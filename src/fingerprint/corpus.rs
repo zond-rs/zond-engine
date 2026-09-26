@@ -249,6 +249,7 @@ fn golden_cases_resolve_end_to_end() {
                 tunnel: None,
                 speaks_http: false,
                 detection: crate::config::ServiceDetection::default(),
+                host_name: None,
             },
             &responses,
             &Collected::default(),
@@ -299,6 +300,7 @@ fn non_standard_port_is_identified_via_global_fallback() {
             tunnel: None,
             speaks_http: false,
             detection: crate::config::ServiceDetection::default(),
+            host_name: None,
         },
         &responses,
         &Collected::default(),
@@ -332,6 +334,7 @@ proptest! {
             tunnel: None,
             speaks_http: false,
             detection: crate::config::ServiceDetection::default(),
+            host_name: None,
         };
         let evidence = BannerRegexAnalyzer.analyze(&ctx, &responses, &Collected::default());
         let _ = ServiceVerdict::resolve(evidence);
@@ -351,6 +354,7 @@ fn port_linked_match_is_tagged_port_confirmed() {
             tunnel: None,
             speaks_http: false,
             detection: crate::config::ServiceDetection::default(),
+            host_name: None,
         },
         &responses,
         &Collected::default(),
@@ -384,6 +388,7 @@ fn tls_cert_identifies_self_signed_appliance() {
             tunnel: Some(Tunnel::Tls),
             speaks_http: false,
             detection: crate::config::ServiceDetection::default(),
+            host_name: None,
         },
         &responses,
         &Collected::default(),
@@ -417,6 +422,7 @@ fn tls_analyzer_is_silent_without_a_certificate() {
                     tunnel: None,
                     speaks_http: false,
                     detection: crate::config::ServiceDetection::default(),
+                    host_name: None,
                 },
                 &responses,
                 &Collected::default(),
@@ -437,6 +443,7 @@ fn banner_matched_in_a_tunnel_is_labelled_with_scheme() {
         tunnel: Some(Tunnel::Tls),
         speaks_http: false,
         detection: crate::config::ServiceDetection::default(),
+        host_name: None,
     };
     let evidence = BannerRegexAnalyzer.analyze(&ctx, &responses, &Collected::default());
     let verdict = ServiceVerdict::resolve(evidence);
@@ -458,6 +465,7 @@ fn named(port: u16, protocol: crate::model::port::Protocol, banner: &str) -> Ser
             tunnel: None,
             speaks_http: false,
             detection: crate::config::ServiceDetection::default(),
+            host_name: None,
         },
         &responses,
         &Collected::default(),

@@ -104,6 +104,7 @@ pub use tls_enum::{EXCHANGE_TIMEOUT, MAX_OFFERS_PER_VERSION, enumerate_tls};
 // The same walk answering to a scan's budget; see its documentation.
 pub(crate) use tls_enum::enumerate_tls_while;
 
+use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -444,7 +445,15 @@ pub async fn fingerprint_tcp_detailed(
     port: Port,
     detection: ServiceDetection,
 ) -> Fingerprinted {
-    fingerprint_tcp_via(stream, port, detection, Egress::KERNEL, PathAllowance::NONE).await
+    fingerprint_tcp_via(
+        stream,
+        port,
+        detection,
+        Egress::KERNEL,
+        PathAllowance::NONE,
+        None,
+    )
+    .await
 }
 
 /// What identifying one port came to: the port as it was named, what its
@@ -494,14 +503,16 @@ pub struct Fingerprinted {
 
 /// [`fingerprint_tcp_detailed`], with every further connection to the port
 /// leaving by `egress`, which is how `stream` was reached, every wait on the
-/// port allowing for `path`, and with whether one of the connections was
-/// refused a socket.
+/// port allowing for `path`, the port asked for by `name` where a target
+/// named its address (see [`Authority`]), and with whether one of the
+/// connections was refused a socket.
 pub(crate) async fn fingerprint_tcp_via(
     stream: TcpStream,
     port: Port,
     detection: ServiceDetection,
     egress: Egress,
     path: PathAllowance,
+    name: Option<Arc<str>>,
 ) -> Fingerprinted {
     // Every connection after `stream` dials through this scope, and every
     // wait on the port is sized in it, which is also where a connection given
@@ -516,7 +527,7 @@ pub(crate) async fn fingerprint_tcp_via(
     let (port, about_the_host, responses) = DIALLING
         .scope(
             dialling,
-            identify_tcp(stream, port, detection, egress, path),
+            identify_tcp(stream, port, detection, egress, path, name),
         )
         .await;
     Fingerprinted {
@@ -536,6 +547,7 @@ async fn identify_tcp(
     detection: ServiceDetection,
     egress: Egress,
     path: PathAllowance,
+    name: Option<Arc<str>>,
 ) -> (Port, AboutTheHost, Vec<String>) {
     // Capture the peer address before `gather` consumes the stream, so active
     // analyzers can open their own connection to the same target. Only at a
@@ -548,7 +560,7 @@ async fn identify_tcp(
     // the scan recorded it, which is what a port that said nothing gets.
     let Ok((responses, tunnel)) = timeout(
         path.over_each(COLLECTION_BUDGET, COLLECTION_WAITS),
-        gather(stream, port.number(), detection, egress),
+        gather(stream, port.number(), detection, egress, name.clone()),
     )
     .await
     else {
@@ -583,6 +595,7 @@ async fn identify_tcp(
         responses,
         tunnel,
         detection,
+        name,
     )
     .await;
     match verdict {
@@ -711,6 +724,7 @@ async fn fingerprint_udp_within(
         responses,
         None,
         ServiceDetection::default(),
+        None,
     )
     .await
     .filter(|verdict| !verdict.is_empty())?;
@@ -906,6 +920,7 @@ async fn gather(
     port: u16,
     detection: ServiceDetection,
     egress: Egress,
+    name: Option<Arc<str>>,
 ) -> (ResponseSet, Option<Tunnel>) {
     // Identify nothing. Reached only from the unprivileged path, where the
     // connection is how the port's state was established and so exists whether
@@ -932,6 +947,7 @@ async fn gather(
     let Ok(socket) = stream.peer_addr() else {
         return (plaintext(stream, port, None, egress).await, None);
     };
+    let peer = Authority::new(socket).named(name);
 
     // The first rung inherits the connection the caller opened. Every rung after
     // it dials its own, because a handshake consumes the stream it was given and
@@ -946,7 +962,7 @@ async fn gather(
             },
         };
 
-        let (responses, tunnel) = rung.ask(stream, port, socket, detection, egress).await;
+        let (responses, tunnel) = rung.ask(stream, port, &peer, detection, egress).await;
         if !responses.is_empty() {
             return (responses, tunnel);
         }
@@ -1085,22 +1101,23 @@ impl Rung {
         self,
         stream: TcpStream,
         port: u16,
-        socket: SocketAddr,
+        peer: &Authority,
         detection: ServiceDetection,
         egress: Egress,
     ) -> (ResponseSet, Option<Tunnel>) {
         match self {
-            Rung::Tls => tunneled(tls::handshake(stream, socket.ip()).await, port).await,
+            Rung::Tls => {
+                let handshake = tls::handshake(stream, peer.server_name()).await;
+                tunneled(handshake, port, peer).await
+            }
             Rung::SpeculativeTls => {
-                tunneled(tls::speculative_handshake(stream, socket.ip()).await, port).await
+                let handshake = tls::speculative_handshake(stream, peer.server_name()).await;
+                tunneled(handshake, port, peer).await
             }
             Rung::LegacyTls => (legacy_tls(stream).await, None),
-            Rung::Plaintext => (
-                plaintext(stream, port, Some(&Authority::new(socket)), egress).await,
-                None,
-            ),
+            Rung::Plaintext => (plaintext(stream, port, Some(peer), egress).await, None),
             Rung::LastResort => (
-                last_resort(stream, socket, port, detection, egress).await,
+                last_resort(stream, peer, port, detection, egress).await,
                 None,
             ),
         }
@@ -1126,7 +1143,7 @@ impl Rung {
 /// Which probes are asked is [`ServiceDetection::probe_intensity`].
 async fn last_resort(
     first: TcpStream,
-    socket: SocketAddr,
+    peer: &Authority,
     port: u16,
     detection: ServiceDetection,
     egress: Egress,
@@ -1139,12 +1156,12 @@ async fn last_resort(
     for payload in probes {
         let Some(mut stream) = (match opened.take() {
             Some(stream) => Some(stream),
-            None => redial(socket, egress).await,
+            None => redial(peer.socket(), egress).await,
         }) else {
             break;
         };
 
-        if stream.write_all(payload).await.is_err() {
+        if stream.write_all(&peer.addressed(payload)).await.is_err() {
             continue;
         }
         if let Some(reply) = read_document(&mut stream, PROBE_READ_TIMEOUT).await {
@@ -1174,7 +1191,7 @@ async fn plaintext(
 ) -> ResponseSet {
     let probes = SignatureDb::global().tcp_probe_payloads(port);
     if !probes.is_empty() {
-        let banners = collect_responses(&mut stream, port, probes).await;
+        let banners = collect_responses(&mut stream, port, probes, peer).await;
         // Read back off the decoded text, which is sound only because every
         // byte `looks_like_tls` constrains is under 0x80 and survives
         // `from_utf8_lossy` unchanged.
@@ -1230,7 +1247,11 @@ async fn ask_generically(
     egress: Egress,
 ) -> GenericReply {
     for payload in SignatureDb::global().generic_tcp_probe_payloads() {
-        if stream.write_all(payload).await.is_err() {
+        let payload = match peer {
+            Some(peer) => peer.addressed(payload),
+            None => Cow::Borrowed(&payload[..]),
+        };
+        if stream.write_all(&payload).await.is_err() {
             break;
         }
     }
@@ -1388,6 +1409,7 @@ async fn legacy_tls(stream: TcpStream) -> ResponseSet {
 async fn tunneled(
     handshake: Option<(tls::TlsTunnel, TlsInfo)>,
     port: u16,
+    peer: &Authority,
 ) -> (ResponseSet, Option<Tunnel>) {
     let Some((mut tunnel, info)) = handshake else {
         return (ResponseSet::default(), None);
@@ -1401,7 +1423,7 @@ async fn tunneled(
         [] => db.generic_tcp_probe_payloads(),
         own => own,
     };
-    let banners = collect_responses(&mut tunnel, port, probes).await;
+    let banners = collect_responses(&mut tunnel, port, probes, Some(&peer.through_tls())).await;
     let responses = ResponseSet {
         banners,
         tls: Some(info),
@@ -1415,8 +1437,14 @@ async fn tunneled(
 ///
 /// The probes are passed in rather than looked up, because the caller is what
 /// knows which set applies: a port's own where it has them, and the generic set
-/// where it does not.
-async fn collect_responses<S>(stream: &mut S, port: u16, probes: &[Vec<u8>]) -> Vec<String>
+/// where it does not. Each is addressed to `peer` where there is one; see
+/// [`Authority::addressed`].
+async fn collect_responses<S>(
+    stream: &mut S,
+    port: u16,
+    probes: &[Vec<u8>],
+    peer: Option<&Authority>,
+) -> Vec<String>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -1428,7 +1456,11 @@ where
     }
 
     for payload in probes {
-        if stream.write_all(payload).await.is_err() {
+        let payload = match peer {
+            Some(peer) => peer.addressed(payload),
+            None => Cow::Borrowed(&payload[..]),
+        };
+        if stream.write_all(&payload).await.is_err() {
             break;
         }
         let Some(bytes) = read_bytes(stream, PROBE_READ_TIMEOUT, CONTINUATION_GRACE).await else {
@@ -1569,6 +1601,7 @@ async fn analyze(
     responses: ResponseSet,
     tunnel: Option<Tunnel>,
     detection: ServiceDetection,
+    name: Option<Arc<str>>,
 ) -> Option<ServiceVerdict> {
     // Read before the context is built, so an active analyzer's `collect` can
     // gate on it: `collect` is handed no responses and runs before any evidence
@@ -1582,7 +1615,8 @@ async fn analyze(
         .with_addr(addr)
         .with_tunnel(tunnel)
         .with_speaks_http(speaks_http)
-        .with_detection(detection);
+        .with_detection(detection)
+        .with_host_name(name.map(|name| name.to_string()));
     analyze_with(ctx, responses, analyzers()).await
 }
 
@@ -2092,6 +2126,7 @@ mod tests {
             responses,
             None,
             ServiceDetection::default(),
+            None,
         )
         .await
         .expect("names a service");
@@ -2122,6 +2157,7 @@ mod tests {
             responses,
             None,
             ServiceDetection::default(),
+            None,
         )
         .await
         .expect("names a service");
@@ -2153,6 +2189,7 @@ mod tests {
             responses,
             None,
             ServiceDetection::default(),
+            None,
         )
         .await
         .expect("names a service")
@@ -2182,6 +2219,7 @@ mod tests {
             responses,
             None,
             ServiceDetection::default(),
+            None,
         )
         .await
         .expect("names a service");
@@ -2299,7 +2337,7 @@ mod tests {
         let stream = TcpStream::connect(addr).await.expect("connects");
         let port = baseline_port(443, Protocol::Tcp, PortState::Open);
         let (responses, tunnel) =
-            gather(stream, 443, ServiceDetection::Probe, Egress::KERNEL).await;
+            gather(stream, 443, ServiceDetection::Probe, Egress::KERNEL, None).await;
         server.abort();
         let _ = port;
 
@@ -2513,6 +2551,7 @@ mod tests {
             ServiceDetection::Banner,
             Egress::KERNEL,
             PathAllowance::NONE,
+            None,
         )
         .await
         .port;
@@ -2538,7 +2577,8 @@ mod tests {
     /// What the clear-text rung sends a silent port numbered `number`, read
     /// off a loopback listener that records every byte and answers nothing.
     /// The number decides what is asked, the socket who is asked, as in the
-    /// tests above.
+    /// tests above. Asked with no peer to address it to, so what arrives is
+    /// the probes as authored, whatever port the listener was given.
     async fn asked_in_the_clear(number: u16) -> Vec<u8> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -2552,7 +2592,7 @@ mod tests {
         });
 
         let stream = TcpStream::connect(addr).await.expect("connects");
-        plaintext(stream, number, Some(&Authority::new(addr)), Egress::KERNEL).await;
+        plaintext(stream, number, None, Egress::KERNEL).await;
         server.await.expect("the listener finishes")
     }
 
@@ -2825,9 +2865,132 @@ mod tests {
                 ResponseSet::default(),
                 None,
                 ServiceDetection::default(),
+                None,
             )
             .await
             .is_none()
+        );
+    }
+
+    /// What a loopback server was asked, request by request, in the order
+    /// they arrived: decrypted where they came through TLS.
+    type Heard = Arc<std::sync::Mutex<Vec<String>>>;
+
+    /// A loopback HTTPS server keeping a certificate for `name` alone, as a
+    /// server holding its sites by name keeps one per site, so a handshake
+    /// naming nothing, or something else, is refused. A request in the clear is
+    /// answered the way Go's server answers one, with a plaintext `400`.
+    async fn https_by_name(name: &str) -> (SocketAddr, Heard) {
+        use rustls::server::ResolvesServerCertUsingSni;
+        use rustls::sign::CertifiedKey;
+
+        let cert = rcgen::generate_simple_self_signed(vec![name.to_string()])
+            .expect("a self-signed certificate");
+        let key = rustls::pki_types::PrivateKeyDer::Pkcs8(
+            rustls::pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()),
+        );
+        let signing = rustls::crypto::ring::sign::any_supported_type(&key).expect("a signing key");
+        let mut by_name = ResolvesServerCertUsingSni::new();
+        by_name
+            .add(
+                name,
+                CertifiedKey::new(vec![cert.cert.der().clone()], signing),
+            )
+            .expect("the name takes the certificate");
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("ring supports the default versions")
+        .with_no_client_auth()
+        .with_cert_resolver(Arc::new(by_name));
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binds loopback");
+        let addr = listener.local_addr().expect("a local address");
+        let heard: Heard = Arc::default();
+        let record = Arc::clone(&heard);
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let (acceptor, record) = (acceptor.clone(), Arc::clone(&record));
+                tokio::spawn(async move {
+                    let mut first = [0u8; 1];
+                    if stream.peek(&mut first).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let mut buffer = [0u8; 2048];
+                    if first[0] != 0x16 {
+                        let mut stream = stream;
+                        let read = stream.read(&mut buffer).await.unwrap_or(0);
+                        record.lock().expect("not poisoned").push(format!(
+                            "clear: {}",
+                            String::from_utf8_lossy(&buffer[..read])
+                        ));
+                        let _ = stream
+                            .write_all(
+                                b"HTTP/1.0 400 Bad Request\r\n\r\n\
+                                  Client sent an HTTP request to an HTTPS server.\n",
+                            )
+                            .await;
+                        return;
+                    }
+                    let Ok(mut tls) = acceptor.accept(stream).await else {
+                        return;
+                    };
+                    let read = tls.read(&mut buffer).await.unwrap_or(0);
+                    record
+                        .lock()
+                        .expect("not poisoned")
+                        .push(String::from_utf8_lossy(&buffer[..read]).into_owned());
+                    let _ = tls
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nServer: Caddy\r\n\
+                              Content-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await;
+                    let _ = tls.shutdown().await;
+                });
+            }
+        });
+        (addr, heard)
+    }
+
+    /// A server keeping its certificates by name completes a handshake only
+    /// for a client naming a site it holds, so a port on an address a target
+    /// reached by name is asked for by that name, in the handshake and in the
+    /// request inside it. Asked for by nothing, the port reads as one that does
+    /// not speak TLS at all.
+    #[tokio::test]
+    async fn a_tls_port_on_a_named_address_is_asked_for_by_its_name() {
+        let (addr, heard) = https_by_name("box.example").await;
+
+        let stream = TcpStream::connect(addr).await.expect("connects");
+        let port = baseline_port(443, Protocol::Tcp, PortState::Open);
+        let found = fingerprint_tcp_via(
+            stream,
+            port,
+            ServiceDetection::Probe,
+            Egress::KERNEL,
+            PathAllowance::NONE,
+            Some(Arc::from("box.example")),
+        )
+        .await;
+
+        assert!(
+            found.port.security().is_some(),
+            "the handshake did not complete: {:?}",
+            heard.lock().expect("not poisoned")
+        );
+        let service = found.port.service().expect("a service was named");
+        assert_eq!(service.name(), "ssl/http");
+        let asked = heard.lock().expect("not poisoned").clone();
+        let host = format!("\r\nHost: box.example:{}\r\n", addr.port());
+        assert!(
+            asked.iter().any(|request| request.contains(&host)),
+            "nothing inside the tunnel asked for `{}`: {asked:?}",
+            host.trim()
         );
     }
 }

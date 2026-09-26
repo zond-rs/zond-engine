@@ -298,6 +298,7 @@ mod tests {
             tunnel: None,
             speaks_http: false,
             detection: crate::config::ServiceDetection::default(),
+            host_name: None,
         };
 
         let findings = runtime

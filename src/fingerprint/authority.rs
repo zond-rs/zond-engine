@@ -15,14 +15,32 @@
 //! identified is written in that form and read back out of it, so a request
 //! and the check on where its redirect leads cannot disagree about what the
 //! port is called.
+//!
+//! ## Named where a target named it
+//!
+//! A server holding several sites at one address routes a request by the name
+//! in it: the `Host` header, and before that the server name of a TLS
+//! handshake. Asked with neither, it serves its default site, or refuses the
+//! handshake outright where it keeps no certificate for a nameless client. So
+//! where a target reached the address by a name, the port is asked for by that
+//! name and the site identified is the one the target named. Elsewhere it is
+//! asked for by its address, as a browser pointed at the address asks; a
+//! placeholder such as `localhost` is a site no server was asked to hold, and
+//! a request naming it is one no visitor sends.
 
+use std::borrow::Cow;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
+
+use rustls::pki_types::ServerName;
 
 /// The port being identified, as a web client addresses it.
 #[derive(Debug, Clone)]
 pub(crate) struct Authority {
     /// Where the port was reached.
     socket: SocketAddr,
+    /// The name a target reached the address by, where it named a host.
+    name: Option<Arc<str>>,
     /// Whether it is spoken to through TLS, which makes the scheme `https`
     /// and its default port 443 rather than `http`'s 80.
     tls: bool,
@@ -31,7 +49,74 @@ pub(crate) struct Authority {
 impl Authority {
     /// The port at `socket`, spoken to in the clear.
     pub(crate) fn new(socket: SocketAddr) -> Self {
-        Self { socket, tls: false }
+        Self {
+            socket,
+            name: None,
+            tls: false,
+        }
+    }
+
+    /// The same port, asked for by `name` where there is one.
+    pub(crate) fn named(mut self, name: Option<Arc<str>>) -> Self {
+        self.name = name;
+        self
+    }
+
+    /// The same port, spoken to through TLS.
+    pub(crate) fn through_tls(&self) -> Self {
+        Self {
+            tls: true,
+            ..self.clone()
+        }
+    }
+
+    /// The server name a TLS handshake with this port carries: the name, where
+    /// it is one a handshake can carry, and otherwise the address, which puts
+    /// no server name on the wire at all.
+    pub(crate) fn server_name(&self) -> ServerName<'static> {
+        self.name
+            .as_deref()
+            .and_then(|name| ServerName::try_from(name.to_string()).ok())
+            .unwrap_or_else(|| ServerName::IpAddress(self.socket.ip().into()))
+    }
+
+    /// `payload` with the `Host` header of the HTTP request it carries set to
+    /// this port's; see [`header`](Self::header).
+    ///
+    /// An authored probe is written once for every host, so the host it
+    /// writes is a placeholder, and this is where the port being asked is put
+    /// in its place. A payload that is not an HTTP/1 request, or that carries
+    /// no `Host`, is sent as written, which leaves a probe for another protocol
+    /// and a deliberate HTTP/1.0 request without one untouched.
+    pub(crate) fn addressed<'a>(&self, payload: &'a [u8]) -> Cow<'a, [u8]> {
+        let Some(head) = find(payload, b"\r\n\r\n") else {
+            return Cow::Borrowed(payload);
+        };
+        let Some(line_end) = find(&payload[..head], b"\r\n") else {
+            return Cow::Borrowed(payload);
+        };
+        if find(&payload[..line_end], b" HTTP/1.").is_none() {
+            return Cow::Borrowed(payload);
+        }
+
+        // Each header line starts after a CRLF and runs to the next one.
+        let mut at = line_end + 2;
+        while at < head {
+            let end = find(&payload[at..head], b"\r\n").map_or(head, |n| at + n);
+            let line = &payload[at..end];
+            if let Some(colon) = line.iter().position(|&byte| byte == b':')
+                && line[..colon].eq_ignore_ascii_case(b"host")
+            {
+                let mut addressed = Vec::with_capacity(payload.len() + 64);
+                addressed.extend_from_slice(&payload[..at + colon + 1]);
+                addressed.push(b' ');
+                addressed.extend_from_slice(self.header().as_bytes());
+                addressed.extend_from_slice(&payload[end..]);
+                return Cow::Owned(addressed);
+            }
+            at = end + 2;
+        }
+        Cow::Borrowed(payload)
     }
 
     /// Where the port was reached.
@@ -62,6 +147,9 @@ impl Authority {
     /// 6874 allows one only in a URI and not in a request, and it names an
     /// interface of this machine, which is nothing to the server.
     fn host(&self) -> String {
+        if let Some(name) = &self.name {
+            return name.to_string();
+        }
         match self.socket.ip() {
             IpAddr::V4(v4) => v4.to_string(),
             IpAddr::V6(v6) => format!("[{v6}]"),
@@ -122,11 +210,28 @@ impl Authority {
     }
 
     /// Whether `host`, as a URL writes it with any brackets taken off, names
-    /// this port's host.
+    /// this port's host: its address, or the name it is asked for by. A name
+    /// is compared without case and without a fully qualified name's trailing
+    /// dot, as DNS compares names.
     fn names(&self, host: &str) -> bool {
-        host.parse::<IpAddr>()
+        if host
+            .parse::<IpAddr>()
             .is_ok_and(|address| address == self.socket.ip())
+        {
+            return true;
+        }
+        let bare = |name: &str| name.strip_suffix('.').unwrap_or(name).to_owned();
+        self.name
+            .as_deref()
+            .is_some_and(|name| bare(name).eq_ignore_ascii_case(&bare(host)))
     }
+}
+
+/// Where `needle` first appears in `haystack`.
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 /// The host and the port of a URL's authority, with an IPv6 address's brackets
@@ -182,6 +287,76 @@ mod tests {
         assert_eq!(at("192.0.2.1:8080").header(), "192.0.2.1:8080");
         assert_eq!(at("[2001:db8::1]:80").header(), "[2001:db8::1]");
         assert_eq!(at("[2001:db8::1]:8080").header(), "[2001:db8::1]:8080");
+    }
+
+    /// A named port is asked for by its name, which is what a virtual host
+    /// is configured under, and through TLS the default port is 443.
+    #[test]
+    fn a_named_port_is_asked_for_by_its_name() {
+        let named = at("192.0.2.1:8443").named(Some(Arc::from("box.example")));
+        assert_eq!(named.header(), "box.example:8443");
+        assert_eq!(named.through_tls().header(), "box.example:8443");
+        let https = at("192.0.2.1:443").named(Some(Arc::from("box.example")));
+        assert_eq!(https.through_tls().header(), "box.example");
+        assert_eq!(https.header(), "box.example:443");
+    }
+
+    /// A handshake carries the name, and an address carries none, since an
+    /// address in the server name extension is not allowed.
+    #[test]
+    fn a_handshake_carries_the_name_and_never_an_address() {
+        let named = at("192.0.2.1:443").named(Some(Arc::from("box.example")));
+        assert!(
+            matches!(named.server_name(), ServerName::DnsName(dns) if dns.as_ref() == "box.example")
+        );
+        assert!(matches!(
+            at("192.0.2.1:443").server_name(),
+            ServerName::IpAddress(_)
+        ));
+    }
+
+    /// The placeholder an authored probe carries becomes the port asked, and
+    /// nothing else in the request moves.
+    #[test]
+    fn an_authored_request_is_addressed_to_the_port_asked() {
+        let named = at("192.0.2.1:80").named(Some(Arc::from("box.example")));
+        let probe = b"GET / HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\n\r\n";
+        assert_eq!(
+            &*named.addressed(probe),
+            b"GET / HTTP/1.1\r\nHost: box.example\r\nAccept: */*\r\n\r\n"
+        );
+        let last = b"GET /v2/ HTTP/1.1\r\nhost:localhost\r\n\r\n";
+        assert_eq!(
+            &*at("[2001:db8::1]:5000").addressed(last),
+            b"GET /v2/ HTTP/1.1\r\nhost: [2001:db8::1]:5000\r\n\r\n"
+        );
+
+        // Not an HTTP request, or one with no `Host`: sent as written.
+        for untouched in [
+            &b"GET / HTTP/1.0\r\n\r\n"[..],
+            b"0011git-upload-pack /\0host=localhost\0",
+            b"<stream:stream to='localhost'>",
+            b"PING\r\nHost: localhost\r\n\r\n",
+        ] {
+            assert!(matches!(named.addressed(untouched), Cow::Borrowed(_)));
+        }
+    }
+
+    /// A redirect naming the name the port is asked for by leads back, which
+    /// is how a virtual host sends a visitor to its own login page.
+    #[test]
+    fn a_url_naming_the_name_asked_for_leads_back() {
+        let named = at("192.0.2.1:80").named(Some(Arc::from("box.example")));
+        assert_eq!(
+            named.path_of("http://BOX.example./login").as_deref(),
+            Some("/login")
+        );
+        assert_eq!(
+            named.path_of("http://192.0.2.1/login").as_deref(),
+            Some("/login")
+        );
+        assert_eq!(named.path_of("http://dev.box.example/"), None);
+        assert_eq!(at("192.0.2.1:80").path_of("http://box.example/"), None);
     }
 
     /// Two spellings of one IPv6 address are one address, and the default

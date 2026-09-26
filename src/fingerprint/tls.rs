@@ -31,7 +31,6 @@
 //!
 //! [`TlsCertAnalyzer`]: super::tls_cert::TlsCertAnalyzer
 
-use std::net::IpAddr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -159,8 +158,11 @@ fn connector() -> &'static TlsConnector {
 
 /// Handshake on a port where TLS is *expected*, an implicit-TLS port. Patient
 /// (see [`TLS_HANDSHAKE_TIMEOUT`]).
-pub async fn handshake(stream: TcpStream, peer: IpAddr) -> Option<(TlsTunnel, TlsInfo)> {
-    handshake_within(stream, peer, TLS_HANDSHAKE_TIMEOUT).await
+pub async fn handshake(
+    stream: TcpStream,
+    server: ServerName<'static>,
+) -> Option<(TlsTunnel, TlsInfo)> {
+    handshake_within(stream, server, TLS_HANDSHAKE_TIMEOUT).await
 }
 
 /// *Speculative* handshake on a silent, un-probed port that might be TLS on a
@@ -168,47 +170,33 @@ pub async fn handshake(stream: TcpStream, peer: IpAddr) -> Option<(TlsTunnel, Tl
 /// the prior is low and this cost is paid on every silent port.
 pub async fn speculative_handshake(
     stream: TcpStream,
-    peer: IpAddr,
+    server: ServerName<'static>,
 ) -> Option<(TlsTunnel, TlsInfo)> {
-    handshake_within(stream, peer, SPECULATIVE_TLS_TIMEOUT).await
+    handshake_within(stream, server, SPECULATIVE_TLS_TIMEOUT).await
 }
 
 /// Completes a TLS handshake over `stream` within `budget`, which allows for
 /// the path (see [`on_path`](super::on_path)), returning the live tunnel and
 /// the certificate chain the peer presented (owned DER).
 ///
-/// `peer` is the address we connected to; it becomes the rustls server name, and
-/// an address is not a name, so **no SNI goes on the wire**. What comes back is
-/// whatever certificate the default virtual host serves, and the accept-any
-/// verifier means the name never decides whether the handshake completes. The
-/// tunnel is returned so the caller can re-probe *through* it; the certificate
-/// may be empty (anonymous handshake) without failing. Returns `None` only on
-/// timeout or handshake failure.
-///
-/// # What that costs, and why it is not fixed here
-///
-/// On a shared address the certificate recorded is the fallback one and not the
-/// operator's, and a growing number of hosts refuse a no-SNI handshake
-/// outright, which reads, from a scan, as a port that does not speak TLS.
-///
-/// That the engine scans by IP does not settle it:
-/// [`resolve`](crate::resolve) turns names into addresses before a scan and
-/// [`rdns`](crate::scanner::rdns) attaches names to hosts after one. The real
-/// obstacle is that neither has produced a name **by the time this runs**. A
-/// forward-resolved target does not record the name it came from, and reverse
-/// resolution lands in `finish_enrichment`, which the orchestrator runs after
-/// service detection has finished.
-///
-/// So the fix is upstream and is one of two things: record the name a target was
-/// resolved from, or order reverse resolution before the service phase. Adding a
-/// parameter here first would be a seam nothing could fill.
+/// `server` is who the handshake asks for, from
+/// [`Authority::server_name`](super::authority::Authority::server_name): the
+/// name a target reached the address by, which goes on the wire as the server
+/// name indication, or the address, which puts none there. A server holding
+/// several sites at one address picks the certificate by it, and one keeping
+/// no certificate for a nameless client refuses the handshake without it, so
+/// the name is what reaches the site the target named. Without one, what comes
+/// back is whatever certificate the default site serves. The accept-any
+/// verifier means the name never decides whether the handshake completes on
+/// this side. The tunnel is returned so the caller can re-probe *through* it;
+/// the certificate may be empty (anonymous handshake) without failing. Returns
+/// `None` only on timeout or handshake failure.
 async fn handshake_within(
     stream: TcpStream,
-    peer: IpAddr,
+    server: ServerName<'static>,
     budget: Duration,
 ) -> Option<(TlsTunnel, TlsInfo)> {
-    let server_name = ServerName::IpAddress(peer.into());
-    let connect = connector().connect(server_name, stream);
+    let connect = connector().connect(server, stream);
 
     let Ok(done) = timeout(super::on_path(budget), connect).await else {
         // A handshake with no answer in time, which the identification is

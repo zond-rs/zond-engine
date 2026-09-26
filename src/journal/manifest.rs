@@ -72,6 +72,8 @@
 //! `cap_net_raw`, and refused it by reporting that recorded positions would name
 //! different targets, of which such a journal has none.
 
+use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
@@ -754,7 +756,7 @@ impl std::error::Error for PlanChanged {}
 ///
 /// # What is recorded, and what a later sitting may change
 ///
-/// Three kinds of option, told apart by what changing one between two sittings
+/// Four kinds of option, told apart by what changing one between two sittings
 /// would do to the job.
 ///
 /// **What the job asks, and what its answers mean.** The TCP and SCTP
@@ -767,6 +769,13 @@ impl std::error::Error for PlanChanged {}
 /// beside the first sitting's as though they were answers to the same one.
 /// These are restored, and a sitting that asks for a different one is refused;
 /// see [`check`](Self::check).
+///
+/// **Who each address is asked as.** The name a target gave an address, which
+/// a web port is asked for by. Restored, so a sitting given nothing but the
+/// journal asks for the sites the first asked for; not held to the record,
+/// since a name is how an address is addressed rather than which question it
+/// is asked, and a caller resolving the targets again may find them named
+/// otherwise.
 ///
 /// **How fast, for how long, and what else goes on the wire.** The probe-rate
 /// ceiling and floor, the gap kept between probes at one host, the per-host and
@@ -798,6 +807,10 @@ pub struct JobOptions {
     /// its host was there.
     #[serde(default)]
     pub assume_up: bool,
+    /// The name each address was asked for by, where a target named a host;
+    /// see [`ZondConfig::target_names`].
+    #[serde(default)]
+    pub target_names: BTreeMap<IpAddr, String>,
 }
 
 impl JobOptions {
@@ -806,6 +819,7 @@ impl JobOptions {
         Self {
             settings: SettingsRecord::from(&ScanSettings::from(cfg)),
             assume_up: cfg.assume_up,
+            target_names: cfg.target_names.clone(),
         }
     }
 
@@ -819,6 +833,7 @@ impl JobOptions {
         let recorded = ScanSettings::from(&self.settings);
 
         cfg.assume_up = self.assume_up;
+        cfg.target_names = self.target_names.clone();
         cfg.tcp_technique = recorded.tcp_technique;
         cfg.sctp_technique = recorded.sctp_technique;
         cfg.retry = recorded.retry;
@@ -1470,6 +1485,10 @@ mod tests {
         cfg.retry.effort = crate::config::ScanEffort::Thorough;
         cfg.ip_protocols = [1, 6].into_iter().collect();
         cfg.listen_only_ports.clear();
+        cfg.target_names.insert(
+            "192.0.2.1".parse().expect("an address"),
+            "box.example".into(),
+        );
         cfg
     }
 
@@ -1498,6 +1517,7 @@ mod tests {
             Some(std::time::Duration::from_secs(60))
         );
         assert!(restored.no_dns);
+        assert_eq!(restored.target_names, set_apart().target_names);
 
         assert!(!restored.redact, "masking is what this sitting shows");
         assert!(!restored.icmp_evidence, "and so is what the capture keeps");
@@ -1539,6 +1559,12 @@ mod tests {
             |cfg| cfg.host_timeout = Some(std::time::Duration::from_secs(5)),
             |cfg| cfg.no_dns = true,
             |cfg| cfg.redact = true,
+            |cfg| {
+                cfg.target_names.insert(
+                    "192.0.2.1".parse().expect("an address"),
+                    "box.example".into(),
+                );
+            },
         ] {
             assert_eq!(changed(pace), None);
         }

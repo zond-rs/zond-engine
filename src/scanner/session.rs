@@ -71,7 +71,7 @@
 //! empty" and "the raw scanner never started" would be the same answer.
 
 use dashmap::DashMap;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -1661,9 +1661,18 @@ pub struct ScanContext {
     /// The TCP ports this scan connects to and listens on and sends nothing;
     /// see [`listens_only`](Self::listens_only).
     pub(crate) listen_only: Arc<BTreeSet<u16>>,
+    /// The name each address was asked for by, where a target named a host;
+    /// see [`ZondConfig::target_names`](crate::config::ZondConfig::target_names).
+    target_names: Arc<BTreeMap<IpAddr, Arc<str>>>,
 }
 
 impl ScanContext {
+    /// The name a target reached `ip` by, which its web ports are asked for
+    /// by, or `None` where it was named by its address.
+    pub(crate) fn target_name(&self, ip: IpAddr) -> Option<Arc<str>> {
+        self.target_names.get(&ip).cloned()
+    }
+
     /// Where a connection this scan opens to `target` leaves from.
     ///
     /// Asked by every phase that dials, once per destination, and handed to
@@ -1844,6 +1853,12 @@ impl ScanContext {
             // about it, since it is what the host was looked up by.
             if let Some(zone) = key.zone() {
                 host.set_zone(zone.clone());
+            }
+            // Born named where a target named it, for the same reason: the
+            // name is what the caller called this address, known before
+            // anything answered, and a reverse lookup leaves a named host be.
+            if let Some(name) = self.target_names.get(&ip) {
+                host.set_hostname(Some(name.to_string()));
             }
             host
         });
@@ -2858,6 +2873,7 @@ pub struct SessionBuilder {
     /// they name, in place of the host's own; `None` to read the host's.
     neighbours: Option<Vec<(IpAddr, Option<MacAddr>)>>,
     finished: Finished,
+    target_names: BTreeMap<IpAddr, String>,
 }
 
 impl SessionBuilder {
@@ -2875,6 +2891,17 @@ impl SessionBuilder {
     /// its hardware address. See [`Exclusions`].
     pub fn excluding(mut self, exclusions: Exclusions) -> Self {
         self.exclusions = exclusions;
+        self
+    }
+
+    /// The name each address was asked for by, where a target named a host.
+    ///
+    /// A host recorded at one of these addresses carries its name as its
+    /// hostname from the moment it is recorded, and its web ports are asked
+    /// for by it; see
+    /// [`ZondConfig::target_names`](crate::config::ZondConfig::target_names).
+    pub fn naming(mut self, names: BTreeMap<IpAddr, String>) -> Self {
+        self.target_names = names;
         self
     }
 
@@ -3159,6 +3186,12 @@ impl SessionBuilder {
             listen_only: Arc::new(
                 self.listen_only
                     .unwrap_or_else(|| crate::config::RAW_PRINT_PORTS.into_iter().collect()),
+            ),
+            target_names: Arc::new(
+                self.target_names
+                    .into_iter()
+                    .map(|(ip, name)| (ip, Arc::from(name)))
+                    .collect(),
             ),
         };
 

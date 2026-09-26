@@ -93,8 +93,8 @@ mod unicast;
 
 pub use links::{LinkError, for_listening, for_listening_on};
 pub use targets::{
-    DiscoveryTargets, for_discovery, for_discovery_with, for_exclusion, for_exclusion_with,
-    resolve_names, to_set, to_target_map,
+    DiscoveryTargets, PortScanTargets, for_discovery, for_discovery_with, for_exclusion,
+    for_exclusion_with, for_port_scan, resolve_names, to_set, to_target_map,
 };
 
 use std::fmt;

@@ -883,6 +883,9 @@ impl From<&ZondConfig> for ScanSettings {
             exclusions: _,
             segment_sweep: _,
             assume_up: _,
+            // What each address was asked as, which the hosts' own names
+            // record; the journal keeps it with the job's options.
+            target_names: _,
 
             // Not recorded: which local source a scan was pinned to is transport
             // plumbing the findings do not turn on. Unlike `send_mode` it names

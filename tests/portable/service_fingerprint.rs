@@ -762,3 +762,60 @@ async fn identifies_a_coap_endpoint_from_its_resource_list() {
         "coap"
     );
 }
+
+/// A web server holding several sites at one address serves the one a request
+/// names, so a scan of a name asks for that name, and the host is reported
+/// under it.
+///
+/// The address is loopback's, reached here as the name a target resolved to
+/// it. Asked with a placeholder, a server routing by name answers with its
+/// default site, and the application the target named is never seen.
+#[tokio::test]
+async fn a_web_port_on_a_named_target_is_asked_for_by_that_name() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind loopback web server");
+    let port = listener.local_addr().expect("server local addr").port();
+    let (asked, mut heard) = tokio::sync::mpsc::unbounded_channel();
+    let server = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let asked = asked.clone();
+            tokio::spawn(async move {
+                let mut buffer = [0u8; 2048];
+                let read = stream.read(&mut buffer).await.unwrap_or(0);
+                let _ = asked.send(String::from_utf8_lossy(&buffer[..read]).into_owned());
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+            });
+        }
+    });
+
+    let mut cfg = test_config();
+    cfg.target_names.insert(LOOPBACK, "box.example".to_string());
+    let outcome = run_scan(target_map(LOOPBACK, &port.to_string()), &cfg).await;
+    server.abort();
+
+    let mut requests = Vec::new();
+    while let Ok(request) = heard.try_recv() {
+        requests.push(request);
+    }
+    let host = format!("\r\nHost: box.example:{port}\r\n");
+    assert!(
+        requests.iter().any(|request| request.contains(&host)),
+        "no request asked for `{}`: {requests:?}",
+        host.trim()
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.contains("Host: localhost")),
+        "a request asked for a placeholder: {requests:?}"
+    );
+
+    let host = outcome.host(LOOPBACK).expect("loopback host recorded");
+    assert_eq!(host.hostname(), Some("box.example"));
+}

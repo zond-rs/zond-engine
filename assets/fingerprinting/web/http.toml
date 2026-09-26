@@ -19,6 +19,8 @@ description = "Hypertext Transfer Protocol"
 # then guess at TLS, and report the port with no service at all.
 speaks = "http"
 
+# `Host: localhost` is a placeholder: the engine puts the port being asked in its
+# place, the name a target gave its address or the address itself.
 [[probe]]
 name = "get_root"
 payload = 'GET / HTTP/1.1\r\nHost: localhost\r\nUser-Agent: ZondScanner/1.0\r\nAccept: */*\r\n\r\n'

@@ -144,7 +144,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
             target,
             detection,
             egress,
-            crowds.of(address),
+            crowds.of(address, ctx.target_name(address)),
         ))
         .await;
     }
@@ -535,10 +535,16 @@ pub(crate) struct Crowds {
 }
 
 impl Crowds {
-    /// The crowd `host`'s identifications make in this pass.
-    pub(crate) fn of(&self, host: IpAddr) -> Arc<Crowd> {
+    /// The crowd `host`'s identifications make in this pass, which ask its
+    /// ports for by `name` where a target reached the host by one.
+    pub(crate) fn of(&self, host: IpAddr, name: Option<Arc<str>>) -> Arc<Crowd> {
         let mut hosts = self.hosts.lock().unwrap_or_else(|held| held.into_inner());
-        Arc::clone(hosts.entry(host).or_default())
+        Arc::clone(hosts.entry(host).or_insert_with(|| {
+            Arc::new(Crowd {
+                name,
+                ..Crowd::default()
+            })
+        }))
     }
 
     /// Asks again, each with its host to itself, every port a [`Crowd`] owes
@@ -618,6 +624,10 @@ pub(crate) struct Crowd {
     answered_late: AtomicBool,
     /// The ports owed a second asking, in the order their first ended.
     owed: Mutex<Vec<Owed>>,
+    /// The name a target reached the host by, which its web ports are asked
+    /// for by; see
+    /// [`ZondConfig::target_names`](crate::config::ZondConfig::target_names).
+    name: Option<Arc<str>>,
 }
 
 /// A port a [`Crowd`] owes a second asking, and what that asking needs.
@@ -650,9 +660,15 @@ impl Crowd {
     ) -> Fingerprinted {
         let addr = stream.peer_addr().ok();
         let visit = self.contention.enter();
-        let found =
-            crate::fingerprint::fingerprint_tcp_via(stream, port.clone(), detection, egress, path)
-                .await;
+        let found = crate::fingerprint::fingerprint_tcp_via(
+            stream,
+            port.clone(),
+            detection,
+            egress,
+            path,
+            self.name.clone(),
+        )
+        .await;
         let alone = visit.leave();
         self.heard(&found);
         if let (Some(addr), false, true, true) = (
@@ -723,9 +739,15 @@ impl Crowd {
             else {
                 continue;
             };
-            let again =
-                crate::fingerprint::fingerprint_tcp_via(stream, port, detection, egress, path)
-                    .await;
+            let again = crate::fingerprint::fingerprint_tcp_via(
+                stream,
+                port,
+                detection,
+                egress,
+                path,
+                self.name.clone(),
+            )
+            .await;
             self.heard(&again);
             if !again.responses.is_empty() {
                 named.push((key, again));
@@ -1278,7 +1300,7 @@ mod tests {
         let silent = SilentPort::open();
         let (_session, ctx) = ScanSession::new();
         let crowds = Crowds::default();
-        let crowd = crowds.of(silent.addr().ip());
+        let crowd = crowds.of(silent.addr().ip(), None);
         crowd.answered_late.store(true, Ordering::Relaxed);
 
         let company = crowd.contention.enter();

@@ -394,6 +394,7 @@ pub zond_engine::config::ZondConfig::segment_sweep: bool
 pub zond_engine::config::ZondConfig::send_mode: zond_engine::transport::probe::SendMode
 pub zond_engine::config::ZondConfig::send_source: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::config::ZondConfig::service_detection: zond_engine::config::ServiceDetection
+pub zond_engine::config::ZondConfig::target_names: alloc::collections::btree::map::BTreeMap<core::net::ip_addr::IpAddr, alloc::string::String>
 pub zond_engine::config::ZondConfig::tcp_technique: zond_engine::model::technique::TcpScanTechnique
 pub zond_engine::config::ZondConfig::tls_enumeration: bool
 pub zond_engine::config::ZondConfig::traceroute: bool
@@ -5422,6 +5423,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::MatchRul
 #[non_exhaustive] pub struct zond_engine::fingerprint::PortContext
 pub zond_engine::fingerprint::PortContext::addr: core::option::Option<core::net::socket_addr::SocketAddr>
 pub zond_engine::fingerprint::PortContext::detection: zond_engine::config::ServiceDetection
+pub zond_engine::fingerprint::PortContext::host_name: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::PortContext::port: u16
 pub zond_engine::fingerprint::PortContext::protocol: zond_engine::model::port::Protocol
 pub zond_engine::fingerprint::PortContext::speaks_http: bool
@@ -5430,6 +5432,7 @@ impl zond_engine::fingerprint::PortContext
 pub fn zond_engine::fingerprint::PortContext::new(u16, zond_engine::model::port::Protocol) -> Self
 pub fn zond_engine::fingerprint::PortContext::with_addr(self, core::option::Option<core::net::socket_addr::SocketAddr>) -> Self
 pub fn zond_engine::fingerprint::PortContext::with_detection(self, zond_engine::config::ServiceDetection) -> Self
+pub fn zond_engine::fingerprint::PortContext::with_host_name(self, core::option::Option<alloc::string::String>) -> Self
 pub fn zond_engine::fingerprint::PortContext::with_speaks_http(self, bool) -> Self
 pub fn zond_engine::fingerprint::PortContext::with_tunnel(self, core::option::Option<zond_engine::fingerprint::model::Tunnel>) -> Self
 impl core::clone::Clone for zond_engine::fingerprint::PortContext
@@ -7094,6 +7097,7 @@ pub mod zond_engine::journal::manifest
 #[non_exhaustive] pub struct zond_engine::journal::manifest::JobOptions
 pub zond_engine::journal::manifest::JobOptions::assume_up: bool
 pub zond_engine::journal::manifest::JobOptions::settings: zond_engine::record::SettingsRecord
+pub zond_engine::journal::manifest::JobOptions::target_names: alloc::collections::btree::map::BTreeMap<core::net::ip_addr::IpAddr, alloc::string::String>
 impl zond_engine::journal::manifest::JobOptions
 pub fn zond_engine::journal::manifest::JobOptions::apply_to(&self, &mut zond_engine::config::ZondConfig)
 pub fn zond_engine::journal::manifest::JobOptions::check(&self, &zond_engine::config::ZondConfig) -> core::result::Result<(), zond_engine::journal::manifest::OptionChanged>
@@ -14559,6 +14563,23 @@ impl core::marker::Unpin for zond_engine::resolve::DiscoveryTargets
 impl core::marker::UnsafeUnpin for zond_engine::resolve::DiscoveryTargets
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::resolve::DiscoveryTargets
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::resolve::DiscoveryTargets
+pub struct zond_engine::resolve::PortScanTargets
+impl zond_engine::resolve::PortScanTargets
+pub fn zond_engine::resolve::PortScanTargets::apply_to(&self, &mut zond_engine::config::ZondConfig)
+pub fn zond_engine::resolve::PortScanTargets::into_map(self) -> zond_engine::model::target::TargetMap
+pub fn zond_engine::resolve::PortScanTargets::map(&self) -> &zond_engine::model::target::TargetMap
+pub fn zond_engine::resolve::PortScanTargets::names(&self) -> &alloc::collections::btree::map::BTreeMap<core::net::ip_addr::IpAddr, alloc::string::String>
+impl core::clone::Clone for zond_engine::resolve::PortScanTargets
+pub fn zond_engine::resolve::PortScanTargets::clone(&self) -> zond_engine::resolve::PortScanTargets
+impl core::fmt::Debug for zond_engine::resolve::PortScanTargets
+pub fn zond_engine::resolve::PortScanTargets::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::resolve::PortScanTargets
+impl core::marker::Send for zond_engine::resolve::PortScanTargets
+impl core::marker::Sync for zond_engine::resolve::PortScanTargets
+impl core::marker::Unpin for zond_engine::resolve::PortScanTargets
+impl core::marker::UnsafeUnpin for zond_engine::resolve::PortScanTargets
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::resolve::PortScanTargets
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::resolve::PortScanTargets
 #[non_exhaustive] pub struct zond_engine::resolve::ResolveConfig
 pub zond_engine::resolve::ResolveConfig::mdns: bool
 pub zond_engine::resolve::ResolveConfig::mdns_timeout: core::time::Duration
@@ -14598,6 +14619,7 @@ pub async fn zond_engine::resolve::for_exclusion<S: core::convert::AsRef<str>>(&
 pub async fn zond_engine::resolve::for_exclusion_with<S: core::convert::AsRef<str>>(&[S], core::option::Option<&zond_engine::resolve::Resolver>, core::option::Option<zond_engine::model::parse::ip::ResolverFn<'_>>, core::option::Option<zond_engine::model::parse::ip::ZoneResolverFn<'_>>) -> core::result::Result<zond_engine::model::exclusion::Exclusions, zond_engine::model::parse::target::TargetParseError>
 pub fn zond_engine::resolve::for_listening<S: core::convert::AsRef<str>>(&[S]) -> core::result::Result<alloc::vec::Vec<zond_engine::model::ip::scoped::Zone>, zond_engine::resolve::LinkError>
 pub fn zond_engine::resolve::for_listening_on<S: core::convert::AsRef<str>>(&[S], &[zond_engine::system::interface::Link]) -> core::result::Result<alloc::vec::Vec<zond_engine::model::ip::scoped::Zone>, zond_engine::resolve::LinkError>
+pub async fn zond_engine::resolve::for_port_scan<S: core::convert::AsRef<str>>(&[S], zond_engine::model::port::set::PortSet, &zond_engine::model::parse::target::TargetContext<'_>, core::option::Option<&zond_engine::resolve::Resolver>) -> core::result::Result<zond_engine::resolve::PortScanTargets, zond_engine::model::parse::target::TargetParseError>
 pub async fn zond_engine::resolve::resolve_names<S: core::convert::AsRef<str>>(&[S], &zond_engine::resolve::Resolver) -> std::collections::hash::map::HashMap<alloc::string::String, alloc::vec::Vec<core::net::ip_addr::IpAddr>>
 pub async fn zond_engine::resolve::to_set<S: core::convert::AsRef<str>>(&[S], core::option::Option<zond_engine::model::parse::ip::ResolverFn<'_>>, core::option::Option<zond_engine::model::parse::ip::ZoneResolverFn<'_>>, &zond_engine::resolve::Resolver) -> core::result::Result<zond_engine::model::ip::set::IpSet, zond_engine::model::parse::target::TargetParseError>
 pub async fn zond_engine::resolve::to_target_map<S: core::convert::AsRef<str>>(&[S], zond_engine::model::port::set::PortSet, &zond_engine::model::parse::target::TargetContext<'_>, &zond_engine::resolve::Resolver) -> core::result::Result<zond_engine::model::target::TargetMap, zond_engine::model::parse::target::TargetParseError>
@@ -15415,6 +15437,7 @@ pub fn zond_engine::scanner::session::SessionBuilder::excluding(self, zond_engin
 pub fn zond_engine::scanner::session::SessionBuilder::host_probe_interval(self, core::option::Option<core::time::Duration>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::host_timeout(self, core::option::Option<core::time::Duration>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::listening_only_to(self, alloc::collections::btree::set::BTreeSet<u16>) -> Self
+pub fn zond_engine::scanner::session::SessionBuilder::naming(self, alloc::collections::btree::map::BTreeMap<core::net::ip_addr::IpAddr, alloc::string::String>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::ordering(self, core::option::Option<u64>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::planning(self, zond_engine::scanner::session::Stage, core::option::Option<u64>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::resuming(self, &zond_engine::journal::cursor::Checkpoint) -> Self
@@ -18773,6 +18796,7 @@ pub zond_engine::ZondConfig::segment_sweep: bool
 pub zond_engine::ZondConfig::send_mode: zond_engine::transport::probe::SendMode
 pub zond_engine::ZondConfig::send_source: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::ZondConfig::service_detection: zond_engine::config::ServiceDetection
+pub zond_engine::ZondConfig::target_names: alloc::collections::btree::map::BTreeMap<core::net::ip_addr::IpAddr, alloc::string::String>
 pub zond_engine::ZondConfig::tcp_technique: zond_engine::model::technique::TcpScanTechnique
 pub zond_engine::ZondConfig::tls_enumeration: bool
 pub zond_engine::ZondConfig::traceroute: bool

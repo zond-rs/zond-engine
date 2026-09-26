@@ -551,6 +551,7 @@ pub async fn discover(
 
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
+        .naming(cfg.target_names.clone())
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
         .host_probe_interval(cfg.host_probe_interval)
@@ -663,6 +664,7 @@ pub async fn discover_with_journal(
 
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
+        .naming(cfg.target_names.clone())
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
         .host_probe_interval(cfg.host_probe_interval)
@@ -1310,6 +1312,7 @@ pub async fn listen(
 ) -> Result<(ScanSession, ScanTask), ScanError> {
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
+        .naming(cfg.target_names.clone())
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
         .host_probe_interval(cfg.host_probe_interval)
@@ -1375,6 +1378,7 @@ pub async fn listen_with_journal(
 
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
+        .naming(cfg.target_names.clone())
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
         .host_probe_interval(cfg.host_probe_interval)
@@ -1526,6 +1530,7 @@ pub async fn scan(
 
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
+        .naming(cfg.target_names.clone())
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
         .host_probe_interval(cfg.host_probe_interval)
@@ -1603,6 +1608,7 @@ pub async fn scan_with_journal(
 
     let (session, ctx) = ScanSession::builder()
         .excluding(cfg.exclusions.clone())
+        .naming(cfg.target_names.clone())
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
         .host_probe_interval(cfg.host_probe_interval)

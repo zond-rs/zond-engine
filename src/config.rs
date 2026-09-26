@@ -64,7 +64,7 @@ pub mod limits;
 
 pub use crate::config::envelope::DetectionEnvelope;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::net::IpAddr;
 use std::num::{NonZeroU8, NonZeroU32};
@@ -1217,6 +1217,27 @@ pub struct ZondConfig {
     /// which keys a document is allowed to carry.
     pub exclusions: Exclusions,
 
+    /// The name each address was asked for by, where a target named a host
+    /// rather than an address.
+    ///
+    /// A web server routes a request by the name in it, the `Host` header in
+    /// the clear and the server name of a TLS handshake, and a server holding
+    /// several sites at one address answers a request naming none of them with
+    /// its default one, or refuses the handshake. So a port on an address a
+    /// target reached by name is identified as that name, and the site
+    /// identified is the one the target named. The host's record carries the
+    /// name as its hostname, which a reverse lookup then leaves as it is.
+    ///
+    /// Only what was written: a name a lookup, a report or a redirect suggests
+    /// for an address is never asked for, since a site nobody named is not
+    /// the one a scan was pointed at. Where two names led to one address, the
+    /// one written first is the one asked for.
+    ///
+    /// Empty by default, and set by whoever resolved the target expressions,
+    /// since by the time a scan has addresses the names are gone; see
+    /// [`resolve::for_port_scan`](crate::resolve::for_port_scan).
+    pub target_names: BTreeMap<IpAddr, String>,
+
     /// Whether identifying detail should be masked wherever the scan's findings
     /// leave the process: hostnames, hardware addresses, and the host part of an
     /// IPv6 address.
@@ -1565,6 +1586,7 @@ impl Default for ZondConfig {
             listen_only_ports: RAW_PRINT_PORTS.into_iter().collect(),
             idle_scan: Default::default(),
             exclusions: Default::default(),
+            target_names: Default::default(),
             redact: Default::default(),
             send_mode: Default::default(),
             max_probe_rate: Default::default(),
@@ -1619,6 +1641,8 @@ impl ZondConfig {
             // on a port asks first.
             listen_only_ports: _,
             exclusions: _,
+            // Read by the identification, which asks each port by it.
+            target_names: _,
             redact: _,
             detection: _,
 

@@ -704,6 +704,7 @@ mod tests {
                 tunnel: None,
                 speaks_http: false,
                 detection: crate::config::ServiceDetection::default(),
+                host_name: None,
             },
             &ResponseSet::from_banners(vec![banner.to_string()]),
             &Collected::default(),
@@ -720,6 +721,7 @@ mod tests {
                 tunnel: None,
                 speaks_http: false,
                 detection: crate::config::ServiceDetection::default(),
+                host_name: None,
             },
             &ResponseSet::from_banners(banners.iter().map(|b| (*b).to_string()).collect()),
             &Collected::default(),
@@ -1110,6 +1112,7 @@ mod tests {
                 tunnel: Some(Tunnel::Tls),
                 speaks_http: false,
                 detection: crate::config::ServiceDetection::default(),
+                host_name: None,
             },
             &ResponseSet::from_banners(vec![
                 "HTTP/1.1 200 OK\r\nServer: nginx/1.25.3\r\n\r\n".to_string(),
@@ -1143,6 +1146,7 @@ mod os_from_headers {
                 tunnel: None,
                 speaks_http: false,
                 detection: crate::config::ServiceDetection::default(),
+                host_name: None,
             },
             &ResponseSet::from_banners(vec![
                 "HTTP/1.1 200 OK\r\nServer: Microsoft-IIS/6.0\r\nContent-Length: 0\r\n\r\n"

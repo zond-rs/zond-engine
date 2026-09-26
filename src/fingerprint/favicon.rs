@@ -38,6 +38,7 @@ use md5::{Digest, Md5};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::analyzer::{Analyzer, PortContext};
@@ -65,11 +66,13 @@ const MAX_ICON_BYTES: usize = 256 * 1024;
 /// the convention every browser falls back on, and plenty of servers honour it.
 const CONVENTIONAL_PATH: &str = "/favicon.ico";
 
-/// One request. `Host` is a fixed `localhost`, as the signature corpus sends it;
-/// the scanned host is not seeded as a variable anywhere in this engine yet.
-fn request(path: &str) -> Vec<u8> {
-    format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\nConnection: close\r\n\r\n")
-        .into_bytes()
+/// One request, for the site `peer` names; see [`Authority`].
+fn request(peer: &Authority, path: &str) -> Vec<u8> {
+    format!(
+        "GET {path} HTTP/1.1\r\nHost: {}\r\nAccept: */*\r\nConnection: close\r\n\r\n",
+        peer.header()
+    )
+    .into_bytes()
 }
 
 /// Identifies a web application by the MD5 of the icon it serves.
@@ -91,9 +94,10 @@ impl Analyzer for FaviconAnalyzer {
         let Some(addr) = ctx.addr else {
             return Collected::default();
         };
+        let peer = Authority::new(addr).named(ctx.host_name.as_deref().map(Arc::from));
         // One budget for the whole search, however many requests it takes, so a
         // slow server cannot cost more by declaring its icon than by not.
-        match timeout(super::on_path(FETCH_TIMEOUT), icon_of(addr, responses)).await {
+        match timeout(super::on_path(FETCH_TIMEOUT), icon_of(&peer, responses)).await {
             Ok(Some(icon)) => Collected::from_frames(vec![icon]),
             _ => Collected::default(),
         }
@@ -163,9 +167,12 @@ fn as_application(mut evidence: Evidence) -> Evidence {
 /// Behind `test-support`, since nothing in a scan needs it.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn digest_of(addr: std::net::SocketAddr) -> Option<String> {
-    let icon = timeout(FETCH_TIMEOUT, icon_of(addr, &ResponseSet::default()))
-        .await
-        .ok()??;
+    let icon = timeout(
+        FETCH_TIMEOUT,
+        icon_of(&Authority::new(addr), &ResponseSet::default()),
+    )
+    .await
+    .ok()??;
     Some(md5_hex(&icon))
 }
 
@@ -190,8 +197,8 @@ fn md5_hex(bytes: &[u8]) -> String {
 /// The page usually costs nothing: first contact already fetched `/`, and only a
 /// root that redirects (which a self-hosted application very often does) needs a
 /// request to reach the markup.
-async fn icon_of(addr: std::net::SocketAddr, responses: &ResponseSet) -> Option<Vec<u8>> {
-    let (page, base) = page_of(addr, responses).await;
+async fn icon_of(peer: &Authority, responses: &ResponseSet) -> Option<Vec<u8>> {
+    let (page, base) = page_of(peer, responses).await;
 
     let declared = page
         .as_deref()
@@ -206,7 +213,7 @@ async fn icon_of(addr: std::net::SocketAddr, responses: &ResponseSet) -> Option<
         .map(String::as_str)
         .chain([CONVENTIONAL_PATH])
     {
-        if let Some(icon) = fetch(addr, path).await {
+        if let Some(icon) = fetch(peer, path).await {
             return Some(icon);
         }
     }
@@ -222,7 +229,7 @@ async fn icon_of(addr: std::net::SocketAddr, responses: &ResponseSet) -> Option<
 /// Reuses what first contact read and follows one same-host redirect from it. A
 /// second hop is not followed: one is what a self-hosted root costs, and a chain
 /// is a server that does not want to be read.
-async fn page_of(addr: std::net::SocketAddr, responses: &ResponseSet) -> (Option<String>, String) {
+async fn page_of(peer: &Authority, responses: &ResponseSet) -> (Option<String>, String) {
     let root = "/".to_string();
 
     // `None` where nothing was read, which is how the container tier drives this
@@ -244,16 +251,16 @@ async fn page_of(addr: std::net::SocketAddr, responses: &ResponseSet) -> (Option
     // names it. The banner is still consulted for a redirect first, so an
     // unclaimed port that already fetched `/` spends no request re-fetching it.
     let path = first
-        .and_then(|page| super::redirect_path(page, Some(&Authority::new(addr))))
+        .and_then(|page| super::redirect_path(page, Some(peer)))
         .unwrap_or_else(|| root.clone());
-    let Some(page) = fetch_text(addr, &path).await else {
+    let Some(page) = fetch_text(peer, &path).await else {
         return (first.cloned(), root);
     };
 
     // The root may redirect on this request rather than on the scan's. One hop,
     // because a chain is a server that does not want to be read.
-    match super::redirect_path(&page, Some(&Authority::new(addr))) {
-        Some(next) => match fetch_text(addr, &next).await {
+    match super::redirect_path(&page, Some(peer)) {
+        Some(next) => match fetch_text(peer, &next).await {
             Some(followed) => (Some(followed), next),
             None => (Some(page), path),
         },
@@ -348,22 +355,22 @@ fn resolve(base: &str, href: &str) -> Option<String> {
 /// One same-host redirect is followed, because an icon is very often served from
 /// somewhere other than where it is asked for: Grafana answers `/favicon.ico`
 /// with a `302` to the file it actually holds.
-async fn fetch(addr: std::net::SocketAddr, path: &str) -> Option<Vec<u8>> {
-    let response = exchange(addr, path).await?;
+async fn fetch(peer: &Authority, path: &str) -> Option<Vec<u8>> {
+    let response = exchange(peer, path).await?;
 
     if let Some(body) = body_of(&response) {
         return Some(body.to_vec());
     }
 
     let head = String::from_utf8_lossy(&response);
-    let next = super::redirect_path(&head, Some(&Authority::new(addr)))?;
-    let followed = exchange(addr, &next).await?;
+    let next = super::redirect_path(&head, Some(peer))?;
+    let followed = exchange(peer, &next).await?;
     body_of(&followed).map(<[u8]>::to_vec)
 }
 
 /// The same exchange, as text, for a page rather than an icon.
-async fn fetch_text(addr: std::net::SocketAddr, path: &str) -> Option<String> {
-    let response = exchange(addr, path).await?;
+async fn fetch_text(peer: &Authority, path: &str) -> Option<String> {
+    let response = exchange(peer, path).await?;
     Some(String::from_utf8_lossy(&response).into_owned())
 }
 
@@ -375,9 +382,9 @@ async fn fetch_text(addr: std::net::SocketAddr, path: &str) -> Option<String> {
 /// request's `Connection: close` and holds the socket until an idle timeout of
 /// its own would otherwise have each request wait that timeout out, and one
 /// longer than [`FETCH_TIMEOUT`] leave the icon unread.
-async fn exchange(addr: std::net::SocketAddr, path: &str) -> Option<Vec<u8>> {
-    let mut stream = super::analyzer_connect(addr).await.ok()?;
-    stream.write_all(&request(path)).await.ok()?;
+async fn exchange(peer: &Authority, path: &str) -> Option<Vec<u8>> {
+    let mut stream = super::analyzer_connect(peer.socket()).await.ok()?;
+    stream.write_all(&request(peer, path)).await.ok()?;
 
     let mut response = Vec::new();
     let mut buffer = [0u8; 8192];
@@ -619,7 +626,9 @@ mod tests {
             }
         });
 
-        let icon = fetch(addr, "/favicon.ico").await.expect("a bounded body");
+        let icon = fetch(&Authority::new(addr), "/favicon.ico")
+            .await
+            .expect("a bounded body");
         server.abort();
 
         assert!(
@@ -936,7 +945,7 @@ mod tests {
             }
         });
 
-        let icon = fetch(addr, "/favicon.ico").await;
+        let icon = fetch(&Authority::new(addr), "/favicon.ico").await;
         server.await.unwrap();
         assert_eq!(icon.as_deref(), Some(ICON));
     }

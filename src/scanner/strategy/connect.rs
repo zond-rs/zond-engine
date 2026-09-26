@@ -668,7 +668,7 @@ pub async fn scan(
         // Identified over the connection that finds the port open, so the
         // port's own cap applies here rather than in a pass of its own.
         let identify = ctx.service_detection_on(detection, target.port(), target.protocol());
-        let crowd = crowds.of(target.ip());
+        let crowd = crowds.of(target.ip(), ctx.target_name(target.ip()));
         pool.admit(port_prober(
             target,
             identify,

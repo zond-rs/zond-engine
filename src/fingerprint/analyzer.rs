@@ -96,6 +96,14 @@ pub struct PortContext {
     /// [`ServiceDetection::default()`] wherever a context is built by hand,
     /// which is the level a caller who said nothing asked for.
     pub detection: ServiceDetection,
+    /// The name the peer was reached by, where a target named a host rather
+    /// than an address.
+    ///
+    /// What an active analyzer speaking HTTP or TLS asks for: a server holding
+    /// several sites at one address routes a request by the name in it, and
+    /// answers one naming none with its default site. `None` where the address
+    /// was named, and wherever a context is built by hand.
+    pub host_name: Option<String>,
 }
 
 impl PortContext {
@@ -113,6 +121,7 @@ impl PortContext {
             tunnel: None,
             speaks_http: false,
             detection: ServiceDetection::default(),
+            host_name: None,
         }
     }
 
@@ -141,6 +150,14 @@ impl PortContext {
     #[must_use]
     pub fn with_detection(mut self, detection: ServiceDetection) -> Self {
         self.detection = detection;
+        self
+    }
+
+    /// Names the host the peer was reached as, for an analyzer that asks it
+    /// for a site.
+    #[must_use]
+    pub fn with_host_name(mut self, host_name: Option<String>) -> Self {
+        self.host_name = host_name;
         self
     }
 }
@@ -305,6 +322,7 @@ mod tests {
             tunnel: None,
             speaks_http: false,
             detection: crate::config::ServiceDetection::default(),
+            host_name: None,
         };
         // Drive the two phases exactly as the orchestrator does.
         let collected = EchoAnalyzer.collect(&ctx, &ResponseSet::default()).await;
@@ -325,6 +343,7 @@ mod tests {
             tunnel: None,
             speaks_http: false,
             detection: crate::config::ServiceDetection::default(),
+            host_name: None,
         };
         assert!(
             BannerRegexAnalyzer

@@ -20,7 +20,7 @@
 //! decide a token is worth resolving, so the classification cannot drift
 //! from the one the builder applies when it later consumes the same input.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -100,6 +100,101 @@ pub async fn to_target_map<S: AsRef<str>>(
     };
 
     target::to_target_map(exprs, default_ports, &ctx)
+}
+
+/// What a port scan was asked to cover: the plan, and the name each address
+/// was reached by where an expression named a host.
+///
+/// The two travel together for the reason [`DiscoveryTargets`] carries its
+/// flag: a [`TargetMap`] holds addresses, and by the time a scan has one the
+/// names it came from are gone. A web port on an address a name led to is
+/// asked for by that name, and a caller who resolved the map and dropped the
+/// names gets every virtual host's default site instead of the one it named.
+#[derive(Debug, Clone)]
+pub struct PortScanTargets {
+    map: TargetMap,
+    names: BTreeMap<IpAddr, String>,
+}
+
+impl PortScanTargets {
+    /// The plan, for [`scan`](crate::scanner::scan).
+    pub fn map(&self) -> &TargetMap {
+        &self.map
+    }
+
+    /// Takes the plan, for handing to [`scan`](crate::scanner::scan).
+    pub fn into_map(self) -> TargetMap {
+        self.map
+    }
+
+    /// The name each address was reached by, where an expression named a
+    /// host; see [`ZondConfig::target_names`].
+    pub fn names(&self) -> &BTreeMap<IpAddr, String> {
+        &self.names
+    }
+
+    /// Writes what these targets imply into `cfg`: the names, into
+    /// [`target_names`](ZondConfig::target_names).
+    pub fn apply_to(&self, cfg: &mut ZondConfig) {
+        cfg.target_names = self.names.clone();
+    }
+}
+
+/// Parses `exprs` into a port scan's plan, resolving any hostnames under the
+/// caller's DNS policy and keeping the name each address was reached by.
+///
+/// [`to_target_map`] with the names kept. `names` is the DNS policy, as on
+/// [`for_discovery`]: `None` refuses a name rather than looking it up, and
+/// the targets then carry none.
+pub async fn for_port_scan<S: AsRef<str>>(
+    exprs: &[S],
+    default_ports: PortSet,
+    ctx: &TargetContext<'_>,
+    names: Option<&Resolver>,
+) -> Result<PortScanTargets, TargetParseError> {
+    let Some(resolver) = names else {
+        let map = target::to_target_map(exprs, default_ports, ctx)?;
+        return Ok(PortScanTargets {
+            map,
+            names: BTreeMap::new(),
+        });
+    };
+
+    let written = collect_names(exprs);
+    let resolved = resolve_all(written.clone(), resolver).await;
+    let lookup = |name: &str| resolved.get(name).cloned();
+    let with_lookup = TargetContext {
+        keywords: ctx.keywords,
+        zones: ctx.zones,
+        hosts: Some(&lookup),
+    };
+    let map = target::to_target_map(exprs, default_ports, &with_lookup)?;
+
+    Ok(PortScanTargets {
+        map,
+        names: names_by_address(&written, &resolved),
+    })
+}
+
+/// The name each resolved address was reached by, the first written where
+/// several led to one address, so the one asked for does not depend on which
+/// lookup answered first.
+///
+/// Written as the target wrote it, less the trailing dot of a fully qualified
+/// name, which a `Host` header and a TLS server name both leave off.
+fn names_by_address(
+    written: &[String],
+    resolved: &HashMap<String, Vec<IpAddr>>,
+) -> BTreeMap<IpAddr, String> {
+    let mut names = BTreeMap::new();
+    for name in written {
+        for address in resolved.get(name).into_iter().flatten() {
+            names
+                .entry(*address)
+                .or_insert_with(|| name.strip_suffix('.').unwrap_or(name).to_string());
+        }
+    }
+    names
 }
 
 /// Resolves `exprs` into a single [`IpSet`], for the discovery phase, which asks
@@ -663,6 +758,24 @@ mod tests {
     /// addresses the grammar handles, and only the two hostnames are left for
     /// resolution, carrying their ports stripped since a name is the address half
     /// alone.
+    /// Two names leading to one address ask for the one written first,
+    /// whichever lookup answered first, and a fully qualified name is asked
+    /// for without the dot that marks it.
+    #[test]
+    fn an_address_is_asked_for_by_the_first_name_that_led_to_it() {
+        let shared: IpAddr = "192.0.2.10".parse().expect("an address");
+        let own: IpAddr = "192.0.2.11".parse().expect("an address");
+        let written = vec!["box.example.".to_string(), "dev.box.example".to_string()];
+        let resolved = HashMap::from([
+            ("dev.box.example".to_string(), vec![shared, own]),
+            ("box.example.".to_string(), vec![shared]),
+        ]);
+
+        let names = names_by_address(&written, &resolved);
+        assert_eq!(names.get(&shared).map(String::as_str), Some("box.example"));
+        assert_eq!(names.get(&own).map(String::as_str), Some("dev.box.example"));
+    }
+
     #[test]
     fn only_the_hostnames_in_a_mixed_list_are_collected() {
         let exprs = [

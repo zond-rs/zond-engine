@@ -434,6 +434,7 @@ async fn detect_one(
             tunnel,
             speaks_http: false,
             detection,
+            host_name: None,
         };
         let computed = compute_stage::detect_port(
             modules.runtime(),

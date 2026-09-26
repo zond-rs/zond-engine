@@ -175,6 +175,7 @@ pub fn replay_run(run: &DetectionRunRecord) -> Result<Vec<Finding>, ReplayError>
         tunnel: None,
         speaks_http: false,
         detection: crate::config::ServiceDetection::default(),
+        host_name: None,
     };
 
     let responses: Vec<Vec<u8>> = run
@@ -301,6 +302,7 @@ mod tests {
             tunnel: None,
             speaks_http: false,
             detection: crate::config::ServiceDetection::default(),
+            host_name: None,
         }
     }
 
