@@ -12,5 +12,11 @@ protocol = "tcp"
 
 [[match]]
 name = "socks4_response"
-pattern = '^\x00[\x5a\x5b]'
+# The SOCKS 4 protocol's reply whole: a version of zero, a result from 90
+# (granted) to 93, then two bytes of port and four of address, eight bytes in
+# all. Those six are arbitrary, and a reading of the reply as text may join
+# them into as few as two characters. `\x00\x5a` alone is how a DNS reply over
+# TCP of ninety bytes opens.
+pattern = '(?s)^\x00[\x5a-\x5d].{2,6}$'
 product = "socks4"
+example = "\u0000\u005a\u0000\u0050\u007f\u0000\u0000\u0001"

@@ -653,6 +653,38 @@ fn binary_replies_reach_the_rules_written_for_their_bytes() {
             b"\x80\x00\x00\x1czond\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
             "rpcbind",
         ),
+        // RFC 1179: a daemon command acknowledged.
+        (515, b"\x00", "lpd"),
+        // The RMI transport protocol: ProtocolAck and the endpoint seen.
+        (1099, b"N\x00\x0c198.51.100.7\x00\x00\x04\x4b", "java-rmi"),
+        // AFP over TCP: a DSI GetStatus reply's header.
+        (
+            548,
+            b"\x01\x03\x00\x01\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00",
+            "afp",
+        ),
+        // NRPE: a version 2 response, OK, two of whose CRC bytes read as one
+        // UTF-8 character.
+        (5666, b"\x00\x02\x00\x02\x5a\xc3\x91\x07\x00\x00NRPE v4.1.0", "nrpe"),
+        // MQTT 3.1.1 §3.2: CONNACK, connection accepted.
+        (1883, b"\x20\x02\x00\x00", "mqtt"),
+        // RFC 1928 §3: no authentication required.
+        (1080, b"\x05\x00", "socks5"),
+        // MS-TDS 2.2.6.5: a pre-login response naming SQL Server 15.0.2000.
+        (1433, TDS_PRELOGIN_RESPONSE, "mssql"),
+        // The SOCKS 4 protocol: request granted.
+        (
+            51987,
+            b"\x00\x5a\x00\x50\x7f\x00\x00\x01",
+            "socks4",
+        ),
+        // The memcached binary protocol: a version response naming 1.6.21.
+        (
+            11211,
+            b"\x81\x0a\x00\x00\x00\x00\x00\x00\x00\x00\x00\x06\x00\x00\x00\x00\
+              \x00\x00\x00\x00\x00\x00\x00\x001.6.21",
+            "memcached_binary",
+        ),
     ];
 
     for (port, reply, service) in replies {
@@ -664,6 +696,105 @@ fn binary_replies_reach_the_rules_written_for_their_bytes() {
             "{reply:02x?} on {port}"
         );
     }
+}
+
+/// A pre-login response as MS-TDS lays it out: the packet header, the VERSION,
+/// ENCRYPTION, INSTOPT, THREADID and MARS options and their terminator, then
+/// their data.
+const TDS_PRELOGIN_RESPONSE: &[u8] = b"\x04\x01\x00\x2b\x00\x00\x01\x00\
+    \x00\x00\x1a\x00\x06\x01\x00\x20\x00\x01\x02\x00\x21\x00\x01\x03\x00\x22\x00\x00\
+    \x04\x00\x22\x00\x01\xff\x0f\x00\x07\xd0\x00\x00\x02\x00\x00";
+
+/// A binary rule claims its protocol's reply and not another's that opens the
+/// same way.
+///
+/// Each of these rules once read one or two leading bytes, and they are
+/// consulted on every port nothing else names, where a reply of any protocol
+/// can arrive. Each is held here against a reply of a different protocol
+/// sharing its first bytes, taken from that protocol's specification, and so
+/// against the rule itself rather than whichever rule wins the ranking.
+#[test]
+fn a_binary_rule_does_not_claim_another_protocol_opening_the_same_way() {
+    // A Modbus TCP reply to a register read: transaction ID, protocol zero,
+    // a length, then unit, function and one register.
+    fn modbus(transaction: [u8; 2]) -> Vec<u8> {
+        let mut reply = transaction.to_vec();
+        reply.extend_from_slice(b"\x00\x00\x00\x05\x01\x03\x02\x00\x2a");
+        reply
+    }
+    let cases: &[(&str, &str, Vec<u8>)] = &[
+        // Kerberos over TCP, RFC 4120 §7.2.2: a length, then a KRB-ERROR.
+        (
+            "lpd",
+            "lpd_response",
+            b"\x00\x00\x00\x0b\x7e\x09\x30\x07\xa6\x03\x02\x01\x06".to_vec(),
+        ),
+        // RFC 2637 §2.2: PPTP's Start-Control-Connection-Reply.
+        (
+            "lpd",
+            "lpd_response",
+            b"\x00\x9c\x00\x01\x1a\x2b\x3c\x4d\x00\x02\x00\x00".to_vec(),
+        ),
+        // RFC 2812 §3.3.2: an IRC server's first words.
+        (
+            "java-rmi",
+            "jrmp_ack",
+            b"NOTICE AUTH :*** Looking up your hostname\r\n".to_vec(),
+        ),
+        ("afp", "dsi_reply", modbus([0x01, 0x03])),
+        ("nrpe", "nrpe_response", modbus([0x00, 0x02])),
+        ("mqtt", "mqtt_connack", modbus([0x20, 0x02])),
+        // DCE/RPC's bind_ack: version 5, minor version 0, packet type 12.
+        (
+            "socks5",
+            "socks5_response",
+            b"\x05\x00\x0c\x03\x10\x00\x00\x00\x44\x00\x00\x00".to_vec(),
+        ),
+        ("mssql", "mssql_prelogin_response", modbus([0x04, 0x01])),
+        (
+            "tor",
+            "tor_socks_match",
+            b"\x05\x00\x0c\x03\x10\x00\x00\x00\x44\x00\x00\x00".to_vec(),
+        ),
+        // RFC 1035 §4.2.2: a DNS reply over TCP, ninety bytes long.
+        (
+            "socks4",
+            "socks4_response",
+            b"\x00\x5a\x12\x34\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00".to_vec(),
+        ),
+        // RFC 6455 §5.2: a WebSocket text frame of ten bytes.
+        (
+            "memcached_binary",
+            "version_response",
+            b"\x81\x0aHello Zond".to_vec(),
+        ),
+    ];
+
+    let defs = SignatureDb::embedded_definitions();
+    let claimed: Vec<String> = cases
+        .iter()
+        .filter(|(service, rule, reply)| {
+            let (def, matched) = defs
+                .iter()
+                .filter(|def| def.service.name == *service)
+                .find_map(|def| {
+                    def.r#match
+                        .iter()
+                        .find(|candidate| candidate.name.as_deref() == Some(*rule))
+                        .map(|matched| (def, matched))
+                })
+                .unwrap_or_else(|| panic!("no rule {service}#{rule}"));
+            Signature::new(&def.service.name, matched)
+                .identify(
+                    &super::extract::reply_text(reply),
+                    crate::model::host::OsSource::ServiceBanner,
+                )
+                .is_some()
+        })
+        .map(|(service, rule, reply)| format!("{service}#{rule} claimed {reply:02x?}"))
+        .collect();
+
+    assert!(claimed.is_empty(), "{claimed:#?}");
 }
 
 /// A high first byte alone names nothing.

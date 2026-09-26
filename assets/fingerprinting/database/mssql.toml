@@ -11,8 +11,14 @@ protocol = "tcp"
 
 [[match]]
 name = "mssql_prelogin_response"
-pattern = '^[\x04\x12][\x01\x00]'
+# MS-TDS 2.2.3.1 and 2.2.6.5: a tabular result packet (0x04) marked end of
+# message (0x01), five bytes of length, SPID and packet ID, a zero window,
+# then the pre-login options, of which VERSION (0x00) comes first, with a
+# two-byte offset and a length of six. The first two bytes alone are also a
+# Modbus reply's transaction ID.
+pattern = '(?s)^\x04\x01.{5}\x00\x00..\x00\x06'
 product = "mssql"
+example = "\u0004\u0001\u0000+\u0000\u0000\u0001\u0000\u0000\u0000\u001a\u0000\u0006\u0001\u0000\u0020\u0000\u0001\u0002\u0000!\u0000\u0001\u0003\u0000\u0022\u0000\u0000\u0004\u0000\u0022\u0000\u0001\u00ff\u000f\u0000\u0007\u00d0\u0000\u0000\u0002\u0000\u0000"
 
 # ── The version the pre-login answer states ──────────────────────────────────
 #

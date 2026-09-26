@@ -10,8 +10,11 @@ protocol = "tcp"
 
 [[match]]
 name = "socks5_response"
-pattern = '^\x05[\x00\xff]'
+pattern = '^\x05[\x00\xff]$'
 product = "socks5"
 # RFC 1928 §3: version 5, then the method chosen, 0xFF where none was
 # acceptable, which is how a proxy that wants a password refuses anonymity.
+# The probe offers no authentication, so no other method can come back. The
+# two bytes are the whole reply, since the proxy then waits for a request;
+# a DCE/RPC reply opens with the same two, version 5 minor 0.
 example = "\u0005\u00ff"

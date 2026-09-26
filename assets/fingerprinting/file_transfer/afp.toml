@@ -13,5 +13,10 @@ protocol = "tcp"
 
 [[match]]
 name = "dsi_reply"
-pattern = '^\x01\x03'
+# The DSI header whole, as Apple's AFP over TCP fixes it: the reply flag, the
+# GetStatus command, the request ID the probe sent (1), four bytes of error
+# code, four of data length, and four reserved and zero. The first two bytes
+# alone are also a Modbus reply's transaction ID.
+pattern = '(?s)^\x01\x03\x00\x01.{8}\x00\x00\x00\x00'
 product = "afp"
+example = "\u0001\u0003\u0000\u0001\u0000\u0000\u0000\u0000\u0000\u0000\u0001\u0000\u0000\u0000\u0000\u0000"

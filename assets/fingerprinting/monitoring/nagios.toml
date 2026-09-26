@@ -10,5 +10,12 @@ protocol = "tcp"
 
 [[match]]
 name = "nrpe_response"
-pattern = '^\x00\x02'
+# The NRPE packet as its reference implementation lays it out: a packet
+# version (2 to 4), the response type (2), a CRC-32, then a result code from
+# 0 (OK) to 3 (UNKNOWN). The CRC is four arbitrary bytes, which a reading of
+# the reply as text may join into fewer characters, so it is matched as one to
+# four. `\x00\x02` alone opens any reply whose big-endian length or
+# transaction ID begins with it.
+pattern = '(?s)^\x00[\x02-\x04]\x00\x02.{1,4}\x00[\x00-\x03]'
 product = "nrpe"
+example = "\u0000\u0002\u0000\u0002Z<\u0091\u0007\u0000\u0000NRPE v4.1.0"

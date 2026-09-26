@@ -12,7 +12,10 @@ protocol = "tcp"
 
 [[match]]
 name = "version_response"
-pattern = '^\x81\x0a'
+pattern = '^\x81\x0a\x00\x00\x00\x00'
 product = "memcached_binary"
-# The response magic, then the opcode the request carried back.
+# The binary protocol's response header: the response magic, the opcode the
+# request carried back, then a key length, extras length and data type, all
+# zero in a version response. The first two bytes alone are a WebSocket text
+# frame of ten bytes (RFC 6455 §5.2).
 example = "\u0081\u000a\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"

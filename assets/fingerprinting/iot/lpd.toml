@@ -10,5 +10,10 @@ protocol = "tcp"
 
 [[match]]
 name = "lpd_response"
-pattern = '^[\x00-\x01]'
+# RFC 1179 acknowledges with a single octet, zero to accept, and sends nothing
+# after it; the one read here is zero or, refusing, one. That octet has to be
+# the whole reply, because a first byte of zero is also how every
+# length-prefixed protocol opens, Kerberos over TCP and PPTP among them.
+pattern = '^[\x00\x01]$'
 product = "lpd"
+example = "\u0000"
