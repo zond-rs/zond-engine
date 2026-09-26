@@ -1189,9 +1189,11 @@ async fn plaintext(
     peer: Option<&Authority>,
     egress: Egress,
 ) -> ResponseSet {
-    let probes = SignatureDb::global().tcp_probe_payloads(port);
+    let db = SignatureDb::global();
+    let probes = db.tcp_probe_payloads(port);
     if !probes.is_empty() {
-        let banners = collect_responses(&mut stream, port, probes, peer).await;
+        let listen = !db.asked_first(port);
+        let banners = collect_responses(&mut stream, port, probes, peer, listen).await;
         // Read back off the decoded text, which is sound only because every
         // byte `looks_like_tls` constrains is under 0x80 and survives
         // `from_utf8_lossy` unchanged.
@@ -1418,12 +1420,16 @@ async fn tunneled(
     // generic question if it does not, since the protocol under TLS is as
     // unidentified as it would have been in the clear. A caller who asked to
     // send nothing never reaches here: `gather` returns before the handshake.
+    //
+    // The generic question goes out without listening first, as it does in
+    // the clear; see `ask_generically` for why that loses no greeting.
     let db = SignatureDb::global();
-    let probes = match db.tcp_probe_payloads(port) {
-        [] => db.generic_tcp_probe_payloads(),
-        own => own,
+    let (probes, listen) = match db.tcp_probe_payloads(port) {
+        [] => (db.generic_tcp_probe_payloads(), false),
+        own => (own, !db.asked_first(port)),
     };
-    let banners = collect_responses(&mut tunnel, port, probes, Some(&peer.through_tls())).await;
+    let peer = peer.through_tls();
+    let banners = collect_responses(&mut tunnel, port, probes, Some(&peer), listen).await;
     let responses = ResponseSet {
         banners,
         tls: Some(info),
@@ -1431,9 +1437,15 @@ async fn tunneled(
     (responses, Some(Tunnel::Tls))
 }
 
-/// Grabs a first-speak banner and then sends `probes` over `stream`, returning
-/// every non-empty response. Generic over the transport, so it runs identically
-/// on a raw socket or inside a TLS tunnel.
+/// Grabs a first-speak banner where `listen` says one may come, then sends
+/// `probes` over `stream`, returning every non-empty response. Generic over the
+/// transport, so it runs identically on a raw socket or inside a TLS tunnel.
+///
+/// Not listening costs no greeting a port sends: one sent on connect is
+/// already on its way when the first probe is written, and is read as the
+/// first reply. What listening buys is not interrupting a service before it
+/// has spoken, and on a port that never speaks first it is a wait that always
+/// runs out; see [`SignatureDb::asked_first`].
 ///
 /// The probes are passed in rather than looked up, because the caller is what
 /// knows which set applies: a port's own where it has them, and the generic set
@@ -1444,6 +1456,7 @@ async fn collect_responses<S>(
     port: u16,
     probes: &[Vec<u8>],
     peer: Option<&Authority>,
+    listen: bool,
 ) -> Vec<String>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -1451,7 +1464,7 @@ where
     let mut banners = Vec::new();
 
     // Many services announce themselves on connect.
-    if let Some(banner) = read_response(stream, BANNER_READ_TIMEOUT).await {
+    if listen && let Some(banner) = read_response(stream, BANNER_READ_TIMEOUT).await {
         banners.push(banner);
     }
 
@@ -2991,6 +3004,99 @@ mod tests {
             asked.iter().any(|request| request.contains(&host)),
             "nothing inside the tunnel asked for `{}`: {asked:?}",
             host.trim()
+        );
+    }
+
+    /// A stream that notes, in order, whether each operation on it was a read
+    /// or a write, over the client half of an in-memory pipe.
+    struct Noting {
+        inner: tokio::io::DuplexStream,
+        seen: Vec<&'static str>,
+    }
+
+    impl AsyncRead for Noting {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if self.seen.last() != Some(&"read") {
+                self.seen.push("read");
+            }
+            std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+        }
+    }
+
+    impl AsyncWrite for Noting {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            if self.seen.last() != Some(&"write") {
+                self.seen.push("write");
+            }
+            std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+        }
+
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+        }
+
+        fn poll_shutdown(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+
+    /// What the clear-text rung does first on a port numbered `number`
+    /// claimed by something that registered probes.
+    async fn first_move_on(number: u16) -> &'static str {
+        let (client, mut server) = tokio::io::duplex(8192);
+        let answering = tokio::spawn(async move {
+            let mut buffer = [0u8; 2048];
+            while server.read(&mut buffer).await.unwrap_or(0) > 0 {
+                let _ = server
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+        let mut noting = Noting {
+            inner: client,
+            seen: Vec::new(),
+        };
+        let db = SignatureDb::global();
+        let probes = db.tcp_probe_payloads(number);
+        assert!(!probes.is_empty(), "port {number} registers probes");
+        let _ = collect_responses(&mut noting, number, probes, None, !db.asked_first(number)).await;
+        answering.abort();
+        noting.seen.first().copied().unwrap_or("nothing")
+    }
+
+    /// An HTTP server never speaks first, so a web port is asked at once
+    /// rather than listened to for a greeting that never comes, which cost
+    /// every web port a scan identified the whole of a banner wait. A port
+    /// where something that greets may be listening is listened to first.
+    #[tokio::test]
+    async fn a_web_port_is_asked_before_it_is_listened_to() {
+        assert_eq!(
+            first_move_on(8080).await,
+            "write",
+            "8080 waited for a greeting"
+        );
+        assert_eq!(
+            first_move_on(9200).await,
+            "write",
+            "9200 waited for a greeting"
+        );
+        assert!(
+            !SignatureDb::global().asked_first(21),
+            "a port a greeting service claims is listened to first"
         );
     }
 }

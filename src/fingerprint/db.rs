@@ -33,7 +33,7 @@
 //! disk/mmap loading of a versioned, integrity-checked artifact will slot in
 //! without touching callers.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
 use rayon::prelude::*;
@@ -217,6 +217,9 @@ pub struct SignatureDb {
     /// services that declare one. See
     /// [`ServiceSignature::speaks`](crate::fingerprint::ServiceSignature::speaks).
     speaks: HashMap<Arc<str>, Arc<str>>,
+    /// The ports every service reachable on which speaks HTTP; see
+    /// [`asked_first`](Self::asked_first).
+    asked_first: HashSet<u16>,
     /// The global-match prefilter, built on first use.
     prefilter: OnceLock<LiteralPrefilter>,
 }
@@ -392,6 +395,16 @@ impl SignatureDb {
 
         universal_tcp_probes.sort_by_key(|(rarity, _)| *rarity);
 
+        let asked_first = port_services
+            .iter()
+            .filter(|(_, names)| {
+                names
+                    .iter()
+                    .all(|name| speaks.get(name.as_str()).is_some_and(|p| &**p == "http"))
+            })
+            .map(|(port, _)| *port)
+            .collect();
+
         Self {
             signatures,
             name_index,
@@ -405,6 +418,7 @@ impl SignatureDb {
             universal_tcp_probes,
             udp_probes,
             speaks,
+            asked_first,
             prefilter: OnceLock::new(),
         }
     }
@@ -635,6 +649,22 @@ impl SignatureDb {
     /// decoded bytes ready to send.
     pub fn tcp_probe_payloads(&self, port: u16) -> &[Vec<u8>] {
         self.tcp_probes.get(&port).map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether every service reachable on `port` waits to be asked, so its
+    /// probes go out without first listening for a greeting.
+    ///
+    /// A port is listened to before it is asked because a service that greets
+    /// on connect should be heard before it is interrupted: some take a
+    /// request sent before their greeting for a client not worth answering.
+    /// HTTP never greets. Its server speaks only to answer a request, so on a
+    /// port whose every service declares it speaks HTTP the listening is a
+    /// wait that always runs out, and it is spent on every web port a scan
+    /// identifies, through TLS as well as in the clear. A port shared with a
+    /// service declaring anything else, or nothing, is listened to as before,
+    /// since that service may be the one that greets.
+    pub(crate) fn asked_first(&self, port: u16) -> bool {
+        self.asked_first.contains(&port)
     }
 
     /// The UDP probe payloads registered for `port` (service-linked), as decoded
