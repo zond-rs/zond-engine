@@ -195,7 +195,7 @@ pub const CONTEXTS: &[Context] = &[
     Context {
         name: "l2tp.sccrp",
         reach: Reach::Produced,
-        note: "the vendor and host names an L2TP concentrator answers an SCCRQ with, read by `framed::l2tp_control`",
+        note: "the vendor name an L2TP concentrator answers an SCCRQ with, read by `framed::l2tp_control`. Never the host name, which is recorded as one of the host's names by `framed::l2tp_host_name`",
     },
     Context {
         name: "ldap.search_result",

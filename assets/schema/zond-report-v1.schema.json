@@ -554,7 +554,7 @@
           ]
         },
         "names": {
-          "description": "The names the host gave for itself through its own services, the machine's before its domain's: an NTLM challenge's target information, an LDAP directory's root entry, the realm a Kerberos KDC names, the primary domain of an SMB1 session setup, a NetBIOS name table. Every one is masked under export redaction as `hostname` is, the domain and the forest as well as the machine. Never a copy of `hostname`, which is what name resolution answered for the address; empty where no service the scan asked named anything.",
+          "description": "The names the host gave for itself through its own services, the machine's before its domain's: an NTLM challenge's target information, an LDAP directory's root entry, the realm a Kerberos KDC names, the primary domain of an SMB1 session setup, a NetBIOS name table, the host name an L2TP concentrator answers a tunnel request with. Every one is masked under export redaction as `hostname` is, the domain and the forest as well as the machine. Never a copy of `hostname`, which is what name resolution answered for the address; empty where no service the scan asked named anything.",
           "type": "array",
           "items": {
             "type": "object",
@@ -572,7 +572,8 @@
                   "ldap",
                   "kerberos",
                   "smb",
-                  "netbios"
+                  "netbios",
+                  "l2tp"
                 ]
               },
               "kind": {

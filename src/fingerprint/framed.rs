@@ -889,88 +889,110 @@ fn der_unsigned(bytes: &[u8]) -> u32 {
 /// What an L2TP concentrator says about itself when a tunnel is proposed.
 ///
 /// An `SCCRQ` draws an `SCCRP`, and the reply carries the two attributes worth
-/// reading: the vendor name, which identifies the implementation, and the host
-/// name, which is the machine's own.
+/// reading: the vendor name, which identifies the implementation and is this
+/// text, and the host name, which is the machine's own and is not.
 ///
 /// ```text
-/// vendor=xelerance.com host=lima-deb12
+/// vendor=xelerance.com
 /// ```
 ///
-/// Measured against `xl2tpd` on Debian 12, which fills in both. Either may be
-/// absent, and a reply carrying neither still says an L2TP daemon answered.
+/// Measured against `xl2tpd` on Debian 12, which fills in both. The host name
+/// is read by [`l2tp_host_name`] as one of the host's names, which a report
+/// masks where it is asked to; a service's description reaches a report
+/// unmasked, and a rule capturing the name from this text would carry it
+/// there. A reply naming no vendor still says an L2TP daemon answered.
 ///
-/// [`None`] for a datagram that is not a control message, or whose attribute
-/// chain runs past its end.
+/// [`None`] for a datagram that is not a control message, whose attribute
+/// chain runs past its end, or that carries no attributes at all.
 #[must_use]
 pub(super) fn l2tp_control(datagram: &[u8]) -> Option<String> {
-    /// The first byte of a control message: type and length bits set, and the
-    /// version in the low nibble of the second.
-    const CONTROL: u8 = 0b1100_0000;
-    /// A control header carries a length, a tunnel and session id, and two
-    /// sequence numbers.
-    const HEADER_BYTES: usize = 12;
-    const ATTRIBUTE_HEADER_BYTES: usize = 6;
-    const VENDOR_NAME: u16 = 8;
-    const HOST_NAME: u16 = 7;
+    Some(match L2tpControl::read(datagram)?.vendor {
+        Some(vendor) => format!("vendor={vendor}"),
+        // Some other control message, or one naming only the host: a refusal
+        // names no vendor and is still an L2TP daemon answering.
+        None => "l2tp".to_string(),
+    })
+}
 
-    if *datagram.first()? & CONTROL != CONTROL {
-        return None;
-    }
-    if *datagram.get(1)? & 0x0F != 2 {
-        return None;
-    }
+/// The Host Name attribute of an L2TP control message (RFC 2661 §4.4.3), as
+/// the machine's own name.
+///
+/// The name of the concentrator that sent it: xl2tpd sends the machine's
+/// hostname, and Cisco and Windows RRAS their configured host names.
+///
+/// [`None`] for anything [`l2tp_control`] would not read, and for a message
+/// naming no host.
+#[must_use]
+pub(super) fn l2tp_host_name(datagram: &[u8]) -> Option<HostName> {
+    let host = L2tpControl::read(datagram)?.host?;
+    HostName::new(NameKind::Host, NameSource::L2tp, host)
+}
 
-    let mut at = HEADER_BYTES;
-    let mut vendor = None;
-    let mut host = None;
-    let mut attributes = 0usize;
-    while at + ATTRIBUTE_HEADER_BYTES <= datagram.len() {
-        attributes += 1;
-        // The top six bits are flags and the low ten are the length, which
-        // counts this header along with the value.
-        let length = (u16::from_be_bytes([datagram[at], datagram[at + 1]]) & 0x03FF) as usize;
-        if length < ATTRIBUTE_HEADER_BYTES {
+/// The attributes of an L2TP control message anything here reads.
+struct L2tpControl<'a> {
+    vendor: Option<&'a str>,
+    host: Option<&'a str>,
+}
+
+impl<'a> L2tpControl<'a> {
+    /// [`None`] for a datagram that is not a version 2 control message, whose
+    /// attribute chain runs past its end, or that carries no attributes.
+    fn read(datagram: &'a [u8]) -> Option<Self> {
+        /// The first byte of a control message: type and length bits set, and
+        /// the version in the low nibble of the second.
+        const CONTROL: u8 = 0b1100_0000;
+        /// A control header carries a length, a tunnel and session id, and two
+        /// sequence numbers.
+        const HEADER_BYTES: usize = 12;
+        const ATTRIBUTE_HEADER_BYTES: usize = 6;
+        const VENDOR_NAME: u16 = 8;
+        const HOST_NAME: u16 = 7;
+
+        if *datagram.first()? & CONTROL != CONTROL {
             return None;
         }
-        let attribute = u16::from_be_bytes([datagram[at + 4], datagram[at + 5]]);
-        let value = datagram.get(at + ATTRIBUTE_HEADER_BYTES..at + length)?;
-
-        let text = |value: &[u8]| {
-            std::str::from_utf8(value)
-                .ok()
-                .map(|text| text.trim().to_string())
-                .filter(|text| !text.is_empty())
-        };
-        match attribute {
-            VENDOR_NAME => vendor = text(value),
-            HOST_NAME => host = text(value),
-            _ => {}
+        if *datagram.get(1)? & 0x0F != 2 {
+            return None;
         }
-        at += length;
-    }
 
-    // A control message carrying no attributes at all is a zero-length body,
-    // which acknowledges a message rather than answering one. A concentrator
-    // sends it for a repeat of a tunnel request it has already seen, so a scan
-    // that probes this port twice gets the real answer once and an
-    // acknowledgement after. Reading that as a service would name L2TP from a
-    // datagram that says nothing.
-    if attributes == 0 {
-        return None;
-    }
+        let mut at = HEADER_BYTES;
+        let mut read = Self {
+            vendor: None,
+            host: None,
+        };
+        let mut attributes = 0usize;
+        while at + ATTRIBUTE_HEADER_BYTES <= datagram.len() {
+            attributes += 1;
+            // The top six bits are flags and the low ten are the length, which
+            // counts this header along with the value.
+            let length = (u16::from_be_bytes([datagram[at], datagram[at + 1]]) & 0x03FF) as usize;
+            if length < ATTRIBUTE_HEADER_BYTES {
+                return None;
+            }
+            let attribute = u16::from_be_bytes([datagram[at + 4], datagram[at + 5]]);
+            let value = datagram.get(at + ATTRIBUTE_HEADER_BYTES..at + length)?;
 
-    let mut said = Vec::new();
-    if let Some(vendor) = vendor {
-        said.push(format!("vendor={vendor}"));
-    }
-    if let Some(host) = host {
-        said.push(format!("host={host}"));
-    }
-    match said.is_empty() {
-        // Some other control message: a refusal names no vendor and is still an
-        // L2TP daemon answering.
-        true => Some("l2tp".to_string()),
-        false => Some(said.join(" ")),
+            let text = |value: &'a [u8]| {
+                std::str::from_utf8(value)
+                    .ok()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+            };
+            match attribute {
+                VENDOR_NAME => read.vendor = text(value),
+                HOST_NAME => read.host = text(value),
+                _ => {}
+            }
+            at += length;
+        }
+
+        // A control message carrying no attributes at all is a zero-length
+        // body, which acknowledges a message rather than answering one. A
+        // concentrator sends it for a repeat of a tunnel request it has already
+        // seen, so a scan that probes this port twice gets the real answer once
+        // and an acknowledgement after. Reading that as a service would name
+        // L2TP from a datagram that says nothing.
+        (attributes > 0).then_some(read)
     }
 }
 
@@ -2068,6 +2090,39 @@ mod tests {
         assert!(l2tp_control(&zlb).is_none());
     }
 
+    /// An SCCRP as xl2tpd sends it: the control header, then a Vendor Name
+    /// and a Host Name attribute.
+    fn sccrp(vendor: &str, host: &str) -> Vec<u8> {
+        let mut message = vec![0xC8u8, 0x02, 0x00, 0x00, 0x7A, 0x6F, 0, 0, 0, 0, 0, 1];
+        // Message Type = 2, SCCRP.
+        message.extend_from_slice(&[0x80, 0x08, 0, 0, 0, 0, 0, 2]);
+        for (attribute, value) in [(8u8, vendor), (7, host)] {
+            let length = u8::try_from(6 + value.len()).expect("a short value");
+            message.extend_from_slice(&[0x00, length, 0, 0, 0, attribute]);
+            message.extend_from_slice(value.as_bytes());
+        }
+        message
+    }
+
+    /// The Host Name attribute is the machine's own name, so it is recorded
+    /// as one, masked where a report is, and never written into the text the
+    /// corpus reads, where a rule capturing it would carry it into a report
+    /// unmasked.
+    #[test]
+    fn the_host_name_is_a_name_of_the_host_and_not_text() {
+        let reply = sccrp("xelerance.com", "lns01.example.net");
+
+        assert_eq!(
+            l2tp_control(&reply).as_deref(),
+            Some("vendor=xelerance.com")
+        );
+        assert_eq!(
+            l2tp_host_name(&reply),
+            HostName::new(NameKind::Host, NameSource::L2tp, "lns01.example.net")
+        );
+        assert_eq!(l2tp_host_name(&sccrp("Microsoft", " ")), None);
+    }
+
     /// A control message that carries attributes but names neither the vendor
     /// nor the host is still a daemon answering.
     #[test]
@@ -2104,6 +2159,7 @@ mod tests {
             let _ = ike_response(bytes);
             let _ = kerberos_error(bytes);
             let _ = l2tp_control(bytes);
+            let _ = l2tp_host_name(bytes);
         }
     }
 }

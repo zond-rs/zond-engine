@@ -150,6 +150,10 @@ pub enum NameSource {
     /// 137: the machine's own name, registered for the workstation service,
     /// and the domain or workgroup it joined, registered as a group.
     Netbios,
+    /// The Host Name attribute an L2TP concentrator puts in its answer to a
+    /// tunnel request (RFC 2661 §4.4.3), sent to anyone proposing a tunnel on
+    /// UDP 1701 before anything is authenticated: the machine's own name.
+    L2tp,
 }
 
 impl NameSource {
@@ -160,6 +164,7 @@ impl NameSource {
         Self::Kerberos,
         Self::Smb,
         Self::Netbios,
+        Self::L2tp,
     ];
 
     /// How a source is written for a person to read.
@@ -174,6 +179,7 @@ impl NameSource {
             Self::Kerberos => "Kerberos",
             Self::Smb => "SMB",
             Self::Netbios => "NetBIOS",
+            Self::L2tp => "L2TP",
         }
     }
 }

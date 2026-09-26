@@ -40,8 +40,9 @@ protocol = "udp"
 
 # ── What the concentrator names ──────────────────────────────────────────────
 #
-# The vendor name identifies the implementation and the host name is the
-# machine's own. Rules anchor on `vendor=`, which leads the text when present.
+# The vendor name identifies the implementation, and is the whole text when
+# the reply names one. The host name is the machine's own and is recorded as
+# one of the host's names rather than offered here.
 
 [[match]]
 name = "xl2tpd"
@@ -50,7 +51,7 @@ name = "xl2tpd"
 pattern = '(?i)^vendor=xelerance\.com\b'
 product = "xl2tpd"
 context = "l2tp.sccrp"
-example = "vendor=xelerance.com host=lima-deb12"
+example = "vendor=xelerance.com"
 
 [[match]]
 name = "cisco_l2tp"
@@ -58,7 +59,7 @@ pattern = '(?i)^vendor=Cisco\b'
 vendor = "Cisco"
 product = "Cisco L2TP"
 context = "l2tp.sccrp"
-example = "vendor=Cisco Systems, Inc. host=edge-router"
+example = "vendor=Cisco Systems, Inc."
 metadata = { "os.vendor" = "Cisco" }
 
 [[match]]
@@ -67,12 +68,12 @@ pattern = '(?i)^vendor=Microsoft\b'
 vendor = "Microsoft"
 product = "Windows RRAS"
 context = "l2tp.sccrp"
-example = "vendor=Microsoft host=VPN01"
+example = "vendor=Microsoft"
 metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows" }
 
 [[match]]
 name = "l2tp_concentrator"
 # The baseline, naming no product so the rules above outrank it.
-pattern = '^(?:l2tp$|vendor=|host=)'
+pattern = '^(?:l2tp$|vendor=)'
 context = "l2tp.sccrp"
-example = "host=lns01"
+example = "l2tp"

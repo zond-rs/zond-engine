@@ -201,7 +201,8 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
         88 => super::framed::kerberos_error(datagram)
             .into_iter()
             .collect(),
-        // What a concentrator calls itself, and what it calls the machine.
+        // What a concentrator calls itself. What it calls the machine is one
+        // of the host's names; see `names_from_datagram`.
         1701 => super::framed::l2tp_control(datagram).into_iter().collect(),
         // The corpus registers two probes here. The client request proves the
         // port is open and carries nothing to read; the mode 6 control message
@@ -340,6 +341,9 @@ pub(crate) fn from_stream(port: u16, bytes: &[u8]) -> Vec<String> {
 pub(crate) fn names_from_datagram(port: u16, datagram: &[u8]) -> Vec<HostName> {
     match port {
         88 => super::framed::kerberos_realm(datagram)
+            .into_iter()
+            .collect(),
+        1701 => super::framed::l2tp_host_name(datagram)
             .into_iter()
             .collect(),
         _ => Vec::new(),
@@ -1598,9 +1602,12 @@ mod framed_replies {
     }
 
     /// What xl2tpd 1.3.16 on Debian 12 actually answered, captured off the wire.
-    /// The host name in it is the VM's own.
+    /// The host name in it is the VM's own, and it is one of the host's names
+    /// rather than part of the text a rule reads.
     #[test]
     fn a_concentrator_names_itself_and_the_machine() {
+        use crate::model::host::{HostName, NameKind, NameSource};
+
         fn hex(text: &str) -> Vec<u8> {
             (0..text.len())
                 .step_by(2)
@@ -1610,10 +1617,14 @@ mod framed_replies {
         const SCCRP: &str = "c802006b7a6f00000000000180080000000000028008000000020100800a0000000300000003800a000000040000000000080000000606908010000000076c696d612d646562313200130000000878656c6572616e63652e636f6d800800000009503180080000000a0004";
 
         let texts = super::from_datagram(1701, &hex(SCCRP));
-        assert_eq!(texts, vec!["vendor=xelerance.com host=lima-deb12"]);
+        assert_eq!(texts, vec!["vendor=xelerance.com"]);
         assert_eq!(
             identify(1701, &texts[0]).map(|found| found.0),
             Some("xl2tpd".to_string())
+        );
+        assert_eq!(
+            super::names_from_datagram(1701, &hex(SCCRP)),
+            vec![HostName::new(NameKind::Host, NameSource::L2tp, "lima-deb12").expect("a name")]
         );
     }
 
