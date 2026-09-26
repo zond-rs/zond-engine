@@ -297,7 +297,10 @@ fn open(
 ) -> Option<(ProbeTransport, BTreeMap<u8, TransportSenderHandle>)> {
     let first = protocols.iter().copied().next()?;
 
-    let transport = match ProbeTransport::open_receiver(ProbeKind::IpProtocol { number: first }) {
+    let transport = match ProbeTransport::open_receiver_capturing(
+        ProbeKind::IpProtocol { number: first },
+        &ctx.capture_links(),
+    ) {
         Ok(transport) => transport,
         Err(failure) => {
             ctx.record_failure(

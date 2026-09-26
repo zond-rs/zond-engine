@@ -202,10 +202,13 @@ impl IdlePortScanner {
     ) -> Result<Self, StrategyError> {
         let _ = tuning;
         let reply_port: u16 = rand::random_range(50_000..u16::MAX);
-        let transport = ProbeTransport::open_ethernet(ProbeKind::TcpProbe {
-            reply_port,
-            icmp_errors: false,
-        })?;
+        let transport = ProbeTransport::open_ethernet_capturing(
+            ProbeKind::TcpProbe {
+                reply_port,
+                icmp_errors: false,
+            },
+            &ctx.capture_links(),
+        )?;
         let source = SourceResolver::from_system().resolve(zombie);
 
         Ok(Self {

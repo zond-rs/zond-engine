@@ -151,7 +151,7 @@ impl TcpPortScanner {
             .evasion
             .source_port_or(rand::random_range(50_000..u16::MAX));
         let flags_override = tuning.evasion.flags;
-        let transport = ProbeTransport::open_with(
+        let transport = ProbeTransport::open_capturing(
             ProbeKind::TcpProbe {
                 reply_port: src_port,
                 // An arbitrary flag combination reads its verdict off ICMP the
@@ -162,6 +162,7 @@ impl TcpPortScanner {
                     || tuning.icmp_evidence,
             },
             tuning.evasion.effective_send_mode(tuning.send_mode),
+            &ctx.capture_links(),
         )?;
 
         Ok(Self::build(

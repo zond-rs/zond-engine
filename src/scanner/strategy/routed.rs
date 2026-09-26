@@ -723,9 +723,10 @@ impl RoutedScanner {
         dns_tx: Option<UnboundedSender<IpAddr>>,
         tuning: ProbeTuning,
     ) -> Result<Self, StrategyError> {
-        let transport = ProbeTransport::open_with(
+        let transport = ProbeTransport::open_capturing(
             probe.transport(),
             tuning.evasion.effective_send_mode(tuning.send_mode),
+            &ctx.capture_links(),
         )?;
         Ok(Self::build(
             targets,

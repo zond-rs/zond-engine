@@ -1834,6 +1834,13 @@ pub struct ScanContext {
     /// Learned once the port phase knows which targets it kept, and empty for
     /// every scan that named no zone.
     pub(crate) zones: Arc<OnceLock<ZoneMap>>,
+    /// The links a reply to this scan's probes can arrive by, which is where
+    /// its captures listen; see
+    /// [`capture_links_toward`](crate::transport::probe::capture_links_toward).
+    ///
+    /// Learned once the scan knows its targets, and unset for a caller
+    /// orchestrating their own scan, whose captures listen on every link.
+    pub(crate) capture_links: Arc<OnceLock<Vec<Zone>>>,
     /// How a port scan numbers its targets, for settling every target at an
     /// address it files as unreachable; see
     /// [`record_unroutable`](Self::record_unroutable).
@@ -2211,6 +2218,22 @@ impl ScanContext {
                 .map_or(key.clone(), |zones| zones.key(key.addr())),
             false => key,
         }
+    }
+
+    /// Records the links a reply to this scan's probes can arrive by. The
+    /// first call decides; later ones are ignored.
+    pub(crate) fn capture_on(&self, links: Vec<Zone>) {
+        let _ = self.capture_links.set(links);
+    }
+
+    /// The links this scan's captures listen on: those
+    /// [`capture_on`](Self::capture_on) recorded, or every link that is up
+    /// where nothing was.
+    pub(crate) fn capture_links(&self) -> Vec<Zone> {
+        self.capture_links
+            .get()
+            .cloned()
+            .unwrap_or_else(crate::transport::probe::capturable_interfaces)
     }
 
     /// Records which interface each of this scan's link-local targets was named
@@ -3451,6 +3474,7 @@ impl SessionBuilder {
                 last_sent: DashMap::new(),
             }),
             zones: Arc::new(OnceLock::new()),
+            capture_links: Arc::new(OnceLock::new()),
             numbering: Arc::new(OnceLock::new()),
             swept_links: Arc::new(SweptLinks::default()),
             attachments: Arc::new(Attachments::default()),

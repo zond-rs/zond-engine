@@ -2120,7 +2120,7 @@ pub(super) async fn spawn_resolver(
     ctx: ScanContext,
 ) -> JoinHandle<Option<HostnameResolver>> {
     tokio::spawn(async move {
-        match HostnameResolver::new(dns_rx) {
+        match HostnameResolver::capturing_on(dns_rx, &ctx.capture_links()) {
             Ok(resolver) => {
                 // Working, not news: every run that resolves names starts one,
                 // and the failure below is the case worth a line.

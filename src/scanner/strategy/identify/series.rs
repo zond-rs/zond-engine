@@ -389,7 +389,11 @@ impl OsSeriesScanner {
         samples: usize,
         tuning: ProbeTuning,
     ) -> Result<Self, StrategyError> {
-        let transport = ProbeTransport::open_with(ProbeKind::TcpSyn, tuning.send_mode)?;
+        let transport = ProbeTransport::open_capturing(
+            ProbeKind::TcpSyn,
+            tuning.send_mode,
+            &ctx.capture_links(),
+        )?;
         Ok(Self::with_transport(
             ctx,
             targets,

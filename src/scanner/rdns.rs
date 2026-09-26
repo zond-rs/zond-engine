@@ -85,6 +85,8 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::Instant;
 
+use crate::model::ip::scoped::Zone;
+use crate::model::ip::set::IpSet;
 use crate::transport::probe::{ProbeKind, ProbeTransport, TransportError};
 
 /// Where a name server answers, and where this resolver both listens and asks.
@@ -282,6 +284,34 @@ impl HostnameResolver {
     pub fn new(dns_rx: UnboundedReceiver<IpAddr>) -> Result<Self, ResolverError> {
         let routes = Routes::from_system();
         let transport = ProbeTransport::open_receiver(ProbeKind::UdpResolve)?;
+        Self::with_routes(dns_rx, transport, routes)
+    }
+
+    /// [`new`](Self::new), sniffing only on `links` and the links replies
+    /// from the resolvers it queries arrive by.
+    ///
+    /// For a scan that knows its targets: an mDNS answer about one of them
+    /// comes over the target's own link, and a unicast answer over the link
+    /// toward the server that gives it. See
+    /// [`capture_links_toward`](crate::transport::probe::capture_links_toward).
+    pub(crate) fn capturing_on(
+        dns_rx: UnboundedReceiver<IpAddr>,
+        links: &[Zone],
+    ) -> Result<Self, ResolverError> {
+        let routes = Routes::from_system();
+        let mut servers = IpSet::new();
+        for (server, _) in &routes.servers {
+            servers.insert(server.ip());
+        }
+        let mut links = links.to_vec();
+        if !servers.is_empty() {
+            for link in crate::transport::probe::capture_links_toward(&servers, &[]) {
+                if !links.contains(&link) {
+                    links.push(link);
+                }
+            }
+        }
+        let transport = ProbeTransport::open_receiver_capturing(ProbeKind::UdpResolve, &links)?;
         Self::with_routes(dns_rx, transport, routes)
     }
 

@@ -1150,6 +1150,12 @@ fn spawn_discovery(
     tokio::spawn(async move {
         // Held for as long as the sweep runs; see `descriptors::hold_back`.
         let _held_back = held_back;
+        // Before the sweep opens a capture, so each listens only where a
+        // reply to it can arrive.
+        ctx.capture_on(crate::transport::probe::capture_links_toward(
+            &targets,
+            &cfg.send_source,
+        ));
         ctx.enter_stage(Stage::Discovery, None);
         // No SCTP sweep and no ports of its own: `discover` is asked about
         // addresses and never about ports, so nothing has said which port
@@ -1835,6 +1841,13 @@ fn spawn_scan(
         // taken over what was asked, so they can say what the policy
         // withheld.
         ctx.number_targets(TargetIndex::of(&numbered));
+        // Before any phase opens a capture, so each listens only where a
+        // reply to this plan can arrive.
+        let addresses = orchestrator::unsettled_ips(&numbered, &Checkpoint::default());
+        ctx.capture_on(crate::transport::probe::capture_links_toward(
+            &addresses,
+            &cfg.send_source,
+        ));
 
         // Phase one: which of these addresses has anything at it.
         //

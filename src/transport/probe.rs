@@ -40,7 +40,9 @@ use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 
 use crate::model::capture::CaptureCounts;
 use crate::model::ip::scoped::Zone;
+use crate::model::ip::set::IpSet;
 use crate::model::mac::MacAddr;
+use crate::system::interface::{Link, RoutedTargets};
 use crate::transport::capture::{self, CaptureGuard, CaptureOptions, CaptureStream};
 use crate::transport::kernel_neighbors::KernelNeighbors;
 use crate::transport::link::{EthernetSender, LinkNeighbors};
@@ -947,24 +949,38 @@ impl ProbeTransport {
     /// egress path can differ per destination, especially with a VPN in play,
     /// so binding to a single guessed interface would silently miss replies.
     pub fn open_with(kind: ProbeKind, mode: SendMode) -> Result<Self, TransportError> {
+        Self::open_capturing(kind, mode, &capturable_interfaces())
+    }
+
+    /// [`open_with`](Self::open_with), capturing on `links` alone.
+    ///
+    /// For a scan that knows where its targets are: each capture holds a
+    /// device of the system's own, which on macOS is one of a fixed number of
+    /// BPF devices every process shares, and a capture on a link no reply can
+    /// arrive by holds one for nothing. See [`capture_links_toward`].
+    pub(crate) fn open_capturing(
+        kind: ProbeKind,
+        mode: SendMode,
+        links: &[Zone],
+    ) -> Result<Self, TransportError> {
         match mode {
-            SendMode::Ethernet => Self::open_ethernet(kind),
-            SendMode::RawSocket => Self::open_on(kind, &capturable_interfaces()),
+            SendMode::Ethernet => Self::open_ethernet_capturing(kind, links),
+            SendMode::RawSocket => Self::open_on(kind, links),
             // Windows blocks raw-socket TCP sends; macOS accepts them and drops
             // a quarter silently. Elsewhere the raw socket reaches everything
             // without ARP. See [`LinkLayerFirst`].
             SendMode::Auto => {
                 #[cfg(windows)]
                 {
-                    Self::open_ethernet(kind)
+                    Self::open_ethernet_capturing(kind, links)
                 }
                 #[cfg(target_os = "macos")]
                 {
-                    Self::open_link_first(kind)
+                    Self::open_link_first_capturing(kind, links)
                 }
                 #[cfg(not(any(windows, target_os = "macos")))]
                 {
-                    Self::open_on(kind, &capturable_interfaces())
+                    Self::open_on(kind, links)
                 }
             }
         }
@@ -991,11 +1007,16 @@ impl ProbeTransport {
     /// rest. The macOS default. A host with no Ethernet interface gets the
     /// plain raw-socket transport, which is all the fallback would do anyway.
     pub fn open_link_first(kind: ProbeKind) -> Result<Self, TransportError> {
+        Self::open_link_first_capturing(kind, &capturable_interfaces())
+    }
+
+    /// [`open_link_first`](Self::open_link_first), capturing on `links` alone.
+    fn open_link_first_capturing(kind: ProbeKind, links: &[Zone]) -> Result<Self, TransportError> {
         let Some(link) = EthernetSender::from_system(kind.ip_protocols()) else {
-            return Self::open_on(kind, &capturable_interfaces());
+            return Self::open_on(kind, links);
         };
         let (rx, capture) = capture::segments(
-            &capturable_interfaces(),
+            links,
             &CaptureOptions::for_replies(kind.filter()),
             REPLY_QUEUE_DEPTH,
         )?;
@@ -1023,13 +1044,21 @@ impl ProbeTransport {
     /// interface - only a tunnel or loopback - in which case the raw-IP
     /// transport from [`open`](Self::open) is the correct choice.
     pub fn open_ethernet(kind: ProbeKind) -> Result<Self, TransportError> {
+        Self::open_ethernet_capturing(kind, &capturable_interfaces())
+    }
+
+    /// [`open_ethernet`](Self::open_ethernet), capturing on `links` alone.
+    pub(crate) fn open_ethernet_capturing(
+        kind: ProbeKind,
+        links: &[Zone],
+    ) -> Result<Self, TransportError> {
         let sender = EthernetSender::from_system(kind.ip_protocols()).ok_or_else(|| {
             TransportError::NoEthernetInterface(
                 "the host has only tunnel or loopback interfaces".to_string(),
             )
         })?;
         let (rx, capture) = capture::segments(
-            &capturable_interfaces(),
+            links,
             &CaptureOptions::for_replies(kind.filter()),
             REPLY_QUEUE_DEPTH,
         )?;
@@ -1050,8 +1079,16 @@ impl ProbeTransport {
     /// unnecessary privilege requirement and failure mode (a host that blocks
     /// raw sockets can still resolve hostnames).
     pub fn open_receiver(kind: ProbeKind) -> Result<Self, TransportError> {
+        Self::open_receiver_capturing(kind, &capturable_interfaces())
+    }
+
+    /// [`open_receiver`](Self::open_receiver), capturing on `links` alone.
+    pub(crate) fn open_receiver_capturing(
+        kind: ProbeKind,
+        links: &[Zone],
+    ) -> Result<Self, TransportError> {
         let (rx, capture) = capture::segments(
-            &capturable_interfaces(),
+            links,
             &CaptureOptions::for_replies(kind.filter()),
             REPLY_QUEUE_DEPTH,
         )?;
@@ -1112,11 +1149,16 @@ impl ProbeTransport {
 /// index costs nothing to keep here, the interface table having been read to find
 /// the name, and it is what a finding scoped to a link needs, since a
 /// link-local address names a different machine on every one of them.
-fn capturable_interfaces() -> Vec<Zone> {
-    crate::system::interface::interfaces()
-        .into_iter()
+pub(crate) fn capturable_interfaces() -> Vec<Zone> {
+    capturable(&crate::system::interface::interfaces())
+}
+
+/// [`capturable_interfaces`] among `links`.
+fn capturable(links: &[Link]) -> Vec<Zone> {
+    links
+        .iter()
         .filter(|link| link.is_up() || link.is_loopback())
-        .map(|link| link.zone())
+        .map(Link::zone)
         .collect()
 }
 
@@ -1124,6 +1166,98 @@ fn capturable_interfaces() -> Vec<Zone> {
 /// interface [`capturable_interfaces`] names.
 pub(crate) fn capture_devices() -> usize {
     capturable_interfaces().len()
+}
+
+/// The links a reply to a probe of `targets` can arrive by, sent from
+/// `forced` where the scan pins its source: what a scan that knows its
+/// targets captures on.
+///
+/// A reply comes back to the address its probe was sent from, so it arrives
+/// by the link that holds that address. For a target on a segment this host
+/// is on, that is the segment's link; for a routed one, the link holding the
+/// source the routing table picks, which is the tunnel's own link where a VPN
+/// carries it; for this host's own addresses and loopback's, loopback. A
+/// pinned source is asked of both the pin and the routing table, since the
+/// probe may still leave by the route while its answer comes back to the pin.
+///
+/// Every link that is up where the routing cannot say: an address with no
+/// route, or a source no link holds. A capture on a link nothing arrives by
+/// costs a device and nothing else, and one missing from the link a reply
+/// does arrive by loses the reply, so the doubt is resolved toward listening.
+/// So too for a plan with more addresses to route one at a time than
+/// [`MAX_ENUMERABLE_ADDRESSES`]: its phases route each of them anyway, and
+/// asking again here would double the one cost of planning that grows with
+/// the plan.
+///
+/// [`MAX_ENUMERABLE_ADDRESSES`]: crate::system::interface::MAX_ENUMERABLE_ADDRESSES
+///
+/// Worth narrowing because each capture holds a device of the system's own:
+/// on macOS one of a fixed pool of BPF devices every process shares, which a
+/// few scans capturing on every link of a machine with dozens of them
+/// exhaust.
+pub(crate) fn capture_links_toward(targets: &IpSet, forced: &[IpAddr]) -> Vec<Zone> {
+    use crate::system::interface::{
+        MAX_ENUMERABLE_ADDRESSES, is_enumerable, map_ips_to_interfaces,
+        map_ips_to_interfaces_forced,
+    };
+
+    let links = crate::system::interface::interfaces();
+    // What the routing below would walk address by address: every IPv4
+    // range, and the IPv6 ones small enough to walk at all.
+    let mut routed_one_by_one = IpSet::new();
+    for range in targets.v4() {
+        routed_one_by_one.push_v4_range(*range);
+    }
+    for range in targets.v6().iter().filter(|range| is_enumerable(range)) {
+        routed_one_by_one.push_v6_range(*range);
+    }
+    if routed_one_by_one.len_gross() > MAX_ENUMERABLE_ADDRESSES {
+        return capturable(&links);
+    }
+    let mut routings = vec![map_ips_to_interfaces(targets.clone())];
+    if !forced.is_empty() {
+        routings.push(map_ips_to_interfaces_forced(targets.clone(), forced));
+    }
+    links_replies_reach(&links, &routings).unwrap_or_else(|| capturable(&links))
+}
+
+/// The links among `links` a reply to what `routings` planned arrives by, or
+/// `None` where one of them cannot be named; see [`capture_links_toward`].
+fn links_replies_reach(links: &[Link], routings: &[RoutedTargets]) -> Option<Vec<Zone>> {
+    let loopback: Vec<&Link> = links.iter().filter(|link| link.is_loopback()).collect();
+    let mut reached: Vec<Zone> = Vec::new();
+    for routing in routings {
+        reached.extend(routing.local.keys().map(Link::zone));
+        for routed in &routing.routed {
+            let holder = links.iter().find(|link| {
+                link.addresses()
+                    .iter()
+                    .any(|held| held.address() == routed.source)
+            })?;
+            reached.push(holder.zone());
+        }
+        let unmapped_is_loopback =
+            routing
+                .unmapped
+                .v4()
+                .iter()
+                .all(|range| range.start_addr().is_loopback() && range.end_addr().is_loopback())
+                && routing.unmapped.v6().iter().all(|range| {
+                    range.start_addr().is_loopback() && range.end_addr().is_loopback()
+                });
+        if !unmapped_is_loopback {
+            return None;
+        }
+        if !routing.ours.is_empty() || !routing.unmapped.is_empty() {
+            if loopback.is_empty() {
+                return None;
+            }
+            reached.extend(loopback.iter().map(|link| link.zone()));
+        }
+    }
+    reached.sort_by(|one, other| one.name().cmp(other.name()));
+    reached.dedup();
+    (!reached.is_empty()).then_some(reached)
 }
 
 /// A record of one recorded send: `(segment, source, destination)`.
@@ -1168,6 +1302,94 @@ impl ProbeSender for MockSender {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::system::interface::LinkKind;
+
+    /// A link named `name` holding `address`, of `kind`.
+    fn holding(name: &str, index: u32, kind: LinkKind, address: &str) -> Link {
+        use crate::system::interface::LinkAddress;
+        let address: IpAddr = address.parse().expect("an address");
+        Link::new(name, index)
+            .with_kind(kind)
+            .with_addresses(vec![LinkAddress::new(address, 24)])
+    }
+
+    /// Loopback, a wired segment, a VPN's tunnel, and a link no target is on.
+    fn machine() -> Vec<Link> {
+        vec![
+            holding("lo0", 1, LinkKind::Loopback, "127.0.0.1"),
+            holding("en0", 4, LinkKind::Wired, "192.0.2.10"),
+            holding("utun4", 20, LinkKind::Virtual, "198.51.100.2"),
+            holding("awdl0", 11, LinkKind::Wireless, "203.0.113.77"),
+        ]
+    }
+
+    fn names(zones: Option<Vec<Zone>>) -> Option<Vec<String>> {
+        zones.map(|zones| zones.iter().map(|zone| zone.name().to_owned()).collect())
+    }
+
+    /// **A scan captures only on the links a reply to it can arrive by.**
+    ///
+    /// Every capture holds a device, and on macOS the devices are a fixed
+    /// pool every process shares: a scan capturing on each of a machine's
+    /// dozens of links leaves a handful of scans to exhaust it. A reply comes
+    /// back to its probe's source, so to the segment an on-link target is on,
+    /// to the link holding a routed target's source, which is the tunnel's
+    /// where a VPN carries the route, and over loopback for this host's own
+    /// addresses.
+    #[test]
+    fn a_capture_listens_where_replies_to_its_targets_arrive() {
+        let links = machine();
+        let on = |routing: RoutedTargets| names(links_replies_reach(&links, &[routing]));
+
+        let loopback = RoutedTargets {
+            unmapped: "127.0.0.1".parse().expect("an address"),
+            ..RoutedTargets::default()
+        };
+        assert_eq!(on(loopback), Some(vec!["lo0".to_owned()]));
+
+        let mut local = std::collections::HashMap::new();
+        local.insert(links[1].clone(), "192.0.2.0/24".parse().expect("a range"));
+        let beside_a_vpn = RoutedTargets {
+            local,
+            routed: vec![crate::system::interface::RoutedTarget {
+                target: "203.0.113.5".parse().expect("an address"),
+                source: "198.51.100.2".parse().expect("an address"),
+            }],
+            ..RoutedTargets::default()
+        };
+        assert_eq!(
+            on(beside_a_vpn),
+            Some(vec!["en0".to_owned(), "utun4".to_owned()])
+        );
+
+        let ours = RoutedTargets {
+            ours: "192.0.2.10".parse().expect("an address"),
+            ..RoutedTargets::default()
+        };
+        assert_eq!(on(ours), Some(vec!["lo0".to_owned()]), "this host's own");
+    }
+
+    /// Where the routing cannot name the link a reply arrives by, a capture
+    /// listens on every link, since one missing from that link loses the
+    /// reply and one too many costs only a device.
+    #[test]
+    fn a_capture_whose_replies_the_routing_cannot_place_listens_everywhere() {
+        let links = machine();
+        let no_route = RoutedTargets {
+            unmapped: "203.0.113.9".parse().expect("an address"),
+            ..RoutedTargets::default()
+        };
+        assert_eq!(links_replies_reach(&links, &[no_route]), None);
+
+        let unheld_source = RoutedTargets {
+            routed: vec![crate::system::interface::RoutedTarget {
+                target: "203.0.113.5".parse().expect("an address"),
+                source: "198.51.100.99".parse().expect("an address"),
+            }],
+            ..RoutedTargets::default()
+        };
+        assert_eq!(links_replies_reach(&links, &[unheld_source]), None);
+    }
 
     /// A raw socket reaches whatever the kernel carries and a frame what has
     /// Ethernet in front of it, on every platform. What `Auto` reaches belongs

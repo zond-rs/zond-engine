@@ -249,11 +249,12 @@ impl UdpPortScanner {
         let src_port: u16 = tuning
             .evasion
             .source_port_or(rand::random_range(50_000..u16::MAX));
-        let transport = ProbeTransport::open_with(
+        let transport = ProbeTransport::open_capturing(
             ProbeKind::UdpProbe {
                 reply_port: src_port,
             },
             tuning.evasion.effective_send_mode(tuning.send_mode),
+            &ctx.capture_links(),
         )?;
 
         Ok(Self {

@@ -170,8 +170,11 @@ impl OsEchoScanner {
         tuning: ProbeTuning,
     ) -> Result<Self, StrategyError> {
         let identifier = rand::random();
-        let transport =
-            ProbeTransport::open_with(ProbeKind::IcmpEcho { identifier }, tuning.send_mode)?;
+        let transport = ProbeTransport::open_capturing(
+            ProbeKind::IcmpEcho { identifier },
+            tuning.send_mode,
+            &ctx.capture_links(),
+        )?;
         Ok(Self::with_identifier(
             ctx,
             targets,

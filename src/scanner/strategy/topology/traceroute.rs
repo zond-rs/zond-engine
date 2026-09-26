@@ -90,7 +90,7 @@ use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
 use crate::transport::frame::IpSegment;
 use crate::transport::kernel_neighbors::NeighborState;
-use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
+use crate::transport::probe::{Emission, ProbeKind, ProbeTransport, SendMode};
 use crate::{info, warn};
 
 use crate::scanner::strategy::icmp_error;
@@ -674,7 +674,11 @@ pub async fn trace(ctx: &ScanContext, targets: Vec<IpAddr>) {
         }
 
         let marker: u16 = rand::random_range(33_000..60_000);
-        let transport = match ProbeTransport::open(probe.probe_kind(marker)) {
+        let transport = match ProbeTransport::open_capturing(
+            probe.probe_kind(marker),
+            SendMode::Auto,
+            &ctx.capture_links(),
+        ) {
             Ok(transport) => transport,
             Err(error) => {
                 ctx.record_failure(

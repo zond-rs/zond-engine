@@ -48,7 +48,9 @@ use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::raw::neighbors::{resolve_ahead, send_when_admitted};
 use crate::system::interface::SourceResolver;
 use crate::transport::link::EthernetSender;
-use crate::transport::probe::{Emission, NeighborWatch, ProbeKind, ProbeSender, ProbeTransport};
+use crate::transport::probe::{
+    Emission, NeighborWatch, ProbeKind, ProbeSender, ProbeTransport, SendMode,
+};
 use crate::{counted, info};
 
 /// How long to listen for replies once the last diagnostic probe has left. A
@@ -94,7 +96,11 @@ pub async fn characterise(ctx: &ScanContext, subjects: Vec<Subject>) {
         return;
     }
 
-    let mut transport = match ProbeTransport::open(ProbeKind::TcpSyn) {
+    let mut transport = match ProbeTransport::open_capturing(
+        ProbeKind::TcpSyn,
+        SendMode::Auto,
+        &ctx.capture_links(),
+    ) {
         Ok(transport) => transport,
         Err(error) => {
             ctx.record_failure(
