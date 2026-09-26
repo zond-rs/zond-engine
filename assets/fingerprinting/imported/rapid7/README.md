@@ -14,6 +14,34 @@ The converted files are edited in place where the imported metadata asserts more
 than its own pattern can establish. **Re-importing overwrites these**, so they are
 recorded here to be re-applied.
 
+### Examples decoded and pattern flags restored (2026-09-26, 218 rules)
+
+The conversion dropped two attributes Recog stores beside a rule, and 218
+examples failed their own patterns as a result. Recog's own suite runs every
+example against its pattern with its flags, so an example that matches upstream
+and not here shows what was lost, and each was corrected from the example alone,
+without the upstream XML.
+
+- **Encoding, 173 rules** (116 in `telnet/telnet_banners.toml`, 55 in
+  `ldap/ldap_searchresult.toml`, 2 in `snmp/snmp_sysdescr.toml`). Recog marks a
+  binary example `_encoding="base64"`, and the base64 text was imported as the
+  example. Each is stored decoded, as the text the engine reads a reply as:
+  valid UTF-8 as written, any other byte as the character of its own value,
+  escaped in the TOML string where it is not printable ASCII.
+- **Flags, 61 rules**, 16 of them among the decoded. A pattern whose example
+  matches only under a flag was given the least that makes it match: Recog's
+  `REG_ICASE` as `(?i)`, 14 rules; its dot-matches-newline flag, Ruby's
+  multiline mode, as `(?s)`, 44; and `(?m)` on 4 rules that anchor at a
+  line inside the banner, which Ruby's `^` and `$` do by default and Rust's do
+  only under it. A rule upstream may carry a flag its example does not need,
+  and such a flag is not recoverable this way; a re-import from the XML
+  supersedes it.
+
+Two decoded telnet examples carried addresses, a private one in the ACT Video
+security banner and a public host's in the DrayTek one. Both are replaced by
+documentation addresses (`192.0.2.1`, `203.0.113.86`); neither pattern reads
+the address.
+
 ### CPEs naming products the vulnerability data does not have (2026-09-09, 29 rules)
 
 Three identifiers were spelled in a way NVD has never used, so every finding

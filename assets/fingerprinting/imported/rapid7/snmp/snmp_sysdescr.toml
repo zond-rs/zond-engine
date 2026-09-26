@@ -910,7 +910,7 @@ metadata = { "os.certainty" = "0.9", "os.vendor" = "Cisco", "os.product" = "IOS-
 name = "Cisco IOS"
 pattern = "^Cisco (?:Internetwork Operating System|IOS) Software,? (?:\\r|\\n|.)+Version\\s+([^,]+),"
 context = "snmp.sys_description"
-example = "\n      Q2lzY28gSW50ZXJuZXR3b3JrIE9wZXJhdGluZyBTeXN0ZW0gU29mdHdhcmUgDQpJT1MgKHRtK\n      SBDMTcwMCBTb2Z0d2FyZSAoQzE3MDAtWS1NKSwgVmVyc2lvbiAxMi4yKDQpWUIsIEVBUkxZIE\n      RFUExPWU1FTlQgUkVMRUFTRSBTT0ZUV0FSRSAoZmMxKQ0KU3luY2hlZCB0byB0ZWNobm9sb2d\n      5IHZlcnNpb24gMTIuMig2LjgpVDINClRBQyBTdXBwb3J0OiBodHRwOi8vd3d3LmNpc2NvLmNv\n      bS90YWMNCkNvcHlyaWdodCAoYykgMTk4Ni0yMDAyIGJ5IGNpCg==\n    "
+example = "Cisco Internetwork Operating System Software \r\nIOS (tm) C1700 Software (C1700-Y-M), Version 12.2(4)YB, EARLY DEPLOYMENT RELEASE SOFTWARE (fc1)\r\nSynched to technology version 12.2(6.8)T2\r\nTAC Support: http://www.cisco.com/tac\r\nCopyright (c) 1986-2002 by ci\n"
 metadata = { "os.certainty" = "0.85", "os.vendor" = "Cisco", "os.product" = "IOS", "os.family" = "IOS", "os.device" = "Router", "os.version" = "{capture:1}", "os.cpe23" = "cpe:/o:cisco:ios:{os.version}" }
 
 [[match]]
@@ -1428,7 +1428,7 @@ metadata = { "os.vendor" = "HP", "os.device" = "Switch", "os.family" = "Comware"
 name = "H3C Comware, generic, pre-HP acquisition"
 pattern = "^H3C Comware Platform Software, Software Version ([\\d\\.]+) Release \\d+[\\r\\n]+H3C (\\S+)[\\r\\n]+Copyright"
 context = "snmp.sys_description"
-example = "\n      SDNDIENvbXdhcmUgUGxhdGZvcm0gU29mdHdhcmUsIFNvZnR3YXJlIFZlcnNpb24gNS4yMCBSZ\n      WxlYXNlIDIyMDgNCkgzQyBTNTUwMC0yOEMtRUkNCkNvcHlyaWdodCAoYykgMjAwNC0yMDEwIE\n      hhbmd6aG91IEgzQyBUZWNoLiBDby4sIEx0ZC4gQWxsIHJpZ2h0cyByZXNlcnZlZC4K\n    "
+example = "H3C Comware Platform Software, Software Version 5.20 Release 2208\r\nH3C S5500-28C-EI\r\nCopyright (c) 2004-2010 Hangzhou H3C Tech. Co., Ltd. All rights reserved.\n"
 metadata = { "os.vendor" = "H3C", "os.family" = "Comware", "os.version" = "{capture:1}", "os.product" = "Comware", "hw.product" = "{capture:2}" }
 
 [[match]]

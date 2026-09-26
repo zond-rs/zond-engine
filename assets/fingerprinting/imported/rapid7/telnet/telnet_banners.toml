@@ -48,7 +48,7 @@ name = "Cisco switch or router - user access variant"
 pattern = "^(?:\\r|\\n)*User Access Verification(?:\\r|\\n)+(?:Username|Password):\\s*$"
 vendor = "Cisco"
 context = "unknown"
-example = "VXNlciBBY2Nlc3MgVmVyaWZpY2F0aW9uDQoNClVzZXJuYW1lOgo="
+example = "User Access Verification\r\n\r\nUsername:\n"
 metadata = { "os.vendor" = "Cisco", "hw.vendor" = "Cisco" }
 
 [[match]]
@@ -63,49 +63,49 @@ metadata = { "os.vendor" = "Cisco", "hw.vendor" = "Cisco" }
 name = "MikroTik RouterOS"
 pattern = "^(?:\\r|\\n)*MikroTik v([\\w.]+)(?: \\([\\w-]+\\))?(?:\\r|\\n)+Login:\\s*$"
 context = "unknown"
-example = "TWlrcm9UaWsgdjUuMg0KTG9naW46Cg=="
+example = "MikroTik v5.2\r\nLogin:\n"
 metadata = { "os.vendor" = "MikroTik", "os.device" = "Router", "os.product" = "RouterOS", "os.version" = "{capture:1}", "os.cpe23" = "cpe:/o:mikrotik:routeros:{os.version}", "hw.vendor" = "MikroTik", "hw.device" = "Router" }
 
 [[match]]
 name = "ZTE ZXHN router"
 pattern = "^(?:\\r|\\n)?ZXHN (\\w+)(?: V([\\d.]+))?(?:\\r|\\n)*Login:\\s*$"
 context = "unknown"
-example = "WlhITiBIMTA4Tg0KTG9naW46Cg=="
+example = "ZXHN H108N\r\nLogin:\n"
 metadata = { "hw.vendor" = "ZTE", "hw.device" = "Router", "hw.family" = "ZXHN", "hw.product" = "{capture:1}", "hw.version" = "{capture:2}" }
 
 [[match]]
 name = "ZTE F6xx series GPON router"
 pattern = "^(F6\\d+\\w?)\\r\\n\\rLogin:\\s*$"
 context = "unknown"
-example = "RjY2OA0KDUxvZ2luOgo="
+example = "F668\r\n\rLogin:\n"
 metadata = { "hw.vendor" = "ZTE", "hw.device" = "Router", "hw.product" = "{capture:1}" }
 
 [[match]]
 name = "DD-WRT - 24 family"
 pattern = "^(?:\\r|\\n)*DD-WRT v([\\d.]+)(?:-(\\w+))? ([\\w-]+) \\(c\\) \\d{4} NewMedia-NET GmbH(?:\\r|\\n)+Release: \\d+\\/\\d+\\/\\d+ \\(SVN revision: ([:\\w]+)\\)(?:\\r|\\n)+.* login:\\s*$"
 context = "unknown"
-example = "\n      REQtV1JUIHYyNC1zcDIgbWluaSAoYykgMjAxMyBOZXdNZWRpYS1ORVQgR21iSA0KUmVsZWFzZ\n      TogMDUvMjcvMTMgKFNWTiByZXZpc2lvbjogMjE2NzYpDQoNCkRELVdSVCBsb2dpbjoK\n    "
+example = "DD-WRT v24-sp2 mini (c) 2013 NewMedia-NET GmbH\r\nRelease: 05/27/13 (SVN revision: 21676)\r\n\r\nDD-WRT login:\n"
 metadata = { "os.vendor" = "DD-WRT", "os.product" = "DD-WRT", "os.device" = "Router", "os.version" = "{capture:1}", "os.version.version" = "{capture:2}", "os.edition" = "{capture:3}", "os.build" = "{capture:4}", "os.cpe23" = "cpe:/o:dd-wrt:dd-wrt:{os.version}", "hw.device" = "Router" }
 
 [[match]]
 name = "DD-WRT - 3.0 family"
 pattern = "^(?:\\r|\\n)*DD-WRT v(3.\\d)-(r([\\w]+)) ([\\w-]+) \\(c\\) \\d{4} NewMedia-NET GmbH(?:\\r|\\n)+Release: \\d+\\/\\d+\\/\\d+(?:\\r|\\n)+.* login:\\s*$"
 context = "unknown"
-example = "\n      REQtV1JUIHYzLjAtcjM0ODg2TSBzdGQgKGMpIDIwMTggTmV3TWVkaWEtTkVUIEdtYkgNClJlb\n      GVhc2U6IDAyLzEwLzE4DQoNCndpYnJhdGUgbG9naW46Cg==\n    "
+example = "DD-WRT v3.0-r34886M std (c) 2018 NewMedia-NET GmbH\r\nRelease: 02/10/18\r\n\r\nwibrate login:\n"
 metadata = { "os.vendor" = "DD-WRT", "os.product" = "DD-WRT", "os.device" = "Router", "os.version" = "{capture:1}", "os.version.version" = "{capture:2}", "os.build" = "{capture:3}", "os.edition" = "{capture:4}", "os.cpe23" = "cpe:/o:dd-wrt:dd-wrt:{os.version}", "hw.device" = "Router" }
 
 [[match]]
 name = "DD-WRT - 3.0 family - with hardward product"
 pattern = "^(?:\\r|\\n)*DD-WRT v(3.\\d)-(r([\\w]+)) ([\\w-]+) \\(c\\) \\d{4} NewMedia-NET GmbH(?:\\r|\\n)+Release: \\d+\\/\\d+\\/\\d+(?:\\r|\\n)+Board: (\\S+) ([^\\n\\r]+)(?:\\r|\\n)+.* login:\\s*$"
 context = "unknown"
-example = "\n      REQtV1JUIHYzLjAtcjQwNTU5IHN0ZCAoYykgMjAxOSBOZXdNZWRpYS1ORVQgR21iSA0KUmVsZ\n      WFzZTogMDgvMDYvMTkNCkJvYXJkOiBMaW5rc3lzIFdSVDMyMDBBQ00NCg0KREQtV1JUIGxvZ2\n      luOgo=\n    "
+example = "DD-WRT v3.0-r40559 std (c) 2019 NewMedia-NET GmbH\r\nRelease: 08/06/19\r\nBoard: Linksys WRT3200ACM\r\n\r\nDD-WRT login:\n"
 metadata = { "os.vendor" = "DD-WRT", "os.product" = "DD-WRT", "os.device" = "Router", "os.version" = "{capture:1}", "os.version.version" = "{capture:2}", "os.build" = "{capture:3}", "os.edition" = "{capture:4}", "os.cpe23" = "cpe:/o:dd-wrt:dd-wrt:{os.version}", "hw.vendor" = "{capture:5}", "hw.product" = "{capture:6}", "hw.device" = "Router" }
 
 [[match]]
 name = "TP-LINK TD Family DSL Modem/Router"
 pattern = "^(TD-\\w+) [\\d.]+ DSL Modem Router(?:\\r|\\n)+Authorization failed after trying \\d+ times!!!\\.(?:\\r|\\n)+Please login after \\d+ seconds!\\s*$"
 context = "unknown"
-example = "\n      VEQtVzg5NjBOIDUuMCBEU0wgTW9kZW0gUm91dGVyDQpBdXRob3JpemF0aW9uIGZhaWxlZCBhZ\n      nRlciB0cnlpbmcgNSB0aW1lcyEhIS4NClBsZWFzZSBsb2dpbiBhZnRlciA0MTYgc2Vjb25kcy\n      E=\n    "
+example = "TD-W8960N 5.0 DSL Modem Router\r\nAuthorization failed after trying 5 times!!!.\r\nPlease login after 416 seconds!"
 metadata = { "hw.vendor" = "TP-LINK", "hw.product" = "{capture:1}", "hw.device" = "Router" }
 
 [[match]]
@@ -117,79 +117,79 @@ metadata = { "hw.vendor" = "Zyxel" }
 
 [[match]]
 name = "ZyXEL Router - simple"
-pattern = "^ZyXEL \\w?DSL Router\\r\\nLogin:$"
+pattern = "(?m)^ZyXEL \\w?DSL Router\\r\\nLogin:$"
 context = "unknown"
-example = "WnlYRUwgVkRTTCBSb3V0ZXINCkxvZ2luOgo="
+example = "ZyXEL VDSL Router\r\nLogin:\n"
 metadata = { "hw.vendor" = "Zyxel", "hw.device" = "Router" }
 
 [[match]]
 name = "Debian 9.0 (stretch)"
 pattern = "^Debian GNU\\/Linux 9(?:\\r|\\n)+([\\w.-]+) login:\\s*$"
 context = "unknown"
-example = "RGViaWFuIEdOVS9MaW51eCA5DQpzZXJ2ZXItMDEuMiBsb2dpbjoK"
+example = "Debian GNU/Linux 9\r\nserver-01.2 login:\n"
 metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "9", "os.cpe23" = "cpe:/o:debian:debian_linux:9.0", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Debian 8.0 (jessie)"
 pattern = "^Debian GNU\\/Linux 8(?:.0)?(?:\\r|\\n)+([\\w.-]+) login:\\s*$"
 context = "unknown"
-example = "RGViaWFuIEdOVS9MaW51eCA4DQpzZXJ2ZXItMDEuMiBsb2dpbjoK"
+example = "Debian GNU/Linux 8\r\nserver-01.2 login:\n"
 metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "8", "os.cpe23" = "cpe:/o:debian:debian_linux:8.0", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Debian 7.0 (wheezy)"
 pattern = "^(?:\\r|\\n)*Debian GNU\\/Linux 7(?:.0)?(?:\\r|\\n)+([\\w.-]+) login:\\s*$"
 context = "unknown"
-example = "RGViaWFuIEdOVS9MaW51eCA3DQpzZXJ2ZXItMDEuMiBsb2dpbjoK"
+example = "Debian GNU/Linux 7\r\nserver-01.2 login:\n"
 metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "7", "os.cpe23" = "cpe:/o:debian:debian_linux:7.0", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Debian 6.0 (sqeeze)"
 pattern = "^(?:\\r|\\n)*Debian GNU\\/Linux 6(?:.0)?(?:\\r|\\n)+([\\w.-]+) login:\\s*$"
 context = "unknown"
-example = "RGViaWFuIEdOVS9MaW51eCA2LjANCnNlcnZlci0wMS4yIGxvZ2luOgo="
+example = "Debian GNU/Linux 6.0\r\nserver-01.2 login:\n"
 metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "6", "os.cpe23" = "cpe:/o:debian:debian_linux:6.0", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Debian 5.0 (lenny)"
 pattern = "^(?:\\r|\\n)*Debian GNU\\/Linux 5(?:.0)?(?:\\r|\\n)+([\\w.-]+) login:\\s*$"
 context = "unknown"
-example = "RGViaWFuIEdOVS9MaW51eCA1LjANCnNlcnZlci0wMS4yIGxvZ2luOgo="
+example = "Debian GNU/Linux 5.0\r\nserver-01.2 login:\n"
 metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "5", "os.cpe23" = "cpe:/o:debian:debian_linux:5.0", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Debian 4.0 (etch)"
 pattern = "^(?:\\r|\\n)*Debian GNU\\/Linux 4(?:.0)?(?:\\r|\\n)+([\\w.-]+) login:\\s*$"
 context = "unknown"
-example = "RGViaWFuIEdOVS9MaW51eCA0LjANCnNlcnZlci0wMS4yIGxvZ2luOgo="
+example = "Debian GNU/Linux 4.0\r\nserver-01.2 login:\n"
 metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "4", "os.cpe23" = "cpe:/o:debian:debian_linux:4.0", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Debian 3.x (woody/sarge)"
 pattern = "^(?:\\r|\\n)*Debian GNU\\/Linux (3.\\d)(?: [\\w.-]+)?(?:\\r|\\n)+([\\w.-]+) login:\\s*$"
 context = "unknown"
-example = "\n      RGViaWFuIEdOVS9MaW51eCAzLjENCnNlcnZlci0wMS4yIGxvZ2luOgo=\n    "
+example = "Debian GNU/Linux 3.1\r\nserver-01.2 login:\n"
 metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:1}", "os.cpe23" = "cpe:/o:debian:debian_linux:{os.version}", "host.name" = "{capture:2}" }
 
 [[match]]
 name = "Ubuntu - most versions"
 pattern = "^(?:\\r|\\n)*Ubuntu ([\\d.]+)(?: LTS)?(?:\\r|\\n)+([\\w.-]+) login:\\s*$"
 context = "unknown"
-example = "\n      VWJ1bnR1IDE2LjA0LjQgTFRTDQpzZXJ2ZXItMDEuMiBsb2dpbjoK\n    "
+example = "Ubuntu 16.04.4 LTS\r\nserver-01.2 login:\n"
 metadata = { "os.vendor" = "Ubuntu", "os.family" = "Linux", "os.product" = "Ubuntu Linux", "os.version" = "{capture:1}", "os.cpe23" = "cpe:/o:canonical:ubuntu_linux:{os.version}", "host.name" = "{capture:2}" }
 
 [[match]]
 name = "Debian 2.x (hamm/slink/potato)"
 pattern = "(?:\\r|\\n)*Debian GNU\\/Linux (2.\\d)(?: [\\w.-]+)?(?:\\r|\\n)+([\\w.-]+) login:\\s*"
 context = "unknown"
-example = "\n      RGViaWFuIEdOVS9MaW51eCAyLjINCnNlcnZlci0wMS4yIGxvZ2luOgo=\n    "
+example = "Debian GNU/Linux 2.2\r\nserver-01.2 login:\n"
 metadata = { "os.vendor" = "Debian", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:1}", "os.cpe23" = "cpe:/o:debian:debian_linux:{os.version}", "host.name" = "{capture:2}" }
 
 [[match]]
 name = "CentOS"
 pattern = "^CentOS release ([\\d.]+) \\(Final\\)(?:\\r|\\n)+Kernel ([\\w.-]+) on an (\\w+)(?:\\r|\\n)+(?:([\\w.-]+) )?login:\\s*$"
 context = "unknown"
-example = "\n      Q2VudE9TIHJlbGVhc2UgNS45IChGaW5hbCkNCktlcm5lbCAyLjYuMTgtMzQ4LjYuMS5lbDUgb\n      24gYW4gaTY4Ng0KbG9naW46Cg==\n    "
+example = "CentOS release 5.9 (Final)\r\nKernel 2.6.18-348.6.1.el5 on an i686\r\nlogin:\n"
 metadata = { "os.vendor" = "CentOS", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:1}", "linux.kernel.version" = "{capture:2}", "os.arch" = "{capture:3}", "os.cpe23" = "cpe:/o:centos:centos:{os.version}", "host.name" = "{capture:4}" }
 
 [[match]]
@@ -217,84 +217,84 @@ metadata = { "hw.vendor" = "Airties", "hw.device" = "WAP", "hw.product" = "{capt
 name = "Amazon Linux AMI"
 pattern = "^Amazon Linux AMI release ([\\d.]+)(?:\\r|\\n)+Kernel ([\\w.-]+) on an (\\w+)(?:\\r|\\n)+(?:([\\w.-]+) )?login:\\s*$"
 context = "unknown"
-example = "\n      QW1hem9uIExpbnV4IEFNSSByZWxlYXNlIDIwMTMuMDkNCktlcm5lbCAzLjQuNjgtNTkuOTcuY\n      W16bjEueDg2XzY0IG9uIGFuIHg4Nl82NA0Kc2VydmVyLTAxLjIgbG9naW46Cg==\n    "
+example = "Amazon Linux AMI release 2013.09\r\nKernel 3.4.68-59.97.amzn1.x86_64 on an x86_64\r\nserver-01.2 login:\n"
 metadata = { "os.vendor" = "Amazon", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:1}", "linux.kernel.version" = "{capture:2}", "os.arch" = "{capture:3}", "host.name" = "{capture:4}" }
 
 [[match]]
 name = "ALCATEL Service Router running TiMOS"
-pattern = "(?m)^TiMOS-[CB]-([\\S]+) (?:both|cpm)/([\\w]+) ALCATEL (SR [\\S]+) Copyright.*Login:\\s*$"
+pattern = "(?s)(?m)^TiMOS-[CB]-([\\S]+) (?:both|cpm)/([\\w]+) ALCATEL (SR [\\S]+) Copyright.*Login:\\s*$"
 context = "unknown"
-example = "\n      VGlNT1MtQy0xMi4wLlIxMiBjcG0vaG9wczY0IEFMQ0FURUwgU1IgNzc1MCBDb3B5cmlnaHQgK\n      GMpIDIwMDAtMjAxNSBBbGNhdGVsLUx1Y2VudC4NDQpCYW5uZXIgU2hvcnRlbmVkIEZvciANDQ\n      pCcmV2aXR5DQpMb2dpbjoK\n    "
+example = "TiMOS-C-12.0.R12 cpm/hops64 ALCATEL SR 7750 Copyright (c) 2000-2015 Alcatel-Lucent.\r\r\nBanner Shortened For \r\r\nBrevity\r\nLogin:\n"
 metadata = { "os.vendor" = "ALCATEL", "os.product" = "TimOS", "os.device" = "Router", "os.version" = "{capture:1}", "os.arch" = "{capture:2}", "hw.vendor" = "ALCATEL", "hw.family" = "Service Router", "hw.device" = "Router", "hw.product" = "{capture:3}" }
 
 [[match]]
 name = "Nokia Service Router running TiMOS"
-pattern = "(?m)^TiMOS-[CB]-([\\S]+) (?:both|cpm)\\/([\\w]+) Nokia ([\\S]+ [SRX]+) Copyright.*Login:\\s*$"
+pattern = "(?s)(?m)^TiMOS-[CB]-([\\S]+) (?:both|cpm)\\/([\\w]+) Nokia ([\\S]+ [SRX]+) Copyright.*Login:\\s*$"
 context = "unknown"
-example = "\n      VGlNT1MtQy0xNC4wLlI1IGNwbS9ob3BzNjQgTm9raWEgNzc1MCBTUiBDb3B5cmlnaHQgKGMpI\n      DIwMDAtMjAxNiBOb2tpYS4NDQpCYW5uZXIgU2hvcnRlbmVkIEZvciANDQpCcmV2aXR5DQpMb2\n      dpbjoK\n    "
+example = "TiMOS-C-14.0.R5 cpm/hops64 Nokia 7750 SR Copyright (c) 2000-2016 Nokia.\r\r\nBanner Shortened For \r\r\nBrevity\r\nLogin:\n"
 metadata = { "os.vendor" = "Nokia", "os.product" = "TimOS", "os.device" = "Router", "os.version" = "{capture:1}", "os.arch" = "{capture:2}", "hw.vendor" = "Nokia", "hw.family" = "Service Router", "hw.device" = "Router", "hw.product" = "{capture:3}" }
 
 [[match]]
 name = "Nokia Service Access Switch running TiMOS"
-pattern = "(?m)^TiMOS-[CB]-([\\S]+) (?:both|cpm)\\/([\\w]+) Nokia (SAS[+\\w\\s-]+) Copyright.*Login:\\s*$"
+pattern = "(?s)(?m)^TiMOS-[CB]-([\\S]+) (?:both|cpm)\\/([\\w]+) Nokia (SAS[+\\w\\s-]+) Copyright.*Login:\\s*$"
 context = "unknown"
-example = "\n      VGlNT1MtQi04LjAuUjEyIGJvdGgvaG9wcyBOb2tpYSBTQVMtTXhwIDIyRjJDIDRTRlArIDcyM\n      TAgQ29weXJpZ2h0IChjKSAyMDAwLTIwMTcgTm9raWEuDQ0KQmFubmVyIFNob3J0ZW5lZCBGb3\n      IgDQ0KQnJldml0eQ0KTG9naW46Cg==\n    "
+example = "TiMOS-B-8.0.R12 both/hops Nokia SAS-Mxp 22F2C 4SFP+ 7210 Copyright (c) 2000-2017 Nokia.\r\r\nBanner Shortened For \r\r\nBrevity\r\nLogin:\n"
 metadata = { "os.vendor" = "Nokia", "os.product" = "TimOS", "os.device" = "Switch", "os.version" = "{capture:1}", "os.arch" = "{capture:2}", "hw.vendor" = "Nokia", "hw.family" = "Service Access Switch", "hw.device" = "Switch", "hw.product" = "{capture:3}" }
 
 [[match]]
 name = "Grandstream HandyTone Analog Telephone Adapters"
 pattern = "^(?:\\r|\\n)*Grandstream (HT[\\d-]+)\\s+(?:V\\d\\.\\d\\w?\\s+)?Command Shell Copyright \\d\\d\\d\\d-\\d\\d\\d\\d(?:\\r|\\n)+Password:\\s*$"
 context = "unknown"
-example = "\n      R3JhbmRzdHJlYW0gSFQ4MTIgQ29tbWFuZCBTaGVsbCBDb3B5cmlnaHQgMjAwNi0yMDE3DQpQY\n      XNzd29yZDoK\n    "
+example = "Grandstream HT812 Command Shell Copyright 2006-2017\r\nPassword:\n"
 metadata = { "hw.vendor" = "Grandstream", "hw.family" = "HandyTone", "hw.device" = "VoIP", "hw.product" = "{capture:1}" }
 
 [[match]]
 name = "Grandstream Analog VoIP Gateways"
 pattern = "^(?:\\r|\\n)*Grandstream (GXW[\\d-]+)\\s+(?:V\\d\\.\\d\\w?\\s+)?Command Shell Copyright \\d\\d\\d\\d(?:-\\d\\d\\d\\d)?(?:\\r|\\n)+Password:\\s*$"
 context = "unknown"
-example = "\n      R3JhbmRzdHJlYW0gR1hXLTQwMDggIFYxLjVBIENvbW1hbmQgU2hlbGwgQ29weXJpZ2h0IDIwM\n      DYtMjAxNQ0KUGFzc3dvcmQ6Cg==\n    "
+example = "Grandstream GXW-4008  V1.5A Command Shell Copyright 2006-2015\r\nPassword:\n"
 metadata = { "hw.vendor" = "Grandstream", "hw.family" = "GXW", "hw.device" = "VoIP", "hw.product" = "{capture:1}" }
 
 [[match]]
 name = "Grandstream IP Cameras"
 pattern = "^(?:\\r|\\n|\\s){0,256}Grandstream (GXV[\\w-]+)\\s+(?:V\\d\\.\\d\\w?\\s+)?Shell Command.Copyight \\d\\d\\d\\d-\\d\\d\\d\\d(?:\\r|\\n)+Username:\\s*$"
 context = "unknown"
-example = "\n      R3JhbmRzdHJlYW0gR1hWMzY3NF9GSERfVkYgICAgU2hlbGwgQ29tbWFuZC5Db3B5aWdodCAyM\n      DExLTIwMTQNClVzZXJuYW1lOgo=\n    "
+example = "Grandstream GXV3674_FHD_VF    Shell Command.Copyight 2011-2014\r\nUsername:\n"
 metadata = { "hw.vendor" = "Grandstream", "hw.family" = "GXV", "hw.device" = "IP Camera", "hw.product" = "{capture:1}" }
 
 [[match]]
 name = "Polycom Real Time Media Conferencing"
 pattern = "^(?:\\r|\\n)*Welcome to Polycom RMX\\s*(\\w+) \\(COP\\) Console Utility(?:\\r|\\n)+Copyright \\(C\\) \\d\\d\\d\\d-\\d\\d\\d\\d POLYCOM(?:\\r|\\n)+Password:\\s*$"
 context = "unknown"
-example = "\n      V2VsY29tZSB0byBQb2x5Y29tIFJNWCA1MDAgKENPUCkgQ29uc29sZSBVdGlsaXR5DQoNQ29we\n      XJpZ2h0IChDKSAyMDA4LTIwMTAgUE9MWUNPTQ0KDQ0KDVBhc3N3b3JkOgo=\n    "
+example = "Welcome to Polycom RMX 500 (COP) Console Utility\r\n\rCopyright (C) 2008-2010 POLYCOM\r\n\r\r\n\rPassword:\n"
 metadata = { "hw.vendor" = "Polycom", "hw.family" = "RMX", "hw.device" = "Video Conferencing", "hw.product" = "{capture:1}" }
 
 [[match]]
 name = "Polycom Video Conferencing - VSX Family"
 pattern = "^(?:\\r|\\n)*Hi, my name is :\\s+[\\w.\\s-]+(?:\\r|\\n)+Here is what I know about myself:(?:\\r|\\n)+Model:\\s+VSX (\\w+)(?:\\r|\\n)+Serial Number:\\s+(\\w+)(?:\\r|\\n)+Software Version:\\s+Release ([\\d.-]+)\\s"
 context = "unknown"
-example = "\n      SGksIG15IG5hbWUgaXMgOiAgICAgU29tZXRoaW5nIFBpdHkNCkhlcmUgaXMgd2hhdCBJIGtub\n      3cgYWJvdXQgbXlzZWxmOg0KTW9kZWw6ICAgICAgICAgICAgICAgVlNYIDYwMDBBDQpTZXJpYW\n      wgTnVtYmVyOiAgICAgICAwMDA3MDkwNkZDMzRGNg0KU29mdHdhcmUgVmVyc2lvbjogICAgUmV\n      sZWFzZSA5LjAuNi4yLTEwMyAtIDA0U2VwMjAxMSAyMToyNw0KQnVpbGQgSW5mb3JtYXRpb246\n      ICAgZWNvbW1hbgo=\n    "
+example = "Hi, my name is :     Something Pity\r\nHere is what I know about myself:\r\nModel:               VSX 6000A\r\nSerial Number:       00070906FC34F6\r\nSoftware Version:    Release 9.0.6.2-103 - 04Sep2011 21:27\r\nBuild Information:   ecomman\n"
 metadata = { "hw.vendor" = "Polycom", "hw.family" = "VSX", "hw.device" = "Video Conferencing", "hw.product" = "{capture:1}", "hw.serial_number" = "{capture:2}", "os.version" = "{capture:3}" }
 
 [[match]]
 name = "Polycom Diagnotic Service"
 pattern = "Polycom Command Shell(?:\\r|\\n)+XCOM host:\\s+localhost port: \\d+"
 context = "unknown"
-example = "\n      UG9seWNvbSBDb21tYW5kIFNoZWxsDQ0KWENPTSBob3N0OiAgICBsb2NhbGhvc3QgcG9ydDogN\n      DEyMQ0NClRUWSBuYW1lOiAgICAgL2Rldi9wdHMvMA0NClNlc3Npb24gdHlwZTogdGVsbmV0DQ\n      0KTkNGDQpOQ0YNCjIwMTgtMDgtMTUgMTg6MDM6MTAgREVCVUcK\n    "
+example = "Polycom Command Shell\r\r\nXCOM host:    localhost port: 4121\r\r\nTTY name:     /dev/pts/0\r\r\nSession type: telnet\r\r\nNCF\r\nNCF\r\n2018-08-15 18:03:10 DEBUG\n"
 metadata = { "hw.vendor" = "Polycom", "hw.device" = "Video Conferencing" }
 
 [[match]]
 name = "Sunny WebBox Windows CE"
 pattern = "^Welcome to the Windows CE Telnet Service on (WEBBOX[\\w.-]+)(?:\\r|\\n)+login:\\s*$"
 context = "unknown"
-example = "\n      V2VsY29tZSB0byB0aGUgV2luZG93cyBDRSBUZWxuZXQgU2VydmljZSBvbiBXRUJCT1gxNTAwM\n      DAwMDANCg0KbG9naW46Cg==\n    "
+example = "Welcome to the Windows CE Telnet Service on WEBBOX150000000\r\n\r\nlogin:\n"
 metadata = { "hw.vendor" = "SMA Solar Technology Ag", "hw.family" = "Sunny", "hw.product" = "WebBox", "hw.device" = "Power Device", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows CE", "os.cpe23" = "cpe:/o:microsoft:windows_ce:-", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Windows CE"
 pattern = "^Welcome to the Windows CE Telnet Service on ([\\w.-]+)(?:\\r|\\n)+login:\\s*$"
 context = "unknown"
-example = "\n      V2VsY29tZSB0byB0aGUgV2luZG93cyBDRSBUZWxuZXQgU2VydmljZSBvbiBNWS1DRS1ERVZJQ\n      0UNCg0KbG9naW46Cg==\n    "
+example = "Welcome to the Windows CE Telnet Service on MY-CE-DEVICE\r\n\r\nlogin:\n"
 metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows CE", "os.cpe23" = "cpe:/o:microsoft:windows_ce:-", "host.name" = "{capture:1}" }
 
 [[match]]
@@ -303,28 +303,28 @@ pattern = "^(?:\\r|\\n)*HP JetDirect(?:\\r|\\n)+"
 vendor = "HP"
 product = "JetDirect"
 context = "unknown"
-example = "\n      SFAgSmV0RGlyZWN0DQpQYXNzd29yZCBpcyBub3Qgc2V0DQoNClBsZWFzZSB0eXBlICJtZW51I\n      iBmb3IgdGhlIE1FTlUgc3lzdGVtLCANCm9yICI/IiBmb3IgaGVscCwgb3IgIi8iIGZvciBjdX\n      JyZW50IHNldHRpbmdzLg0KPgo=\n    "
+example = "HP JetDirect\r\nPassword is not set\r\n\r\nPlease type \"menu\" for the MENU system, \r\nor \"?\" for help, or \"/\" for current settings.\r\n>\n"
 metadata = { "service.family" = "JetDirect", "os.vendor" = "HP", "os.device" = "Printer", "os.family" = "JetDirect", "os.product" = "JetDirect", "hw.vendor" = "HP", "hw.family" = "JetDirect", "hw.product" = "JetDirect", "hw.device" = "Printer" }
 
 [[match]]
 name = "HP switch blocking connection using network ACL"
 pattern = "^(?:\\r|\\n)*%connection closed by remote host!(?:\\x00)?$"
 context = "unknown"
-example = "JWNvbm5lY3Rpb24gY2xvc2VkIGJ5IHJlbW90ZSBob3N0IQ=="
+example = "%connection closed by remote host!"
 metadata = { "hw.vendor" = "HP", "hw.device" = "Switch" }
 
 [[match]]
 name = "Huawei HG series Home Gateway routers"
-pattern = "^(?:\\r|\\n)*Welcome Visiting Huawei Home Gateway\\r\\nCopyright by Huawei Technologies Co., Ltd.\\r\\n\\r\\nLogin:$"
+pattern = "(?m)^(?:\\r|\\n)*Welcome Visiting Huawei Home Gateway\\r\\nCopyright by Huawei Technologies Co., Ltd.\\r\\n\\r\\nLogin:$"
 context = "unknown"
-example = "\n      V2VsY29tZSBWaXNpdGluZyBIdWF3ZWkgSG9tZSBHYXRld2F5DQpDb3B5cmlnaHQgYnkgSHVhd\n      2VpIFRlY2hub2xvZ2llcyBDby4sIEx0ZC4NCg0KTG9naW46Cg==\n    "
+example = "Welcome Visiting Huawei Home Gateway\r\nCopyright by Huawei Technologies Co., Ltd.\r\n\r\nLogin:\n"
 metadata = { "hw.vendor" = "Huawei", "hw.device" = "Router" }
 
 [[match]]
 name = "Huawei Router"
-pattern = "^(?:\\r|\\n)*Warning: Telnet is not a secure protocol, and it is recommended to use Stelnet.(?:(?:\\r|\\n)+Login authentication)?(?:\\r|\\n)+Username:$"
+pattern = "(?m)^(?:\\r|\\n)*Warning: Telnet is not a secure protocol, and it is recommended to use Stelnet.(?:(?:\\r|\\n)+Login authentication)?(?:\\r|\\n)+Username:$"
 context = "unknown"
-example = "\n      V2FybmluZzogVGVsbmV0IGlzIG5vdCBhIHNlY3VyZSBwcm90b2NvbCwgYW5kIGl0IGlzIHJlY\n      29tbWVuZGVkIHRvIHVzZSBTdGVsbmV0Lg0KDQpMb2dpbiBhdXRoZW50aWNhdGlvbg0KDQoNCl\n      VzZXJuYW1lOgo=\n    "
+example = "Warning: Telnet is not a secure protocol, and it is recommended to use Stelnet.\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:\n"
 metadata = { "hw.vendor" = "Huawei", "hw.device" = "Router" }
 
 [[match]]
@@ -332,15 +332,15 @@ name = "Cisco router - Cisco Configuration Pro  variant"
 pattern = "^(?:\\r|\\n)*(?:% Password expiration warning.\\r\\n)?-+\\r\\nCisco Configuration Professional \\(Cisco CP\\) is installed on this device. \\r\\nThis feature requires the one-time use of the username"
 vendor = "Cisco"
 context = "unknown"
-example = "\n      LS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tL\n      S0tLS0tLS0tLS0tLS0tLS0NCkNpc2NvIENvbmZpZ3VyYXRpb24gUHJvZmVzc2lvbmFsIChDaX\n      NjbyBDUCkgaXMgaW5zdGFsbGVkIG9uIHRoaXMgZGV2aWNlLiANClRoaXMgZmVhdHVyZSByZXF\n      1aXJlcyB0aGUgb25lLXRpbWUgdXNlIG9mIHRoZSB1c2VybmFtZQo=\n    "
+example = "-----------------------------------------------------------------------\r\nCisco Configuration Professional (Cisco CP) is installed on this device. \r\nThis feature requires the one-time use of the username\n"
 metadata = { "os.vendor" = "Cisco", "os.family" = "IOS", "os.product" = "IOS", "os.device" = "Router", "os.cpe23" = "cpe:/o:cisco:ios:-", "hw.vendor" = "Cisco", "hw.device" = "Router" }
 
 [[match]]
 name = "Cisco Catalyst 1900"
-pattern = "(?m)^(?:\\r|\\n)*Catalyst 1900 Management Console(?:\\r|\\n)+.*Ethernet Address:\\s+([\\w-]+)(?:\\r|\\n)+.*Model Number:\\s+([\\w-]+)(?:\\r|\\n)+System Serial Number:\\s+(\\w+)(?:\\r|\\n)+Power Supply"
+pattern = "(?s)(?m)^(?:\\r|\\n)*Catalyst 1900 Management Console(?:\\r|\\n)+.*Ethernet Address:\\s+([\\w-]+)(?:\\r|\\n)+.*Model Number:\\s+([\\w-]+)(?:\\r|\\n)+System Serial Number:\\s+(\\w+)(?:\\r|\\n)+Power Supply"
 vendor = "Cisco"
 context = "unknown"
-example = "\n      Q2F0YWx5c3QgMTkwMCBNYW5hZ2VtZW50IENvbnNvbGUNCkNvcHlyaWdodCAoYykgQ2lzY28gU\n      3lzdGVtcywgSW5jLiAgMTk5My0xOTk4DQpBbGwgcmlnaHRzIHJlc2VydmVkLg0KRW50ZXJwcm\n      lzZSBFZGl0aW9uIFNvZnR3YXJlDQpFdGhlcm5ldCBBZGRyZXNzOiAgICAgIDAwLUFBLTE5LTM\n      4LUFBLTAwDQoNClBDQSBOdW1iZXI6ICAgICAgICAgICAgNzMtMzFBQS1BQQ0KUENBIFNlcmlh\n      bCBOdW1iZXI6ICAgICBGQUIwMzNBQUFBQQ0KTW9kZWwgTnVtYmVyOiAgICAgICAgICBXUy1DM\n      TkyNC1FTg0KU3lzdGVtIFNlcmlhbCBOdW1iZXI6ICBGQUIwMzQxQUFBQQ0KUG93ZXIgU3VwcG\n      x5IFMvTjogICAK\n    "
+example = "Catalyst 1900 Management Console\r\nCopyright (c) Cisco Systems, Inc.  1993-1998\r\nAll rights reserved.\r\nEnterprise Edition Software\r\nEthernet Address:      00-AA-19-38-AA-00\r\n\r\nPCA Number:            73-31AA-AA\r\nPCA Serial Number:     FAB033AAAAA\r\nModel Number:          WS-C1924-EN\r\nSystem Serial Number:  FAB0341AAAA\r\nPower Supply S/N:   \n"
 metadata = { "os.vendor" = "Cisco", "os.device" = "Switch", "hw.vendor" = "Cisco", "hw.product" = "Catalyst 1900", "hw.device" = "Switch", "host.mac" = "{capture:1}", "hw.model" = "{capture:2}", "hw.serial_number" = "{capture:3}" }
 
 [[match]]
@@ -354,7 +354,7 @@ metadata = { "os.vendor" = "Hikvision", "hw.vendor" = "Hikvision" }
 name = "Juniper Netscreen"
 pattern = "^Remote Management Console\\r\\nlogin:\\s*$"
 context = "unknown"
-example = "UmVtb3RlIE1hbmFnZW1lbnQgQ29uc29sZQ0KbG9naW46Cg=="
+example = "Remote Management Console\r\nlogin:\n"
 metadata = { "os.vendor" = "Juniper", "os.device" = "Firewall", "os.family" = "ScreenOS", "os.product" = "ScreenOS", "os.cpe23" = "cpe:/o:juniper:screenos:-", "hw.vendor" = "Juniper", "hw.device" = "Firewall", "hw.product" = "NetScreen" }
 
 [[match]]
@@ -403,91 +403,91 @@ metadata = { "hw.vendor" = "Ruijie" }
 name = "Microsoft Windows"
 pattern = "^Welcome to Microsoft Telnet Service \\r\\n\\n\\rlogin:\\s*$"
 context = "unknown"
-example = "V2VsY29tZSB0byBNaWNyb3NvZnQgVGVsbmV0IFNlcnZpY2UgDQoKDWxvZ2luOgo="
+example = "Welcome to Microsoft Telnet Service \r\n\n\rlogin:\n"
 metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
 
 [[match]]
 name = "OEM'd Broadcom Router"
 pattern = "^(BCM\\d+) (?:Broadband|ADSL|xDSL|DSL) Router\\r\\nLogin:\\s*"
 context = "unknown"
-example = "QkNNOTYzMjY4IEJyb2FkYmFuZCBSb3V0ZXINCkxvZ2luOgo="
+example = "BCM963268 Broadband Router\r\nLogin:\n"
 metadata = { "hw.device" = "Router", "hw.product" = "{capture:1}" }
 
 [[match]]
 name = "OEM'd Broadcom Router - telnet disabled on WAN side"
-pattern = "^(BCM\\d+) Broadband Router\\r\\nTelnet is Disabled in WAN Side$"
+pattern = "(?m)^(BCM\\d+) Broadband Router\\r\\nTelnet is Disabled in WAN Side$"
 context = "unknown"
-example = "QkNNOTYzMjY4IEJyb2FkYmFuZCBSb3V0ZXINClRlbG5ldCBpcyBEaXNhYmxlZCBpbiBXQU4gU2lkZQo="
+example = "BCM963268 Broadband Router\r\nTelnet is Disabled in WAN Side\n"
 metadata = { "hw.device" = "Router", "hw.product" = "{capture:1}" }
 
 [[match]]
 name = "OEM'd Broadcom Router - input validation code"
-pattern = "(?m)^(BCM\\d+) Broadband Router\\r\\n.*Please input the verification code:$"
+pattern = "(?s)(?m)^(BCM\\d+) Broadband Router\\r\\n.*Please input the verification code:$"
 context = "unknown"
-example = "\n      QkNNOTYzMTggQnJvYWRiYW5kIFJvdXRlcg0KPT09PT09PT09PT09PT09PT09PT09PT09PT09P\n      T09PT09PT09PT09PT09PT09PT09PT09PQ0KICAgICogKiAgICAgICAgICogKiAqICogICAgIC\n      AqICogKiAqICAgICAgKiAqICogKiAgIA0KICAgICAgKiAgICAgICAgICogICAgICAgICAgICA\n      gICAgICAqICAgICAgKiAgICAgKiAgIA0KICAgICAgKiAgICAgICAgICogKiAqICogICAgICAq\n      ICogKiAqICAgICAgKiAqICogKiAgIA0KICAgICAgKiAgICAgICAgICogICAgICogICAgICAgI\n      CAgICAqICAgICAgICAgICAgKiAgIA0KICAgICAgKiAgICAgICAgICogICAgICogICAgICAgIC\n      AgICAqICAgICAgICAgICAgKiAgIA0KICAgKiAqICogKiAgICAgICogKiAqICogICAgICAqICo\n      gKiAqICAgICAgKiAqICogKiAgIA0KPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09\n      PT09PT09PT09PT09PT09PT09PQ0KUGxlYXNlIGlucHV0IHRoZSB2ZXJpZmljYXRpb24gY29kZ\n      ToK\n    "
+example = "BCM96318 Broadband Router\r\n====================================================\r\n    * *         * * * *      * * * *      * * * *   \r\n      *         *                  *      *     *   \r\n      *         * * * *      * * * *      * * * *   \r\n      *         *     *            *            *   \r\n      *         *     *            *            *   \r\n   * * * *      * * * *      * * * *      * * * *   \r\n====================================================\r\nPlease input the verification code:\n"
 metadata = { "hw.device" = "Router", "hw.product" = "{capture:1}" }
 
 [[match]]
 name = "OEM'd Broadcom Router - Max incorrect tries - variant 1"
 pattern = "^(BCM\\d+) Broadband Router\\r\\nMaximum number of incorrect account entries exceeded."
 context = "unknown"
-example = "\n      QkNNOTYzMjggQnJvYWRiYW5kIFJvdXRlcg0KTWF4aW11bSBudW1iZXIgb2YgaW5jb3JyZWN0I\n      GFjY291bnQgZW50cmllcyBleGNlZWRlZC4K\n    "
+example = "BCM96328 Broadband Router\r\nMaximum number of incorrect account entries exceeded.\n"
 metadata = { "hw.device" = "Router", "hw.product" = "{capture:1}" }
 
 [[match]]
 name = "OEM'd Broadcom Router - Max incorrect tries - variant 2"
 pattern = "^(BCM\\d+) Broadband Router\\r\\nSorry, you need to wait for \\d+ second before next login attempt.(?:\\r|\\n)*"
 context = "unknown"
-example = "\n      QkNNOTY4MTYgQnJvYWRiYW5kIFJvdXRlcg0KU29ycnksIHlvdSBuZWVkIHRvIHdhaXQgZm9yI\n      DExOSBzZWNvbmQgYmVmb3JlIG5leHQgbG9naW4gYXR0ZW1wdC4K\n    "
+example = "BCM96816 Broadband Router\r\nSorry, you need to wait for 119 second before next login attempt.\n"
 metadata = { "hw.device" = "Router", "hw.product" = "{capture:1}" }
 
 [[match]]
 name = "Moxa NPort Terminal Server - 6xxx Series"
 pattern = "^(?:\\r|\\n)*NPort (NP6[\\w-]+)(?:\\r|\\n|\\x00)+Console terminal type"
 context = "unknown"
-example = "\n     TlBvcnQgTlA2NjEwLTMyDQAKQ29uc29sZSB0ZXJtaW5hbCB0eXBlICgxOiBhbnNpL3Z0MTAwLC\n     AyOiB2dDUyKSA6IDE=\n    "
+example = "NPort NP6610-32\r\u0000\nConsole terminal type (1: ansi/vt100, 2: vt52) : 1"
 metadata = { "hw.vendor" = "Moxa", "hw.family" = "NPort", "hw.device" = "Device Server", "hw.product" = "{capture:1}" }
 
 [[match]]
 name = "Moxa NPort Device Server - IA Series"
 pattern = "^Model name\\s+: NPort (IA-\\d+)(?:\\r|\\n|\\x00)+MAC address\\s+: ([\\w:]+)(?:\\r|\\n|\\x00)+Serial No.\\s+: (\\d+)(?:\\r|\\n|\\x00)+Firmware version : ([\\d.]+) Build (\\d+)(?:\\r|\\n|\\x00)+System uptime"
 context = "unknown"
-example = "\n      TW9kZWwgbmFtZSAgICAgICA6IE5Qb3J0IElBLTUyNTANAApNQUMgYWRkcmVzcyAgICAgIDogM\n      DA6OTA6RTg6QUE6QUE6QUENAApTZXJpYWwgTm8uICAgICAgIDogMjgxDQAKRmlybXdhcmUgdm\n      Vyc2lvbiA6IDEuNiBCdWlsZCAxNzA2MDYxNg0AClN5c3RlbSB1cHRpbWUgICAgOiAzMSBkYXl\n      zLCAwNmg6MDNtOjQ1cw0ACg0AClBsZWFzZSBrZXlpbiB5b3VyIHBhc3N3b3JkOg==\n    "
+example = "Model name       : NPort IA-5250\r\u0000\nMAC address      : 00:90:E8:AA:AA:AA\r\u0000\nSerial No.       : 281\r\u0000\nFirmware version : 1.6 Build 17060616\r\u0000\nSystem uptime    : 31 days, 06h:03m:45s\r\u0000\n\r\u0000\nPlease keyin your password:"
 metadata = { "hw.vendor" = "Moxa", "hw.family" = "NPort", "hw.device" = "Device Server", "hw.product" = "{capture:1}", "host.mac" = "{capture:2}", "hw.serial_number" = "{capture:3}", "os.vendor" = "Moxa", "os.version" = "{capture:4}", "os.version.version" = "{capture:5}" }
 
 [[match]]
 name = "Moxa NPort Device Server - 5xxx Series"
 pattern = "^(?:\\r|\\n|\\x00|-)*Model name\\s+: NPort (5[\\w-]+)(?:\\r|\\n|\\x00)+MAC address\\s+: ([\\w:]+)(?:\\r|\\n|\\x00)+Serial No.\\s+: (\\d+)(?:\\r|\\n|\\x00)+Firmware version : ([\\d.]+) Build (\\d+)(?:\\r|\\n|\\x00)+"
 context = "unknown"
-example = "\n      TW9kZWwgbmFtZSAgICAgICA6IE5Qb3J0IDU2MTAtOC1EVA0ACk1BQyBhZGRyZXNzICAgICAgO\n      iAwMDo5MDpFODpBQTpBQTpBQQ0AClNlcmlhbCBOby4gICAgICAgOiA5NTIyDQAKRmlybXdhcm\n      UgdmVyc2lvbiA6IDIuMiBCdWlsZCAxMTA5MDYxMw0AClN5c3RlbSB1cHRpbWUgICAgOiA4IGR\n      heXMsIDAyaDoxMW06NDRzDQAKDQAKUGxlYXNlIGtleWluIHlvdXIgcGFzc3dvcmQ6\n    "
+example = "Model name       : NPort 5610-8-DT\r\u0000\nMAC address      : 00:90:E8:AA:AA:AA\r\u0000\nSerial No.       : 9522\r\u0000\nFirmware version : 2.2 Build 11090613\r\u0000\nSystem uptime    : 8 days, 02h:11m:44s\r\u0000\n\r\u0000\nPlease keyin your password:"
 metadata = { "hw.vendor" = "Moxa", "hw.family" = "NPort", "hw.device" = "Device Server", "hw.product" = "{capture:1}", "host.mac" = "{capture:2}", "hw.serial_number" = "{capture:3}", "os.vendor" = "Moxa", "os.version" = "{capture:4}", "os.version.version" = "{capture:5}" }
 
 [[match]]
 name = "Moxa NPort Device Server - 5xxx Series - Model only"
 pattern = "^(?:\\r|\\n|\\x00|-)*Model name\\s+: NPort (5[\\w-]+)(?:\\r|\\n|\\x00)+Please keyin your username:"
 context = "unknown"
-example = "TW9kZWwgbmFtZSAgICAgICA6IE5Q\n      b3J0IDUxMTBBDQoNClBsZWFzZSBrZXlpbiB5b3VyIHVzZXJuYW1lOgo=\n    "
+example = "Model name       : NPort 5110A\r\n\r\nPlease keyin your username:\n"
 metadata = { "hw.vendor" = "Moxa", "hw.family" = "NPort", "hw.device" = "Device Server", "hw.product" = "{capture:1}" }
 
 [[match]]
 name = "Moxa MGate Modbus Gateway"
 pattern = "^Model name\\s+: MGate (MB3[\\w-]+)(?:\\r|\\n|\\x00|)+MAC address\\s+: ([\\w:]+)(?:\\r|\\n|\\x00)+Serial No.\\s+: (\\d+)(?:\\r|\\n|\\x00)+Firmware version : ([\\d.]+) Build (\\d+)(?:\\r|\\n|\\x00)+"
 context = "unknown"
-example = "\n      TW9kZWwgbmFtZSAgICAgICA6IE1HYXRlIE1CMzE4MA0ACk1BQyBhZGRyZXNzICAgICAgOiAwM\n      Do5MDpFODpBQTpBQTpBQQ0AClNlcmlhbCBOby4gICAgICAgOiA5NDc0DQAKRmlybXdhcmUgdm\n      Vyc2lvbiA6IDEuMiBCdWlsZCAwOTEwMTkxMw0AClN5c3RlbSB1cHRpbWUgICAgOiAxNSBkYXl\n      zLCAxNmg6MzdtOjQ4cw0ACg0AClBsZWFzZSBrZXlpbiB5b3VyIHBhc3N3b3JkOg==\n    "
+example = "Model name       : MGate MB3180\r\u0000\nMAC address      : 00:90:E8:AA:AA:AA\r\u0000\nSerial No.       : 9474\r\u0000\nFirmware version : 1.2 Build 09101913\r\u0000\nSystem uptime    : 15 days, 16h:37m:48s\r\u0000\n\r\u0000\nPlease keyin your password:"
 metadata = { "hw.vendor" = "Moxa", "hw.family" = "MGate", "hw.device" = "Industrial Control", "hw.product" = "{capture:1}", "host.mac" = "{capture:2}", "hw.serial_number" = "{capture:3}", "os.vendor" = "Moxa", "os.version" = "{capture:4}", "os.version.version" = "{capture:5}" }
 
 [[match]]
 name = "Moxa NE Series Embedded device server"
 pattern = "^Model name\\s+: (NE[\\w-]+)(?:\\r|\\n|\\x00)+MAC address\\s+: ([\\w:]+)(?:\\r|\\n|\\x00)+Serial No.\\s+: (\\d+)(?:\\r|\\n|\\x00)+Firmware version\\s+: ([\\d.]+)(?: Build (\\d+)(?:\\r|\\n|\\x00)+)?"
 context = "unknown"
-example = "\n      TW9kZWwgbmFtZSAgICAgICA6IE5FLTQxMTBTDQAKTUFDIGFkZHJlc3MgICAgICA6IDAwOjkwO\n      kU4OkFBOkFBOkFBDQAKU2VyaWFsIE5vICAgICAgICA6IDM2MTYNAApGaXJtd2FyZSB2ZXJzaW\n      9uIDogNC4xIEJ1aWxkIDA3MDYxNTE3DQAKDQAKUGxlYXNlIGtleWluIHlvdXIgcGFzc3dvcmQ6\n    "
+example = "Model name       : NE-4110S\r\u0000\nMAC address      : 00:90:E8:AA:AA:AA\r\u0000\nSerial No        : 3616\r\u0000\nFirmware version : 4.1 Build 07061517\r\u0000\n\r\u0000\nPlease keyin your password:"
 metadata = { "hw.vendor" = "Moxa", "hw.family" = "NE", "hw.device" = "Device Server", "hw.product" = "{capture:1}", "host.mac" = "{capture:2}", "hw.serial_number" = "{capture:3}", "os.vendor" = "Moxa", "os.version" = "{capture:4}", "os.version.version" = "{capture:5}" }
 
 [[match]]
 name = "Moxa MiiNePort Series Embedded device server"
 pattern = "^Model name\\s+: (MiiNePort [\\w-]+)(?:\\r|\\n|\\x00)+Serial No.\\s+: (\\d+)(?:\\r|\\n|\\x00)+Device name\\s+: [\\w:\\&-]+(?:\\r|\\n|\\x00)+Firmware version\\s+: ([\\d.]+) Build (\\d+)(?:\\r|\\n|\\x00)+Ethernet MAC address: ([\\w:]+)(?:\\r|\\n|\\x00)+"
 context = "unknown"
-example = "\n      TW9kZWwgbmFtZSAgICAgICAgICA6IE1paU5lUG9ydCBFMg0KU2VyaWFsIE5vLiAgICAgICAgI\n      CA6IDk5OTkNCkRldmljZSBuYW1lICAgICAgICAgOiBNaWlOZVBvcnRfRTJfNDA2NA0KRmlybX\n      dhcmUgdmVyc2lvbiAgICA6IDEuMy4zNiBCdWlsZCAxNTAzMTYxNQ0KRXRoZXJuZXQgTUFDIGF\n      kZHJlc3M6IDAwOjkwOkU4OjVBOjkyOkZGDQoNClBsZWFzZSBrZXlpbiB5b3VyIHBhc3N3b3Jk\n      Ogo=\n    "
+example = "Model name          : MiiNePort E2\r\nSerial No.          : 9999\r\nDevice name         : MiiNePort_E2_4064\r\nFirmware version    : 1.3.36 Build 15031615\r\nEthernet MAC address: 00:90:E8:5A:92:FF\r\n\r\nPlease keyin your password:\n"
 metadata = { "hw.vendor" = "Moxa", "hw.family" = "MiiNePort", "hw.device" = "Device Server", "hw.product" = "{capture:1}", "hw.serial_number" = "{capture:2}", "os.vendor" = "Moxa", "os.version" = "{capture:3}", "os.version.version" = "{capture:4}", "host.mac" = "{capture:5}" }
 
 [[match]]
@@ -508,98 +508,98 @@ metadata = { "hw.vendor" = "Moxa", "hw.family" = "EDR", "hw.device" = "Router", 
 name = "RedHat general purpose linux"
 pattern = "^Red Hat Linux release ([^\\\\s]+)\\\\s*"
 context = "unknown"
-example = "\n      UmVkIEhhdCBMaW51eCByZWxlYXNlIDkgKFNocmlrZSlcbktlcm5lbCAyLjQuMjAtOCBvbiBhbiBpNjg2XG5sb2dpbjo=\n   "
+example = "Red Hat Linux release 9 (Shrike)\\nKernel 2.4.20-8 on an i686\\nlogin:"
 metadata = { "os.vendor" = "Red Hat", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:1}", "os.cpe23" = "cpe:/o:redhat:linux:{os.version}" }
 
 [[match]]
 name = "RedHat Enterprise Linux ES"
-pattern = "(?m)^Red Hat Enterprise Linux ES release (.*) \\(.*\\).*Kernel (.*) on a[^ ]* ([^ ]*\\d)"
+pattern = "(?s)(?m)^Red Hat Enterprise Linux ES release (.*) \\(.*\\).*Kernel (.*) on a[^ ]* ([^ ]*\\d)"
 context = "unknown"
-example = "\n      UmVkIEhhdCBFbnRlcnByaXNlIExpbnV4IEVTIHJlbGVhc2UgMyAoVGFyb29uIFVwZGF0ZSA5KQpLZXJuZWwgMi40LjIxLTQ3Lk\n      VMIG9uIGFuIHg4Nl82NApsb2dpbjo=\n    "
+example = "Red Hat Enterprise Linux ES release 3 (Taroon Update 9)\nKernel 2.4.21-47.EL on an x86_64\nlogin:"
 metadata = { "os.vendor" = "Red Hat", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:1}", "linux.kernel.version" = "{capture:2}", "os.arch" = "{capture:3}", "os.cpe23" = "cpe:/o:redhat:linux:{os.version}" }
 
 [[match]]
 name = "RedHat Enterprise Linux AS"
-pattern = "(?m)^Red Hat Enterprise Linux AS release (.*) \\(.*\\).*Kernel (.*) on a[^ ]* ([^ ]*\\d)"
+pattern = "(?s)(?m)^Red Hat Enterprise Linux AS release (.*) \\(.*\\).*Kernel (.*) on a[^ ]* ([^ ]*\\d)"
 context = "unknown"
-example = "\n      UmVkIEhhdCBFbnRlcnByaXNlIExpbnV4IEFTIHJlbGVhc2UgNS44IChUaWthbmdhKQpLZXJuZWwgM\n      i42LjE4LTMwOC4xMS4xLmVsNSBvbiBhbiB4ODZfNjQKbG9naW46\n    "
+example = "Red Hat Enterprise Linux AS release 5.8 (Tikanga)\nKernel 2.6.18-308.11.1.el5 on an x86_64\nlogin:"
 metadata = { "os.vendor" = "Red Hat", "os.family" = "Linux", "os.product" = "RedHat Enterprise AS", "os.version" = "{capture:1}", "linux.kernel.version" = "{capture:2}", "os.arch" = "{capture:3}" }
 
 [[match]]
 name = "RedHat Enterprise Linux WS"
-pattern = "(?m)^Red Hat Enterprise Linux WS release (.*) \\(.*\\).*Kernel (.*) on a[^ ]* ([^ ]*)"
+pattern = "(?s)(?m)^Red Hat Enterprise Linux WS release (.*) \\(.*\\).*Kernel (.*) on a[^ ]* ([^ ]*)"
 context = "unknown"
-example = "\n      UmVkIEhhdCBFbnRlcnByaXNlIExpbnV4IFdTIHJlbGVhc2UgMi4xIChUYW1wY\n      SkgCktlcm5lbCAyLjQuOS1lLjQwc21wIG9uIGFuIGk2ODYgCmxvZ2luOiA=\n    "
+example = "Red Hat Enterprise Linux WS release 2.1 (Tampa) \nKernel 2.4.9-e.40smp on an i686 \nlogin: "
 metadata = { "os.vendor" = "Red Hat", "os.family" = "Linux", "os.product" = "RedHat Enterprise WS", "os.version" = "{capture:1}", "linux.kernel.version" = "{capture:2}", "os.arch" = "{capture:3}" }
 
 [[match]]
 name = "Fedora Core Release"
-pattern = "(?m)^Fedora Core.release (.*) \\(.*\\).*Kernel (.*) on a[^ ]* ([^ ]*\\d)"
+pattern = "(?s)(?m)^Fedora Core.release (.*) \\(.*\\).*Kernel (.*) on a[^ ]* ([^ ]*\\d)"
 context = "unknown"
-example = "\n     RmVkb3JhIENvcmUgcmVsZWFzZSAxIChZYXJyb3cpCktlcm5lbCAyLjQuMjAtMTMuOWVuc2ltLTMuNS4wLTEzIG9uIGFuIGk2ODYKbG9naW46\n    "
+example = "Fedora Core release 1 (Yarrow)\nKernel 2.4.20-13.9ensim-3.5.0-13 on an i686\nlogin:"
 metadata = { "os.vendor" = "Red Hat", "os.family" = "Linux", "os.product" = "Fedora", "os.version" = "{capture:1}", "linux.kernel.version" = "{capture:2}", "os.arch" = "{capture:3}", "os.cpe23" = "cpe:/o:redhat:fedora:{os.version}" }
 
 [[match]]
 name = "SuSE Linux"
 pattern = "(?m)^Welcome to SuSE Linux (.*) \\(([^\\)]+)\\) - Kernel (.*) "
 context = "unknown"
-example = "\n      V2VsY29tZSB0byBTdVNFIExpbnV4IDcuMCAoaTM4NikgLSBLZXJuZWwgMi4yLjE2LVJBSUQgKDApLiAyVkcwMjkwMzcgCgpsb2dpbjo=\n    "
+example = "Welcome to SuSE Linux 7.0 (i386) - Kernel 2.2.16-RAID (0). 2VG029037 \n\nlogin:"
 metadata = { "os.vendor" = "SUSE", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:1}", "os.arch" = "{capture:2}", "os.cpe23" = "cpe:/o:suse:linux:{os.version}", "linux.kernel.version" = "{capture:3}" }
 
 [[match]]
 name = "Turbolinux ApplianceServer"
 pattern = "^Turbolinux ApplianceServer (\\d+\\.\\d+)"
 context = "unknown"
-example = "\n     VHVyYm9saW51eCBBcHBsaWFuY2VTZXJ2ZXIgNC4wIChBdGxhczIpIExpbnV4IDIuNi4zMi00MzEuMjMuMy5lbDYueDg\n     2XzY0IG9uIGEgeDg2XzY0IChzZW55bzE5MXg4OS5kaWdpdGFsaW5rLm5lLmpwKSBUVFk6IDEyOjE1IG9uIFR1ZXNkYX\n     ksIDAyIE9jdG9iZXIgMjAxOCBsb2dpbjog\n    "
+example = "Turbolinux ApplianceServer 4.0 (Atlas2) Linux 2.6.32-431.23.3.el6.x86_64 on a x86_64 (senyo191x89.digitalink.ne.jp) TTY: 12:15 on Tuesday, 02 October 2018 login: "
 metadata = { "os.vendor" = "Turbolinux", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:1}" }
 
 [[match]]
 name = "UnixWare"
 pattern = "^UnixWare ([^ ]+)"
 context = "unknown"
-example = "\n     VW5peFdhcmUgMi4xLjMgKHByb2ZpbCkgKHB0cy8zKQoKCgpsb2dpbjog\n    "
+example = "UnixWare 2.1.3 (profil) (pts/3)\n\n\n\nlogin: "
 metadata = { "os.vendor" = "SCO", "os.family" = "UnixWare", "os.device" = "UnixWare", "os.product" = "UnixWare", "os.version" = "{capture:1}" }
 
 [[match]]
 name = "Windows 2000"
 pattern = "(?m)^Telnet Server Build (5\\.[.\\d]+)"
 context = "unknown"
-example = "\n      TWljcm9zb2Z0IChSKSBXaW5kb3dzIE5UIChUTSkgVmVyc2lvbiA0LjAwIChCdWlsZCAxMzgxKQpXZWxj\n      b21lIHRvIE1pY3Jvc29mdCBUZWxuZXQgU2VydmljZSAKVGVsbmV0IFNlcnZlciBCdWlsZCA1LjAwLjk5MDM0LjEKCmxvZ2luOiA=\n    "
+example = "Microsoft (R) Windows NT (TM) Version 4.00 (Build 1381)\nWelcome to Microsoft Telnet Service \nTelnet Server Build 5.00.99034.1\n\nlogin: "
 metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows 2000", "os.version" = "{capture:1}", "os.cpe23" = "cpe:/o:microsoft:windows_2000:{os.version}" }
 
 [[match]]
 name = "Brother Printer"
 pattern = "^Welcome. Type return, enter password at # prompt"
 context = "unknown"
-example = "\n      V2VsY29tZS4gVHlwZSByZXR1cm4sIGVudGVyIHBhc3N3b3JkIGF0ICMgcHJvbXB0Cg==\n    "
+example = "Welcome. Type return, enter password at # prompt\n"
 metadata = { "os.vendor" = "Brother", "os.family" = "Brother", "os.device" = "Printer", "os.product" = "Brother Printer" }
 
 [[match]]
 name = "Arescom System"
 pattern = "^\\s{0,256}(\\S{1,64}) Copyright by ARESCOM"
 context = "unknown"
-example = "\n      TkRTMTI2MEhFLVRMSSBDb3B5cmlnaHQgYnkgQVJFU0NPTSAyMDAyCgoKClBhc3N3b3JkOgo=\n    "
+example = "NDS1260HE-TLI Copyright by ARESCOM 2002\n\n\n\nPassword:\n"
 metadata = { "os.vendor" = "Arescom", "os.device" = "WAP", "os.model" = "{capture:1}", "hw.vendor" = "Arescom", "hw.device" = "WAP", "hw.model" = "{capture:1}" }
 
 [[match]]
 name = "Polycom ViewStation Video Conference System"
 pattern = "^Welcome to ViewStation"
 context = "unknown"
-example = "\n      V2VsY29tZSB0byBWaWV3U3RhdGlvbgoKUGFzc3dvcmQ6\n    "
+example = "Welcome to ViewStation\n\nPassword:"
 metadata = { "os.vendor" = "Polycom", "os.device" = "ViewStation" }
 
 [[match]]
 name = "FlowPoint 2200 DSL router"
 pattern = "^FlowPoint\\/(.*) SDSL \\[ATM\\] Router .*v(.*) Ready"
 context = "unknown"
-example = "\n      Rmxvd1BvaW50LzIyMDAgU0RTTCBbQVRNXSBSb3V0ZXIgZnAyMjAwLTEyIHYzLjAuMiBSZWFkeQpMb2dpbjog\n    "
+example = "FlowPoint/2200 SDSL [ATM] Router fp2200-12 v3.0.2 Ready\nLogin: "
 metadata = { "os.vendor" = "FlowPoint", "hw.device" = "Broadband Router", "hw.product" = "DSL Router", "hw.model" = "{capture:1}", "os.version" = "{capture:2}" }
 
 [[match]]
 name = "GlobespanVirata broadband router"
 pattern = "^GlobespanVirata Inc\\., Software Release (.*)"
 context = "unknown"
-example = "\n      R2xvYmVzcGFuVmlyYXRhIEluYy4sIFNvZnR3YXJlIFJlbGVhc2UgMi4xLjA0MDQwN2EzX3VfZV9BCgpDb3B5cmlnaHQgKG\n      MpIDIwMDEtMjAwMyBieSBHbG9iZXNwYW5WaXJhdGEsIEluYy4KCgpsb2dpbjog\n    "
+example = "GlobespanVirata Inc., Software Release 2.1.040407a3_u_e_A\n\nCopyright (c) 2001-2003 by GlobespanVirata, Inc.\n\n\nlogin: "
 metadata = { "os.vendor" = "Conexant", "hw.device" = "Broadband Router", "os.version" = "{capture:1}" }
 
 [[match]]
@@ -613,133 +613,133 @@ metadata = { "os.family" = "VxWorks" }
 name = "Nortel Passport"
 pattern = "Nortel.*Passport ([^ ]*) .*Software Release ([^ ]*)"
 context = "unknown"
-example = "\n      KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqXG5cblxuKiBDb3B5cmlnaHQgKG\n      MpIDIwMDMgTm9ydGVsIE5ldHdvcmtzLCBJbmMuICAqXG5cblxuKiBBbGwgUmlnaHRzIFJlc2VydmVkICAgICAg\n      ICAgICAgICAgICAgICAgICAqXG5cblxuKiBQYXNzcG9ydCA4MDEwICAgICAgICAgICAgICAgICAgICAgICAgIC\n      AgICAqXG5cblxuKiBTb2Z0d2FyZSBSZWxlYXNlIDMuNS4wLjAgICAgICAgICAgICAgICAgICAqXG5cblxuKioq\n      KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqXG5cblxuXG5cbkxvZ2luOg==\n    "
+example = "*********************************************\\n\\n\\n* Copyright (c) 2003 Nortel Networks, Inc.  *\\n\\n\\n* All Rights Reserved                       *\\n\\n\\n* Passport 8010                             *\\n\\n\\n* Software Release 3.5.0.0                  *\\n\\n\\n*********************************************\\n\\n\\n\\n\\nLogin:"
 metadata = { "os.vendor" = "Nortel", "os.device" = "Switch", "os.product" = "{capture:1}", "os.version" = "{capture:2}" }
 
 [[match]]
 name = "Checkpoint Firewall-1 running on a Nokia IPSO appliance"
 pattern = "^IPSO.* \\((.*)\\) \\(tty.*\\)"
 context = "unknown"
-example = "\n     SVBTTy9pMzg2IChCSi1JREMtRlcyKSAodHR5cDcpCgoKClRoaXMgc3lzdGVtIGlzIGZvciBhdXRob3Jpem\n     VkIHVzZSBvbmx5LgoKCgoKCgoKbG9naW46IA==\n    "
+example = "IPSO/i386 (BJ-IDC-FW2) (ttyp7)\n\n\n\nThis system is for authorized use only.\n\n\n\n\n\n\n\nlogin: "
 metadata = { "os.vendor" = "Check Point", "os.family" = "Check Point", "os.device" = "Firewall", "os.product" = "IPSO", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Tasman Networks Login"
 pattern = "Tasman Networks Inc.*Telnet Login"
 context = "unknown"
-example = "\n      Iy0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0\n      tLS0tLS0tCiMgVGFzbWFuIE5ldHdvcmtzIEluYy4gVGVsbmV0IExvZ2luCiMtLS0tLS0tLS0tLS0tLS0tLS0tLS\n      0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQpFc2NhcGUgY2hhcmFjd\n      GVyIGlzICdeXScuCgoKICAgICAgICAKbG9naW46IA==\n    "
+example = "#-----------------------------------------------------------------------\n# Tasman Networks Inc. Telnet Login\n#-----------------------------------------------------------------------\nEscape character is '^]'.\n\n\n        \nlogin: "
 metadata = { "os.vendor" = "Tasman Networks", "os.device" = "Router", "os.product" = "Tasman Networks router" }
 
 [[match]]
 name = "MS Windows running Pragma TelnetD server"
 pattern = "Pragma Systems"
 context = "unknown"
-example = "\n      V2VsY29tZSB0byBHZW1hZGVwdCBMb2dpc3RpY3MgUkYgU2VydmVyCihDKSBDb3B5cmlnaHQgMTk5NC0yMDEyIFB\n      yYWdtYSBTeXN0ZW1zLCBJbmMuCgpsb2dpbiBuYW1lOiA=\n    "
+example = "Welcome to Gemadept Logistics RF Server\n(C) Copyright 1994-2012 Pragma Systems, Inc.\n\nlogin name: "
 metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
 
 [[match]]
 name = "probably IBM AS/400 running TN3270 or 5250 emulation server"
 pattern = "^Application Required. No Installation Default"
 context = "unknown"
-example = "\n     QXBwbGljYXRpb24gUmVxdWlyZWQuIE5vIEluc3RhbGxhdGlvbiBEZWZhdWx0ICAgICAgICA\n     gICAgICAgICAgICAgICAgICAgICAgICAgIApFbnRlciBBcHBsaWNhdGlvbiBOYW1lOg==\n    "
+example = "Application Required. No Installation Default                                  \nEnter Application Name:"
 metadata = { "os.vendor" = "IBM", "os.family" = "OS/400", "os.product" = "OS/400", "os.cpe23" = "cpe:/o:ibm:os_400:-" }
 
 [[match]]
 name = "Windows NT/2k/2k3 running Ataman telnet server"
 pattern = "^This copy of the Ataman TCP Remote Logon Services"
 context = "unknown"
-example = "\n      VGhpcyBjb3B5IG9mIHRoZSBBdGFtYW4gVENQIFJlbW90ZSBMb2dvbiBTZXJ2aWNlcyBpcyByZWdpc3RlcmVkIG\n      FzIGxpY2Vuc2VkIHRvOgoJRUNJMi9ERE1TCgpBY2NvdW50IE5hbWU6IA==\n    "
+example = "This copy of the Ataman TCP Remote Logon Services is registered as licensed to:\n\tECI2/DDMS\n\nAccount Name: "
 metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
 
 [[match]]
 name = "Cobalt Linux"
 pattern = "Cobalt Linux release\\W(.*)\\W\\("
 context = "unknown"
-example = "\n      Q29iYWx0IExpbnV4IHJlbGVhc2UgNi4wIChTaGlua2Fuc2VuKQpLZXJuZWwgMi4yLjE2QzM3X0lJSSBvbiBhbiBpNTg2CmxvZ2luOiA=\n    "
+example = "Cobalt Linux release 6.0 (Shinkansen)\nKernel 2.2.16C37_III on an i586\nlogin: "
 metadata = { "os.vendor" = "Cobalt", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:1}" }
 
 [[match]]
 name = "Check Point Firewall-1"
 pattern = "^Check Point FireWall-1 authenticated Telnet server running on (.*)"
 context = "unknown"
-example = "\n      Q2hlY2sgUG9pbnQgRmlyZVdhbGwtMSBhdXRoZW50aWNhdGVkIFRlbG5ldCBzZXJ2ZXIgcnVubmluZyBvbiBnYWF0ZHJmMgoKVXNlcjog\n    "
+example = "Check Point FireWall-1 authenticated Telnet server running on gaatdrf2\n\nUser: "
 metadata = { "os.vendor" = "Checkpoint", "os.family" = "Checkpoint", "os.device" = "Firewall", "os.product" = "Checkpoint FW1", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Raptor Firewall"
 pattern = "^Raptor Firewall"
 context = "unknown"
-example = "\n      UmFwdG9yIEZpcmV3YWxsIFNlY3VyZSBHYXRld2F5LgoKSG9zdG5hbWU6IA==\n    "
+example = "Raptor Firewall Secure Gateway.\n\nHostname: "
 metadata = { "os.vendor" = "Symantec", "os.family" = "Raptor", "os.device" = "Firewall", "os.product" = "Raptor" }
 
 [[match]]
 name = "SunOS (Solaris)"
 pattern = "UNIX\\(r\\) System V Release (\\d*.\\d*)"
 context = "unknown"
-example = "\n      VU5JWChyKSBTeXN0ZW0gViBSZWxlYXNlIDQuMCAoVGhlLVNlcnZlcikKCgoKbG9naW46IA==\n    "
+example = "UNIX(r) System V Release 4.0 (The-Server)\n\n\n\nlogin: "
 metadata = { "os.vendor" = "Sun", "os.family" = "Solaris", "os.product" = "Solaris", "os.version" = "{capture:1}", "os.cpe23" = "cpe:/o:sun:solaris:{os.version}" }
 
 [[match]]
 name = "Solaris"
 pattern = "Solaris (.*)"
 context = "unknown"
-example = "\n      U2VhdHRsZSBDb21tdW5pdHkgTmV0d29yayBTdW4gU29sYXJpcyAxLjEuMS5CClBsZWFzZSBsb2dpbiBhcyAndml\n      zaXRvcicgaWYgeW91IGFyZSBhIHZpc2l0b3IKCgpTdW5PUyBVTklYIChzY24pCgoKCmxvZ2luOg==\n    "
+example = "Seattle Community Network Sun Solaris 1.1.1.B\nPlease login as 'visitor' if you are a visitor\n\n\nSunOS UNIX (scn)\n\n\n\nlogin:"
 metadata = { "os.vendor" = "Sun", "os.family" = "Solaris", "os.product" = "Solaris", "os.version" = "{capture:1}", "os.cpe23" = "cpe:/o:sun:solaris:{os.version}" }
 
 [[match]]
 name = "Digital Unix"
 pattern = "^Digital UNIX \\(([^)]+)"
 context = "unknown"
-example = "\n      RGlnaXRhbCBVTklYIChqb3VybmFsKSAodHR5cDIpCgoKCmxvZ2luOiA=\n    "
+example = "Digital UNIX (journal) (ttyp2)\n\n\n\nlogin: "
 metadata = { "os.vendor" = "HP", "os.family" = "Digital Unix", "os.product" = "Digital Unix", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Compaq Tru64 UNIX V"
 pattern = "(?m)^Compaq Tru64 UNIX V(.*) \\(Rev. (.*\\d)\\) "
 context = "unknown"
-example = "\n     Q29tcGFxIFRydTY0IFVOSVggVjUuMUIgKFJldi4gMjY1MCkgKGRvY2FscGhhKSAocHRzLzExKQoKCgoKCmxvZ2luOg==\n    "
+example = "Compaq Tru64 UNIX V5.1B (Rev. 2650) (docalpha) (pts/11)\n\n\n\n\n\nlogin:"
 metadata = { "os.vendor" = "HP", "os.family" = "Digital Unix", "os.product" = "TRU64", "os.version" = "{capture:1}", "os.rev" = "{capture:2}", "os.cpe23" = "cpe:/o:hp:tru64:{os.version}" }
 
 [[match]]
 name = "System HP-UX"
 pattern = "HP-UX ([^ ]+) [A-Z]\\.([^ ]+) ([^ ]+) ([^ ]+)\\s([^ ]+\\))"
 context = "unknown"
-example = "\n      SFAtVVggY3RvdXQgQi4xMS4xMSBVIDkwMDAvODAwICh0YykKCmxvZ2luOiA=\n    "
+example = "HP-UX ctout B.11.11 U 9000/800 (tc)\n\nlogin: "
 metadata = { "os.vendor" = "HP", "os.family" = "HP-UX", "os.product" = "HP-UX", "host.name" = "{capture:1}", "os.version" = "{capture:2}", "os.cpe23" = "cpe:/o:hp:hp-ux:{os.version}", "hw.version" = "{capture:3}", "hw.series" = "{capture:4}", "hw.model" = "{capture:5}" }
 
 [[match]]
 name = "A NetApp apliance"
 pattern = "^Data ONTAP"
 context = "unknown"
-example = "RGF0YSBPTlRBUCAoczUwMC4pCmxvZ2luOiA="
+example = "Data ONTAP (s500.)\nlogin: "
 metadata = { "os.vendor" = "NetApp", "os.family" = "Data ONTAP", "os.product" = "Data ONTAP", "os.device" = "NAS", "os.cpe23" = "cpe:/o:netapp:data_ontap:-", "hw.vendor" = "NetApp", "hw.family" = "Data ONTAP", "hw.product" = "Data ONTAP", "hw.device" = "NAS" }
 
 [[match]]
 name = "OpenVMS"
 pattern = "OpenVMS.*Version\\sV([^\\s]+)"
 context = "unknown"
-example = "\n      IFdlbGNvbWUgdG8gT3BlblZNUyAoVE0pIEFscGhhIE9wZXJhdGluZyBTeXN0Z\n      W0sIFZlcnNpb24gVjguNCAgICAgLSBOT1Q3MAoKClVzZXJuYW1lOiA=\n    "
+example = " Welcome to OpenVMS (TM) Alpha Operating System, Version V8.4     - NOT70\n\n\nUsername: "
 metadata = { "os.vendor" = "HP", "os.family" = "OpenVMS", "os.product" = "VMS", "os.version" = "{capture:1}" }
 
 [[match]]
 name = "SCO OpenServer"
 pattern = "(?m)^SCO OpenServer\\(TM\\) Release ([^ ]+)"
 context = "unknown"
-example = "\n      U0NPIE9wZW5TZXJ2ZXIoVE0pIFJlbGVhc2UgNSAoYm9tZGlhLmNvLnphKSAodHR5cDYpCgpsb2dpbjo=\n    "
+example = "SCO OpenServer(TM) Release 5 (bomdia.co.za) (ttyp6)\n\nlogin:"
 metadata = { "os.vendor" = "SCO", "os.family" = "OpenServer", "os.product" = "OpenServer", "os.version" = "{capture:1}" }
 
 [[match]]
 name = "Some kind of Cisco device"
 pattern = "^% Username:  timeout expired!"
 context = "unknown"
-example = "\n      JSBVc2VybmFtZTogIHRpbWVvdXQgZXhwaXJlZCE=\n    "
+example = "% Username:  timeout expired!"
 metadata = { "os.vendor" = "Cisco", "os.family" = "IOS", "os.product" = "IOS", "os.cpe23" = "cpe:/o:cisco:ios:-" }
 
 [[match]]
 name = "Windows running MKS Telnet Server"
 pattern = "^Welcome to MKS Telnet Server Version"
 context = "unknown"
-example = "\n      V2VsY29tZSB0byBNS1MgVGVsbmV0IFNlcnZlciBWZXJzaW9uIDQuNzAuMDAwMC4KbG9naW46IA==\n    "
+example = "Welcome to MKS Telnet Server Version 4.70.0000.\nlogin: "
 metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows", "os.cpe23" = "cpe:/o:microsoft:windows:-" }
 
 [[match]]
@@ -753,175 +753,175 @@ metadata = { "os.vendor" = "Epson", "os.device" = "Printer" }
 name = "an Allied Telesyn router"
 pattern = "^TELNET session now in ESTABLISHED state"
 context = "unknown"
-example = "\n      VEVMTkVUIHNlc3Npb24gbm93IGluIEVTVEFCTElTSEVEIHN0YXRlCgpHRU8tMDAzIGxvZ2luOiA=\n    "
+example = "TELNET session now in ESTABLISHED state\n\nGEO-003 login: "
 metadata = { "os.vendor" = "Allied Telesyn", "os.device" = "Router", "os.product" = "Allied Telesyn router" }
 
 [[match]]
 name = "a Conexant ADSL router"
 pattern = "^CONEXANT SYSTEMS.*ACCESS RUNNER ADSL"
 context = "unknown"
-example = "\n      Q09ORVhBTlQgU1lTVEVNUywgSU5DLiBBQ0NFU1MgUlVOTkVSIEFEU0wgQ09OU09MRSBQ\n      T1JUPj4+TE9HT04gUEFTU1dPUkQ+My4yNyoqKioqKg==\n    "
+example = "CONEXANT SYSTEMS, INC. ACCESS RUNNER ADSL CONSOLE PORT>>>LOGON PASSWORD>3.27******"
 metadata = { "os.vendor" = "Conexant", "os.device" = "Broadband Router", "os.product" = "AccessRunner ADSL router" }
 
 [[match]]
 name = "a DrayTek Vigor SOHO Router"
 pattern = "^System administrator is connecting from"
 context = "unknown"
-example = "\n      U3lzdGVtIGFkbWluaXN0cmF0b3IgaXMgY29ubmVjdGluZyBmcm9tIDU0LjM5LjE3My44NgoKUmVqZWN0IH\n      RoZSBjb25uZWN0aW9uIHJlcXVlc3QgISEh\n    "
+example = "System administrator is connecting from 203.0.113.86\n\nReject the connection request !!!"
 metadata = { "hw.vendor" = "DrayTek", "hw.device" = "Broadband Router", "hw.product" = "Vigor" }
 
 [[match]]
 name = "OpenBSD"
 pattern = "Version\\s(\\d*.\\d*)\\/OpenBSD"
 context = "unknown"
-example = "\n      MjIwIGtpbGxlcjA5IEZUUCBzZXJ2ZXIgKFZlcnNpb24gNi40L09wZW5CU0QvTGludXgtZnRwZC0wLjE3KSByZWFkeS4K\n    "
+example = "220 killer09 FTP server (Version 6.4/OpenBSD/Linux-ftpd-0.17) ready.\n"
 metadata = { "os.vendor" = "OpenBSD", "os.family" = "OpenBSD", "os.product" = "OpenBSD", "os.version" = "{capture:1}", "os.cpe23" = "cpe:/o:openbsd:openbsd:{os.version}" }
 
 [[match]]
 name = "a FreeBSD"
 pattern = "^FreeBSD\\/([^\\\\s]+)\\s+\\(([^\\s]+)\\)"
 context = "unknown"
-example = "\n      RnJlZUJTRC9hbWQ2NCAobXMuZ3ltc3Bncy5jeikgKHB0cy8wKQoKCgpsb2dpbjo=\n    "
+example = "FreeBSD/amd64 (ms.gymspgs.cz) (pts/0)\n\n\n\nlogin:"
 metadata = { "os.vendor" = "FreeBSD", "os.family" = "FreeBSD", "os.product" = "FreeBSD", "os.arch" = "{capture:1}", "os.cpe23" = "cpe:/o:freebsd:freebsd:-", "host.name" = "{capture:2}" }
 
 [[match]]
 name = "NetBSD"
 pattern = "^NetBSD"
 context = "unknown"
-example = "\n      TmV0QlNEL21lc3NpbWlwcyAoKSAodHR5cDMpCgpsb2dpbjog\n    "
+example = "NetBSD/messimips () (ttyp3)\n\nlogin: "
 metadata = { "os.vendor" = "NetBSD", "os.family" = "NetBSD", "os.product" = "NetBSD", "os.cpe23" = "cpe:/o:netbsd:netbsd:-" }
 
 [[match]]
 name = "SGI IRIX"
 pattern = "^IRIX\\W\\((.*)\\)"
 context = "unknown"
-example = "\n      SVJJWCAoYXJ0ZW1pcy5iaW9sLnVvYS5ncikKCgoKbG9naW46IA==\n    "
+example = "IRIX (artemis.biol.uoa.gr)\n\n\n\nlogin: "
 metadata = { "os.vendor" = "SGI", "os.family" = "IRIX", "os.product" = "IRIX", "os.cpe23" = "cpe:/o:sgi:irix:-", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "a Riverstone router"
-pattern = "(?m)(ES|RS)\\s([^\\s]+) System Software, Version ([^\\s]+).*Riverstone Networks"
+pattern = "(?s)(?m)(ES|RS)\\s([^\\s]+) System Software, Version ([^\\s]+).*Riverstone Networks"
 context = "unknown"
-example = "\n      LS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tL\n      S0tLS0tLQpFUyAxMDE3MCBTeXN0ZW0gU29mdHdhcmUsIFZlcnNpb24gOS4zLjAuNApSaXZlcnN0b25lIE5ldH\n      dvcmtzLCBJbmMuLCBDb3B5cmlnaHQgKGMpIDIwMDAtMjAwMy4gQWxsIHJpZ2h0cyByZXNlcnZlZC4KU3lzdGV\n      tIHN0YXJ0ZWQgb24gMjAxOC0wOS0wNiAxNTo1ODozMAotLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0t\n      LS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS4uLg==\n    "
+example = "----------------------------------------------------------------------\nES 10170 System Software, Version 9.3.0.4\nRiverstone Networks, Inc., Copyright (c) 2000-2003. All rights reserved.\nSystem started on 2018-09-06 15:58:30\n-----------------------------------------------------------------..."
 metadata = { "os.vendor" = "Riverstone", "os.device" = "Router", "os.family" = "{capture:1}", "os.product" = "{capture:2}", "os.version" = "{capture:3}" }
 
 [[match]]
 name = "HP ProCurve Switch"
 pattern = "(?m)^HP ([^\\s]+) ProCurve Switch"
 context = "unknown"
-example = "\n      PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09P\n      T09PT09PT09PT09PT09PT09PT09PT09CkhQIEo0MTIxQSBQcm9DdXJ2ZSBTd2l0Y2ggNDAwME\n      0KRmlybXdhcmUgcmV2aXNpb24gdjIuMi4zCgpDb3B5cmlnaHQgKEMpIDE5OTEtMjAwNCBIZXd\n      sZXR0LVBhY2thcmQgQ28uIEFsbCBSaWdodHMgUmVzZXJ2ZWQuCgogICAgICAgICAgICAgICAg\n      ICAgICAgICBSRVNUUklDVEVEIFJJR0hUUyBMRUdFTkQKCiBVc2UsIGR1cGxpY2F0aW9uLCBvc\n      iBkaXNjbG9zdXJlIGJ5IHRoZSBHb3Zlcm5tZW50IGlzIHN1YmplY3QgdG8gcmVzdHJpY3Rpb2\n      5zCiAKIGFzIHNldCBmb3J0aCBpbiBzdWJkaXZpc2lvbiAoYikgKDMpIChpaSkgb2YgdGhlIFJ\n      pZ2h0cyBpbiBUZWNobmljYWwgRGF0YSBhbmQKIAogQ29tcHV0ZXIgU29mdHdhcmUgY2xhdXNl\n      IGF0IDUyLjIyNy03MDEzLgoKICAgICAgSEVXTEVUVC1QQUNLQVJEIENPTVBBTlksIDMwMDAgS\n      GFub3ZlciBTdC4sIFBhbG8gQWx0bywgQ0EgOTQzMDMKCiAgICAgICAgICAgICAgICAgICAgIC\n      AgIApXZSdkIGxpa2UgdG8ga2VlcCB5b3UgdXAgdG8gZGF0ZSBhYm91dDoKICogU29mdHdhcmU\n      gZmVhdHVyZSB1cGRhdGVzCiAqIE5ldyBwcm9kdWN0IGFubm91bmNlbWVudHMKICogU3BlY2lh\n      bCBldmVudHMKCiAgICAgICAgICAgICAgICAgICAgICAgIApQbGVhc2UgcmVnaXN0ZXIgeW91c\n      iBwcm9kdWN0cyBub3cgYXQ6IHd3dy5Qcm9DdXJ2ZS5jb20KPT09PT09PT09PT09PT09PT09PT\n      09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0\n      9PT09CgoKVXNlcm5hbWU6IA==\n    "
+example = "==============================================================================\nHP J4121A ProCurve Switch 4000M\nFirmware revision v2.2.3\n\nCopyright (C) 1991-2004 Hewlett-Packard Co. All Rights Reserved.\n\n                        RESTRICTED RIGHTS LEGEND\n\n Use, duplication, or disclosure by the Government is subject to restrictions\n \n as set forth in subdivision (b) (3) (ii) of the Rights in Technical Data and\n \n Computer Software clause at 52.227-7013.\n\n      HEWLETT-PACKARD COMPANY, 3000 Hanover St., Palo Alto, CA 94303\n\n                        \nWe'd like to keep you up to date about:\n * Software feature updates\n * New product announcements\n * Special events\n\n                        \nPlease register your products now at: www.ProCurve.com\n==============================================================================\n\n\nUsername: "
 metadata = { "os.vendor" = "HP", "os.family" = "ProCurve", "os.device" = "Switch", "os.product" = "{capture:1}" }
 
 [[match]]
 name = "PowerWare ConnectUPS"
 pattern = "(?m)^.*ConnectUPS"
 context = "unknown"
-example = "\n      Kz09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0\n      9PT09PT09PT09PT09PT0rCnwgICAgICAgICAgICBbIENvbm5lY3RVUFMgV2ViL1NOTVAgQ2FyZCBDb25maW\n      d1cmF0aW9uIFV0aWxpdHkgXSAgICAgICAgICAgICAgfAorPT09PT09PT09PT09PT09PT09PT09PT09PT09P\n      T09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PSsKCkVudGVyIFBhc3N3\n      b3JkOiA=\n    "
+example = "+============================================================================+\n|            [ ConnectUPS Web/SNMP Card Configuration Utility ]              |\n+============================================================================+\n\nEnter Password: "
 metadata = { "os.vendor" = "PowerWare", "os.family" = "ConnectUPS", "os.device" = "UPS", "os.product" = "ConnectUPS" }
 
 [[match]]
 name = "an Imagistics device"
 pattern = "^Imagistics.*im"
 context = "unknown"
-example = "\n      SW1hZ2lzdGljcyBpbTM1MTEvaW00NTExIFZlciAwMS4wMC4yMCBURUxORVQgc2VydmVyLgpDb3B5cmlnaH\n      QoYykgMjAwMS0yMDA1LCBzaWxleCB0ZWNobm9sb2d5LCBJbmMuCmxvZ2luOiA=\n    "
+example = "Imagistics im3511/im4511 Ver 01.00.20 TELNET server.\nCopyright(c) 2001-2005, silex technology, Inc.\nlogin: "
 metadata = { "os.vendor" = "Imagistics", "os.family" = "Imagistics", "os.device" = "Multifunction Device", "os.product" = "im" }
 
 [[match]]
 name = "a Ricoh NRG device"
 pattern = "^NRG Maintenance Shell"
 context = "unknown"
-example = "\n      TlJHIE1haW50ZW5hbmNlIFNoZWxsLiAgIAoKVXNlciBhY2Nlc3MgdmVyaWZpY2F0aW9uLgoKbG9naW46\n    "
+example = "NRG Maintenance Shell.   \n\nUser access verification.\n\nlogin:"
 metadata = { "os.vendor" = "Ricoh", "os.device" = "Printer", "os.product" = "NRG Printer" }
 
 [[match]]
 name = "SHARP AR Series multifunction device"
 pattern = "^SHARP (AR-[^\\\\s]+) Ver ([^\\\\s]+) TELNET server"
 context = "unknown"
-example = "\n      U0hBUlAgQVItTTM1MVUgVmVyIDAxLjAwLjE4IFRFTE5FVCBzZXJ2ZXIuCkNvcHlyaWdodChjKSAyMDAx\n      LTIwMDUsIHNpbGV4IHRlY2hub2xvZ3ksIEluYy4KbG9naW46IA==\n    "
+example = "SHARP AR-M351U Ver 01.00.18 TELNET server.\nCopyright(c) 2001-2005, silex technology, Inc.\nlogin: "
 metadata = { "os.vendor" = "Sharp", "os.family" = "Sharp AR Series", "os.device" = "Multifunction Device", "os.product" = "{capture:1}", "os.version" = "{capture:2}" }
 
 [[match]]
 name = "SHARP MX Series multifunction device"
 pattern = "^SHARP (MX-[^\\\\s]+) Ver ([^\\\\s]+) TELNET server"
 context = "unknown"
-example = "\n      U0hBUlAgTVgtMzYxME4gVmVyIDAxLjA1LjAwLjBvLjE4IFRFTE5FVCBzZXJ2ZXIuCkNvcHlyaWdodC\n      hDKSAyMDA1LSAgICAgU0hBUlAgQ09SUE9SQVRJT04KQ29weXJpZ2h0KEMpIDIwMDUtICAgICBzaWxl\n      eCB0ZWNobm9sb2d5LCBJbmMuCmxvZ2luOiA=\n    "
+example = "SHARP MX-3610N Ver 01.05.00.0o.18 TELNET server.\nCopyright(C) 2005-     SHARP CORPORATION\nCopyright(C) 2005-     silex technology, Inc.\nlogin: "
 metadata = { "os.vendor" = "Sharp", "os.family" = "Sharp MX Series", "os.device" = "Multifunction Device", "os.product" = "{capture:1}", "os.version" = "{capture:2}" }
 
 [[match]]
 name = "System is a Buffalo/MELCO Embedded Print Server"
 pattern = "(?m)^.*Welcome to MELCO Print Server.*Server Name *: *([^ ]*)\\W.*Server Model *: *([^ ]*).*F \\/ W Version *: *([^ ]*).*MAC Address *: *(.. .. .. .. .. ..)"
 context = "unknown"
-example = "\n      KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKipcbiogV2VsY29tZSB0byBNRUxDTyBQc\n      mludCBTZXJ2ZXIgKlxuKiBUZWxuZXQgQ29uc29sZSAqXG4qKioqKioqKioqKioqKioqKioqKioqKi\n      oqKioqKioqKioqKlxuIFxuU2VydmVyIE5hbWU6IFBTLUIwNEU4RVxuU2VydmVyIE1vZGVsOiBMUFY\n      gMiAtIFRYIDFcbkYgLyBXIFZlcnNpb246IDIuMDAgSiBcbk1BQyBBZGRyZXNzOiBBRSAzMiBFQSAy\n      MSBCQiBFM1xuVXB0aW1lOiAwIGRheXMsIDAwOiAwMDogMTJcbiBcblBsZWFzZSBFbnRlciBQYXNzd\n      29yZDoi\n    "
+example = "***********************************\\n* Welcome to MELCO Print Server *\\n* Telnet Console *\\n***********************************\\n \\nServer Name: PS-B04E8E\\nServer Model: LPV 2 - TX 1\\nF / W Version: 2.00 J \\nMAC Address: AE 32 EA 21 BB E3\\nUptime: 0 days, 00: 00: 12\\n \\nPlease Enter Password:\""
 metadata = { "os.vendor" = "Buffalo", "os.family" = "PrintServer", "os.device" = "Print Server", "host.name" = "{capture:1}", "hw.vendor" = "Buffalo", "hw.device" = "Print Server", "hw.model" = "{capture:2}", "os.version" = "{capture:3}", "host.mac" = "{capture:4}" }
 
 [[match]]
 name = "System is IBM AIX v"
 pattern = "(?m)^AIX Version\\W(\\d)"
 context = "unknown"
-example = "\n      QUlYIFZlcnNpb24gNgpDb3B5cmlnaHQgSUJNIENvcnBvcmF0aW9uLCAxOTgyLCAyMDA3Lgpsb2dpbjogCg==\n    "
+example = "AIX Version 6\nCopyright IBM Corporation, 1982, 2007.\nlogin: \n"
 metadata = { "os.vendor" = "IBM", "os.family" = "AIX", "os.product" = "AIX", "os.version" = "{capture:1}", "os.cpe23" = "cpe:/o:ibm:aix:{os.version}" }
 
 [[match]]
 name = "System is Cisco UCS Device"
 pattern = "(?m)^CIMC Debug Firmware Utility Shell\\W([^\\s]+)"
 context = "unknown"
-example = "\n      Q0lNQyBEZWJ1ZyBGaXJtd2FyZSBVdGlsaXR5IFNoZWxsCmZha2UtdWNzLWRldmljZS0zLTEtcCBsb2dpbjogCg==\n    "
+example = "CIMC Debug Firmware Utility Shell\nfake-ucs-device-3-1-p login: \n"
 metadata = { "os.vendor" = "Cisco", "os.family" = "UCS", "os.device" = "Network Management Device", "os.product" = "UCS Device", "host.name" = "{capture:1}" }
 
 [[match]]
 name = "Sytem is HP ProLiant server"
 pattern = "(?m)^HP ProLiant.*v(\\d+.\\d+)"
 context = "unknown"
-example = "\n      SFAgUHJvTGlhbnQgQkwgZS1DbGFzcyBJbnRlZ3JhdGVkIEFkbWluaXN0cmF0b3IgdjIuMDAKICAgICAgI\n      CAgQ29weXJpZ2h0IDIwMDUgSGV3bGV0dC1QYWNrYXJkIERldmVsb3BtZW50IEdyb3VwLCBMLlAuCgogIC\n      AgICAgICAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0\n      tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQogICAgICAgICBXQVJOSU5HOiBUaGlzIGlzIGEgcHJpdmF0ZSBz\n      eXN0ZW0uICBEbyBub3QgYXR0ZW1wdCB0byBsb2dpbiB1bmxlc3MgeW91IGFyZSBhbgogICAgICAgICBhd\n      XRob3JpemVkIHVzZXIuICBBbnkgYXV0aG9yaXplZCBvciB1bmF1dGhvcml6ZWQgYWNjZXNzIGFuZCB1c2\n      UgbWF5IGJlIG1vbmktCiAgICAgICAgIHRvcmVkIGFuZCBjYW4gcmVzdWx0IGluIGNyaW1pbmFsIG9yIGN\n      pdmlsIHByb3NlY3V0aW9uIHVuZGVyIGFwcGxpY2FibGUgbGF3LgogICAgICAgICAtLS0tLS0tLS0tLS0t\n      LS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tL\n      S0tLQoKCiAgICAgICAgIElBLTAwNTA4QkVCQUE1OSBsb2dpbjo=\n    "
+example = "HP ProLiant BL e-Class Integrated Administrator v2.00\n         Copyright 2005 Hewlett-Packard Development Group, L.P.\n\n         -----------------------------------------------------------------------------\n         WARNING: This is a private system.  Do not attempt to login unless you are an\n         authorized user.  Any authorized or unauthorized access and use may be moni-\n         tored and can result in criminal or civil prosecution under applicable law.\n         -----------------------------------------------------------------------------\n\n\n         IA-00508BEBAA59 login:"
 metadata = { "os.vendor" = "HP", "os.family" = "ProLiant", "os.product" = "ProLiant", "os.version" = "{capture:1}" }
 
 [[match]]
 name = "Power Measurement ION Power Meter"
 pattern = "^Power Measurement Ltd. Meter ION ([a-zA-Z0-9]+)"
 context = "unknown"
-example = "\n      UG93ZXIgTWVhc3VyZW1lbnQgTHRkLiBNZXRlciBJT04gNzMzMFYyNzEgRVRIIEVUSDczMzBWMjcyCg1TZ\n      XJpYWwjOiBQQi0wMjA0QTA1OC0xMQoNCg1sb2dpbjo=\n    "
+example = "Power Measurement Ltd. Meter ION 7330V271 ETH ETH7330V272\n\rSerial#: PB-0204A058-11\n\r\n\rlogin:"
 metadata = { "hw.vendor" = "Power Measurement Ltd.", "hw.family" = "ION", "hw.version" = "{capture:1}" }
 
 [[match]]
 name = "Satelitech Power Meter"
 pattern = "^GW25 v([\\d.]+) - Intelligent Power Meters GPRS Gateway\\s+Developed by Satelitech"
 context = "unknown"
-example = "\n      R1cyNSB2MS4yLjEgLSBJbnRlbGxpZ2VudCBQb3dlciBNZXRlcnMgR1BSUyBHYXRld2F5Cg1EZXZlbG9wZ\n      WQgYnkgU2F0ZWxpdGVjaCBTLkEgZm9yIEVTRyBEaWxlYwoNRW50ZXIgcGFzc3dvcmQ6\n    "
+example = "GW25 v1.2.1 - Intelligent Power Meters GPRS Gateway\n\rDeveloped by Satelitech S.A for ESG Dilec\n\rEnter password:"
 metadata = { "hw.vendor" = "Satelitech", "hw.family" = "GW25", "hw.version" = "{capture:1}" }
 
 [[match]]
 name = "DOCSIS Cable Modem Running RDK"
 pattern = "^RDK \\(A Yocto Project based Distro\\) ([^ ]+) (?:Docsis-Gateway|Business)"
 context = "unknown"
-example = "\n      UkRLIChBIFlvY3RvIFByb2plY3QgYmFzZWQgRGlzdHJvKSAyLjAgRG9jc2lzLUdhdGV3YXkNC\n      g0NCg1Eb2NzaXMtR2F0ZXdheSBsb2dpbjo=\n    "
+example = "RDK (A Yocto Project based Distro) 2.0 Docsis-Gateway\r\n\r\r\n\rDocsis-Gateway login:"
 metadata = { "hw.device" = "DOCSIS Cable Modem", "os.vendor" = "Yocto", "os.product" = "RDK", "os.version" = "{capture:1}" }
 
 [[match]]
 name = "a Ricoh device"
 pattern = "^RICOH Maintenance Shell"
 context = "unknown"
-example = "\n      UklDT0ggTWFpbnRlbmFuY2UgU2hlbGwuICAgCg1Vc2VyIGFjY2VzcyB2ZXJpZmljYXRpb24uCg1sb2dpbjo=\n    "
+example = "RICOH Maintenance Shell.   \n\rUser access verification.\n\rlogin:"
 metadata = { "os.vendor" = "Ricoh", "os.device" = "Printer" }
 
 [[match]]
 name = "Liebert UPS"
 pattern = "Precise/RTCS v([\\d\\.]+) Telnet server"
 context = "unknown"
-example = "\n      UHJlY2lzZS9SVENTIHYyLjkwLjAwIFRlbG5ldCBzZXJ2ZXIKCgpTZXJ2aWNlIFBvcnQgTWFuYWdlciBBY3RpdmUKCjxFc2M+IEVuZHMgU2Vzc2lvbgoKroot\n    "
+example = "Precise/RTCS v2.90.00 Telnet server\n\n\nService Port Manager Active\n\n<Esc> Ends Session\n\n\u00ae\u008a-"
 metadata = { "hw.device" = "Power Device", "hw.vendor" = "Liebert", "os.device" = "Power Device", "os.vendor" = "Liebert", "os.version" = "{capture:1}" }
 
 [[match]]
 name = "Keentic KeeneticOS"
 pattern = "^KeeneticOS version ([\\w.-]+), copyright"
 context = "unknown"
-example = "\n      S2VlbmV0aWNPUyB2ZXJzaW9uIDMuMDQuQy42LjAtMCwgY29weXJpZ2h0IChjKSAyMDEwLTIwM\n      jAgS2VlbmV0aWMgTHRkLg0KDQpMb2dpbjoK\n    "
+example = "KeeneticOS version 3.04.C.6.0-0, copyright (c) 2010-2020 Keenetic Ltd.\r\n\r\nLogin:\n"
 metadata = { "hw.device" = "Router", "hw.vendor" = "Keenetic", "os.device" = "Router", "os.vendor" = "Keenetic", "os.product" = "KeeneticOS", "os.version" = "{capture:1}" }
 
 [[match]]
 name = "Generic H3C Technologies banner"
 pattern = "^\\**(?:\\r|\\n)+\\* Copyright \\(c\\) \\d\\d\\d\\d-\\d\\d\\d\\d New H3C Technologies Co., Ltd. All rights reserved.\\*(?:\\r|\\n)+\\* Without the owner's prior written consent,\\s+\\*(?:\\r|\\n)+\\* no decompiling or reverse-engineering shall be allowed.\\s+\\*(?:\\r|\\n)+\\*+(?:\\r|\\n)+login:\\s*$"
 context = "unknown"
-example = "\n      KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqK\n      ioqKioqKioqKioqKioqKioqKioqKioqDQoqIENvcHlyaWdodCAoYykgMjAwNC0yMDE3IE5ldy\n      BIM0MgVGVjaG5vbG9naWVzIENvLiwgTHRkLiBBbGwgcmlnaHRzIHJlc2VydmVkLioNCiogV2l\n      0aG91dCB0aGUgb3duZXIncyBwcmlvciB3cml0dGVuIGNvbnNlbnQsICAgICAgICAgICAgICAg\n      ICAgICAgICAgICAgICAgICAgKg0KKiBubyBkZWNvbXBpbGluZyBvciByZXZlcnNlLWVuZ2luZ\n      WVyaW5nIHNoYWxsIGJlIGFsbG93ZWQuICAgICAgICAgICAgICAgICAgICAqDQoqKioqKioqKi\n      oqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio\n      qKioqKioqKioqKioqKioNCg0KbG9naW46Cg==\n    "
+example = "******************************************************************************\r\n* Copyright (c) 2004-2017 New H3C Technologies Co., Ltd. All rights reserved.*\r\n* Without the owner's prior written consent,                                 *\r\n* no decompiling or reverse-engineering shall be allowed.                    *\r\n******************************************************************************\r\n\r\nlogin:\n"
 metadata = { "hw.vendor" = "H3C", "os.vendor" = "H3C" }
 
 [[match]]
@@ -931,7 +931,7 @@ version_group = 1
 vendor = "SAP"
 product = "NetWeaver Application Server Java"
 context = "unknown"
-example = "\n      KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKiogCiAgICoqKi\n      oqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKiogCiAgICoqKiojIyMq\n      KioqKioqIyMjIyoqKioqIyMjIyMjIyoqKioqKioqKioqKioqIAogICAqKiMjKioqIyMqKioqIy\n      MqKiMjKioqKiMjKioqKiMjKioqKioqKioqKioqIAogICAqKiojIyoqKioqKiojIyoqKiojIyoq\n      KiMjKioqKiMjKioqKioqKioqKiAKICAgKioqKiojIyoqKioqIyMjIyMjIyMqKiojIyMjIyMqKi\n      oqKioqKioqKiAKICAgKioqKioqIyMqKioqIyMqKioqIyMqKiojIyoqKioqKioqKioqKiogCiAg\n      ICoqIyMqKiojIyoqIyMqKioqKiojIyoqIyMqKioqKioqKioqKiogCiAgICoqKiojIyMqKioqIy\n      MqKioqKiojIyoqIyMqKioqKioqKioqIAogICAqKioqKioqKioqKioqKioqKioqKioqKioqKioq\n      KioqKioqIAogICAqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKiAKCiAgIFRlbG5ldC\n      BBZG1pbmlzdHJhdGlvbiAKICAgU0FQIEoyRUUgRW5naW5lIHY3LjAwCgoKCkxvZ2luOgo=\n    "
+example = "*********************************************** \n   ********************************************** \n   ****###*******####*****#######************** \n   **##***##****##**##****##****##************ \n   ***##*******##****##***##****##********** \n   *****##*****########***######*********** \n   ******##****##****##***##************* \n   **##***##**##******##**##************ \n   ****###****##******##**##********** \n   ********************************** \n   ******************************** \n\n   Telnet Administration \n   SAP J2EE Engine v7.00\n\n\n\nLogin:\n"
 metadata = { "service.family" = "NetWeaver", "service.cpe23" = "cpe:/a:sap:netweaver_application_server_java:{service.version}", "service.component.vendor" = "SAP", "service.component.product" = "NetWeaver Application Server", "service.component.cpe23" = "cpe:/a:sap:netweaver_application_server:-" }
 
 [[match]]
@@ -941,14 +941,14 @@ version_group = 1
 vendor = "SAP"
 product = "NetWeaver Application Server Java"
 context = "unknown"
-example = "\n      KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKiogCiAgICoqKi\n      oqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKiogCiAgICoqKiojIyMq\n      KioqKioqIyMjIyoqKioqIyMjIyMjIyoqKioqKioqKioqKioqIAogICAqKiMjKioqIyMqKioqIy\n      MqKiMjKioqKiMjKioqKiMjKioqKioqKioqKioqIAogICAqKiojIyoqKioqKiojIyoqKiojIyoq\n      KiMjKioqKiMjKioqKioqKioqKiAKICAgKioqKiojIyoqKioqIyMjIyMjIyMqKiojIyMjIyMqKi\n      oqKioqKioqKiAKICAgKioqKioqIyMqKioqIyMqKioqIyMqKiojIyoqKioqKioqKioqKiogCiAg\n      ICoqIyMqKiojIyoqIyMqKioqKiojIyoqIyMqKioqKioqKioqKiogCiAgICoqKiojIyMqKioqIy\n      MqKioqKiojIyoqIyMqKioqKioqKioqIAogICAqKioqKioqKioqKioqKioqKioqKioqKioqKioq\n      KioqKioqIAogICAqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKiAKCiAgIFRlbG5ldC\n      BBZG1pbmlzdHJhdGlvbiAKICAgU0FQIEphdmEgRUUgQXBwbGljYXRpb24gU2VydmVyIHY3LjUw\n      CgoKVXNlciBuYW1lOgo=\n    "
+example = "*********************************************** \n   ********************************************** \n   ****###*******####*****#######************** \n   **##***##****##**##****##****##************ \n   ***##*******##****##***##****##********** \n   *****##*****########***######*********** \n   ******##****##****##***##************* \n   **##***##**##******##**##************ \n   ****###****##******##**##********** \n   ********************************** \n   ******************************** \n\n   Telnet Administration \n   SAP Java EE Application Server v7.50\n\n\nUser name:\n"
 metadata = { "service.family" = "NetWeaver", "service.cpe23" = "cpe:/a:sap:netweaver_application_server_java:{service.version}", "service.component.vendor" = "SAP", "service.component.product" = "NetWeaver Application Server", "service.component.cpe23" = "cpe:/a:sap:netweaver_application_server:-" }
 
 [[match]]
 name = "ACT Security IP Cameras"
 pattern = "^(?:\\r|\\n|\\s){0,256}UDP/TCP/IP Stack: ACT Video security"
 context = "unknown"
-example = "\n      VURQL1RDUC9JUCBTdGFjazogQUNUIFZpZGVvIHNlY3VyaXR5DQpWNS44DQpX\n      ZWxjb21lIGNvbm5lY3Rpb24gOiAxOTIuMTY4LjAuMTo2MTMwMA0KDQpQYXNz\n      d29yZDog\n    "
+example = "UDP/TCP/IP Stack: ACT Video security\r\nV5.8\r\nWelcome connection : 192.0.2.1:61300\r\n\r\nPassword: "
 metadata = { "hw.vendor" = "ACT Security", "hw.device" = "IP Camera" }
 
 [[match]]
@@ -1018,14 +1018,14 @@ metadata = { "hw.vendor" = "MRV Communications", "hw.device" = "Device Server", 
 name = "Lantronix device server - w/o Serial"
 pattern = "(?m)\\*\\*\\* Lantronix ([\\S]+) Device Server \\*\\*\\*(?:\\r|\\n)+MAC address ([a-fA-F0-9]{12})(?:\\r|\\n)+Software version V(\\S+)"
 context = "unknown"
-example = "\n      KioqIExhbnRyb25peCBVRFMxMTAwLUlBUCBEZXZpY2UgU2VydmVyICoqKgpN\n      QUMgYWRkcmVzcyAwMDgwQTNCRDAwMDAKClNvZnR3YXJlIHZlcnNpb24gVjYu\n      MTEuMC4wICgxNTA1MTQpIFVEUzExMDAKCgpQcmVzcyBFbnRlciBmb3IgU2V0\n      dXAgTW9kZQo=\n    "
+example = "*** Lantronix UDS1100-IAP Device Server ***\nMAC address 0080A3BD0000\n\nSoftware version V6.11.0.0 (150514) UDS1100\n\n\nPress Enter for Setup Mode\n"
 metadata = { "hw.vendor" = "Lantronix", "hw.device" = "Device Server", "hw.product" = "{capture:1}", "host.mac" = "{capture:2}", "hw.version" = "{capture:3}" }
 
 [[match]]
 name = "Lantronix device server - w/ Serial"
 pattern = "(?m)\\*\\*\\* Lantronix Universal Device Server \\*\\*\\*(?:\\r|\\n)+Serial Number (\\d+)\\s+MAC address ([a-fA-F0-9:]{17})(?:\\r|\\n)+Software version (\\S+)"
 context = "unknown"
-example = "\n      KioqIExhbnRyb25peCBVbml2ZXJzYWwgRGV2aWNlIFNlcnZlciAqKioKU2Vy\n      aWFsIE51bWJlciA2NDUxMDAwICBNQUMgYWRkcmVzcyAwMDoyMDo0QTo2NDow\n      MDowMAoKU29mdHdhcmUgdmVyc2lvbiAwNC41ICgwMTEwMjUpCgpQcmVzcyBF\n      bnRlciB0byBnbyBpbnRvIFNldHVwIE1vZGUK\n    "
+example = "*** Lantronix Universal Device Server ***\nSerial Number 6451000  MAC address 00:20:4A:64:00:00\n\nSoftware version 04.5 (011025)\n\nPress Enter to go into Setup Mode\n"
 metadata = { "hw.vendor" = "Lantronix", "hw.device" = "Device Server", "hw.product" = "UDS", "lantronix.serial_number" = "{capture:1}", "hw.serial_number" = "{capture:1}", "host.mac" = "{capture:2}", "hw.version" = "{capture:3}" }
 
 [[match]]
@@ -1039,7 +1039,7 @@ metadata = { "os.vendor" = "Eltex", "os.product" = "{hw.product} Firmware", "os.
 name = "Eltex SMG model VoIP gateway - banner with model number"
 pattern = "(?m)^\\**(?:\\r|\\n)*\\**\\s*Welcome to (SMG-?\\d+[A-Z]?)\\s*\\**(?:\\r|\\n)*\\**(?:\\r|\\n)+(\\S+) login:\\s*$"
 context = "unknown"
-example = "\n      DQ0KDQoNKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioNCg0qI\n      CAgICAgICAgICAgV2VsY29tZSB0byBTTUcxMDE2TSAgICAgICAgICAgKg0KDSoqKioqKioqKi\n      oqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqDQoNDQoNZm9vLmJhci5iYXogbG9\n      naW46IA==\n    "
+example = "\r\r\n\r\n\r********************************************\r\n\r*            Welcome to SMG1016M           *\r\n\r********************************************\r\n\r\r\n\rfoo.bar.baz login: "
 metadata = { "os.vendor" = "Eltex", "os.product" = "{hw.product} Firmware", "os.device" = "VoIP Gateway", "hw.vendor" = "Eltex", "hw.product" = "{capture:1}", "hw.device" = "VoIP Gateway", "host.name" = "{capture:2}" }
 
 [[match]]
@@ -1060,6 +1060,6 @@ metadata = { "hw.device" = "Device", "os.product" = "Fermentrack" }
 name = "Baxter SIGMA Spectrum Infusion System with Wireless Battery Module"
 pattern = "(?m)^Welcome to the SIGMA Spectrum Diagnostic Terminal(?:\\r|\\n)*Wireless Battery Module \\(802\\.11[abgn\\/]+\\)(?:\\r|\\n)*MAC Address: ((?:[0-9a-f]{2}-?){6}) SW: \\d+[\\sD]*\\d+\\s*(?:\\r|\\n)*Sigma Spectrum SN: (\\d+) SW: v([\\d.]+)(?:\\r|\\n)*Radio up since: [\\w\\s:]+(?:\\r|\\n)*login:\\s*$"
 context = "unknown"
-example = "\n      V2VsY29tZSB0byB0aGUgU0lHTUEgU3BlY3RydW0gRGlhZ25vc3RpYyBUZXJtaW5hbA0KDQpXa\n      XJlbGVzcyBCYXR0ZXJ5IE1vZHVsZSAoODAyLjExYS9iL2cvbikNCk1BQyBBZGRyZXNzOiAwMC\n      00MC05ZC0xMi0zNC01NiBTVzogMjAgRDI5DQpTaWdtYSBTcGVjdHJ1bSBTTjogMTIzNDU2NyB\n      TVzogdjguMDAuMDENClJhZGlvIHVwIHNpbmNlOiBGcmkgTWFyICAxIDAzOjE0OjI0IDIwMTkN\n      Cg0KbG9naW46IA==\n    "
+example = "Welcome to the SIGMA Spectrum Diagnostic Terminal\r\n\r\nWireless Battery Module (802.11a/b/g/n)\r\nMAC Address: 00-40-9d-12-34-56 SW: 20 D29\r\nSigma Spectrum SN: 1234567 SW: v8.00.01\r\nRadio up since: Fri Mar  1 03:14:24 2019\r\n\r\nlogin: "
 metadata = { "os.vendor" = "Baxter", "os.product" = "SIGMA Spectrum Infusion System Firmware", "os.device" = "Medical", "os.version" = "{capture:3}", "os.cpe23" = "cpe:/o:baxter:sigma_spectrum_infusion_system_firmware:{os.version}", "hw.vendor" = "Baxter", "hw.product" = "SIGMA Spectrum Infusion System", "hw.device" = "Medical", "hw.serial_number" = "{capture:2}", "hw.cpe23" = "cpe:/h:baxter:sigma_spectrum_infusion_system:-", "host.mac" = "{capture:1}" }
 

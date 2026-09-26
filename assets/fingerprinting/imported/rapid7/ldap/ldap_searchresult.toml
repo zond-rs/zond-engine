@@ -14,7 +14,7 @@ pattern = "(?m:vendorName1.\\x04.Samba.*domainControllerFunctionality1.{1,5}\\x0
 vendor = "Samba"
 product = "Active Directory Controller"
 context = "ldap.search_result"
-example = "\n      dmVuZG9yTmFtZTEfBB1TYW1iYSBUZWFtIChodHRwOi8vc2FtYmEub3JnKS5kYXRhLnJlbW92Z\n      WQuBB1kb21haW5Db250cm9sbGVyRnVuY3Rpb25hbGl0eTEDBAE0MB4=\n    "
+example = "vendorName1\u001f\u0004\u001dSamba Team (http://samba.org).data.removed.\u0004\u001ddomainControllerFunctionality1\u0003\u0004\u000140\u001e"
 
 [[match]]
 name = "Samba Active Directory Controller emulating Windows 2000"
@@ -22,7 +22,7 @@ pattern = "(?m:vendorName1.\\x04.Samba.*domainFunctionality1.\\x04\\x0100.\\x04\
 vendor = "Samba"
 product = "Active Directory Controller"
 context = "ldap.search_result"
-example = "\n      dmVuZG9yTmFtZTEfBB1TYW1iYSBUZWFtIChodHRwOi8vc2FtYmEub3JnKS5kYXRhLnJlbW92Z\n      WQuZG9tYWluRnVuY3Rpb25hbGl0eTEDBAEwMBoEE2ZvcmVzdEZ1bmN0aW9uYWxpdHkxAwQBMD\n      AeBBQ=\n    "
+example = "vendorName1\u001f\u0004\u001dSamba Team (http://samba.org).data.removed.domainFunctionality1\u0003\u0004\u000100\u001a\u0004\u0013forestFunctionality1\u0003\u0004\u000100\u001e\u0004\u0014"
 
 [[match]]
 name = "Active Directory Controller on Windows Server 2016"
@@ -30,7 +30,7 @@ pattern = "(?im:1.2.840.113556.1.4.800.*domainControllerFunctionality1.{1,5}\\x0
 vendor = "Microsoft"
 product = "Active Directory Controller"
 context = "ldap.search_result"
-example = "\n      dGllczGEAAAAlQQWMS4yLjg0MC4xMTM1NTYuMS40LjgwMAQuZGF0YS5yZW1vdmVkLjCEAAAAK\n      AQdZG9tYWluQ29udHJvbGxlckZ1bmN0aW9uYWxpdHkxhAAAAAMEATc=\n    "
+example = "ties1\u0084\u0000\u0000\u0000\u0095\u0004\u00161.2.840.113556.1.4.800\u0004.data.removed.0\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u00017"
 metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory:-", "service.extrainfo" = "functional level 7: Windows Server 2016, 2019 or 2022", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server" }
 
 [[match]]
@@ -39,14 +39,14 @@ pattern = "(?im:1.2.840.113556.1.4.1851.*domainControllerFunctionality1.{1,5}\\x
 vendor = "Microsoft"
 product = "Lightweight Directory Server"
 context = "ldap.search_result"
-example = "\n      aWVzMYQAAACvBBcxLjIuODQwLjExMzU1Ni4xLjQuMTg1MQQuZGF0YS5yZW1vdmVkLjCEAAAAK\n      AQdZG9tYWluQ29udHJvbGxlckZ1bmN0aW9uYWxpdHkxhAAAAAMEATc=\n    "
+example = "ies1\u0084\u0000\u0000\u0000\u00af\u0004\u00171.2.840.113556.1.4.1851\u0004.data.removed.0\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u00017"
 metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory_lightweight_directory_service:-", "service.extrainfo" = "functional level 7: Windows Server 2016, 2019 or 2022", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server" }
 
 [[match]]
 name = "Windows Server Server 2016"
 pattern = "(?im:domainControllerFunctionality1.{1,5}\\x04\\x017)"
 context = "ldap.search_result"
-example = "\n      MIQAAAAoBB1kb21haW5Db250cm9sbGVyRnVuY3Rpb25hbGl0eTGEAAAAAwQBNw==\n    "
+example = "0\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u00017"
 metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server" }
 
 [[match]]
@@ -55,7 +55,7 @@ pattern = "(?im:1.2.840.113556.1.4.800.*domainControllerFunctionality1.{1,5}\\x0
 vendor = "Microsoft"
 product = "Active Directory Controller"
 context = "ldap.search_result"
-example = "\n      ZXMxhAAAAJUEFjEuMi44NDAuMTEzNTU2LjEuNC44MDAELmRhdGEucmVtb3ZlZC6EAAAAKAQdZ\n      G9tYWluQ29udHJvbGxlckZ1bmN0aW9uYWxpdHkxhAAAAAMEATYw\n    "
+example = "es1\u0084\u0000\u0000\u0000\u0095\u0004\u00161.2.840.113556.1.4.800\u0004.data.removed.\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u000160"
 metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2012 R2", "os.cpe23" = "cpe:/o:microsoft:windows_server_2012:-" }
 
 [[match]]
@@ -64,14 +64,14 @@ pattern = "(?im:1.2.840.113556.1.4.1851.*domainControllerFunctionality1.{1,5}\\x
 vendor = "Microsoft"
 product = "Lightweight Directory Server"
 context = "ldap.search_result"
-example = "\n      aWVzMYQAAACvBBcxLjIuODQwLjExMzU1Ni4xLjQuMTg1MQQuZGF0YS5yZW1vdmVkLoQAAAAoB\n      B1kb21haW5Db250cm9sbGVyRnVuY3Rpb25hbGl0eTGEAAAAAwQBNjA=\n    "
+example = "ies1\u0084\u0000\u0000\u0000\u00af\u0004\u00171.2.840.113556.1.4.1851\u0004.data.removed.\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u000160"
 metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory_lightweight_directory_service:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2012 R2", "os.cpe23" = "cpe:/o:microsoft:windows_server_2012:-" }
 
 [[match]]
 name = "Windows Server Server 2012 R2"
 pattern = "(?im:domainControllerFunctionality1.{1,5}\\x04\\x016)"
 context = "ldap.search_result"
-example = "\n      MIQAAAAoBB1kb21haW5Db250cm9sbGVyRnVuY3Rpb25hbGl0eTGEAAAAAwQBNjA=\n    "
+example = "0\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u000160"
 metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2012 R2", "os.cpe23" = "cpe:/o:microsoft:windows_server_2012:-" }
 
 [[match]]
@@ -80,7 +80,7 @@ pattern = "(?im:1.2.840.113556.1.4.800.*domainControllerFunctionality1.{1,5}\\x0
 vendor = "Microsoft"
 product = "Active Directory Controller"
 context = "ldap.search_result"
-example = "\n      aWVzMYQAAACVBBYxLjIuODQwLjExMzU1Ni4xLjQuODAwBC5kYXRhLnJlbW92ZWQwhAAAACgEH\n      WRvbWFpbkNvbnRyb2xsZXJGdW5jdGlvbmFsaXR5MYQAAAADBAE1MA==\n    "
+example = "ies1\u0084\u0000\u0000\u0000\u0095\u0004\u00161.2.840.113556.1.4.800\u0004.data.removed0\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u000150"
 metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2012", "os.cpe23" = "cpe:/o:microsoft:windows_server_2012:-" }
 
 [[match]]
@@ -89,14 +89,14 @@ pattern = "(?im:1.2.840.113556.1.4.1851.*domainControllerFunctionality1.{1,5}\\x
 vendor = "Microsoft"
 product = "Lightweight Directory Server"
 context = "ldap.search_result"
-example = "\n      ZXMxhAAAAK8EFzEuMi44NDAuMTEzNTU2LjEuNC4xODUxBC5kYXRhLnJlbW92ZWQuMIQAAAAoB\n      B1kb21haW5Db250cm9sbGVyRnVuY3Rpb25hbGl0eTGEAAAAAwQBNTA=\n    "
+example = "es1\u0084\u0000\u0000\u0000\u00af\u0004\u00171.2.840.113556.1.4.1851\u0004.data.removed.0\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u000150"
 metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory_lightweight_directory_service:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2012", "os.cpe23" = "cpe:/o:microsoft:windows_server_2012:-" }
 
 [[match]]
 name = "Windows Server Server 2012"
 pattern = "(?im:domainControllerFunctionality1.{1,5}\\x04\\x015)"
 context = "ldap.search_result"
-example = "\n      MIQAAAAoBB1kb21haW5Db250cm9sbGVyRnVuY3Rpb25hbGl0eTGEAAAAAwQBNTA=\n    "
+example = "0\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u000150"
 metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2012", "os.cpe23" = "cpe:/o:microsoft:windows_server_2012:-" }
 
 [[match]]
@@ -105,7 +105,7 @@ pattern = "(?im:1.2.840.113556.1.4.800.*domainControllerFunctionality1.{1,5}\\x0
 vendor = "Microsoft"
 product = "Active Directory Controller"
 context = "ldap.search_result"
-example = "\n      aWVzMYQAAACVBBYxLjIuODQwLjExMzU1Ni4xLjQuODAwBC5kYXRhLnJlbW92ZWQuMIQAAAAoB\n      B1kb21haW5Db250cm9sbGVyRnVuY3Rpb25hbGl0eTGEAAAAAwQBNDA=\n    "
+example = "ies1\u0084\u0000\u0000\u0000\u0095\u0004\u00161.2.840.113556.1.4.800\u0004.data.removed.0\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u000140"
 metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2008 R2", "os.cpe23" = "cpe:/o:microsoft:windows_server_2008:-" }
 
 [[match]]
@@ -114,14 +114,14 @@ pattern = "(?im:1.2.840.113556.1.4.1851.*domainControllerFunctionality1.{1,5}\\x
 vendor = "Microsoft"
 product = "Lightweight Directory Server"
 context = "ldap.search_result"
-example = "\n      aWVzMYQAAACvBBcxLjIuODQwLjExMzU1Ni4xLjQuMTg1MQQuZGF0YS5yZW1vdmVkLoQAAAAoB\n      B1kb21haW5Db250cm9sbGVyRnVuY3Rpb25hbGl0eTGEAAAAAwQBNDA=\n    "
+example = "ies1\u0084\u0000\u0000\u0000\u00af\u0004\u00171.2.840.113556.1.4.1851\u0004.data.removed.\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u000140"
 metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory_lightweight_directory_service:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2008 R2", "os.cpe23" = "cpe:/o:microsoft:windows_server_2008:-" }
 
 [[match]]
 name = "Windows Server Server 2008 R2"
 pattern = "(?im:domainControllerFunctionality1.{1,5}\\x04\\x014)"
 context = "ldap.search_result"
-example = "\n      MIQAAAAoBB1kb21haW5Db250cm9sbGVyRnVuY3Rpb25hbGl0eTGEAAAAAwQBNDA=\n    "
+example = "0\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u000140"
 metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2008 R2", "os.cpe23" = "cpe:/o:microsoft:windows_server_2008:-" }
 
 [[match]]
@@ -130,7 +130,7 @@ pattern = "(?im:1.2.840.113556.1.4.800.*domainControllerFunctionality1.{1,5}\\x0
 vendor = "Microsoft"
 product = "Active Directory Controller"
 context = "ldap.search_result"
-example = "\n      aWVzMYQAAACVBBYxLjIuODQwLjExMzU1Ni4xLjQuODAwBC5kYXRhLnJlbW92ZWQuMIQAAAAoB\n      B1kb21haW5Db250cm9sbGVyRnVuY3Rpb25hbGl0eTGEAAAAAwQBMzA=\n    "
+example = "ies1\u0084\u0000\u0000\u0000\u0095\u0004\u00161.2.840.113556.1.4.800\u0004.data.removed.0\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u000130"
 metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2008", "os.cpe23" = "cpe:/o:microsoft:windows_server_2008:-" }
 
 [[match]]
@@ -139,14 +139,14 @@ pattern = "(?im:1.2.840.113556.1.4.1851.*domainControllerFunctionality1.{1,5}\\x
 vendor = "Microsoft"
 product = "Lightweight Directory Server"
 context = "ldap.search_result"
-example = "\n      aWVzMYQAAACvBBcxLjIuODQwLjExMzU1Ni4xLjQuMTg1MQQuZGF0YS5yZW1vdmVkLjCEAAAAK\n      AQdZG9tYWluQ29udHJvbGxlckZ1bmN0aW9uYWxpdHkxhAAAAAMEATMw\n    "
+example = "ies1\u0084\u0000\u0000\u0000\u00af\u0004\u00171.2.840.113556.1.4.1851\u0004.data.removed.0\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u000130"
 metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory_lightweight_directory_service:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2008", "os.cpe23" = "cpe:/o:microsoft:windows_server_2008:-" }
 
 [[match]]
 name = "Windows Server Server 2008"
 pattern = "(?im:domainControllerFunctionality1.{1,5}\\x04\\x013)"
 context = "ldap.search_result"
-example = "\n      MIQAAAAoBB1kb21haW5Db250cm9sbGVyRnVuY3Rpb25hbGl0eTGEAAAAAwQBMzA=\n    "
+example = "0\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u000130"
 metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2008", "os.cpe23" = "cpe:/o:microsoft:windows_server_2008:-" }
 
 [[match]]
@@ -155,7 +155,7 @@ pattern = "(?im:1.2.840.113556.1.4.800.*domainControllerFunctionality1.{1,5}\\x0
 vendor = "Microsoft"
 product = "Active Directory Controller"
 context = "ldap.search_result"
-example = "\n      aWVzMYQAAACVBBYxLjIuODQwLjExMzU1Ni4xLjQuODAwBC5kYXRhLnJlbW92ZWQuMIQAAAAoB\n      B1kb21haW5Db250cm9sbGVyRnVuY3Rpb25hbGl0eTGEAAAAAwQBMjA=\n    "
+example = "ies1\u0084\u0000\u0000\u0000\u0095\u0004\u00161.2.840.113556.1.4.800\u0004.data.removed.0\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u000120"
 metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2003", "os.cpe23" = "cpe:/o:microsoft:windows_server_2003:-" }
 
 [[match]]
@@ -164,14 +164,14 @@ pattern = "(?im:1.2.840.113556.1.4.1851.*domainControllerFunctionality1.{1,5}\\x
 vendor = "Microsoft"
 product = "Lightweight Directory Server"
 context = "ldap.search_result"
-example = "\n      aWVzMYQAAACvBBcxLjIuODQwLjExMzU1Ni4xLjQuMTg1MQQuZGF0YS5yZW1vdmVkLjCEAAAAK\n      AQdZG9tYWluQ29udHJvbGxlckZ1bmN0aW9uYWxpdHkxhAAAAAMEATIw\n    "
+example = "ies1\u0084\u0000\u0000\u0000\u00af\u0004\u00171.2.840.113556.1.4.1851\u0004.data.removed.0\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u000120"
 metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory_lightweight_directory_service:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2003", "os.cpe23" = "cpe:/o:microsoft:windows_server_2003:-" }
 
 [[match]]
 name = "Windows Server Server 2003"
 pattern = "(?im:domainControllerFunctionality1.{1,5}\\x04\\x012)"
 context = "ldap.search_result"
-example = "\n      MIQAAAAoBB1kb21haW5Db250cm9sbGVyRnVuY3Rpb25hbGl0eTGEAAAAAwQBMjA=\n    "
+example = "0\u0084\u0000\u0000\u0000(\u0004\u001ddomainControllerFunctionality1\u0084\u0000\u0000\u0000\u0003\u0004\u000120"
 metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2003", "os.cpe23" = "cpe:/o:microsoft:windows_server_2003:-" }
 
 [[match]]
@@ -180,7 +180,7 @@ pattern = "(?im:supportedCapabilities1.{1,5}\\x04\\x161.2.840.113556.1.4.800\\x0
 vendor = "Microsoft"
 product = "Active Directory Controller"
 context = "ldap.search_result"
-example = "\n      c3VwcG9ydGVkQ2FwYWJpbGl0aWVzMTEEFjEuMi44NDAuMTEzNTU2LjEuNC44MDAEFzEuMi44N\n      DAuMTEzNTU2LjEuNC4xNzkxMEQEEHN1cHBvcnRlZENvbnRyb2x8\n    "
+example = "supportedCapabilities11\u0004\u00161.2.840.113556.1.4.800\u0004\u00171.2.840.113556.1.4.17910D\u0004\u0010supportedControl|"
 metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2000", "os.version" = "Windows Server 2000 SP3", "os.cpe23" = "cpe:/o:microsoft:windows_2000:Windows Server 2000 SP3" }
 
 [[match]]
@@ -189,7 +189,7 @@ pattern = "(?im:supportedCapabilities1.{1,5}\\x04\\x161.2.840.113556.1.4.8000.{1
 vendor = "Microsoft"
 product = "Active Directory Controller"
 context = "ldap.search_result"
-example = "\n      c3VwcG9ydGVkQ2FwYWJpbGl0aWVzMYQAAAAYBBYxLjIuODQwLjExMzU1Ni4xLjQuODAwMIQAA\n      AAcBA5pc1N5bmNocm9uaXplZDE=\n    "
+example = "supportedCapabilities1\u0084\u0000\u0000\u0000\u0018\u0004\u00161.2.840.113556.1.4.8000\u0084\u0000\u0000\u0000\u001c\u0004\u000eisSynchronized1"
 metadata = { "service.cpe23" = "cpe:/a:microsoft:active_directory:-", "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2000", "os.cpe23" = "cpe:/o:microsoft:windows_2000:-" }
 
 [[match]]
@@ -198,7 +198,7 @@ pattern = "(?im:\\x04..penLDAProotDSE)"
 vendor = "OpenLDAP"
 product = "OpenLDAP"
 context = "ldap.search_result"
-example = "\n      dm9iamVjdENsYXNzMRYEA3RvcAQPT3BlbkxEQVByb290RFNFMA==\n    "
+example = "vobjectClass1\u0016\u0004\u0003top\u0004\u000fOpenLDAProotDSE0"
 metadata = { "service.cpe23" = "cpe:/a:openldap:openldap:-" }
 
 [[match]]
@@ -207,7 +207,7 @@ pattern = "(?i:namingcontexts1.\\x04.fn=ContactRoot0.[\\x02\\x04])"
 vendor = "Kerio"
 product = "Connect"
 context = "ldap.search_result"
-example = "\n      bmFtaW5nQ29udGV4dHMxEAQOZm49Q29udGFjdFJvb3QwKAQUZGVmYXVsdE5hbWluZ0NvbnRle\n      HQx\n    "
+example = "namingContexts1\u0010\u0004\u000efn=ContactRoot0(\u0004\u0014defaultNamingContext1"
 metadata = { "service.cpe23" = "cpe:/a:kerio:connect:-" }
 
 [[match]]
@@ -217,7 +217,7 @@ version_group = 1
 vendor = "VMware"
 product = "Platform Services Controller"
 context = "ldap.search_result"
-example = "\n      dm13UGxhdGZvcm1TZXJ2aWNlc0NvbnRyb2xsZXJWZXJzaW9uMQcEBTYuMC4wMCc=\n    "
+example = "vmwPlatformServicesControllerVersion1\u0007\u0004\u00056.0.00'"
 
 [[match]]
 name = "Fedora Project 389 Directory Server - Old Fedora branding"
@@ -226,7 +226,7 @@ version_group = 1
 vendor = "Fedora Project"
 product = "389 Directory Server"
 context = "ldap.search_result"
-example = "\n      dmVuZG9yTmFtZTEQBA5GZWRvcmEgUHJvamVjdDA3BA12ZW5kb3JWZXJzaW9uMSYEJEZlZG9yY\n      S1EaXJlY3RvcnkvMS4wLjQgQjIwMDYuMzEyLjU0NTA=\n    "
+example = "vendorName1\u0010\u0004\u000eFedora Project07\u0004\rvendorVersion1&\u0004$Fedora-Directory/1.0.4 B2006.312.5450"
 metadata = { "service.cpe23" = "cpe:/a:fedoraproject:389_directory_server:{service.version}" }
 
 [[match]]
@@ -236,7 +236,7 @@ version_group = 1
 vendor = "Fedora Project"
 product = "389 Directory Server"
 context = "ldap.search_result"
-example = "\n      dmVuZG9yTmFtZTENBAszODkgUHJvamVjdDA5BA12ZW5kb3JWZXJzaW9uMSgEJjM4OS1EaXJlY\n      3RvcnkvMS4yLjExLjI1IEIyMDEzLjMyNS4xOTUxMA==\n    "
+example = "vendorName1\r\u0004\u000b389 Project09\u0004\rvendorVersion1(\u0004&389-Directory/1.2.11.25 B2013.325.19510"
 metadata = { "service.cpe23" = "cpe:/a:fedoraproject:389_directory_server:{service.version}" }
 
 [[match]]
@@ -246,7 +246,7 @@ version_group = 1
 vendor = "CentOS"
 product = "CentOS Directory Server"
 context = "ldap.search_result"
-example = "\n      dmVuZG9yTmFtZTEIBAZDZW50T1MwOAQNdmVuZG9yVmVyc2lvbjEnBCVDZW50T1MtRGlyZWN0b\n      3J5LzguMi44IEIyMDEyLjA0MS4xMjI3MC8ECw==\n    "
+example = "vendorName1\u0008\u0004\u0006CentOS08\u0004\rvendorVersion1'\u0004%CentOS-Directory/8.2.8 B2012.041.12270/\u0004\u000b"
 
 [[match]]
 name = "Red Hat Red Hat Directory Server"
@@ -255,7 +255,7 @@ version_group = 1
 vendor = "Red Hat"
 product = "Red Hat Directory Server"
 context = "ldap.search_result"
-example = "\n      dmVuZG9yTmFtZTEJBAdSZWQgSGF0MDgEDXZlbmRvclZlcnNpb24xJwQlUmVkIEhhdC1EaXJlY\n      3RvcnkvOC4yLjAgQjIwMTAuMjEwLjA1OTAgBAs=\n    "
+example = "vendorName1\t\u0004\u0007Red Hat08\u0004\rvendorVersion1'\u0004%Red Hat-Directory/8.2.0 B2010.210.0590 \u0004\u000b"
 metadata = { "service.cpe23" = "cpe:/a:redhat:directory_server:{service.version}" }
 
 [[match]]
@@ -265,7 +265,7 @@ version_group = 1
 vendor = "Netscape"
 product = "Directory Server"
 context = "ldap.search_result"
-example = "\n      dmVuZG9yTmFtZTEfBB1OZXRzY2FwZSBDb21tdW5pY2F0aW9ucyBDb3JwLjA5BA12ZW5kb3JWZ\n      XJzaW9uMSgEJk5ldHNjYXBlLURpcmVjdG9yeS82LjExIEIyMDAyLjI4MS4wODUzMC8ECw==\n    "
+example = "vendorName1\u001f\u0004\u001dNetscape Communications Corp.09\u0004\rvendorVersion1(\u0004&Netscape-Directory/6.11 B2002.281.08530/\u0004\u000b"
 metadata = { "service.cpe23" = "cpe:/a:netscape:directory_server:{service.version}" }
 
 [[match]]
@@ -275,7 +275,7 @@ version_group = 1
 vendor = "IBM"
 product = "Domino LDAP Server"
 context = "ldap.search_result"
-example = "\n      SUJNIExvdHVzIFNvZnR3YXJlMCAEDXZlbmRvcnZlcnNpb24xDwQNUmVsZWFzZSA4LjUuMzAeB\n      BNkb21pbm9tYWptaW52ZXJzaW9uMQcE\n    "
+example = "IBM Lotus Software0 \u0004\rvendorversion1\u000f\u0004\rRelease 8.5.30\u001e\u0004\u0013dominomajminversion1\u0007\u0004"
 
 [[match]]
 name = "IBM (Lotus) Domino LDAP Server"
@@ -284,7 +284,7 @@ version_group = 1
 vendor = "IBM"
 product = "Domino LDAP Server"
 context = "ldap.search_result"
-example = "\n      dmVuZG9ybmFtZTEUBBJJQk0gTG90dXMgU29mdHdhcmUwKQQNdmVuZG9ydmVyc2lvbjEYBBZSZ\n      WxlYXNlIDkuMC4xRlA0IEhGNTIzMAwC\n    "
+example = "vendorname1\u0014\u0004\u0012IBM Lotus Software0)\u0004\rvendorversion1\u0018\u0004\u0016Release 9.0.1FP4 HF5230\u000c\u0002"
 
 [[match]]
 name = "IBM (Lotus) Domino LDAP Server - build variant"
@@ -293,7 +293,7 @@ version_group = 1
 vendor = "IBM"
 product = "Domino LDAP Server"
 context = "ldap.search_result"
-example = "\n      SUJNIExvdHVzIFNvZnR3YXJlMCYEDXZlbmRvcnZlcnNpb24xFQQTQnVpbGQgVjkwMl8xMjMwM\n      jAxMzAeBBNkb21pbm9tYWptaW52ZXJzaW9uMQcE\n    "
+example = "IBM Lotus Software0&\u0004\rvendorversion1\u0015\u0004\u0013Build V902_123020130\u001e\u0004\u0013dominomajminversion1\u0007\u0004"
 
 [[match]]
 name = "NetIQ LDAP Agent for eDirectory"
@@ -302,7 +302,7 @@ version_group = 1
 vendor = "NetIQ"
 product = "LDAP Agent for eDirectory"
 context = "ldap.search_result"
-example = "\n      eDA0CnZlbmRvck5hbWUxEwQRTmV0SVEgQ29ycG9yYXRpb24wRQQNdmVuZG9yVmVyc2lvbjE0B\n      DJMREFQIEFnZW50IGZvciBOZXRJUSBlRGlyZWN0b3J5IDguOCBTUDggKDIwODA4LjA2KTBJBA\n      ==\n    "
+example = "x04\nvendorName1\u0013\u0004\u0011NetIQ Corporation0E\u0004\rvendorVersion14\u00042LDAP Agent for NetIQ eDirectory 8.8 SP8 (20808.06)0I\u0004"
 
 [[match]]
 name = "Novell LDAP Agent for eDirectory"
@@ -311,7 +311,7 @@ version_group = 1
 vendor = "Novell"
 product = "LDAP Agent for eDirectory"
 context = "ldap.search_result"
-example = "\n      dmVuZG9yTmFtZTEOBAxOb3ZlbGwsIEluYy4wRgQNdmVuZG9yVmVyc2lvbjE1BDNMREFQIEFnZ\n      W50IGZvciBOb3ZlbGwgZURpcmVjdG9yeSA4LjcuMy44ICgxMDU1NC45OSkwKQQ=\n    "
+example = "vendorName1\u000e\u0004\u000cNovell, Inc.0F\u0004\rvendorVersion15\u00043LDAP Agent for Novell eDirectory 8.7.3.8 (10554.99)0)\u0004"
 
 [[match]]
 name = "Novell eDirectory"
@@ -320,7 +320,7 @@ version_group = 1
 vendor = "Novell"
 product = "eDirectory"
 context = "ldap.search_result"
-example = "\n      dmVuZG9yTmFtZTEOBAxOb3ZlbGwsIEluYy4wLwQNdmVuZG9yVmVyc2lvbjEeBBxlRGlyZWN0b\n      3J5IHY4LjYuMiAoMTAzNTAuMTgpMCcE\n    "
+example = "vendorName1\u000e\u0004\u000cNovell, Inc.0/\u0004\rvendorVersion1\u001e\u0004\u001ceDirectory v8.6.2 (10350.18)0'\u0004"
 metadata = { "service.cpe23" = "cpe:/a:novell:edirectory:{service.version}" }
 
 [[match]]
@@ -330,7 +330,7 @@ version_group = 1
 vendor = "Sun"
 product = "Sun Java System Directory Server"
 context = "ldap.search_result"
-example = "\n      dmVuZG9yTmFtZTEYBBZTdW4gTWljcm9zeXN0ZW1zLCBJbmMuMEMEDXZlbmRvclZlcnNpb24xM\n      gQwU3VuIEphdmEoVE0pIFN5c3RlbSBEaXJlY3RvcnkgU2VydmVyLzUuMl9QYXRjaF82MC8E\n    "
+example = "vendorName1\u0018\u0004\u0016Sun Microsystems, Inc.0C\u0004\rvendorVersion12\u00040Sun Java(TM) System Directory Server/5.2_Patch_60/\u0004"
 
 [[match]]
 name = "Sun Directory Server"
@@ -339,7 +339,7 @@ version_group = 1
 vendor = "Sun"
 product = "Sun Directory Server"
 context = "ldap.search_result"
-example = "\n      dmVuZG9ybmFtZTEYBBZTdW4gTWljcm9zeXN0ZW1zLCBJbmMuMCsEDXZlbmRvcnZlcnNpb24xG\n      gQYU3VuLURpcmVjdG9yeS1TZXJ2ZXIvNy4wMC8E\n    "
+example = "vendorname1\u0018\u0004\u0016Sun Microsystems, Inc.0+\u0004\rvendorversion1\u001a\u0004\u0018Sun-Directory-Server/7.00/\u0004"
 
 [[match]]
 name = "Oracle Sun Directory Server"
@@ -348,7 +348,7 @@ version_group = 1
 vendor = "Oracle"
 product = "Sun Directory Server"
 context = "ldap.search_result"
-example = "\n      dmVuZG9yTmFtZTEUBBJPcmFjbGUgQ29ycG9yYXRpb24wMgQNdmVuZG9yVmVyc2lvbjEhBB9Td\n      W4tRGlyZWN0b3J5LVNlcnZlci8xMS4xLjEuNy4yMCAE\n    "
+example = "vendorName1\u0014\u0004\u0012Oracle Corporation02\u0004\rvendorVersion1!\u0004\u001fSun-Directory-Server/11.1.1.7.20 \u0004"
 
 [[match]]
 name = "Sun Directory Proxy Server"
@@ -357,7 +357,7 @@ version_group = 1
 vendor = "Sun"
 product = "Sun Directory Proxy Server"
 context = "ldap.search_result"
-example = "\n      dmVuZG9yTmFtZTEXBBVTdW4gTWljcm9zeXN0ZW1zLCBJbmMwNAQNdmVuZG9yVmVyc2lvbjEjB\n      CFEaXJlY3RvcnkgUHJveHkgU2VydmVyIDExLjEuMS43LjEwRQQ=\n    "
+example = "vendorName1\u0017\u0004\u0015Sun Microsystems, Inc04\u0004\rvendorVersion1#\u0004!Directory Proxy Server 11.1.1.7.10E\u0004"
 
 [[match]]
 name = "Sun ONE Directory Server"
@@ -366,7 +366,7 @@ version_group = 1
 vendor = "Sun"
 product = "Sun ONE Directory Server"
 context = "ldap.search_result"
-example = "\n      dmVuZG9yTmFtZTEYBBZTdW4gTWljcm9zeXN0ZW1zLCBJbmMuMCgEDXZlbmRvclZlcnNpb24xF\n      wQVU3VuLU9ORS1EaXJlY3RvcnkvNS4yMC8E\n    "
+example = "vendorName1\u0018\u0004\u0016Sun Microsystems, Inc.0(\u0004\rvendorVersion1\u0017\u0004\u0015Sun-ONE-Directory/5.20/\u0004"
 
 [[match]]
 name = "IBM Security Directory Server on OS/400 (IBM i)"
@@ -375,7 +375,7 @@ version_group = 1
 vendor = "IBM"
 product = "Security Directory Server"
 context = "ldap.search_result"
-example = "\n      SW50ZXJuYXRpb25hbCBCdXNpbmVzcyBNYWNoaW5lcyAoSUJNKTCEAAAAGgQNdmVuZG9ydmVyc\n      2lvbjGEAAAABQQDNS4yMIQAAAArBBxpYm0tc2xhcGRpc2NvbmZpZ3VyYXRpb25tb2RlMYQAAA\n      AHBAVGQUxTRTCEAAAARAQVaWJtLW9zcmVnaXN0cnljb250ZXh0MYQAAAAnBCVPUzQwMC1TWVM9\n    "
+example = "International Business Machines (IBM)0\u0084\u0000\u0000\u0000\u001a\u0004\rvendorversion1\u0084\u0000\u0000\u0000\u0005\u0004\u00035.20\u0084\u0000\u0000\u0000+\u0004\u001cibm-slapdisconfigurationmode1\u0084\u0000\u0000\u0000\u0007\u0004\u0005FALSE0\u0084\u0000\u0000\u0000D\u0004\u0015ibm-osregistrycontext1\u0084\u0000\u0000\u0000'\u0004%OS400-SYS="
 metadata = { "os.vendor" = "IBM", "os.family" = "OS/400", "os.product" = "OS/400 (IBM i)", "service.cpe23" = "cpe:/a:ibm:security_directory_server:{service.version}" }
 
 [[match]]
@@ -385,7 +385,7 @@ version_group = 1
 vendor = "IBM"
 product = "Security Directory Server"
 context = "ldap.search_result"
-example = "\n      dmVuZG9ybmFtZTGEAAAAJwQlSW50ZXJuYXRpb25hbCBCdXNpbmVzcyBNYWNoaW5lcyAoSUJNK\n      TCEAAAAGgQNdmVuZG9ydmVyc2lvbjGEAAAABQQDNS4xMIQA\n    "
+example = "vendorname1\u0084\u0000\u0000\u0000'\u0004%International Business Machines (IBM)0\u0084\u0000\u0000\u0000\u001a\u0004\rvendorversion1\u0084\u0000\u0000\u0000\u0005\u0004\u00035.10\u0084\u0000"
 metadata = { "service.cpe23" = "cpe:/a:ibm:security_directory_server:{service.version}" }
 
 [[match]]
@@ -395,7 +395,7 @@ version_group = 1
 vendor = "Mirapoint"
 product = "LDAP Server"
 context = "ldap.search_result"
-example = "\n      dmVuZG9yTmFtZTGEAAAACwQJTWlyYXBvaW50MIQAAAAaBA12ZW5kb3JWZXJzaW9uMYQAAAAFB\n      AMzLjIwhAA=\n    "
+example = "vendorName1\u0084\u0000\u0000\u0000\u000b\u0004\tMirapoint0\u0084\u0000\u0000\u0000\u001a\u0004\rvendorVersion1\u0084\u0000\u0000\u0000\u0005\u0004\u00033.20\u0084\u0000"
 
 [[match]]
 name = "Oracle Internet Directory"
@@ -404,7 +404,7 @@ version_group = 1
 vendor = "Oracle"
 product = "Internet Directory Server"
 context = "ldap.search_result"
-example = "\n      b3JjbGRpcmVjdG9yeXZlcnNpb24xhAAAAA8EDU9JRCA5LjAuNC4wLjAwhAAAAA==\n    "
+example = "orcldirectoryversion1\u0084\u0000\u0000\u0000\u000f\u0004\rOID 9.0.4.0.00\u0084\u0000\u0000\u0000"
 
 [[match]]
 name = "Oracle Virtual Directory"
@@ -413,7 +413,7 @@ version_group = 1
 vendor = "Oracle"
 product = "Virtual Directory Server"
 context = "ldap.search_result"
-example = "\n      b3JjbGRpcmVjdG9yeXZlcnNpb24xEAQOT1ZEIDExLjEuMS42LjAwLgQSc3VwcG9ydGVkRQ==\n    "
+example = "orcldirectoryversion1\u0010\u0004\u000eOVD 11.1.1.6.00.\u0004\u0012supportedE"
 
 [[match]]
 name = "estos MetaDirectory"
@@ -422,7 +422,7 @@ version_group = 1
 vendor = "estos"
 product = "MetaDirectory Server"
 context = "ldap.search_result"
-example = "\n      BA1tZXRhUHJvZHVjdElEMQYEBDExMDIwHAQLbWV0YVZlcnNpb24xDQQLMy41LjIyLjQyOTEwF\n      gQ=\n    "
+example = "\u0004\rmetaProductID1\u0006\u0004\u000411020\u001c\u0004\u000bmetaVersion1\r\u0004\u000b3.5.22.42910\u0016\u0004"
 metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows" }
 
 [[match]]
@@ -432,7 +432,7 @@ version_group = 1
 vendor = "Cisco"
 product = "Data Connection Directory"
 context = "ldap.search_result"
-example = "\n      ZHNhVmVyc2lvbjEuBCxEQyBEaXJlY3RvcnkgU2VydmVyIHY4LjEuMDAgKGJ1aWxkIDIwMTUwM\n      zA1KTBeBAs=\n    "
+example = "dsaVersion1.\u0004,DC Directory Server v8.1.00 (build 20150305)0^\u0004\u000b"
 
 [[match]]
 name = "UnboundID Directory Server"
@@ -441,7 +441,7 @@ version_group = 1
 vendor = "UnboundID"
 product = "UnboundID Directory Server"
 context = "ldap.search_result"
-example = "\n      dmVuZG9yTmFtZTERBA9VbmJvdW5kSUQgQ29ycC4wNQQNdmVuZG9yVmVyc2lvbjEkBCJVbmJvd\n      W5kSUQgRGlyZWN0b3J5IFNlcnZlciA1LjEuNS4yMAw=\n    "
+example = "vendorName1\u0011\u0004\u000fUnboundID Corp.05\u0004\rvendorVersion1$\u0004\"UnboundID Directory Server 5.1.5.20\u000c"
 
 [[match]]
 name = "UnboundID Directory Proxy Server"
@@ -450,23 +450,23 @@ version_group = 1
 vendor = "UnboundID"
 product = "UnboundID Directory Proxy Server"
 context = "ldap.search_result"
-example = "\n      dmVuZG9yTmFtZTERBA9VbmJvdW5kSUQgQ29ycC4wOwQNdmVuZG9yVmVyc2lvbjEqBChVbmJvd\n      W5kSUQgRGlyZWN0b3J5IFByb3h5IFNlcnZlciA0LjcuMC43MAw=\n    "
+example = "vendorName1\u0011\u0004\u000fUnboundID Corp.0;\u0004\rvendorVersion1*\u0004(UnboundID Directory Proxy Server 4.7.0.70\u000c"
 
 [[match]]
 name = "innovaphone VoIP Gateway Virtual Appliance"
-pattern = "(?im:namingContexts1.\\x04.cn=.?pbx.*\\x04.ldapServiceName1.\\x04.IPVA-\\w+-)"
+pattern = "(?s)(?im:namingContexts1.\\x04.cn=.?pbx.*\\x04.ldapServiceName1.\\x04.IPVA-\\w+-)"
 vendor = "innovaphone"
 product = "IPVA"
 context = "ldap.search_result"
-example = "\n      Dm5hbWluZ0NvbnRleHRzMQoECGNuPUtQQlgwMCIED2xkYXBTZXJ2aWNlTmFtZTEPBA1JUFZBL\n      TNmLTAwLTBjMAwC\n    "
+example = "\u000enamingContexts1\n\u0004\u0008cn=KPBX00\"\u0004\u000fldapServiceName1\u000f\u0004\rIPVA-3f-00-0c0\u000c\u0002"
 metadata = { "service.family" = "VoiP Gateway" }
 
 [[match]]
 name = "innovaphone VoIP Gateway"
-pattern = "(?im:namingContexts1.\\x04.cn=.?pbx.*\\x04.ldapServiceName1.\\x04.(IP\\d+)-\\w+-)"
+pattern = "(?s)(?im:namingContexts1.\\x04.cn=.?pbx.*\\x04.ldapServiceName1.\\x04.(IP\\d+)-\\w+-)"
 vendor = "innovaphone"
 context = "ldap.search_result"
-example = "\n      bmFtaW5nQ29udGV4dHMxCgQIY249S1BCWDAwIwQPbGRhcFNlcnZpY2VOYW1lMRAEDklQODAwL\n      TA2LTJiLTYxMA==\n    "
+example = "namingContexts1\n\u0004\u0008cn=KPBX00#\u0004\u000fldapServiceName1\u0010\u0004\u000eIP800-06-2b-610"
 metadata = { "service.family" = "VoiP Gateway", "service.product" = "{capture:1}" }
 
 [[match]]
@@ -474,7 +474,7 @@ name = "Ascom IP-DECT Base Station"
 pattern = "(?im:namingContexts1.\\x04.cn=.?pbx.*\\x04.ldapServiceName1.\\x04.(IPBS\\d*)-\\w+-)"
 vendor = "Ascom"
 context = "ldap.search_result"
-example = "\n      bmFtaW5nQ29udGV4dHMxCQQHY249UEJYMDAjBA9sZGFwU2VydmljZU5hbWUxEAQOSVBCUzItM\n      TktYjEtZTcw\n    "
+example = "namingContexts1\t\u0004\u0007cn=PBX00#\u0004\u000fldapServiceName1\u0010\u0004\u000eIPBS2-19-b1-e70"
 metadata = { "service.family" = "IP-DECT Base Station", "service.product" = "{capture:1}" }
 
 [[match]]
@@ -482,7 +482,7 @@ name = "Ascom IP-DECT Gateway"
 pattern = "(?im:namingContexts1.\\x04.cn=.?pbx.*\\x04.ldapServiceName1.\\x04.(IPBL\\d*)-\\w+-)"
 vendor = "Ascom"
 context = "ldap.search_result"
-example = "\n      bmFtaW5nQ29udGV4dHMxCQQHY249UEJYMDAiBA9sZGFwU2VydmljZU5hbWUxDwQNSVBCTC0zM\n      C0yYy0yNTA=\n    "
+example = "namingContexts1\t\u0004\u0007cn=PBX00\"\u0004\u000fldapServiceName1\u000f\u0004\rIPBL-30-2c-250"
 metadata = { "service.family" = "IP-DECT Gateway", "service.product" = "{capture:1}" }
 
 [[match]]
@@ -492,5 +492,5 @@ version_group = 1
 vendor = "Scalix"
 product = "LDAP Server"
 context = "ldap.search_result"
-example = "\n      bz1NeUNvbnRhY3RzBAhvPVNjYWxpeDAsBBFzdWJzY2hlbWFzdWJlbnRyeTEXBBVjbj1zdWJTY\n      2hlbWEsbz1TY2FsaXgwDQQJYWx0c2VydmVyMQAwHgQUc3VwcG9ydGVkbGRhcHZlcnNpb24xBg\n      QBMgQBMzAgBA54c2VydmVydmVyc2lvbjEOBAwxMS40LjYuMTM2NzYwDAI=\n    "
+example = "o=MyContacts\u0004\u0008o=Scalix0,\u0004\u0011subschemasubentry1\u0017\u0004\u0015cn=subSchema,o=Scalix0\r\u0004\taltserver1\u00000\u001e\u0004\u0014supportedldapversion1\u0006\u0004\u00012\u0004\u000130 \u0004\u000exserverversion1\u000e\u0004\u000c11.4.6.136760\u000c\u0002"
 

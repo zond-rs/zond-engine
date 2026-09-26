@@ -12,8 +12,7 @@
 //!
 //! 1. **Self-consistency** ([`every_signature_matches_its_example`]): 95% of
 //!    signature rules ship a recorded `example` banner they are meant to match.
-//!    Every example is run through the real signature and the count of
-//!    non-matching examples is pinned to a baseline.
+//!    Every example is run through the real signature, and every one matches.
 //! 2. **Prefilter soundness** ([`prefilter_never_drops_a_matching_signature`]):
 //!    for every example that matches its pattern, the global-match prefilter
 //!    must select that signature as a candidate. This is what makes it safe to
@@ -26,14 +25,15 @@
 //!    [`non_standard_port_is_identified_via_global_fallback`]): real banners
 //!    driven through the whole pipeline with the exact verdict pinned.
 //!
-//! ## Known baseline
+//! ## Imported examples
 //!
-//! 218 recorded examples do not match their own pattern, overwhelmingly case
-//! mismatches (`"MIPS"` against `mips`, `"FTP server"` against `FTP Server`)
-//! from imported rapid7/recog signatures whose per-pattern case flag was dropped
-//! on import.
-//! Restoring it takes a re-import that preserves `flags`, not a blanket
-//! case-fold; the baseline is pinned so it cannot grow.
+//! The rules imported from Recog hold their examples to the same standard,
+//! which Recog's own suite holds them to upstream. Each is the text the engine
+//! reads a reply as, so an example Recog stores in base64 is stored here
+//! decoded, and each pattern carries the flags it was written under: Recog's
+//! case-insensitive flag as `(?i)`, its dot-matches-newline as `(?s)`, and
+//! Ruby's line anchors, which are the default there, as `(?m)` where a rule
+//! relies on them.
 
 use proptest::prelude::*;
 use rayon::prelude::*;
@@ -44,11 +44,6 @@ use super::prefilter::{LiteralPrefilter, Prefilter};
 use super::response::{Collected, ResponseSet, TlsInfo};
 use super::{Analyzer, BannerRegexAnalyzer, PortContext, ServiceVerdict, TlsCertAnalyzer, Tunnel};
 use crate::model::confidence::Confidence;
-
-/// Recorded examples that do not match their own pattern today, from lost recog
-/// case flags; see the module docs. Ratchet down as fixed, since a rise is a
-/// regression.
-const KNOWN_EXAMPLE_MISMATCHES: usize = 218;
 
 /// The signature set flattened exactly as the runtime builds it, paired with
 /// each signature's recorded example (if any).
@@ -82,11 +77,10 @@ fn every_signature_matches_its_example() {
         .collect();
     mismatches.sort();
 
-    assert_eq!(
-        mismatches.len(),
-        KNOWN_EXAMPLE_MISMATCHES,
-        "example-match count changed (found {}, baseline {KNOWN_EXAMPLE_MISMATCHES}). If you \
-         changed signatures, review the delta and update KNOWN_EXAMPLE_MISMATCHES.\nFirst:\n{}",
+    assert!(
+        mismatches.is_empty(),
+        "{} examples do not match their own rule. A pattern that fails its own \
+         example fails the banner it was written from too.\nFirst:\n{}",
         mismatches.len(),
         mismatches
             .iter()

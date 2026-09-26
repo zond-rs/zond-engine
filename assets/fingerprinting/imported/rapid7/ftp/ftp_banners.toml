@@ -56,7 +56,7 @@ metadata = { "service.family" = "IIS", "service.cpe23" = "cpe:/a:microsoft:inter
 
 [[match]]
 name = "FTP on HPUX with a PHNE (HP Networking patch) installed"
-pattern = "^([^ ]{1,512}) +FTP +Server \\(Version ([^\\(]+)\\(PHNE_\\d+\\) [^\\)]+\\) ready.?$"
+pattern = "(?i)^([^ ]{1,512}) +FTP +Server \\(Version ([^\\(]+)\\(PHNE_\\d+\\) [^\\)]+\\) ready.?$"
 version_group = 2
 vendor = "HP"
 product = "FTPD"
@@ -66,7 +66,7 @@ metadata = { "os.vendor" = "HP", "os.family" = "HP-UX", "os.product" = "HP-UX", 
 
 [[match]]
 name = "WU-FTPD on HPUX with a PHNE (HP Networking patch) installed"
-pattern = "^([^ ]{1,512}) +FTP +Server \\(Revision \\S+ Version wuftpd-([^\\(]+)\\(PHNE_\\d+\\) [^\\)]+\\) ready.?$"
+pattern = "(?i)^([^ ]{1,512}) +FTP +Server \\(Revision \\S+ Version wuftpd-([^\\(]+)\\(PHNE_\\d+\\) [^\\)]+\\) ready.?$"
 version_group = 2
 vendor = "Washington University"
 product = "WU-FTPD"
@@ -76,7 +76,7 @@ metadata = { "os.vendor" = "HP", "os.family" = "HP-UX", "os.product" = "HP-UX", 
 
 [[match]]
 name = "WU-FTPD on various OS"
-pattern = "^(\\S{1,512})(?: \\S{1,512})? FTP Server \\((?:Revision [\\d\\.]+ )?Version wu(?:ftpd)?-([\\d\\.]+).*\\) ready.?$"
+pattern = "(?i)^(\\S{1,512})(?: \\S{1,512})? FTP Server \\((?:Revision [\\d\\.]+ )?Version wu(?:ftpd)?-([\\d\\.]+).*\\) ready.?$"
 version_group = 2
 vendor = "Washington University"
 product = "WU-FTPD"
@@ -86,7 +86,7 @@ metadata = { "host.name" = "{capture:1}" }
 
 [[match]]
 name = "FTPD on Mac OS X Server with a version"
-pattern = "^(\\S{1,512})\\s{1,8}FTP Server \\(Version:\\s+Mac OS X Server\\s+([\\d\\.]+).*\\) ready\\.?"
+pattern = "(?i)^(\\S{1,512})\\s{1,8}FTP Server \\(Version:\\s+Mac OS X Server\\s+([\\d\\.]+).*\\) ready\\.?"
 vendor = "Apple"
 product = "FTP"
 context = "ftp.banner"
@@ -95,7 +95,7 @@ metadata = { "os.vendor" = "Apple", "os.family" = "Mac OS X", "os.product" = "Ma
 
 [[match]]
 name = "FTPD on Mac OS X Server without a version"
-pattern = "^(\\S{1,512})\\s{1,8}FTP Server \\(Version:\\s+Mac OS X Server\\) ready\\.?"
+pattern = "(?i)^(\\S{1,512})\\s{1,8}FTP Server \\(Version:\\s+Mac OS X Server\\) ready\\.?"
 vendor = "Apple"
 product = "FTP"
 context = "ftp.banner"
@@ -104,7 +104,7 @@ metadata = { "os.vendor" = "Apple", "os.family" = "Mac OS X", "os.product" = "Ma
 
 [[match]]
 name = "Simple tnftpd banner with a version"
-pattern = "^(\\S{1,512})\\s{1,8}FTP Server \\(tnftpd (.*)\\) ready\\.?$"
+pattern = "(?i)^(\\S{1,512})\\s{1,8}FTP Server \\(tnftpd (.*)\\) ready\\.?$"
 version_group = 2
 product = "tnftpd"
 context = "ftp.banner"
@@ -113,14 +113,14 @@ metadata = { "host.name" = "{capture:1}" }
 
 [[match]]
 name = "SunOS/Solaris"
-pattern = "^(\\S{1,512}) FTP Server \\(SunOS 5.(1[1-9])\\) ready\\.?$"
+pattern = "(?i)^(\\S{1,512}) FTP Server \\(SunOS 5.(1[1-9])\\) ready\\.?$"
 context = "ftp.banner"
 example = "example.com FTP server (SunOS 5.11) ready."
 metadata = { "os.vendor" = "Oracle", "os.family" = "Solaris", "os.product" = "Solaris", "host.name" = "{capture:1}", "os.version" = "{capture:2}", "os.cpe23" = "cpe:/o:oracle:solaris:{os.version}" }
 
 [[match]]
 name = "SunOS/Solaris 5.7-5.10"
-pattern = "^(\\S{1,512}) FTP Server \\(SunOS 5.([789]|10)\\) ready\\.?$"
+pattern = "(?i)^(\\S{1,512}) FTP Server \\(SunOS 5.([789]|10)\\) ready\\.?$"
 context = "ftp.banner"
 example = "example.com FTP server (SunOS 5.7) ready."
 metadata = { "os.vendor" = "Sun", "os.family" = "Solaris", "os.product" = "Solaris", "host.name" = "{capture:1}", "os.version" = "{capture:2}", "os.cpe23" = "cpe:/o:sun:solaris:{os.version}" }
@@ -595,7 +595,7 @@ metadata = { "os.vendor" = "Lexmark", "os.device" = "Printer", "os.version" = "{
 
 [[match]]
 name = "Lexmark printer"
-pattern = "Lexmark (\\S+) FTP Server ready\\.?$"
+pattern = "(?i)Lexmark (\\S+) FTP Server ready\\.?$"
 context = "ftp.banner"
 example = "Lexmark X500 FTP server ready"
 metadata = { "os.vendor" = "Lexmark", "os.device" = "Printer", "hw.vendor" = "Lexmark", "hw.device" = "Printer", "hw.product" = "{capture:1}" }

@@ -106,7 +106,7 @@ metadata = { "service.product" = "{capture:1}" }
 
 [[match]]
 name = "Equivalence (OpenH323) H.323 Server"
-pattern = "^0x0900003d\\:(.*)\\:.*?(\\d*\\.*\\d*\\.*\\d*)"
+pattern = "(?i)^0x0900003d\\:(.*)\\:.*?(\\d*\\.*\\d*\\.*\\d*)"
 version_group = 2
 vendor = "Equivalence (OpenH323)"
 context = "unknown"

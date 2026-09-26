@@ -17,21 +17,21 @@ metadata = { "os.vendor" = "HP", "os.family" = "Digital Unix" }
 
 [[match]]
 name = "Windows rlogind"
-pattern = "^.Winsock RSHD/NT: Protocol negotiation error\\..+$|^.in\\.rlogind: Permission denied\\..+$"
+pattern = "(?s)^.Winsock RSHD/NT: Protocol negotiation error\\..+$|^.in\\.rlogind: Permission denied\\..+$"
 context = "unknown"
 example = "xWinsock RSHD/NT: Protocol negotiation error.\n      0"
 metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows" }
 
 [[match]]
 name = "Solaris rlogind"
-pattern = "^.permission denied\\..+$"
+pattern = "(?s)^.permission denied\\..+$"
 context = "unknown"
 example = "xpermission denied.\n      "
 metadata = { "os.vendor" = "Sun", "os.family" = "Solaris", "os.product" = "Solaris", "os.cpe23" = "cpe:/o:sun:solaris:-" }
 
 [[match]]
 name = "AIX rlogind"
-pattern = "^.rlogind: Acc.s refus.\\..+$"
+pattern = "(?s)^.rlogind: Acc.s refus.\\..+$"
 context = "unknown"
 example = "xrlogind: Accxs refusx.\n      "
 metadata = { "os.vendor" = "IBM", "os.family" = "AIX", "os.product" = "AIX", "os.cpe23" = "cpe:/o:ibm:aix:-" }
@@ -59,7 +59,7 @@ metadata = { "os.vendor" = "IBM", "os.family" = "AIX", "os.product" = "AIX", "os
 
 [[match]]
 name = "HP-UX rshd"
-pattern = "^.remshd: (?:getservbyname.+|Kerberos Authentication not enabled\\..+|Error! Kerberos authentication failed)$"
+pattern = "(?s)^.remshd: (?:getservbyname.+|Kerberos Authentication not enabled\\..+|Error! Kerberos authentication failed)$"
 context = "unknown"
 example = "xremshd: getservbyname\n      "
 metadata = { "os.vendor" = "HP", "os.family" = "HP-UX", "os.product" = "HP-UX", "os.cpe23" = "cpe:/o:hp:hp-ux:-" }

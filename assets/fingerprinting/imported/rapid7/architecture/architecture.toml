@@ -38,7 +38,7 @@ metadata = { "os.arch" = "Sparc" }
 
 [[match]]
 name = "MIPS"
-pattern = "mips"
+pattern = "(?i)mips"
 context = "architecture"
 example = "MIPS"
 metadata = { "os.arch" = "MIPS" }
