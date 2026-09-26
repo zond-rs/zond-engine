@@ -419,6 +419,18 @@ impl Segment {
         [at(1), at(2), at(3), at(4)]
     }
 
+    /// Refuses the peer by a host route of this process's own of `kind`,
+    /// `prohibit`, `unreachable` or `blackhole`, over the segment's connected
+    /// prefix: an address on this process's own segment that its routing
+    /// table will not send to, which is what an administrator's route or a
+    /// VPN's kill switch makes of a neighbour.
+    ///
+    /// Left in place when the segment goes: it names this segment's peer, and
+    /// no later segment is numbered alike.
+    pub fn refuse_peer_by_route(&self, kind: &str) {
+        ip(&["route", "add", kind, &format!("{}/32", self.peer())]);
+    }
+
     /// Lifts the ration the peer's kernel sends its ICMP errors under, so it
     /// answers every closed UDP port it is asked about however fast.
     pub fn unrationed_icmp(&self) {

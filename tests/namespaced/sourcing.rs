@@ -178,3 +178,37 @@ async fn a_connect_scan_leaves_by_the_forced_source() {
         "a connection came from somewhere other than {forced}: {seen:?}"
     );
 }
+
+/// A host on this process's own segment that its routing table refuses is not
+/// probed.
+///
+/// A `prohibit`, `unreachable` or `blackhole` route for one address of a
+/// connected prefix is the host's policy, and ping and every connect honour
+/// it. A raw socket held to the link, or a frame built for the neighbour,
+/// never asks the table, and without the scan asking it for them the peer's
+/// listener answers the scan's SYN, and the port reads open, from the one
+/// program on the box that ignored the route. The answer is captured
+/// whatever the route says of it, so an open port is the probe arriving.
+#[tokio::test]
+async fn a_host_on_link_behind_a_refusing_route_is_not_probed() {
+    if !available() {
+        return;
+    }
+
+    for kind in ["prohibit", "unreachable", "blackhole"] {
+        let mut segment = Segment::new();
+        let open = segment.listen_tcp();
+        segment.refuse_peer_by_route(kind);
+
+        let mut cfg = test_config();
+        // Straight to the port: the probe is what the route has to stop.
+        cfg.assume_up = true;
+        let outcome = run_scan(target_map(segment.peer(), &open.to_string()), &cfg).await;
+
+        assert_ne!(
+            outcome.port_state(segment.peer(), open),
+            Some(PortState::Open),
+            "{kind}: the probe reached the peer"
+        );
+    }
+}

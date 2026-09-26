@@ -812,7 +812,12 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// it.
     pub fn record_no_route(&mut self, host: IpAddr) {
         if self.unreachable.insert(host) {
-            info!(verbosity = 2, "{host} unreachable (no source address)");
+            let why = if self.resolver.refused_by_route(host) {
+                "a route refuses it"
+            } else {
+                "no source address"
+            };
+            info!(verbosity = 2, "{host} unreachable ({why})");
         }
     }
 

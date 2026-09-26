@@ -171,6 +171,26 @@ pub(crate) fn plausible_source(links: &[Link], target: IpAddr) -> Option<IpAddr>
 ///
 /// `sockets` caches one socket per address family so repeated probes reuse it.
 pub fn probe_route_source(target: IpAddr, sockets: &mut ProbeSockets) -> Option<IpAddr> {
+    match ask_route(target, sockets) {
+        RouteAnswer::From(source) => Some(source),
+        RouteAnswer::Refused | RouteAnswer::Unasked => None,
+    }
+}
+
+/// What the kernel's routing table said about one destination.
+enum RouteAnswer {
+    /// It routes there, from this address.
+    From(IpAddr),
+    /// It refuses to route there.
+    Refused,
+    /// Nothing was asked: no socket to ask with, which says nothing about the
+    /// destination.
+    Unasked,
+}
+
+/// Asks the kernel how it routes to `target`, keeping its refusal apart from a
+/// question that could not be put. See [`probe_route_source`].
+fn ask_route(target: IpAddr, sockets: &mut ProbeSockets) -> RouteAnswer {
     let slot = match target {
         IpAddr::V4(_) => &mut sockets.v4,
         IpAddr::V6(_) => &mut sockets.v6,
@@ -185,9 +205,32 @@ pub fn probe_route_source(target: IpAddr, sockets: &mut ProbeSockets) -> Option<
         *slot = UdpSocket::bind(bind_addr).ok();
     }
 
-    let socket = slot.as_ref()?;
-    socket.connect((target, 53)).ok()?;
-    socket.local_addr().ok().map(|addr| addr.ip())
+    let Some(socket) = slot.as_ref() else {
+        return RouteAnswer::Unasked;
+    };
+    if socket.connect((target, 53)).is_err() {
+        return RouteAnswer::Refused;
+    }
+    match socket.local_addr() {
+        Ok(local) => RouteAnswer::From(local.ip()),
+        Err(_) => RouteAnswer::Unasked,
+    }
+}
+
+/// Whether the kernel's routing table refuses `target` outright, for a
+/// destination on one of this host's own segments.
+///
+/// A segment this host holds is reached directly, so the table's answer for
+/// it is the connected route unless a more specific one overrides it, and
+/// the overrides that refuse are the host's policy: a `prohibit`,
+/// `unreachable` or `blackhole` route an administrator added, or the rules a
+/// VPN's kill switch keeps the local network out with. A packet socket or
+/// a raw socket held to its interface never consults the table, so asking
+/// it here is the only way such a policy is heard. Only a refusal counts: a
+/// socket that could not be opened to ask with is no answer about the
+/// destination.
+pub(crate) fn kernel_refuses(target: IpAddr, sockets: &mut ProbeSockets) -> bool {
+    matches!(ask_route(target, sockets), RouteAnswer::Refused)
 }
 
 /// Resolves the source address for arbitrary destinations seen one at a time,
@@ -207,6 +250,14 @@ pub fn probe_route_source(target: IpAddr, sockets: &mut ProbeSockets) -> Option<
 /// the kernel.
 pub struct SourceResolver {
     onlink: OnLinkTable,
+    /// Whether the routing table refuses a destination on one of this host's
+    /// segments: [`kernel_refuses`] for a resolver of this host's, and never
+    /// for one built over links it was handed, which are not this host's
+    /// table's to refuse.
+    refuses: fn(IpAddr, &mut ProbeSockets) -> bool,
+    /// The destinations on this host's segments the routing table refused.
+    /// See [`refused_by_route`](Self::refused_by_route).
+    refused: std::collections::HashSet<IpAddr>,
     sockets: ProbeSockets,
     cache: HashMap<IpAddr, Option<IpAddr>>,
     /// The interfaces themselves, kept for [`plausible_source`]. The
@@ -226,14 +277,22 @@ pub struct SourceResolver {
 
 impl SourceResolver {
     /// Builds a resolver from the host's current viable interfaces.
+    ///
+    /// Such a resolver honours the routing table's refusals for destinations
+    /// on this host's own segments; see [`resolve`](Self::resolve).
     pub fn from_system() -> Self {
-        Self::from_links(&viable_interfaces())
+        Self {
+            refuses: kernel_refuses,
+            ..Self::from_links(&viable_interfaces())
+        }
     }
 
     /// Builds a resolver from an explicit list of links (used in tests).
     pub fn from_links(links: &[Link]) -> Self {
         Self {
             onlink: OnLinkTable::from_links(links),
+            refuses: |_, _| false,
+            refused: std::collections::HashSet::new(),
             sockets: ProbeSockets::default(),
             cache: HashMap::new(),
             links: links.to_vec(),
@@ -296,6 +355,13 @@ impl SourceResolver {
         self.zones.zone_of(&target).is_some() || self.onlink.source_for(target).is_some()
     }
 
+    /// Whether [`resolve`](Self::resolve) found no source for `target`
+    /// because the routing table refuses it, rather than because nothing
+    /// here reaches it.
+    pub(crate) fn refused_by_route(&self, target: IpAddr) -> bool {
+        self.refused.contains(&target)
+    }
+
     /// Whether this host has any address to send probes from. When false,
     /// there is no point standing up a raw-socket scanner at all.
     pub fn has_sources(&self) -> bool {
@@ -340,14 +406,28 @@ impl SourceResolver {
     /// it, which a forced source must not move it off; a forced source placed
     /// ahead would send its probes out by another link while the plan and
     /// every connection to it went by its own.
+    ///
+    /// A target on one of this host's segments that the routing table
+    /// refuses has no source, whatever the segment says. A probe to it would
+    /// be framed to the neighbour, or sent by a socket held to the link,
+    /// neither of which asks the table, and would reach a host the machine's
+    /// own policy keeps it from: the one scanner on the box that ignored a
+    /// route its administrator added, found out by the probes arriving. The
+    /// table is asked by connecting a UDP socket, as for a routed target.
     pub fn resolve(&mut self, target: IpAddr) -> Option<IpAddr> {
         if let Some(cached) = self.cache.get(&target) {
             return *cached;
         }
 
         let scoped = self.scoped_source(target);
+        let on_link = self.onlink.source_for(target);
+        if scoped.is_none() && on_link.is_some() && (self.refuses)(target, &mut self.sockets) {
+            self.refused.insert(target);
+            self.cache.insert(target, None);
+            return None;
+        }
         let source = scoped
-            .or_else(|| self.onlink.source_for(target))
+            .or(on_link)
             .or_else(|| self.forced_source(target))
             .or_else(|| probe_route_source(target, &mut self.sockets))
             .or_else(|| plausible_source(&self.links, target));
@@ -473,6 +553,45 @@ mod tests {
             table.source_for(IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, 1))),
             None
         );
+    }
+
+    /// A target on this host's own segment that the routing table refuses has
+    /// no source, and says why, while its neighbours on the segment keep
+    /// theirs.
+    ///
+    /// A `prohibit`, `unreachable` or `blackhole` host route over an address
+    /// on a connected segment is the host's own policy. A probe framed to the
+    /// neighbour, or sent by a socket held to the link, never asks the table,
+    /// so without this the one program on the box that ignored the route
+    /// would be the scanner, found out by its probes arriving.
+    #[test]
+    fn a_target_on_link_the_routing_table_refuses_has_no_source() {
+        let refused = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 13));
+        let neighbour = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 14));
+        let mut resolver = SourceResolver {
+            refuses: |target, _| target == IpAddr::V4(Ipv4Addr::new(192, 0, 2, 13)),
+            ..SourceResolver::from_links(&[mock_interface(vec![v4net(192, 0, 2, 10, 24)])])
+        };
+
+        assert_eq!(resolver.resolve(refused), None);
+        assert!(resolver.refused_by_route(refused), "and says why");
+        assert_eq!(
+            resolver.resolve(neighbour),
+            Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)))
+        );
+        assert!(!resolver.refused_by_route(neighbour));
+    }
+
+    /// The table is asked, and an address it routes is not refused. Loopback
+    /// is routed on every host a test runs on, and the one refusal a test
+    /// could build takes privileges; that half is Tier 3's.
+    #[test]
+    fn an_address_the_kernel_routes_is_not_refused() {
+        let mut sockets = ProbeSockets::default();
+        assert!(!kernel_refuses(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            &mut sockets
+        ));
     }
 
     /// A link-local written with its interface is not this case at all: it
