@@ -69,7 +69,7 @@ pub(super) fn create_private(path: &Path) -> std::io::Result<fs::File> {
     private(&mut options);
 
     let file = options.open(path)?;
-    claim(&file);
+    claim(&file, path);
     Ok(file)
 }
 
@@ -155,7 +155,7 @@ pub(super) fn open_or_create_private(path: &Path) -> std::io::Result<fs::File> {
     private(&mut options);
 
     let file = options.open(path)?;
-    claim(&file);
+    claim(&file, path);
     Ok(file)
 }
 
@@ -172,60 +172,27 @@ fn private(options: &mut fs::OpenOptions) {
 #[cfg(not(unix))]
 fn private(_options: &mut fs::OpenOptions) {}
 
-/// Gives a directory a journal created under `sudo` to the user who invoked it.
+/// Gives a directory a journal created under `sudo` to the user who invoked
+/// it, when it lies in their home.
 ///
 /// The file cases claim through the handle they already hold. A directory has
 /// none, so one is opened for it, refusing a link in the same position for the
-/// same reason.
-#[cfg(unix)]
+/// same reason. The boundary is the one every giving shares; see
+/// [`ownership`](super::ownership).
 pub(super) fn claim_directory_for_invoking_user(path: &Path) {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let opened = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
-        .open(path);
-
-    if let Ok(directory) = opened {
-        claim(&directory);
-    }
+    super::ownership::give(path);
 }
 
-/// The platforms with no `sudo` to have been invoked through, where a journal is
-/// already the invoking user's.
-#[cfg(not(unix))]
-pub(super) fn claim_directory_for_invoking_user(_path: &Path) {}
-
-/// Gives something a journal wrote under `sudo` to the user who invoked it.
+/// Gives a file a journal wrote under `sudo` to the user who invoked it, when
+/// it lies in their home.
 ///
 /// Best effort: a journal left owned by root is one they can neither read nor
 /// prune, which is worth trying to avoid and not worth failing a scan over.
-#[cfg(unix)]
-fn claim(file: &fs::File) {
-    use std::os::unix::io::AsRawFd;
-    use std::sync::OnceLock;
-
-    /// Resolved once. Who invoked this process cannot change while it runs, and
-    /// the lookup goes to the password database, which a checkpoint every three
-    /// seconds has no reason to ask again.
-    static INVOKING: OnceLock<Option<super::paths::InvokingUser>> = OnceLock::new();
-
-    let Some(user) = INVOKING.get_or_init(super::paths::invoking_user) else {
-        return;
-    };
-
-    // SAFETY: the descriptor is owned by `file` and open for the call, and
-    // `fchown` reads it and nothing else. Taking the descriptor rather than the
-    // path is what stops the name being repointed between the open and here.
-    unsafe {
-        libc::fchown(file.as_raw_fd(), user.uid, user.gid);
-    }
+/// Taking the descriptor rather than the path is what stops the name being
+/// repointed between the open and the change of owner.
+fn claim(file: &fs::File, path: &Path) {
+    super::ownership::give_open(file, path);
 }
-
-/// [`claim_directory_for_invoking_user`]'s file half, and inert for the same
-/// reason.
-#[cfg(not(unix))]
-fn claim(_file: &fs::File) {}
 
 #[cfg(all(test, unix))]
 mod tests {

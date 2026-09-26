@@ -1074,6 +1074,10 @@ impl Entry {
 /// in. A state directory that was already there may predate this engine by
 /// years and belongs to whoever made it.
 ///
+/// Nothing is given outside the invoking user's home, wherever the root is:
+/// a state root kept through `sudo` that points elsewhere stays root's, as a
+/// settings directory there does; see the `ownership` module.
+///
 /// Best effort, like every other claim here: a directory that cannot be given
 /// away is not worth failing a scan over, and an unprivileged run has no
 /// invoking user to give it to and no need of one.
