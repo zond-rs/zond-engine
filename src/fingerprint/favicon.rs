@@ -35,7 +35,7 @@
 
 use async_trait::async_trait;
 use md5::{Digest, Md5};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::timeout;
 
 use std::sync::Arc;
@@ -43,7 +43,7 @@ use std::time::Duration;
 
 use super::analyzer::{Analyzer, PortContext};
 use super::authority::Authority;
-use super::model::{Evidence, SourceId};
+use super::model::{Evidence, SourceId, Tunnel};
 use super::response::{Collected, ResponseSet};
 
 /// How long the whole exchange may take, connect included.
@@ -95,6 +95,10 @@ impl Analyzer for FaviconAnalyzer {
             return Collected::default();
         };
         let peer = Authority::new(addr).named(ctx.host_name.as_deref().map(Arc::from));
+        let peer = match ctx.tunnel {
+            Some(Tunnel::Tls) => peer.through_tls(),
+            None => peer,
+        };
         // One budget for the whole search, however many requests it takes, so a
         // slow server cannot cost more by declaring its icon than by not.
         match timeout(super::on_path(FETCH_TIMEOUT), icon_of(&peer, responses)).await {
@@ -382,8 +386,30 @@ async fn fetch_text(peer: &Authority, path: &str) -> Option<String> {
 /// request's `Connection: close` and holds the socket until an idle timeout of
 /// its own would otherwise have each request wait that timeout out, and one
 /// longer than [`FETCH_TIMEOUT`] leave the icon unread.
+///
+/// Through a handshake of its own where the port answered through TLS, and
+/// never in the clear there: a request an HTTPS port can only refuse is
+/// traffic with nothing to learn from it.
 async fn exchange(peer: &Authority, path: &str) -> Option<Vec<u8>> {
-    let mut stream = super::analyzer_connect(peer.socket()).await.ok()?;
+    let stream = super::analyzer_connect(peer.socket()).await.ok()?;
+    match peer.is_tls() {
+        true => {
+            let (mut tunnel, _) = super::tls::handshake(stream, peer.server_name()).await?;
+            converse(&mut tunnel, peer, path).await
+        }
+        false => {
+            let mut stream = stream;
+            converse(&mut stream, peer, path).await
+        }
+    }
+}
+
+/// Writes the request for `path` to `stream` and reads the response, whole
+/// and bounded; see [`exchange`].
+async fn converse<S>(stream: &mut S, peer: &Authority, path: &str) -> Option<Vec<u8>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     stream.write_all(&request(peer, path)).await.ok()?;
 
     let mut response = Vec::new();

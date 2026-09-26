@@ -3349,4 +3349,35 @@ mod tests {
         );
         assert_eq!(banners.len(), 2, "{banners:?}");
     }
+
+    /// A port that answered through TLS is asked for its icon through TLS.
+    /// Asked in the clear, an HTTPS port receives requests it can only
+    /// refuse, which is traffic a scan has no business sending it, and the
+    /// icon that would have named the application is never read.
+    #[tokio::test]
+    async fn an_https_port_is_asked_for_its_icon_through_tls() {
+        let (addr, heard) = https_by_name("box.example").await;
+        let stream = TcpStream::connect(addr).await.expect("connects");
+        let _ = fingerprint_tcp_via(
+            stream,
+            baseline_port(443, Protocol::Tcp, PortState::Open),
+            ServiceDetection::Probe,
+            Egress::KERNEL,
+            PathAllowance::NONE,
+            Some(Arc::from("box.example")),
+        )
+        .await;
+
+        let asked = heard.lock().expect("not poisoned").clone();
+        assert!(
+            !asked.iter().any(|request| request.starts_with("clear:")),
+            "an HTTPS port was asked in the clear: {asked:?}"
+        );
+        assert!(
+            asked
+                .iter()
+                .any(|request| request.starts_with("GET /favicon.ico ")),
+            "the icon was not asked for through TLS: {asked:?}"
+        );
+    }
 }
