@@ -1352,6 +1352,12 @@ mod tests {
     /// passes that talk to a service wait on a slow path as the port scans
     /// that found it did. A steady path narrows both alike, and a wandering
     /// one keeps both wide.
+    ///
+    /// All but a lone round trip past a second, which a conversation holds to
+    /// the path-finding wait where a probe does not: a conversation waits on
+    /// the path several times in a row, and a first sample that carried more
+    /// than the path costs it on every one. See
+    /// [`PathAllowance::of_round_trips`](crate::transport::dial::PathAllowance::of_round_trips).
     #[test]
     fn a_conversation_allows_for_a_path_what_a_probe_after_the_same_replies_is_given() {
         use crate::transport::dial::PathAllowance;
@@ -1359,7 +1365,7 @@ mod tests {
         let steady = [1_900; 10];
         let wandering = [900, 2_900, 1_000, 2_800, 1_100, 2_700];
         let slowing = [5, 7, 40, 140, 600, 1_900];
-        let mut runs: Vec<Vec<u64>> = [1, 5, 140, 1_900].map(|millis| vec![millis]).into();
+        let mut runs: Vec<Vec<u64>> = [1, 5, 140, 1_000].map(|millis| vec![millis]).into();
         runs.extend([steady.to_vec(), wandering.to_vec(), slowing.to_vec()]);
         for run in runs {
             let round_trips: Vec<Duration> =

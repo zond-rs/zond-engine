@@ -77,6 +77,8 @@ mod syn_retries;
 
 mod allowance;
 pub(crate) use allowance::PathAllowance;
+#[cfg(test)]
+pub(crate) use allowance::UNMEASURED_PATH_WAIT;
 
 /// What a caller has chosen about a socket beyond where it is going: a source
 /// port to leave from and a hop limit to carry.

@@ -1914,10 +1914,10 @@ mod tests {
         let within =
             PathAllowance::of_round_trip(Duration::from_millis(1_900)).over(CONNECT_PROBE_TIMEOUT);
         let silent = Unreached::of(std::io::ErrorKind::TimedOut.into(), within);
-        assert_eq!(silent.said(), "no answer within 7.2s");
+        assert_eq!(silent.said(), "no answer within 4.5s");
         assert_eq!(
             QuietPorts::line("192.0.2.10:22", &silent, 1),
-            "192.0.2.10:22 not fingerprinted (no answer in 7.2s)"
+            "192.0.2.10:22 not fingerprinted (no answer in 4.5s)"
         );
     }
 

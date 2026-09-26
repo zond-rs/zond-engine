@@ -24,6 +24,12 @@
 
 use std::time::Duration;
 
+/// The most a round trip measured alone earns, unless it and the floor's
+/// quarter need more: the wait the scan gives a path it has measured nothing
+/// of, the connect path's path-finding wait, which a test beside that wait
+/// holds this to.
+pub(crate) const UNMEASURED_PATH_WAIT: Duration = Duration::from_secs(3);
+
 /// How much longer than on a path that costs nothing a reply from one host
 /// may take to arrive, and how much of that the path itself takes.
 ///
@@ -47,8 +53,8 @@ impl PathAllowance {
 
     /// The allowance a path measured at `round_trip` alone earns: the
     /// timeout the port scans give a probe to a host seeded with that one
-    /// round trip, three round trips in all; see
-    /// [`of_round_trips`](Self::of_round_trips).
+    /// round trip, three round trips in all, held to the path-finding wait
+    /// on a slow path; see [`of_round_trips`](Self::of_round_trips).
     #[cfg(test)]
     pub(crate) fn of_round_trip(round_trip: Duration) -> Self {
         Self::of_round_trips([round_trip])
@@ -71,19 +77,35 @@ impl PathAllowance {
     ///
     /// Spelled here rather than read off the port scans' estimator, which
     /// lives above this module; a test beside that estimator holds the two to
-    /// the same figure.
+    /// the same figure, but for one case. A round trip measured alone earns no
+    /// more than [`UNMEASURED_PATH_WAIT`], the wait the scan gives a path it
+    /// has measured nothing of, unless the round trip and the floor's quarter
+    /// need more. One sample has nothing to be checked against, and the first
+    /// a scan takes of a slow path is the one most likely to carry more than
+    /// the path: a handshake that waited on its neighbour's resolution, or on
+    /// a SYN sent again. Three of those on every wait of a conversation,
+    /// which waits on the path several times in a row where a probe waits on
+    /// it once, made one sample of 2.79 s across a path of 1.9 s cost a scan
+    /// of one silent port 48 s rather than 37. Below a second of round trip
+    /// the cap is not reached, and a second sample lifts it.
     pub(crate) fn of_round_trips(round_trips: impl IntoIterator<Item = Duration>) -> Self {
         let mut samples = round_trips.into_iter();
         let Some(first) = samples.next() else {
             return Self::NONE;
         };
-        let (mut smoothed, mut variation) = (first, first / 2);
+        let (mut smoothed, mut variation, mut alone) = (first, first / 2, true);
         for sample in samples {
             variation = (variation * 3 + smoothed.abs_diff(sample)) / 4;
             smoothed = (smoothed * 7 + sample) / 8;
+            alone = false;
+        }
+        let floor = smoothed.saturating_add(smoothed / 4);
+        let mut allowance = smoothed.saturating_add((variation * 4).max(smoothed / 4));
+        if alone {
+            allowance = allowance.min(UNMEASURED_PATH_WAIT.max(floor));
         }
         Self {
-            allowance: smoothed.saturating_add((variation * 4).max(smoothed / 4)),
+            allowance,
             round_trip: smoothed,
         }
     }
@@ -162,9 +184,36 @@ mod tests {
         )
         .over(Duration::ZERO);
 
-        assert_eq!(one, path * 3);
+        assert_eq!(one, UNMEASURED_PATH_WAIT, "held to the path-finding wait");
         assert_eq!(steady, path + path / 4, "the floor, once the path agrees");
         assert!(wandering > path * 2, "{wandering:?}");
+    }
+
+    /// **One round trip measured alone earns no more patience than a path
+    /// measured not at all, unless it needs more.**
+    ///
+    /// A first sample can carry more than the path: across a path of 1.9 s,
+    /// a handshake timed at 2.79 s earned three times that on every wait of a
+    /// silent port's conversation, and the scan of that one port took 48 s
+    /// rather than 37. Held to the path-finding wait, it is waited on as the
+    /// scan waited before it knew anything. A fast path keeps its three round
+    /// trips, a lone sample slower than the wait keeps the floor over it, and
+    /// a second sample is weighed as RFC 6298 weighs it.
+    #[test]
+    fn a_lone_slow_sample_earns_no_more_than_the_path_finding_wait() {
+        let alone = |millis| {
+            PathAllowance::of_round_trip(Duration::from_millis(millis)).over(Duration::ZERO)
+        };
+
+        let outlier = Duration::from_millis(2_790);
+        assert_eq!(alone(2_790), outlier + outlier / 4, "the floor over it");
+        assert_eq!(alone(1_900), UNMEASURED_PATH_WAIT);
+        assert_eq!(alone(140), Duration::from_millis(420), "three round trips");
+        assert_eq!(alone(4_000), Duration::from_millis(5_000), "the floor");
+
+        let two = PathAllowance::of_round_trips([1_900, 1_900].map(Duration::from_millis))
+            .over(Duration::ZERO);
+        assert!(two > UNMEASURED_PATH_WAIT, "{two:?}");
     }
 
     /// A reply across a slow path that came as soon as the path let it spent

@@ -2578,6 +2578,17 @@ mod tests {
         }
     }
 
+    /// What a round trip measured alone earns on a slow path is the wait a
+    /// path nothing has measured is given, so a measurement never makes the
+    /// scan more patient than ignorance did unless the round trip needs it.
+    #[test]
+    fn a_lone_sample_is_held_to_the_path_finding_wait() {
+        assert_eq!(
+            crate::transport::dial::UNMEASURED_PATH_WAIT,
+            PATH_FINDING_TIMEOUT
+        );
+    }
+
     /// The connect that finds the path to a neighbour waits for the
     /// neighbour's resolution as well as its handshake, and one to any other
     /// address waits for the handshake alone. A link-local address is a
