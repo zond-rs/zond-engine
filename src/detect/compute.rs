@@ -49,6 +49,7 @@
 mod budget;
 mod capability;
 pub(crate) mod db;
+mod guest_patterns;
 mod http;
 mod live;
 mod record;

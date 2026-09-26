@@ -58,6 +58,7 @@ use crate::record::wire;
 
 use super::budget::{BudgetTrap, Denial, ModuleFault, RunOutcome};
 use super::capability::{CapError, Capabilities, Capability, Grant};
+use super::guest_patterns::guest_regex;
 use super::runtime::{ComputeRuntime, LoadError, ModuleBody};
 
 /// The deepest a module's function calls may nest at run, a guard against
@@ -423,13 +424,13 @@ fn register_helpers(engine: &mut Engine) {
     engine.register_fn(
         "re_is_match",
         |pattern: ImmutableString, text: ImmutableString| -> bool {
-            compile_regex(&pattern).is_some_and(|re| re.is_match(&text))
+            guest_regex(&pattern).is_some_and(|re| re.is_match(&text))
         },
     );
     engine.register_fn(
         "re_find",
         |pattern: ImmutableString, text: ImmutableString| -> String {
-            compile_regex(&pattern)
+            guest_regex(&pattern)
                 .and_then(|re| re.find(&text).map(|m| m.as_str().to_string()))
                 .unwrap_or_default()
         },
@@ -437,7 +438,7 @@ fn register_helpers(engine: &mut Engine) {
     engine.register_fn(
         "re_capture",
         |pattern: ImmutableString, text: ImmutableString| -> String {
-            let Some(re) = compile_regex(&pattern) else {
+            let Some(re) = guest_regex(&pattern) else {
                 return String::new();
             };
             // The first capturing group if the pattern has one, else the whole
@@ -521,19 +522,6 @@ fn register_helpers(engine: &mut Engine) {
 
         super::http::build_request(&method, &path, &host, &headers, &body)
     });
-}
-
-/// Compiles a guest-supplied pattern under a size ceiling, or [`None`] if it will
-/// not compile within it. The ceiling bounds the one cost the linear matcher does
-/// not: a pathologically large pattern's compiled program, which is memory rather
-/// than the runaway match time a backtracking engine would risk.
-fn compile_regex(pattern: &str) -> Option<::regex::Regex> {
-    const REGEX_SIZE_LIMIT: usize = 1 << 20;
-    ::regex::RegexBuilder::new(pattern)
-        .size_limit(REGEX_SIZE_LIMIT)
-        .dfa_size_limit(REGEX_SIZE_LIMIT)
-        .build()
-        .ok()
 }
 
 /// Removes the stock-engine symbols and the stock resolver the sandbox's
