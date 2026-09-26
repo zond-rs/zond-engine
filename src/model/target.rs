@@ -23,7 +23,8 @@
 //! which is why the counts here are gross rather than net. Two units naming one
 //! address are two questions about it, and both get asked.
 
-use crate::model::ip::range::IpRange;
+use crate::model::ip::range::{IpRange, Ipv6Range};
+use crate::model::ip::scoped::ZoneMap;
 use crate::model::ip::set::{IpSet, Positions};
 use crate::model::port::{PortSet, Protocol};
 use std::{net::IpAddr, ops::Range, sync::Arc};
@@ -53,7 +54,7 @@ pub struct Target {
     /// Bare, with no zone. A link-local address needs one, and it travels
     /// beside the targets rather than on each of them: the zone is written on
     /// the range a target came from, and a scan holds the pairing in a
-    /// [`ZoneMap`](crate::model::ip::scoped::ZoneMap) for the phases that open a
+    /// [`ZoneMap`] for the phases that open a
     /// socket or send a frame. See
     /// [`ScopedIp`](crate::model::ip::scoped::ScopedIp) for an address that
     /// carries its own.
@@ -315,6 +316,100 @@ impl TargetMap {
             })
             .collect();
     }
+
+    /// Takes out every target a port phase cannot probe, which it does before
+    /// anything numbers the plan: the link-local ranges that name no
+    /// interface or name an address another range names on another, then the
+    /// IPv6 ranges `walkable` refuses as too wide to walk.
+    ///
+    /// One reading for the two places that have to agree on it: the port
+    /// phase, which numbers what is left and refuses the rest, and a journal,
+    /// which counts what is left as the job's total. A total that counted a
+    /// withheld target would never be reached, and a finished job would read
+    /// as one with work left. What is taken out depends on the targets alone,
+    /// so every sitting of a job takes out the same ones.
+    ///
+    /// `interfaces` is the host's interface table as index and name, which
+    /// names the zones handed back; `walkable` is the host's own limit on
+    /// what a walk may cover. Both are the caller's to supply, this module
+    /// asking nothing of the host.
+    pub(crate) fn withhold_unprobeable(
+        &mut self,
+        interfaces: &[(u32, &str)],
+        walkable: impl Fn(&Ipv6Range) -> bool,
+    ) -> Unprobeable {
+        let mut unscoped: Vec<Ipv6Range> = Vec::new();
+        let mut contested: Vec<Ipv6Range> = Vec::new();
+        let mut zones = ZoneMap::new();
+        for range in self.units.iter().flat_map(|unit| unit.ips().v6()) {
+            if range.is_ambiguous() {
+                unscoped.push(*range);
+            } else if zones.contests(range) {
+                contested.push(*range);
+            } else {
+                zones.insert(*range, interfaces);
+            }
+        }
+        self.keep_v6(|range| !unscoped.contains(range) && !contested.contains(range));
+        unscoped.sort_unstable_by_key(|range| range.start_addr());
+        unscoped.dedup();
+
+        let mut unwalkable: Vec<Ipv6Range> = self
+            .units
+            .iter()
+            .flat_map(|unit| unit.ips().v6().iter().copied())
+            .filter(|range| !walkable(range))
+            .collect();
+        if !unwalkable.is_empty() {
+            unwalkable.sort_unstable_by_key(|range| range.start_addr());
+            unwalkable.dedup();
+            self.keep_v6(&walkable);
+        }
+
+        Unprobeable {
+            zones,
+            unscoped,
+            contested,
+            unwalkable,
+        }
+    }
+
+    /// Keeps the IPv6 ranges `keep` accepts, dropping a unit left with no
+    /// address.
+    fn keep_v6(&mut self, keep: impl Fn(&Ipv6Range) -> bool) {
+        let mut kept = Vec::with_capacity(self.units.len());
+        for unit in std::mem::take(&mut self.units) {
+            let (ips, ports) = unit.into_parts();
+            let mut left = IpSet::new();
+            for range in ips.v4() {
+                left.push_v4_range(*range);
+            }
+            for range in ips.v6() {
+                if keep(range) {
+                    left.push_v6_range(*range);
+                }
+            }
+            left.canonicalize();
+            if !left.is_empty() {
+                kept.push(TargetSet::new(left, ports));
+            }
+        }
+        self.units = kept;
+    }
+}
+
+/// What [`TargetMap::withhold_unprobeable`] took out, and the zones the
+/// link-local ranges it kept were named on.
+pub(crate) struct Unprobeable {
+    /// The interface each kept link-local range was named on.
+    pub(crate) zones: ZoneMap,
+    /// Link-local ranges that name no interface, ascending.
+    pub(crate) unscoped: Vec<Ipv6Range>,
+    /// Link-local ranges naming an address another range names on another
+    /// interface.
+    pub(crate) contested: Vec<Ipv6Range>,
+    /// Ranges too wide to walk, ascending.
+    pub(crate) unwalkable: Vec<Ipv6Range>,
 }
 
 /// The same targets [`TargetMap::iter`] yields, addressed by position instead of

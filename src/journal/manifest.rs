@@ -221,6 +221,27 @@ impl Plan {
         }
     }
 
+    /// How many targets the plan numbers, which is what a job's progress is
+    /// drawn against and what it has finished once each is settled.
+    ///
+    /// [`total_targets`](Self::total_targets) for a sweep. A port scan's less
+    /// what its port phase takes out before numbering it: a link-local range
+    /// naming no interface, or an address two ranges name on two interfaces,
+    /// and a range too wide to walk; see
+    /// [`TargetMap::withhold_unprobeable`]. Those are refused rather than
+    /// asked, in every sitting alike, so a total counting them would be
+    /// reached by none.
+    pub(crate) fn numbered_targets(&self) -> u128 {
+        match &self.0 {
+            Resolved::PortScan { targets, .. } => {
+                let mut numbered = targets.clone();
+                numbered.withhold_unprobeable(&[], crate::system::interface::is_enumerable);
+                numbered.gross_targets().unwrap_or_default()
+            }
+            Resolved::Discovery { .. } | Resolved::Listen { .. } => self.total_targets(),
+        }
+    }
+
     /// The addresses a sweep will walk, or `None` for a port scan, which is
     /// counted in address-and-port pairs rather than addresses.
     pub fn addresses(&self) -> Option<&IpSet> {
@@ -532,8 +553,10 @@ pub struct JournalManifest {
         with = "wire_privilege"
     )]
     pub privilege: Privilege,
-    /// How many targets that plan holds, so a caller can report progress without
-    /// walking it.
+    /// How many targets that plan numbers, so a caller can report progress
+    /// without walking it: every one it holds but those a port scan refuses
+    /// before numbering, which no sitting asks or settles. See
+    /// [`Plan::total_targets`] for everything it holds.
     pub total_targets: u128,
     /// The key the order this journal's targets are asked in is a function of.
     ///
@@ -624,7 +647,7 @@ impl JournalManifest {
                 .map(|link| link.name().to_owned())
                 .collect(),
             privilege,
-            total_targets: plan.total_targets(),
+            total_targets: plan.numbered_targets(),
             // Drawn here because a journal is created once and the order is a
             // property of the job rather than of a sitting. Every sitting after
             // the first reads it back, which is what it is written down for.
@@ -696,7 +719,7 @@ impl JournalManifest {
             expected: self.plan,
             found,
             expected_targets: self.total_targets,
-            found_targets: plan.total_targets(),
+            found_targets: plan.numbered_targets(),
         })
     }
 }
@@ -1254,6 +1277,26 @@ mod tests {
 
         let read: JournalManifest = serde_json::from_value(written).expect("an older manifest");
         assert_eq!(read.privilege, Privilege::Connect);
+    }
+
+    /// A port scan's total counts what its plan numbers, less the targets its
+    /// port phase withholds before numbering: a link-local range naming no
+    /// interface, one naming an address another names on another interface,
+    /// and a range too wide to walk.
+    ///
+    /// The total is what a job's progress is drawn against and what says it
+    /// is finished. Counting targets no sitting numbers, a job that settled
+    /// everything it could ask lists as resumable for good, and every resume
+    /// announces probes it will not send.
+    #[test]
+    fn a_port_scans_total_leaves_out_what_its_port_phase_withholds() {
+        let named = plan(&[
+            ("fe80::1-fe80::2", "80,443"),
+            ("192.0.2.1", "80,443"),
+            ("2001:db8::/64", "80"),
+        ]);
+        let manifest = JournalManifest::new("01J8Z5Q7VN", &ports(&named), Privilege::Raw, "");
+        assert_eq!(manifest.total_targets, 2);
     }
 
     /// The manifest accepts the plan it was made from and refuses anything else,

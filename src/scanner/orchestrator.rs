@@ -116,53 +116,6 @@ pub(super) fn walkable(targets: IpSet, ctx: &ScanContext) -> IpSet {
     kept
 }
 
-/// Takes the IPv6 ranges out of `target_map` too large to walk, handing them
-/// back for the port phase to refuse.
-///
-/// The port phase's side of the rule [`walkable`] applies to a sweep, and to
-/// the same constant. A port scan walks its plan target by target whatever
-/// the privilege, since no strategy asks a range's ports in one packet, so a
-/// `/64` behind a port list is a walk that never ends: the liveness pass
-/// refuses the range and leaves every target of it undecided, and the walk
-/// then settles them one at a time for longer than the process lives. Taken
-/// out before the plan is numbered, so the numbering, the count a fraction is
-/// drawn against and the walk all describe one plan, and what the caller
-/// named still reads the same in every sitting.
-pub(super) fn withhold_unwalkable_targets(target_map: &mut TargetMap) -> Vec<Ipv6Range> {
-    let mut refused: Vec<Ipv6Range> = target_map
-        .units
-        .iter()
-        .flat_map(|unit| unit.ips().v6().iter().copied())
-        .filter(|range| !interface::is_enumerable(range))
-        .collect();
-    if refused.is_empty() {
-        return refused;
-    }
-    refused.sort_unstable_by_key(|range| range.start_addr());
-    refused.dedup();
-
-    let mut kept = Vec::with_capacity(target_map.units.len());
-    for unit in std::mem::take(&mut target_map.units) {
-        let (ips, ports) = unit.into_parts();
-        let mut walkable = IpSet::new();
-        for range in ips.v4() {
-            walkable.push_v4_range(*range);
-        }
-        for range in ips.v6() {
-            if interface::is_enumerable(range) {
-                walkable.push_v6_range(*range);
-            }
-        }
-        walkable.canonicalize();
-        if !walkable.is_empty() {
-            kept.push(TargetSet::new(walkable, ports));
-        }
-    }
-    target_map.units = kept;
-
-    refused
-}
-
 /// The environment-derived facts that steer how a scan runs.
 ///
 /// Both entry points face the same two questions: can the process open raw
@@ -2156,7 +2109,7 @@ pub(super) async fn spawn_resolver(
 /// what is left alike. The refusals wait for the port phase, whose record is
 /// where a reader looks for what the ports did not cover.
 pub(super) struct Withheld {
-    /// Ranges too large to walk; see [`withhold_unwalkable_targets`].
+    /// Ranges too large to walk.
     unwalkable: Vec<Ipv6Range>,
     /// Link-local ranges that name no interface.
     unscoped: Vec<Ipv6Range>,
@@ -2200,35 +2153,24 @@ impl Withheld {
 ///
 /// The link-local question comes first: an unscoped `fe80::/64` is both too
 /// wide to walk and on no segment, and the refusal that names the interface to
-/// write is the one the caller can act on.
-pub(super) fn withhold_unprobeable_targets(target_map: &mut TargetMap) -> Withheld {
-    let (zones, unscoped, contested) = withhold_ambiguous_targets(target_map);
-    let unwalkable = withhold_unwalkable_targets(target_map);
-    Withheld {
-        unwalkable,
-        unscoped,
-        contested,
-        zones,
-    }
-}
-
-/// Takes the link-local targets that name no interface out of `target_map`,
-/// handing back the zones the rest were named on, then the ranges taken out:
-/// those that name no interface, and those that name one address on two.
+/// write is the one the caller can act on. Which targets go is
+/// [`TargetMap::withhold_unprobeable`]'s to say, since a journal counts the
+/// job's total by the same reading.
+///
+/// # A link-local range
 ///
 /// A port scan reaches its targets over the routing table, which cannot carry a
 /// link-local address without an interface, and every interface holds an
 /// `fe80::/64`, so an unscoped one names nothing this scan can send to. Written
-/// `fe80::1%en0` it names a segment outright, and the [`ZoneMap`] returned here
+/// `fe80::1%en0` it names a segment outright, and the [`ZoneMap`] handed back
 /// is how the interface reaches the scanners: a target is addressed one at a
 /// time, and the zone is written on the range rather than on the addresses
-/// inside it.
-///
-/// A range only partly link-local, such as `fe80::/10` widened by hand, is
-/// judged by [`Ipv6Range::is_ambiguous`](crate::model::ip::range::Ipv6Range::is_ambiguous),
+/// inside it. A range only partly link-local, such as `fe80::/10` widened by
+/// hand, is judged by
+/// [`Ipv6Range::is_ambiguous`](crate::model::ip::range::Ipv6Range::is_ambiguous),
 /// which is the predicate the discovery classifier uses for the same question.
 ///
-/// Two ranges naming one address on different interfaces are refused together.
+/// Two ranges naming one address on different interfaces are refused.
 /// Which segment was meant is the one thing that cannot be recovered, and a
 /// verdict filed under a bare address would be a verdict about whichever of them
 /// answered first.
@@ -2238,16 +2180,19 @@ pub(super) fn withhold_unprobeable_targets(target_map: &mut TargetMap) -> Withhe
 /// report: `resolve_unasked` only accounts for what is still queued, and one
 /// already taken off the stream is simply gone. A refusal says what was not
 /// covered and why, which is what the caller can act on.
-fn withhold_ambiguous_targets(
-    target_map: &mut TargetMap,
-) -> (ZoneMap, Vec<Ipv6Range>, Vec<Ipv6Range>) {
-    let mut refused: Vec<Ipv6Range> = Vec::new();
-    let mut contested: Vec<Ipv6Range> = Vec::new();
-    let mut zones = ZoneMap::new();
-
+///
+/// # A range too wide to walk
+///
+/// The port phase's side of the rule [`walkable`] applies to a sweep, and to
+/// the same constant. A port scan walks its plan target by target whatever
+/// the privilege, since no strategy asks a range's ports in one packet, so a
+/// `/64` behind a port list is a walk that never ends: the liveness pass
+/// refuses the range and leaves every target of it undecided, and the walk
+/// then settles them one at a time for longer than the process lives.
+pub(super) fn withhold_unprobeable_targets(target_map: &mut TargetMap) -> Withheld {
     // Read once, and only for a scan that named a zone at all: the names come
-    // from the host's interface table, and every target below is looked up in
-    // the same list.
+    // from the host's interface table, and every target is looked up in the
+    // same list.
     let named_a_zone = target_map
         .units
         .iter()
@@ -2262,41 +2207,13 @@ fn withhold_ambiguous_targets(
         .map(|link| (link.index(), link.name()))
         .collect();
 
-    for range in target_map.units.iter().flat_map(|unit| unit.ips().v6()) {
-        if range.is_ambiguous() {
-            refused.push(*range);
-        } else if zones.contests(range) {
-            contested.push(*range);
-        } else {
-            zones.insert(*range, &names);
-        }
+    let taken = target_map.withhold_unprobeable(&names, interface::is_enumerable);
+    Withheld {
+        unwalkable: taken.unwalkable,
+        unscoped: taken.unscoped,
+        contested: taken.contested,
+        zones: taken.zones,
     }
-
-    let mut kept = Vec::with_capacity(target_map.units.len());
-    for unit in std::mem::take(&mut target_map.units) {
-        let (ips, ports) = unit.into_parts();
-        let mut walkable = IpSet::new();
-
-        for range in ips.v4() {
-            walkable.push_v4_range(*range);
-        }
-        for range in ips.v6() {
-            if !refused.contains(range) && !contested.contains(range) {
-                walkable.push_v6_range(*range);
-            }
-        }
-        walkable.canonicalize();
-
-        if !walkable.is_empty() {
-            kept.push(TargetSet::new(walkable, ports));
-        }
-    }
-    target_map.units = kept;
-
-    refused.sort_unstable_by_key(|range| range.start_addr());
-    refused.dedup();
-
-    (zones, refused, contested)
 }
 
 /// Probes `target_map`'s ports, and nothing else of its hosts.
@@ -3098,7 +3015,7 @@ mod tests {
             "443".parse().expect("ports"),
         ));
 
-        let refused = withhold_unwalkable_targets(&mut map);
+        let refused = withhold_unprobeable_targets(&mut map).unwalkable;
 
         assert_eq!(refused.len(), 1, "one range, named twice: {refused:?}");
         assert_eq!(map.units.len(), 1, "the unit left with nothing is gone");
