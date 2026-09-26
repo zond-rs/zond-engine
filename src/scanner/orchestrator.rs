@@ -1602,9 +1602,38 @@ pub(super) fn run_correlation(ctx: &ScanContext, detection: ServiceDetection) {
         return;
     }
 
+    let catalogue = crate::cve::Catalogue::embedded();
     for key in ctx.hosts_owed_passes() {
-        ctx.update_host(key, crate::cve::correlate);
+        let matched = ctx.read_host(&key, |host| crate::cve::matches(host, catalogue));
+        record_port_findings(ctx, key, matched.unwrap_or_default());
     }
+}
+
+/// Records `findings` on the host at `key`, where there are any, announcing it
+/// only where one was news.
+///
+/// For the passes that read the store and write back, which run over every
+/// host and find something on few: a write is taken down by a journal and a
+/// host announced is one a watcher reads again, so a host these found nothing
+/// on is left unwritten, and one they found only what it already held on is
+/// written without a word.
+fn record_port_findings(
+    ctx: &ScanContext,
+    key: crate::model::ip::scoped::ScopedIp,
+    findings: Vec<(u16, Protocol, crate::model::finding::Finding)>,
+) {
+    if findings.is_empty() {
+        return;
+    }
+    ctx.write_host(key, |host| {
+        let mut news = false;
+        for (number, protocol, finding) in findings {
+            news |= host
+                .add_port_finding(number, protocol, finding)
+                .unwrap_or(false);
+        }
+        news
+    });
 }
 
 /// Assesses each gathered certificate's own posture — expiry, self-signing, a
@@ -1618,11 +1647,8 @@ pub(super) fn run_correlation(ctx: &ScanContext, detection: ServiceDetection) {
 pub(super) fn run_cert_posture(ctx: &ScanContext) {
     let now = std::time::SystemTime::now();
     for key in ctx.hosts_owed_passes() {
-        ctx.update_host(key, |host| {
-            // Collect first, mutate second: the read borrows the host's ports and
-            // the write needs them mutably, so the two cannot overlap.
-            let hits: Vec<(u16, Protocol, crate::model::finding::Finding)> = host
-                .ports()
+        let hits = ctx.read_host(&key, |host| {
+            host.ports()
                 .flat_map(|port| {
                     let number = port.number();
                     let protocol = port.protocol();
@@ -1634,12 +1660,9 @@ pub(super) fn run_cert_posture(ctx: &ScanContext) {
                         .map(move |finding| (number, protocol, finding))
                         .collect::<Vec<_>>()
                 })
-                .collect();
-
-            for (number, protocol, finding) in hits {
-                host.add_port_finding(number, protocol, finding);
-            }
+                .collect()
         });
+        record_port_findings(ctx, key, hits.unwrap_or_default());
     }
 }
 
@@ -2845,6 +2868,44 @@ mod tests {
             "the refusal quotes the size it is refusing: {}",
             refusals[0].reason()
         );
+    }
+
+    /// **The passes that read the store announce only what they found.**
+    /// Correlation runs twice in a port scan and certificate posture once,
+    /// over every host, and a host announced each time is read again by
+    /// every watcher and written again by the journal for nothing. A host
+    /// they match is still told.
+    #[test]
+    fn the_store_passes_announce_only_the_hosts_they_found_something_on() {
+        use crate::model::port::{Port, Service};
+        use crate::scanner::session::ScanEvent;
+
+        let (mut session, ctx) = ScanSession::new();
+        let plain: IpAddr = "192.0.2.1".parse().expect("an address");
+        let vulnerable: IpAddr = "192.0.2.2".parse().expect("an address");
+        ctx.update_host(plain, |host| {
+            host.set_status(HostStatus::Up);
+            host.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
+        });
+        ctx.update_host(vulnerable, |host| {
+            host.set_status(HostStatus::Up);
+            host.add_port(Port::new(80, Protocol::Tcp, PortState::Open).with_service(
+                Service::new("http", 90).with_cpe("cpe:/a:apache:http_server:2.4.49"),
+            ));
+        });
+        while session.events().try_recv().is_some() {}
+
+        run_correlation(&ctx, ServiceDetection::default());
+        run_correlation(&ctx, ServiceDetection::default());
+        run_cert_posture(&ctx);
+
+        let mut announced = Vec::new();
+        while let Some(event) = session.events().try_recv() {
+            if let ScanEvent::HostUpdated(ip) = event {
+                announced.push(ip.addr());
+            }
+        }
+        assert_eq!(announced, [vulnerable], "announced: {announced:?}");
     }
 
     /// A port plan naming a range too wide to walk keeps everything else it

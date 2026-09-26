@@ -251,8 +251,19 @@ pub fn correlate(host: &mut Host) {
 pub fn correlate_with(host: &mut Host, catalogue: &Catalogue) {
     // Collect first, mutate second: the read borrows the host's ports and the
     // write needs them mutably, so the two cannot overlap.
-    let hits: Vec<(u16, Protocol, Finding)> = host
-        .ports()
+    for (number, protocol, finding) in matches(host, catalogue) {
+        host.add_port_finding(number, protocol, finding);
+    }
+}
+
+/// What [`correlate_with`] would record on `host`, port by port, without
+/// recording it.
+///
+/// For a scan correlating in place, which reads first and writes only a host
+/// something matched: a write is announced to whoever watches the scan and
+/// taken down by its journal, and most hosts match nothing.
+pub(crate) fn matches(host: &Host, catalogue: &Catalogue) -> Vec<(u16, Protocol, Finding)> {
+    host.ports()
         .flat_map(|port| {
             let number = port.number();
             let protocol = port.protocol();
@@ -263,11 +274,7 @@ pub fn correlate_with(host: &mut Host, catalogue: &Catalogue) {
                 .map(move |finding| (number, protocol, finding))
                 .collect::<Vec<_>>()
         })
-        .collect();
-
-    for (number, protocol, finding) in hits {
-        host.add_port_finding(number, protocol, finding);
-    }
+        .collect()
 }
 
 /// [`correlate_with`], over every host in a finished report.
