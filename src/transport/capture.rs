@@ -48,6 +48,7 @@ use crate::model::ip::scoped::Zone;
 use crate::model::mac::MacAddr;
 use crate::protocols::ethernet::VLAN_TAG_LEN;
 use crate::protocols::sizes::{ETH_HDR_LEN, IP_V6_HDR_LEN};
+use crate::system::descriptors::Descriptor;
 use crate::transport::frame::{self, LinkType};
 use crate::{counted, info, warn};
 
@@ -666,6 +667,10 @@ pub struct CaptureGuard {
     handles: Vec<JoinHandle<()>>,
     /// One set of counters per live capture, shared with the thread reading it.
     stats: Vec<Arc<CaptureStats>>,
+    /// The permits the descriptor gate has no socket for once these captures'
+    /// links are open, held out of it for as long as they are. See
+    /// [`running`](Self::running).
+    _held_back: Option<Descriptor>,
 }
 
 impl Drop for CaptureGuard {
@@ -701,6 +706,7 @@ impl CaptureGuard {
             stop: Arc::new(AtomicBool::new(true)),
             handles: Vec::new(),
             stats: Vec::new(),
+            _held_back: None,
         }
     }
 
@@ -714,6 +720,32 @@ impl CaptureGuard {
             stop: Arc::new(AtomicBool::new(true)),
             handles: Vec::new(),
             stats: vec![Arc::new(counters)],
+            _held_back: None,
+        }
+    }
+
+    /// A guard over the reader threads `handles`, whose links are open, taking
+    /// out of the descriptor gate what the table no longer has a socket for.
+    ///
+    /// A capture holds a descriptor for each link it listens on, thirty on a
+    /// laptop with a VPN and a hypervisor, and every transport opens its own.
+    /// What a scan's connections were let hold was read off the table when
+    /// the scan started, before any of these were open, so without this the
+    /// connections are promised sockets the captures hold, and each one past
+    /// the table's room waits out its patience for a socket and is filed
+    /// unasked. Read here, after the links are open, the table counts them,
+    /// and the permits go back to the gate when the captures close. See
+    /// [`hold_back`](crate::system::descriptors::hold_back).
+    fn running(
+        stop: Arc<AtomicBool>,
+        handles: Vec<JoinHandle<()>>,
+        stats: Vec<Arc<CaptureStats>>,
+    ) -> Self {
+        Self {
+            stop,
+            handles,
+            stats,
+            _held_back: crate::system::descriptors::hold_back(),
         }
     }
 
@@ -1249,6 +1281,7 @@ where
             stop,
             handles,
             stats,
+            _held_back: None,
         });
         return Err(CaptureError::OutOfDescriptors { links: exhausted });
     }
@@ -1276,11 +1309,7 @@ where
         options.filter,
     );
 
-    Ok(CaptureGuard {
-        stop,
-        handles,
-        stats,
-    })
+    Ok(CaptureGuard::running(stop, handles, stats))
 }
 
 /// Says which links could not be captured on, and why: once per link for the
@@ -2638,6 +2667,7 @@ mod tests {
             stop: Arc::new(AtomicBool::new(true)),
             handles: Vec::new(),
             stats,
+            _held_back: None,
         }
     }
 
@@ -2788,6 +2818,7 @@ mod tests {
             stop: Arc::new(AtomicBool::new(false)),
             handles: vec![handle],
             stats: vec![counters],
+            _held_back: None,
         };
 
         while !guard.handles[0].is_finished() {
@@ -2811,9 +2842,58 @@ mod tests {
                 spawn_reader("test0", Arc::clone(&counters), |_| {}).expect("a thread starts"),
             ],
             stats: vec![Arc::clone(&counters)],
+            _held_back: None,
         };
 
         drop(guard);
         assert!(!counters.stopped_early.load(Ordering::Relaxed));
+    }
+
+    /// Captures opened in a table the scan's connections were sized to take
+    /// the descriptors they hold out of what those connections are let hold,
+    /// for as long as they are open.
+    ///
+    /// Forty free of 64 when the scan starts leaves its connections the gate
+    /// whole. Twenty-eight links' captures then take twenty-eight of those
+    /// forty, and a gate still promising thirty-two sends connections past
+    /// the table's room to wait out their patience and be filed unasked.
+    #[cfg(unix)]
+    #[test]
+    fn a_capture_holds_back_the_connections_its_links_took_the_room_of() {
+        use crate::system::descriptors::testing::{exhaust, in_a_process_of_its_own};
+        use crate::system::descriptors::{OPENED_WHILE_RUNNING, gate, hold_back};
+
+        if !in_a_process_of_its_own(
+            module_path!(),
+            "a_capture_holds_back_the_connections_its_links_took_the_room_of",
+        ) {
+            return;
+        }
+        let mut held = exhaust(64);
+        held.truncate(held.len() - 40);
+        let whole = gate().available_permits();
+        let scan = hold_back();
+        let at_start = gate().available_permits();
+
+        let links: Vec<std::fs::File> = (0..28)
+            .map(|_| std::fs::File::open("/dev/null").expect("a descriptor for a link"))
+            .collect();
+        let guard = CaptureGuard::running(Arc::new(AtomicBool::new(true)), Vec::new(), Vec::new());
+        let capturing = gate().available_permits();
+        drop(guard);
+        let closed = gate().available_permits();
+        drop((links, scan, held));
+
+        assert_eq!(
+            (whole, at_start),
+            (32, 32),
+            "the table had room for the gate"
+        );
+        assert_eq!(
+            capturing,
+            40 - 28 - OPENED_WHILE_RUNNING,
+            "the connections are let hold what the captures left"
+        );
+        assert_eq!(closed, whole, "and the captures closing gives it back");
     }
 }

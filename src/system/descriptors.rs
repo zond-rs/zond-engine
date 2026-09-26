@@ -322,6 +322,13 @@ pub(crate) fn too_few(captures: usize) -> Option<(usize, usize)> {
 /// difference measures is the descriptors held outside the gate. Held until
 /// the scan ends rather than handed back as the table empties, since the gate
 /// has no way to learn the rest of the process closed a file.
+///
+/// Taken twice over, for the two things that fill the table: when a scan
+/// starts, for what the process holds then, and when a capture has opened
+/// its links, for the descriptors those took, held for as long as the capture
+/// is open. A capture opens after the scan's own holdback was read, and the
+/// scan's connections cannot be promised the sockets it holds; see
+/// [`CaptureGuard`](crate::transport::capture::CaptureGuard).
 pub(crate) fn hold_back() -> Option<Descriptor> {
     let soft = soft_limit()?;
     let open = open_descriptors(soft)?;
