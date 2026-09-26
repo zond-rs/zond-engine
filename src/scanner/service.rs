@@ -172,6 +172,26 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
     // A stop that came while ports were being identified ended the ones in
     // flight, which keep what the port phase recorded and nothing more.
     ctx.stopping_before(Pass::Services);
+    close_pass(ctx, &crowds, &quiet, in_part, asked).await;
+}
+
+/// Ends a pass whose first identifications are done: asks again the ports
+/// its crowds owe a second asking, and says what the pass could not learn,
+/// the ports that said nothing, those that were quiet or out of reach, and
+/// those the file limit left identified in part, a second asking it cut
+/// short counted as a first one is.
+///
+/// Apart from [`detect`] so the counting of a second asking is tested where
+/// the pass does it, against a table filled before anything else is opened:
+/// a test that ran the pass's first identification before filling it would
+/// race the descriptors that identification's far end lets go of.
+async fn close_pass(
+    ctx: &ScanContext,
+    crowds: &Crowds,
+    quiet: &QuietPorts,
+    mut in_part: QuietPorts,
+    asked: usize,
+) {
     for (ip, port) in crowds.ask_again(ctx, ScannerKind::Service).await {
         in_part.record(&ip, port, Unreached::Starved);
     }
@@ -1874,9 +1894,22 @@ mod tests {
     }
 
     /// A second asking the file limit cuts short is counted as identified in
-    /// part, as a first asking cut short is: the port keeps what its first
-    /// identification drew, and the questions the second would have put went
-    /// unasked for this machine's limit, not for anything the port said.
+    /// part, as a first asking cut short is, and the pass files it: the port
+    /// keeps what its first identification drew, and the questions the second
+    /// would have put went unasked for this machine's limit, not for anything
+    /// the port said.
+    ///
+    /// The port is owed its second asking as its first identification leaves
+    /// it owed, with no connection made first, and the table is filled before
+    /// anything is opened. A first identification run here would leave its
+    /// far end closing sockets on another thread after the fill, and a socket
+    /// freed that way lets the second asking connect, which reads as a port
+    /// that said nothing rather than one the limit cut short. Nor is the
+    /// host's backlog waited out, which is not what is tested here. The port
+    /// refuses connections, so a table with room for one ends the asking at
+    /// once rather than walking an identification. What it does wait is the
+    /// patience every connection gives a full table, which is the path the
+    /// limit takes.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_second_asking_the_file_limit_cuts_short_is_counted_identified_in_part() {
@@ -1888,24 +1921,47 @@ mod tests {
         ) {
             return;
         }
-        let silent = SilentPort::open();
+        let refusing = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .expect("a loopback port");
         let (_session, ctx) = ScanSession::new();
         let crowds = Crowds::default();
-        let crowd = crowds.of(silent.addr().ip(), None);
+        let crowd = crowds.of(refusing.ip(), None);
         crowd.answered_late.store(true, Ordering::Relaxed);
-
-        let company = crowd.contention.enter();
-        identified_in(&crowd, &silent).await;
-        drop(company);
+        crowd.owed.lock().unwrap().push(Owed {
+            key: refusing.ip().into(),
+            addr: refusing,
+            port: crate::fingerprint::baseline_port(
+                refusing.port(),
+                Protocol::Tcp,
+                PortState::Open,
+            ),
+            detection: ServiceDetection::default(),
+            egress: Egress::KERNEL,
+            path: PathAllowance::NONE,
+            in_part: false,
+        });
 
         let held = exhaust(64);
-        let in_part = crowds.ask_again(&ctx, ScannerKind::Service).await;
+        close_pass(
+            &ctx,
+            &crowds,
+            &QuietPorts::default(),
+            QuietPorts::default(),
+            1,
+        )
+        .await;
         drop(held);
 
-        assert_eq!(
-            in_part,
-            vec![(silent.addr().ip().into(), silent.addr().port())],
-            "a second asking refused a socket was not counted"
+        let failures = ctx.take_failures();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].reason().starts_with(&format!(
+                "{} identified in part",
+                ScopedIp::from(refusing.ip()).endpoint(refusing.port())
+            )),
+            "a second asking refused a socket was not counted: {}",
+            failures[0].reason()
         );
     }
 
