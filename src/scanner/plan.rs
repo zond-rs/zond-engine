@@ -321,7 +321,10 @@ impl RefusedStep {
     ///
     /// `fe80::1` names a different machine on every segment, and every interface
     /// holds an `fe80::/64`, so there is nothing to choose between them. Written
-    /// `fe80::1%en0` it names one, and the scan sends from that interface.
+    /// with an interface, as `fe80::1%en0`, it names one, and the scan sends
+    /// from that interface. The reason written out shows the target written
+    /// with an interface this host has: up, able to broadcast and holding a
+    /// link-local address, the one the default route leaves by first.
     ///
     /// [`RoutedTargets::ambiguous`](crate::system::interface::RoutedTargets)
     /// refuses the same target on the discovery path.
@@ -329,10 +332,7 @@ impl RefusedStep {
         let target = name(range);
         Self {
             scanner: ScannerKind::SynPort,
-            reason: format!(
-                "{target}: link-local, name the interface ({}%en0)",
-                range.start_addr()
-            ),
+            reason: format!("{target}: {}", name_an_interface(range)),
         }
     }
 
@@ -629,11 +629,7 @@ impl DiscoveryPlan {
         for range in &ambiguous {
             refusals.push(RefusedStep {
                 scanner: ScannerKind::Local,
-                reason: format!(
-                    "{}: link-local, name the interface ({}%en0)",
-                    range.start_addr(),
-                    range.start_addr()
-                ),
+                reason: format!("{}: {}", range.start_addr(), name_an_interface(range)),
             });
         }
 
@@ -1501,9 +1497,86 @@ fn candidates_for(link: &Link, table: &[neighbor_cache::Neighbor]) -> Vec<IpAddr
 // ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
 // ╚════════════════════════════════════════════╝
 
+/// The remedy for a link-local target that names no interface: the target
+/// written with an interface this host has, from its own table.
+///
+/// An example rather than an instruction, because the one thing a reader
+/// cannot tell from "name the interface" is how, and a name they do not have,
+/// such as another platform's first Ethernet port, sends them to find out.
+/// Where the host has no link to suggest, the instruction alone.
+fn name_an_interface(range: &Ipv6Range) -> String {
+    match link_local_example(&crate::system::interface::interfaces_or_none()) {
+        Some(link) => format!(
+            "link-local, name the interface ({}%{})",
+            range.start_addr(),
+            link.name()
+        ),
+        None => "link-local, name the interface".to_owned(),
+    }
+}
+
+/// The link a link-local target is most likely meant on: one that is up, can
+/// broadcast and holds a link-local address of its own, which is a segment
+/// `fe80::/64` means something on. The one the default route leaves by is
+/// preferred, being where this host meets the network it is on; otherwise the
+/// first, in the order the system lists them.
+fn link_local_example(links: &[Link]) -> Option<&Link> {
+    let segment = |link: &&Link| {
+        link.is_up()
+            && link.is_broadcast()
+            && !link.is_loopback()
+            && link
+                .ipv6()
+                .any(|(address, _)| address.is_unicast_link_local())
+    };
+    links
+        .iter()
+        .filter(segment)
+        .find(|link| link.carries_default_route())
+        .or_else(|| links.iter().find(segment))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The link-local hint names an interface this host has**, one that is
+    /// up, broadcasts and holds a link-local address, the default route's
+    /// first, and suggests none where the host has no such link. A name taken
+    /// from another platform, `en0` on a Linux host, is one the reader does
+    /// not have.
+    #[test]
+    fn the_link_local_hint_names_an_interface_this_host_has() {
+        use crate::system::interface::{Addressing, LinkAddress};
+        use std::net::Ipv6Addr;
+
+        let link_local =
+            LinkAddress::new(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)), 64);
+        let global = LinkAddress::new(
+            IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
+            64,
+        );
+        let link = |name: &str, addresses: Vec<LinkAddress>| {
+            Link::new(name, 1)
+                .with_link_up(true)
+                .with_addressing(Addressing::Broadcast)
+                .with_addresses(addresses)
+        };
+
+        let links = [
+            link("tun0", vec![link_local]).with_addressing(Addressing::PointToPoint),
+            link("eth1", vec![global]),
+            link("eth2", vec![link_local]).with_link_up(false),
+            link("eth0", vec![link_local]),
+            link("wlan0", vec![link_local]).with_default_route(true),
+        ];
+        assert_eq!(link_local_example(&links).map(Link::name), Some("wlan0"));
+        assert_eq!(
+            link_local_example(&links[..4]).map(Link::name),
+            Some("eth0")
+        );
+        assert!(link_local_example(&links[..3]).is_none());
+    }
 
     /// The port a raw TCP scanner built here probes from. Its transport sends
     /// nothing, so which one does not matter.

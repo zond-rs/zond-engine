@@ -2336,7 +2336,7 @@ mod tests {
                 .phases()
                 .iter()
                 .flat_map(|phase| phase.refusals())
-                .any(|refusal| refusal.reason().contains("%en0")),
+                .any(|refusal| refusal.reason().contains("link-local, name the interface")),
             "the unscoped targets are refused: {:?}",
             report.phases()
         );

@@ -2817,7 +2817,9 @@ mod tests {
         let refusals = ctx.refusals_snapshot();
         assert_eq!(refusals.len(), 1);
         assert!(
-            refusals[0].reason().contains("fe80::1%en0"),
+            refusals[0]
+                .reason()
+                .starts_with("fe80::1: link-local, name the interface"),
             "the refusal says what the caller could write instead: {}",
             refusals[0].reason()
         );
