@@ -59,13 +59,29 @@ use std::time::{Duration, Instant};
 /// its own; anything else is the `errno` that stopped it.
 static ENTERED: AtomicI32 = AtomicI32::new(-1);
 
-/// Moves this process into a user and network namespace of its own.
+/// The variable a process that made the tier's namespace leaves for the
+/// processes it starts, naming itself by its process ID.
+const MADE_BY: &str = "ZOND_TIER3_NAMESPACE_OF";
+
+/// Moves this process into a user and network namespace of its own, with its
+/// loopback up.
 ///
 /// Registered in `.init_array`, so it runs before `main` and before any thread
 /// exists. A failure is recorded rather than raised: the tests report it as a
 /// skip, which reads better than a suite that aborts on a kernel that will not
 /// hand out user namespaces.
+///
+/// A process started from inside the namespace, as a test that runs this
+/// binary again for a second process of its own does, stays in the one it
+/// was started in. Moved into a namespace of its own it would find nothing
+/// the test that started it holds: a datagram it sends to that test's port
+/// would go to a port nothing holds, on a loopback of its own.
 extern "C" fn enter() {
+    if started_inside_the_namespace() {
+        ENTERED.store(0, Ordering::SeqCst);
+        return;
+    }
+
     // SAFETY: called on the only thread this process has, which is what
     // `CLONE_NEWUSER` requires. `getuid` and `getgid` cannot fail.
     let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
@@ -93,7 +109,70 @@ extern "C" fn enter() {
         return;
     }
 
-    ENTERED.store(mount_fresh_sysfs(), Ordering::SeqCst);
+    let entered = match mount_fresh_sysfs() {
+        0 => bring_loopback_up(),
+        code => code,
+    };
+    if entered == 0 {
+        // SAFETY: nothing else reads or writes the environment while this runs
+        // before `main`, on the only thread there is.
+        unsafe { std::env::set_var(MADE_BY, std::process::id().to_string()) };
+    }
+    ENTERED.store(entered, Ordering::SeqCst);
+}
+
+/// Whether this process was started from inside the namespace another run of
+/// this binary made, which it shares by inheriting it.
+///
+/// Told by [`MADE_BY`] naming a process whose network namespace is this
+/// process's own. A name alone would not do: a variable left behind by a run
+/// that has since ended, or passed into a shell a test was started from,
+/// names a process whose namespace this one is not in.
+fn started_inside_the_namespace() -> bool {
+    let Some(maker) = std::env::var_os(MADE_BY) else {
+        return false;
+    };
+    let theirs = std::path::Path::new("/proc").join(maker).join("ns/net");
+    match (fs::read_link("/proc/self/ns/net"), fs::read_link(theirs)) {
+        (Ok(ours), Ok(theirs)) => ours == theirs,
+        _ => false,
+    }
+}
+
+/// Brings this namespace's loopback up, answering the `errno` that stopped
+/// it, or zero.
+///
+/// A new network namespace has its loopback down, and with it down nothing
+/// reaches `127.0.0.1` or `::1`: a send there is refused as a network out of
+/// reach. The loopback services the tiers share stand up on it, and a test
+/// of them here must find it up whether or not a [`Segment`] was built
+/// first.
+fn bring_loopback_up() -> i32 {
+    // SAFETY: `socket` takes no pointers. `ioctl` reads and writes one
+    // `ifreq` through a pointer to a live local of that type, whose name is
+    // NUL-terminated since it starts zeroed and `lo` fills less of it than
+    // its length, and the socket is closed on every path out.
+    unsafe {
+        let socket = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
+        if socket < 0 {
+            return std::io::Error::last_os_error().raw_os_error().unwrap_or(-1);
+        }
+        let mut request: libc::ifreq = std::mem::zeroed();
+        for (slot, byte) in request.ifr_name.iter_mut().zip(b"lo") {
+            *slot = *byte as libc::c_char;
+        }
+        let mut code = 0;
+        if libc::ioctl(socket, libc::SIOCGIFFLAGS as _, &mut request) != 0 {
+            code = std::io::Error::last_os_error().raw_os_error().unwrap_or(-1);
+        } else {
+            request.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
+            if libc::ioctl(socket, libc::SIOCSIFFLAGS as _, &request) != 0 {
+                code = std::io::Error::last_os_error().raw_os_error().unwrap_or(-1);
+            }
+        }
+        libc::close(socket);
+        code
+    }
 }
 
 /// Replaces `/sys` with one belonging to this network namespace.
@@ -240,7 +319,6 @@ impl Segment {
 
         ip(&["link", "add", &near, "type", "veth", "peer", "name", &far]);
         ip(&["link", "set", &far, "netns", &pid.to_string()]);
-        ip(&["link", "set", "lo", "up"]);
         ip(&[
             "addr",
             "add",
