@@ -970,6 +970,19 @@ async fn an_rdp_server_is_named_from_its_negotiation_over_a_socket() {
     assert_eq!(service.extrainfo(), Some("security layer: CredSSP (NLA)"));
 }
 
+/// A domain controller's root DSE as the matcher reads it: the attributes the
+/// rules read, at the functional level `level`, in the four-byte lengths
+/// Active Directory writes.
+fn root_dse(level: &[u8]) -> String {
+    let mut bytes = b"\x04\x15supportedCapabilities1\x84\x00\x00\x00\x18\x04\x16".to_vec();
+    bytes.extend_from_slice(b"1.2.840.113556.1.4.8000\x84\x00\x00\x00\x28");
+    bytes.extend_from_slice(b"\x04\x1ddomainControllerFunctionality1\x84\x00\x00\x00");
+    bytes.push(2 + level.len() as u8);
+    bytes.extend_from_slice(&[0x04, level.len() as u8]);
+    bytes.extend_from_slice(level);
+    super::extract::reply_text(&bytes)
+}
+
 /// A domain controller's functional level names its release only as far as
 /// the level does.
 ///
@@ -982,18 +995,6 @@ async fn an_rdp_server_is_named_from_its_negotiation_over_a_socket() {
 #[test]
 fn a_functional_level_names_the_release_only_as_far_as_it_goes() {
     use crate::model::port::Protocol::Tcp;
-
-    /// The root DSE attributes the rules read, in the four-byte lengths Active
-    /// Directory writes.
-    fn root_dse(level: &[u8]) -> String {
-        let mut bytes = b"\x04\x15supportedCapabilities1\x84\x00\x00\x00\x18\x04\x16".to_vec();
-        bytes.extend_from_slice(b"1.2.840.113556.1.4.8000\x84\x00\x00\x00\x28");
-        bytes.extend_from_slice(b"\x04\x1ddomainControllerFunctionality1\x84\x00\x00\x00");
-        bytes.push(2 + level.len() as u8);
-        bytes.extend_from_slice(&[0x04, level.len() as u8]);
-        bytes.extend_from_slice(level);
-        super::extract::reply_text(&bytes)
-    }
 
     // The CPE a reading carries, release and all: `windows` is the family's
     // own, which is as far as level 7 goes.
@@ -1020,6 +1021,40 @@ fn a_functional_level_names_the_release_only_as_far_as_it_goes() {
         assert_eq!(
             found.product.as_deref(),
             Some("Active Directory Controller")
+        );
+    }
+}
+
+/// A domain controller read over SMB and LDAP together is reported with the
+/// CPE of the release the two establish.
+///
+/// Its SMB service states build 20348, which is Windows Server 2022 and
+/// carries that release's CPE; its functional level of 7 names Windows Server
+/// and carries the family's. The first is the second carried further, so the
+/// merged product is the 2022 release, and its CPE has to be the one naming
+/// it: the family's is a true reading of something coarser than what was
+/// concluded, and two CPEs that differ for that reason are no disagreement.
+/// Dropping both left a controller with a named release and no identifier
+/// to look its vulnerabilities up by, less than SMB said alone.
+#[test]
+fn smb_and_ldap_together_keep_the_cpe_of_the_release_they_establish() {
+    use crate::model::port::Protocol::Tcp;
+
+    let db = SignatureDb::global();
+    let read = |port: u16, text: &str| {
+        db.identify(port, Tcp, text)
+            .and_then(|found| found.os)
+            .expect("the reply names an operating system")
+    };
+    let smb = read(445, "Windows 10.0 Build 20348");
+    let ldap = read(389, &root_dse(b"7"));
+
+    for evidence in [vec![smb.clone(), ldap.clone()], vec![ldap, smb]] {
+        let verdict = super::os::resolve(evidence).expect("the two agree");
+        assert_eq!(verdict.product.as_deref(), Some("Windows Server 2022"));
+        assert_eq!(
+            verdict.cpe.as_deref(),
+            Some("cpe:/o:microsoft:windows_server_2022:-")
         );
     }
 }

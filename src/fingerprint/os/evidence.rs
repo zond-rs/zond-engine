@@ -217,15 +217,41 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
     lines.sort_unstable();
     lines.dedup();
 
-    let (vendor, product, version, kernel, arch, cpe, device) = (
+    let (vendor, product, version, kernel, arch, device) = (
         agreed(|item| &item.vendor),
         deepest(|item| &item.product),
         deepest(|item| &item.version),
         deepest(|item| &item.kernel),
         agreed(|item| &item.arch),
-        agreed(|item| &item.cpe),
         agreed(|item| &item.device),
     );
+
+    // The CPE names what was concluded, so only the sources that stated what
+    // was concluded speak to it. A CPE is an identifier for a product at a
+    // version, and a source whose product or version stops short of the
+    // merged one carries the identifier of that shorter reading: a functional
+    // level naming `Windows Server` carries the family's `windows`, beside an
+    // SMB build naming `Windows Server 2022` and carrying that release's. The
+    // two identifiers differ because the readings go to different depths, not
+    // because the sources disagree, and taking the shorter one's would put an
+    // identifier beside a name it does not describe. So the CPE is the one the
+    // sources stating exactly the merged product and version agree on, and
+    // none where they part ways or none of them carries one.
+    let cpe = {
+        let concluded: Vec<&OsEvidence> = items
+            .iter()
+            .copied()
+            .filter(|item| item.product == product && item.version == version)
+            .collect();
+        let stated: Vec<&str> = concluded
+            .iter()
+            .filter_map(|item| item.cpe.as_deref())
+            .collect();
+        stated
+            .first()
+            .filter(|candidate| stated.iter().all(|other| other == *candidate))
+            .map(|candidate| (*candidate).to_owned())
+    };
 
     // Something has to have been established. Every one of these is a real
     // answer on its own: a device class says the box is infrastructure, which is
@@ -723,6 +749,57 @@ mod tests {
                 .expect("the family is agreed");
             assert_eq!(resolved.product, None, "{other}");
         }
+    }
+
+    /// The CPE is the one carried by what was concluded. A reading that stops
+    /// short of the merged product or version carries the identifier of that
+    /// shorter reading, which describes something coarser than the answer;
+    /// two sources stating the concluded release with different identifiers
+    /// still leave none, since nothing here can say which is right.
+    #[test]
+    fn the_cpe_is_the_one_the_concluded_release_carries() {
+        let named = |product: &str, version: Option<&str>, cpe: &str| {
+            let mut item = evidence("Windows", 0.6, OsSource::ServiceBanner);
+            item.product = Some(product.to_string());
+            item.version = version.map(str::to_string);
+            item.cpe = Some(cpe.to_string());
+            item
+        };
+        let release = named(
+            "Windows Server 2022",
+            None,
+            "cpe:/o:microsoft:windows_server_2022:-",
+        );
+        let family = named("Windows Server", None, "cpe:/o:microsoft:windows:-");
+        let resolved = resolve(vec![family, release.clone()]).expect("named");
+        assert_eq!(
+            resolved.cpe.as_deref(),
+            Some("cpe:/o:microsoft:windows_server_2022:-")
+        );
+
+        let patched = named(
+            "Windows Server 2008",
+            Some("SP2"),
+            "cpe:/o:microsoft:windows_server_2008:SP2",
+        );
+        let unpatched = named(
+            "Windows Server 2008",
+            None,
+            "cpe:/o:microsoft:windows_server_2008:-",
+        );
+        let resolved = resolve(vec![unpatched, patched]).expect("named");
+        assert_eq!(resolved.version.as_deref(), Some("SP2"));
+        assert_eq!(
+            resolved.cpe.as_deref(),
+            Some("cpe:/o:microsoft:windows_server_2008:SP2")
+        );
+
+        let mut other = release.clone();
+        other.source = OsSource::SnmpAgent;
+        other.cpe = Some("cpe:/o:microsoft:windows_server:2022".to_string());
+        let resolved = resolve(vec![release, other]).expect("named");
+        assert_eq!(resolved.product.as_deref(), Some("Windows Server 2022"));
+        assert_eq!(resolved.cpe, None, "two identifiers for one release");
     }
 
     /// Two runs over the same evidence must resolve the same way. With scores
