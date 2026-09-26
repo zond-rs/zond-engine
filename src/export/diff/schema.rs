@@ -27,8 +27,8 @@ use crate::diff::{
     CertificateChange, Confirmed, Coverage, DiffSummary, HostChange, HostDelta, PortChange,
     PortDelta, Presence, ScanDiff, SecurityChange, ServiceChange, Significance,
 };
-use crate::export::ExportOptions;
 use crate::export::schema::{EngineDto, HostDto};
+use crate::export::{ExportOptions, HostRedaction};
 use crate::format::time::rfc3339;
 use crate::model::finding::Finding;
 use crate::model::host::os::OsFingerprint;
@@ -333,6 +333,7 @@ impl<'a> HostDeltaDto<'a> {
     /// Renders one host's comparison.
     pub fn new(delta: &'a HostDelta, options: &ExportOptions) -> Self {
         let (baseline_records, current_records) = delta.records();
+        let masking = options.redaction.for_delta(delta);
 
         Self {
             address: delta.address().to_string(),
@@ -348,12 +349,12 @@ impl<'a> HostDeltaDto<'a> {
             changes: delta
                 .changes()
                 .iter()
-                .flat_map(|change| ChangeDto::of_host(change, options))
+                .flat_map(|change| ChangeDto::of_host(change, &masking))
                 .collect(),
             ports: delta
                 .ports()
                 .iter()
-                .map(|port| PortDeltaDto::new(port, options))
+                .map(|port| PortDeltaDto::new(port, &masking))
                 .collect(),
             baseline: delta.baseline().map(|host| HostDto::new(host, options)),
             current: delta.current().map(|host| HostDto::new(host, options)),
@@ -399,8 +400,8 @@ pub struct PortDeltaDto {
 }
 
 impl PortDeltaDto {
-    /// Renders one endpoint's comparison.
-    pub fn new(delta: &PortDelta, options: &ExportOptions) -> Self {
+    /// Renders one endpoint's comparison, on the host `masking` was made for.
+    pub fn new(delta: &PortDelta, masking: &HostRedaction) -> Self {
         Self {
             port: delta.number(),
             protocol: protocol_name(delta.protocol()),
@@ -413,7 +414,7 @@ impl PortDeltaDto {
             changes: delta
                 .changes()
                 .iter()
-                .flat_map(|change| ChangeDto::of_port(change, options))
+                .flat_map(|change| ChangeDto::of_port(change, masking))
                 .collect(),
         }
     }
@@ -518,10 +519,16 @@ impl ChangeDto {
     /// [`HostChange`] stops this compiling until somebody decides what it is
     /// called on the wire, as [`export::schema`](crate::export::schema) does for
     /// the report document.
-    pub fn of_host(change: &HostChange, options: &ExportOptions) -> Vec<Self> {
-        let redaction = options.redaction;
+    ///
+    /// `masking` is made for the host the change is on, from both of its
+    /// records ([`Redaction::for_delta`](crate::export::Redaction::for_delta)).
+    /// A name and a hardware address are masked as their fields are anywhere,
+    /// and every value then goes through [`HostRedaction::text`], since an
+    /// operating system's name and a finding's title are the host's words.
+    pub fn of_host(change: &HostChange, masking: &HostRedaction) -> Vec<Self> {
+        let redaction = masking.redaction();
 
-        match change {
+        let changes = match change {
             HostChange::Status(status) => vec![Self::between(
                 "status",
                 host_status_name(status.before),
@@ -601,7 +608,26 @@ impl ChangeDto {
                 resolved,
                 reassessed,
             } => Self::findings(appeared, resolved, &[], reassessed),
-        }
+        };
+        Self::masked(changes, masking)
+    }
+
+    /// `changes` with each value read through `masking`.
+    fn masked(changes: Vec<Self>, masking: &HostRedaction) -> Vec<Self> {
+        let mask = |value: Option<String>| {
+            value.map(|value| match masking.text(&value) {
+                std::borrow::Cow::Borrowed(_) => value,
+                std::borrow::Cow::Owned(masked) => masked,
+            })
+        };
+        changes
+            .into_iter()
+            .map(|change| Self {
+                kind: change.kind,
+                before: mask(change.before),
+                after: mask(change.after),
+            })
+            .collect()
     }
 
     /// One IP protocol verdict, as `47 gre: open`.
@@ -672,17 +698,13 @@ impl ChangeDto {
     /// | `finding_unsettled` | one claim the earlier scan made that the later one neither makes nor settled |
     /// | `finding_reassessed` | one claim both scans make, graded differently |
     ///
-    /// `options` is not read, and the parameter stays. Nothing an endpoint change
-    /// carries is what [`Redaction`](crate::export::Redaction) masks: a
-    /// certificate change is rendered by fingerprint rather than subject, and a
-    /// service's name and version identify software rather than a person or a
-    /// device. The two sides' whole host records travel on the [`HostDeltaDto`]
-    /// above and are masked there. Taking the parameter away would leave a caller
-    /// reading these two functions side by side wondering which forgot, and it
-    /// would have to come back the first time a change
-    /// carries a subject.
-    pub fn of_port(change: &PortChange, _options: &ExportOptions) -> Vec<Self> {
-        match change {
+    /// Every value goes through `masking`, made as for
+    /// [`of_host`](Self::of_host): a service's product and extra information
+    /// and a finding's title are filled from the host's replies, and can name
+    /// it. A certificate change is rendered by fingerprint rather than subject,
+    /// so it names nothing to mask.
+    pub fn of_port(change: &PortChange, masking: &HostRedaction) -> Vec<Self> {
+        let changes = match change {
             PortChange::State(state) => vec![Self::between(
                 "port_state",
                 port_state_name(state.before),
@@ -696,7 +718,8 @@ impl ChangeDto {
                 unsettled,
                 reassessed,
             } => Self::findings(appeared, resolved, unsettled, reassessed),
-        }
+        };
+        Self::masked(changes, masking)
     }
 
     fn of_service(change: &ServiceChange) -> Vec<Self> {

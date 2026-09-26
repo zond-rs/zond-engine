@@ -84,7 +84,7 @@ use serde::Serialize;
 use serde::ser::{SerializeSeq, Serializer};
 
 use crate::config::{RetryConfig, ScanEffort};
-use crate::export::ExportOptions;
+use crate::export::{ExportOptions, HostRedaction};
 use crate::format::time::rfc3339;
 use crate::model::capture::CaptureCounts;
 use crate::model::finding::{Finding, Reference};
@@ -1634,6 +1634,7 @@ impl<'a> HostDto<'a> {
     /// Renders a host, applying the redaction policy in `options`.
     pub fn new(host: &'a Host, options: &ExportOptions) -> Self {
         let redaction = options.redaction;
+        let masking = redaction.for_host(host);
 
         let mut families: Vec<&'static str> = Vec::with_capacity(2);
         if host.ips().iter().any(std::net::IpAddr::is_ipv4) {
@@ -1692,7 +1693,7 @@ impl<'a> HostDto<'a> {
                     state: ip_protocol_state_name(*state),
                 })
                 .collect(),
-            os: host.os().map(OsDto::new),
+            os: host.os().map(|os| OsDto::new(os, &masking)),
             hardware: host
                 .hardware()
                 .map(|hardware| HardwareDto::new(hardware, options)),
@@ -1700,9 +1701,9 @@ impl<'a> HostDto<'a> {
             path: host.path().hops().iter().map(HopDto::new).collect(),
             ports: host
                 .ports()
-                .map(|port| PortDto::new(port, options))
+                .map(|port| PortDto::new(port, &masking))
                 .collect(),
-            findings: findings_dto(host.findings()),
+            findings: findings_dto(host.findings(), &masking),
             first_seen: rfc3339(host.first_seen()),
             last_seen: rfc3339(host.last_seen()),
         }
@@ -1843,8 +1844,9 @@ impl<'a> ReasonDto<'a> {
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct OsDto<'a> {
-    /// The primary OS name.
-    pub name: &'a str,
+    /// The primary OS name. Free text a reply can fill, so a name the host is
+    /// known by is masked in it under redaction.
+    pub name: Cow<'a, str>,
     /// The broad family.
     pub family: Option<&'a str>,
     /// The version or generation.
@@ -1862,7 +1864,9 @@ pub struct OsDto<'a> {
     /// things here, and the fields a consumer should act on are the named ones
     /// above. It lets a disputed finding be diagnosed, and turned into a corpus
     /// entry, without re-running the scan.
-    pub evidence: Option<&'a str>,
+    ///
+    /// Masked as `name` is under redaction, for the same reason.
+    pub evidence: Option<Cow<'a, str>>,
     /// The kernel release, or `null` where nothing read one.
     ///
     /// Beside `generation` rather than a finer form of it: a distribution
@@ -1894,16 +1898,16 @@ pub struct OsDto<'a> {
 }
 
 impl<'a> OsDto<'a> {
-    /// Renders an OS fingerprint.
-    pub fn new(os: &'a OsFingerprint) -> Self {
+    /// Renders an OS fingerprint, masking the host's names in its free text.
+    pub fn new(os: &'a OsFingerprint, masking: &HostRedaction) -> Self {
         Self {
-            name: os.name(),
+            name: masking.text(os.name()),
             family: os.family(),
             generation: os.generation(),
             vendor: os.vendor(),
             accuracy: os.accuracy(),
             cpes: os.cpes().iter().map(|cpe| &**cpe).collect(),
-            evidence: os.evidence(),
+            evidence: os.evidence().map(|evidence| masking.text(evidence)),
             kernel: os.kernel(),
             arch: os.arch(),
             detail_accuracy: os.detail_accuracy(),
@@ -2081,18 +2085,21 @@ pub struct PortDto<'a> {
 }
 
 impl<'a> PortDto<'a> {
-    /// Renders a port, applying the redaction policy.
-    pub fn new(port: &'a Port, options: &ExportOptions) -> Self {
+    /// Renders a port of the host `masking` was made for, applying its
+    /// redaction policy.
+    pub fn new(port: &'a Port, masking: &HostRedaction) -> Self {
         Self {
             port: port.number(),
             protocol: protocol_name(port.protocol()),
             state: port_state_name(port.state()),
-            service: port.service().map(ServiceDto::new),
+            service: port
+                .service()
+                .map(|service| ServiceDto::new(service, masking)),
             security: port
                 .security()
-                .map(|security| SecurityDto::new(security, options)),
+                .map(|security| SecurityDto::new(security, masking)),
             discovery: port.discovery().map(DiscoveryDto::new),
-            findings: findings_dto(port.findings()),
+            findings: findings_dto(port.findings(), masking),
         }
     }
 }
@@ -2100,14 +2107,20 @@ impl<'a> PortDto<'a> {
 /// The findings of a subject, worst-first for a person reading the report:
 /// severity descending, then producer id. The model sorts by identity for a
 /// stable file, and a report sorts by severity for a legible page.
-fn findings_dto<'a>(findings: impl Iterator<Item = &'a Finding>) -> Vec<FindingDto<'a>> {
+fn findings_dto<'a>(
+    findings: impl Iterator<Item = &'a Finding>,
+    masking: &HostRedaction,
+) -> Vec<FindingDto<'a>> {
     let mut findings: Vec<&'a Finding> = findings.collect();
     findings.sort_by(|a, b| {
         b.severity()
             .cmp(&a.severity())
             .then_with(|| a.detection().id().cmp(b.detection().id()))
     });
-    findings.into_iter().map(FindingDto::new).collect()
+    findings
+        .into_iter()
+        .map(|finding| FindingDto::new(finding, masking))
+        .collect()
 }
 
 /// One finding, for a report a consumer parses.
@@ -2121,8 +2134,10 @@ pub struct FindingDto<'a> {
     pub version: String,
     /// The content hash of the detection body, for reproducibility.
     pub content_hash: &'a str,
-    /// The one-line title. Untrusted.
-    pub title: &'a str,
+    /// The one-line title. Untrusted, and filled from the reply where the
+    /// detection interpolated one, so a name the host is known by is masked in
+    /// it under redaction.
+    pub title: Cow<'a, str>,
     /// How bad it is if true: `info`, `low`, `medium`, `high` or `critical`.
     pub severity: &'static str,
     /// How sure it is true: `heuristic`, `weak`, `probable`, `strong` or
@@ -2133,13 +2148,19 @@ pub struct FindingDto<'a> {
     pub class: &'static str,
     /// The bytes that justify it, for a person rather than a parser. Untrusted;
     /// absent where the detection carried none.
+    ///
+    /// Under redaction a name the host is known by is masked in it, and an
+    /// excerpt that is not text, a binary reply read byte for byte, is replaced
+    /// by a note saying it was withheld: such a reply holds names in forms a
+    /// search cannot be sure of.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub excerpt: Option<&'a str>,
+    pub excerpt: Option<Cow<'a, str>>,
     /// External references: CVE, CWE and advisory links.
     pub references: Vec<ReferenceDto<'a>>,
-    /// Remediation advice, if the detection carried any. Untrusted.
+    /// Remediation advice, if the detection carried any. Untrusted, and masked
+    /// as `title` is.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub remediation: Option<&'a str>,
+    pub remediation: Option<Cow<'a, str>>,
     /// The lowest of `cpes`, for a consumer written before a finding could
     /// name more than one. Untrusted; absent from a finding drawn from
     /// anything but a vulnerability correlation.
@@ -2154,19 +2175,20 @@ pub struct FindingDto<'a> {
 }
 
 impl<'a> FindingDto<'a> {
-    /// Renders a finding.
-    pub fn new(finding: &'a Finding) -> Self {
+    /// Renders a finding of the host `masking` was made for.
+    pub fn new(finding: &'a Finding, masking: &HostRedaction) -> Self {
         Self {
             id: finding.detection().id(),
             version: finding.detection().version().to_string(),
             content_hash: finding.detection().content_hash(),
-            title: finding.title(),
+            title: masking.text(finding.title()),
             severity: severity_name(finding.severity()),
             confidence: confidence_name(finding.confidence()),
             class: detection_class_name(finding.class()),
-            excerpt: (!finding.excerpt().is_empty()).then(|| finding.excerpt().as_str()),
+            excerpt: (!finding.excerpt().is_empty())
+                .then(|| masking.excerpt(finding.excerpt().as_str())),
             references: finding.references().map(ReferenceDto::new).collect(),
-            remediation: finding.remediation(),
+            remediation: finding.remediation().map(|advice| masking.text(advice)),
             cpe: finding.cpes().next(),
             cpes: finding.cpes().collect(),
         }
@@ -2224,27 +2246,30 @@ pub struct ServiceDto<'a> {
     /// unprobed on purpose.
     pub confidence: u8,
     /// The specific product or daemon.
-    pub product: Option<&'a str>,
+    ///
+    /// This, `version` and `extrainfo` are filled from the reply, so a name the
+    /// host is known by is masked in each under redaction.
+    pub product: Option<Cow<'a, str>>,
     /// The organization behind the product, where one could be attributed.
     pub vendor: Option<&'a str>,
     /// The version string reported or detected.
-    pub version: Option<&'a str>,
+    pub version: Option<Cow<'a, str>>,
     /// Additional metadata or environment hints.
-    pub extrainfo: Option<&'a str>,
+    pub extrainfo: Option<Cow<'a, str>>,
     /// CPE identifiers, in the order they were established.
     pub cpes: Vec<&'a str>,
 }
 
 impl<'a> ServiceDto<'a> {
-    /// Renders a service identification.
-    pub fn new(service: &'a Service) -> Self {
+    /// Renders a service identification on the host `masking` was made for.
+    pub fn new(service: &'a Service, masking: &HostRedaction) -> Self {
         Self {
             name: service.name(),
             confidence: service.confidence(),
-            product: service.product(),
+            product: service.product().map(|text| masking.text(text)),
             vendor: service.vendor(),
-            version: service.version(),
-            extrainfo: service.extrainfo(),
+            version: service.version().map(|text| masking.text(text)),
+            extrainfo: service.extrainfo().map(|text| masking.text(text)),
             cpes: service.cpes().iter().map(AsRef::as_ref).collect(),
         }
     }
@@ -2283,15 +2308,16 @@ pub struct SecurityDto<'a> {
 }
 
 impl<'a> SecurityDto<'a> {
-    /// Renders security telemetry, applying the redaction policy.
-    pub fn new(security: &'a Security, options: &ExportOptions) -> Self {
+    /// Renders security telemetry on the host `masking` was made for, applying
+    /// its redaction policy.
+    pub fn new(security: &'a Security, masking: &HostRedaction) -> Self {
         Self {
             tls_version: security.tls_version(),
             cipher_suite: security.cipher_suite(),
             alpn: security.alpn().iter().map(AsRef::as_ref).collect(),
             certificate: security
                 .certificate()
-                .map(|cert| CertificateDto::new(cert, options)),
+                .map(|cert| CertificateDto::new(cert, masking)),
             accepts: security
                 .support()
                 .versions()
@@ -2410,8 +2436,10 @@ pub struct CertificateDto<'a> {
     pub common_name: Cow<'a, str>,
     /// Subject Alternative Names, masked under redaction for the same reason.
     pub sans: Vec<Cow<'a, str>>,
-    /// The issuing authority.
-    pub issuer: &'a str,
+    /// The issuing authority. Masked where it names the host under redaction:
+    /// a directory's own certificate authority is commonly named for the
+    /// machine it runs on.
+    pub issuer: Cow<'a, str>,
     /// When the certificate becomes valid.
     pub validity_start: String,
     /// When it expires.
@@ -2425,9 +2453,10 @@ pub struct CertificateDto<'a> {
 }
 
 impl<'a> CertificateDto<'a> {
-    /// Renders certificate information, applying the redaction policy.
-    pub fn new(cert: &'a CertificateInfo, options: &ExportOptions) -> Self {
-        let redaction = options.redaction;
+    /// Renders certificate information on the host `masking` was made for,
+    /// applying its redaction policy.
+    pub fn new(cert: &'a CertificateInfo, masking: &HostRedaction) -> Self {
+        let redaction = masking.redaction();
 
         Self {
             common_name: redaction.hostname(cert.common_name()),
@@ -2436,7 +2465,7 @@ impl<'a> CertificateDto<'a> {
                 .iter()
                 .map(|san| redaction.hostname(san))
                 .collect(),
-            issuer: cert.issuer(),
+            issuer: masking.text(cert.issuer()),
             validity_start: rfc3339(cert.validity_start()),
             validity_end: rfc3339(cert.validity_end()),
             pubkey_type: cert.pubkey_type(),

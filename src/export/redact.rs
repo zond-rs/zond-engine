@@ -9,7 +9,10 @@
 //! # The masking [`Redaction::Standard`](super::Redaction::Standard) applies
 //!
 //! One function per thing a report carries that names a person or a device: a
-//! hostname and a hardware address.
+//! hostname and a hardware address. Beside them, crate-private, the mechanics
+//! [`HostRedaction`](super::HostRedaction) applies to free text a host's own
+//! replies filled: finding the names that host gave, and telling a reply that
+//! is text from one that is not.
 //!
 //! [`Redaction`](super::Redaction) states the policy and its limits, including
 //! why addresses are not masked. Read that first; these are the mechanics.
@@ -17,6 +20,8 @@
 //! The goal is not anonymity. A masked hostname stays distinguishable from the
 //! next one so a reader can still follow a host through a report, and that is
 //! the whole of what is promised.
+
+use std::borrow::Cow;
 
 use crate::model::mac::MacAddr;
 
@@ -86,6 +91,142 @@ pub fn mac_addr(mac: &MacAddr) -> String {
     )
 }
 
+/// What stands in for an excerpt that is not text, under redaction.
+///
+/// A binary reply carries names in forms a search of the text cannot be sure
+/// to find: a NetBIOS name in half-ASCII, a DNS name as length-prefixed labels,
+/// a realm inside DER, a name never recorded as one at all. Its bytes are also
+/// what makes such an excerpt worth reading, so a masked copy of them is
+/// neither safe nor useful, and the finding keeps its title and its claim
+/// without them.
+pub(crate) const WITHHELD_EXCERPT: &str = "(binary reply withheld under redaction)";
+
+/// Whether `text` holds a character no text reply carries: a control other
+/// than a tab or a line break, as a reply read byte for byte has wherever the
+/// protocol is binary.
+pub(crate) fn is_binary(text: &str) -> bool {
+    text.chars()
+        .any(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r'))
+}
+
+/// One name to find in free text, with the mask it is replaced by.
+#[derive(Debug, Clone)]
+pub(crate) struct Needle {
+    chars: Vec<char>,
+    mask: String,
+}
+
+impl Needle {
+    /// The needles for the names a host is known by: each name whole, and the
+    /// first label of a dotted one, which is the machine's own name and the
+    /// form a banner or a NetBIOS reply gives it in. A label that is also a
+    /// name in its own right is masked as that name is, so a NetBIOS domain
+    /// reads the same in the text as in its field. Longest first, so a whole
+    /// name is masked before its first label could be.
+    pub(crate) fn for_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<Needle> {
+        let names: Vec<&str> = names.into_iter().collect();
+        let mut needles: Vec<Needle> = Vec::new();
+        let mut push = |name: &str| {
+            let name = name.trim();
+            if name.is_empty()
+                || needles
+                    .iter()
+                    .any(|needle| same_letters(&needle.chars, name))
+            {
+                return;
+            }
+            needles.push(Needle {
+                chars: name.chars().collect(),
+                mask: hostname(name),
+            });
+        };
+        for name in &names {
+            push(name);
+        }
+        for name in &names {
+            if let Some((label, _)) = name.split_once('.') {
+                push(label);
+            }
+        }
+        needles.sort_by_key(|needle| std::cmp::Reverse(needle.chars.len()));
+        needles
+    }
+
+    /// How many characters of `text` from `at` this name takes up, if it is
+    /// there: as itself, a word of its own and in any case, or as UTF-16LE read
+    /// a byte to a character, each letter followed by a NUL, which is how SMB,
+    /// NTLM and Kerberos carry a name and how a reply read byte for byte holds
+    /// it.
+    fn at(&self, text: &[char], at: usize) -> Option<usize> {
+        let len = self.chars.len();
+        let rest = &text[at..];
+
+        let plain = rest.len() >= len
+            && rest
+                .iter()
+                .zip(&self.chars)
+                .all(|(a, b)| same_letter(*a, *b))
+            && (at == 0 || !text[at - 1].is_alphanumeric())
+            && rest.get(len).is_none_or(|c| !c.is_alphanumeric());
+        if plain {
+            return Some(len);
+        }
+
+        let wide = rest.len() >= 2 * len
+            && self
+                .chars
+                .iter()
+                .enumerate()
+                .all(|(i, c)| same_letter(rest[2 * i], *c) && rest[2 * i + 1] == '\0');
+        wide.then_some(2 * len)
+    }
+}
+
+/// Masks every name `needles` holds wherever it appears in `text`, borrowing
+/// when none does.
+pub(crate) fn names_in<'a>(text: &'a str, needles: &[Needle]) -> Cow<'a, str> {
+    if needles.is_empty() {
+        return Cow::Borrowed(text);
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut masked = String::with_capacity(text.len());
+    let mut changed = false;
+    let mut at = 0;
+    while at < chars.len() {
+        match needles
+            .iter()
+            .find_map(|needle| needle.at(&chars, at).map(|len| (len, needle)))
+        {
+            Some((len, needle)) => {
+                masked.push_str(&needle.mask);
+                at += len;
+                changed = true;
+            }
+            None => {
+                masked.push(chars[at]);
+                at += 1;
+            }
+        }
+    }
+
+    if changed {
+        Cow::Owned(masked)
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+/// Two letters that are one in any case.
+fn same_letter(a: char, b: char) -> bool {
+    a == b || a.to_lowercase().eq(b.to_lowercase())
+}
+
+/// Two names that are one in any case.
+fn same_letters(a: &[char], b: &str) -> bool {
+    a.len() == b.chars().count() && a.iter().zip(b.chars()).all(|(x, y)| same_letter(*x, y))
+}
+
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -115,6 +256,48 @@ mod tests {
         }
 
         assert_eq!(hostname("modem"), "XXXXX");
+    }
+
+    /// A name is found as a word of its own and in any case, and a word it is
+    /// only part of is left alone: `FS01` names the machine, `FS010` does not.
+    #[test]
+    fn a_name_is_masked_as_a_word_in_any_case() {
+        let needles = Needle::for_names(["fs01.example.com", "EXAMPLE"]);
+
+        assert_eq!(
+            names_in("220 FS01.EXAMPLE.COM ready", &needles),
+            "220 fsXXXXXom ready"
+        );
+        assert_eq!(
+            names_in("CN=example-FS01-CA", &needles),
+            "CN=EXXXXXXLE-XXXXX-CA"
+        );
+        assert!(matches!(
+            names_in("FS010 and examples", &needles),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    /// SMB, NTLM and Kerberos carry a name in UTF-16LE, which a reply read a
+    /// byte to a character holds as each letter followed by a NUL.
+    #[test]
+    fn a_name_in_utf16_is_masked() {
+        let needles = Needle::for_names(["EXAMPLE"]);
+
+        assert_eq!(
+            names_in("\u{ff}SMBe\0x\0a\0m\0p\0l\0e\0\0\0", &needles),
+            "\u{ff}SMBEXXXXXXLE\0\0"
+        );
+    }
+
+    /// A reply is text when it holds nothing but printable characters and
+    /// line breaks, and binary as soon as it holds any other control.
+    #[test]
+    fn a_reply_holding_a_control_is_binary() {
+        assert!(!is_binary("HTTP/1.1 200 OK\r\n\tServer: x\n"));
+        assert!(!is_binary("caf\u{e9}"));
+        assert!(is_binary("\0\0\0\x55\u{ff}SMB"));
+        assert!(is_binary("\u{1b}[31m"));
     }
 }
 

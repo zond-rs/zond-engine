@@ -86,7 +86,7 @@ use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::export::schema::{ENGINE_NAME, protocol_name, reference_text, severity_name};
-use crate::export::{ExportError, ExportOptions, Exporter};
+use crate::export::{ExportError, ExportOptions, Exporter, HostRedaction};
 use crate::fingerprint::Tunnel;
 use crate::model::finding::Finding;
 use crate::model::host::{
@@ -431,6 +431,7 @@ fn write_host(
     options: &ExportOptions,
 ) -> Result<(), ExportError> {
     let redaction = options.redaction;
+    let masking = redaction.for_host(host);
 
     writeln!(
         out,
@@ -503,7 +504,7 @@ fn write_host(
 
     write_ip_protocols(out, host)?;
 
-    write_ports(out, host)?;
+    write_ports(out, host, &masking)?;
 
     if let Some(os) = host.os() {
         writeln!(out, "<os>")?;
@@ -513,7 +514,7 @@ fn write_host(
         writeln!(
             out,
             r#"<osmatch name="{}" accuracy="{}" line="0">"#,
-            Attr(os.name()),
+            Attr(&masking.text(os.name())),
             os.accuracy(),
         )?;
         write_os_class(out, os)?;
@@ -531,7 +532,7 @@ fn write_host(
     // before `<trace>` as nmap's DTD fixes the order.
     if host.findings().next().is_some() {
         writeln!(out, "<hostscript>")?;
-        write_finding_scripts(out, host.findings())?;
+        write_finding_scripts(out, host.findings(), &masking)?;
         writeln!(out, "</hostscript>")?;
     }
 
@@ -576,7 +577,11 @@ fn write_host(
 /// open port is the finding. Nor is a port whose record holds more than a
 /// state and the packet behind it, an identified service or a finding, since
 /// the summary has nowhere to put either and would lose it.
-fn write_ports(out: &mut dyn Write, host: &Host) -> Result<(), ExportError> {
+fn write_ports(
+    out: &mut dyn Write,
+    host: &Host,
+    masking: &HostRedaction,
+) -> Result<(), ExportError> {
     let probed: Vec<&Port> = host
         .ports()
         .filter(|port| port_state(port.state()).is_some())
@@ -600,7 +605,7 @@ fn write_ports(out: &mut dyn Write, host: &Host) -> Result<(), ExportError> {
     for port in probed {
         let listed = !is_summarisable(port) || !summarised.contains_key(&port.state());
         if listed {
-            write_port(out, port)?;
+            write_port(out, port, masking)?;
         }
     }
     writeln!(out, "</ports>")?;
@@ -827,22 +832,22 @@ fn write_trace(out: &mut dyn Write, host: &Host) -> Result<(), ExportError> {
 /// A finding flattened to one line of `<script output>` text: severity, title,
 /// references, the justifying excerpt, and any remediation. Every part is
 /// attacker-influenced and is written through [`Attr`] at the call site, never
-/// raw.
-fn finding_output(finding: &Finding) -> String {
+/// raw, and every part the host's reply filled is read through `masking`.
+fn finding_output(finding: &Finding, masking: &HostRedaction) -> String {
     let mut parts = vec![format!(
         "[{}] {}",
         severity_name(finding.severity()),
-        finding.title()
+        masking.text(finding.title())
     )];
     let references: Vec<String> = finding.references().map(reference_text).collect();
     if !references.is_empty() {
         parts.push(references.join(", "));
     }
     if !finding.excerpt().is_empty() {
-        parts.push(finding.excerpt().as_str().to_owned());
+        parts.push(masking.excerpt(finding.excerpt().as_str()).into_owned());
     }
     if let Some(remediation) = finding.remediation() {
-        parts.push(format!("fix: {remediation}"));
+        parts.push(format!("fix: {}", masking.text(remediation)));
     }
     parts.join(" | ")
 }
@@ -854,13 +859,14 @@ fn finding_output(finding: &Finding) -> String {
 fn write_finding_scripts<'a>(
     out: &mut dyn Write,
     findings: impl Iterator<Item = &'a Finding>,
+    masking: &HostRedaction,
 ) -> Result<(), ExportError> {
     for finding in findings {
         writeln!(
             out,
             r#"<script id="{}" output="{}"/>"#,
             Attr(finding.detection().id()),
-            Attr(&finding_output(finding)),
+            Attr(&finding_output(finding, masking)),
         )?;
     }
     Ok(())
@@ -963,7 +969,11 @@ fn ip_protocol_reason(state: IpProtocolState) -> &'static str {
 /// Writes nothing for a port this format cannot state, which is a port no probe
 /// was sent to; the caller filters those out, and this returns rather than
 /// writing an element with no `<state>` in it.
-fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
+fn write_port(
+    out: &mut dyn Write,
+    port: &Port,
+    masking: &HostRedaction,
+) -> Result<(), ExportError> {
     let (Some(state), Some(reason)) = (port_state(port.state()), port_reason(port)) else {
         return Ok(());
     };
@@ -986,13 +996,13 @@ fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
         let (name, tunnel) = service_name(service.name());
         write!(out, r#"<service name="{}""#, Attr(name))?;
         if let Some(product) = service.product() {
-            write!(out, r#" product="{}""#, Attr(product))?;
+            write!(out, r#" product="{}""#, Attr(&masking.text(product)))?;
         }
         if let Some(version) = service.version() {
-            write!(out, r#" version="{}""#, Attr(version))?;
+            write!(out, r#" version="{}""#, Attr(&masking.text(version)))?;
         }
         if let Some(extrainfo) = service.extrainfo() {
-            write!(out, r#" extrainfo="{}""#, Attr(extrainfo))?;
+            write!(out, r#" extrainfo="{}""#, Attr(&masking.text(extrainfo)))?;
         }
         if let Some(tunnel) = tunnel {
             write!(out, r#" tunnel="{tunnel}""#)?;
@@ -1021,7 +1031,7 @@ fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
     }
 
     // `<script>` follows `<service>` in nmap's DTD for a `<port>`.
-    write_finding_scripts(out, port.findings())?;
+    write_finding_scripts(out, port.findings(), masking)?;
 
     writeln!(out, "</port>")?;
     Ok(())
@@ -1536,7 +1546,7 @@ mod tests {
     /// The `<state>` line of `port`, as written.
     fn state_line(port: &Port) -> String {
         let mut out = Vec::new();
-        write_port(&mut out, port).expect("writing to a vector");
+        write_port(&mut out, port, &HostRedaction::default()).expect("writing to a vector");
         let written = String::from_utf8(out).expect("UTF-8");
         written
             .lines()
@@ -2483,6 +2493,7 @@ mod tests {
         write_port(
             &mut out,
             &Port::new(80, Protocol::Tcp, PortState::Closed).with_service(Service::new("http", 0)),
+            &HostRedaction::default(),
         )
         .expect("writing to a vector");
         let inferred = String::from_utf8(out).expect("UTF-8");
@@ -2492,6 +2503,7 @@ mod tests {
         write_port(
             &mut out,
             &Port::new(80, Protocol::Tcp, PortState::Open).with_service(Service::new("http", 100)),
+            &HostRedaction::default(),
         )
         .expect("writing to a vector");
         let probed = String::from_utf8(out).expect("UTF-8");

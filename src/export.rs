@@ -106,6 +106,8 @@ use std::fmt;
 use std::io::Write;
 use std::path::Path;
 
+use crate::diff::HostDelta;
+use crate::model::host::{Host, HostName};
 use crate::model::mac::MacAddr;
 use crate::report::ScanReport;
 
@@ -183,15 +185,24 @@ pub trait Exporter {
 /// names the organisation running the machine and is the most identifying
 /// string a report can carry.
 ///
+/// A name is masked in free text too, wherever the host's own replies wrote
+/// it: see [`HostRedaction`], which every exporter reads a host's record
+/// through. A name the host stated but no protocol recorded as one cannot be
+/// found there, and is the second residual leak below; an excerpt that is not
+/// text is withheld whole for that reason.
+///
 /// IP addresses are left alone. A report is a list of hosts, and a masking
 /// scheme that hides which host is which collapses ten records on a /24 into ten
 /// copies of the same string. The addresses are also what makes the findings
 /// actionable to a recipient who already knows the network they asked to have
 /// scanned.
 ///
-/// One residual leak is worth stating: an IPv6 address formed the old EUI-64 way
-/// embeds the MAC that redaction masks elsewhere. A report from a network with
-/// EUI-64 addressing is not free of hardware identifiers however this is set.
+/// Two residual leaks are worth stating. An IPv6 address formed the old EUI-64
+/// way embeds the MAC that redaction masks elsewhere, so a report from a
+/// network with EUI-64 addressing is not free of hardware identifiers however
+/// this is set. And a name a host wrote into a text reply without any protocol
+/// having stated it as a name, an HTTP banner naming a machine the scan found
+/// no other name for, is text like any other and survives.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Redaction {
@@ -230,6 +241,106 @@ impl Redaction {
     pub fn is_active(self) -> bool {
         !matches!(self, Redaction::None)
     }
+
+    /// The policy as it applies to `host`'s record, for the free text its
+    /// replies filled.
+    pub fn for_host(self, host: &Host) -> HostRedaction {
+        self.for_hosts([host])
+    }
+
+    /// The policy as it applies to both records a comparison holds of one
+    /// host, masking the names either scan knew it by: a name the later scan
+    /// dropped is still the host's name in the earlier one's text.
+    pub fn for_delta(self, delta: &HostDelta) -> HostRedaction {
+        self.for_hosts(delta.baseline().into_iter().chain(delta.current()))
+    }
+
+    fn for_hosts<'h>(self, hosts: impl IntoIterator<Item = &'h Host>) -> HostRedaction {
+        HostRedaction {
+            redaction: self,
+            needles: if self.is_active() {
+                redact::Needle::for_names(hosts.into_iter().flat_map(host_names))
+            } else {
+                Vec::new()
+            },
+        }
+    }
+}
+
+/// The redaction policy as it applies to one host's record: the names that
+/// host is known by, masked wherever its own replies wrote them.
+///
+/// A name reaches a report in two ways. The host's hostname and the names it
+/// gave for itself ([`Host::names`]) are fields, masked by
+/// [`Redaction::hostname`]. The same names also sit inside text the host sent:
+/// a finding's excerpt of the reply, a title a detection filled from it, a
+/// service's extra information, an issuer naming the machine that issued it.
+/// This finds them there, in every form a reply holds them in: as written, in
+/// any case, and in UTF-16LE read a byte to a character, which is how SMB,
+/// NTLM and Kerberos carry a name. Each is replaced by the mask its field
+/// shows, so a reader still sees which name a line spoke of. The first label
+/// of a dotted name is found on its own as well, being the machine's name as
+/// a banner gives it.
+///
+/// An excerpt that is not text is withheld whole under redaction rather than
+/// searched ([`excerpt`](Self::excerpt)). A binary reply holds names in forms
+/// no search of the text can be sure of, and names the scan never recorded.
+///
+/// Every exporter in this crate reads a host's free text through one of
+/// these: a finding's title, excerpt and remediation, a service's product, version and extra information, an
+/// operating system's name and evidence, and a certificate's issuer. A front
+/// end printing any of them reads them through one too.
+///
+/// # Examples
+/// ```
+/// use zond_engine::export::Redaction;
+/// use zond_engine::model::host::{Host, HostName, NameKind, NameSource};
+///
+/// let mut host = Host::new("192.0.2.10".parse().unwrap());
+/// host.record_name(HostName::new(NameKind::NetbiosDomain, NameSource::Smb, "EXAMPLE").unwrap());
+///
+/// let masking = Redaction::Standard.for_host(&host);
+/// assert_eq!(masking.text("Workgroup: EXAMPLE"), "Workgroup: EXXXXXXLE");
+/// assert_eq!(masking.text("E\0X\0A\0M\0P\0L\0E\0"), "EXXXXXXLE");
+/// assert_eq!(Redaction::None.for_host(&host).text("EXAMPLE"), "EXAMPLE");
+/// ```
+///
+/// The [`Default`] masks nothing, for a part of a record rendered with no
+/// policy in force.
+#[derive(Debug, Clone, Default)]
+pub struct HostRedaction {
+    redaction: Redaction,
+    needles: Vec<redact::Needle>,
+}
+
+impl HostRedaction {
+    /// The policy in force, for the fields it applies to directly.
+    pub fn redaction(&self) -> Redaction {
+        self.redaction
+    }
+
+    /// Free text the host's replies filled, with every name it is known by
+    /// masked. Borrows when nothing is masked.
+    pub fn text<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        redact::names_in(text, &self.needles)
+    }
+
+    /// A finding's excerpt: masked as [`text`](Self::text) is where it is
+    /// text, and replaced by a note saying it was withheld where it is not.
+    pub fn excerpt<'a>(&self, excerpt: &'a str) -> Cow<'a, str> {
+        if self.redaction.is_active() && redact::is_binary(excerpt) {
+            Cow::Borrowed(redact::WITHHELD_EXCERPT)
+        } else {
+            self.text(excerpt)
+        }
+    }
+}
+
+/// Every name a host is known by: its hostname and the names it gave.
+fn host_names(host: &Host) -> impl Iterator<Item = &str> {
+    host.hostname()
+        .into_iter()
+        .chain(host.names().map(HostName::name))
 }
 
 /// Policy that applies to an export regardless of the format it lands in.

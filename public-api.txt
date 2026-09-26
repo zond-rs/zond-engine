@@ -2904,8 +2904,8 @@ pub zond_engine::export::diff::schema::ChangeDto::after: core::option::Option<al
 pub zond_engine::export::diff::schema::ChangeDto::before: core::option::Option<alloc::string::String>
 pub zond_engine::export::diff::schema::ChangeDto::kind: &'static str
 impl zond_engine::export::diff::schema::ChangeDto
-pub fn zond_engine::export::diff::schema::ChangeDto::of_host(&zond_engine::diff::host::HostChange, &zond_engine::export::ExportOptions) -> alloc::vec::Vec<Self>
-pub fn zond_engine::export::diff::schema::ChangeDto::of_port(&zond_engine::diff::port::PortChange, &zond_engine::export::ExportOptions) -> alloc::vec::Vec<Self>
+pub fn zond_engine::export::diff::schema::ChangeDto::of_host(&zond_engine::diff::host::HostChange, &zond_engine::export::HostRedaction) -> alloc::vec::Vec<Self>
+pub fn zond_engine::export::diff::schema::ChangeDto::of_port(&zond_engine::diff::port::PortChange, &zond_engine::export::HostRedaction) -> alloc::vec::Vec<Self>
 impl core::clone::Clone for zond_engine::export::diff::schema::ChangeDto
 pub fn zond_engine::export::diff::schema::ChangeDto::clone(&self) -> zond_engine::export::diff::schema::ChangeDto
 impl core::cmp::Eq for zond_engine::export::diff::schema::ChangeDto
@@ -3014,7 +3014,7 @@ pub zond_engine::export::diff::schema::PortDeltaDto::presence: &'static str
 pub zond_engine::export::diff::schema::PortDeltaDto::protocol: &'static str
 pub zond_engine::export::diff::schema::PortDeltaDto::significance: &'static str
 impl zond_engine::export::diff::schema::PortDeltaDto
-pub fn zond_engine::export::diff::schema::PortDeltaDto::new(&zond_engine::diff::port::PortDelta, &zond_engine::export::ExportOptions) -> Self
+pub fn zond_engine::export::diff::schema::PortDeltaDto::new(&zond_engine::diff::port::PortDelta, &zond_engine::export::HostRedaction) -> Self
 impl core::fmt::Debug for zond_engine::export::diff::schema::PortDeltaDto
 pub fn zond_engine::export::diff::schema::PortDeltaDto::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl serde_core::ser::Serialize for zond_engine::export::diff::schema::PortDeltaDto
@@ -3372,14 +3372,14 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::Captu
 #[non_exhaustive] pub struct zond_engine::export::schema::CertificateDto<'a>
 pub zond_engine::export::schema::CertificateDto::common_name: alloc::borrow::Cow<'a, str>
 pub zond_engine::export::schema::CertificateDto::fingerprint_sha256: &'a str
-pub zond_engine::export::schema::CertificateDto::issuer: &'a str
+pub zond_engine::export::schema::CertificateDto::issuer: alloc::borrow::Cow<'a, str>
 pub zond_engine::export::schema::CertificateDto::pubkey_bits: u32
 pub zond_engine::export::schema::CertificateDto::pubkey_type: &'a str
 pub zond_engine::export::schema::CertificateDto::sans: alloc::vec::Vec<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::CertificateDto::validity_end: alloc::string::String
 pub zond_engine::export::schema::CertificateDto::validity_start: alloc::string::String
 impl<'a> zond_engine::export::schema::CertificateDto<'a>
-pub fn zond_engine::export::schema::CertificateDto<'a>::new(&'a zond_engine::model::port::security::CertificateInfo, &zond_engine::export::ExportOptions) -> Self
+pub fn zond_engine::export::schema::CertificateDto<'a>::new(&'a zond_engine::model::port::security::CertificateInfo, &zond_engine::export::HostRedaction) -> Self
 impl<'a> core::clone::Clone for zond_engine::export::schema::CertificateDto<'a>
 pub fn zond_engine::export::schema::CertificateDto<'a>::clone(&self) -> zond_engine::export::schema::CertificateDto<'a>
 impl<'a> core::fmt::Debug for zond_engine::export::schema::CertificateDto<'a>
@@ -3498,15 +3498,15 @@ pub zond_engine::export::schema::FindingDto::confidence: &'static str
 pub zond_engine::export::schema::FindingDto::content_hash: &'a str
 pub zond_engine::export::schema::FindingDto::cpe: core::option::Option<&'a str>
 pub zond_engine::export::schema::FindingDto::cpes: alloc::vec::Vec<&'a str>
-pub zond_engine::export::schema::FindingDto::excerpt: core::option::Option<&'a str>
+pub zond_engine::export::schema::FindingDto::excerpt: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::FindingDto::id: &'a str
 pub zond_engine::export::schema::FindingDto::references: alloc::vec::Vec<zond_engine::export::schema::ReferenceDto<'a>>
-pub zond_engine::export::schema::FindingDto::remediation: core::option::Option<&'a str>
+pub zond_engine::export::schema::FindingDto::remediation: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::FindingDto::severity: &'static str
-pub zond_engine::export::schema::FindingDto::title: &'a str
+pub zond_engine::export::schema::FindingDto::title: alloc::borrow::Cow<'a, str>
 pub zond_engine::export::schema::FindingDto::version: alloc::string::String
 impl<'a> zond_engine::export::schema::FindingDto<'a>
-pub fn zond_engine::export::schema::FindingDto<'a>::new(&'a zond_engine::model::finding::Finding) -> Self
+pub fn zond_engine::export::schema::FindingDto<'a>::new(&'a zond_engine::model::finding::Finding, &zond_engine::export::HostRedaction) -> Self
 impl<'a> core::clone::Clone for zond_engine::export::schema::FindingDto<'a>
 pub fn zond_engine::export::schema::FindingDto<'a>::clone(&self) -> zond_engine::export::schema::FindingDto<'a>
 impl<'a> core::fmt::Debug for zond_engine::export::schema::FindingDto<'a>
@@ -3678,14 +3678,14 @@ pub zond_engine::export::schema::OsDto::arch: core::option::Option<&'a str>
 pub zond_engine::export::schema::OsDto::cpes: alloc::vec::Vec<&'a str>
 pub zond_engine::export::schema::OsDto::detail_accuracy: core::option::Option<u8>
 pub zond_engine::export::schema::OsDto::device: core::option::Option<&'a str>
-pub zond_engine::export::schema::OsDto::evidence: core::option::Option<&'a str>
+pub zond_engine::export::schema::OsDto::evidence: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::OsDto::family: core::option::Option<&'a str>
 pub zond_engine::export::schema::OsDto::generation: core::option::Option<&'a str>
 pub zond_engine::export::schema::OsDto::kernel: core::option::Option<&'a str>
-pub zond_engine::export::schema::OsDto::name: &'a str
+pub zond_engine::export::schema::OsDto::name: alloc::borrow::Cow<'a, str>
 pub zond_engine::export::schema::OsDto::vendor: core::option::Option<&'a str>
 impl<'a> zond_engine::export::schema::OsDto<'a>
-pub fn zond_engine::export::schema::OsDto<'a>::new(&'a zond_engine::model::host::os::OsFingerprint) -> Self
+pub fn zond_engine::export::schema::OsDto<'a>::new(&'a zond_engine::model::host::os::OsFingerprint, &zond_engine::export::HostRedaction) -> Self
 impl<'a> core::clone::Clone for zond_engine::export::schema::OsDto<'a>
 pub fn zond_engine::export::schema::OsDto<'a>::clone(&self) -> zond_engine::export::schema::OsDto<'a>
 impl<'a> core::fmt::Debug for zond_engine::export::schema::OsDto<'a>
@@ -3764,7 +3764,7 @@ pub zond_engine::export::schema::PortDto::security: core::option::Option<zond_en
 pub zond_engine::export::schema::PortDto::service: core::option::Option<zond_engine::export::schema::ServiceDto<'a>>
 pub zond_engine::export::schema::PortDto::state: &'static str
 impl<'a> zond_engine::export::schema::PortDto<'a>
-pub fn zond_engine::export::schema::PortDto<'a>::new(&'a zond_engine::model::port::Port, &zond_engine::export::ExportOptions) -> Self
+pub fn zond_engine::export::schema::PortDto<'a>::new(&'a zond_engine::model::port::Port, &zond_engine::export::HostRedaction) -> Self
 impl<'a> core::clone::Clone for zond_engine::export::schema::PortDto<'a>
 pub fn zond_engine::export::schema::PortDto<'a>::clone(&self) -> zond_engine::export::schema::PortDto<'a>
 impl<'a> core::fmt::Debug for zond_engine::export::schema::PortDto<'a>
@@ -4013,7 +4013,7 @@ pub zond_engine::export::schema::SecurityDto::cipher_suite: core::option::Option
 pub zond_engine::export::schema::SecurityDto::tls_version: core::option::Option<&'a str>
 pub zond_engine::export::schema::SecurityDto::unfinished: alloc::vec::Vec<zond_engine::export::schema::UnfinishedVersionDto>
 impl<'a> zond_engine::export::schema::SecurityDto<'a>
-pub fn zond_engine::export::schema::SecurityDto<'a>::new(&'a zond_engine::model::port::security::Security, &zond_engine::export::ExportOptions) -> Self
+pub fn zond_engine::export::schema::SecurityDto<'a>::new(&'a zond_engine::model::port::security::Security, &zond_engine::export::HostRedaction) -> Self
 impl<'a> core::clone::Clone for zond_engine::export::schema::SecurityDto<'a>
 pub fn zond_engine::export::schema::SecurityDto<'a>::clone(&self) -> zond_engine::export::schema::SecurityDto<'a>
 impl<'a> core::fmt::Debug for zond_engine::export::schema::SecurityDto<'a>
@@ -4030,13 +4030,13 @@ impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::S
 #[non_exhaustive] pub struct zond_engine::export::schema::ServiceDto<'a>
 pub zond_engine::export::schema::ServiceDto::confidence: u8
 pub zond_engine::export::schema::ServiceDto::cpes: alloc::vec::Vec<&'a str>
-pub zond_engine::export::schema::ServiceDto::extrainfo: core::option::Option<&'a str>
+pub zond_engine::export::schema::ServiceDto::extrainfo: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::ServiceDto::name: &'a str
-pub zond_engine::export::schema::ServiceDto::product: core::option::Option<&'a str>
+pub zond_engine::export::schema::ServiceDto::product: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::ServiceDto::vendor: core::option::Option<&'a str>
-pub zond_engine::export::schema::ServiceDto::version: core::option::Option<&'a str>
+pub zond_engine::export::schema::ServiceDto::version: core::option::Option<alloc::borrow::Cow<'a, str>>
 impl<'a> zond_engine::export::schema::ServiceDto<'a>
-pub fn zond_engine::export::schema::ServiceDto<'a>::new(&'a zond_engine::model::port::service::Service) -> Self
+pub fn zond_engine::export::schema::ServiceDto<'a>::new(&'a zond_engine::model::port::service::Service, &zond_engine::export::HostRedaction) -> Self
 impl<'a> core::clone::Clone for zond_engine::export::schema::ServiceDto<'a>
 pub fn zond_engine::export::schema::ServiceDto<'a>::clone(&self) -> zond_engine::export::schema::ServiceDto<'a>
 impl<'a> core::fmt::Debug for zond_engine::export::schema::ServiceDto<'a>
@@ -4259,6 +4259,8 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::ExportFormat
 pub zond_engine::export::Redaction::None
 pub zond_engine::export::Redaction::Standard
 impl zond_engine::export::Redaction
+pub fn zond_engine::export::Redaction::for_delta(self, &zond_engine::diff::host::HostDelta) -> zond_engine::export::HostRedaction
+pub fn zond_engine::export::Redaction::for_host(self, &zond_engine::model::host::Host) -> zond_engine::export::HostRedaction
 pub fn zond_engine::export::Redaction::hostname<'a>(self, &'a str) -> alloc::borrow::Cow<'a, str>
 pub fn zond_engine::export::Redaction::is_active(self) -> bool
 pub fn zond_engine::export::Redaction::mac(self, &zond_engine::model::mac::MacAddr) -> alloc::string::String
@@ -4326,6 +4328,24 @@ impl core::marker::Unpin for zond_engine::export::ExportOptions
 impl core::marker::UnsafeUnpin for zond_engine::export::ExportOptions
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::ExportOptions
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::ExportOptions
+pub struct zond_engine::export::HostRedaction
+impl zond_engine::export::HostRedaction
+pub fn zond_engine::export::HostRedaction::excerpt<'a>(&self, &'a str) -> alloc::borrow::Cow<'a, str>
+pub fn zond_engine::export::HostRedaction::redaction(&self) -> zond_engine::export::Redaction
+pub fn zond_engine::export::HostRedaction::text<'a>(&self, &'a str) -> alloc::borrow::Cow<'a, str>
+impl core::clone::Clone for zond_engine::export::HostRedaction
+pub fn zond_engine::export::HostRedaction::clone(&self) -> zond_engine::export::HostRedaction
+impl core::default::Default for zond_engine::export::HostRedaction
+pub fn zond_engine::export::HostRedaction::default() -> zond_engine::export::HostRedaction
+impl core::fmt::Debug for zond_engine::export::HostRedaction
+pub fn zond_engine::export::HostRedaction::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::export::HostRedaction
+impl core::marker::Send for zond_engine::export::HostRedaction
+impl core::marker::Sync for zond_engine::export::HostRedaction
+impl core::marker::Unpin for zond_engine::export::HostRedaction
+impl core::marker::UnsafeUnpin for zond_engine::export::HostRedaction
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::HostRedaction
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::HostRedaction
 pub struct zond_engine::export::HtmlExporter
 impl zond_engine::export::html::HtmlExporter
 pub fn zond_engine::export::html::HtmlExporter::new(zond_engine::export::ExportOptions) -> Self

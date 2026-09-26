@@ -63,7 +63,7 @@ use crate::export::schema::{
     host_status_name, name_kind_name, name_source_name, network_role_name, port_state_name,
     protocol_name, reference_text, scan_response_name, severity_name,
 };
-use crate::export::{ExportError, ExportOptions, Exporter};
+use crate::export::{ExportError, ExportOptions, Exporter, HostRedaction};
 use crate::format::csv::{COLUMNS, FORMULA_LEADERS, PORT_COLUMNS};
 use crate::format::time::rfc3339;
 use crate::model::finding::Finding;
@@ -130,7 +130,8 @@ impl Exporter for CsvExporter {
         row.finish(out)?;
 
         for host in report.hosts() {
-            let host_columns = HostColumns::new(host, &self.options);
+            let masking = self.options.redaction.for_host(host);
+            let host_columns = HostColumns::new(host, &masking);
 
             if host.port_count() == 0 {
                 let mut row = Row::new();
@@ -146,7 +147,7 @@ impl Exporter for CsvExporter {
             for port in host.ports() {
                 let mut row = Row::new();
                 host_columns.write(&mut row);
-                write_port(&mut row, port, &self.options);
+                write_port(&mut row, port, &masking);
                 host_columns.write_after_port(&mut row);
                 row.finish(out)?;
             }
@@ -178,8 +179,8 @@ struct HostColumns {
 }
 
 impl HostColumns {
-    fn new(host: &Host, options: &ExportOptions) -> Self {
-        let redaction = options.redaction;
+    fn new(host: &Host, masking: &HostRedaction) -> Self {
+        let redaction = masking.redaction();
 
         let mut roles: Vec<&str> = host
             .network_roles()
@@ -205,7 +206,7 @@ impl HostColumns {
             mac_vendor: host.vendor().unwrap_or_default().to_string(),
             os: host
                 .os()
-                .map(|os| os.name().to_string())
+                .map(|os| masking.text(os.name()).into_owned())
                 .unwrap_or_default(),
             os_accuracy: host
                 .os()
@@ -258,7 +259,7 @@ impl HostColumns {
 }
 
 /// Appends the port half of a row. Must push exactly [`PORT_COLUMNS`] fields.
-fn write_port(row: &mut Row, port: &Port, options: &ExportOptions) {
+fn write_port(row: &mut Row, port: &Port, masking: &HostRedaction) {
     let service = port.service();
     let certificate = port.security().and_then(|security| security.certificate());
 
@@ -269,11 +270,13 @@ fn write_port(row: &mut Row, port: &Port, options: &ExportOptions) {
     row.push(
         service
             .and_then(|service| service.product())
+            .map(|product| masking.text(product))
             .unwrap_or_default(),
     );
     row.push(
         service
             .and_then(|service| service.version())
+            .map(|version| masking.text(version))
             .unwrap_or_default(),
     );
     row.push(
@@ -293,7 +296,12 @@ fn write_port(row: &mut Row, port: &Port, options: &ExportOptions) {
     );
     row.push(
         certificate
-            .map(|cert| options.redaction.hostname(cert.common_name()).into_owned())
+            .map(|cert| {
+                masking
+                    .redaction()
+                    .hostname(cert.common_name())
+                    .into_owned()
+            })
             .unwrap_or_default(),
     );
     row.push(
@@ -301,7 +309,7 @@ fn write_port(row: &mut Row, port: &Port, options: &ExportOptions) {
             .map(|cert| rfc3339(cert.validity_end()))
             .unwrap_or_default(),
     );
-    row.push(findings_cell(port));
+    row.push(findings_cell(port, masking));
 }
 
 /// The port's findings as one cell: each finding as `severity: title (refs)`,
@@ -311,7 +319,7 @@ fn write_port(row: &mut Row, port: &Port, options: &ExportOptions) {
 /// a spreadsheet cell. The cell always leads with a severity word, so it never
 /// begins with a formula character, and `push` quotes any cell carrying a `;`,
 /// so the summary survives a locale that reads `;` as the column delimiter.
-fn findings_cell(port: &Port) -> String {
+fn findings_cell(port: &Port, masking: &HostRedaction) -> String {
     let mut findings: Vec<&Finding> = port.findings().collect();
     findings.sort_by(|a, b| {
         b.severity()
@@ -321,7 +329,11 @@ fn findings_cell(port: &Port) -> String {
     findings
         .into_iter()
         .map(|finding| {
-            let mut entry = format!("{}: {}", severity_name(finding.severity()), finding.title());
+            let mut entry = format!(
+                "{}: {}",
+                severity_name(finding.severity()),
+                masking.text(finding.title())
+            );
             let references: Vec<String> = finding.references().map(reference_text).collect();
             if !references.is_empty() {
                 entry.push_str(" (");

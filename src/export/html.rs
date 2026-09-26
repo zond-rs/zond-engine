@@ -633,8 +633,8 @@ fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), Export
             detail.push(esc(vendor));
         }
         let name = match os.generation {
-            Some(generation) => format!("{} {}", esc(os.name), esc(generation)),
-            None => esc(os.name),
+            Some(generation) => format!("{} {}", esc(&os.name), esc(generation)),
+            None => esc(&os.name),
         };
         fact(out, "os", &format!("{name}{}", dim(&detail)))?;
     }
@@ -823,15 +823,15 @@ fn write_port(out: &mut dyn Write, port: &Port, dto: &PortDto<'_>) -> Result<(),
         out,
         "<td>{}</td>",
         service
-            .and_then(|service| service.product)
+            .and_then(|service| service.product.as_deref())
             .map(esc)
             .unwrap_or_default()
     )?;
 
     let version = service
         .map(|service| {
-            let mut text = service.version.map(esc).unwrap_or_default();
-            if let Some(extra) = service.extrainfo {
+            let mut text = service.version.as_deref().map(esc).unwrap_or_default();
+            if let Some(extra) = &service.extrainfo {
                 text.push_str(&dim(&[esc(extra)]));
             }
             text
@@ -877,13 +877,13 @@ fn write_finding_facts(facts: &mut String, findings: &[FindingDto<'_>]) {
             facts,
             "<dt>{severity}</dt><dd>{title}{detail}",
             severity = Text(finding.severity),
-            title = Text(finding.title),
+            title = Text(&finding.title),
             detail = dim(&detail),
         );
-        if let Some(excerpt) = finding.excerpt {
+        if let Some(excerpt) = &finding.excerpt {
             let _ = write!(facts, "<div class=\"mono\">{}</div>", Text(excerpt));
         }
-        if let Some(remediation) = finding.remediation {
+        if let Some(remediation) = &finding.remediation {
             let _ = write!(facts, "<div>{}</div>", Text(remediation));
         }
         facts.push_str("</dd>");
@@ -992,7 +992,7 @@ fn write_port_detail(out: &mut dyn Write, dto: &PortDto<'_>) -> Result<(), Expor
         }
 
         if let Some(certificate) = &security.certificate {
-            let mut detail = vec![format!("issued by {}", esc(certificate.issuer))];
+            let mut detail = vec![format!("issued by {}", esc(&certificate.issuer))];
             if !certificate.sans.is_empty() {
                 let sans: Vec<String> = certificate.sans.iter().map(|san| esc(san)).collect();
                 detail.push(format!("also {}", sans.join(", ")));

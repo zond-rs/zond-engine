@@ -838,3 +838,119 @@ pub(crate) fn hostile() -> ScanReport {
 
     recorder.finish(&ctx)
 }
+
+/// The machine's name in [`named`], as its own replies spell it.
+pub(crate) const NAMED_HOST: &str = "FS01";
+
+/// Its domain's name in [`named`], likewise.
+pub(crate) const NAMED_DOMAIN: &str = "CONTOSO";
+
+/// A reply read a byte to a character, as a flow reads one: an SMB1 negotiate
+/// answer whose tail names the domain and the machine in UTF-16LE.
+fn smb1_negotiate_reply() -> String {
+    let mut bytes: Vec<u8> = b"\x00\x00\x00\x55\xffSMBr\x00\x00\x00\x00\x88\x01\xc8".to_vec();
+    for name in [NAMED_DOMAIN, NAMED_HOST] {
+        for byte in name.bytes() {
+            bytes.extend([byte, 0]);
+        }
+        bytes.extend([0, 0]);
+    }
+    bytes.into_iter().map(char::from).collect()
+}
+
+/// A finding a detection drew from a reply, its title and remedy filled from
+/// that reply too.
+fn named_finding(id: &str, title: &str, excerpt: &str) -> Finding {
+    Finding::new(
+        DetectionId::new(id, Version::new(1, 0, 0), "0123abcd").expect("a valid id"),
+        title,
+        Severity::High,
+        Confidence::Certain,
+        DetectionClass::ActiveBenign,
+    )
+    .expect("a valid finding")
+    .with_excerpt(Excerpt::new(excerpt))
+    .with_remediation(format!("Turn it off on {NAMED_HOST}"))
+}
+
+/// A file server that named itself and its domain, and repeats both in the
+/// text of its replies: in a finding's excerpt as text and as a binary SMB
+/// reply, in titles and remedies, in a service's product, version and extra
+/// information, in its operating system's name and evidence, and in its
+/// certificate's issuer. The earlier record (`later` false) holds the names
+/// and nothing else, so a comparison of the two carries each as a change.
+fn named_host(later: bool) -> Host {
+    let mut host = Host::new(ip(20));
+    host.set_status(HostStatus::Up);
+    host.add_reason(StatusReason::basic(StatusProtocol::TcpSyn));
+    host.set_hostname(Some(format!(
+        "fs01.{}.example",
+        NAMED_DOMAIN.to_lowercase()
+    )));
+    for (kind, name) in [
+        (NameKind::NetbiosHost, NAMED_HOST.to_owned()),
+        (NameKind::NetbiosDomain, NAMED_DOMAIN.to_owned()),
+        (
+            NameKind::Domain,
+            format!("{}.example", NAMED_DOMAIN.to_lowercase()),
+        ),
+    ] {
+        host.record_name(HostName::new(kind, NameSource::Smb, &name).expect("a name"));
+    }
+    if !later {
+        return host;
+    }
+
+    host.set_os(
+        OsFingerprint::new(format!("Windows Server 2019 ({NAMED_HOST})"), 90).with_evidence(
+            format!("smb native os on {NAMED_HOST}: Windows Server 2019"),
+        ),
+    );
+
+    let mut smb = Port::new(445, Protocol::Tcp, PortState::Open).with_service(
+        Service::new("microsoft-ds", 95)
+            .with_product(format!("Samba smbd for {NAMED_DOMAIN}"))
+            .with_version(format!("4.15 {NAMED_HOST}"))
+            .with_extrainfo(format!("workgroup: {NAMED_DOMAIN}")),
+    );
+    smb.add_finding(named_finding(
+        "smbv1-enabled",
+        &format!("SMBv1 is enabled on {NAMED_HOST}"),
+        &smb1_negotiate_reply(),
+    ));
+    host.add_port(smb);
+
+    let mut smtp = Port::new(25, Protocol::Tcp, PortState::Open)
+        .with_service(Service::new("smtp", 90).with_product("Microsoft ESMTP"));
+    smtp.add_finding(named_finding(
+        "smtp-open-relay",
+        "The mail server relays for anyone",
+        &format!(
+            "220 fs01.{}.example Microsoft ESMTP MAIL Service ready",
+            NAMED_DOMAIN.to_lowercase()
+        ),
+    ));
+    host.add_port(smtp);
+
+    let ldaps = Port::new(636, Protocol::Tcp, PortState::Open).with_security(
+        Security::new().with_certificate(CertificateInfo::new(
+            format!("fs01.{}.example", NAMED_DOMAIN.to_lowercase()),
+            format!("CN={}-{NAMED_HOST}-CA", NAMED_DOMAIN.to_lowercase()),
+            std::time::UNIX_EPOCH + BASELINE_AT - DAY * 90,
+            std::time::UNIX_EPOCH + BASELINE_AT + DAY * 300,
+            "5f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+        )),
+    );
+    host.add_port(ldaps);
+
+    host
+}
+
+/// A report on the host of [`named_host`], and the earlier one a comparison
+/// sets it against.
+pub(crate) fn named() -> (ScanReport, ScanReport) {
+    (
+        compared_phase(0, vec![named_host(false)]),
+        compared_phase(35, vec![named_host(true)]),
+    )
+}

@@ -1342,3 +1342,175 @@ fn the_hostile_fixture_poisons_every_string_the_schema_declares() {
          ENGINE_WRITTEN with that reasoning."
     );
 }
+
+// ---------------------------------------------------------------------------
+// Names in the host's own words
+// ---------------------------------------------------------------------------
+
+/// Every rendering of the [`fixture::named`] host this build can write, by
+/// format: each report format, and each comparison format over the earlier
+/// record and this one.
+fn named_renderings(options: &ExportOptions) -> Vec<(&'static str, String)> {
+    use crate::diff::ScanDiff;
+    use crate::export::diff::DiffExporter;
+
+    let (before, after) = fixture::named();
+    let mut rendered = Vec::new();
+    let mut write = |format: &'static str, export: &dyn Fn(&mut Vec<u8>)| {
+        let mut bytes = Vec::new();
+        export(&mut bytes);
+        rendered.push((format, String::from_utf8(bytes).expect("utf-8")));
+    };
+
+    for format in crate::export::ExportFormat::all() {
+        write(format.extension(), &|bytes| {
+            format
+                .exporter(options.clone())
+                .export(&after, bytes)
+                .expect("the report exports");
+        });
+    }
+
+    let diff = ScanDiff::between(&before, &after);
+    write("diff json", &|bytes| {
+        crate::export::diff::JsonDiffExporter::new(options.clone())
+            .export(&diff, bytes)
+            .expect("the comparison exports");
+    });
+    #[cfg(feature = "export-html")]
+    write("diff html", &|bytes| {
+        crate::export::diff::HtmlDiffExporter::new(options.clone())
+            .export(&diff, bytes)
+            .expect("the comparison exports");
+    });
+
+    rendered
+}
+
+/// `text` as a reader searching it for a name sees it: without the NULs a
+/// reply read byte for byte carries between the letters of a UTF-16 name,
+/// however the format wrote them, dropped them or drew them, and in one case.
+fn as_searched(text: &str) -> String {
+    text.replace(r#"<span class="ctl">U+0000</span>"#, "")
+        .replace("\\u0000", "")
+        .replace("&#x0;", "")
+        .replace("&#0;", "")
+        .replace('\0', "")
+        .to_lowercase()
+}
+
+/// A name the host gave reaches a report inside the text of its own replies
+/// as well as in its fields: the raw bytes of an SMB reply in a finding's
+/// excerpt, a banner, a title a detection filled from the reply, a service's
+/// extra information, a certificate issuer named for the machine. Redaction
+/// that masks the fields and leaves the text has masked nothing, so every
+/// format, the comparisons included, is searched for each name, in any case
+/// and with the NULs of its UTF-16 spelling taken out.
+#[test]
+fn no_format_carries_a_name_the_host_gave_under_redaction() {
+    let names: Vec<String> = [fixture::NAMED_HOST, fixture::NAMED_DOMAIN]
+        .iter()
+        .map(|name| name.to_lowercase())
+        .collect();
+
+    for (format, text) in named_renderings(&ExportOptions::new()) {
+        let searched = as_searched(&text);
+        assert!(
+            names.iter().all(|name| searched.contains(name)),
+            "the unredacted {format} does not carry the names, so this test checks nothing"
+        );
+    }
+
+    let redacted = ExportOptions::new().with_redaction(Redaction::Standard);
+    for (format, text) in named_renderings(&redacted) {
+        let searched = as_searched(&text);
+        for name in &names {
+            assert!(
+                !searched.contains(name.as_str()),
+                "the redacted {format} still names `{name}`:\n{text}"
+            );
+        }
+    }
+}
+
+/// The fields the fixture puts the names in are the fields a reply fills, and
+/// the report masks each rather than dropping it: the finding survives with its
+/// claim, and the binary reply that justified it is replaced by a note saying
+/// it was withheld, not left out as though there had been none.
+#[test]
+fn redaction_masks_the_host_s_words_in_every_field_its_replies_fill() {
+    const FILLED: &[&str] = &[
+        "evidence",
+        "excerpt",
+        "extrainfo",
+        "issuer",
+        "name",
+        "product",
+        "remediation",
+        "title",
+        "version",
+    ];
+
+    fn named_in(value: &Value, out: &mut BTreeSet<String>) {
+        match value {
+            Value::Object(map) => {
+                for (key, sub) in map {
+                    if sub.as_str().is_some_and(|text| {
+                        [fixture::NAMED_HOST, fixture::NAMED_DOMAIN]
+                            .iter()
+                            .any(|name| as_searched(text).contains(&name.to_lowercase()))
+                    }) {
+                        out.insert(key.clone());
+                    }
+                    named_in(sub, out);
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|item| named_in(item, out)),
+            _ => {}
+        }
+    }
+
+    let (_, after) = fixture::named();
+    let render = |options: ExportOptions| -> Value {
+        let mut bytes = Vec::new();
+        JsonExporter::new(options)
+            .export(&after, &mut bytes)
+            .expect("the report exports");
+        serde_json::from_slice::<Value>(&bytes).expect("it parses")["hosts"][0].clone()
+    };
+
+    let mut carried = BTreeSet::new();
+    named_in(&render(ExportOptions::new()), &mut carried);
+    // Less the fields masked whole in their own right. `name` is both an
+    // operating system's, a reply's, and a name's own.
+    let carried: Vec<&str> = carried
+        .iter()
+        .map(String::as_str)
+        .filter(|key| !["common_name", "hostname"].contains(key))
+        .collect();
+    assert_eq!(
+        carried, FILLED,
+        "the fixture no longer names the host in every field a reply fills"
+    );
+
+    let host = render(ExportOptions::new().with_redaction(Redaction::Standard));
+    let ports = host["ports"].as_array().expect("ports");
+    let smb = ports
+        .iter()
+        .find(|port| port["port"] == 445)
+        .expect("the SMB port");
+    assert_eq!(smb["findings"][0]["title"], "SMBv1 is enabled on XXXXX");
+    assert_eq!(
+        smb["findings"][0]["excerpt"],
+        crate::export::redact::WITHHELD_EXCERPT
+    );
+    assert_eq!(smb["service"]["extrainfo"], "workgroup: COXXXXXSO");
+    let smtp = ports
+        .iter()
+        .find(|port| port["port"] == 25)
+        .expect("the SMTP port");
+    assert_eq!(
+        smtp["findings"][0]["excerpt"],
+        "220 fsXXXXXle Microsoft ESMTP MAIL Service ready"
+    );
+}

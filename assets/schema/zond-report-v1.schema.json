@@ -1146,7 +1146,7 @@
           ]
         },
         "excerpt": {
-          "description": "The bytes that justify it, for a person rather than a parser. Absent where the detection carried none. Untrusted.",
+          "description": "The bytes that justify it, for a person rather than a parser. Absent where the detection carried none. Untrusted. Under redaction a name the host is known by is masked in it, and an excerpt that is not text is replaced by a note saying it was withheld.",
           "type": "string"
         },
         "references": {
