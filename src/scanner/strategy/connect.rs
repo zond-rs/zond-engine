@@ -805,6 +805,10 @@ impl Asking<'_> {
 
     /// [`port`](Self::port), asked a second time: what it draws revises the
     /// port's record and settles nothing, since the first asking settled it.
+    ///
+    /// One that drew no verdict, cut short by the stop or refused by this
+    /// machine, revises nothing either: the first asking's verdict stands
+    /// rather than giving way to an unasked port. Its send is still counted.
     fn again(
         &self,
         target: PlannedTarget,
@@ -814,6 +818,9 @@ impl Asking<'_> {
         async move {
             asked.await.map(|probed| Probed {
                 settles: false,
+                port: probed
+                    .port
+                    .filter(|port| port.state() != PortState::Unasked),
                 ..probed
             })
         }
@@ -1169,10 +1176,15 @@ async fn port_prober(
                 began,
                 descriptor,
             } => {
-                let handshake = Handshake::sent(handshake(connecting, patience).await);
+                // The SYN left, so a stop that cuts the wait leaves a port
+                // asked with no verdict, as the raw path files a probe whose
+                // schedule the stop cut: unasked, and asked again by a resume.
+                let Some(finished) = handshake(connecting, patience, &handle).await else {
+                    return unasked(Outcome::Interrupted, Attempt::Sent);
+                };
                 // Read before the fingerprint talks to the port, which is the
                 // service's time rather than the path's.
-                (handshake, began.elapsed(), Some(descriptor))
+                (Handshake::sent(finished), began.elapsed(), Some(descriptor))
             }
             Dialled::Ran {
                 result: Err(e),
@@ -1440,14 +1452,24 @@ fn is_unreachable(error: &io::Error) -> bool {
     }
 }
 
-/// The second half of a connect, given `patience` to be answered.
+/// The second half of a connect, given `patience` to be answered, or `None`
+/// where the scan stopped first.
 ///
 /// The budget running out and the stack giving up first are the same outcome,
 /// a SYN out and nothing back, so both come back as [`ErrorKind::TimedOut`].
-async fn handshake(connecting: Connecting, patience: Duration) -> io::Result<TcpStream> {
-    timeout(patience, connecting.finish())
+/// Raced against the stop because the wait is the longest one a probe makes
+/// with nothing between to read it: a port that drops its SYN holds its
+/// probe the whole of `patience`, which across a slow path is many seconds,
+/// and a stopped scan would otherwise wait out every one in flight.
+async fn handshake(
+    connecting: Connecting,
+    patience: Duration,
+    handle: &ScanHandle,
+) -> Option<io::Result<TcpStream>> {
+    handle
+        .or_stopped(timeout(patience, connecting.finish()))
         .await
-        .unwrap_or_else(|_elapsed| Err(ErrorKind::TimedOut.into()))
+        .map(|finished| finished.unwrap_or_else(|_elapsed| Err(ErrorKind::TimedOut.into())))
 }
 
 /// Probes a single [`PlannedTarget`] for UDP using a standard OS `UdpSocket`,
@@ -2048,7 +2070,11 @@ async fn prober(
                     began,
                     descriptor,
                 } => {
-                    let sent = Handshake::sent(handshake(connecting, waiting).await);
+                    // Asked, with no answer yet, where the stop cut the wait.
+                    let Some(finished) = handshake(connecting, waiting, &handle).await else {
+                        return cut_short(true);
+                    };
+                    let sent = Handshake::sent(finished);
                     waiting = CONNECT_PROBE_TIMEOUT;
                     (sent, began, Some(descriptor))
                 }
@@ -2595,6 +2621,146 @@ mod tests {
             "the handshake's verdict is kept"
         );
         assert!(probed.answered);
+    }
+
+    /// A loopback listener that drops every further SYN, and the connections
+    /// that filled its queue, held for as long as it is.
+    ///
+    /// A listener never accepted from takes connections into its queue up to
+    /// its backlog and then drops the SYNs that follow, as Linux and the BSDs
+    /// do (Windows resets them instead): from outside, a port a firewall
+    /// drops. A backlog of one, since
+    /// macOS reads zero as its default; filled until a connect goes
+    /// unanswered, so the next one is dropped whatever the stack's arithmetic
+    /// on the backlog.
+    #[cfg(unix)]
+    fn a_port_that_drops_syns() -> (socket2::Socket, Vec<std::net::TcpStream>) {
+        let listener = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )
+        .expect("a socket");
+        listener
+            .bind(&SocketAddr::from((Ipv4Addr::LOCALHOST, 0)).into())
+            .expect("binds loopback");
+        listener.listen(1).expect("listens");
+        let addr = listener
+            .local_addr()
+            .expect("its address")
+            .as_socket()
+            .expect("an inet address");
+        let mut queued = Vec::new();
+        for _ in 0..64 {
+            match std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)) {
+                Ok(stream) => queued.push(stream),
+                Err(_) => return (listener, queued),
+            }
+        }
+        panic!("the listener's queue never filled");
+    }
+
+    /// **A stop ends a handshake in flight at once, and leaves its port
+    /// unasked.**
+    ///
+    /// A connect to a port that drops its SYN waits its whole patience, which
+    /// across a slow path is many seconds, and a stopped scan would wait out
+    /// every one in flight before it ended. The SYN left and nothing came
+    /// back yet, so the port has no verdict: filed filtered, a firewall would
+    /// be reported that the probe never waited long enough to see.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stop_ends_a_handshake_in_flight_and_leaves_its_port_unasked() {
+        let (listener, _queued) = a_port_that_drops_syns();
+        let port = listener
+            .local_addr()
+            .expect("its address")
+            .as_socket()
+            .expect("an inet address")
+            .port();
+
+        let handle = ScanHandle::new();
+        let stopper = handle.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            stopper.abort();
+        });
+
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        // Far longer than the wait below, so only the stop can end it there.
+        let patience = Duration::from_secs(600);
+        let probed = tokio::time::timeout(
+            Duration::from_secs(60),
+            port_prober(
+                tcp_target(ip, port),
+                ServiceDetection::Off,
+                Shaping::default(),
+                Egress::KERNEL,
+                SocketAddr::new(ip, port),
+                patience,
+                handle,
+                Default::default(),
+            ),
+        )
+        .await
+        .expect("the stop ended the handshake")
+        .expect("a TCP target is probed");
+
+        assert_eq!(
+            probed.port.as_ref().map(Port::state),
+            Some(PortState::Unasked),
+            "a handshake cut short has no verdict"
+        );
+        assert!(!probed.answered);
+        assert!(
+            matches!(probed.outcome, Outcome::Interrupted),
+            "asked and cut short, so a resume asks again: {:?}",
+            probed.outcome
+        );
+    }
+
+    /// A second asking the stop cuts short keeps the first asking's verdict.
+    ///
+    /// The first asking settled the port filtered, and the second is only a
+    /// longer wait for the same answer. Cut short, it heard nothing yet, and
+    /// filed unasked it would take back a verdict the scan earned.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_second_asking_cut_short_revises_nothing() {
+        let (listener, _queued) = a_port_that_drops_syns();
+        let port = listener
+            .local_addr()
+            .expect("its address")
+            .as_socket()
+            .expect("an inet address")
+            .port();
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let stopper = ctx.handle.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            stopper.abort();
+        });
+
+        let (crowds, tarpits) = Default::default();
+        let asking = Asking {
+            ctx: &ctx,
+            detection: ServiceDetection::Off,
+            shaping: Shaping::default(),
+            zones: &ZoneMap::new(),
+            crowds: &crowds,
+            tarpits: &tarpits,
+        };
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let probed = tokio::time::timeout(
+            Duration::from_secs(60),
+            asking.again(tcp_target(ip, port), Duration::from_secs(600)),
+        )
+        .await
+        .expect("the stop ended the handshake")
+        .expect("a TCP target is probed");
+
+        assert_eq!(probed.port, None, "the second asking filed a port");
+        assert!(matches!(probed.attempt, Attempt::Sent), "its send counts");
     }
 
     /// Where an error surfaced decides what it means: the same code before
