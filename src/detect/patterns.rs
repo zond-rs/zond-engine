@@ -84,8 +84,35 @@ impl KeptPattern {
 
     /// What `with` makes of the pattern, run on the flow-matching thread.
     pub(crate) fn matching<T: Send>(&self, with: impl FnOnce(&CompiledPattern) -> T + Send) -> T {
+        #[cfg(test)]
+        MATCHED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Arc::as_ptr(&self.0) as usize);
         on_the_matching_thread(|| with(&self.0))
     }
+}
+
+/// The kept copies [`KeptPattern::matching`] has matched with, by address,
+/// for [`matched_as_kept`].
+#[cfg(test)]
+static MATCHED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+/// Whether a match has been made with the one copy of `source` this process
+/// keeps, through [`KeptPattern::matching`].
+///
+/// What a test asks after running a flow, to tell a call site that matches on
+/// the kept path from one that compiles a copy of its own: the second compiles
+/// and matches as well as the first, and differs only in what it costs, which
+/// nothing else a test can read would show.
+#[cfg(test)]
+pub(crate) fn matched_as_kept(source: &str) -> bool {
+    compiled(source).is_some_and(|kept| {
+        MATCHED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&(Arc::as_ptr(&kept) as usize))
+    })
 }
 
 /// Runs `work` on the thread kept for flow matching, blocking the caller until

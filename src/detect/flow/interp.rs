@@ -524,6 +524,49 @@ mod tests {
         }
     }
 
+    /// **A flow matches its `expect` and its `bind` on the patterns kept for
+    /// the process.** A call site that compiled its pattern at each match
+    /// would match the same, and cost a compile per reply and a search cache
+    /// per thread that ever matched with it, which no finding shows; the
+    /// kept copies are asked whether they were the ones matched with.
+    #[test]
+    fn a_flow_matches_its_expect_and_bind_on_the_kept_patterns() {
+        const EXPECT: &str = "^KEPT-EXPECT ok";
+        const BIND: &str = "build (?<build>[0-9]+)";
+        let toml = format!(
+            r#"
+            [detection]
+            id = "kept-patterns"
+            version = "1.0.0"
+            title = "kept patterns"
+            [detection.when]
+            service = "http"
+            [detection.capabilities]
+            class = "active-benign"
+            speak = "target"
+            [[step]]
+            send = "HELLO\r\n"
+            expect = '{EXPECT}'
+            bind = {{ build = '{BIND}' }}
+            "#
+        );
+        let flow: FlowDetection = toml::from_str(&toml).expect("a valid flow");
+
+        run(
+            &flow,
+            "",
+            &seed(),
+            &mut Canned(b"KEPT-EXPECT ok, build 42".to_vec()),
+        );
+
+        for source in [EXPECT, BIND] {
+            assert!(
+                crate::detect::patterns::matched_as_kept(source),
+                "`{source}` was matched on a copy of its own"
+            );
+        }
+    }
+
     #[test]
     fn a_send_template_resolves_the_seeded_host_and_port() {
         // A one-step flow whose probe interpolates both seeded variables. The

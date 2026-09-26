@@ -328,8 +328,23 @@ pub(crate) fn udp(
 
 #[cfg(test)]
 mod tests {
-    use super::{http_message_end, idle_gap};
+    use super::{ReplyEnd, http_message_end, idle_gap};
     use std::time::Duration;
+
+    /// **Where a flow says its reply ends is matched on the pattern kept for
+    /// the process**, as its `expect` is: a read asks after every chunk it
+    /// takes, and a copy compiled for each would cost a compile per chunk.
+    #[test]
+    fn a_reply_s_end_is_matched_on_the_kept_pattern() {
+        const END: &str = "(?m)^226 kept-end";
+        let end = ReplyEnd::compile(END).expect("compiles");
+
+        assert!(end.reached(b"150 sending\r\n226 kept-end\r\n"));
+        assert!(
+            crate::detect::patterns::matched_as_kept(END),
+            "the reply's end was matched on a copy of its own"
+        );
+    }
 
     /// An exchange holds one descriptor, its socket, and nothing beside it, so
     /// a table with room for that socket carries the exchange through.
