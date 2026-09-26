@@ -2053,9 +2053,11 @@ fn spawn_scan(
         orchestrator::run_cert_posture(&ctx);
         let report = recorder.finish_last(ctx);
 
+        // Both closed against this scan's one store, so the port phase's
+        // hosts are later copies of the liveness phase's.
         match liveness {
             Some(mut first) => {
-                first.merge(report);
+                first.merge_later_copy(report);
                 first
             }
             None => report,
@@ -2920,6 +2922,86 @@ mod tests {
         let (runs, rewritten) = resumed(true).await;
         assert_eq!(runs, 0, "a finished host was asked its detections again");
         assert!(!rewritten, "a finished host was written down again");
+    }
+
+    /// A resumed sitting reports each round trip its job recorded once, as
+    /// reading the job back does.
+    ///
+    /// A port scan closes its liveness phase against its store and goes on
+    /// with that store, so the two phases' reports hold one host twice, the
+    /// later copy with every round trip the earlier held. Folded as two
+    /// accounts, each round trip the job brought back from its journal
+    /// counted twice and the window kept the newest half of them: the resumed
+    /// report's fastest reply rose to its slowest few, where the job read
+    /// back still held them all.
+    #[cfg(feature = "journal-format")]
+    #[tokio::test]
+    async fn a_resumed_sitting_reports_each_recorded_round_trip_once() {
+        use crate::journal::Journal;
+        use crate::journal::manifest::Plan;
+        use crate::journal::settle::{Outcome, Settlements};
+        use crate::model::host::{Host, HostStatus};
+        use crate::model::target::TargetSet;
+        use std::time::Duration;
+
+        // Ports enough that a liveness pass is worth its probes; see
+        // `liveness_earns_its_place`.
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "127.0.0.1".parse().expect("an address"),
+            "20000-20015".parse().expect("ports"),
+        ));
+        let cfg = ZondConfig {
+            no_dns: true,
+            ..ZondConfig::default()
+        };
+        assert!(liveness_earns_its_place(&cfg, &map), "the pass runs");
+        let plan = Plan::port_scan(&map, &cfg.exclusions, cfg.tcp_technique);
+
+        // A job an earlier sitting ran to its end, its one host answering in
+        // round trips no loopback reply takes.
+        let root = journal_root("round-trips-once");
+        let mut journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
+        let recorded: Vec<Duration> = (91..=96).map(Duration::from_millis).collect();
+        let mut host = Host::new("127.0.0.1".parse().expect("an address"));
+        host.set_status(HostStatus::Up);
+        host.add_rtts(recorded.iter().copied());
+        journal.record_hosts(&[host]).expect("records the host");
+        let settlements = Settlements::default();
+        for position in 0..16 {
+            settlements.record(Outcome::Answered { position });
+        }
+        journal.checkpoint(&settlements).expect("checkpoints");
+        journal
+            .record_finished(["127.0.0.1".to_string()])
+            .expect("records the sitting's end");
+        let directory = journal.directory().to_path_buf();
+        journal.close().expect("closes");
+
+        let (journal, _) =
+            Journal::resume(&directory, &plan, Privilege::current()).expect("resumes");
+        let (_session, task) = scan_with_journal(map, &cfg, Detections::embedded(), journal)
+            .await
+            .expect("the sitting starts");
+        let report = task.join().await.expect("the sitting ends");
+        std::fs::remove_dir_all(&root).ok();
+
+        let [host] = report.hosts().collect::<Vec<_>>()[..] else {
+            panic!("one host reported");
+        };
+        let held: Vec<Duration> = host
+            .telemetry()
+            .history()
+            .iter()
+            .map(|sample| sample.rtt)
+            .collect();
+        for rtt in &recorded {
+            assert_eq!(
+                held.iter().filter(|held| *held == rtt).count(),
+                1,
+                "{rtt:?} is reported other than once: {held:?}"
+            );
+        }
     }
 
     /// A port an earlier sitting found open and identified, and was killed

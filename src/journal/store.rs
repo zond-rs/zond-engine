@@ -3597,6 +3597,74 @@ mod tests {
         );
     }
 
+    /// **A host written down at every checkpoint reads back as the host it
+    /// is, every field of it.** Each record repeats its host's fields as they
+    /// stood, so a field folded as though each record brought something new
+    /// counts the repeats, as the round trips once did. Held over everything
+    /// a record keeps, for the hosts the schema can say the most about, grown
+    /// between checkpoints as a scan grows them, with a port changing at each
+    /// so its record repeats too.
+    #[test]
+    fn a_host_recorded_at_every_checkpoint_reads_back_as_the_host_it_is() {
+        use crate::model::confidence::Confidence;
+        use crate::model::finding::{DetectionClass, DetectionId, Finding, Severity, Version};
+        use crate::model::host::{OsEvidence, OsSource};
+
+        let root = scratch("repeated");
+        let mut journal = begin(&root, &plan("203.0.113.1-203.0.113.9", "22,80,443,445"));
+        let mut hosts: Vec<Host> = crate::export::fixture::report().hosts().cloned().collect();
+        for checkpoint in 0..3u64 {
+            let finding = Finding::new(
+                DetectionId::new(format!("check-{checkpoint}"), Version::new(1, 0, 0), "")
+                    .expect("an id"),
+                "A check",
+                Severity::Low,
+                Confidence::Certain,
+                DetectionClass::Passive,
+            )
+            .expect("a finding");
+            for host in &mut hosts {
+                host.add_rtt(Duration::from_micros(700 + 100 * checkpoint));
+                host.record_os_evidence(OsEvidence {
+                    source: OsSource::ServiceBanner,
+                    family: Some("Linux".to_string()),
+                    device: None,
+                    vendor: None,
+                    product: None,
+                    version: None,
+                    kernel: None,
+                    arch: None,
+                    cpe: None,
+                    confidence: 0.5,
+                    evidence: format!("banner read at checkpoint {checkpoint}"),
+                });
+                host.add_finding(finding.clone());
+                let first = host
+                    .ports()
+                    .next()
+                    .map(|port| (port.number(), port.protocol()));
+                if let Some((number, protocol)) = first {
+                    host.add_port_finding(number, protocol, finding.clone());
+                }
+            }
+            journal.record_hosts(&hosts).expect("records");
+        }
+        let directory = journal.directory().to_path_buf();
+        journal.close().expect("closes");
+
+        let mut read = read_findings(&directory).expect("reads");
+        std::fs::remove_dir_all(&root).ok();
+        read.sort_by_key(Host::primary_ip);
+        hosts.sort_by_key(Host::primary_ip);
+        let as_recorded = |hosts: &[Host]| {
+            hosts
+                .iter()
+                .map(|host| serde_json::to_value(HostRecord::from(host)).expect("serialises"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(as_recorded(&read), as_recorded(&hosts));
+    }
+
     /// Reading a journal refuses a link standing where one of its files
     /// should be, and says so, rather than reading what it points to.
     ///

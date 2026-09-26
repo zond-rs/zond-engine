@@ -3102,11 +3102,32 @@ impl ScanReport {
     /// engine builds are not part of one job, and silently averaging their
     /// provenance would be worse than keeping the first.
     pub fn merge(&mut self, other: ScanReport) {
+        self.fold(other, Host::merge);
+    }
+
+    /// Folds `later`, a report closed against the same live hosts as this one
+    /// and after it, into this report.
+    ///
+    /// For a scan that closes one phase and goes on with the store it closed
+    /// against: a host in both reports is one host copied twice, and the later
+    /// copy holds every round trip the earlier did, as far as its window
+    /// reaches. Folded as two accounts with nothing in common, each of those
+    /// counts twice, and the window the report keeps is the newest half of
+    /// them twice over rather than the store's own. So the later's round
+    /// trips are taken in place of these, as a journal's later record's are;
+    /// see [`Host::merge_later_account`]. Everything else folds as
+    /// [`merge`](Self::merge) folds it.
+    pub(crate) fn merge_later_copy(&mut self, later: ScanReport) {
+        self.fold(later, Host::merge_later_account);
+    }
+
+    /// Appends `other`'s phases and folds its hosts into these by `fold`.
+    fn fold(&mut self, other: ScanReport, fold: fn(&mut Host, Host)) {
         self.phases.extend(other.phases);
 
         for (key, host) in other.hosts {
             match self.hosts.get_mut(&key) {
-                Some(existing) => existing.merge(host),
+                Some(existing) => fold(existing, host),
                 None => {
                     self.hosts.insert(key, host);
                 }
