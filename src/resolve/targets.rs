@@ -232,16 +232,33 @@ pub async fn for_port_scan<S: AsRef<str>>(
 ///
 /// Written as the target wrote it, less the trailing dot of a fully qualified
 /// name, which a `Host` header and a TLS server name both leave off.
+///
+/// A later name that shares an address is said so at the first verbosity,
+/// once per name, since it goes unasked there: no `Host` header and no server
+/// name carries it, and no certificate is held against it. See
+/// [`ZondConfig::target_names`] for why one name is kept per address.
 fn names_by_address(
     written: &[String],
     resolved: &HashMap<String, Vec<IpAddr>>,
 ) -> BTreeMap<IpAddr, String> {
-    let mut names = BTreeMap::new();
+    let mut names: BTreeMap<IpAddr, String> = BTreeMap::new();
     for name in written {
+        let bare = name.strip_suffix('.').unwrap_or(name);
+        let mut shared = None;
         for address in resolved.get(name).into_iter().flatten() {
-            names
-                .entry(*address)
-                .or_insert_with(|| name.strip_suffix('.').unwrap_or(name).to_string());
+            match names.get(address) {
+                Some(first) if first != bare => shared = Some((*address, first.clone())),
+                Some(_) => {}
+                None => {
+                    names.insert(*address, bare.to_string());
+                }
+            }
+        }
+        if let Some((address, first)) = shared {
+            crate::info!(
+                verbosity = 1,
+                "{bare} not asked by name at {address} (asked as {first})"
+            );
         }
     }
     names
@@ -822,9 +839,23 @@ mod tests {
             ("box.example.".to_string(), vec![shared]),
         ]);
 
-        let names = names_by_address(&written, &resolved);
+        let mut names = BTreeMap::new();
+        let logged = crate::logging::logged(|| names = names_by_address(&written, &resolved));
         assert_eq!(names.get(&shared).map(String::as_str), Some("box.example"));
         assert_eq!(names.get(&own).map(String::as_str), Some("dev.box.example"));
+
+        // The name that goes unasked at the shared address is said to, once,
+        // since no handshake there names it and no certificate is held to it.
+        let said: Vec<_> = logged
+            .iter()
+            .filter(|line| line.message.contains("not asked by name"))
+            .collect();
+        assert_eq!(said.len(), 1, "{logged:?}");
+        assert_eq!(said[0].verbosity, 1);
+        assert_eq!(
+            said[0].message,
+            "dev.box.example not asked by name at 192.0.2.10 (asked as box.example)"
+        );
     }
 
     #[test]

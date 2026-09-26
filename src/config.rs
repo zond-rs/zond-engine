@@ -1300,6 +1300,15 @@ pub struct ZondConfig {
     /// the one a scan was pointed at. Where two names led to one address, the
     /// one written first is the one asked for.
     ///
+    /// One name per address, because a scan's record is kept per address: a
+    /// port holds one identification and one TLS record, so a second site at
+    /// the same address has nowhere of its own to be recorded. Nor is the
+    /// certificate the first name drew held against the second. A server
+    /// choosing its certificate by the name asked for presents the second
+    /// name's own, so a mismatch read that way is one no client naming it
+    /// meets. A caller wanting each site identified and its certificate checked
+    /// scans each name in a run of its own.
+    ///
     /// Empty by default, and set by whoever resolved the target expressions,
     /// since by the time a scan has addresses the names are gone; see
     /// [`resolve::for_port_scan`](crate::resolve::for_port_scan).
