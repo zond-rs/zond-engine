@@ -3312,7 +3312,7 @@ mod tests {
         );
         assert!(ctx.take_failures().is_empty(), "declining is not failing");
         assert!(ctx.take_refusals().is_empty());
-        assert_eq!(ctx.take_reached_by_connect().len(), 1);
+        assert_eq!(ctx.take_reached_by_connect(&[]).len(), 1);
     }
 
     /// **A technique refused for a target is one refusal, and not a scanner
@@ -3376,7 +3376,7 @@ mod tests {
             let failures = ctx.take_failures();
             assert!(failures.is_empty(), "{path}: {failures:?}");
             assert!(
-                ctx.take_reached_by_connect().is_empty(),
+                ctx.take_reached_by_connect(&[]).is_empty(),
                 "{path}: nothing was reached by connect"
             );
             assert_eq!(
@@ -3691,7 +3691,7 @@ mod tests {
 
         let said = heard.0.lock().expect("an unpoisoned log").clone();
         assert_eq!(said, ["sweep by connect: 127.0.0.1 +1 (loopback)"]);
-        assert_eq!(ctx.take_reached_by_connect().len(), 2);
+        assert_eq!(ctx.take_reached_by_connect(&[]).len(), 2);
     }
 
     /// A frames-only run whose every target is out of a frame's reach refuses
@@ -3893,7 +3893,7 @@ mod tests {
         assert_eq!(routes.len(), 4, "the raw routes are kept beside them");
         assert!(ctx.take_refusals().is_empty());
         assert_eq!(
-            ctx.take_reached_by_connect().len(),
+            ctx.take_reached_by_connect(&[]).len(),
             1,
             "the phase has to say its loopback evidence is connect evidence"
         );
@@ -3952,7 +3952,7 @@ mod tests {
         let refusals = ctx.take_refusals();
         assert_eq!(refusals.len(), 1);
         assert_eq!(refusals[0].scanner(), ScannerKind::SctpPort);
-        assert!(ctx.take_reached_by_connect().is_empty());
+        assert!(ctx.take_reached_by_connect(&[]).is_empty());
     }
 
     /// A protocol whose raw strategy did not open at all is refused once, for

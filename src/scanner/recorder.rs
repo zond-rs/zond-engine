@@ -313,6 +313,17 @@ impl PhaseRecorder {
             _ => Vec::new(),
         };
 
+        // Taken whatever the privilege, so a context reused for another phase
+        // starts empty, and kept only for a raw phase: one at `Connect`
+        // reached everything this way, and its privilege says so.
+        let reached_by_connect = match self.opened.privilege {
+            Privilege::Raw => ctx.take_reached_by_connect(&unroutable),
+            Privilege::Connect => {
+                let _ = ctx.take_reached_by_connect(&[]);
+                Vec::new()
+            }
+        };
+
         let phase = ScanPhase::from_parts(PhaseParts {
             kind: self.opened.kind,
             started_at: self.opened.started_at,
@@ -328,16 +339,7 @@ impl PhaseRecorder {
             refused_by_route,
             timed_out: ctx.take_timed_out(),
             icmp_rate_limited: ctx.take_icmp_rate_limited(),
-            // Taken whatever the privilege, so a context reused for another
-            // phase starts empty, and kept only for a raw phase: one at
-            // `Connect` reached everything this way, and its privilege says so.
-            reached_by_connect: match self.opened.privilege {
-                Privilege::Raw => ctx.take_reached_by_connect(),
-                Privilege::Connect => {
-                    let _ = ctx.take_reached_by_connect();
-                    Vec::new()
-                }
-            },
+            reached_by_connect,
             undecided,
             liveness_skipped: self.opened.liveness_skipped,
             silent,
@@ -513,12 +515,6 @@ mod tests {
         IpAddr::V4(Ipv4Addr::new(203, 0, 113, last))
     }
 
-    /// A caller running strategies themselves has to be able to produce the
-    /// report the engine produces, or the whole third altitude stops at the
-    /// live store: findings readable, nothing exportable.
-    ///
-    /// This walks that path with no strategies in it, since what is being
-    /// pinned is that every piece is reachable and the halves meet, not what a
     /// An address with no route reaches the record without making the scan
     /// partial.
     ///
@@ -584,6 +580,51 @@ mod tests {
         assert!(!report.is_partial());
     }
 
+    /// An address the connect step was handed and could not reach, a route
+    /// on this machine refusing it, is named unreachable and not also reached
+    /// by connect: it holds no connect evidence, and a reader would otherwise
+    /// be told it was both asked and never asked.
+    #[test]
+    fn an_address_a_connect_step_could_not_reach_is_not_named_reached_by_it() {
+        let cfg = ZondConfig::default();
+        let (_session, ctx) = ScanSession::new();
+        let mut targets = IpSet::from_str("203.0.113.1-203.0.113.3").expect("a valid range");
+        let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
+        let recorder = PhaseRecorder::start(ScanKind::Discovery, Privilege::Raw, scope, &cfg);
+
+        let mut handed = IpSet::new();
+        handed.insert_range(IpRange::V4(
+            crate::model::ip::range::Ipv4Range::new(
+                std::net::Ipv4Addr::new(203, 0, 113, 1),
+                std::net::Ipv4Addr::new(203, 0, 113, 3),
+            )
+            .expect("ordered"),
+        ));
+        ctx.record_reached_by_connect(&handed);
+        ctx.note_refused_by_route(ip(2));
+        ctx.record_unroutable(ip(2));
+
+        let report = recorder.finish(&ctx);
+        let phase = &report.phases()[0];
+        assert_eq!(phase.unroutable(), [ip(2)]);
+        assert_eq!(phase.refused_by_route(), [ip(2)]);
+        let reached: Vec<String> = phase
+            .reached_by_connect()
+            .iter()
+            .map(|range| format!("{}-{}", range.start_addr(), range.end_addr()))
+            .collect();
+        assert_eq!(
+            reached,
+            ["203.0.113.1-203.0.113.1", "203.0.113.3-203.0.113.3"]
+        );
+    }
+
+    /// A caller running strategies themselves has to be able to produce the
+    /// report the engine produces, or the whole third altitude stops at the
+    /// live store: findings readable, nothing exportable.
+    ///
+    /// This walks that path with no strategies in it, since what is being
+    /// pinned is that every piece is reachable and the halves meet, not what a
     /// scanner would have written.
     #[test]
     fn a_self_orchestrated_scan_can_close_its_own_phase() {

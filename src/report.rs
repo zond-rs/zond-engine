@@ -2182,6 +2182,10 @@ impl ScanPhase {
     /// nothing may have been told nothing by the local stack, and no port was
     /// asked with the technique the settings name.
     ///
+    /// An address handed to connect that no probe could leave for is not
+    /// here: it is [unroutable](Self::unroutable), and holds no evidence of
+    /// either kind.
+    ///
     /// Empty for most phases, and for every phase at
     /// [`Privilege::Connect`], which reached everything this way and says so
     /// once.

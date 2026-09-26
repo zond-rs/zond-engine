@@ -1214,10 +1214,18 @@ impl ConnectLog {
         }
     }
 
-    fn drain(&self) -> Vec<IpRange> {
+    fn drain(&self, unreached: &[IpAddr]) -> Vec<IpRange> {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         let mut taken = std::mem::take(&mut *entries);
         taken.canonicalize();
+        if !unreached.is_empty() {
+            let mut unreached_set = IpSet::new();
+            for address in unreached {
+                unreached_set.insert(*address);
+            }
+            unreached_set.canonicalize();
+            taken.subtract(&unreached_set);
+        }
         let v4 = taken.v4().iter().copied().map(IpRange::V4);
         let v6 = taken.v6().iter().copied().map(IpRange::V6);
         v4.chain(v6).collect()
@@ -2846,9 +2854,14 @@ impl ScanContext {
         self.reached_by_connect.extend(targets);
     }
 
-    /// The addresses reached by connect so far, merged and taken.
-    pub(crate) fn take_reached_by_connect(&self) -> Vec<IpRange> {
-        self.reached_by_connect.drain()
+    /// The addresses reached by connect so far, merged and taken, less
+    /// `unreached`: the addresses the phase filed unroutable.
+    ///
+    /// What fills the log is the whole of what a strategy was handed, and an
+    /// address in it that no probe could leave for, a route on this machine
+    /// refusing it, was asked by nothing and holds no connect evidence.
+    pub(crate) fn take_reached_by_connect(&self, unreached: &[IpAddr]) -> Vec<IpRange> {
+        self.reached_by_connect.drain(unreached)
     }
 
     /// Records that this phase swept a whole link, not merely the addresses on
