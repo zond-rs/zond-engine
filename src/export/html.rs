@@ -626,13 +626,13 @@ fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), Export
 
     if let Some(os) = &dto.os {
         let mut detail = vec![format!("{}% confidence", os.accuracy)];
-        if let Some(family) = os.family {
+        if let Some(family) = &os.family {
             detail.push(esc(family));
         }
-        if let Some(vendor) = os.vendor {
+        if let Some(vendor) = &os.vendor {
             detail.push(esc(vendor));
         }
-        let name = match os.generation {
+        let name = match &os.generation {
             Some(generation) => format!("{} {}", esc(&os.name), esc(generation)),
             None => esc(&os.name),
         };
@@ -675,7 +675,7 @@ fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), Export
     if let Some(hardware) = &dto.hardware {
         let mut value = hardware.mac.as_deref().map(esc).unwrap_or_default();
         let mut detail = Vec::new();
-        if let Some(vendor) = hardware.vendor {
+        if let Some(vendor) = &hardware.vendor {
             detail.push(esc(vendor));
         }
         if hardware.macs.len() > 1 {
@@ -743,7 +743,7 @@ fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), Export
     // as the host.
     let mut evidence = String::new();
     for reason in &dto.reasons {
-        let mut detail: Vec<String> = reason.details.map(esc).into_iter().collect();
+        let mut detail: Vec<String> = reason.details.as_deref().map(esc).into_iter().collect();
         match &reason.source_ip {
             Some(source) => detail.push(format!("via {}", esc(source))),
             None if reason.source_withheld => detail.push("via an excluded address".to_owned()),
@@ -817,7 +817,9 @@ fn write_port(out: &mut dyn Write, port: &Port, dto: &PortDto<'_>) -> Result<(),
     write!(
         out,
         "<td>{}</td>",
-        service.map(|service| esc(service.name)).unwrap_or_default()
+        service
+            .map(|service| esc(&service.name))
+            .unwrap_or_default()
     )?;
     write!(
         out,

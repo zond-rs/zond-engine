@@ -523,7 +523,7 @@ fn write_host(
             Attr(&masking.text(os.name())),
             os.accuracy(),
         )?;
-        write_os_class(out, os)?;
+        write_os_class(out, os, &masking)?;
         writeln!(out, "</osmatch>")?;
         writeln!(out, "</os>")?;
     }
@@ -771,9 +771,13 @@ const MAX_PORT_LIST_BYTES: usize = 8 * 1024;
 /// as it requires a vendor. A vendor this engine did not establish is written
 /// empty, which claims nothing, rather than leaving out the class and the CPEs
 /// with it.
+///
+/// Every string in the class is read through `masking`, as the match's name
+/// is: a rule fills each from what it captured of the reply.
 fn write_os_class(
     out: &mut dyn Write,
     os: &crate::model::host::OsFingerprint,
+    masking: &HostRedaction,
 ) -> Result<(), ExportError> {
     let Some(family) = os.family() else {
         return Ok(());
@@ -782,14 +786,14 @@ fn write_os_class(
     write!(
         out,
         r#"<osclass vendor="{}" osfamily="{}""#,
-        Attr(os.vendor().unwrap_or_default()),
-        Attr(family),
+        Attr(&masking.text(os.vendor().unwrap_or_default())),
+        Attr(&masking.text(family)),
     )?;
     if let Some(generation) = os.generation() {
-        write!(out, r#" osgen="{}""#, Attr(generation))?;
+        write!(out, r#" osgen="{}""#, Attr(&masking.text(generation)))?;
     }
     if let Some(device) = os.device() {
-        write!(out, r#" type="{}""#, Attr(device))?;
+        write!(out, r#" type="{}""#, Attr(&masking.text(device)))?;
     }
     write!(
         out,
@@ -802,19 +806,21 @@ fn write_os_class(
         return Ok(());
     }
     writeln!(out, ">")?;
-    write_cpes(out, os.cpes())?;
+    write_cpes(out, os.cpes(), masking)?;
     writeln!(out, "</osclass>")?;
     Ok(())
 }
 
 /// Writes one `<cpe>` element per CPE, the form nmap's DTD gives them beneath
-/// a service or an OS class.
+/// a service or an OS class, each read through `masking`: a CPE is a template
+/// a rule fills from the reply.
 fn write_cpes(
     out: &mut dyn Write,
     cpes: &std::collections::BTreeSet<std::sync::Arc<str>>,
+    masking: &HostRedaction,
 ) -> Result<(), ExportError> {
     for cpe in cpes {
-        writeln!(out, "<cpe>{}</cpe>", Attr(cpe))?;
+        writeln!(out, "<cpe>{}</cpe>", Attr(&masking.text(cpe)))?;
     }
     Ok(())
 }
@@ -1028,7 +1034,8 @@ fn write_port(
     )?;
 
     if let Some(service) = port.service() {
-        let (name, tunnel) = service_name(service.name());
+        let label = masking.text(service.name());
+        let (name, tunnel) = service_name(&label);
         write!(out, r#"<service name="{}""#, Attr(name))?;
         if let Some(product) = service.product() {
             write!(out, r#" product="{}""#, Attr(&masking.text(product)))?;
@@ -1060,7 +1067,7 @@ fn write_port(
             writeln!(out, "/>")?;
         } else {
             writeln!(out, ">")?;
-            write_cpes(out, service.cpes())?;
+            write_cpes(out, service.cpes(), masking)?;
             writeln!(out, "</service>")?;
         }
     }

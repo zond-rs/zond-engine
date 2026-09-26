@@ -3521,17 +3521,17 @@ impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::FindingDto<'
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::FindingDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::FindingDto<'a>
 #[non_exhaustive] pub struct zond_engine::export::schema::HardwareDto<'a>
-pub zond_engine::export::schema::HardwareDto::cpe23: core::option::Option<&'a str>
-pub zond_engine::export::schema::HardwareDto::family: core::option::Option<&'a str>
+pub zond_engine::export::schema::HardwareDto::cpe23: core::option::Option<alloc::borrow::Cow<'a, str>>
+pub zond_engine::export::schema::HardwareDto::family: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::HardwareDto::mac: core::option::Option<alloc::string::String>
 pub zond_engine::export::schema::HardwareDto::macs: alloc::vec::Vec<alloc::string::String>
-pub zond_engine::export::schema::HardwareDto::model: core::option::Option<&'a str>
-pub zond_engine::export::schema::HardwareDto::product: core::option::Option<&'a str>
+pub zond_engine::export::schema::HardwareDto::model: core::option::Option<alloc::borrow::Cow<'a, str>>
+pub zond_engine::export::schema::HardwareDto::product: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::HardwareDto::serial_number: core::option::Option<&'a str>
-pub zond_engine::export::schema::HardwareDto::vendor: core::option::Option<&'a str>
-pub zond_engine::export::schema::HardwareDto::version: core::option::Option<&'a str>
+pub zond_engine::export::schema::HardwareDto::vendor: core::option::Option<alloc::borrow::Cow<'a, str>>
+pub zond_engine::export::schema::HardwareDto::version: core::option::Option<alloc::borrow::Cow<'a, str>>
 impl<'a> zond_engine::export::schema::HardwareDto<'a>
-pub fn zond_engine::export::schema::HardwareDto<'a>::new(&'a zond_engine::model::host::hardware::HardwareInfo, &zond_engine::export::ExportOptions) -> Self
+pub fn zond_engine::export::schema::HardwareDto<'a>::new(&'a zond_engine::model::host::hardware::HardwareInfo, &zond_engine::export::HostRedaction) -> Self
 impl<'a> core::clone::Clone for zond_engine::export::schema::HardwareDto<'a>
 pub fn zond_engine::export::schema::HardwareDto<'a>::clone(&self) -> zond_engine::export::schema::HardwareDto<'a>
 impl<'a> core::fmt::Debug for zond_engine::export::schema::HardwareDto<'a>
@@ -3674,16 +3674,16 @@ impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::NameDto<'a>
 #[non_exhaustive] pub struct zond_engine::export::schema::OsDto<'a>
 pub zond_engine::export::schema::OsDto::accuracy: u8
-pub zond_engine::export::schema::OsDto::arch: core::option::Option<&'a str>
-pub zond_engine::export::schema::OsDto::cpes: alloc::vec::Vec<&'a str>
+pub zond_engine::export::schema::OsDto::arch: core::option::Option<alloc::borrow::Cow<'a, str>>
+pub zond_engine::export::schema::OsDto::cpes: alloc::vec::Vec<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::OsDto::detail_accuracy: core::option::Option<u8>
-pub zond_engine::export::schema::OsDto::device: core::option::Option<&'a str>
+pub zond_engine::export::schema::OsDto::device: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::OsDto::evidence: core::option::Option<alloc::borrow::Cow<'a, str>>
-pub zond_engine::export::schema::OsDto::family: core::option::Option<&'a str>
-pub zond_engine::export::schema::OsDto::generation: core::option::Option<&'a str>
-pub zond_engine::export::schema::OsDto::kernel: core::option::Option<&'a str>
+pub zond_engine::export::schema::OsDto::family: core::option::Option<alloc::borrow::Cow<'a, str>>
+pub zond_engine::export::schema::OsDto::generation: core::option::Option<alloc::borrow::Cow<'a, str>>
+pub zond_engine::export::schema::OsDto::kernel: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::OsDto::name: alloc::borrow::Cow<'a, str>
-pub zond_engine::export::schema::OsDto::vendor: core::option::Option<&'a str>
+pub zond_engine::export::schema::OsDto::vendor: core::option::Option<alloc::borrow::Cow<'a, str>>
 impl<'a> zond_engine::export::schema::OsDto<'a>
 pub fn zond_engine::export::schema::OsDto<'a>::new(&'a zond_engine::model::host::os::OsFingerprint, &zond_engine::export::HostRedaction) -> Self
 impl<'a> core::clone::Clone for zond_engine::export::schema::OsDto<'a>
@@ -3873,12 +3873,12 @@ impl core::marker::UnsafeUnpin for zond_engine::export::schema::RangeDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::RangeDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::RangeDto
 #[non_exhaustive] pub struct zond_engine::export::schema::ReasonDto<'a>
-pub zond_engine::export::schema::ReasonDto::details: core::option::Option<&'a str>
+pub zond_engine::export::schema::ReasonDto::details: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::ReasonDto::protocol: alloc::borrow::Cow<'a, str>
 pub zond_engine::export::schema::ReasonDto::source_ip: core::option::Option<alloc::string::String>
 pub zond_engine::export::schema::ReasonDto::source_withheld: bool
 impl<'a> zond_engine::export::schema::ReasonDto<'a>
-pub fn zond_engine::export::schema::ReasonDto<'a>::new(&'a zond_engine::model::host::status::StatusReason) -> Self
+pub fn zond_engine::export::schema::ReasonDto<'a>::new(&'a zond_engine::model::host::status::StatusReason, &zond_engine::export::HostRedaction) -> Self
 impl<'a> core::clone::Clone for zond_engine::export::schema::ReasonDto<'a>
 pub fn zond_engine::export::schema::ReasonDto<'a>::clone(&self) -> zond_engine::export::schema::ReasonDto<'a>
 impl<'a> core::fmt::Debug for zond_engine::export::schema::ReasonDto<'a>
@@ -4029,11 +4029,11 @@ impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::SecurityDto<'a>
 #[non_exhaustive] pub struct zond_engine::export::schema::ServiceDto<'a>
 pub zond_engine::export::schema::ServiceDto::confidence: u8
-pub zond_engine::export::schema::ServiceDto::cpes: alloc::vec::Vec<&'a str>
+pub zond_engine::export::schema::ServiceDto::cpes: alloc::vec::Vec<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::ServiceDto::extrainfo: core::option::Option<alloc::borrow::Cow<'a, str>>
-pub zond_engine::export::schema::ServiceDto::name: &'a str
+pub zond_engine::export::schema::ServiceDto::name: alloc::borrow::Cow<'a, str>
 pub zond_engine::export::schema::ServiceDto::product: core::option::Option<alloc::borrow::Cow<'a, str>>
-pub zond_engine::export::schema::ServiceDto::vendor: core::option::Option<&'a str>
+pub zond_engine::export::schema::ServiceDto::vendor: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::ServiceDto::version: core::option::Option<alloc::borrow::Cow<'a, str>>
 impl<'a> zond_engine::export::schema::ServiceDto<'a>
 pub fn zond_engine::export::schema::ServiceDto<'a>::new(&'a zond_engine::model::port::service::Service, &zond_engine::export::HostRedaction) -> Self

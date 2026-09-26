@@ -109,6 +109,14 @@ pub(crate) fn is_binary(text: &str) -> bool {
         .any(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r'))
 }
 
+/// Labels a registry puts under a country's top-level domain for anyone to
+/// register beneath, as in `example.com.au` or `example.gov.uk`: part of the
+/// suffix rather than of a name, so never masked on their own. See
+/// [`Needle::for_names`].
+const GENERIC_LABELS: &[&str] = &[
+    "com", "net", "org", "edu", "gov", "mil", "int", "ltd", "plc",
+];
+
 /// One name to find in free text, with the mask it is replaced by.
 #[derive(Debug, Clone)]
 pub(crate) struct Needle {
@@ -117,12 +125,25 @@ pub(crate) struct Needle {
 }
 
 impl Needle {
-    /// The needles for the names a host is known by: each name whole, and the
+    /// The needles for the names a host is known by: each name whole, the
     /// first label of a dotted one, which is the machine's own name and the
-    /// form a banner or a NetBIOS reply gives it in. A label that is also a
-    /// name in its own right is masked as that name is, so a NetBIOS domain
-    /// reads the same in the text as in its field. Longest first, so a whole
-    /// name is masked before its first label could be.
+    /// form a banner or a NetBIOS reply gives it in, and every label between
+    /// that and the last. A label that is also a name in its own right is
+    /// masked as that name is, so a NetBIOS domain reads the same in the text
+    /// as in its field. Longest first, so a whole name is masked before any
+    /// label of it could be.
+    ///
+    /// The labels between, because text spells a name in other ways than
+    /// dotted: `DC=corp,DC=example` in a directory's reply, `%2E` between
+    /// labels in a URL, a realm upper-cased on its own. Each label of a domain
+    /// is part of what names the organisation, and one left standing reads it
+    /// out. Three exceptions, each a label that names no one: the last, which
+    /// is the top-level domain and is shared by millions; one of fewer than
+    /// three characters, which as a word of its own is too often an ordinary
+    /// one (`co`, `ad`, `us`) for masking it to leave the text readable; and
+    /// the handful of generic second-level labels a country's registry puts
+    /// under its own, [`GENERIC_LABELS`], which would otherwise mask `com` in
+    /// every URL of a report on `example.com.au`.
     pub(crate) fn for_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<Needle> {
         let names: Vec<&str> = names.into_iter().collect();
         let mut needles: Vec<Needle> = Vec::new();
@@ -148,6 +169,18 @@ impl Needle {
                 push(label);
             }
         }
+        for name in &names {
+            let labels: Vec<&str> = name.trim().split('.').collect();
+            for label in labels.iter().take(labels.len().saturating_sub(1)).skip(1) {
+                if label.chars().count() >= 3
+                    && !GENERIC_LABELS
+                        .iter()
+                        .any(|generic| generic.eq_ignore_ascii_case(label))
+                {
+                    push(label);
+                }
+            }
+        }
         needles.sort_by_key(|needle| std::cmp::Reverse(needle.chars.len()));
         needles
     }
@@ -166,7 +199,7 @@ impl Needle {
                 .iter()
                 .zip(&self.chars)
                 .all(|(a, b)| same_letter(*a, *b))
-            && (at == 0 || !text[at - 1].is_alphanumeric())
+            && (at == 0 || !text[at - 1].is_alphanumeric() || after_escape(text, at))
             && rest.get(len).is_none_or(|c| !c.is_alphanumeric());
         if plain {
             return Some(len);
@@ -180,6 +213,13 @@ impl Needle {
                 .all(|(i, c)| same_letter(rest[2 * i], *c) && rest[2 * i + 1] == '\0');
         wide.then_some(2 * len)
     }
+}
+
+/// Whether the three characters before `at` are a URL's percent escape, such
+/// as the `%2E` a URL can spell a dot as. It ends in a letter or a digit, and
+/// yet it is a separator, so a name after it starts a word of its own.
+fn after_escape(text: &[char], at: usize) -> bool {
+    at >= 3 && text[at - 3] == '%' && text[at - 2..at].iter().all(char::is_ascii_hexdigit)
 }
 
 /// Masks every name `needles` holds wherever it appears in `text`, borrowing
@@ -276,6 +316,26 @@ mod tests {
             names_in("FS010 and examples", &needles),
             Cow::Borrowed(_)
         ));
+    }
+
+    /// **Each label of a domain between its first and its last is masked on
+    /// its own**, since a directory's reply spells a domain as
+    /// `DC=corp,DC=example` and a URL as `%2E`-joined labels, and a label
+    /// left standing names the organisation. The top-level label, a label of
+    /// under three characters and a generic second-level one stay, being no
+    /// one's name.
+    #[test]
+    fn each_label_between_the_first_and_the_last_is_masked() {
+        let needles = Needle::for_names(["fs01.ad.contoso.com.au"]);
+
+        assert_eq!(
+            names_in("DC=ad,DC=contoso,DC=com,DC=au", &needles),
+            "DC=ad,DC=coXXXXXso,DC=com,DC=au"
+        );
+        assert_eq!(
+            names_in("GET /%2Econtoso%2Ecom%2Eau", &needles),
+            "GET /%2EcoXXXXXso%2Ecom%2Eau"
+        );
     }
 
     /// SMB, NTLM and Kerberos carry a name in UTF-16LE, which a reply read a

@@ -280,16 +280,21 @@ impl Redaction {
 /// NTLM and Kerberos carry a name. Each is replaced by the mask its field
 /// shows, so a reader still sees which name a line spoke of. The first label
 /// of a dotted name is found on its own as well, being the machine's name as
-/// a banner gives it.
+/// a banner gives it, and so is each label after it but the top-level one, as
+/// a directory spells a domain in `DC=` parts. A label of under three
+/// characters, or a generic one such as the `com` of `example.com.au`, is
+/// left, being no one's name.
 ///
 /// An excerpt that is not text is withheld whole under redaction rather than
 /// searched ([`excerpt`](Self::excerpt)). A binary reply holds names in forms
 /// no search of the text can be sure of, and names the scan never recorded.
 ///
 /// Every exporter in this crate reads a host's free text through one of
-/// these: a finding's title, excerpt and remediation, a service's product, version and extra information, an
-/// operating system's name and evidence, and a certificate's issuer. A front
-/// end printing any of them reads them through one too.
+/// these: a finding's title, excerpt and remediation, a service's product,
+/// version and extra information, an operating system's name and evidence, a
+/// certificate's issuer, the hardware's product, family, model and version,
+/// and the details of the evidence that the host is up. A front end printing
+/// any of them reads them through one too.
 ///
 /// # Examples
 /// ```

@@ -875,10 +875,12 @@ fn named_finding(id: &str, title: &str, excerpt: &str) -> Finding {
 
 /// A file server that named itself and its domain, and repeats both in the
 /// text of its replies: in a finding's excerpt as text and as a binary SMB
-/// reply, in titles and remedies, in a service's product, version and extra
-/// information, in its operating system's name and evidence, and in its
-/// certificate's issuer. The earlier record (`later` false) holds the names
-/// and nothing else, so a comparison of the two carries each as a change.
+/// reply, in titles and remedies, in every string of a service, of its
+/// operating system and of its hardware that a rule can fill from a reply, in
+/// a port named by its banner alone, in the details of the evidence it is up,
+/// and in its certificate's issuer. The earlier record (`later` false) holds
+/// the names and nothing else, so a comparison of the two carries each as a
+/// change.
 fn named_host(later: bool) -> Host {
     let mut host = Host::new(ip(20));
     host.set_status(HostStatus::Up);
@@ -901,15 +903,43 @@ fn named_host(later: bool) -> Host {
         return host;
     }
 
-    host.set_os(
-        OsFingerprint::new(format!("Windows Server 2019 ({NAMED_HOST})"), 90).with_evidence(
-            format!("smb native os on {NAMED_HOST}: Windows Server 2019"),
-        ),
+    // Read back from a document another tool wrote, whose words these are.
+    host.add_reason(StatusReason::new(
+        StatusProtocol::TcpSyn,
+        format!("syn-ack from {NAMED_HOST}"),
+    ));
+
+    let mut os = OsFingerprint::new(format!("Windows Server 2019 ({NAMED_HOST})"), 90)
+        .with_evidence(format!(
+            "smb native os on {NAMED_HOST}: Windows Server 2019"
+        ))
+        .with_family(format!("Windows {NAMED_HOST}"))
+        .with_generation(format!("2019 {NAMED_HOST}"))
+        .with_vendor(format!("Microsoft {NAMED_HOST}"))
+        .with_kernel(format!("10.0 {NAMED_HOST}"))
+        .with_arch(format!("x86_64 {NAMED_HOST}"))
+        .with_device(format!("file server {NAMED_HOST}"));
+    os.add_cpe(format!("cpe:/o:microsoft:windows_server_2019:{NAMED_HOST}"));
+    host.set_os(os);
+
+    host.set_hardware(
+        HardwareInfo::described(HardwareDescription {
+            vendor: Some(&format!("Dell for {NAMED_DOMAIN}")),
+            product: Some(&format!("PowerEdge {NAMED_HOST}")),
+            family: Some(&format!("PowerEdge R {NAMED_HOST}")),
+            cpe23: Some(&format!("cpe:/h:dell:poweredge:{NAMED_HOST}")),
+            model: Some(&format!("R740 {NAMED_HOST}")),
+            version: Some(&format!("A01 {NAMED_HOST}")),
+            serial_number: None,
+        })
+        .expect("a description naming something"),
     );
 
     let mut smb = Port::new(445, Protocol::Tcp, PortState::Open).with_service(
         Service::new("microsoft-ds", 95)
             .with_product(format!("Samba smbd for {NAMED_DOMAIN}"))
+            .with_vendor(format!("Samba for {NAMED_DOMAIN}"))
+            .with_cpe(format!("cpe:/a:samba:samba:4.15:{NAMED_HOST}"))
             .with_version(format!("4.15 {NAMED_HOST}"))
             .with_extrainfo(format!("workgroup: {NAMED_DOMAIN}")),
     );
@@ -942,6 +972,17 @@ fn named_host(later: bool) -> Host {
         )),
     );
     host.add_port(ldaps);
+
+    // A port nothing identified and no number names, labelled by its banner.
+    host.add_port(
+        Port::new(40390, Protocol::Tcp, PortState::Open).with_service(Service::new(
+            format!(
+                "banner: zq7 node fs01.{}.example ok",
+                NAMED_DOMAIN.to_lowercase()
+            ),
+            0,
+        )),
+    );
 
     host
 }

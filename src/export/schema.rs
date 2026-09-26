@@ -1644,7 +1644,11 @@ impl<'a> HostDto<'a> {
             families.push("ipv6");
         }
 
-        let mut reasons: Vec<ReasonDto<'a>> = host.reasons().iter().map(ReasonDto::new).collect();
+        let mut reasons: Vec<ReasonDto<'a>> = host
+            .reasons()
+            .iter()
+            .map(|reason| ReasonDto::new(reason, &masking))
+            .collect();
         reasons.sort_by(|a, b| {
             a.protocol
                 .cmp(&b.protocol)
@@ -1696,7 +1700,7 @@ impl<'a> HostDto<'a> {
             os: host.os().map(|os| OsDto::new(os, &masking)),
             hardware: host
                 .hardware()
-                .map(|hardware| HardwareDto::new(hardware, options)),
+                .map(|hardware| HardwareDto::new(hardware, &masking)),
             telemetry: TelemetryDto::new(host.telemetry()),
             path: host.path().hops().iter().map(HopDto::new).collect(),
             ports: host
@@ -1825,17 +1829,21 @@ pub struct ReasonDto<'a> {
     /// reading only `source_ip` would take it for.
     pub source_withheld: bool,
     /// What was observed, where the strategy recorded it.
-    pub details: Option<&'a str>,
+    ///
+    /// Free text, and not always this engine's: a record read back from
+    /// another tool's document carries whatever that document said. So a name
+    /// the host is known by is masked in it under redaction.
+    pub details: Option<Cow<'a, str>>,
 }
 
 impl<'a> ReasonDto<'a> {
-    /// Renders a status reason.
-    pub fn new(reason: &'a StatusReason) -> Self {
+    /// Renders a status reason of the host `masking` was made for.
+    pub fn new(reason: &'a StatusReason, masking: &HostRedaction) -> Self {
         Self {
             protocol: status_protocol_name(&reason.protocol),
             source_ip: reason.source.address().map(|ip| ip.to_string()),
             source_withheld: reason.source.is_withheld(),
-            details: reason.details.as_deref(),
+            details: reason.details.as_deref().map(|text| masking.text(text)),
         }
     }
 }
@@ -1848,15 +1856,18 @@ pub struct OsDto<'a> {
     /// known by is masked in it under redaction.
     pub name: Cow<'a, str>,
     /// The broad family.
-    pub family: Option<&'a str>,
+    ///
+    /// This and every other string here are masked as `name` is: a rule fills
+    /// each from what it captured of the reply, a CPE included.
+    pub family: Option<Cow<'a, str>>,
     /// The version or generation.
-    pub generation: Option<&'a str>,
+    pub generation: Option<Cow<'a, str>>,
     /// The vendor.
-    pub vendor: Option<&'a str>,
+    pub vendor: Option<Cow<'a, str>>,
     /// Confidence in this identification, 0 to 100.
     pub accuracy: u8,
     /// CPE identifiers, sorted.
-    pub cpes: Vec<&'a str>,
+    pub cpes: Vec<Cow<'a, str>>,
     /// What this identification was read off, in one line, or `null` where the
     /// technique that produced it recorded nothing.
     ///
@@ -1872,14 +1883,14 @@ pub struct OsDto<'a> {
     /// Beside `generation` rather than a finer form of it: a distribution
     /// release and the kernel it ships are two facts about one machine. It is
     /// also what a known-vulnerability lookup keys on for a Unix host.
-    pub kernel: Option<&'a str>,
+    pub kernel: Option<Cow<'a, str>>,
     /// The instruction set, such as `"x86_64"` or `"mips"`, or `null` where
     /// nothing read one.
     ///
     /// A third axis beside what the machine runs and what it is: two hosts of
     /// one family on different silicon are not interchangeable to an exploit
     /// that needs a payload built for the target.
-    pub arch: Option<&'a str>,
+    pub arch: Option<Cow<'a, str>>,
     /// How well supported everything *past* the family is, or `null` where the
     /// finding stops at a family.
     ///
@@ -1894,24 +1905,25 @@ pub struct OsDto<'a> {
     /// A separate axis from `family`, not a coarser one: what a machine is and
     /// what it runs are independent, and a host may have either answered without
     /// the other. Both may be `null` on a finding that named only a product.
-    pub device: Option<&'a str>,
+    pub device: Option<Cow<'a, str>>,
 }
 
 impl<'a> OsDto<'a> {
     /// Renders an OS fingerprint, masking the host's names in its free text.
     pub fn new(os: &'a OsFingerprint, masking: &HostRedaction) -> Self {
+        let text = |field: Option<&'a str>| field.map(|text| masking.text(text));
         Self {
             name: masking.text(os.name()),
-            family: os.family(),
-            generation: os.generation(),
-            vendor: os.vendor(),
+            family: text(os.family()),
+            generation: text(os.generation()),
+            vendor: text(os.vendor()),
             accuracy: os.accuracy(),
-            cpes: os.cpes().iter().map(|cpe| &**cpe).collect(),
-            evidence: os.evidence().map(|evidence| masking.text(evidence)),
-            kernel: os.kernel(),
-            arch: os.arch(),
+            cpes: os.cpes().iter().map(|cpe| masking.text(cpe)).collect(),
+            evidence: text(os.evidence()),
+            kernel: text(os.kernel()),
+            arch: text(os.arch()),
             detail_accuracy: os.detail_accuracy(),
-            device: os.device(),
+            device: text(os.device()),
         }
     }
 }
@@ -1953,31 +1965,38 @@ pub struct HardwareDto<'a> {
     /// The vendor resolved from the address's OUI.
     ///
     /// Survives redaction: masking preserves the OUI, so naming the vendor
-    /// reveals nothing the masked address does not already.
-    pub vendor: Option<&'a str>,
+    /// reveals nothing the masked address does not already. A rule can also
+    /// name it from the reply, so a name the host is known by is masked in it,
+    /// as in `product`.
+    pub vendor: Option<Cow<'a, str>>,
     /// The model, where a service named it: `PDR M800`, `Firewall-1`.
     ///
     /// Not derivable from an address at any prefix length, so it arrives only
     /// from something that stated it, and it survives redaction for the same
     /// reason the vendor does: it describes the product rather than the host.
+    /// What a redacted report masks in it is a name the host is known by, as
+    /// in every field a reply fills: a rule captures this from the reply, and
+    /// a device that puts its own name beside its model hands over both. The
+    /// same holds of `family`, `model` and `version`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub product: Option<&'a str>,
+    pub product: Option<Cow<'a, str>>,
     /// The line that model belongs to, where a rule distinguishes the two.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub family: Option<&'a str>,
+    pub family: Option<Cow<'a, str>>,
     /// The hardware's platform identifier, separate from the operating
     /// system's: a report naming both names two things about one machine.
+    /// Masked as `product` is, being a template a rule fills from the reply.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cpe23: Option<&'a str>,
+    pub cpe23: Option<Cow<'a, str>>,
     /// The model number on its own, where the product string carried more than
     /// one thing: `4200` beside a product of `Xerox WorkCentre 4200`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<&'a str>,
+    pub model: Option<Cow<'a, str>>,
     /// The hardware revision, which is the board rather than the firmware: a
     /// unit that ships in two silicon revisions under one model number is two
     /// different machines to an exploit.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<&'a str>,
+    pub version: Option<Cow<'a, str>>,
     /// The serial number, where a service handed one over.
     ///
     /// Dropped under redaction, unlike everything else in this record. The rest
@@ -1989,9 +2008,11 @@ pub struct HardwareDto<'a> {
 }
 
 impl<'a> HardwareDto<'a> {
-    /// Renders hardware information, applying the redaction policy.
-    pub fn new(hardware: &'a HardwareInfo, options: &ExportOptions) -> Self {
-        let redaction = options.redaction;
+    /// Renders the hardware of the host `masking` was made for, applying its
+    /// redaction policy.
+    pub fn new(hardware: &'a HardwareInfo, masking: &HostRedaction) -> Self {
+        let redaction = masking.redaction();
+        let text = |field: Option<&'a str>| field.map(|text| masking.text(text));
 
         let mut macs: Vec<String> = hardware
             .macs()
@@ -2007,12 +2028,12 @@ impl<'a> HardwareDto<'a> {
         Self {
             mac: hardware.most_recent_mac().map(|mac| redaction.mac(&mac)),
             macs,
-            vendor: hardware.vendor(),
-            product: hardware.product(),
-            family: hardware.family(),
-            cpe23: hardware.cpe23(),
-            model: hardware.model(),
-            version: hardware.hardware_version(),
+            vendor: text(hardware.vendor()),
+            product: text(hardware.product()),
+            family: text(hardware.family()),
+            cpe23: text(hardware.cpe23()),
+            model: text(hardware.model()),
+            version: text(hardware.hardware_version()),
             serial_number: match redaction.is_active() {
                 true => None,
                 false => hardware.serial_number(),
@@ -2238,7 +2259,12 @@ pub(crate) fn reference_text(reference: &Reference) -> String {
 #[derive(Debug, Clone, Serialize)]
 pub struct ServiceDto<'a> {
     /// The high-level protocol name, such as `ssh` or `http`.
-    pub name: &'a str,
+    ///
+    /// Or, on a port nothing identified and no number names, the start of
+    /// what the port said, as `banner: …`. That is reply text like
+    /// `product`, so a name the host is known by is masked in it under
+    /// redaction.
+    pub name: Cow<'a, str>,
     /// Certainty of this identification, 0 to 100. A table lookup by port
     /// number scores near zero; a completed protocol handshake scores near 100.
     /// A port its phase only listened to scores what it volunteered, which
@@ -2251,26 +2277,29 @@ pub struct ServiceDto<'a> {
     /// host is known by is masked in each under redaction.
     pub product: Option<Cow<'a, str>>,
     /// The organization behind the product, where one could be attributed.
-    pub vendor: Option<&'a str>,
+    ///
+    /// Masked as `product` is, as is each CPE: a rule can fill either from
+    /// what it captured of the reply.
+    pub vendor: Option<Cow<'a, str>>,
     /// The version string reported or detected.
     pub version: Option<Cow<'a, str>>,
     /// Additional metadata or environment hints.
     pub extrainfo: Option<Cow<'a, str>>,
     /// CPE identifiers, in the order they were established.
-    pub cpes: Vec<&'a str>,
+    pub cpes: Vec<Cow<'a, str>>,
 }
 
 impl<'a> ServiceDto<'a> {
     /// Renders a service identification on the host `masking` was made for.
     pub fn new(service: &'a Service, masking: &HostRedaction) -> Self {
         Self {
-            name: service.name(),
+            name: masking.text(service.name()),
             confidence: service.confidence(),
             product: service.product().map(|text| masking.text(text)),
-            vendor: service.vendor(),
+            vendor: service.vendor().map(|text| masking.text(text)),
             version: service.version().map(|text| masking.text(text)),
             extrainfo: service.extrainfo().map(|text| masking.text(text)),
-            cpes: service.cpes().iter().map(AsRef::as_ref).collect(),
+            cpes: service.cpes().iter().map(|cpe| masking.text(cpe)).collect(),
         }
     }
 }

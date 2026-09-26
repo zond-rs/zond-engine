@@ -1440,14 +1440,23 @@ fn no_format_carries_a_name_the_host_gave_under_redaction() {
 #[test]
 fn redaction_masks_the_host_s_words_in_every_field_its_replies_fill() {
     const FILLED: &[&str] = &[
+        "arch",
+        "cpe23",
+        "details",
+        "device",
         "evidence",
         "excerpt",
         "extrainfo",
+        "family",
+        "generation",
         "issuer",
+        "kernel",
+        "model",
         "name",
         "product",
         "remediation",
         "title",
+        "vendor",
         "version",
     ];
 
@@ -1505,6 +1514,27 @@ fn redaction_masks_the_host_s_words_in_every_field_its_replies_fill() {
         crate::export::redact::WITHHELD_EXCERPT
     );
     assert_eq!(smb["service"]["extrainfo"], "workgroup: COXXXXXSO");
+    assert_eq!(smb["service"]["cpes"][0], "cpe:/a:samba:samba:4.15:XXXXX");
+    let banner = ports
+        .iter()
+        .find(|port| port["port"] == 40390)
+        .expect("the port named by its banner");
+    assert_eq!(banner["service"]["name"], "banner: zq7 node fsXXXXXle ok");
+    assert_eq!(host["hardware"]["product"], "PowerEdge XXXXX");
+    assert_eq!(
+        host["os"]["cpes"][0],
+        "cpe:/o:microsoft:windows_server_2019:XXXXX"
+    );
+    let details: Vec<&Value> = host["reasons"]
+        .as_array()
+        .expect("reasons")
+        .iter()
+        .map(|reason| &reason["details"])
+        .collect();
+    assert!(
+        details.contains(&&Value::from("syn-ack from XXXXX")),
+        "{details:?}"
+    );
     let smtp = ports
         .iter()
         .find(|port| port["port"] == 25)

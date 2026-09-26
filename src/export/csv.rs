@@ -203,7 +203,7 @@ impl HostColumns {
                 .mac()
                 .map(|mac| redaction.mac(&mac))
                 .unwrap_or_default(),
-            mac_vendor: host.vendor().unwrap_or_default().to_string(),
+            mac_vendor: masking.text(host.vendor().unwrap_or_default()).into_owned(),
             os: host
                 .os()
                 .map(|os| masking.text(os.name()).into_owned())
@@ -266,7 +266,11 @@ fn write_port(row: &mut Row, port: &Port, masking: &HostRedaction) {
     row.push(port.number().to_string());
     row.push(protocol_name(port.protocol()));
     row.push(port_state_name(port.state()));
-    row.push(service.map(|service| service.name()).unwrap_or_default());
+    row.push(
+        service
+            .map(|service| masking.text(service.name()))
+            .unwrap_or_default(),
+    );
     row.push(
         service
             .and_then(|service| service.product())
