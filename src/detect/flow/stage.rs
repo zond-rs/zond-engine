@@ -455,7 +455,9 @@ impl<'h> PortShare<'h> {
 /// the port, and a port that answers one request at a time is slow in company
 /// and prompt alone: it is live, and writing it off for the queue the scan
 /// itself built would leave its detections unasked. The stage narrows such a
-/// port instead. See [`detect_port`].
+/// port instead. See [`detect_port`]. Nor does a wait for a socket the process
+/// had none to give: the port was never asked, and the flow reports
+/// [`Stopped::Starved`].
 ///
 /// Nothing the cut leaves unasked goes unsaid. A flow the port left short, by
 /// stalling it or by being given up on before its questions reached the socket,
@@ -600,7 +602,13 @@ impl Probe for CachingProbe<'_> {
         let alone = visit.leave();
 
         self.crowded |= !alone;
-        if elapsed >= self.dead_after {
+        // An exchange the process had no socket for spent its wait on the
+        // descriptor table, not on the port, which was never asked: counted
+        // as a dead wait, a full table would write off every port it met and
+        // file each flow left behind as the port's silence.
+        let starved =
+            reply.is_none() && self.inner.last_refusal() == Some(ProbeRefusal::Descriptors);
+        if elapsed >= self.dead_after && !starved {
             self.stalled = true;
             if alone {
                 self.struck = true;
@@ -609,7 +617,7 @@ impl Probe for CachingProbe<'_> {
         }
         let Some(reply) = reply else {
             let refusal = self.inner.last_refusal();
-            self.starved |= refusal == Some(ProbeRefusal::Descriptors);
+            self.starved |= starved;
             self.refused = self.refused.or(refusal);
             return None;
         };
@@ -1734,6 +1742,55 @@ mod tests {
             reported, expected,
             "a flow the silent port left unanswered went unreported: {shortfalls:?}"
         );
+    }
+
+    /// A process with no socket to give is not a port that stopped answering,
+    /// however long each exchange waited for one. A full descriptor table
+    /// holds every exchange to its flow's time, which is as long as a dead
+    /// port holds it, and read as the port's silence it would write the port
+    /// off and file every flow left behind against the port, sending the
+    /// reader to the target for what the file limit did.
+    #[test]
+    fn flows_a_full_file_table_starved_are_the_limits_shortfall_and_never_the_ports() {
+        let flows = DETECTION_FLOW_CONCURRENCY * 2;
+        let corpus = four_question_flows(flows, 40);
+
+        /// Waits out the flow's time for a descriptor that never comes free,
+        /// as an exchange does against a table filled from elsewhere.
+        struct Starving;
+        impl Probe for Starving {
+            fn speak(&mut self, _bytes: &[u8]) -> Option<Vec<u8>> {
+                std::thread::sleep(Duration::from_millis(40));
+                None
+            }
+            fn last_refusal(&self) -> Option<ProbeRefusal> {
+                Some(ProbeRefusal::Descriptors)
+            }
+        }
+
+        let (_, shortfalls) = detect_port(
+            &corpus,
+            &benign_envelope(),
+            "192.0.2.10",
+            Some("http"),
+            80,
+            Protocol::Tcp,
+            &HostContention::default(),
+            |_caps| Some(Box::new(Starving) as Box<dyn Probe>),
+        );
+
+        let stopped: Vec<(&str, Stopped)> = shortfalls
+            .iter()
+            .map(|shortfall| (shortfall.detection.as_str(), shortfall.stopped))
+            .collect();
+        let expected: Vec<(String, Stopped)> = (0..flows)
+            .map(|n| (format!("asks-{n:02}"), Stopped::Starved))
+            .collect();
+        let expected: Vec<(&str, Stopped)> = expected
+            .iter()
+            .map(|(id, stopped)| (id.as_str(), *stopped))
+            .collect();
+        assert_eq!(stopped, expected, "a starved flow was blamed on the port");
     }
 
     #[test]

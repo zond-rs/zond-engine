@@ -174,6 +174,11 @@ pub enum RunOutcome {
     BudgetExceeded(BudgetTrap),
     /// A granted capability refused a specific call.
     Denied(Denial),
+    /// The process had no file descriptor to give one of the module's
+    /// exchanges, so a question went unasked. This machine's shortfall,
+    /// neither the module's nor the port's, and raising the process's file
+    /// limit is its remedy.
+    OutOfDescriptors,
     /// The module broke.
     Faulted(ModuleFault),
     /// A [`Capabilities`](super::Capabilities) implementation re-entered the

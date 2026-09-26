@@ -653,6 +653,7 @@ pub zond_engine::detect::compute::CapError::ByteBudgetExhausted
 pub zond_engine::detect::compute::CapError::ConnectionBudgetExhausted
 pub zond_engine::detect::compute::CapError::ConnectionRefused
 pub zond_engine::detect::compute::CapError::Denied(alloc::string::String)
+pub zond_engine::detect::compute::CapError::OutOfDescriptors
 pub zond_engine::detect::compute::CapError::Reset
 pub zond_engine::detect::compute::CapError::TimedOut
 impl core::clone::Clone for zond_engine::detect::compute::CapError
@@ -790,6 +791,7 @@ pub zond_engine::detect::compute::RunOutcome::BudgetExceeded(zond_engine::detect
 pub zond_engine::detect::compute::RunOutcome::Denied(zond_engine::detect::compute::Denial)
 pub zond_engine::detect::compute::RunOutcome::Faulted(zond_engine::detect::compute::ModuleFault)
 pub zond_engine::detect::compute::RunOutcome::HostReentered
+pub zond_engine::detect::compute::RunOutcome::OutOfDescriptors
 impl core::clone::Clone for zond_engine::detect::compute::RunOutcome
 pub fn zond_engine::detect::compute::RunOutcome::clone(&self) -> zond_engine::detect::compute::RunOutcome
 impl core::cmp::Eq for zond_engine::detect::compute::RunOutcome

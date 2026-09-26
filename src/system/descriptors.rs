@@ -192,17 +192,10 @@ pub(crate) fn patiently_blocking<T>(
 /// and the same everywhere: the engine reads the file limit and does not raise
 /// it.
 pub(crate) fn starved(patience: Duration) -> String {
-    starved_while(&format!("within {patience:?}"))
-}
-
-/// [`starved`], for a connection whose wait was bounded by a clock of its own
-/// rather than by [`PATIENCE`], named by `wait` as it finishes the sentence
-/// "no socket came free ...".
-pub(crate) fn starved_while(wait: &str) -> String {
     let limit = soft_limit()
         .map(|limit| format!(" of {limit}"))
         .unwrap_or_default();
-    format!("file descriptor limit{limit} reached, no socket free {wait}")
+    format!("file descriptor limit{limit} reached, no socket free within {patience:?}")
 }
 
 /// [`starved`] in the few words a console line has room for: the limit and

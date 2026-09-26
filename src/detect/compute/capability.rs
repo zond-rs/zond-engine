@@ -158,11 +158,19 @@ pub enum CapError {
     /// hard end.
     #[error("the connection budget is exhausted")]
     ConnectionBudgetExhausted,
-    /// The call is refused: on policy grounds, a `resolve` outside the granted
-    /// scope, or for want of a socket, a `speak` the process had no file
-    /// descriptor for. A hard end, carrying the reason for the report.
+    /// The call is refused on policy grounds, a `resolve` outside the granted
+    /// scope. A hard end, carrying the reason for the report.
     #[error("the call was denied: {0}")]
     Denied(String),
+    /// The process had no file descriptor to give the exchange's socket for
+    /// as long as the run's time allowed, so nothing was sent. A hard end:
+    /// the port was never asked, so a module that caught this would read the
+    /// machine's shortfall as the port's answer, and one that retried would
+    /// find the table no emptier. Kept apart from [`Denied`](Self::Denied)
+    /// because nothing refused the call and the remedy, raising the file
+    /// limit, is the caller's.
+    #[error("no file descriptor was free for the exchange's socket")]
+    OutOfDescriptors,
     /// The exchange timed out. Handed back to the module.
     #[error("the exchange timed out")]
     TimedOut,
@@ -176,11 +184,15 @@ pub enum CapError {
 
 impl CapError {
     /// Whether this error ends the run outright, rather than being handed back to
-    /// the module to handle. Budget and policy refusals do; I/O failures do not.
+    /// the module to handle. Budget and policy refusals and a full descriptor
+    /// table do; I/O failures do not.
     pub(crate) fn is_fatal(&self) -> bool {
         matches!(
             self,
-            Self::ByteBudgetExhausted | Self::ConnectionBudgetExhausted | Self::Denied(_)
+            Self::ByteBudgetExhausted
+                | Self::ConnectionBudgetExhausted
+                | Self::Denied(_)
+                | Self::OutOfDescriptors
         )
     }
 }

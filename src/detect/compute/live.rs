@@ -234,15 +234,7 @@ impl From<ExchangeError> for CapError {
             ExchangeError::TimedOut => CapError::TimedOut,
             ExchangeError::ConnectionRefused => CapError::ConnectionRefused,
             ExchangeError::Reset => CapError::Reset,
-            // Denied rather than handed back as an I/O failure: the socket was
-            // never opened, so a module that caught it would read this
-            // machine's shortfall as the port's answer, and one that retried
-            // would find the table no emptier. Ending the run files it with
-            // the reason, and the remedy is the operator's.
-            ExchangeError::Starved => CapError::Denied(format!(
-                "no socket to speak through: {}",
-                crate::system::descriptors::starved_while("in the time the detection had")
-            )),
+            ExchangeError::Starved => CapError::OutOfDescriptors,
         }
     }
 }
@@ -259,17 +251,15 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    /// A module's exchange the process had no socket for ends its run with a
-    /// reason, rather than coming back as a reset the module would catch and
-    /// read as the port's answer.
+    /// A module's exchange the process had no socket for ends its run as out
+    /// of descriptors, rather than coming back as a reset the module would
+    /// catch and read as the port's answer, or as a denial the report would
+    /// file as a failed detection.
     #[test]
-    fn a_speak_refused_a_socket_ends_the_run_with_the_reason() {
+    fn a_speak_refused_a_socket_ends_the_run_as_out_of_descriptors() {
         let error = CapError::from(ExchangeError::Starved);
         assert!(error.is_fatal(), "handed back to the module: {error:?}");
-        assert!(
-            matches!(&error, CapError::Denied(reason) if reason.contains("file descriptor limit")),
-            "{error:?}"
-        );
+        assert_eq!(error, CapError::OutOfDescriptors);
     }
 
     /// A module's request reaches the site a target named on a port that

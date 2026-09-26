@@ -633,6 +633,7 @@ fn outcome_for(error: &CapError, capability: Capability) -> RunOutcome {
             capability,
             reason: reason.clone(),
         }),
+        CapError::OutOfDescriptors => RunOutcome::OutOfDescriptors,
         // The non-fatal errors are handed back to the module, never here.
         other => RunOutcome::Faulted(ModuleFault::Runtime(other.to_string())),
     }

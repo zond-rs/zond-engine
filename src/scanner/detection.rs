@@ -116,6 +116,10 @@ enum Unfinished {
     ///
     /// Apart from [`CutShort`](Self::CutShort) because its remedy is the
     /// caller's, raising the limit, and so it is said at every verbosity.
+    /// Apart from [`PortGivenUp`](Self::PortGivenUp) because the port was
+    /// never asked: a full table holds an exchange as long as a dead port
+    /// does, and naming the port would send the reader to the target for
+    /// what the limit did.
     Starved { id: String, why: String },
     /// The detection broke, or the runtime refused it something it asked for.
     Failed { id: String, why: String },
@@ -134,27 +138,39 @@ impl Unfinished {
     ///
     /// Each is its own report entry, since a report read for coverage counts
     /// the questions left open. The console hears a port given up on once,
-    /// however many detections it left: what a reader acts on is the port,
-    /// and a line per detection buries the rest of the run under dozens
-    /// saying the same thing. Each detection's own line is kept for the
-    /// verbosity that shows a line per exchange.
+    /// however many detections it left, and a port's detections the file limit
+    /// starved once: what a reader acts on is the port or the limit, and a
+    /// line per detection buries the rest of the run under dozens saying the
+    /// same thing. Each detection's own line is kept for the verbosity that
+    /// shows a line per exchange.
     fn file_all(unfinished: &[Unfinished], ctx: &ScanContext, endpoint: &str) {
-        let mut given_up: u128 = 0;
+        let (mut given_up, mut starved): (u128, u128) = (0, 0);
         for detection in unfinished {
-            match detection {
-                Unfinished::PortGivenUp { id, why } => {
-                    given_up += 1;
-                    let reason = format!("{id} on {endpoint} cut short: {why}");
-                    crate::warn!(verbosity = 2, "{reason}");
-                    ctx.file_cut_short(ScannerKind::Detection, reason);
+            let (count, id, why) = match detection {
+                Unfinished::PortGivenUp { id, why } => (&mut given_up, id, why),
+                Unfinished::Starved { id, why } => (&mut starved, id, why),
+                other => {
+                    other.record(ctx, endpoint);
+                    continue;
                 }
-                other => other.record(ctx, endpoint),
-            }
+            };
+            *count += 1;
+            let reason = format!("{id} on {endpoint} cut short: {why}");
+            crate::warn!(verbosity = 2, "{reason}");
+            ctx.file_cut_short(ScannerKind::Detection, reason);
         }
+        let detections = |count| crate::logging::counted(count, "detection", "detections");
         if given_up > 0 {
             crate::warn!(
                 "{endpoint} unresponsive, {} cut short",
-                crate::logging::counted(given_up, "detection", "detections")
+                detections(given_up)
+            );
+        }
+        if starved > 0 {
+            crate::warn!(
+                "{} on {endpoint} cut short ({})",
+                detections(starved),
+                crate::system::descriptors::starved_briefly()
             );
         }
     }
@@ -562,6 +578,10 @@ fn describe_outcome(run: &InconclusiveRun) -> Unfinished {
             };
             Unfinished::CutShort { id, why }
         }
+        RunOutcome::OutOfDescriptors => Unfinished::Starved {
+            id,
+            why: no_socket(None),
+        },
         RunOutcome::Denied(denial) => Unfinished::Failed {
             id,
             why: format!("denied {:?}: {}", denial.capability, denial.reason),
@@ -612,14 +632,23 @@ fn describe_shortfall(shortfall: &Shortfall) -> Unfinished {
 fn starved(shortfall: &Shortfall) -> Unfinished {
     Unfinished::Starved {
         id: shortfall.detection.clone(),
-        why: format!(
-            "no socket ({}/{} answered{})",
-            shortfall.answered,
-            shortfall.requests,
-            crate::system::descriptors::soft_limit()
-                .map(|limit| format!(", file limit {limit}"))
-                .unwrap_or_default()
-        ),
+        why: no_socket(Some((shortfall.answered, shortfall.requests))),
+    }
+}
+
+/// Why a detection the file limit starved was cut short, the same words for
+/// either tier: no socket, how far a flow had got where there is a count of
+/// its requests to weigh it against, and the limit, which is what the reader
+/// raises.
+fn no_socket(answered: Option<(u32, u32)>) -> String {
+    let parts: Vec<String> = answered
+        .map(|(answered, requests)| format!("{answered}/{requests} answered"))
+        .into_iter()
+        .chain(crate::system::descriptors::soft_limit().map(|limit| format!("file limit {limit}")))
+        .collect();
+    match parts.is_empty() {
+        true => "no socket".to_string(),
+        false => format!("no socket ({})", parts.join(", ")),
     }
 }
 
@@ -1360,6 +1389,143 @@ mod tests {
         assert!(
             matches!(lines.as_slice(), [(tracing::Level::WARN, _)]),
             "announced as a failure: {lines:?}"
+        );
+        drop(session);
+    }
+
+    /// A module the file limit left without a socket is filed as the limit's
+    /// shortfall, cut short and naming the limit, never as a detection that
+    /// failed. Nothing refused the module and nothing broke, and a reader told
+    /// a detection failed looks for a fault in it rather than at the limit.
+    #[test]
+    fn a_module_refused_a_socket_is_filed_as_the_file_limit_and_not_as_a_failure() {
+        use crate::detect::compute::{ComputeRuntime, Grant, ModuleBody, RhaiRuntime};
+        use crate::model::finding::{DetectionClass, DetectionId, Version};
+
+        /// Has no socket for any exchange, as a full descriptor table leaves
+        /// every `speak`.
+        struct NoSocket;
+        impl Capabilities for NoSocket {
+            fn speak(&mut self, _bytes: &[u8]) -> Result<Vec<u8>, CapError> {
+                Err(CapError::OutOfDescriptors)
+            }
+            fn resolve(&mut self, _name: &str) -> Result<Vec<std::net::IpAddr>, CapError> {
+                Ok(Vec::new())
+            }
+            fn now(&mut self) -> ScanInstant {
+                ScanInstant::from_millis(0)
+            }
+        }
+
+        let detection = DetectionId::new("speaks-once", Version::new(1, 0, 0), "0".repeat(64))
+            .expect("a valid detection id");
+        let budget = Budget::new(1_000_000, Duration::from_secs(2));
+        let grant = Grant {
+            detection: detection.clone(),
+            class: DetectionClass::ActiveBenign,
+            budget,
+            speak: true,
+            resolve: false,
+        };
+        let runtime = RhaiRuntime::new();
+        let module = runtime
+            .load(&ModuleBody::Rhai(
+                "fn analyze(ctx, responses) { speak(blob()); [] }".to_string(),
+            ))
+            .expect("the module compiles");
+        let mut instance = runtime
+            .instantiate(&module, &grant)
+            .expect("the module instantiates");
+        let context = PortContext {
+            port: 80,
+            protocol: Protocol::Tcp,
+            addr: None,
+            tunnel: None,
+            speaks_http: true,
+            detection: ServiceDetection::default(),
+            host_name: None,
+        };
+        let outcome = runtime
+            .run(&mut instance, &context, &[], &mut NoSocket)
+            .expect_err("a run with no socket did not finish");
+        let unfinished = describe_outcome(&InconclusiveRun {
+            detection,
+            outcome,
+            budget,
+        });
+
+        let (session, ctx) = ScanSession::new();
+        let lines = crate::logging::logged(|| {
+            Unfinished::file_all(std::slice::from_ref(&unfinished), &ctx, "192.0.2.1:80");
+        });
+
+        assert!(
+            matches!(&unfinished, Unfinished::Starved { why, .. } if why.starts_with("no socket")),
+            "{unfinished:?}"
+        );
+        let failures = ctx.failures_snapshot();
+        assert!(
+            failures.len() == 1 && failures[0].is_cut_short(),
+            "filed as a failure: {failures:?}"
+        );
+        let console: Vec<&str> = lines
+            .iter()
+            .filter(|line| line.verbosity == 0)
+            .map(|line| line.message.as_str())
+            .collect();
+        assert!(
+            matches!(console.as_slice(), [line] if line.contains("file limit")),
+            "{console:?}"
+        );
+        drop(session);
+    }
+
+    /// A port's detections the file limit starved are one line on the console
+    /// naming the limit, however many there were, and never a line calling the
+    /// port unresponsive. The report keeps an entry for each.
+    ///
+    /// A full table leaves every detection gated onto a web port without a
+    /// socket, dozens at once, and the reader acts once, on the limit; the
+    /// port was never asked, so a line naming it sends the reader to the
+    /// target for what the limit did.
+    #[test]
+    fn a_ports_starved_detections_are_one_console_line_naming_the_file_limit() {
+        let (session, ctx) = ScanSession::new();
+        let unfinished: Vec<Unfinished> = ["admin-panels", "git-exposed", "env-file"]
+            .iter()
+            .map(|detection| {
+                describe_shortfall(&Shortfall {
+                    detection: detection.to_string(),
+                    stopped: Stopped::Starved,
+                    answered: 0,
+                    requests: 1,
+                })
+            })
+            .collect();
+
+        let lines = crate::logging::logged(|| {
+            Unfinished::file_all(&unfinished, &ctx, "192.0.2.1:80");
+        });
+
+        let console: Vec<&str> = lines
+            .iter()
+            .filter(|line| line.verbosity == 0)
+            .map(|line| line.message.as_str())
+            .collect();
+        assert_eq!(
+            console,
+            vec![format!(
+                "3 detections on 192.0.2.1:80 cut short ({})",
+                crate::system::descriptors::starved_briefly()
+            )]
+        );
+        let filed = ctx.failures_snapshot();
+        assert_eq!(filed.len(), 3, "an entry per detection: {filed:?}");
+        assert!(
+            filed
+                .iter()
+                .all(|failure| failure.is_cut_short() && failure.reason().contains("no socket")),
+            "{filed:?}"
         );
         drop(session);
     }
