@@ -1131,7 +1131,9 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn an_offer_with_no_socket_to_put_it_on_is_named_for_the_file_limit() {
-        use crate::system::descriptors::testing::{exhaust, in_a_process_of_its_own};
+        use crate::system::descriptors::testing::{
+            in_a_process_of_its_own, refuse_every_descriptor,
+        };
 
         if !in_a_process_of_its_own(
             module_path!(),
@@ -1147,7 +1149,7 @@ mod tests {
             suites: &suites,
             server_name: None,
         };
-        let held = exhaust(64);
+        let held = refuse_every_descriptor();
 
         let answer = ask(
             addr,

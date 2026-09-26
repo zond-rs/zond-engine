@@ -240,7 +240,7 @@ impl Egress {
     /// giving the connection itself `timeout`.
     ///
     /// A socket refused because the process holds too many is asked for again
-    /// for up to [`descriptors::PATIENCE`] rather than returned as a failed
+    /// for up to [`descriptors::patience`] rather than returned as a failed
     /// connection, which a caller would read as something the target did; see
     /// [`descriptors::patiently`]. Past that the refusal is returned, and
     /// [`descriptors::exhausted`] names it.
@@ -256,7 +256,7 @@ impl Egress {
         addr: SocketAddr,
         timeout: Duration,
     ) -> io::Result<TcpStream> {
-        descriptors::patiently(descriptors::PATIENCE, || async move {
+        descriptors::patiently(descriptors::patience(), || async move {
             tokio::time::timeout(timeout, self.connect_shaped(addr, Shaping::default()))
                 .await
                 .unwrap_or_else(|_elapsed| Err(io::ErrorKind::TimedOut.into()))

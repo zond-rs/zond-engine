@@ -107,6 +107,21 @@ pub(crate) fn descriptor_blocking(runtime: &tokio::runtime::Handle) -> Descripto
 /// connection is reported as the process having run out of descriptors.
 pub(crate) const PATIENCE: Duration = Duration::from_secs(10);
 
+/// How long a connection that waits out a full table on the engine's own
+/// account keeps asking: [`PATIENCE`].
+///
+/// A test that fills its own process's table to see a connection given up
+/// sets it shorter through `testing::wait_out_a_full_table_for`, since what
+/// it checks is that the wait ends and how, which a wait of ten seconds
+/// shows no better than one of a tenth of one.
+pub(crate) fn patience() -> Duration {
+    #[cfg(all(test, unix))]
+    if let Some(patience) = testing::patience() {
+        return patience;
+    }
+    PATIENCE
+}
+
 /// The first pause before an attempt refused a socket asks for one again.
 /// Short, because the descriptor it waits for is freed by whichever connection
 /// finishes next, which on a busy scan is a matter of milliseconds.
@@ -409,10 +424,72 @@ pub(crate) fn exhausted(error: &io::Error) -> bool {
 /// running beside it down too, so it runs its body in a process of its own:
 /// [`in_a_process_of_its_own`](testing::in_a_process_of_its_own) re-runs the
 /// test binary on that one test, and the re-run fills its own table with
-/// [`exhaust`](testing::exhaust).
+/// [`exhaust`](testing::exhaust), where how many descriptors are free is what
+/// it tests, or refuses every descriptor with
+/// [`refuse_every_descriptor`](testing::refuse_every_descriptor), where a
+/// refusal is: a socket some thread of the test closes after a fill frees
+/// room the next ask takes, and under a refusal it frees none.
 #[cfg(all(test, unix))]
 pub(crate) mod testing {
     pub(crate) use crate::testing::own_process::in_a_process_of_its_own;
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    /// The [`patience`](super::patience) a test set, in milliseconds, or zero
+    /// where it set none.
+    static PATIENCE_MS: AtomicU64 = AtomicU64::new(0);
+
+    /// Has every connection that waits out a full table on
+    /// [`patience`](super::patience) wait `patience` instead, for the rest of
+    /// this process. For a test running in a process of its own, which is the
+    /// only kind that fills its table.
+    pub(crate) fn wait_out_a_full_table_for(patience: Duration) {
+        let millis = u64::try_from(patience.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        PATIENCE_MS.store(millis, Ordering::Relaxed);
+    }
+
+    /// What [`wait_out_a_full_table_for`] set, if anything.
+    pub(super) fn patience() -> Option<Duration> {
+        match PATIENCE_MS.load(Ordering::Relaxed) {
+            0 => None,
+            millis => Some(Duration::from_millis(millis)),
+        }
+    }
+
+    /// Every descriptor this process asks for refused, for as long as it is
+    /// held, whatever it closes meanwhile.
+    pub(crate) struct Refusing(libc::rlimit);
+
+    /// Lowers this process's descriptor limit below every descriptor it
+    /// holds, so the next one anything asks for is refused, and so is every
+    /// one after it until what this returns is dropped: a descriptor closed
+    /// meanwhile frees no room under a limit of none.
+    pub(crate) fn refuse_every_descriptor() -> Refusing {
+        let mut bounds = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: as in `exhaust`.
+        unsafe {
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut bounds), 0);
+            let was = bounds;
+            bounds.rlim_cur = 0;
+            assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &bounds), 0);
+            Refusing(was)
+        }
+    }
+
+    impl Drop for Refusing {
+        fn drop(&mut self) {
+            // SAFETY: as in `exhaust`.
+            unsafe {
+                libc::setrlimit(libc::RLIMIT_NOFILE, &self.0);
+            }
+        }
+    }
 
     /// Lowers this process's descriptor limit to `limit` and opens files until
     /// it is reached, so the next socket anything asks for is refused. The

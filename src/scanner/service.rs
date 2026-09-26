@@ -2129,20 +2129,21 @@ mod tests {
     /// the port said.
     ///
     /// The port is owed its second asking as its first identification leaves
-    /// it owed, with no connection made first, and the table is filled before
-    /// anything is opened. A first identification run here would leave its
-    /// far end closing sockets on another thread after the fill, and a socket
-    /// freed that way lets the second asking connect, which reads as a port
-    /// that said nothing rather than one the limit cut short. Nor is the
-    /// host's backlog waited out, which is not what is tested here. The port
-    /// refuses connections, so a table with room for one ends the asking at
-    /// once rather than walking an identification. What it does wait is the
-    /// patience every connection gives a full table, which is the path the
-    /// limit takes.
+    /// it owed, with no connection made first, and every descriptor is refused
+    /// while the pass closes, so no socket closed meanwhile lets the asking
+    /// connect, which would read as a port that said nothing rather than one
+    /// the limit cut short. Nor is the host's backlog waited out, which is not
+    /// what is tested here. The port refuses connections, so a connection let
+    /// through would end the asking at once rather than walk an
+    /// identification. What the asking does wait is the patience every
+    /// connection gives a full table, which is the path the limit takes, set
+    /// short here since how long it lasts is not the question.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_second_asking_the_file_limit_cuts_short_is_counted_identified_in_part() {
-        use crate::system::descriptors::testing::{exhaust, in_a_process_of_its_own};
+        use crate::system::descriptors::testing::{
+            in_a_process_of_its_own, refuse_every_descriptor, wait_out_a_full_table_for,
+        };
 
         if !in_a_process_of_its_own(
             module_path!(),
@@ -2150,6 +2151,7 @@ mod tests {
         ) {
             return;
         }
+        wait_out_a_full_table_for(Duration::from_millis(100));
         let refusing =
             crate::testing::loopback::refused_port(std::net::IpAddr::from([127, 0, 0, 1]));
         let (_session, ctx) = ScanSession::new();
@@ -2170,7 +2172,7 @@ mod tests {
             in_part: false,
         });
 
-        let held = exhaust(64);
+        let held = refuse_every_descriptor();
         close_pass(
             &ctx,
             &crowds,
@@ -2189,6 +2191,93 @@ mod tests {
                 ScopedIp::from(refusing.ip()).endpoint(refusing.port())
             )),
             "a second asking refused a socket was not counted: {}",
+            failures[0].reason()
+        );
+    }
+
+    /// A second asking that connects, and whose identification is then
+    /// refused a socket for a question after the first, is counted identified
+    /// in part, as one refused its first connection is. The identification
+    /// comes back with nothing heard, which unmarked reads as a port with
+    /// nothing to say, where what it would have been asked went unasked for
+    /// this machine's limit.
+    ///
+    /// The port is a listener nothing accepts from, so the asking's first
+    /// connection completes and is never answered. Once it has, the process's
+    /// limit is dropped below every descriptor it holds, and every socket
+    /// asked for after that is refused. Filling the table instead leaves it a
+    /// socket as soon as the first connection closes, which the next question
+    /// takes; in a scan it is other connections that hold the table full.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_second_asking_whose_later_questions_find_no_socket_is_counted_identified_in_part() {
+        use crate::system::descriptors::testing::{
+            in_a_process_of_its_own, refuse_every_descriptor, wait_out_a_full_table_for,
+        };
+        use std::os::fd::AsRawFd;
+
+        if !in_a_process_of_its_own(
+            module_path!(),
+            "a_second_asking_whose_later_questions_find_no_socket_is_counted_identified_in_part",
+        ) {
+            return;
+        }
+        wait_out_a_full_table_for(Duration::from_millis(100));
+        let unanswering = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let addr = unanswering.local_addr().expect("a local address");
+        let (_session, ctx) = ScanSession::new();
+        let crowds = Crowds::default();
+        let crowd = crowds.of(addr.ip(), None);
+        crowd.answered_late.store(true, Ordering::Relaxed);
+        crowd.owed.lock().unwrap().push(Owed {
+            key: addr.ip().into(),
+            addr,
+            port: crate::fingerprint::baseline_port(addr.port(), Protocol::Tcp, PortState::Open),
+            detection: ServiceDetection::default(),
+            egress: Egress::KERNEL,
+            path: PathAllowance::NONE,
+            in_part: false,
+        });
+
+        // Waits, holding no descriptor of its own, for the listener to have a
+        // connection waiting, which is the asking's first.
+        let listening = unanswering.as_raw_fd();
+        let refusing = std::thread::spawn(move || {
+            let mut waiting = libc::pollfd {
+                fd: listening,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: one live `pollfd`, and the count says one.
+            let ready = unsafe { libc::poll(&raw mut waiting, 1, 30_000) };
+            (ready == 1).then(refuse_every_descriptor)
+        });
+        close_pass(
+            &ctx,
+            &crowds,
+            &QuietPorts::default(),
+            QuietPorts::default(),
+            1,
+        )
+        .await;
+        let refused = refusing.join().expect("the watch on the listener");
+        drop(refused);
+
+        unanswering
+            .set_nonblocking(true)
+            .expect("a non-blocking listener");
+        assert!(
+            unanswering.accept().is_ok(),
+            "the asking never connected, so its first question was what was refused"
+        );
+        let failures = ctx.take_failures();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].reason().starts_with(&format!(
+                "{} identified in part",
+                ScopedIp::from(addr.ip()).endpoint(addr.port())
+            )),
+            "an asking whose later questions were refused a socket was not counted: {}",
             failures[0].reason()
         );
     }

@@ -1144,7 +1144,7 @@ async fn redial(socket: SocketAddr, egress: Egress) -> Option<TcpStream> {
 /// Every connection an identification makes after its first comes through
 /// here, so that one given up for want of a socket is never read as a port
 /// that said nothing. A socket the process refuses is asked for again for up
-/// to [`PATIENCE`](descriptors::PATIENCE), each attempt on a clock of its own.
+/// to [`patience`](descriptors::patience), each attempt on a clock of its own.
 /// Should the table stay full past that, or the caller's own clock run out
 /// while this still waits on it, the identification is marked starved on the
 /// way out, which is what its caller files: whatever the connection was to
@@ -1156,7 +1156,7 @@ async fn dial_again(
 ) -> std::io::Result<TcpStream> {
     let refused = Refused::default();
     let refused = &refused;
-    descriptors::patiently(descriptors::PATIENCE, || async move {
+    descriptors::patiently(descriptors::patience(), || async move {
         let attempt = match limit {
             Some(limit) => timeout(limit, egress.connect_shaped(addr, Shaping::default()))
                 .await
@@ -3415,7 +3415,9 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_connection_given_up_for_want_of_a_socket_marks_the_identification_starved() {
-        use crate::system::descriptors::testing::{exhaust, in_a_process_of_its_own};
+        use crate::system::descriptors::testing::{
+            in_a_process_of_its_own, refuse_every_descriptor,
+        };
 
         if !in_a_process_of_its_own(
             module_path!(),
@@ -3447,7 +3449,7 @@ mod tests {
             tally.starved.load(Ordering::Relaxed)
         };
 
-        let held = exhaust(64);
+        let held = refuse_every_descriptor();
         let refused_a_socket = dial(open).await;
         drop(held);
         let refused_by_the_port = dial(closed).await;
@@ -3473,7 +3475,9 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_udp_identification_refused_a_socket_is_starved_and_not_silent() {
-        use crate::system::descriptors::testing::{exhaust, in_a_process_of_its_own};
+        use crate::system::descriptors::testing::{
+            in_a_process_of_its_own, refuse_every_descriptor,
+        };
 
         if !in_a_process_of_its_own(
             module_path!(),
@@ -3491,7 +3495,7 @@ mod tests {
         let port = || baseline_port(161, Protocol::Udp, PortState::Open);
         let patience = Duration::from_millis(50);
 
-        let held = exhaust(64);
+        let held = refuse_every_descriptor();
         let unasked =
             fingerprint_udp_within(snmp, port(), Egress::KERNEL, patience, PathAllowance::NONE)
                 .await;

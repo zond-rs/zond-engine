@@ -321,7 +321,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn an_exchange_with_no_socket_to_give_is_refused_rather_than_read_as_silence() {
-        use crate::system::descriptors::testing::{exhaust, in_a_process_of_its_own};
+        use crate::system::descriptors::testing::{
+            in_a_process_of_its_own, refuse_every_descriptor,
+        };
 
         if !in_a_process_of_its_own(
             module_path!(),
@@ -332,7 +334,7 @@ mod tests {
         // Bound before the table fills; nothing will reach it.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
         let addr = listener.local_addr().expect("its address");
-        let held = exhaust(64);
+        let held = refuse_every_descriptor();
 
         let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4_096, 300, 8));
         let reply = probe.speak(b"GET / HTTP/1.1\r\n\r\n");
