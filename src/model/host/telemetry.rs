@@ -112,6 +112,23 @@ pub struct RttSample {
     pub protocol: Option<StatusProtocol>,
 }
 
+/// The median of `samples`, the two central ones averaged where there is an
+/// even number of them, or `None` for none.
+fn median(mut samples: Vec<Duration>) -> Option<Duration> {
+    if samples.is_empty() {
+        return None;
+    }
+    samples.sort_unstable();
+
+    let mid = samples.len() / 2;
+    if samples.len() % 2 == 1 {
+        Some(samples[mid])
+    } else {
+        // Average the two central samples without overflowing on the sum.
+        Some(samples[mid - 1] + (samples[mid] - samples[mid - 1]) / 2)
+    }
+}
+
 impl RttSample {
     /// Whether the probe that drew this sample was an address resolution,
     /// answered off the link layer rather than across the host's IP stack.
@@ -257,10 +274,9 @@ impl HostTelemetry {
     /// and pooled, the slow resolution became the smoothed round trip every
     /// wait is sized from: each wait of a TLS port's conversation took about
     /// 800 ms of allowance rather than 50, and naming the port took twice as
-    /// long.
-    /// So the resolution sizes waits only for a host that answered nothing
-    /// else. A sample whose probe is not named, as a record rebuilt from a
-    /// journal holds when two probes measured it, is counted as having
+    /// long. So the resolution sizes waits only for a host that answered
+    /// nothing else. A sample whose probe is not named, as a record rebuilt
+    /// from a journal holds when two probes measured it, is counted as having
     /// crossed the IP stack, since nothing says it did not.
     pub(crate) fn round_trips(&self) -> Vec<Duration> {
         if !self.has_direct() {
@@ -476,20 +492,26 @@ impl HostTelemetry {
         if !self.has_direct() {
             return self.tightest_bound();
         }
+        median(self.direct().collect())
+    }
 
-        let mut sorted: Vec<Duration> = self.direct().collect();
-        if sorted.is_empty() {
-            return None;
-        }
-        sorted.sort_unstable();
+    /// The median of [`round_trips`](Self::round_trips): the figure a scan
+    /// times its first probes to this host from, before it has measured the
+    /// host for itself. The median for the reason
+    /// [`median_rtt`](Self::median_rtt) gives.
+    pub(crate) fn median_round_trip(&self) -> Option<Duration> {
+        median(self.round_trips())
+    }
 
-        let mid = sorted.len() / 2;
-        if sorted.len() % 2 == 1 {
-            Some(sorted[mid])
-        } else {
-            // Average the two central samples without overflowing on the sum.
-            Some(sorted[mid - 1] + (sorted[mid] - sorted[mid - 1]) / 2)
-        }
+    /// Whether [`round_trips`](Self::round_trips) are the answers to address
+    /// resolutions, the host having answered nothing across its IP stack.
+    pub(crate) fn round_trips_resolve_the_link(&self) -> bool {
+        let mut direct = self
+            .rtt_history
+            .iter()
+            .filter(|sample| sample.source == RttSource::Direct)
+            .peekable();
+        direct.peek().is_some() && direct.all(RttSample::resolves_the_link)
     }
 
     /// The arithmetic mean of the window's round trips.

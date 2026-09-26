@@ -216,7 +216,7 @@ impl OsEchoScanner {
         // target is a host the scan already found and most were timed finding
         // it. From first principles, a host behind a path slower than the
         // first timeout has every attempt given up on before it can answer.
-        // The median, for the reason the port scans' `seed_timing` gives.
+        // As the port scans' `seed_timing` is, for the reasons it gives.
         let mut ledger = ProbeLedger::new(RETRY_POLICY, 256);
         let wanted: std::collections::HashSet<IpAddr> = targets.iter().copied().collect();
         for host in ctx.store.iter() {
@@ -224,9 +224,7 @@ impl OsEchoScanner {
             if !wanted.contains(&address) {
                 continue;
             }
-            if let Some(rtt) = host.value().median_rtt() {
-                ledger.seed_host_rtt(address, rtt);
-            }
+            ledger.seed_host(address, host.value().telemetry());
         }
 
         Self {

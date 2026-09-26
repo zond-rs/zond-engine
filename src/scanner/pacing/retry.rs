@@ -60,6 +60,7 @@
 
 use super::timer::later;
 use crate::config::{RetryConfig, ScanEffort};
+use crate::model::host::telemetry::HostTelemetry;
 use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hash;
 use std::net::IpAddr;
@@ -1181,6 +1182,37 @@ where
         }
     }
 
+    /// Seeds `host` from `telemetry`, what the phases before this ledger's
+    /// scan measured of it, as [`seed_host_rtt`](Self::seed_host_rtt) does, from
+    /// the median of the round trips a wait on its path is sized from.
+    ///
+    /// Where those are only the answers to address resolutions, the seed is
+    /// taken only if it times the host's probes sooner than the unmeasured
+    /// starting timeout: a resolution can show a neighbour near, and cannot
+    /// show it far. Its lateness is the link delivering a request put to
+    /// every station and the neighbour waking for it (see
+    /// [`HostTelemetry::round_trips`]), which the probes after it do not wait
+    /// on. A neighbour that answered ARP in 196 ms answered SYNs in 8, and
+    /// timed from the ARP answer its silent ports waited 600 ms each until
+    /// the scan measured a round trip of its own: the scan took nearly twice
+    /// as long as it did unseeded.
+    pub(crate) fn seed_host(&mut self, host: IpAddr, telemetry: &HostTelemetry) {
+        let Some(rtt) = telemetry.median_round_trip() else {
+            return;
+        };
+        if telemetry.round_trips_resolve_the_link() {
+            let mut resolution = RttEstimator::default();
+            resolution.record(rtt);
+            if resolution
+                .timeout()
+                .is_none_or(|timeout| timeout >= self.policy.initial_rto)
+            {
+                return;
+            }
+        }
+        self.seed_host_rtt(host, rtt);
+    }
+
     /// Accounts for a probe that spent its entire budget in silence.
     fn retire(&mut self, host: IpAddr) {
         let state = self.hosts.entry(host).or_default();
@@ -1503,6 +1535,60 @@ mod tests {
             ledger.timeout_for(OTHER, 1),
             own,
             "and the scan's reply times a host with none of its own"
+        );
+    }
+
+    /// **An address resolution's answer seeds a host only sooner than the
+    /// unmeasured guess, and an answer across its IP stack seeds it either
+    /// way.**
+    ///
+    /// A neighbour that answered ARP in 196 ms answered SYNs in 8, and timed
+    /// from the ARP answer each of its silent ports waited three times that
+    /// before a retry until the scan measured the host itself: nearly twice
+    /// the time the same scan took with no seed at all. A fast resolution is
+    /// still worth taking, since the guess would wait out a wired neighbour's
+    /// every silent port at many times its round trip.
+    #[test]
+    fn a_resolution_seeds_a_host_only_sooner_than_the_unmeasured_guess() {
+        use crate::model::host::StatusProtocol;
+        use crate::model::host::telemetry::HostTelemetry;
+
+        let answered = |samples: &[(u64, StatusProtocol)]| {
+            let mut telemetry = HostTelemetry::default();
+            for (millis, protocol) in samples {
+                telemetry.add_rtt_from(Duration::from_millis(*millis), protocol.clone());
+            }
+            telemetry
+        };
+        let seeded = |telemetry: HostTelemetry| {
+            let mut ledger = ledger(policy());
+            ledger.seed_host(HOST, &telemetry);
+            ledger.timeout_for(HOST, 1)
+        };
+        let guess = policy().initial_rto;
+
+        assert_eq!(
+            seeded(answered(&[(196, StatusProtocol::Arp)])),
+            guess,
+            "a slow resolution leaves the guess standing"
+        );
+        assert_eq!(
+            seeded(answered(&[(5, StatusProtocol::Arp)])),
+            Duration::from_millis(15),
+            "a fast one times the host from it"
+        );
+        assert_eq!(
+            seeded(answered(&[
+                (196, StatusProtocol::Arp),
+                (8, StatusProtocol::TcpSyn)
+            ])),
+            Duration::from_millis(24),
+            "a SYN's round trip outranks the resolution's"
+        );
+        assert_eq!(
+            seeded(answered(&[(196, StatusProtocol::TcpSyn)])),
+            Duration::from_millis(588),
+            "and a slow path measured across the IP stack is waited on for"
         );
     }
 

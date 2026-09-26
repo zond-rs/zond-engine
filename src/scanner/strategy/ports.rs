@@ -1047,12 +1047,11 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     ///
     /// The median rather than the minimum, because a retry schedule sized from
     /// the fastest sample a host ever produced repeats every probe that is
-    /// merely typical.
+    /// merely typical. See [`ProbeLedger::seed_host`] for which samples.
     pub fn seed_timing(&mut self) {
         for host in self.ctx.store.iter() {
-            if let Some(rtt) = host.value().median_rtt() {
-                self.ledger.seed_host_rtt(host.key().addr(), rtt);
-            }
+            self.ledger
+                .seed_host(host.key().addr(), host.value().telemetry());
         }
     }
 
