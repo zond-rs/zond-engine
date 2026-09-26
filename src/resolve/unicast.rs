@@ -795,11 +795,9 @@ resolver #1
             .enable_all()
             .build()
             .expect("a runtime builds");
-        let global = runtime
-            .block_on(tokio::net::UdpSocket::bind("127.0.0.1:0"))
-            .expect("a loopback socket binds");
+        let global = crate::testing::loopback::SilentUdpPort::open();
         let unicast = Unicast::from_config(DnsConfig {
-            global: Ok(global_at(global.local_addr().expect("an address"))),
+            global: Ok(global_at(global.addr())),
             scoped: parse_scutil_dns(ZONED_REPORT, |_| None),
         });
 
@@ -814,9 +812,8 @@ resolver #1
         });
 
         assert_eq!(resolved, Vec::<IpAddr>::new());
-        let mut buf = [0u8; 512];
         assert!(
-            global.try_recv_from(&mut buf).is_err(),
+            global.datagrams().is_empty(),
             "the VPN name reached the global server"
         );
         let said: Vec<_> = lines

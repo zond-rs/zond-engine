@@ -31,9 +31,10 @@
 //! A datagram is told the same way, by its source: the local end of a
 //! datagram socket this process holds. Every pass that sends one waits on the
 //! socket for the answer, so the socket is still held when a peer here reads
-//! what it sent. A peer that only counts what reaches it, and answers nothing,
-//! can read a datagram after the pass has given up and let its socket go, so
-//! it cannot tell a pass's datagram from another process's this way.
+//! what it sent. A peer that answers nothing and is only read once the pass
+//! has given up and let its socket go cannot tell a pass's datagram from
+//! another process's that way, so [`SilentUdpPort`] reads each one as it
+//! arrives, from a thread of its own, and keeps it for when it is asked.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Condvar, Mutex};
@@ -462,6 +463,117 @@ impl SilentPort {
     }
 }
 
+/// A loopback UDP port that answers nothing and keeps each datagram this
+/// process sends it, standing in for a name server that is not there or a
+/// server a pass has promised not to ask.
+///
+/// Read from a thread of its own the moment a datagram arrives, while the
+/// pass that sent it is still waiting on its socket for the answer, so a
+/// datagram's source is still one this process holds when it is looked at:
+/// the check [`recv_from_this_process`] makes, made in time for a peer that
+/// is only read once the pass has returned. Any other process's datagram is
+/// read and dropped.
+pub(crate) struct SilentUdpPort {
+    addr: SocketAddr,
+    heard: Arc<(Mutex<Heard>, Condvar)>,
+}
+
+/// What a [`SilentUdpPort`] has kept.
+#[derive(Default)]
+struct Heard {
+    /// Each datagram's source and payload, in the order they arrived.
+    datagrams: Vec<(SocketAddr, Vec<u8>)>,
+    /// The sources of the datagrams its own reads sent it, which are no
+    /// pass's and are left out of everything it reports.
+    markers: Vec<SocketAddr>,
+}
+
+impl Heard {
+    /// The payloads a pass sent, in the order they arrived.
+    fn sent(&self) -> impl Iterator<Item = &[u8]> {
+        self.datagrams
+            .iter()
+            .filter(|(from, _)| !self.markers.contains(from))
+            .map(|(_, payload)| payload.as_slice())
+    }
+}
+
+/// How long [`SilentUdpPort`] waits for datagrams it was told to expect.
+/// Long enough that only one never sent runs it out.
+const DATAGRAM_PATIENCE: Duration = Duration::from_secs(30);
+
+impl SilentUdpPort {
+    /// Opens one on an unused loopback port.
+    pub(crate) fn open() -> Self {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("binds loopback");
+        let addr = socket.local_addr().expect("a local address");
+        let heard = Arc::new((Mutex::new(Heard::default()), Condvar::new()));
+        let log = Arc::clone(&heard);
+        std::thread::spawn(move || {
+            let mut buffer = [0u8; 65_535];
+            while let Ok((len, from)) = recv_from_this_process_blocking(&socket, &mut buffer) {
+                let mut heard = log.0.lock().unwrap();
+                heard.datagrams.push((from, buffer[..len].to_vec()));
+                log.1.notify_all();
+            }
+        });
+        Self { addr, heard }
+    }
+
+    /// Where it listens.
+    pub(crate) fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// Every datagram this process sent it before the call, in the order they
+    /// arrived.
+    ///
+    /// A datagram on loopback is queued at the port by the time its send
+    /// returns, so one of the call's own sent after them is read after all of
+    /// them, and once it has been, everything before it is in the record.
+    pub(crate) fn datagrams(&self) -> Vec<Vec<u8>> {
+        let marker = std::net::UdpSocket::bind("127.0.0.1:0").expect("binds loopback");
+        let from = marker.local_addr().expect("a local address");
+        let (lock, arrived) = &*self.heard;
+        lock.lock().unwrap().markers.push(from);
+        marker.send_to(&[], self.addr).expect("sends on loopback");
+        let (heard, waited) = arrived
+            .wait_timeout_while(lock.lock().unwrap(), DATAGRAM_PATIENCE, |heard| {
+                !heard.datagrams.iter().any(|(source, _)| *source == from)
+            })
+            .unwrap();
+        assert!(
+            !waited.timed_out(),
+            "the port's own datagram was not read in {DATAGRAM_PATIENCE:?}"
+        );
+        heard.sent().map(<[u8]>::to_vec).collect()
+    }
+
+    /// Waits, without holding up the runtime it is awaited on, until this
+    /// process has sent it at least `count` datagrams.
+    ///
+    /// # Panics
+    ///
+    /// Where they have not all arrived within [`DATAGRAM_PATIENCE`].
+    pub(crate) async fn arrived(&self, count: usize) {
+        let heard = Arc::clone(&self.heard);
+        tokio::task::spawn_blocking(move || {
+            let (lock, arrived) = &*heard;
+            let (_heard, waited) = arrived
+                .wait_timeout_while(lock.lock().unwrap(), DATAGRAM_PATIENCE, |heard| {
+                    heard.sent().count() < count
+                })
+                .unwrap();
+            assert!(
+                !waited.timed_out(),
+                "fewer than {count} datagrams arrived in {DATAGRAM_PATIENCE:?}"
+            );
+        })
+        .await
+        .expect("the wait does not panic");
+    }
+}
+
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -638,5 +750,59 @@ mod tests {
             "the counts' own connections counted"
         );
         drop(held);
+    }
+
+    /// Where [`send_one_datagram`] sends, in the process it runs in.
+    #[cfg(unix)]
+    const SEND_TO: &str = "ZOND_TEST_DATAGRAM_TO";
+
+    /// A silent UDP port keeps what this process sent it, even once the
+    /// socket it came from has been let go, and nothing another process sent.
+    /// A pass has usually given its socket up by the time its test asks what
+    /// reached the port, and another scanner on the machine can send to the
+    /// port at any moment.
+    #[cfg(unix)]
+    #[test]
+    fn a_silent_udp_port_keeps_this_processs_datagrams_and_no_others() {
+        let silent = SilentUdpPort::open();
+        let here = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        here.send_to(b"here", silent.addr()).unwrap();
+        assert_eq!(silent.datagrams(), [b"here"]);
+        drop(here);
+
+        let path = format!(
+            "{}::send_one_datagram",
+            module_path!().split_once("::").expect("a crate path").1
+        );
+        let elsewhere = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([path.as_str(), "--exact", "--ignored", "--test-threads=1"])
+            .env(SEND_TO, silent.addr().to_string())
+            .output()
+            .expect("another process runs");
+        let said = String::from_utf8_lossy(&elsewhere.stdout);
+        assert!(
+            elsewhere.status.success() && said.contains("1 passed"),
+            "the other process sent nothing:\n{said}"
+        );
+
+        assert_eq!(
+            silent.datagrams(),
+            [b"here"],
+            "another process's datagram was kept"
+        );
+    }
+
+    /// Not a check of its own: the other process
+    /// [`a_silent_udp_port_keeps_this_processs_datagrams_and_no_others`]
+    /// needs, sending one datagram where [`SEND_TO`] says.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "the sender another test runs in a process of its own"]
+    fn send_one_datagram() {
+        if let Ok(to) = std::env::var(SEND_TO) {
+            let to: SocketAddr = to.parse().expect("an address");
+            let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            socket.send_to(b"elsewhere", to).unwrap();
+        }
     }
 }

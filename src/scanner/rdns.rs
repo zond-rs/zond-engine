@@ -1532,6 +1532,7 @@ mod tests {
     use super::*;
     use crate::model::host::HostStatus;
     use crate::scanner::session::{ScanEvent, ScanSession};
+    use crate::testing::loopback::SilentUdpPort;
     use crate::transport::probe::{Emission, ProbeSender, SendError};
     use std::net::Ipv4Addr;
     use tokio::sync::mpsc::UnboundedSender;
@@ -2306,18 +2307,16 @@ mod tests {
         (tx, resolver)
     }
 
-    /// The reverse names of the queries `server` holds unread.
-    fn questions_held(server: &UdpSocket) -> Vec<String> {
-        let mut buf = [0u8; MAX_DNS_DATAGRAM];
-        std::iter::from_fn(|| {
-            let (len, _) = server.try_recv_from(&mut buf).ok()?;
-            Some(buf[..len].to_vec())
-        })
-        .filter_map(|datagram| {
-            let message = hickory_resolver::proto::op::Message::from_vec(&datagram).ok()?;
-            Some(message.queries.first()?.name().to_ascii())
-        })
-        .collect()
+    /// The reverse names of the queries this process has sent `server`.
+    fn questions_asked(server: &SilentUdpPort) -> Vec<String> {
+        server
+            .datagrams()
+            .into_iter()
+            .filter_map(|datagram| {
+                let message = hickory_resolver::proto::op::Message::from_vec(&datagram).ok()?;
+                Some(message.queries.first()?.name().to_ascii())
+            })
+            .collect()
     }
 
     /// **An address under a scoped reverse zone is asked of that zone's
@@ -2328,8 +2327,8 @@ mod tests {
     /// private address the scan found.
     #[tokio::test]
     async fn an_address_under_a_scoped_reverse_zone_is_asked_of_its_servers_alone() {
-        let (global, global_at) = silent_server().await;
-        let (scoped, scoped_at) = silent_server().await;
+        let (global, scoped) = (SilentUdpPort::open(), SilentUdpPort::open());
+        let (global_at, scoped_at) = (global.addr(), scoped.addr());
         let routes = Routes {
             hosts: HostsTable::default(),
             servers: vec![(global_at, None), (scoped_at, Some(0))],
@@ -2356,8 +2355,8 @@ mod tests {
             .await
             .expect("the resolver finishes");
 
-        assert_eq!(questions_held(&scoped), vec!["7.100.51.198.in-addr.arpa."]);
-        assert_eq!(questions_held(&global), vec!["7.113.0.203.in-addr.arpa."]);
+        assert_eq!(questions_asked(&scoped), vec!["7.100.51.198.in-addr.arpa."]);
+        assert_eq!(questions_asked(&global), vec!["7.113.0.203.in-addr.arpa."]);
     }
 
     /// **An address the hosts file lists is named from it and asked of
@@ -2366,7 +2365,8 @@ mod tests {
     /// loopback address's reverse zone never leaves the machine (RFC 6761).
     #[tokio::test]
     async fn an_address_the_hosts_file_lists_is_named_without_a_query() {
-        let (server, at) = silent_server().await;
+        let server = SilentUdpPort::open();
+        let at = server.addr();
         let routes = Routes {
             hosts: HostsTable::parse("198.51.100.23 box.example\n"),
             servers: vec![(at, None)],
@@ -2382,28 +2382,13 @@ mod tests {
             .await
             .expect("the resolver finishes");
 
-        assert_eq!(questions_held(&server), Vec::<String>::new());
+        assert_eq!(questions_asked(&server), Vec::<String>::new());
         let named = resolver.hostname_map.get(&v4(198, 51, 100, 23));
         assert_eq!(
             named.map(|n| (n.hostname.as_str(), n.heard)),
             Some(("box.example", Heard::Listed))
         );
         assert!(!resolver.hostname_map.contains_key(&v4(127, 0, 0, 9)));
-    }
-
-    /// A name server on loopback that answers nothing, and where to reach it.
-    async fn silent_server() -> (UdpSocket, SocketAddr) {
-        let socket = UdpSocket::bind("127.0.0.1:0")
-            .await
-            .expect("a loopback socket binds");
-        let at = socket.local_addr().expect("a bound socket has an address");
-        (socket, at)
-    }
-
-    /// How many queries `server` holds unread.
-    fn queries_held(server: &UdpSocket) -> usize {
-        let mut buf = [0u8; MAX_DNS_DATAGRAM];
-        std::iter::from_fn(|| server.try_recv_from(&mut buf).ok()).count()
     }
 
     /// The privileged resolver asks about as many addresses at once as the
@@ -2413,27 +2398,21 @@ mod tests {
     /// network shares, all at once.
     #[tokio::test]
     async fn the_privileged_resolver_asks_about_a_bounded_number_of_addresses_at_once() {
-        let (server, at) = silent_server().await;
-        let (tx, resolver) = resolver_fed(at);
+        let server = SilentUdpPort::open();
+        let (tx, resolver) = resolver_fed(server.addr());
         for last in 1..=100 {
             tx.send(v4(198, 51, 100, last))
                 .expect("the resolver is listening");
         }
         let running = tokio::spawn(resolver.run());
 
-        let mut buf = [0u8; MAX_DNS_DATAGRAM];
-        for _ in 0..REVERSE_LOOKUPS_IN_FLIGHT {
-            tokio::time::timeout(Duration::from_secs(30), server.recv_from(&mut buf))
-                .await
-                .expect("the first queries arrive")
-                .expect("a query reads");
-        }
+        server.arrived(REVERSE_LOOKUPS_IN_FLIGHT).await;
         // Long enough for every query sent at once to have arrived, and far
         // inside the patience that would free a place.
         tokio::time::sleep(QUERY_PATIENCE / 10).await;
         assert_eq!(
-            queries_held(&server),
-            0,
+            server.datagrams().len(),
+            REVERSE_LOOKUPS_IN_FLIGHT,
             "more than {REVERSE_LOOKUPS_IN_FLIGHT} addresses were asked about at once"
         );
 
@@ -2450,8 +2429,8 @@ mod tests {
     /// otherwise hold every address behind it in turn.
     #[tokio::test]
     async fn a_resolver_that_answers_nothing_is_asked_one_window_and_no_more() {
-        let (server, at) = silent_server().await;
-        let (tx, resolver) = resolver_fed(at);
+        let server = SilentUdpPort::open();
+        let (tx, resolver) = resolver_fed(server.addr());
         for last in 1..=100 {
             tx.send(v4(198, 51, 100, last))
                 .expect("the resolver is listening");
@@ -2462,7 +2441,7 @@ mod tests {
             .await
             .expect("the resolver finishes");
 
-        assert_eq!(queries_held(&server), REVERSE_LOOKUPS_IN_FLIGHT);
+        assert_eq!(server.datagrams().len(), REVERSE_LOOKUPS_IN_FLIGHT);
     }
 
     /// Every address waiting behind the bound is still asked about, and each
@@ -2470,7 +2449,11 @@ mod tests {
     /// window go would name thirty-two hosts of any scan.
     #[tokio::test]
     async fn every_address_behind_the_bound_is_asked_and_named() {
-        let server = Arc::new(silent_server().await.0);
+        let server = Arc::new(
+            UdpSocket::bind("127.0.0.1:0")
+                .await
+                .expect("a loopback socket binds"),
+        );
         let at = server.local_addr().expect("a bound socket has an address");
         let answering = Arc::clone(&server);
         let answerer = tokio::spawn(async move {
