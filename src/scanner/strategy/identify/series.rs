@@ -131,7 +131,6 @@ use crate::scanner::strategy::raw::SendFaults;
 use crate::scanner::strategy::raw::neighbors::{Admission, NeighborGates, resolve_ahead};
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
-use crate::transport::kernel_neighbors::NeighborState;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
 use crate::{counted, info, success};
 
@@ -476,7 +475,7 @@ impl OsSeriesScanner {
                     Admission::Send => self.send_one(source, address, source_port, port),
                     Admission::Hold(_) => {}
                     Admission::Unreachable => {
-                        let why = self.neighbors.unreached(address, NeighborState::Failed);
+                        let why = self.neighbors.refusal(address);
                         self.record_unreached(address, why);
                     }
                 }

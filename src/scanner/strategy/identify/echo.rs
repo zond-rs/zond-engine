@@ -63,7 +63,6 @@ use crate::scanner::strategy::raw::neighbors::{Admission, NeighborGates, RESOLUT
 use crate::scanner::strategy::sweep::HostSweep;
 use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
-use crate::transport::kernel_neighbors::NeighborState;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
 use crate::{info, success};
 
@@ -336,11 +335,11 @@ impl OsEchoScanner {
     }
 
     /// Files `target` as an address nothing reaches: its neighbour did not
-    /// answer, so no request was sent it. A retry's probe restarts its clock
+    /// answer, or its resolution never concluded, so no request was sent it. A retry's probe restarts its clock
     /// from now, with the attempt it was charged still counted, so it runs
     /// out on schedule rather than waiting outstanding.
     fn unreached(&mut self, target: IpAddr, retry: bool, now: Instant) {
-        let why = self.neighbors.unreached(target, NeighborState::Failed);
+        let why = self.neighbors.refusal(target);
         if self.faults.unroutable.is_none() {
             info!(verbosity = 2, "{target} unreachable ({why})");
         }

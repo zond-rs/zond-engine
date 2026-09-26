@@ -127,6 +127,12 @@ pub(crate) struct NeighborGates {
     /// the host itself, or on the kernel's path the gateway it is routed
     /// through.
     gated: HashMap<IpAddr, IpAddr>,
+    /// Each neighbour [`admit`](Self::admit) gave up on, with where its
+    /// resolution stood when it did: failed, or still resolving at
+    /// [`RESOLUTION_WAIT_LIMIT`]. Kept so the reason a host behind it is
+    /// filed under says which, since the two are different faults: a
+    /// neighbour that is not there, and a resolution that never concluded.
+    given_up: HashMap<IpAddr, NeighborState>,
 }
 
 impl NeighborGates {
@@ -193,10 +199,14 @@ impl NeighborGates {
             Some(NeighborState::Resolving)
                 if now.saturating_duration_since(asked) >= RESOLUTION_WAIT_LIMIT =>
             {
+                self.given_up.insert(neighbor, NeighborState::Resolving);
                 Admission::Unreachable
             }
             Some(NeighborState::Resolving) => Admission::Hold(now + NEIGHBOR_RECHECK),
-            Some(NeighborState::Failed) => Admission::Unreachable,
+            Some(NeighborState::Failed) => {
+                self.given_up.insert(neighbor, NeighborState::Failed);
+                Admission::Unreachable
+            }
             Some(NeighborState::Resolved) | None => {
                 self.gates.insert(neighbor, NeighborGate::Open);
                 Admission::Send
@@ -255,6 +265,25 @@ impl NeighborGates {
             .collect()
     }
 
+    /// Why `host` is unreachable, for a host [`admit`](Self::admit) turned
+    /// away: in the words of [`unreached`](Self::unreached), for where its
+    /// neighbour's resolution stood when it was given up on.
+    pub(crate) fn refusal(&self, host: IpAddr) -> String {
+        self.unreached(host, self.given_up_in(host))
+    }
+
+    /// Where the resolution of `host`'s neighbour stood when
+    /// [`admit`](Self::admit) gave it up: [`NeighborState::Resolving`] for
+    /// one given up at [`RESOLUTION_WAIT_LIMIT`], and otherwise
+    /// [`NeighborState::Failed`], the one other reason it turns a host away.
+    pub(crate) fn given_up_in(&self, host: IpAddr) -> NeighborState {
+        self.gated
+            .get(&host)
+            .and_then(|neighbor| self.given_up.get(neighbor))
+            .copied()
+            .unwrap_or(NeighborState::Failed)
+    }
+
     /// Why `host` went unreached, for a neighbour whose resolution stands at
     /// `state`: in the resolution's own word, and naming the gateway where
     /// the host's probes waited on one.
@@ -304,7 +333,7 @@ pub(crate) async fn resolve_ahead(
             Admission::Send => false,
             Admission::Hold(_) => true,
             Admission::Unreachable => {
-                unanswered.insert(*host, gates.unreached(*host, NeighborState::Failed));
+                unanswered.insert(*host, gates.refusal(*host));
                 false
             }
         });
@@ -333,7 +362,7 @@ pub(crate) async fn admit_waiting(
         match gates.admit(watch, resolver, host, Instant::now()) {
             Admission::Send => return Ok(()),
             Admission::Unreachable => {
-                return Err(Some(gates.unreached(host, NeighborState::Failed)));
+                return Err(Some(gates.refusal(host)));
             }
             Admission::Hold(ready) => {
                 if ctx.handle.should_stop() {
@@ -381,7 +410,7 @@ pub(crate) async fn send_when_admitted<P>(
                 Admission::Send => send(host, probe),
                 Admission::Hold(_) => still.push((host, probe)),
                 Admission::Unreachable => {
-                    unreached.insert(host, gates.unreached(host, NeighborState::Failed));
+                    unreached.insert(host, gates.refusal(host));
                 }
             }
         }
@@ -503,5 +532,32 @@ mod tests {
             Admission::Unreachable,
             "a wait past any resolution's is an address nothing reaches"
         );
+    }
+
+    /// A host turned away because its neighbour's resolution never concluded
+    /// is filed as that, not as a neighbour that failed to answer. The two
+    /// are different faults to whoever reads why: one is a machine that is
+    /// not there, the other a resolution the kernel was still running.
+    #[test]
+    fn a_neighbour_given_up_at_the_limit_is_filed_pending_and_a_failed_one_not() {
+        let (watch, mut resolver) = kernel_showing(NeighborState::Resolving);
+        let mut gates = NeighborGates::default();
+        let start = Instant::now();
+        gates.admit(Some(&watch), &mut resolver, HOST, start);
+        let limit = Instant::now() + RESOLUTION_WAIT_LIMIT;
+        assert_eq!(
+            gates.admit(Some(&watch), &mut resolver, HOST, limit),
+            Admission::Unreachable
+        );
+        assert_eq!(gates.refusal(HOST), "ARP pending");
+
+        let (watch, mut resolver) = kernel_showing(NeighborState::Failed);
+        let mut gates = NeighborGates::default();
+        gates.admit(Some(&watch), &mut resolver, HOST, start);
+        assert_eq!(
+            gates.admit(Some(&watch), &mut resolver, HOST, Instant::now()),
+            Admission::Unreachable
+        );
+        assert_eq!(gates.refusal(HOST), "no ARP reply");
     }
 }

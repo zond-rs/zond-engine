@@ -815,8 +815,9 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         }
     }
 
-    /// Files `host` as an address whose neighbour the kernel asked for and
-    /// heard nothing from, in the kernel's word for where it stands.
+    /// Files `host` as an address whose neighbour was asked for and never
+    /// answered, in the resolution's word for where it stands: failed, or
+    /// still pending when it was given up on or the scan ended.
     fn record_unresolved(&mut self, host: IpAddr, state: NeighborState) {
         if self.unreachable.insert(host) {
             let why = self.neighbors.unreached(host, state);
@@ -850,7 +851,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             self.neighbors
                 .admit(self.transport.neighbors(), &mut self.resolver, host, now);
         if admission == Admission::Unreachable {
-            self.record_unresolved(host, NeighborState::Failed);
+            self.record_unresolved(host, self.neighbors.given_up_in(host));
         }
         admission
     }
