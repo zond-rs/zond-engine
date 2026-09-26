@@ -386,6 +386,9 @@ const MIN_HEADROOM_DIVISOR: u32 = 4;
 pub struct RttEstimator {
     smoothed: Option<Duration>,
     variation: Duration,
+    /// Whether the estimate was handed in by [`seed`](Self::seed) rather than
+    /// measured, so the first measurement replaces it.
+    seeded: bool,
 }
 
 impl RttEstimator {
@@ -395,7 +398,13 @@ impl RttEstimator {
     /// estimate outright and seeds the variation at half of itself, which is
     /// what keeps a single fast sample from producing a timeout too tight to
     /// survive the second.
+    ///
+    /// A [seeded](Self::seed) estimate is discarded first, so the first
+    /// measurement starts the estimate as though nothing had been seeded.
     pub fn record(&mut self, sample: Duration) {
+        if std::mem::take(&mut self.seeded) {
+            self.smoothed = None;
+        }
         match self.smoothed {
             None => {
                 self.smoothed = Some(sample);
@@ -442,6 +451,29 @@ impl RttEstimator {
     /// [`timeout`](Self::timeout) has no answer to give.
     pub fn is_empty(&self) -> bool {
         self.smoothed.is_none()
+    }
+
+    /// Starts an empty estimate from `rtt`, a round trip something other than
+    /// this estimate's own probes measured, and keeps it only until the first
+    /// [`record`](Self::record), which replaces it.
+    ///
+    /// Until then it times probes as one sample would. After that it is
+    /// dropped rather than smoothed against, because it is weaker evidence
+    /// than any measurement of the estimate's own and RFC 6298's weights would
+    /// let it outvote them: a first sample becomes the estimate and each later
+    /// one moves it an eighth, so a seed well above the path's round trip
+    /// still sets most of the timeout after the first reply that disagrees,
+    /// and a host that answers the scan once keeps it for the whole scan.
+    /// That is TCP's own practice with a remembered round trip: Linux's
+    /// per-destination metrics set a new connection's first timeout and leave
+    /// its smoothed estimate to the connection's first measurement.
+    ///
+    /// Does nothing to an estimate that holds anything already.
+    pub(crate) fn seed(&mut self, rtt: Duration) {
+        if self.is_empty() {
+            self.record(rtt);
+            self.seeded = true;
+        }
     }
 }
 
@@ -1091,15 +1123,22 @@ where
     /// attempt as a loss signal, an early retry is not mistaken for one. What it
     /// costs is the extra packet, bounded by [`min_rto`](RetryPolicy::min_rto).
     ///
-    /// Does nothing for a host this ledger has already measured for itself: a
-    /// sample it took beats one it was handed.
+    /// A sample this ledger takes beats one it was handed, both ways round.
+    /// Seeding does nothing for a host already measured or seeded, and the
+    /// seed times the host's probes only until the ledger's first round trip
+    /// to it, which replaces it rather than being smoothed into it (see
+    /// [`RttEstimator::seed`]). The seed was measured by another probe at
+    /// another moment, and it can carry more than the path: a sweep's ARP
+    /// request is broadcast, and a neighbour that answered it in 98 ms
+    /// answered SYNs in 10. Smoothed together, the two timed every silent
+    /// port of that host at a third of a second, since a firewalled host
+    /// answers a port scan about once and so never outvotes its seed, and a
+    /// scan paced by its first timeouts ran several times slower. The
+    /// scan-wide fallback is seeded, and replaced, on the same terms.
     pub fn seed_host_rtt(&mut self, host: IpAddr, rtt: Duration) {
-        let state = self.hosts.entry(host).or_default();
-        if state.estimator.is_empty() {
-            state.estimator.record(rtt);
-        }
-        if self.policy.cross_host_estimate && self.global.is_empty() {
-            self.global.record(rtt);
+        self.hosts.entry(host).or_default().estimator.seed(rtt);
+        if self.policy.cross_host_estimate {
+            self.global.seed(rtt);
         }
     }
 
@@ -1397,6 +1436,35 @@ mod tests {
         ledger.seed_host_rtt(HOST, Duration::from_millis(1));
 
         assert_eq!(ledger.host_rtt(&HOST), measured);
+    }
+
+    /// **A seed times a host only until the host answers the scan itself.**
+    ///
+    /// The seed comes from another probe, and a sweep's ARP request answered
+    /// in 98 ms by a neighbour that answers SYNs in 10 is one measured case.
+    /// Smoothed as a first sample, it keeps seven eighths of the estimate
+    /// through the host's one reply and times the next probe at 322 ms: a
+    /// firewalled host answers a port scan about once, so every silent port
+    /// it has waits that long, and the scan's pace with it. Replaced, the
+    /// host and the unmeasured hosts the scan-wide estimate times are both
+    /// timed from the 10 ms the scan measured, as though never seeded.
+    #[test]
+    fn a_seed_gives_way_to_the_first_round_trip_the_scan_measures() {
+        let t0 = Instant::now();
+        let mut ledger = ledger(policy());
+        ledger.seed_host_rtt(HOST, Duration::from_millis(98));
+
+        ledger.arm(HOST, (HOST, 80), 1, (), t0);
+        ledger.resolve(&(HOST, 80), Some(1), t0 + Duration::from_millis(10));
+
+        // 10 ms smoothed, 5 ms variation: 10 + 4 * 5.
+        let own = Duration::from_millis(30);
+        assert_eq!(ledger.timeout_for(HOST, 1), own, "the host's own reply");
+        assert_eq!(
+            ledger.timeout_for(OTHER, 1),
+            own,
+            "and the scan's reply times a host with none of its own"
+        );
     }
 
     /// A fast answer from one host must not shorten an unmeasured host's first
