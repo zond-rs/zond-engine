@@ -618,43 +618,69 @@ fn write_extra_ports(
     )?;
     for ((reason, protocol), mut numbers) in reasons {
         numbers.sort_unstable();
-        writeln!(
-            out,
-            r#"<extrareasons reason="{}" count="{}" proto="{}" ports="{}"/>"#,
-            Attr(reason),
-            numbers.len(),
-            transport(protocol),
-            port_list(&numbers),
-        )?;
+        for (count, list) in port_lists(&numbers) {
+            writeln!(
+                out,
+                r#"<extrareasons reason="{}" count="{count}" proto="{}" ports="{list}"/>"#,
+                Attr(reason),
+                transport(protocol),
+            )?;
+        }
     }
     writeln!(out, "</extraports>")?;
     Ok(())
 }
 
-/// Ascending port numbers as nmap lists them: runs as `first-last`, the rest
-/// alone, comma-separated.
-fn port_list(numbers: &[u16]) -> String {
-    let mut list = String::new();
+/// Ascending port numbers as nmap lists them, runs as `first-last` and the
+/// rest alone, comma-separated, in lists of at most [`MAX_PORT_LIST_BYTES`]
+/// each with the count of ports it names.
+///
+/// A summary whose ports run in long stretches is a few bytes, but one whose
+/// ports alternate with another state's is not: a full range where a host
+/// rate-limits its resets scatters filtered ports through closed ones, and
+/// thirty thousand isolated numbers are two hundred kilobytes in one attribute.
+/// A reader bounding what one element may hold, this engine's own among them,
+/// refuses a document with such an element rather than reading the rest of it.
+/// Nmap's DTD allows any number of `<extrareasons>` in an `<extraports>`, and a
+/// reader totalling them totals the same ports, so the list is split instead.
+fn port_lists(numbers: &[u16]) -> Vec<(usize, String)> {
+    let mut lists = vec![(0, String::new())];
     let mut index = 0;
     while index < numbers.len() {
         let first = numbers[index];
         let mut last = first;
-        while index + 1 < numbers.len() && numbers[index + 1] == last.wrapping_add(1) {
+        while numbers.get(index + 1) == Some(&last.wrapping_add(1)) && last != u16::MAX {
             index += 1;
             last = numbers[index];
         }
+        index += 1;
+
+        let run = if first == last {
+            first.to_string()
+        } else {
+            format!("{first}-{last}")
+        };
+        if lists.last().is_some_and(|(_, list)| {
+            !list.is_empty() && list.len() + 1 + run.len() > MAX_PORT_LIST_BYTES
+        }) {
+            lists.push((0, String::new()));
+        }
+        let (count, list) = lists.last_mut().expect("there is always a list");
         if !list.is_empty() {
             list.push(',');
         }
-        if first == last {
-            let _ = write!(list, "{first}");
-        } else {
-            let _ = write!(list, "{first}-{last}");
-        }
-        index += 1;
+        list.push_str(&run);
+        *count += usize::from(last - first) + 1;
     }
-    list
+    lists.retain(|(count, _)| *count > 0);
+    lists
 }
+
+/// The longest port list one `<extrareasons>` carries, in bytes.
+///
+/// Well inside what a reader bounding a value takes, this engine's own included,
+/// and long enough that a summary of ports in stretches is always one list.
+const MAX_PORT_LIST_BYTES: usize = 8 * 1024;
 
 /// Writes the `<osclass>` beneath a match: the family, vendor, generation and
 /// device type, and the CPEs naming the system.
@@ -1918,9 +1944,59 @@ mod tests {
     /// Runs of port numbers are written as nmap writes them.
     #[test]
     fn a_port_list_is_written_in_runs() {
-        assert_eq!(port_list(&[]), "");
-        assert_eq!(port_list(&[7]), "7");
-        assert_eq!(port_list(&[1, 2, 3, 5, 7, 8, 65535]), "1-3,5,7-8,65535");
+        assert!(port_lists(&[]).is_empty());
+        assert_eq!(port_lists(&[7]), [(1, "7".to_owned())]);
+        assert_eq!(
+            port_lists(&[1, 2, 3, 5, 7, 8, 65535]),
+            [(7, "1-3,5,7-8,65535".to_owned())]
+        );
+        assert_eq!(port_lists(&[65534, 65535]), [(2, "65534-65535".to_owned())]);
+    }
+
+    /// A summary of scattered ports is split into lists a bounded reader
+    /// takes, and every port in them reads back.
+    ///
+    /// Every other port of a full range in one attribute is two hundred
+    /// kilobytes, past the bound on one element that this engine's own reader
+    /// refuses a whole document over.
+    #[cfg(feature = "import-nmap")]
+    #[test]
+    fn a_scattered_summary_is_split_into_lists_a_bounded_reader_takes() {
+        use crate::import::report::ReportReader;
+        use crate::import::report::nmap::NmapXmlReportReader;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 90)));
+        host.set_status(HostStatus::Up);
+        for number in 1..=u16::MAX {
+            let state = match number % 2 {
+                0 => PortState::Closed,
+                _ => PortState::Filtered,
+            };
+            host.add_port(Port::new(number, Protocol::Tcp, state));
+        }
+
+        let document = export(&[host]);
+        let lists: Vec<&str> = document
+            .lines()
+            .filter(|line| line.starts_with("<extrareasons "))
+            .collect();
+        assert!(lists.len() > 2, "{} lists", lists.len());
+        assert!(
+            lists
+                .iter()
+                .all(|list| list.len() < 2 * MAX_PORT_LIST_BYTES)
+        );
+
+        let restored = NmapXmlReportReader::default()
+            .read(&mut std::io::Cursor::new(document.into_bytes()))
+            .expect("the document reads back under the default bounds");
+        let host = restored.hosts().next().expect("the host survived");
+        assert_eq!(host.port_count(), usize::from(u16::MAX));
+        assert!(host.ports().all(|port| match port.number() % 2 {
+            0 => port.state() == PortState::Closed,
+            _ => port.state() == PortState::Filtered,
+        }));
     }
 
     /// A run whose journal fell behind finished as a run that succeeded, and
