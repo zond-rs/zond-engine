@@ -128,6 +128,33 @@ fn prefilter_never_drops_a_matching_signature() {
     );
 }
 
+/// Signatures the prefilter cannot narrow, and so matches against every
+/// response on every port, are those with no literal worth indexing: a
+/// structural pattern, one written with look-arounds, or one whose literals
+/// are all shorter than the prefilter indexes.
+///
+/// Pinned so a rule the extractor could narrow does not slip into the bucket
+/// unnoticed, where it costs a regex run per response for the life of the
+/// corpus.
+#[test]
+fn only_a_pattern_with_no_literal_is_matched_against_every_response() {
+    const KNOWN_ALWAYS_RUN: usize = 13;
+    let (signatures, _) = signatures_with_examples();
+    let prefilter = LiteralPrefilter::build(&signatures);
+    let always: Vec<&str> = prefilter
+        .always_run()
+        .iter()
+        .map(|&idx| signatures[idx].pattern())
+        .collect();
+    assert!(
+        always.len() <= KNOWN_ALWAYS_RUN,
+        "{} of {} signatures always run:\n{}",
+        always.len(),
+        signatures.len(),
+        always.join("\n")
+    );
+}
+
 /// One reply is one witness, whatever the rule that read it says about the
 /// machine.
 ///
