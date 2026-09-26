@@ -881,6 +881,18 @@ impl Host {
         self.last_seen = SystemTime::now();
     }
 
+    /// Joins `ips`, a set built elsewhere, to the host's addresses, leaving
+    /// `last_seen` where it is.
+    ///
+    /// For a reader that parsed a document's address list straight into a
+    /// set, so a host rebuilt from it holds that set rather than a copy, and
+    /// what the document says about when the host was seen stands.
+    #[cfg(feature = "import-json")]
+    pub(crate) fn adopt_ips(&mut self, ips: BTreeSet<IpAddr>) {
+        let held = std::mem::replace(&mut self.ips, ips);
+        self.ips.extend(held);
+    }
+
     /// Drops every address `keep` refuses, and returns whether any is left.
     ///
     /// For the exclusion policy, which holds for every address a host is known

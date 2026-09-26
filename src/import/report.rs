@@ -109,14 +109,15 @@ pub struct ReportOptions {
     ///
     /// It bounds the document, and the process holds a multiple of it. Size
     /// this to what the process can afford rather than to a file you are willing
-    /// to read. Measured, in the shapes that cost most per byte: one host whose
-    /// `ips` array carries four million addresses, 59.9 MB of document and 6.6
-    /// times that resident at the peak; twenty hosts each listing every TCP
-    /// port in the fewest bytes a port entry can take, 64 MB and 5.8 times. A
-    /// document repeating one port entry costs one port, since a host's ports
-    /// are folded by endpoint as they are read. So at the default a hostile
-    /// document can leave the process holding about 7 GiB, and a caller reading
-    /// documents from strangers on a small machine should lower this.
+    /// to read. Measured, in the shapes that cost most per byte: twenty hosts
+    /// each listing every TCP port in the fewest bytes a port entry can take,
+    /// 64 MB of document and 5.8 times that resident at the peak; one host
+    /// whose `ips` array carries four million addresses, 59.9 MB and 2.8
+    /// times. A document repeating one port entry or one address costs one,
+    /// since a host's ports are folded by endpoint and its addresses into a
+    /// set as they are read. So at the default a hostile document can leave the
+    /// process holding about 6 GiB, and a caller reading documents from
+    /// strangers on a small machine should lower this.
     ///
     /// The default is 1 GiB, sized to read back what this engine writes. One
     /// host scanned across the whole TCP range and found closed is 26 MB of

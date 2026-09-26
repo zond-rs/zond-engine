@@ -85,7 +85,7 @@
 //! line is the document's host object with a `type` field added. Only how the
 //! records are found in the bytes differs.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::BufRead;
 use std::net::IpAddr;
@@ -1263,7 +1263,7 @@ impl WindowDto {
 #[serde(default)]
 struct HostDto {
     primary_ip: String,
-    ips: Vec<String>,
+    ips: IpsDto,
     zone: Option<String>,
     hostname: Option<String>,
     status: String,
@@ -1288,11 +1288,14 @@ impl HostDto {
     /// directly rather than passing through the record the rest of it does.
     fn into_host(mut self) -> Result<Host, String> {
         let ports = std::mem::take(&mut self.ports);
-        Ok(self.record()?.rebuild_with(ports.0.into_values()))
+        let ips = std::mem::take(&mut self.ips);
+        let mut host = self.record()?.rebuild_with(ports.0.into_values());
+        host.adopt_ips(ips.0);
+        Ok(host)
     }
 
-    /// Everything but the ports, which [`into_host`](Self::into_host) holds
-    /// already rebuilt.
+    /// Everything but the addresses and ports, which
+    /// [`into_host`](Self::into_host) holds already rebuilt.
     fn record(self) -> Result<HostRecord, String> {
         known(
             wire::host_status(&self.status),
@@ -1322,11 +1325,7 @@ impl HostDto {
 
         Ok(HostRecord {
             primary_ip: address(&self.primary_ip)?,
-            ips: self
-                .ips
-                .iter()
-                .map(|ip| address(ip))
-                .collect::<Result<_, _>>()?,
+            ips: Vec::new(),
             hostname: self.hostname,
             status: self.status,
             reasons: self
@@ -1372,6 +1371,65 @@ impl HostDto {
                 .map(FindingDto::record)
                 .collect::<Result<_, _>>()?,
         })
+    }
+}
+
+/// `ips[]`, parsed into the set a host keeps as the array is read.
+///
+/// For the same reason [`PortsDto`] is: the array is as long as the document
+/// makes it, and read as strings to be parsed afterwards it would be held as
+/// text, then as addresses, then as the host's set, the first two at once. An
+/// address is parsed from the document's own bytes and nothing else is
+/// allocated for it, so what a host's array costs is its set.
+#[derive(Debug, Default)]
+struct IpsDto(BTreeSet<IpAddr>);
+
+impl<'de> Deserialize<'de> for IpsDto {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_seq(IpsVisitor)
+    }
+}
+
+/// Reads `ips[]` into an [`IpsDto`].
+struct IpsVisitor;
+
+impl<'de> Visitor<'de> for IpsVisitor {
+    type Value = IpsDto;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("an array of addresses")
+    }
+
+    fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<IpsDto, S::Error> {
+        let mut ips = BTreeSet::new();
+        while let Some(IpDto(ip)) = seq.next_element()? {
+            ips.insert(ip);
+        }
+        Ok(IpsDto(ips))
+    }
+}
+
+/// One address, parsed from the string the document holds it as.
+struct IpDto(IpAddr);
+
+impl<'de> Deserialize<'de> for IpDto {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_str(IpVisitor)
+    }
+}
+
+/// Reads one address without holding it as text.
+struct IpVisitor;
+
+impl Visitor<'_> for IpVisitor {
+    type Value = IpDto;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("an IP address")
+    }
+
+    fn visit_str<E: de::Error>(self, text: &str) -> Result<IpDto, E> {
+        address(text).map(IpDto).map_err(E::custom)
     }
 }
 
@@ -1991,6 +2049,40 @@ mod tests {
     fn with_value(document: &str, from: &str, to: &str) -> String {
         assert!(document.contains(from), "the fixture does not carry {from}");
         document.replacen(from, to, 1)
+    }
+
+    // ─── A host's addresses ──────────────────────────────────────────────────
+
+    /// A host's `ips` come back as the set it names, parsed as the array is
+    /// read, beside the times the document gives rather than the time it was
+    /// read; and an entry that is no address refuses the document naming it.
+    #[test]
+    fn a_hosts_addresses_read_back_as_a_set_and_a_bad_one_is_named() {
+        let document = |ips: &str| {
+            format!(
+                r#"{{"schema_version":1,"engine":{{"name":"{ENGINE_NAME}"}},"hosts":[{{"primary_ip":"192.0.2.1","ips":[{ips}],"status":"up","first_seen":"2026-01-01T00:00:00Z","last_seen":"2026-01-02T00:00:00Z"}}]}}"#
+            )
+        };
+
+        let report = read(&document(r#""192.0.2.1","2001:db8::1","192.0.2.1""#))
+            .expect("a host with a repeated address reads");
+        let host = report.hosts().next().expect("the host");
+        let ips: Vec<String> = host.ips().iter().map(ToString::to_string).collect();
+        assert_eq!(ips, ["192.0.2.1", "2001:db8::1"]);
+        assert_eq!(
+            host.last_seen(),
+            parse_rfc3339("2026-01-02T00:00:00Z").expect("a timestamp"),
+            "joining the addresses must not move when the host was last seen"
+        );
+
+        let error = read(&document(r#""192.0.2.1","192.0.2.300""#))
+            .expect_err("an entry that is no address reads");
+        assert!(
+            error
+                .to_string()
+                .contains("'192.0.2.300' is not an IP address"),
+            "the refusal has to name the entry, said: {error}"
+        );
     }
 
     // ─── Names this build cannot place ───────────────────────────────────────
