@@ -1367,8 +1367,31 @@ fn snapshot_of(store: &DashMap<ScopedIp, Host>) -> Vec<Host> {
 fn changed_since(store: &DashMap<ScopedIp, Host>, changed: &ChangedHosts) -> Vec<Host> {
     changed
         .drain()
-        .into_iter()
+        .into_keys()
         .filter_map(|key| store.get(&key).map(|host| host.clone()))
+        .collect()
+}
+
+/// [`changed_since`], each host carrying only the ports marked on it where
+/// those were kept.
+///
+/// What a journal writes, at the cost of what changed rather than of each
+/// host's size: a pass that identifies a service on a host scanned on every
+/// port copies that host's own fields and one port, where a whole copy is
+/// tens of thousands of them, taken under the lock every strategy writing
+/// that host waits on. See [`Host::with_only_ports`].
+#[cfg(feature = "journal-format")]
+fn changes_since(store: &DashMap<ScopedIp, Host>, changed: &ChangedHosts) -> Vec<Host> {
+    changed
+        .drain()
+        .into_iter()
+        .filter_map(|(key, pending)| {
+            let host = store.get(&key)?;
+            Some(match pending {
+                Pending::Ports(ports) => host.with_only_ports(&ports),
+                Pending::Whole => host.clone(),
+            })
+        })
         .collect()
 }
 
@@ -1450,17 +1473,19 @@ impl ScanProgress {
     /// record on disk with nothing to drop it by. Held rather than taken, so
     /// the record is written once the phase keeps it or something answers.
     /// See [`ScanContext::await_verdicts`].
+    ///
+    /// Each host carries its own fields and the ports marked on it since it
+    /// was last taken, not every port it holds; see `changes_since`.
     #[cfg(feature = "journal-format")]
     pub(crate) fn take_changed_findings(&self) -> Vec<Host> {
+        let changes = changes_since(&self.store, &self.changed);
         if !self.verdicts_pending.load(Ordering::Acquire) {
-            return self.take_changed_hosts();
+            return changes;
         }
-        let (held, findings): (Vec<Host>, Vec<Host>) = self
-            .take_changed_hosts()
-            .into_iter()
-            .partition(awaits_verdict);
-        for host in held {
-            self.changed.insert(host.scoped_ip());
+        let (held, findings): (Vec<Host>, Vec<Host>) =
+            changes.into_iter().partition(awaits_verdict);
+        for host in &held {
+            self.changed.put_back(host);
         }
         findings
     }
@@ -1537,7 +1562,7 @@ impl ScanProgress {
     #[cfg(feature = "journal-format")]
     pub(crate) fn hand_back(&self, hosts: &[Host]) {
         for host in hosts {
-            self.changed.insert(host.scoped_ip());
+            self.changed.put_back(host);
         }
     }
 
@@ -1583,21 +1608,73 @@ impl ScanProgress {
     }
 }
 
-/// The hosts whose findings a journal has yet to record.
+/// The hosts whose findings a journal has yet to record, and of each, which
+/// ports.
+///
+/// Ports are kept only once something will take them, which is whatever
+/// holds the scan's [`ScanProgress`], as [`Tapes`] are. Before that, and in a
+/// scan nobody journals, a host is marked whole: a mark per port of every
+/// host would be held for the length of a scan with no reader for it.
 #[derive(Debug, Default)]
 pub(crate) struct ChangedHosts {
-    entries: Mutex<std::collections::BTreeSet<ScopedIp>>,
+    entries: Mutex<BTreeMap<ScopedIp, Pending>>,
+    ports_kept: AtomicBool,
+}
+
+/// What a journal has yet to record of one host.
+#[derive(Debug)]
+enum Pending {
+    /// Its own fields and these ports.
+    Ports(BTreeSet<(u16, Protocol)>),
+    /// Everything it holds: marked where which ports changed was not kept.
+    Whole,
 }
 
 impl ChangedHosts {
-    fn insert(&self, ip: ScopedIp) {
+    /// Marks the host at `ip` changed, on the ports `touched` names where
+    /// they are known and on all of them where they are not.
+    fn insert(&self, ip: ScopedIp, touched: Option<BTreeSet<(u16, Protocol)>>) {
+        let touched = touched.filter(|_| self.keeps_ports());
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        entries.insert(ip);
+        match (entries.entry(ip), touched) {
+            (std::collections::btree_map::Entry::Vacant(slot), touched) => {
+                slot.insert(touched.map_or(Pending::Whole, Pending::Ports));
+            }
+            (std::collections::btree_map::Entry::Occupied(mut slot), Some(touched)) => {
+                if let Pending::Ports(ports) = slot.get_mut() {
+                    ports.extend(touched);
+                }
+            }
+            (std::collections::btree_map::Entry::Occupied(mut slot), None) => {
+                slot.insert(Pending::Whole);
+            }
+        }
     }
 
-    fn drain(&self) -> Vec<ScopedIp> {
+    /// Marks `host`, a record a journal took and did not write, changed on
+    /// every port it carries.
+    #[cfg(feature = "journal-format")]
+    fn put_back(&self, host: &Host) {
+        let ports = host
+            .ports()
+            .map(|port| (port.number(), port.protocol()))
+            .collect();
+        self.insert(host.scoped_ip(), Some(ports));
+    }
+
+    /// Keeps which ports change from here on, for a reader that will take
+    /// them.
+    fn keep_ports(&self) {
+        self.ports_kept.store(true, Ordering::Release);
+    }
+
+    fn keeps_ports(&self) -> bool {
+        self.ports_kept.load(Ordering::Acquire)
+    }
+
+    fn drain(&self) -> BTreeMap<ScopedIp, Pending> {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        std::mem::take(&mut *entries).into_iter().collect()
+        std::mem::take(&mut *entries)
     }
 }
 
@@ -2037,6 +2114,9 @@ impl ScanContext {
             }
             host
         });
+        if self.changed.keeps_ports() {
+            host.track_touched_ports();
+        }
         let announce = edit(&mut host);
         // The key passed the gate above, and what the edit attached under it
         // has not been asked. The key's own address is among what is kept, so
@@ -2069,6 +2149,7 @@ impl ScanContext {
                 return false;
             }
         }
+        let touched = host.take_touched_ports();
         drop(host);
 
         // Marked whether or not the edit asked to be announced. `edit` was
@@ -2083,7 +2164,12 @@ impl ScanContext {
         // and that probe has just added an `icmp_echo` reason and a round trip
         // to it. Sharing the boolean would silently drop both from every
         // recorded scan.
-        self.changed.insert(key.clone());
+        //
+        // Marked with the ports the edit touched, so the journal copies and
+        // compares those rather than every port the host holds, and compares
+        // the host's own fields with what it last wrote: an edit that changed
+        // nothing costs that comparison and writes nothing.
+        self.changed.insert(key.clone(), touched);
 
         if announce || is_new {
             let _ = self.events_tx.send(ScanEvent::HostUpdated(key));
@@ -2846,7 +2932,12 @@ impl ScanContext {
 
             let key = host.scoped_ip();
             match self.store.get_mut(&key) {
-                Some(mut existing) => existing.merge(host),
+                Some(mut existing) => {
+                    existing.merge(host);
+                    // What the merge touched is what the journal already
+                    // holds, not a change of this sitting's.
+                    let _ = existing.take_touched_ports();
+                }
                 None => {
                     self.store.insert(key.clone(), host);
                 }
@@ -2869,9 +2960,11 @@ impl ScanContext {
     ///
     /// The detection phase keeps its runs' tapes from the first call on, for
     /// [`ScanProgress::take_tapes`] to hand over. Before it, and in a scan that
-    /// never makes one, a tape has no reader and is not kept.
+    /// never makes one, a tape has no reader and is not kept. Which ports of
+    /// a host changed is kept from then on for the same reason.
     pub fn progress(&self) -> ScanProgress {
         self.tapes.keep();
+        self.changed.keep_ports();
         ScanProgress {
             store: Arc::clone(&self.store),
             changed: Arc::clone(&self.changed),

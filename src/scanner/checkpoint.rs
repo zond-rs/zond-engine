@@ -522,6 +522,71 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// What a checkpoint takes of a wide host is the ports that changed, and
+    /// what it writes of them reads back as the whole host.
+    ///
+    /// A host scanned on every port holds tens of thousands of them, and each
+    /// pass that follows the port scan touches a few: taken whole, each
+    /// checkpoint copied every port under the lock the scan writes that host
+    /// through and serialised each one to learn which had changed, half a
+    /// second a checkpoint on a debug build for one service identified.
+    #[test]
+    fn a_checkpoint_takes_the_ports_that_changed_and_not_the_whole_host() {
+        use crate::model::port::{Port, PortState, Protocol};
+
+        const WIDE: u16 = 2_000;
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "192.0.2.1".parse().expect("an address"),
+            format!("1-{WIDE}").parse().expect("ports"),
+        ));
+        let plan = Plan::port_scan(&map, &Exclusions::none(), TcpScanTechnique::Syn);
+        let root = scratch("touched");
+        let journal = Journal::create(&root, &plan, Privilege::Raw, "test").expect("creates");
+        let directory = journal.directory().to_path_buf();
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let progress = ctx.progress();
+        let ip: std::net::IpAddr = "192.0.2.1".parse().expect("an address");
+
+        ctx.update_host(ip, |host| {
+            for number in 1..=WIDE {
+                host.add_port(Port::new(number, Protocol::Tcp, PortState::Closed));
+            }
+        });
+        let mut writer = Writer::new(journal);
+        writer.checkpoint(&progress);
+
+        // One port answers later, as a re-probe or an identification would
+        // move it.
+        ctx.update_host(ip, |host| {
+            host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
+        });
+        let taken = progress.take_changed_findings();
+        assert_eq!(taken.len(), 1);
+        assert_eq!(
+            taken[0].port_count(),
+            1,
+            "a checkpoint copied every port of a host one port of which changed"
+        );
+        progress.hand_back(&taken);
+        writer.checkpoint(&progress);
+        drop(writer);
+
+        let (resumed, _) = Journal::resume(&directory, &plan, Privilege::Raw).expect("resumes");
+        let host = &resumed.restored()[0];
+        assert_eq!(
+            host.port_count(),
+            usize::from(WIDE),
+            "every port reads back"
+        );
+        assert!(
+            holds_the_open_port(resumed.restored()),
+            "with the one that changed"
+        );
+        drop(resumed);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// Detection tapes a checkpoint could not write are written by the next
     /// one that can.
     ///

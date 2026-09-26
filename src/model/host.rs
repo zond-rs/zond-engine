@@ -616,6 +616,24 @@ pub struct Host {
     /// a walk of the map per recorded port, which on a wide scan is quadratic in
     /// the thing the walk exists to bound.
     open_ports: usize,
+
+    /// The ports recorded or given a finding since
+    /// [`take_touched_ports`](Self::take_touched_ports) last emptied this.
+    ///
+    /// What lets a journal write down what changed on a host at the cost of
+    /// what changed. A host scanned on every port holds tens of thousands of
+    /// them, and a pass that touches a few, a service identified or a finding
+    /// filed, would otherwise have every one cloned and compared to learn
+    /// which. Kept here because [`add_port`](Self::add_port) and
+    /// [`add_port_finding`](Self::add_port_finding) are the only ways a port
+    /// changes, so this is the one place that sees each change as it is made.
+    ///
+    /// Bookkeeping, not a finding: never written down and never read back.
+    /// `None`, and nothing kept, until
+    /// [`track_touched_ports`](Self::track_touched_ports) asks for it, which a
+    /// scan's store does for the hosts it holds and empties after every edit;
+    /// a host built or merged anywhere else pays nothing for it.
+    touched: Option<BTreeSet<(u16, Protocol)>>,
 }
 
 /// How well an address identifies the host holding it: lower leads.
@@ -667,6 +685,7 @@ impl Host {
             last_seen: now,
             ports: BTreeMap::new(),
             open_ports: 0,
+            touched: None,
         }
     }
 
@@ -1103,9 +1122,12 @@ impl Host {
         protocol: Protocol,
         finding: Finding,
     ) -> Option<bool> {
-        self.ports
-            .get_mut(&(number, protocol))
-            .map(|port| port.add_finding(finding))
+        let key = (number, protocol);
+        let port = self.ports.get_mut(&key)?;
+        if let Some(touched) = &mut self.touched {
+            touched.insert(key);
+        }
+        Some(port.add_finding(finding))
     }
 
     /// Replaces this host's operating-system fingerprint outright, whatever was
@@ -1384,6 +1406,9 @@ impl Host {
             }
             std::collections::btree_map::Entry::Vacant(slot) => slot.insert(new_port),
         };
+        if let Some(touched) = &mut self.touched {
+            touched.insert(key);
+        }
 
         // A state only ever promotes, so this counts up and never has to count
         // back down; see `open_ports`.
@@ -1401,6 +1426,98 @@ impl Host {
     /// How many of this host's ports are open.
     pub fn open_port_count(&self) -> usize {
         self.open_ports
+    }
+
+    /// Starts keeping which ports are recorded or given a finding, for
+    /// [`take_touched_ports`](Self::take_touched_ports) to hand over. Keeps
+    /// what is kept already.
+    pub(crate) fn track_touched_ports(&mut self) {
+        self.touched.get_or_insert_with(BTreeSet::new);
+    }
+
+    /// The ports recorded or given a finding since this was last called,
+    /// leaving none marked; `None` for a host nothing asked to track them.
+    ///
+    /// Touched, not changed: a port re-recorded with nothing new is still
+    /// named, since telling the two apart is a comparison this avoids. A
+    /// reader that has to know compares what it wrote; see `touched`.
+    pub(crate) fn take_touched_ports(&mut self) -> Option<BTreeSet<(u16, Protocol)>> {
+        self.touched.as_mut().map(std::mem::take)
+    }
+
+    /// A copy of this host carrying only the ports `keys` name, of those it
+    /// holds, and tracking none.
+    ///
+    /// What a scan's journal writes when a few ports of a wide host changed:
+    /// the host's own fields and those ports, copied without copying the
+    /// rest. Not the host: its ports are a selection, and it is only ever
+    /// written down, where a record's ports fold into what the file already
+    /// holds of the host.
+    pub(crate) fn with_only_ports(&self, keys: &BTreeSet<(u16, Protocol)>) -> Self {
+        // Destructured so a field added to the struct is a compile error here
+        // rather than one this copy quietly leaves at a default.
+        let Self {
+            primary_ip,
+            ips,
+            hostname,
+            status,
+            reasons,
+            os,
+            os_evidence,
+            hardware,
+            zone,
+            telemetry,
+            path,
+            network_roles,
+            filtering,
+            ip_protocols,
+            findings,
+            first_seen,
+            last_seen,
+            ports,
+            open_ports,
+            touched: _,
+        } = self;
+        // Every port named, which is what the first checkpoint after a wide
+        // port scan asks for, is the map copied whole rather than looked up a
+        // key at a time. Ports are never removed, so as many keys as ports
+        // held names each of them.
+        let (ports, open_ports) = if keys.len() == ports.len() {
+            (ports.clone(), *open_ports)
+        } else {
+            let ports: BTreeMap<_, _> = keys
+                .iter()
+                .filter_map(|key| ports.get_key_value(key))
+                .map(|(key, port)| (*key, port.clone()))
+                .collect();
+            let open = ports
+                .values()
+                .filter(|port| port.state() == PortState::Open)
+                .count();
+            (ports, open)
+        };
+        Self {
+            primary_ip: *primary_ip,
+            ips: ips.clone(),
+            hostname: hostname.clone(),
+            status: *status,
+            reasons: reasons.clone(),
+            os: os.clone(),
+            os_evidence: os_evidence.clone(),
+            hardware: hardware.clone(),
+            zone: zone.clone(),
+            telemetry: telemetry.clone(),
+            path: path.clone(),
+            network_roles: network_roles.clone(),
+            filtering: filtering.clone(),
+            ip_protocols: ip_protocols.clone(),
+            findings: findings.clone(),
+            first_seen: *first_seen,
+            last_seen: *last_seen,
+            ports,
+            open_ports,
+            touched: None,
+        }
     }
 
     /// Folds another record of this host into this one.
@@ -1441,6 +1558,9 @@ impl Host {
             ports,
             // Derived, and maintained by `add_port` as the ports below arrive.
             open_ports: _,
+            // Marked by `add_port` for each port below, which is what a merge
+            // touches of this record; what `other` touched is not a change here.
+            touched: _,
         } = other;
 
         // Taken before anything else, and restored at the end.
@@ -2092,6 +2212,40 @@ mod tests {
             Some(second),
             "and the newest is the one the host leads with"
         );
+    }
+
+    /// A host kept by a scan's store names the ports each edit recorded or
+    /// gave a finding, and a host built anywhere else keeps no such list.
+    ///
+    /// The list is what a journal copies of a wide host instead of all of
+    /// it, so a port it missed would be a change the journal never writes;
+    /// and it is bookkeeping, so a host no store asked for it carries none.
+    #[test]
+    fn a_tracked_host_names_the_ports_an_edit_touched() {
+        let mut host = Host::new(IP_ADDR);
+        host.add_port(Port::new(22, Protocol::Tcp, PortState::Closed));
+        assert_eq!(host.take_touched_ports(), None, "nothing asked to track");
+
+        host.track_touched_ports();
+        host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
+        let touched = host.take_touched_ports().expect("tracked");
+        assert_eq!(
+            touched.into_iter().collect::<Vec<_>>(),
+            [(80, Protocol::Tcp)]
+        );
+
+        let _ = host.add_port_finding(22, Protocol::Tcp, a_finding("det-a"));
+        let touched = host.take_touched_ports().expect("tracked");
+        assert_eq!(
+            touched.into_iter().collect::<Vec<_>>(),
+            [(22, Protocol::Tcp)]
+        );
+        assert_eq!(host.take_touched_ports(), Some(BTreeSet::new()), "taken");
+
+        let copy = host.with_only_ports(&[(80, Protocol::Tcp)].into_iter().collect());
+        assert_eq!(copy.port_count(), 1);
+        assert_eq!(copy.open_port_count(), 1);
+        assert_eq!(copy.primary_ip(), host.primary_ip());
     }
 
     /// A merge folds one record's ports into another's through the same entry
