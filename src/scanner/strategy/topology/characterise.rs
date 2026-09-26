@@ -72,17 +72,16 @@ const TRUSTED_SOURCE_PORT: u16 = 53;
 const STATELESS_FRAGMENT_MTU: u16 = 28;
 
 /// One host and the ports the pass aims its diagnostic probes at.
-#[non_exhaustive]
-pub struct Subject {
+pub(crate) struct Subject {
     /// The host to characterise.
-    pub host: IpAddr,
+    pub(crate) host: IpAddr,
     /// An open TCP port, for the bad-checksum middlebox probe. `None` skips it:
     /// a probe whose whole point is that a listener answers has nowhere to land.
-    pub open_port: Option<u16>,
+    pub(crate) open_port: Option<u16>,
     /// A port the scan found filtered, for the comparative probes: each tests
     /// whether a differently-shaped probe reaches where a plain SYN did not.
     /// `None` skips them: an unfiltered port shows no filter doing anything.
-    pub filtered_port: Option<u16>,
+    pub(crate) filtered_port: Option<u16>,
 }
 
 /// The probes still outstanding. Each nonce names the host its probe went to
@@ -92,7 +91,7 @@ type Awaiting = HashMap<u32, (IpAddr, Filtering)>;
 
 /// Sends each host's diagnostic probes and records what the filter in front of
 /// it demonstrably did.
-pub async fn characterise(ctx: &ScanContext, subjects: Vec<Subject>) {
+pub(crate) async fn characterise(ctx: &ScanContext, subjects: Vec<Subject>) {
     if subjects.is_empty() {
         return;
     }

@@ -16029,19 +16029,6 @@ impl core::marker::UnsafeUnpin for zond_engine::scanner::strategy::routed::SynPo
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::strategy::routed::SynPorts
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::routed::SynPorts
 pub mod zond_engine::scanner::strategy::topology
-pub mod zond_engine::scanner::strategy::topology::characterise
-#[non_exhaustive] pub struct zond_engine::scanner::strategy::topology::characterise::Subject
-pub zond_engine::scanner::strategy::topology::characterise::Subject::filtered_port: core::option::Option<u16>
-pub zond_engine::scanner::strategy::topology::characterise::Subject::host: core::net::ip_addr::IpAddr
-pub zond_engine::scanner::strategy::topology::characterise::Subject::open_port: core::option::Option<u16>
-impl core::marker::Freeze for zond_engine::scanner::strategy::topology::characterise::Subject
-impl core::marker::Send for zond_engine::scanner::strategy::topology::characterise::Subject
-impl core::marker::Sync for zond_engine::scanner::strategy::topology::characterise::Subject
-impl core::marker::Unpin for zond_engine::scanner::strategy::topology::characterise::Subject
-impl core::marker::UnsafeUnpin for zond_engine::scanner::strategy::topology::characterise::Subject
-impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::strategy::topology::characterise::Subject
-impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::topology::characterise::Subject
-pub async fn zond_engine::scanner::strategy::topology::characterise::characterise(&zond_engine::scanner::session::ScanContext, alloc::vec::Vec<zond_engine::scanner::strategy::topology::characterise::Subject>)
 pub mod zond_engine::scanner::strategy::topology::traceroute
 pub struct zond_engine::scanner::strategy::topology::traceroute::PathCache
 impl zond_engine::scanner::strategy::topology::traceroute::PathCache

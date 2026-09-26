@@ -10,7 +10,9 @@
 //!
 //! The two passes that describe the path rather than the endpoint.
 //! [`traceroute`] measures how far away a host is and which routers carry the
-//! traffic to it; [`characterise`] asks what the filter in front of it is doing.
+//! traffic to it; the filter characterisation
+//! [`ZondConfig::characterise`](crate::config::ZondConfig::characterise) turns
+//! on asks what the filter in front of it is doing.
 //!
 //! Both run last, after the ports are known, and for the same reason: what
 //! reaches a host is what decides how to ask about the path to it. A host with
@@ -22,6 +24,12 @@
 //! [`PortScanner`](super::PortScanner). They are aimed at hosts the scan has
 //! already found and record a property of the path rather than of the host's
 //! ports, so they are driven directly rather than through either trait.
+//!
+//! The characterisation is a stage of a scan and nothing else, and so is the
+//! crate's own. The scan hands it only hosts it has already held to the
+//! exclusions and to what the path it probes on can reach, and a caller
+//! handing it hosts directly would skip both; a caller wanting it sets the
+//! configuration field.
 
-pub mod characterise;
+pub(crate) mod characterise;
 pub mod traceroute;

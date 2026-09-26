@@ -231,3 +231,154 @@ fn every_struct_with_public_fields_can_grow_unless_it_says_why_not() {
         "exhaustive structs with public fields: {open:#?}"
     );
 }
+
+/// Whether a line of the listing opens an item of its own, which ends the
+/// lines describing the struct before it.
+fn opens_an_item(line: &str) -> bool {
+    let line = line.strip_prefix("#[non_exhaustive] ").unwrap_or(line);
+    ["struct ", "enum ", "mod ", "trait ", "union "]
+        .iter()
+        .any(|kind| {
+            line.strip_prefix("pub ")
+                .is_some_and(|rest| rest.starts_with(kind))
+        })
+}
+
+/// Whether a line of the listing is a function, method or constructor.
+fn is_function(line: &str) -> bool {
+    let mut rest = line.strip_prefix("pub ").unwrap_or("");
+    for qualifier in ["const ", "async ", "unsafe "] {
+        rest = rest.strip_prefix(qualifier).unwrap_or(rest);
+    }
+    rest.starts_with("fn ")
+}
+
+/// A function line's parameter list and whatever follows it.
+fn parameters_and_return(line: &str) -> (&str, &str) {
+    let Some(open) = line.find('(') else {
+        return ("", "");
+    };
+    let mut depth = 0usize;
+    for (offset, c) in line[open..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let close = open + offset;
+                    return (&line[open + 1..close], &line[close + 1..]);
+                }
+            }
+            _ => {}
+        }
+    }
+    (&line[open + 1..], "")
+}
+
+/// Whether `text` names the type at `path`, and not a longer one beginning
+/// with it.
+fn names(text: &str, path: &str) -> bool {
+    text.match_indices(path).any(|(at, _)| {
+        !text[at + path.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
+    })
+}
+
+/// The traits whose implementation hands a caller a value of the type.
+const BUILDS: &[&str] = &[
+    "core::default::Default for ",
+    "core::convert::From<",
+    "core::convert::TryFrom<",
+    "core::str::traits::FromStr for ",
+    "serde_core::de::Deserialize<'de> for ",
+    "core::iter::traits::collect::FromIterator<",
+];
+
+/// A `#[non_exhaustive]` struct cannot be written out as a literal outside the
+/// crate, so a caller holds one only if the crate hands it one: through a
+/// constructor, `Default` or a conversion, or as what a function returns or a
+/// field holds. A public function taking one no caller can come by is a
+/// promise nobody can use, and taking it back is still a breaking release.
+#[test]
+fn no_public_function_takes_a_struct_no_caller_can_come_by() {
+    let listing = listing();
+    let lines: Vec<&str> = listing.lines().collect();
+
+    // Each sealed struct, under every path the listing names it by, with
+    // whether its own lines give a caller a way to one.
+    let mut sealed: Vec<(Vec<&str>, bool)> = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        let Some(path) = line.strip_prefix("#[non_exhaustive] pub struct ") else {
+            continue;
+        };
+        let path = path.split(['<', ' ', '(']).next().unwrap_or(path);
+        let body = lines[at + 1..]
+            .iter()
+            .take_while(|line| !opens_an_item(line));
+        let mut paths = vec![path];
+        let mut built = false;
+        for line in body {
+            if let Some(implemented) = line.strip_prefix("impl") {
+                // A re-export's lines name the type by its own path.
+                if let Some((_, target)) = implemented.rsplit_once(" for ")
+                    && !paths.contains(&target)
+                {
+                    paths.push(target);
+                }
+                built |= BUILDS.iter().any(|trait_| implemented.contains(trait_));
+            } else if is_function(line) {
+                built |= parameters_and_return(line).1.contains("Self");
+            }
+        }
+        sealed.push((paths, built));
+    }
+    assert!(
+        sealed.iter().any(|(paths, built)| {
+            *built && paths.contains(&"zond_engine::model::target::Target")
+        }),
+        "the listing still spells a sealed struct and its constructor the way this \
+         check reads them"
+    );
+
+    let handed_out = |paths: &[&str]| {
+        lines.iter().any(|line| {
+            if is_function(line) {
+                return paths
+                    .iter()
+                    .any(|path| names(parameters_and_return(line).1, path));
+            }
+            // A public field of another type holding one.
+            let Some((field, kind)) = line.strip_prefix("pub ").and_then(|l| l.split_once(": "))
+            else {
+                return false;
+            };
+            !opens_an_item(line)
+                && !paths
+                    .iter()
+                    .any(|path| field.starts_with(&format!("{path}::")))
+                && paths.iter().any(|path| names(kind, path))
+        })
+    };
+    let unobtainable: Vec<Vec<&str>> = sealed
+        .into_iter()
+        .filter(|(paths, built)| !built && !handed_out(paths))
+        .map(|(paths, _)| paths)
+        .collect();
+
+    let unusable: Vec<&str> = lines
+        .iter()
+        .filter(|line| is_function(line))
+        .filter(|line| {
+            let (parameters, _) = parameters_and_return(line);
+            unobtainable
+                .iter()
+                .flatten()
+                .any(|path| names(parameters, path))
+        })
+        .copied()
+        .collect();
+    assert!(
+        unusable.is_empty(),
+        "public functions taking a sealed struct no caller can come by: {unusable:#?}\n\n\
+         Give the struct a constructor, or keep the function to the crate."
+    );
+}

@@ -9,9 +9,10 @@
 //! # Which IP protocols a host takes delivery of
 //!
 //! A diagnostic pass, run after the ports are known and only against hosts that
-//! answered, in the shape
-//! [`characterise`](super::topology::characterise) has: a bounded set of probes
-//! per host, one listening window, and conclusions recorded on the host.
+//! answered, in the shape the filter characterisation
+//! [`ZondConfig::characterise`](crate::config::ZondConfig::characterise) turns
+//! on has: a bounded set of probes per host, one listening window, and
+//! conclusions recorded on the host.
 //!
 //! One datagram goes out under each protocol number the caller asked about, and
 //! the host's own ICMP is the answer. What comes back settles it:

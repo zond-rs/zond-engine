@@ -260,7 +260,10 @@
 //!   the fields set afterwards. The exceptions are types a caller writes out
 //!   whole on purpose: the interchange shapes in [`record`], the `*Parts`
 //!   structs that mirror what they rebuild, and packet headers, whose fields
-//!   the protocol fixes.
+//!   the protocol fixes. A public function takes such a struct only where a
+//!   caller can come by one, from a constructor, `Default`, a conversion or
+//!   what another function returns; one taking a struct nobody outside can
+//!   build is kept to the crate.
 //! - **Enums can grow.** A vocabulary is `#[non_exhaustive]`, and its `ALL` is
 //!   a slice: an array's length is part of its type, and would make the next
 //!   variant a break after all.
