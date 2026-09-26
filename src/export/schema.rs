@@ -1633,8 +1633,21 @@ pub struct HostDto<'a> {
 impl<'a> HostDto<'a> {
     /// Renders a host, applying the redaction policy in `options`.
     pub fn new(host: &'a Host, options: &ExportOptions) -> Self {
+        Self::masked(host, options, &options.redaction.for_host(host))
+    }
+
+    /// Renders a host whose free text is masked by `masking`, the policy in
+    /// `options` as it applies to this record and to any other that shares
+    /// its text's names: a comparison masks each of a host's two records by
+    /// the names either knew it by
+    /// ([`Redaction::for_delta`](crate::export::Redaction::for_delta)).
+    pub(crate) fn masked(host: &'a Host, options: &ExportOptions, masking: &HostRedaction) -> Self {
         let redaction = options.redaction;
-        let masking = redaction.for_host(host);
+        debug_assert_eq!(
+            masking.redaction(),
+            redaction,
+            "the masking is the policy in the options"
+        );
 
         let mut families: Vec<&'static str> = Vec::with_capacity(2);
         if host.ips().iter().any(std::net::IpAddr::is_ipv4) {
@@ -1647,7 +1660,7 @@ impl<'a> HostDto<'a> {
         let mut reasons: Vec<ReasonDto<'a>> = host
             .reasons()
             .iter()
-            .map(|reason| ReasonDto::new(reason, &masking))
+            .map(|reason| ReasonDto::new(reason, masking))
             .collect();
         reasons.sort_by(|a, b| {
             a.protocol
@@ -1697,17 +1710,17 @@ impl<'a> HostDto<'a> {
                     state: ip_protocol_state_name(*state),
                 })
                 .collect(),
-            os: host.os().map(|os| OsDto::new(os, &masking)),
+            os: host.os().map(|os| OsDto::new(os, masking)),
             hardware: host
                 .hardware()
-                .map(|hardware| HardwareDto::new(hardware, &masking)),
+                .map(|hardware| HardwareDto::new(hardware, masking)),
             telemetry: TelemetryDto::new(host.telemetry()),
             path: host.path().hops().iter().map(HopDto::new).collect(),
             ports: host
                 .ports()
-                .map(|port| PortDto::new(port, &masking))
+                .map(|port| PortDto::new(port, masking))
                 .collect(),
-            findings: findings_dto(host.findings(), &masking),
+            findings: findings_dto(host.findings(), masking),
             first_seen: rfc3339(host.first_seen()),
             last_seen: rfc3339(host.last_seen()),
         }

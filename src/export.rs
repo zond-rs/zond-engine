@@ -189,7 +189,10 @@ pub trait Exporter {
 /// it: see [`HostRedaction`], which every exporter reads a host's record
 /// through. A name the host stated but no protocol recorded as one cannot be
 /// found there, and is the second residual leak below; an excerpt that is not
-/// text is withheld whole for that reason.
+/// text is withheld whole for that reason. A comparison masks both of a
+/// host's records by every name either scan knew it by, and a merged report
+/// by every name any of its sources did, since the text of each record can
+/// name the host by a name only the other states.
 ///
 /// IP addresses are left alone. A report is a list of hosts, and a masking
 /// scheme that hides which host is which collapses ten records on a /24 into ten
@@ -202,7 +205,9 @@ pub trait Exporter {
 /// network with EUI-64 addressing is not free of hardware identifiers however
 /// this is set. And a name a host wrote into a text reply without any protocol
 /// having stated it as a name, an HTTP banner naming a machine the scan found
-/// no other name for, is text like any other and survives.
+/// no other name for, is text like any other and survives. A merged report
+/// written plain and redacted when it is read back is such a report for every
+/// name the merge did not keep, having no field that states it.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Redaction {
@@ -249,8 +254,11 @@ impl Redaction {
     }
 
     /// The policy as it applies to both records a comparison holds of one
-    /// host, masking the names either scan knew it by: a name the later scan
-    /// dropped is still the host's name in the earlier one's text.
+    /// host, masking the names either scan knew it by in the text of both: a
+    /// name the later scan dropped is still the host's name in the earlier
+    /// one's text, and a reply the earlier scan kept can name the machine
+    /// before any service stated the name the later scan records. Every part
+    /// of a comparison that renders either record reads it through this one.
     pub fn for_delta(self, delta: &HostDelta) -> HostRedaction {
         self.for_hosts(delta.baseline().into_iter().chain(delta.current()))
     }
@@ -342,11 +350,14 @@ impl HostRedaction {
     }
 }
 
-/// Every name a host is known by: its hostname and the names it gave.
+/// Every name a host is known by: its hostname, the names it gave, and the
+/// names a fold of its records set aside, which the text kept from those
+/// records still holds.
 fn host_names(host: &Host) -> impl Iterator<Item = &str> {
     host.hostname()
         .into_iter()
         .chain(host.names().map(HostName::name))
+        .chain(host.set_aside_names())
 }
 
 /// Policy that applies to an export regardless of the format it lands in.
@@ -571,6 +582,51 @@ mod tests {
 
         assert_eq!(Redaction::None.mac(&mac), "2c:cf:67:00:00:01");
         assert_eq!(Redaction::Standard.mac(&mac), "2c:cf:67:XX:XX:XX");
+    }
+
+    /// Two records of one host folded into one keep one hostname and a
+    /// bounded number of names, and the text of both. A name the fold did
+    /// not keep is still the host's name in the text it kept, so the folded
+    /// record masks it there as it masks the names it states.
+    #[test]
+    fn a_folded_record_masks_the_names_its_fold_did_not_keep() {
+        use crate::model::host::{NameKind, NameSource};
+
+        let address = "192.0.2.10".parse().expect("an address");
+        let mut kept = Host::new(address);
+        kept.set_hostname(Some("files.example".to_owned()));
+        // A peer inventing a name per connection, until the ceiling on a
+        // host's names turns one away.
+        let invented = |n: usize| {
+            HostName::new(NameKind::Host, NameSource::Ntlm, &format!("peer{n:03}")).expect("a name")
+        };
+        let mut n = 0;
+        while kept.record_name(invented(n)) {
+            n += 1;
+        }
+
+        let mut folded = Host::new(address);
+        folded.set_hostname(Some("archive.example".to_owned()));
+        folded.record_name(
+            HostName::new(NameKind::NetbiosHost, NameSource::Netbios, "VAULT").expect("a name"),
+        );
+        kept.merge(folded);
+
+        assert_eq!(kept.hostname(), Some("files.example"));
+        assert!(kept.names().all(|name| name.name() != "VAULT"));
+        let masked = Redaction::Standard
+            .for_host(&kept)
+            .text("archive.example is VAULT")
+            .to_lowercase();
+        assert!(
+            !masked.contains("archive") && !masked.contains("vault"),
+            "{masked}"
+        );
+        assert_eq!(
+            Redaction::None.for_host(&kept).text("VAULT"),
+            "VAULT",
+            "nothing is masked without a policy"
+        );
     }
 
     #[test]

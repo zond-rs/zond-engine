@@ -324,8 +324,12 @@ pub struct HostDeltaDto<'a> {
     /// Every endpoint that moved, ascending by number and then transport.
     pub ports: Vec<PortDeltaDto>,
     /// The earlier scan's whole record, in the report document's schema.
+    ///
+    /// Its text is masked by every name either scan knew the host by, as the
+    /// changes are: the earlier scan can hold a reply naming the machine
+    /// before any service stated the name, and the later one knows it.
     pub baseline: Option<HostDto<'a>>,
-    /// The later scan's whole record.
+    /// The later scan's whole record, masked the same way.
     pub current: Option<HostDto<'a>>,
 }
 
@@ -356,8 +360,12 @@ impl<'a> HostDeltaDto<'a> {
                 .iter()
                 .map(|port| PortDeltaDto::new(port, &masking))
                 .collect(),
-            baseline: delta.baseline().map(|host| HostDto::new(host, options)),
-            current: delta.current().map(|host| HostDto::new(host, options)),
+            baseline: delta
+                .baseline()
+                .map(|host| HostDto::masked(host, options, &masking)),
+            current: delta
+                .current()
+                .map(|host| HostDto::masked(host, options, &masking)),
         }
     }
 }

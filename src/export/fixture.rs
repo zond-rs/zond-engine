@@ -892,31 +892,21 @@ fn named_correlation(title: &str, cpe: &str) -> Finding {
 /// a service, of its operating system and of its hardware that a rule can
 /// fill from a reply, in a port named by its banner alone, in the details of
 /// the evidence it is up, and in its certificate's issuer and alternative
-/// names. The earlier record (`later` false) holds the names and nothing
-/// else, so a comparison of the two carries each as a change.
+/// names. `names` says whether the record holds the names as names, the
+/// hostname and those the machine stated over SMB, and `words` whether it
+/// holds the text that repeats them.
 ///
 /// Every string the schema declares for a host is either filled with a name
 /// here or listed by the census in the conformance tests as one no host can
 /// fill, so a redaction test over this host covers every field there is.
-fn named_host(later: bool) -> Host {
+fn named_host(names: bool, words: bool) -> Host {
     let mut host = Host::new(ip(20));
     host.set_status(HostStatus::Up);
     host.add_reason(StatusReason::basic(StatusProtocol::TcpSyn));
-    host.set_hostname(Some(format!(
-        "fs01.{}.example",
-        NAMED_DOMAIN.to_lowercase()
-    )));
-    for (kind, name) in [
-        (NameKind::NetbiosHost, NAMED_HOST.to_owned()),
-        (NameKind::NetbiosDomain, NAMED_DOMAIN.to_owned()),
-        (
-            NameKind::Domain,
-            format!("{}.example", NAMED_DOMAIN.to_lowercase()),
-        ),
-    ] {
-        host.record_name(HostName::new(kind, NameSource::Smb, &name).expect("a name"));
+    if names {
+        name_host(&mut host, NAMED_HOST, NAMED_DOMAIN);
     }
-    if !later {
+    if !words {
         return host;
     }
 
@@ -1030,11 +1020,57 @@ fn named_host(later: bool) -> Host {
     host
 }
 
+/// Gives `host` a hostname and the names a file server states over SMB: the
+/// machine's, its workgroup's and its domain's.
+fn name_host(host: &mut Host, machine: &str, domain: &str) {
+    let lower = domain.to_lowercase();
+    host.set_hostname(Some(format!("{}.{lower}.example", machine.to_lowercase())));
+    for (kind, name) in [
+        (NameKind::NetbiosHost, machine.to_owned()),
+        (NameKind::NetbiosDomain, domain.to_owned()),
+        (NameKind::Domain, format!("{lower}.example")),
+    ] {
+        host.record_name(HostName::new(kind, NameSource::Smb, &name).expect("a name"));
+    }
+}
+
 /// A report on the host of [`named_host`], and the earlier one a comparison
-/// sets it against.
+/// sets it against, which holds the names and nothing else, so a comparison
+/// of the two carries each as a change.
 pub(crate) fn named() -> (ScanReport, ScanReport) {
     (
-        compared_phase(0, vec![named_host(false)]),
-        compared_phase(35, vec![named_host(true)]),
+        compared_phase(0, vec![named_host(true, false)]),
+        compared_phase(35, vec![named_host(true, true)]),
+    )
+}
+
+/// The same pair the other way about: the earlier report already holds every
+/// word of the host's replies but none of its names, as a scan does whose
+/// banners named the machine before any service stated a name, and the later
+/// one holds both. The earlier record's text names the host, and only the
+/// later record knows that what it names is a name.
+pub(crate) fn named_late() -> (ScanReport, ScanReport) {
+    (
+        compared_phase(0, vec![named_host(false, true)]),
+        compared_phase(35, vec![named_host(true, true)]),
+    )
+}
+
+/// The machine's name after the rename in [`renamed`].
+pub(crate) const RENAMED_HOST: &str = "FS02";
+
+/// Its domain's name after the rename in [`renamed`].
+pub(crate) const RENAMED_DOMAIN: &str = "FABRIKAM";
+
+/// The host of [`named_host`] and a later report on it after the machine was
+/// renamed and moved to another domain, holding the new names and nothing
+/// else. Folded together they keep the later names, the machine's current
+/// ones, and the earlier record's every word, which name it by the old.
+pub(crate) fn renamed() -> (ScanReport, ScanReport) {
+    let mut later = named_host(false, false);
+    name_host(&mut later, RENAMED_HOST, RENAMED_DOMAIN);
+    (
+        compared_phase(0, vec![named_host(true, true)]),
+        compared_phase(35, vec![later]),
     )
 }

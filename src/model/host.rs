@@ -519,6 +519,18 @@ pub struct Host {
     /// by [`MAX_NAMES`].
     names: BTreeSet<HostName>,
 
+    /// Names this record's text may hold that it does not state as names:
+    /// every name a record folded into this one knew the host by and the fold
+    /// did not keep, a renamed machine's former name or a name the ceiling
+    /// turned away. The text of the folded record stays, and names the host by
+    /// them.
+    ///
+    /// Kept for redaction alone, which masks them in that text as it masks
+    /// the names the record states. Nothing exports, compares or writes them
+    /// down: a fold answers what the host is called now, and a record read
+    /// back from a document holds only the names the document states.
+    set_aside_names: BTreeSet<String>,
+
     /// The current reachability status.
     status: HostStatus,
 
@@ -713,6 +725,7 @@ impl Host {
             ips,
             hostname: None,
             names: BTreeSet::new(),
+            set_aside_names: BTreeSet::new(),
             status: HostStatus::Unknown,
             reasons: HashSet::new(),
             os: None,
@@ -1057,10 +1070,45 @@ impl Host {
     /// host was heard from.
     pub fn record_name(&mut self, name: HostName) -> bool {
         self.last_seen = SystemTime::now();
+        self.admit_name(name).unwrap_or(false)
+    }
+
+    /// Records `name` unless the ceiling turns it away, returning whether it
+    /// is new, or handing it back when it was turned away.
+    fn admit_name(&mut self, name: HostName) -> Result<bool, HostName> {
         if self.names.len() >= MAX_NAMES && !self.names.contains(&name) {
-            return false;
+            return Err(name);
         }
-        self.names.insert(name)
+        Ok(self.names.insert(name))
+    }
+
+    /// The names this record's text may hold without stating them as names,
+    /// which a fold of the host's records set aside, for redaction to mask
+    /// there too.
+    pub(crate) fn set_aside_names(&self) -> impl Iterator<Item = &str> {
+        self.set_aside_names.iter().map(String::as_str)
+    }
+
+    /// Sets aside every name `account`, another record of this host whose text
+    /// a fold keeps, knew the host by and this record does not state.
+    pub(crate) fn set_aside_names_of(&mut self, account: &Host) {
+        for name in account
+            .hostname()
+            .into_iter()
+            .chain(account.names().map(HostName::name))
+            .chain(account.set_aside_names())
+        {
+            self.set_aside(name);
+        }
+    }
+
+    /// Sets `name` aside, unless this record states it.
+    fn set_aside(&mut self, name: &str) {
+        let stated = self.hostname.as_deref() == Some(name)
+            || self.names.iter().any(|held| held.name() == name);
+        if !stated && !self.set_aside_names.contains(name) {
+            self.set_aside_names.insert(name.to_owned());
+        }
     }
 
     /// Raises the reachability status to `status`, if that is an improvement.
@@ -1594,6 +1642,7 @@ impl Host {
             ips,
             hostname,
             names,
+            set_aside_names,
             status,
             reasons,
             os,
@@ -1635,6 +1684,7 @@ impl Host {
             ips: ips.clone(),
             hostname: hostname.clone(),
             names: names.clone(),
+            set_aside_names: set_aside_names.clone(),
             status: *status,
             reasons: reasons.clone(),
             os: os.clone(),
@@ -1693,6 +1743,7 @@ impl Host {
             ips,
             hostname,
             names,
+            set_aside_names,
             status,
             reasons,
             os,
@@ -1730,11 +1781,20 @@ impl Host {
         self.ips.extend(ips);
         self.consider_primary_ip(other_primary);
 
+        // A name the fold does not keep is set aside rather than lost, since
+        // the text folded in below can hold it.
         if self.hostname.is_none() {
             self.hostname = hostname;
+        } else if let Some(offered) = hostname {
+            self.set_aside(&offered);
         }
         for name in names {
-            self.record_name(name);
+            if let Err(turned_away) = self.admit_name(name) {
+                self.set_aside(turned_away.name());
+            }
+        }
+        for name in &set_aside_names {
+            self.set_aside(name);
         }
 
         if status > self.status {

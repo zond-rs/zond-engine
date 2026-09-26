@@ -1348,41 +1348,57 @@ fn the_hostile_fixture_poisons_every_string_the_schema_declares() {
 // ---------------------------------------------------------------------------
 
 /// Every rendering of the [`fixture::named`] host this build can write, by
-/// format: each report format, and each comparison format over the earlier
-/// record and this one.
-fn named_renderings(options: &ExportOptions) -> Vec<(&'static str, String)> {
+/// format: each report format, each comparison format over the earlier record
+/// and this one, and over [`fixture::named_late`], whose earlier record names
+/// the host only in its text, and each report format over the fold of
+/// [`fixture::renamed`], which keeps the text of the record whose names it
+/// replaced.
+fn named_renderings(options: &ExportOptions) -> Vec<(String, String)> {
     use crate::diff::ScanDiff;
     use crate::export::diff::DiffExporter;
+    use crate::merge::{Merge, MergeOptions};
+    use crate::report::ScanReport;
 
-    let (before, after) = fixture::named();
     let mut rendered = Vec::new();
-    let mut write = |format: &'static str, export: &dyn Fn(&mut Vec<u8>)| {
+    let mut write = |format: String, export: &dyn Fn(&mut Vec<u8>)| {
         let mut bytes = Vec::new();
         export(&mut bytes);
         rendered.push((format, String::from_utf8(bytes).expect("utf-8")));
     };
+    let mut reports = |label: &str, report: &ScanReport| {
+        for format in crate::export::ExportFormat::all() {
+            write(format!("{label}{}", format.extension()), &|bytes| {
+                format
+                    .exporter(options.clone())
+                    .export(report, bytes)
+                    .expect("the report exports");
+            });
+        }
+    };
 
-    for format in crate::export::ExportFormat::all() {
-        write(format.extension(), &|bytes| {
-            format
-                .exporter(options.clone())
-                .export(&after, bytes)
-                .expect("the report exports");
+    let (before, after) = fixture::named();
+    reports("", &after);
+
+    let (old, new) = fixture::renamed();
+    let mut merge = Merge::new(MergeOptions::default());
+    merge.add(old).add(new);
+    reports("merged ", &merge.finish());
+
+    let (unnamed, _) = fixture::named_late();
+    for (label, baseline) in [("", &before), (" named late", &unnamed)] {
+        let diff = ScanDiff::between(baseline, &after);
+        write(format!("diff json{label}"), &|bytes| {
+            crate::export::diff::JsonDiffExporter::new(options.clone())
+                .export(&diff, bytes)
+                .expect("the comparison exports");
+        });
+        #[cfg(feature = "export-html")]
+        write(format!("diff html{label}"), &|bytes| {
+            crate::export::diff::HtmlDiffExporter::new(options.clone())
+                .export(&diff, bytes)
+                .expect("the comparison exports");
         });
     }
-
-    let diff = ScanDiff::between(&before, &after);
-    write("diff json", &|bytes| {
-        crate::export::diff::JsonDiffExporter::new(options.clone())
-            .export(&diff, bytes)
-            .expect("the comparison exports");
-    });
-    #[cfg(feature = "export-html")]
-    write("diff html", &|bytes| {
-        crate::export::diff::HtmlDiffExporter::new(options.clone())
-            .export(&diff, bytes)
-            .expect("the comparison exports");
-    });
 
     rendered
 }
@@ -1404,8 +1420,12 @@ fn as_searched(text: &str) -> String {
 /// excerpt, a banner, a title a detection filled from the reply, a service's
 /// extra information, a certificate issuer named for the machine. Redaction
 /// that masks the fields and leaves the text has masked nothing, so every
-/// format, the comparisons included, is searched for each name, in any case
-/// and with the NULs of its UTF-16 spelling taken out.
+/// format, the comparisons and a merge included, is searched for each name,
+/// in any case and with the NULs of its UTF-16 spelling taken out.
+///
+/// A comparison or a merge holds text from records that did not all know the
+/// host by the same names, so each is rendered from a pair in which the
+/// record whose words name the host is not the one that states the names.
 #[test]
 fn no_format_carries_a_name_the_host_gave_under_redaction() {
     let names: Vec<String> = [fixture::NAMED_HOST, fixture::NAMED_DOMAIN]
@@ -1421,16 +1441,19 @@ fn no_format_carries_a_name_the_host_gave_under_redaction() {
         );
     }
 
+    // Every leak at once, so a failure says which formats share it.
     let redacted = ExportOptions::new().with_redaction(Redaction::Standard);
-    for (format, text) in named_renderings(&redacted) {
-        let searched = as_searched(&text);
-        for name in &names {
-            assert!(
-                !searched.contains(name.as_str()),
-                "the redacted {format} still names `{name}`:\n{text}"
-            );
-        }
-    }
+    let leaks: Vec<String> = named_renderings(&redacted)
+        .into_iter()
+        .flat_map(|(format, text)| {
+            let searched = as_searched(&text);
+            names
+                .iter()
+                .filter(move |name| searched.contains(name.as_str()))
+                .map(move |name| format!("the redacted {format} still names `{name}`"))
+        })
+        .collect();
+    assert!(leaks.is_empty(), "{leaks:#?}");
 }
 
 /// Every path under a host record at which the schema declares a free

@@ -158,6 +158,17 @@
 //! exported document, an nmap file and a live scan are the same input; and a
 //! merged report is a legal input to the next merge and to a comparison.
 //!
+//! ## Redacting a merged report
+//!
+//! A name the fold does not keep, the one a renamed machine went by, leaves
+//! the merged report as a name and not as text: the older source's findings
+//! and banners stay and still spell it. So the merged record sets such names
+//! aside, and [redaction](crate::export::Redaction) masks them wherever that
+//! text lands, as it masks the names the record states. They are not part of
+//! the report and no document carries them, so a merged report masks every
+//! name its sources knew only when it is redacted as it is written; written
+//! plain and redacted when read back, it masks the names it states.
+//!
 //! ## Fold every source at once, not in rounds
 //!
 //! A merged report is a report and not a transcript of one. Where two sources
@@ -432,6 +443,13 @@ fn fold_host(accounts: &[&Host]) -> Host {
             }
         }
         heard.extend(sources);
+    }
+
+    // What the older accounts called the host stays in the words the fold
+    // keeps of them, a finding's excerpt or a service's banner, so the names
+    // it did not keep are set aside for redaction to mask there.
+    for account in accounts {
+        host.set_aside_names_of(account);
     }
 
     // `Unknown` is the absence of evidence, by the model's own documentation, so
