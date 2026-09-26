@@ -1681,24 +1681,46 @@ fn record_port_findings(
 }
 
 /// Assesses each gathered certificate's own posture — expiry, self-signing, a
-/// weak RSA key — and records a finding for each problem.
+/// weak RSA key — and, on a host a target named, whether it answers to that
+/// name, recording a finding for each problem.
 ///
 /// A sibling of [`run_correlation`]: it sends nothing, deriving entirely from the
 /// certificate the service pass already read off the handshake, and works in place
 /// in the store. A port with no certificate, or one a clean certificate, yields
 /// nothing, so this costs a walk of the store and no traffic. No gate: a scan that
 /// gathered no certificate has nothing here to find.
+///
+/// The name a certificate is held against is the one the service pass's
+/// handshake put in its server name, which is the target's name where a
+/// handshake can carry it and nothing otherwise. A host reached by its address
+/// was asked for no name, and a certificate naming some other site is no
+/// mismatch there: a server sharing its address among sites presents its
+/// default one's to a client naming none.
 pub(super) fn run_cert_posture(ctx: &ScanContext) {
     let now = std::time::SystemTime::now();
     for key in ctx.hosts_owed_passes() {
+        let name = ctx.target_name(key.addr());
         let hits = ctx.read_host(&key, |host| {
             host.ports()
                 .flat_map(|port| {
                     let number = port.number();
                     let protocol = port.protocol();
+                    let asked_for = crate::fingerprint::authority::Authority::new(
+                        std::net::SocketAddr::new(key.addr(), number),
+                    )
+                    .named(name.clone())
+                    .sni();
                     port.security()
                         .and_then(|security| security.certificate())
-                        .map(|cert| cert.findings(now))
+                        .map(|cert| {
+                            let mut findings = cert.findings(now);
+                            findings.extend(
+                                asked_for
+                                    .as_deref()
+                                    .and_then(|name| cert.name_mismatch(name)),
+                            );
+                            findings
+                        })
                         .unwrap_or_default()
                         .into_iter()
                         .map(move |finding| (number, protocol, finding))

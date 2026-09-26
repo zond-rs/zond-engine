@@ -822,3 +822,97 @@ async fn a_web_port_on_a_named_target_is_asked_for_by_that_name() {
     let host = outcome.host(LOOPBACK).expect("loopback host recorded");
     assert_eq!(host.hostname(), Some("box.example"));
 }
+
+/// A loopback TLS server presenting a throwaway certificate for `names`, and
+/// the server names its clients' handshakes carried.
+///
+/// Minted per run so no key material is committed. It completes each handshake
+/// and then answers nothing, which is all a certificate check needs.
+async fn spawn_tls_server(
+    names: &[&str],
+) -> (
+    u16,
+    tokio::task::JoinHandle<()>,
+    tokio::sync::mpsc::UnboundedReceiver<Option<String>>,
+) {
+    let names: Vec<String> = names.iter().map(|name| name.to_string()).collect();
+    let cert = rcgen::generate_simple_self_signed(names).expect("a self-signed certificate");
+    let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der());
+    let config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("ring supports the default versions")
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![cert.cert.der().clone()],
+        rustls::pki_types::PrivateKeyDer::Pkcs8(key_der),
+    )
+    .expect("a server config from the generated key");
+    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind loopback TLS server");
+    let port = listener.local_addr().expect("server local addr").port();
+    let (asked, heard) = tokio::sync::mpsc::unbounded_channel();
+    let server = tokio::spawn(async move {
+        loop {
+            let Ok(stream) = accept_from_this_process(&listener).await else {
+                return;
+            };
+            let (acceptor, asked) = (acceptor.clone(), asked.clone());
+            tokio::spawn(async move {
+                if let Ok(mut tls) = acceptor.accept(stream).await {
+                    let name = tls.get_ref().1.server_name().map(str::to_owned);
+                    let _ = asked.send(name);
+                    let _ = tls.read(&mut [0u8; 512]).await;
+                }
+            });
+        }
+    });
+    (port, server, heard)
+}
+
+/// A certificate that does not name the host a target named is reported, and
+/// the same certificate on a host reached by its address is not.
+///
+/// A client connecting by the name refuses such a certificate, so on a named
+/// target it is a finding. Reached by address, the handshake asked for no name
+/// and a server holding several sites presents its default one's, which is no
+/// fault of the server's.
+#[tokio::test]
+async fn a_certificate_not_naming_a_named_target_is_reported_as_a_mismatch() {
+    const MISMATCH: &str = "TLS certificate does not match the host name";
+    let mismatches = |outcome: &Outcome, number: u16| {
+        outcome
+            .host(LOOPBACK)
+            .expect("loopback host recorded")
+            .ports()
+            .find(|port| port.number() == number)
+            .expect("the scanned port is present")
+            .findings()
+            .filter(|finding| finding.title() == MISMATCH)
+            .count()
+    };
+
+    let (port, server, mut heard) = spawn_tls_server(&["other.example"]).await;
+    let mut named = test_config();
+    named
+        .target_names
+        .insert(LOOPBACK, "box.example".to_string());
+    let outcome = run_scan(target_map(LOOPBACK, &port.to_string()), &named).await;
+    let by_address = run_scan(target_map(LOOPBACK, &port.to_string()), &test_config()).await;
+    server.abort();
+
+    let mut asked = Vec::new();
+    while let Ok(name) = heard.try_recv() {
+        asked.push(name);
+    }
+    assert!(
+        asked.contains(&Some("box.example".to_string())),
+        "no handshake asked for the target's name: {asked:?}"
+    );
+    assert_eq!(mismatches(&outcome, port), 1, "the named scan");
+    assert_eq!(mismatches(&by_address, port), 0, "the scan by address");
+}

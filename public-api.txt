@@ -10674,9 +10674,11 @@ pub mod zond_engine::model::port::security
 pub struct zond_engine::model::port::security::CertificateInfo
 impl zond_engine::model::port::security::CertificateInfo
 pub fn zond_engine::model::port::security::CertificateInfo::common_name(&self) -> &str
+pub fn zond_engine::model::port::security::CertificateInfo::covers(&self, &str) -> bool
 pub fn zond_engine::model::port::security::CertificateInfo::findings(&self, std::time::SystemTime) -> alloc::vec::Vec<zond_engine::model::finding::Finding>
 pub fn zond_engine::model::port::security::CertificateInfo::fingerprint_sha256(&self) -> &str
 pub fn zond_engine::model::port::security::CertificateInfo::issuer(&self) -> &str
+pub fn zond_engine::model::port::security::CertificateInfo::name_mismatch(&self, &str) -> core::option::Option<zond_engine::model::finding::Finding>
 pub fn zond_engine::model::port::security::CertificateInfo::new(impl core::convert::Into<alloc::sync::Arc<str>>, impl core::convert::Into<alloc::sync::Arc<str>>, std::time::SystemTime, std::time::SystemTime, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
 pub fn zond_engine::model::port::security::CertificateInfo::pubkey_bits(&self) -> u32
 pub fn zond_engine::model::port::security::CertificateInfo::pubkey_type(&self) -> &str
@@ -10993,9 +10995,11 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::discover
 pub struct zond_engine::model::port::CertificateInfo
 impl zond_engine::model::port::security::CertificateInfo
 pub fn zond_engine::model::port::security::CertificateInfo::common_name(&self) -> &str
+pub fn zond_engine::model::port::security::CertificateInfo::covers(&self, &str) -> bool
 pub fn zond_engine::model::port::security::CertificateInfo::findings(&self, std::time::SystemTime) -> alloc::vec::Vec<zond_engine::model::finding::Finding>
 pub fn zond_engine::model::port::security::CertificateInfo::fingerprint_sha256(&self) -> &str
 pub fn zond_engine::model::port::security::CertificateInfo::issuer(&self) -> &str
+pub fn zond_engine::model::port::security::CertificateInfo::name_mismatch(&self, &str) -> core::option::Option<zond_engine::model::finding::Finding>
 pub fn zond_engine::model::port::security::CertificateInfo::new(impl core::convert::Into<alloc::sync::Arc<str>>, impl core::convert::Into<alloc::sync::Arc<str>>, std::time::SystemTime, std::time::SystemTime, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
 pub fn zond_engine::model::port::security::CertificateInfo::pubkey_bits(&self) -> u32
 pub fn zond_engine::model::port::security::CertificateInfo::pubkey_type(&self) -> &str

@@ -24,6 +24,7 @@
 //! after it ran, and "expired" answered from the current time would relabel a
 //! report every time it was opened.
 
+use std::net::IpAddr;
 use std::sync::{Arc, OnceLock};
 
 use crate::model::confidence::Confidence;
@@ -204,7 +205,9 @@ impl Security {
     /// [`TlsSupport::standing`] says what a claim drawn from it rests on. The
     /// certificate's posture is the other, and a claim drawn from it rests on
     /// the certificate as a whole: whether it lapsed, names its own issuer or
-    /// carries a short key is a property of those bytes, so this record upholds
+    /// carries a short key is a property of those bytes, and whether it names
+    /// the host asked for is one of those bytes and the name the target gave,
+    /// which a job does not change between sittings. So this record upholds
     /// the claim while it holds the same certificate and overturned it once it
     /// holds another. A certificate with no fingerprint cannot be told from
     /// another, and a claim resting on one has no standing.
@@ -496,12 +499,12 @@ impl CertificateInfo {
     /// key type so an elliptic-curve key is not judged against an RSA floor
     /// (CWE-326).
     ///
-    /// Two neighbouring checks are deliberately absent. Hostname match is not one:
-    /// the scan reaches the endpoint by address with no SNI, so there is no name it
-    /// asked the certificate to present and nothing to hold its names against. Nor
-    /// is the signature algorithm, which is not among the fields parsed here. A
-    /// not-yet-valid certificate is left alone too: a scanner clock running ahead
-    /// is the likelier cause, and flagging it would cry wolf.
+    /// Whether the certificate answers to the name a client asked for is not a
+    /// property of the certificate alone, and is
+    /// [`name_mismatch`](Self::name_mismatch). The signature algorithm is not
+    /// checked, not being among the fields parsed here. A not-yet-valid
+    /// certificate is left alone too: a scanner clock running ahead is the
+    /// likelier cause, and flagging it would cry wolf.
     pub fn findings(&self, at: SystemTime) -> Vec<Finding> {
         let mut findings = Vec::new();
         let id = certificate_detection_id();
@@ -565,6 +568,97 @@ impl CertificateInfo {
 
         findings
     }
+
+    /// Whether the certificate names `name` among the identities it claims, by
+    /// the rules RFC 9525 section 6.3 gives a client checking a server's.
+    ///
+    /// A host name is held against the DNS names in the Subject Alternative
+    /// Name extension, ignoring ASCII case and a trailing dot. A name there
+    /// whose leftmost label is a lone `*` covers any one label in its place and
+    /// no more, so `*.example.com` covers `www.example.com` and neither
+    /// `example.com` nor `a.b.example.com`. An address is held against the
+    /// addresses in the same extension. The subject's common name is not read:
+    /// RFC 9525 forbids a client to, and current TLS clients refuse a
+    /// certificate that names a host only there.
+    ///
+    /// Only the names this record kept are read, up to
+    /// [`MAX_SANS_PER_CERTIFICATE`], so a certificate claiming more than that
+    /// may cover a name this says it does not.
+    pub fn covers(&self, name: &str) -> bool {
+        let name = name.strip_suffix('.').unwrap_or(name);
+        if let Ok(address) = name.parse::<IpAddr>() {
+            return self
+                .sans
+                .iter()
+                .any(|san| san.parse::<IpAddr>() == Ok(address));
+        }
+        self.sans
+            .iter()
+            .filter(|san| san.parse::<IpAddr>().is_err())
+            .any(|san| dns_name_covers(san, name))
+    }
+
+    /// The finding that this certificate does not answer to `name`, the host
+    /// name the handshake that presented it asked for, or `None` where it does.
+    ///
+    /// Held apart from [`findings`](Self::findings) because it is a fact about
+    /// the certificate and a name together: an endpoint reached by its address
+    /// was asked for no name, and a certificate that is wrong for one site
+    /// behind a shared address is right for another. So it is asked only with
+    /// the name a client put in the handshake's server name, where a client
+    /// connecting by that name would refuse the certificate.
+    ///
+    /// Also `None` where the certificate claims as many names as this record
+    /// keeps, since the one that covers `name` may be among those it dropped;
+    /// see [`covers`](Self::covers).
+    pub fn name_mismatch(&self, name: &str) -> Option<Finding> {
+        if self.sans.len() >= MAX_SANS_PER_CERTIFICATE || self.covers(name) {
+            return None;
+        }
+        let bare = name.strip_suffix('.').unwrap_or(name);
+        let only_common_name = dns_name_covers(&self.common_name, bare);
+        let excerpt = if only_common_name {
+            format!("{name} is named only in the subject common name, which clients do not read")
+        } else {
+            match self.sans.as_slice() {
+                [] => format!("asked for {name}; the certificate lists no alternative names"),
+                [first, rest @ ..] => {
+                    let more = match rest.len() {
+                        0 => String::new(),
+                        1 => format!(" and {}", rest[0]),
+                        n => format!(" and {n} more"),
+                    };
+                    format!("asked for {name}; the certificate names {first}{more}")
+                }
+            }
+        };
+        Finding::new(
+            certificate_detection_id(),
+            "TLS certificate does not match the host name",
+            Severity::Medium,
+            Confidence::Certain,
+            DetectionClass::Passive,
+        )
+        .ok()
+        .map(|finding| {
+            finding
+                .with_excerpt(Excerpt::new(excerpt))
+                .with_reference(Reference::Cwe(297))
+        })
+    }
+}
+
+/// Whether one DNS name from a certificate covers the host name `name`,
+/// ignoring ASCII case and a trailing dot, with a leftmost `*` label standing
+/// for exactly one label of `name`; see [`CertificateInfo::covers`].
+fn dns_name_covers(pattern: &str, name: &str) -> bool {
+    let pattern = pattern.strip_suffix('.').unwrap_or(pattern);
+    match pattern.strip_prefix("*.") {
+        Some(parent) => name.split_once('.').is_some_and(|(label, rest)| {
+            !label.is_empty() && !parent.is_empty() && rest.eq_ignore_ascii_case(parent)
+        }),
+        None => !pattern.is_empty() && pattern.eq_ignore_ascii_case(name),
+    }
 }
 
 /// The id every certificate-posture finding is stamped under, which is how
@@ -582,7 +676,7 @@ fn certificate_detection_id() -> DetectionId {
         let version = env!("CARGO_PKG_VERSION")
             .parse::<Version>()
             .unwrap_or_else(|_| Version::new(0, 0, 0));
-        let census = "expired;self-signed;weak-rsa-key";
+        let census = "expired;self-signed;weak-rsa-key;name-mismatch";
         let digest = ring::digest::digest(&ring::digest::SHA256, census.as_bytes());
         let mut hash = String::with_capacity(digest.as_ref().len() * 2);
         for byte in digest.as_ref() {
@@ -839,5 +933,84 @@ mod tests {
         )
         .with_public_key("EC", 256);
         assert!(cert.findings(now).is_empty());
+    }
+
+    /// A certificate for `names`, the rest of it clean.
+    fn naming(common_name: &str, names: &[&str]) -> CertificateInfo {
+        let now = SystemTime::now();
+        CertificateInfo::new(
+            common_name,
+            "Example Root CA",
+            now - Duration::from_secs(86_400 * 30),
+            now + Duration::from_secs(86_400 * 300),
+            "ee",
+        )
+        .with_sans(names.iter().map(|name| Arc::from(*name)))
+        .with_public_key("RSA", 2048)
+    }
+
+    /// The names a certificate covers are the ones a client connecting by name
+    /// would accept it for, so a mismatch reported is one a browser would
+    /// refuse and a match one it would take.
+    #[test]
+    fn a_certificate_covers_the_names_a_client_would_accept_it_for() {
+        let cert = naming("ignored.example", &["www.example.com", "*.api.example.com"]);
+
+        assert!(cert.covers("www.example.com"));
+        assert!(cert.covers("WWW.Example.COM."), "case and a trailing dot");
+        assert!(cert.covers("v1.api.example.com"), "a wildcard, one label");
+
+        assert!(!cert.covers("example.com"));
+        assert!(
+            !cert.covers("api.example.com"),
+            "a wildcard needs its label"
+        );
+        assert!(!cert.covers("a.v1.api.example.com"), "and only one");
+        assert!(
+            !cert.covers("ignored.example"),
+            "the common name is not read"
+        );
+
+        let addressed = naming("", &["192.0.2.7", "2001:db8::7"]);
+        assert!(addressed.covers("192.0.2.7"));
+        assert!(addressed.covers("2001:db8:0::7"), "compared as addresses");
+        assert!(!addressed.covers("192.0.2.8"));
+    }
+
+    /// A certificate that does not name the host asked for is a finding, and
+    /// one that does, or that may have named it past the names kept, is none.
+    #[test]
+    fn a_certificate_not_naming_the_host_asked_for_is_a_mismatch() {
+        let cert = naming("web.example", &["web.example", "www.web.example"]);
+        assert!(cert.name_mismatch("web.example").is_none());
+
+        let finding = cert
+            .name_mismatch("shop.example")
+            .expect("a certificate for another site is a mismatch");
+        assert_eq!(finding.detection().id(), "zond:certificate");
+        assert_eq!(finding.severity(), Severity::Medium);
+        assert!(finding.title().contains("host name"));
+        let excerpt = finding.excerpt().as_str();
+        assert!(excerpt.contains("shop.example"), "{excerpt}");
+        assert!(excerpt.contains("web.example"), "{excerpt}");
+
+        // Named only where clients no longer look, which the excerpt says.
+        let legacy = naming("legacy.example", &[]);
+        let finding = legacy
+            .name_mismatch("legacy.example")
+            .expect("a name in the common name alone does not cover it");
+        let excerpt = finding.excerpt().as_str();
+        assert!(excerpt.contains("common name"), "{excerpt}");
+
+        // As many names as a record keeps: the covering one may be past them.
+        let many: Vec<String> = (0..MAX_SANS_PER_CERTIFICATE)
+            .map(|i| format!("n{i}.example"))
+            .collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert!(
+            naming("", &many)
+                .name_mismatch("elsewhere.example")
+                .is_none()
+        );
     }
 }
