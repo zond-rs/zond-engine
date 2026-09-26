@@ -734,11 +734,20 @@ impl ClosedUdpPort {
 /// number. A port found by binding one and letting it go can be handed to
 /// another socket before the scan binds it, where this one cannot: the socket
 /// holding it is bound and never listens, so nothing accepts a connection
-/// there, and it shares the port as the scan's own socket does, with address
-/// and port reuse, so the scan binds beside it. What a connection from
-/// elsewhere meets is the system's to say: Linux refuses it, and macOS drops
-/// it unanswered, as it does anything sent to a bound socket that is not
-/// listening.
+/// there, and it asks for port reuse, as the scan's own socket does, so the
+/// scan binds beside it and a socket that does not ask for it is refused.
+/// What a connection from elsewhere meets is the system's to say: Linux
+/// refuses it, and macOS drops it unanswered, as it does anything sent to a
+/// bound socket that is not listening.
+///
+/// It asks for port reuse alone and not for address reuse. Linux lets two
+/// sockets that both ask for address reuse share a port while neither
+/// listens, and a listener asks for it as a matter of course, so a holder
+/// asking for it too would let the next listener bound to that number take
+/// the port and answer the scan. Port reuse is shared only between sockets
+/// that both ask for it, on Linux and macOS alike. Windows has no port reuse,
+/// and there a socket asking for address reuse, as the scan's does, binds
+/// beside any other whatever that one asked for.
 pub(crate) struct HeldTcpPort {
     port: u16,
     _held: socket2::Socket,
@@ -754,7 +763,6 @@ impl HeldTcpPort {
             std::net::IpAddr::V6(_) => Domain::IPV6,
         };
         let held = Socket::new(domain, Type::STREAM, None).expect("a socket");
-        held.set_reuse_address(true).expect("address reuse");
         #[cfg(unix)]
         held.set_reuse_port(true).expect("port reuse");
         held.bind(&SocketAddr::new(ip, 0).into())
@@ -845,8 +853,9 @@ mod tests {
     }
 
     /// **A held TCP port admits a socket bound the way a scan binds a pinned
-    /// source port**, where a socket asking for the port plainly is refused
-    /// it.
+    /// source port**, where a listener asking for the port is refused it. The
+    /// listener asks with the address reuse the standard library's listeners
+    /// ask for on Unix, which is what another test's service would bring.
     #[test]
     fn a_held_tcp_port_stays_taken_and_admits_a_pinned_source() {
         use socket2::{Domain, Socket, Type};
