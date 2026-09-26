@@ -37,19 +37,36 @@
 //!
 //! ## What a code promises
 //!
+//! Every public error type in this crate has one, the low-level ones a caller
+//! assembling its own scan meets included, since a front end that has to fall
+//! back on the wording for some errors cannot rely on codes for any.
+//!
 //! The name is stable and the wording of the message is not. Renaming a variant
 //! does not rename its code, and a code is only ever retired by being replaced
-//! with one a consumer can tell apart.
+//! with one a consumer can tell apart. Each names one failure, so no two arms
+//! hand out the same code.
 //!
 //! Codes read `area.what`: the area a caller was working in, and the thing that
 //! stopped it. An error that wraps another reports the inner one's code, since
 //! `scan.evasion` would say only that a scan refused something the caller could
 //! read for themselves in `evasion.hop_limit_zero`.
 
+use crate::config::envelope::UnknownDetectionEnvelope;
+use crate::config::{UnknownOsDetection, UnknownScanEffort, UnknownServiceDetection};
+use crate::cve::CatalogueError;
+use crate::detect::bundle::BundleError;
+use crate::detect::compute::{CapError, LoadError, ReplayError};
 use crate::detect::corpus::DetectionError;
+use crate::detect::flow::ParseError as FlowParseError;
 use crate::evasion::EvasionError;
 use crate::export::ExportError;
+use crate::fingerprint::os::{InvalidRule, RuleError};
+use crate::fingerprint::{DefinitionError, InvalidDefinition};
 use crate::import::ImportError;
+#[cfg(feature = "import-kev")]
+use crate::import::kev::KevError;
+#[cfg(feature = "import-nvd")]
+use crate::import::nvd::NvdError;
 #[cfg(feature = "journal-format")]
 use crate::journal::format::JournalError;
 #[cfg(feature = "journal-format")]
@@ -58,10 +75,29 @@ use crate::journal::lock::LockRefused;
 use crate::journal::manifest::{OptionChanged, PlanChanged};
 #[cfg(feature = "journal-format")]
 use crate::journal::store::OpenError;
+use crate::model::finding::{FindingError, VersionParseError};
+use crate::model::ip::range::IpError;
+use crate::model::ip::scoped::ScopedIpError;
+use crate::model::ip::set::IpSetError;
+use crate::model::mac::MacAddrParseError;
 use crate::model::parse::ip::IpParseError;
 use crate::model::parse::target::TargetParseError;
 use crate::model::port::set::PortSetParseError;
+use crate::model::target::TargetError;
+use crate::model::technique::{UnknownSctpTechnique, UnknownTechnique};
+use crate::model::tls::UnknownTlsVersion;
+use crate::protocols::error::PacketError;
+use crate::resolve::LinkError;
 use crate::scanner::ScanError;
+use crate::scanner::rdns::ResolverError;
+use crate::scanner::strategy::StrategyError;
+use crate::signature::SignatureError;
+use crate::transport::capture::CaptureError;
+use crate::transport::channel::ChannelError;
+#[cfg(feature = "packet-exchange")]
+use crate::transport::exchange::ExchangeError;
+use crate::transport::probe::{SendError, TransportError, UnknownSendMode};
+use crate::transport::raw::RawSocketError;
 
 #[cfg(feature = "import-request")]
 use crate::import::request::RequestError;
@@ -71,8 +107,8 @@ use crate::import::settings::SettingsError;
 /// An error with a name a consumer outside Rust can branch on.
 ///
 /// The module documentation states what the name promises and how the codes are
-/// shaped. Implemented for every error a public entry point of this crate can
-/// hand back.
+/// shaped. Implemented for every public error type in this crate, so whatever
+/// error a caller holds, it has a code to branch on.
 pub trait Coded {
     /// A short, stable name for what went wrong.
     ///
@@ -226,7 +262,7 @@ impl Coded for PortSetParseError {
             PortSetParseError::MalformedSpec(_) => "ports.malformed_spec",
             PortSetParseError::SpacedRange(_) => "ports.spaced_range",
             PortSetParseError::ServiceName(_) => "ports.service_name",
-            PortSetParseError::NoPorts => "ports.no_ports",
+            PortSetParseError::NoPorts => "ports.empty",
         }
     }
 }
@@ -267,6 +303,351 @@ impl Coded for SettingsError {
             SettingsError::NoPath => "settings.no_path",
             SettingsError::TooLarge { .. } => "settings.too_large",
             SettingsError::UnknownProfile { .. } => "settings.unknown_profile",
+        }
+    }
+}
+
+/// Implements [`Coded`] for an error with one code whatever its contents: a
+/// value that did not parse as the one thing it had to be.
+macro_rules! one_code {
+    ($($error:ty => $code:literal),+ $(,)?) => {
+        $(impl Coded for $error {
+            fn code(&self) -> &'static str {
+                $code
+            }
+        })+
+    };
+}
+
+one_code! {
+    UnknownOsDetection => "config.unknown_os_detection",
+    UnknownScanEffort => "config.unknown_scan_effort",
+    UnknownServiceDetection => "config.unknown_service_detection",
+    UnknownDetectionEnvelope => "config.unknown_detection_envelope",
+    UnknownTechnique => "config.unknown_tcp_technique",
+    UnknownSctpTechnique => "config.unknown_sctp_technique",
+    UnknownSendMode => "config.unknown_send_mode",
+    UnknownTlsVersion => "config.unknown_tls_version",
+    MacAddrParseError => "mac.malformed",
+    VersionParseError => "finding.malformed_version",
+}
+
+impl Coded for FindingError {
+    fn code(&self) -> &'static str {
+        match self {
+            FindingError::EmptyId => "finding.empty_id",
+            FindingError::EmptyTitle => "finding.empty_title",
+        }
+    }
+}
+
+impl Coded for IpError {
+    fn code(&self) -> &'static str {
+        match self {
+            IpError::InvalidRange(..) => "range.backwards",
+            IpError::InvalidPrefix(_) => "range.invalid_prefix",
+            IpError::AddrParse(_) => "range.malformed_address",
+            IpError::InvalidFormat(_) => "range.malformed",
+            IpError::PrefixParse(_) => "range.malformed_prefix",
+        }
+    }
+}
+
+impl Coded for IpSetError {
+    fn code(&self) -> &'static str {
+        match self {
+            IpSetError::InvalidTarget(range) => range.code(),
+        }
+    }
+}
+
+impl Coded for ScopedIpError {
+    fn code(&self) -> &'static str {
+        match self {
+            ScopedIpError::NotAnAddress(_) => "scoped_address.not_an_address",
+            ScopedIpError::ZoneOnUnscopedAddress(..) => "scoped_address.zone_on_unscoped",
+            ScopedIpError::EmptyZone => "scoped_address.empty_zone",
+        }
+    }
+}
+
+impl Coded for TargetError {
+    fn code(&self) -> &'static str {
+        match self {
+            TargetError::CapacityOverflow => "target.capacity_overflow",
+        }
+    }
+}
+
+impl Coded for LinkError {
+    fn code(&self) -> &'static str {
+        match self {
+            LinkError::Empty => "link.empty",
+            LinkError::Unknown { .. } => "link.unknown",
+            LinkError::NoLan => "link.no_lan",
+            LinkError::NoLinks => "link.no_links",
+        }
+    }
+}
+
+impl Coded for CatalogueError {
+    fn code(&self) -> &'static str {
+        match self {
+            CatalogueError::Io(_) => "catalogue.io",
+            CatalogueError::Malformed(_) => "catalogue.malformed",
+            CatalogueError::ReservedId { .. } => "catalogue.reserved_id",
+            CatalogueError::TooLarge { .. } => "catalogue.too_large",
+            CatalogueError::UnreadableVersion { .. } => "catalogue.unreadable_version",
+        }
+    }
+}
+
+#[cfg(feature = "import-kev")]
+impl Coded for KevError {
+    fn code(&self) -> &'static str {
+        match self {
+            KevError::Io(_) => "kev.io",
+            KevError::Malformed(_) => "kev.malformed",
+            KevError::TooLarge { .. } => "kev.too_large",
+            KevError::Rejected(catalogue) => catalogue.code(),
+        }
+    }
+}
+
+#[cfg(feature = "import-nvd")]
+impl Coded for NvdError {
+    fn code(&self) -> &'static str {
+        match self {
+            NvdError::Io(_) => "nvd.io",
+            NvdError::Malformed(_) => "nvd.malformed",
+            NvdError::TooLarge { .. } => "nvd.too_large",
+            NvdError::TooManyEntries { .. } => "nvd.too_many_entries",
+            NvdError::Rejected(catalogue) => catalogue.code(),
+        }
+    }
+}
+
+impl Coded for SignatureError {
+    fn code(&self) -> &'static str {
+        match self {
+            SignatureError::UnreadableKey => "signature.unreadable_key",
+            SignatureError::Malformed(_) => "signature.malformed",
+            SignatureError::UnknownAlgorithm { .. } => "signature.unknown_algorithm",
+            SignatureError::UntrustedKey => "signature.untrusted_key",
+            SignatureError::Altered => "signature.altered",
+            SignatureError::Invalid => "signature.invalid",
+            SignatureError::Io(_) => "signature.io",
+        }
+    }
+}
+
+impl Coded for BundleError {
+    fn code(&self) -> &'static str {
+        match self {
+            BundleError::Signature(signature) => signature.code(),
+            BundleError::Manifest(_) => "bundle.manifest",
+            BundleError::Missing { .. } => "bundle.missing",
+            BundleError::Altered { .. } => "bundle.altered",
+            BundleError::Unnamed { .. } => "bundle.unnamed",
+            BundleError::Duplicate { .. } => "bundle.duplicate",
+            BundleError::TooMany { .. } => "bundle.too_many",
+        }
+    }
+}
+
+impl Coded for FlowParseError {
+    fn code(&self) -> &'static str {
+        match self {
+            FlowParseError::Empty => "flow.empty",
+            FlowParseError::UnexpectedChar(_) => "flow.unexpected_char",
+            FlowParseError::UnterminatedString => "flow.unterminated_string",
+            FlowParseError::IntOverflow(_) => "flow.int_overflow",
+            FlowParseError::Expected(_) => "flow.expected",
+            FlowParseError::Trailing => "flow.trailing",
+            FlowParseError::TooDeep => "flow.too_deep",
+        }
+    }
+}
+
+impl Coded for CapError {
+    fn code(&self) -> &'static str {
+        match self {
+            CapError::ByteBudgetExhausted => "capability.byte_budget_exhausted",
+            CapError::ConnectionBudgetExhausted => "capability.connection_budget_exhausted",
+            CapError::Denied(_) => "capability.denied",
+            CapError::TimedOut => "capability.timed_out",
+            CapError::ConnectionRefused => "capability.connection_refused",
+            CapError::Reset => "capability.reset",
+        }
+    }
+}
+
+impl Coded for LoadError {
+    fn code(&self) -> &'static str {
+        match self {
+            LoadError::Compile(_) => "compute.compile",
+            LoadError::UnsupportedBody => "compute.unsupported_body",
+        }
+    }
+}
+
+impl Coded for ReplayError {
+    fn code(&self) -> &'static str {
+        match self {
+            ReplayError::UnknownDetection => "replay.unknown_detection",
+            ReplayError::UnknownTransport(_) => "replay.unknown_transport",
+            ReplayError::GrantFailed => "replay.grant_failed",
+            ReplayError::Instantiate(load) => load.code(),
+            ReplayError::Run(_) => "replay.run",
+            ReplayError::Diverged => "replay.diverged",
+        }
+    }
+}
+
+impl Coded for DefinitionError {
+    fn code(&self) -> &'static str {
+        match self {
+            DefinitionError::Pattern { .. } => "definition.pattern",
+            DefinitionError::VersionGroup { .. } => "definition.version_group",
+            DefinitionError::ProbeProtocol { .. } => "definition.probe_protocol",
+            DefinitionError::GenericProbeNotTcp { .. } => "definition.generic_probe_not_tcp",
+            DefinitionError::UdpProbeSize { .. } => "definition.udp_probe_size",
+        }
+    }
+}
+
+impl Coded for InvalidDefinition {
+    fn code(&self) -> &'static str {
+        self.error.code()
+    }
+}
+
+impl Coded for RuleError {
+    fn code(&self) -> &'static str {
+        match self {
+            RuleError::Unidentified => "rule.unidentified",
+            RuleError::VersionWithoutProduct => "rule.version_without_product",
+            RuleError::Weight(_) => "rule.weight",
+            RuleError::Predicate { .. } => "rule.predicate",
+            RuleError::NoPredicates => "rule.no_predicates",
+            RuleError::ExampleWithoutSeries(_) => "rule.example_without_series",
+            RuleError::ExampleWithoutWindow(_) => "rule.example_without_window",
+        }
+    }
+}
+
+impl Coded for InvalidRule {
+    fn code(&self) -> &'static str {
+        self.error.code()
+    }
+}
+
+impl Coded for PacketError {
+    fn code(&self) -> &'static str {
+        match self {
+            PacketError::TooLong { .. } => "packet.too_long",
+            PacketError::FamilyMismatch { .. } => "packet.family_mismatch",
+            PacketError::WrongFamily { .. } => "packet.wrong_family",
+            PacketError::MtuTooSmall { .. } => "packet.mtu_too_small",
+            PacketError::HeaderHasOptions { .. } => "packet.header_has_options",
+            PacketError::OptionsTooLong { .. } => "packet.options_too_long",
+            PacketError::OptionsMisaligned { .. } => "packet.options_misaligned",
+            PacketError::UnsupportedEtherType(_) => "packet.unsupported_ether_type",
+            PacketError::Unreadable { .. } => "packet.unreadable",
+            PacketError::UnexpectedMessage { .. } => "packet.unexpected_message",
+            PacketError::UnwritableName { .. } => "packet.unwritable_name",
+            PacketError::Truncated { .. } => "packet.truncated",
+        }
+    }
+}
+
+impl Coded for CaptureError {
+    fn code(&self) -> &'static str {
+        match self {
+            CaptureError::NoInterface { .. } => "capture.no_interface",
+            CaptureError::NoReader { .. } => "capture.no_reader",
+            CaptureError::UnsupportedLinkType { .. } => "capture.unsupported_link_type",
+            CaptureError::Filter { .. } => "capture.filter",
+            CaptureError::Open { .. } => "capture.open",
+            CaptureError::Denied { .. } => "capture.denied",
+        }
+    }
+}
+
+impl Coded for RawSocketError {
+    fn code(&self) -> &'static str {
+        match self {
+            RawSocketError::Open { .. } => "raw_socket.open",
+            RawSocketError::NoSocket { .. } => "raw_socket.no_socket",
+            RawSocketError::HopLimit { .. } => "raw_socket.hop_limit",
+            RawSocketError::NotHeld { .. } => "raw_socket.not_held",
+            RawSocketError::Pin { .. } => "raw_socket.pin",
+            RawSocketError::Send { .. } => "raw_socket.send",
+            RawSocketError::Poisoned => "raw_socket.poisoned",
+        }
+    }
+}
+
+impl Coded for TransportError {
+    fn code(&self) -> &'static str {
+        match self {
+            TransportError::Capture(capture) => capture.code(),
+            TransportError::RawSocket(_) => "transport.raw_socket",
+            TransportError::NoEthernetInterface(_) => "transport.no_ethernet_interface",
+        }
+    }
+}
+
+impl Coded for SendError {
+    fn code(&self) -> &'static str {
+        match self {
+            SendError::Unroutable(_) => "send.unroutable",
+            SendError::Unresolved(_) => "send.unresolved",
+            SendError::Refused(_) => "send.refused",
+            SendError::Unsupported(_) => "send.unsupported",
+        }
+    }
+}
+
+impl Coded for ChannelError {
+    fn code(&self) -> &'static str {
+        match self {
+            ChannelError::Send { .. } => "channel.send",
+            ChannelError::Receive { .. } => "channel.receive",
+        }
+    }
+}
+
+#[cfg(feature = "packet-exchange")]
+impl Coded for ExchangeError {
+    fn code(&self) -> &'static str {
+        match self {
+            ExchangeError::Transport(transport) => transport.code(),
+            ExchangeError::Build(packet) => packet.code(),
+            ExchangeError::Send(send) => send.code(),
+            ExchangeError::NoSource(_) => "exchange.no_source",
+        }
+    }
+}
+
+impl Coded for StrategyError {
+    fn code(&self) -> &'static str {
+        match self {
+            StrategyError::Transport(transport) => transport.code(),
+            StrategyError::Channel(channel) => channel.code(),
+            StrategyError::Capture(capture) => capture.code(),
+            StrategyError::Interface { .. } => "strategy.interface",
+            StrategyError::Probe(_) => "strategy.probe",
+            StrategyError::Panicked { .. } => "strategy.panicked",
+        }
+    }
+}
+
+impl Coded for ResolverError {
+    fn code(&self) -> &'static str {
+        match self {
+            ResolverError::NoServer => "rdns.no_server",
+            ResolverError::Transport(transport) => transport.code(),
         }
     }
 }
@@ -454,6 +835,229 @@ mod tests {
             "journal.not_a_journal",
             "an open that failed on the format reports the format's reason"
         );
+    }
+
+    /// Every code this file hands out, written down once.
+    ///
+    /// The codebook is read out of this file's own source, every quoted
+    /// `area.what` outside the tests, so an arm added, renamed or dropped
+    /// anywhere above fails here until the list is edited to match. That edit
+    /// is the decision a code change is, made where it can be seen. Each code
+    /// names one failure, so none is handed out by two arms.
+    #[test]
+    fn every_code_is_in_the_codebook_once() {
+        const WRITTEN: &[&str] = &[
+            "address.empty_set",
+            "address.invalid_prefix",
+            "address.invalid_range",
+            "address.keyword_unresolved",
+            "address.malformed",
+            "address.unknown_interface",
+            "address.zone_on_unscoped_target",
+            "bundle.altered",
+            "bundle.duplicate",
+            "bundle.manifest",
+            "bundle.missing",
+            "bundle.too_many",
+            "bundle.unnamed",
+            "capability.byte_budget_exhausted",
+            "capability.connection_budget_exhausted",
+            "capability.connection_refused",
+            "capability.denied",
+            "capability.reset",
+            "capability.timed_out",
+            "capture.denied",
+            "capture.filter",
+            "capture.no_interface",
+            "capture.no_reader",
+            "capture.open",
+            "capture.unsupported_link_type",
+            "catalogue.io",
+            "catalogue.malformed",
+            "catalogue.reserved_id",
+            "catalogue.too_large",
+            "catalogue.unreadable_version",
+            "channel.receive",
+            "channel.send",
+            "compute.compile",
+            "compute.unsupported_body",
+            "config.unknown_detection_envelope",
+            "config.unknown_os_detection",
+            "config.unknown_scan_effort",
+            "config.unknown_sctp_technique",
+            "config.unknown_send_mode",
+            "config.unknown_service_detection",
+            "config.unknown_tcp_technique",
+            "config.unknown_tls_version",
+            "definition.generic_probe_not_tcp",
+            "definition.pattern",
+            "definition.probe_protocol",
+            "definition.udp_probe_size",
+            "definition.version_group",
+            "detection.body",
+            "detection.compute",
+            "detection.flow",
+            "detection.host",
+            "detection.parse",
+            "detection.pattern",
+            "detection.tier",
+            "detection.unused_body",
+            "evasion.fragment_too_small",
+            "evasion.hop_limit_zero",
+            "evasion.padding_too_large",
+            "evasion.source_port_zero",
+            "exchange.no_source",
+            "export.io",
+            "export.render",
+            "finding.empty_id",
+            "finding.empty_title",
+            "finding.malformed_version",
+            "flow.empty",
+            "flow.expected",
+            "flow.int_overflow",
+            "flow.too_deep",
+            "flow.trailing",
+            "flow.unexpected_char",
+            "flow.unterminated_string",
+            "import.document_too_large",
+            "import.io",
+            "import.line_too_long",
+            "import.malformed",
+            "import.too_many_addresses",
+            "import.too_many_hosts",
+            "import.too_many_tokens",
+            "journal.io",
+            "journal.lock_io",
+            "journal.locked",
+            "journal.malformed",
+            "journal.not_a_journal",
+            "journal.option_changed",
+            "journal.plan_changed",
+            "journal.version_too_new",
+            "journal.version_too_old",
+            "journal.wrong_phase",
+            "kev.io",
+            "kev.malformed",
+            "kev.too_large",
+            "link.empty",
+            "link.no_lan",
+            "link.no_links",
+            "link.unknown",
+            "mac.malformed",
+            "nvd.io",
+            "nvd.malformed",
+            "nvd.too_large",
+            "nvd.too_many_entries",
+            "packet.family_mismatch",
+            "packet.header_has_options",
+            "packet.mtu_too_small",
+            "packet.options_misaligned",
+            "packet.options_too_long",
+            "packet.too_long",
+            "packet.truncated",
+            "packet.unexpected_message",
+            "packet.unreadable",
+            "packet.unsupported_ether_type",
+            "packet.unwritable_name",
+            "packet.wrong_family",
+            "ports.empty",
+            "ports.invalid_port",
+            "ports.invalid_range",
+            "ports.malformed_spec",
+            "ports.service_name",
+            "ports.spaced_range",
+            "range.backwards",
+            "range.invalid_prefix",
+            "range.malformed",
+            "range.malformed_address",
+            "range.malformed_prefix",
+            "raw_socket.hop_limit",
+            "raw_socket.no_socket",
+            "raw_socket.not_held",
+            "raw_socket.open",
+            "raw_socket.pin",
+            "raw_socket.poisoned",
+            "raw_socket.send",
+            "rdns.no_server",
+            "replay.diverged",
+            "replay.grant_failed",
+            "replay.run",
+            "replay.unknown_detection",
+            "replay.unknown_transport",
+            "request.bad_ports",
+            "request.no_targets",
+            "rule.example_without_series",
+            "rule.example_without_window",
+            "rule.no_predicates",
+            "rule.predicate",
+            "rule.unidentified",
+            "rule.version_without_product",
+            "rule.weight",
+            "scan.task_failed",
+            "scan.task_panicked",
+            "scan.too_few_descriptors",
+            "scan.wrong_phase",
+            "scoped_address.empty_zone",
+            "scoped_address.not_an_address",
+            "scoped_address.zone_on_unscoped",
+            "send.refused",
+            "send.unresolved",
+            "send.unroutable",
+            "send.unsupported",
+            "settings.io",
+            "settings.malformed",
+            "settings.no_path",
+            "settings.too_large",
+            "settings.unknown_profile",
+            "signature.altered",
+            "signature.invalid",
+            "signature.io",
+            "signature.malformed",
+            "signature.unknown_algorithm",
+            "signature.unreadable_key",
+            "signature.untrusted_key",
+            "strategy.interface",
+            "strategy.panicked",
+            "strategy.probe",
+            "target.blank",
+            "target.capacity_overflow",
+            "target.empty",
+            "target.empty_ports",
+            "target.mistyped_address",
+            "target.no_host_lookup",
+            "target.resolved_to_nothing",
+            "target.trailing_text",
+            "target.unbalanced_bracket",
+            "target.unbracketed_address",
+            "target.unknown_host",
+            "transport.no_ethernet_interface",
+            "transport.raw_socket",
+        ];
+
+        let source = include_str!("error.rs");
+        let codes_end = source
+            .find("#[cfg(test)]\nmod tests")
+            .expect("the tests module");
+        let mut handed_out: Vec<&str> = source[..codes_end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .flat_map(|line| line.split('"').skip(1).step_by(2))
+            .filter(|quoted| {
+                quoted.split_once('.').is_some_and(|(area, what)| {
+                    !area.is_empty()
+                        && !what.is_empty()
+                        && quoted
+                            .chars()
+                            .all(|c| c.is_ascii_lowercase() || c == '.' || c == '_')
+                })
+            })
+            .collect();
+        handed_out.sort_unstable();
+
+        let mut unique = handed_out.clone();
+        unique.dedup();
+        assert_eq!(handed_out, unique, "a code handed out by two arms");
+        assert_eq!(handed_out, WRITTEN, "the codes and the codebook differ");
     }
 
     fn broken_pipe() -> std::io::Error {

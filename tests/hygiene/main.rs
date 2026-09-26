@@ -29,6 +29,9 @@
 //! the ICMP censuses find a file is tried against the spellings it has to see
 //! through and the prose it has to ignore.
 //!
+//! One more holds the public API to a promise its documentation makes: every
+//! error the crate hands out carries a stable code.
+//!
 //! These are lints wearing a test's clothes, and they run with the ordinary
 //! suite because `cargo test` is where a contributor looks. They need no
 //! privileges, no network, and no fixtures.
@@ -36,6 +39,7 @@
 mod architecture;
 mod attribution;
 mod citations;
+mod coded;
 mod dialling;
 mod documentation;
 mod exclusions;

@@ -49,6 +49,8 @@ pub fn zond_engine::config::envelope::UnknownDetectionEnvelope::fmt(&self, &mut 
 impl core::fmt::Display for zond_engine::config::envelope::UnknownDetectionEnvelope
 pub fn zond_engine::config::envelope::UnknownDetectionEnvelope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::config::envelope::UnknownDetectionEnvelope
+impl zond_engine::error::Coded for zond_engine::config::envelope::UnknownDetectionEnvelope
+pub fn zond_engine::config::envelope::UnknownDetectionEnvelope::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::config::envelope::UnknownDetectionEnvelope
 impl core::marker::Send for zond_engine::config::envelope::UnknownDetectionEnvelope
 impl core::marker::Sync for zond_engine::config::envelope::UnknownDetectionEnvelope
@@ -323,6 +325,8 @@ pub fn zond_engine::config::UnknownOsDetection::fmt(&self, &mut core::fmt::Forma
 impl core::fmt::Display for zond_engine::config::UnknownOsDetection
 pub fn zond_engine::config::UnknownOsDetection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::config::UnknownOsDetection
+impl zond_engine::error::Coded for zond_engine::config::UnknownOsDetection
+pub fn zond_engine::config::UnknownOsDetection::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::config::UnknownOsDetection
 impl core::marker::Send for zond_engine::config::UnknownOsDetection
 impl core::marker::Sync for zond_engine::config::UnknownOsDetection
@@ -343,6 +347,8 @@ pub fn zond_engine::config::UnknownScanEffort::fmt(&self, &mut core::fmt::Format
 impl core::fmt::Display for zond_engine::config::UnknownScanEffort
 pub fn zond_engine::config::UnknownScanEffort::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::config::UnknownScanEffort
+impl zond_engine::error::Coded for zond_engine::config::UnknownScanEffort
+pub fn zond_engine::config::UnknownScanEffort::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::config::UnknownScanEffort
 impl core::marker::Send for zond_engine::config::UnknownScanEffort
 impl core::marker::Sync for zond_engine::config::UnknownScanEffort
@@ -363,6 +369,8 @@ pub fn zond_engine::config::UnknownServiceDetection::fmt(&self, &mut core::fmt::
 impl core::fmt::Display for zond_engine::config::UnknownServiceDetection
 pub fn zond_engine::config::UnknownServiceDetection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::config::UnknownServiceDetection
+impl zond_engine::error::Coded for zond_engine::config::UnknownServiceDetection
+pub fn zond_engine::config::UnknownServiceDetection::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::config::UnknownServiceDetection
 impl core::marker::Send for zond_engine::config::UnknownServiceDetection
 impl core::marker::Sync for zond_engine::config::UnknownServiceDetection
@@ -438,6 +446,8 @@ impl core::fmt::Debug for zond_engine::cve::CatalogueError
 pub fn zond_engine::cve::CatalogueError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::cve::CatalogueError
 pub fn zond_engine::cve::CatalogueError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl zond_engine::error::Coded for zond_engine::cve::CatalogueError
+pub fn zond_engine::cve::CatalogueError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::cve::CatalogueError
 impl core::marker::Send for zond_engine::cve::CatalogueError
 impl core::marker::Sync for zond_engine::cve::CatalogueError
@@ -541,6 +551,8 @@ impl core::fmt::Debug for zond_engine::detect::bundle::BundleError
 pub fn zond_engine::detect::bundle::BundleError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::detect::bundle::BundleError
 pub fn zond_engine::detect::bundle::BundleError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl zond_engine::error::Coded for zond_engine::detect::bundle::BundleError
+pub fn zond_engine::detect::bundle::BundleError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::detect::bundle::BundleError
 impl core::marker::Send for zond_engine::detect::bundle::BundleError
 impl core::marker::Sync for zond_engine::detect::bundle::BundleError
@@ -655,6 +667,8 @@ pub fn zond_engine::detect::compute::CapError::fmt(&self, &mut core::fmt::Format
 impl core::fmt::Display for zond_engine::detect::compute::CapError
 pub fn zond_engine::detect::compute::CapError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::detect::compute::CapError
+impl zond_engine::error::Coded for zond_engine::detect::compute::CapError
+pub fn zond_engine::detect::compute::CapError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::detect::compute::CapError
 impl core::marker::Send for zond_engine::detect::compute::CapError
 impl core::marker::Sync for zond_engine::detect::compute::CapError
@@ -698,6 +712,8 @@ pub fn zond_engine::detect::compute::LoadError::fmt(&self, &mut core::fmt::Forma
 impl core::fmt::Display for zond_engine::detect::compute::LoadError
 pub fn zond_engine::detect::compute::LoadError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::detect::compute::LoadError
+impl zond_engine::error::Coded for zond_engine::detect::compute::LoadError
+pub fn zond_engine::detect::compute::LoadError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::detect::compute::LoadError
 impl core::marker::Send for zond_engine::detect::compute::LoadError
 impl core::marker::Sync for zond_engine::detect::compute::LoadError
@@ -759,6 +775,8 @@ pub fn zond_engine::detect::compute::ReplayError::fmt(&self, &mut core::fmt::For
 impl core::fmt::Display for zond_engine::detect::compute::ReplayError
 pub fn zond_engine::detect::compute::ReplayError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::detect::compute::ReplayError
+impl zond_engine::error::Coded for zond_engine::detect::compute::ReplayError
+pub fn zond_engine::detect::compute::ReplayError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::detect::compute::ReplayError
 impl core::marker::Send for zond_engine::detect::compute::ReplayError
 impl core::marker::Sync for zond_engine::detect::compute::ReplayError
@@ -1450,6 +1468,8 @@ pub fn zond_engine::detect::flow::ParseError::fmt(&self, &mut core::fmt::Formatt
 impl core::fmt::Display for zond_engine::detect::flow::ParseError
 pub fn zond_engine::detect::flow::ParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::detect::flow::ParseError
+impl zond_engine::error::Coded for zond_engine::detect::flow::ParseError
+pub fn zond_engine::detect::flow::ParseError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::detect::flow::ParseError
 impl core::marker::Send for zond_engine::detect::flow::ParseError
 impl core::marker::Sync for zond_engine::detect::flow::ParseError
@@ -2598,14 +2618,46 @@ pub const zond_engine::diff::DEFAULT_EXPIRY_THRESHOLD: core::time::Duration
 pub mod zond_engine::error
 pub trait zond_engine::error::Coded
 pub fn zond_engine::error::Coded::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::config::UnknownOsDetection
+pub fn zond_engine::config::UnknownOsDetection::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::config::UnknownScanEffort
+pub fn zond_engine::config::UnknownScanEffort::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::config::UnknownServiceDetection
+pub fn zond_engine::config::UnknownServiceDetection::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::config::envelope::UnknownDetectionEnvelope
+pub fn zond_engine::config::envelope::UnknownDetectionEnvelope::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::cve::CatalogueError
+pub fn zond_engine::cve::CatalogueError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::detect::bundle::BundleError
+pub fn zond_engine::detect::bundle::BundleError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::detect::compute::CapError
+pub fn zond_engine::detect::compute::CapError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::detect::compute::LoadError
+pub fn zond_engine::detect::compute::LoadError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::detect::compute::ReplayError
+pub fn zond_engine::detect::compute::ReplayError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::detect::corpus::DetectionError
 pub fn zond_engine::detect::corpus::DetectionError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::detect::flow::ParseError
+pub fn zond_engine::detect::flow::ParseError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::evasion::EvasionError
 pub fn zond_engine::evasion::EvasionError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::export::ExportError
 pub fn zond_engine::export::ExportError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::fingerprint::DefinitionError
+pub fn zond_engine::fingerprint::DefinitionError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::fingerprint::InvalidDefinition
+pub fn zond_engine::fingerprint::InvalidDefinition::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::fingerprint::os::InvalidRule
+pub fn zond_engine::fingerprint::os::InvalidRule::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::fingerprint::os::RuleError
+pub fn zond_engine::fingerprint::os::RuleError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::import::ImportError
 pub fn zond_engine::import::ImportError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::import::kev::KevError
+pub fn zond_engine::import::kev::KevError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::import::nvd::NvdError
+pub fn zond_engine::import::nvd::NvdError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::import::request::RequestError
 pub fn zond_engine::import::request::RequestError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::import::settings::SettingsError
@@ -2620,14 +2672,58 @@ impl zond_engine::error::Coded for zond_engine::journal::manifest::PlanChanged
 pub fn zond_engine::journal::manifest::PlanChanged::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::journal::store::OpenError
 pub fn zond_engine::journal::store::OpenError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::finding::FindingError
+pub fn zond_engine::model::finding::FindingError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::finding::VersionParseError
+pub fn zond_engine::model::finding::VersionParseError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::ip::range::IpError
+pub fn zond_engine::model::ip::range::IpError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::ip::scoped::ScopedIpError
+pub fn zond_engine::model::ip::scoped::ScopedIpError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::ip::set::IpSetError
+pub fn zond_engine::model::ip::set::IpSetError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::mac::MacAddrParseError
+pub fn zond_engine::model::mac::MacAddrParseError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::model::parse::ip::IpParseError
 pub fn zond_engine::model::parse::ip::IpParseError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::model::parse::target::TargetParseError
 pub fn zond_engine::model::parse::target::TargetParseError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::model::port::set::PortSetParseError
 pub fn zond_engine::model::port::set::PortSetParseError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::target::TargetError
+pub fn zond_engine::model::target::TargetError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::technique::UnknownSctpTechnique
+pub fn zond_engine::model::technique::UnknownSctpTechnique::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::technique::UnknownTechnique
+pub fn zond_engine::model::technique::UnknownTechnique::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::tls::UnknownTlsVersion
+pub fn zond_engine::model::tls::UnknownTlsVersion::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::protocols::error::PacketError
+pub fn zond_engine::protocols::error::PacketError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::resolve::LinkError
+pub fn zond_engine::resolve::LinkError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::scanner::ScanError
 pub fn zond_engine::scanner::ScanError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::scanner::rdns::ResolverError
+pub fn zond_engine::scanner::rdns::ResolverError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::scanner::strategy::StrategyError
+pub fn zond_engine::scanner::strategy::StrategyError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::signature::SignatureError
+pub fn zond_engine::signature::SignatureError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::transport::capture::CaptureError
+pub fn zond_engine::transport::capture::CaptureError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::transport::channel::ChannelError
+pub fn zond_engine::transport::channel::ChannelError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::transport::exchange::ExchangeError
+pub fn zond_engine::transport::exchange::ExchangeError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::transport::probe::SendError
+pub fn zond_engine::transport::probe::SendError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::transport::probe::TransportError
+pub fn zond_engine::transport::probe::TransportError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::transport::probe::UnknownSendMode
+pub fn zond_engine::transport::probe::UnknownSendMode::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::transport::raw::RawSocketError
+pub fn zond_engine::transport::raw::RawSocketError::code(&self) -> &'static str
 pub mod zond_engine::evasion
 #[non_exhaustive] pub enum zond_engine::evasion::EvasionError
 pub zond_engine::evasion::EvasionError::FragmentTooSmall
@@ -4571,6 +4667,8 @@ pub fn zond_engine::fingerprint::os::RuleError::fmt(&self, &mut core::fmt::Forma
 impl core::fmt::Display for zond_engine::fingerprint::os::RuleError
 pub fn zond_engine::fingerprint::os::RuleError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::fingerprint::os::RuleError
+impl zond_engine::error::Coded for zond_engine::fingerprint::os::RuleError
+pub fn zond_engine::fingerprint::os::RuleError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::fingerprint::os::RuleError
 impl core::marker::Send for zond_engine::fingerprint::os::RuleError
 impl core::marker::Sync for zond_engine::fingerprint::os::RuleError
@@ -4708,6 +4806,8 @@ pub fn zond_engine::fingerprint::os::InvalidRule::fmt(&self, &mut core::fmt::For
 impl core::fmt::Display for zond_engine::fingerprint::os::InvalidRule
 pub fn zond_engine::fingerprint::os::InvalidRule::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::fingerprint::os::InvalidRule
+impl zond_engine::error::Coded for zond_engine::fingerprint::os::InvalidRule
+pub fn zond_engine::fingerprint::os::InvalidRule::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::fingerprint::os::InvalidRule
 impl core::marker::Send for zond_engine::fingerprint::os::InvalidRule
 impl core::marker::Sync for zond_engine::fingerprint::os::InvalidRule
@@ -5114,6 +5214,8 @@ pub fn zond_engine::fingerprint::DefinitionError::fmt(&self, &mut core::fmt::For
 impl core::fmt::Display for zond_engine::fingerprint::DefinitionError
 pub fn zond_engine::fingerprint::DefinitionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::fingerprint::DefinitionError
+impl zond_engine::error::Coded for zond_engine::fingerprint::DefinitionError
+pub fn zond_engine::fingerprint::DefinitionError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::fingerprint::DefinitionError
 impl core::marker::Send for zond_engine::fingerprint::DefinitionError
 impl core::marker::Sync for zond_engine::fingerprint::DefinitionError
@@ -5376,6 +5478,8 @@ pub fn zond_engine::fingerprint::InvalidDefinition::fmt(&self, &mut core::fmt::F
 impl core::fmt::Display for zond_engine::fingerprint::InvalidDefinition
 pub fn zond_engine::fingerprint::InvalidDefinition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::fingerprint::InvalidDefinition
+impl zond_engine::error::Coded for zond_engine::fingerprint::InvalidDefinition
+pub fn zond_engine::fingerprint::InvalidDefinition::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::fingerprint::InvalidDefinition
 impl core::marker::Send for zond_engine::fingerprint::InvalidDefinition
 impl core::marker::Sync for zond_engine::fingerprint::InvalidDefinition
@@ -5808,6 +5912,8 @@ impl core::fmt::Debug for zond_engine::import::kev::KevError
 pub fn zond_engine::import::kev::KevError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::import::kev::KevError
 pub fn zond_engine::import::kev::KevError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl zond_engine::error::Coded for zond_engine::import::kev::KevError
+pub fn zond_engine::import::kev::KevError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::import::kev::KevError
 impl core::marker::Send for zond_engine::import::kev::KevError
 impl core::marker::Sync for zond_engine::import::kev::KevError
@@ -5879,6 +5985,8 @@ impl core::fmt::Debug for zond_engine::import::nvd::NvdError
 pub fn zond_engine::import::nvd::NvdError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::import::nvd::NvdError
 pub fn zond_engine::import::nvd::NvdError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl zond_engine::error::Coded for zond_engine::import::nvd::NvdError
+pub fn zond_engine::import::nvd::NvdError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::import::nvd::NvdError
 impl core::marker::Send for zond_engine::import::nvd::NvdError
 impl core::marker::Sync for zond_engine::import::nvd::NvdError
@@ -6045,6 +6153,7 @@ pub fn zond_engine::import::request::Resolved::exclusions(&self) -> &zond_engine
 pub fn zond_engine::import::request::Resolved::into_ips(self) -> zond_engine::model::ip::set::IpSet
 pub fn zond_engine::import::request::Resolved::into_parts(self) -> (zond_engine::model::ip::set::IpSet, core::option::Option<zond_engine::model::port::set::PortSet>)
 pub fn zond_engine::import::request::Resolved::ips(&self) -> &zond_engine::model::ip::set::IpSet
+pub fn zond_engine::import::request::Resolved::port_scan(&self, &zond_engine::model::port::set::PortSet) -> zond_engine::resolve::PortScanTargets
 pub fn zond_engine::import::request::Resolved::ports(&self) -> core::option::Option<&zond_engine::model::port::set::PortSet>
 impl core::clone::Clone for zond_engine::import::request::Resolved
 pub fn zond_engine::import::request::Resolved::clone(&self) -> zond_engine::import::request::Resolved
@@ -6639,6 +6748,7 @@ pub fn zond_engine::import::request::Resolved::exclusions(&self) -> &zond_engine
 pub fn zond_engine::import::request::Resolved::into_ips(self) -> zond_engine::model::ip::set::IpSet
 pub fn zond_engine::import::request::Resolved::into_parts(self) -> (zond_engine::model::ip::set::IpSet, core::option::Option<zond_engine::model::port::set::PortSet>)
 pub fn zond_engine::import::request::Resolved::ips(&self) -> &zond_engine::model::ip::set::IpSet
+pub fn zond_engine::import::request::Resolved::port_scan(&self, &zond_engine::model::port::set::PortSet) -> zond_engine::resolve::PortScanTargets
 pub fn zond_engine::import::request::Resolved::ports(&self) -> core::option::Option<&zond_engine::model::port::set::PortSet>
 impl core::clone::Clone for zond_engine::import::request::Resolved
 pub fn zond_engine::import::request::Resolved::clone(&self) -> zond_engine::import::request::Resolved
@@ -7808,6 +7918,8 @@ impl core::fmt::Display for zond_engine::model::finding::FindingError
 pub fn zond_engine::model::finding::FindingError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for zond_engine::model::finding::FindingError
 impl core::marker::StructuralPartialEq for zond_engine::model::finding::FindingError
+impl zond_engine::error::Coded for zond_engine::model::finding::FindingError
+pub fn zond_engine::model::finding::FindingError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::model::finding::FindingError
 impl core::marker::Send for zond_engine::model::finding::FindingError
 impl core::marker::Sync for zond_engine::model::finding::FindingError
@@ -8037,6 +8149,8 @@ pub fn zond_engine::model::finding::VersionParseError::fmt(&self, &mut core::fmt
 impl core::fmt::Display for zond_engine::model::finding::VersionParseError
 pub fn zond_engine::model::finding::VersionParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::model::finding::VersionParseError
+impl zond_engine::error::Coded for zond_engine::model::finding::VersionParseError
+pub fn zond_engine::model::finding::VersionParseError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::model::finding::VersionParseError
 impl core::marker::Send for zond_engine::model::finding::VersionParseError
 impl core::marker::Sync for zond_engine::model::finding::VersionParseError
@@ -9092,6 +9206,8 @@ pub fn zond_engine::model::ip::range::IpError::fmt(&self, &mut core::fmt::Format
 impl core::fmt::Display for zond_engine::model::ip::range::IpError
 pub fn zond_engine::model::ip::range::IpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::model::ip::range::IpError
+impl zond_engine::error::Coded for zond_engine::model::ip::range::IpError
+pub fn zond_engine::model::ip::range::IpError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::model::ip::range::IpError
 impl core::marker::Send for zond_engine::model::ip::range::IpError
 impl core::marker::Sync for zond_engine::model::ip::range::IpError
@@ -9214,6 +9330,8 @@ pub fn zond_engine::model::ip::scoped::ScopedIpError::fmt(&self, &mut core::fmt:
 impl core::fmt::Display for zond_engine::model::ip::scoped::ScopedIpError
 pub fn zond_engine::model::ip::scoped::ScopedIpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::model::ip::scoped::ScopedIpError
+impl zond_engine::error::Coded for zond_engine::model::ip::scoped::ScopedIpError
+pub fn zond_engine::model::ip::scoped::ScopedIpError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::model::ip::scoped::ScopedIpError
 impl core::marker::Send for zond_engine::model::ip::scoped::ScopedIpError
 impl core::marker::Sync for zond_engine::model::ip::scoped::ScopedIpError
@@ -9339,6 +9457,8 @@ pub fn zond_engine::model::ip::set::IpSetError::fmt(&self, &mut core::fmt::Forma
 impl core::fmt::Display for zond_engine::model::ip::set::IpSetError
 pub fn zond_engine::model::ip::set::IpSetError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::model::ip::set::IpSetError
+impl zond_engine::error::Coded for zond_engine::model::ip::set::IpSetError
+pub fn zond_engine::model::ip::set::IpSetError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::model::ip::set::IpSetError
 impl core::marker::Send for zond_engine::model::ip::set::IpSetError
 impl core::marker::Sync for zond_engine::model::ip::set::IpSetError
@@ -9455,6 +9575,8 @@ pub fn zond_engine::model::ip::range::IpError::fmt(&self, &mut core::fmt::Format
 impl core::fmt::Display for zond_engine::model::ip::range::IpError
 pub fn zond_engine::model::ip::range::IpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::model::ip::range::IpError
+impl zond_engine::error::Coded for zond_engine::model::ip::range::IpError
+pub fn zond_engine::model::ip::range::IpError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::model::ip::range::IpError
 impl core::marker::Send for zond_engine::model::ip::range::IpError
 impl core::marker::Sync for zond_engine::model::ip::range::IpError
@@ -9514,6 +9636,8 @@ pub fn zond_engine::model::ip::set::IpSetError::fmt(&self, &mut core::fmt::Forma
 impl core::fmt::Display for zond_engine::model::ip::set::IpSetError
 pub fn zond_engine::model::ip::set::IpSetError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::model::ip::set::IpSetError
+impl zond_engine::error::Coded for zond_engine::model::ip::set::IpSetError
+pub fn zond_engine::model::ip::set::IpSetError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::model::ip::set::IpSetError
 impl core::marker::Send for zond_engine::model::ip::set::IpSetError
 impl core::marker::Sync for zond_engine::model::ip::set::IpSetError
@@ -9536,6 +9660,8 @@ pub fn zond_engine::model::ip::scoped::ScopedIpError::fmt(&self, &mut core::fmt:
 impl core::fmt::Display for zond_engine::model::ip::scoped::ScopedIpError
 pub fn zond_engine::model::ip::scoped::ScopedIpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::model::ip::scoped::ScopedIpError
+impl zond_engine::error::Coded for zond_engine::model::ip::scoped::ScopedIpError
+pub fn zond_engine::model::ip::scoped::ScopedIpError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::model::ip::scoped::ScopedIpError
 impl core::marker::Send for zond_engine::model::ip::scoped::ScopedIpError
 impl core::marker::Sync for zond_engine::model::ip::scoped::ScopedIpError
@@ -9846,6 +9972,8 @@ pub fn zond_engine::model::mac::MacAddrParseError::fmt(&self, &mut core::fmt::Fo
 impl core::fmt::Display for zond_engine::model::mac::MacAddrParseError
 pub fn zond_engine::model::mac::MacAddrParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::model::mac::MacAddrParseError
+impl zond_engine::error::Coded for zond_engine::model::mac::MacAddrParseError
+pub fn zond_engine::model::mac::MacAddrParseError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::model::mac::MacAddrParseError
 impl core::marker::Send for zond_engine::model::mac::MacAddrParseError
 impl core::marker::Sync for zond_engine::model::mac::MacAddrParseError
@@ -10406,6 +10534,9 @@ pub zond_engine::model::port::set::PortSetParseError::InvalidRange
 pub zond_engine::model::port::set::PortSetParseError::InvalidRange::end: u16
 pub zond_engine::model::port::set::PortSetParseError::InvalidRange::start: u16
 pub zond_engine::model::port::set::PortSetParseError::MalformedSpec(alloc::string::String)
+pub zond_engine::model::port::set::PortSetParseError::NoPorts
+pub zond_engine::model::port::set::PortSetParseError::ServiceName(alloc::string::String)
+pub zond_engine::model::port::set::PortSetParseError::SpacedRange(alloc::string::String)
 impl core::clone::Clone for zond_engine::model::port::set::PortSetParseError
 pub fn zond_engine::model::port::set::PortSetParseError::clone(&self) -> zond_engine::model::port::set::PortSetParseError
 impl core::cmp::Eq for zond_engine::model::port::set::PortSetParseError
@@ -10486,6 +10617,9 @@ pub zond_engine::model::port::PortSetParseError::InvalidRange
 pub zond_engine::model::port::PortSetParseError::InvalidRange::end: u16
 pub zond_engine::model::port::PortSetParseError::InvalidRange::start: u16
 pub zond_engine::model::port::PortSetParseError::MalformedSpec(alloc::string::String)
+pub zond_engine::model::port::PortSetParseError::NoPorts
+pub zond_engine::model::port::PortSetParseError::ServiceName(alloc::string::String)
+pub zond_engine::model::port::PortSetParseError::SpacedRange(alloc::string::String)
 impl core::clone::Clone for zond_engine::model::port::set::PortSetParseError
 pub fn zond_engine::model::port::set::PortSetParseError::clone(&self) -> zond_engine::model::port::set::PortSetParseError
 impl core::cmp::Eq for zond_engine::model::port::set::PortSetParseError
@@ -10839,6 +10973,8 @@ pub fn zond_engine::model::target::TargetError::fmt(&self, &mut core::fmt::Forma
 impl core::fmt::Display for zond_engine::model::target::TargetError
 pub fn zond_engine::model::target::TargetError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::model::target::TargetError
+impl zond_engine::error::Coded for zond_engine::model::target::TargetError
+pub fn zond_engine::model::target::TargetError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::model::target::TargetError
 impl core::marker::Send for zond_engine::model::target::TargetError
 impl core::marker::Sync for zond_engine::model::target::TargetError
@@ -11111,6 +11247,8 @@ pub fn zond_engine::model::technique::UnknownSctpTechnique::fmt(&self, &mut core
 impl core::fmt::Display for zond_engine::model::technique::UnknownSctpTechnique
 pub fn zond_engine::model::technique::UnknownSctpTechnique::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::model::technique::UnknownSctpTechnique
+impl zond_engine::error::Coded for zond_engine::model::technique::UnknownSctpTechnique
+pub fn zond_engine::model::technique::UnknownSctpTechnique::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::model::technique::UnknownSctpTechnique
 impl core::marker::Send for zond_engine::model::technique::UnknownSctpTechnique
 impl core::marker::Sync for zond_engine::model::technique::UnknownSctpTechnique
@@ -11131,6 +11269,8 @@ pub fn zond_engine::model::technique::UnknownTechnique::fmt(&self, &mut core::fm
 impl core::fmt::Display for zond_engine::model::technique::UnknownTechnique
 pub fn zond_engine::model::technique::UnknownTechnique::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::model::technique::UnknownTechnique
+impl zond_engine::error::Coded for zond_engine::model::technique::UnknownTechnique
+pub fn zond_engine::model::technique::UnknownTechnique::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::model::technique::UnknownTechnique
 impl core::marker::Send for zond_engine::model::technique::UnknownTechnique
 impl core::marker::Sync for zond_engine::model::technique::UnknownTechnique
@@ -11525,6 +11665,8 @@ pub fn zond_engine::model::tls::UnknownTlsVersion::fmt(&self, &mut core::fmt::Fo
 impl core::fmt::Display for zond_engine::model::tls::UnknownTlsVersion
 pub fn zond_engine::model::tls::UnknownTlsVersion::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::model::tls::UnknownTlsVersion
+impl zond_engine::error::Coded for zond_engine::model::tls::UnknownTlsVersion
+pub fn zond_engine::model::tls::UnknownTlsVersion::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::model::tls::UnknownTlsVersion
 impl core::marker::Send for zond_engine::model::tls::UnknownTlsVersion
 impl core::marker::Sync for zond_engine::model::tls::UnknownTlsVersion
@@ -12186,6 +12328,8 @@ pub fn zond_engine::protocols::error::PacketError::fmt(&self, &mut core::fmt::Fo
 impl core::fmt::Display for zond_engine::protocols::error::PacketError
 pub fn zond_engine::protocols::error::PacketError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::protocols::error::PacketError
+impl zond_engine::error::Coded for zond_engine::protocols::error::PacketError
+pub fn zond_engine::protocols::error::PacketError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::protocols::error::PacketError
 impl core::marker::Send for zond_engine::protocols::error::PacketError
 impl core::marker::Sync for zond_engine::protocols::error::PacketError
@@ -14540,6 +14684,8 @@ impl core::fmt::Debug for zond_engine::resolve::LinkError
 pub fn zond_engine::resolve::LinkError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::resolve::LinkError
 pub fn zond_engine::resolve::LinkError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl zond_engine::error::Coded for zond_engine::resolve::LinkError
+pub fn zond_engine::resolve::LinkError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::resolve::LinkError
 impl core::marker::Send for zond_engine::resolve::LinkError
 impl core::marker::Sync for zond_engine::resolve::LinkError
@@ -15204,6 +15350,8 @@ impl core::fmt::Debug for zond_engine::scanner::rdns::ResolverError
 pub fn zond_engine::scanner::rdns::ResolverError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::scanner::rdns::ResolverError
 pub fn zond_engine::scanner::rdns::ResolverError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl zond_engine::error::Coded for zond_engine::scanner::rdns::ResolverError
+pub fn zond_engine::scanner::rdns::ResolverError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::scanner::rdns::ResolverError
 impl core::marker::Send for zond_engine::scanner::rdns::ResolverError
 impl core::marker::Sync for zond_engine::scanner::rdns::ResolverError
@@ -16536,6 +16684,8 @@ impl core::fmt::Debug for zond_engine::scanner::strategy::StrategyError
 pub fn zond_engine::scanner::strategy::StrategyError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::scanner::strategy::StrategyError
 pub fn zond_engine::scanner::strategy::StrategyError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl zond_engine::error::Coded for zond_engine::scanner::strategy::StrategyError
+pub fn zond_engine::scanner::strategy::StrategyError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::scanner::strategy::StrategyError
 impl core::marker::Send for zond_engine::scanner::strategy::StrategyError
 impl core::marker::Sync for zond_engine::scanner::strategy::StrategyError
@@ -16710,6 +16860,8 @@ impl core::fmt::Debug for zond_engine::signature::SignatureError
 pub fn zond_engine::signature::SignatureError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::signature::SignatureError
 pub fn zond_engine::signature::SignatureError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl zond_engine::error::Coded for zond_engine::signature::SignatureError
+pub fn zond_engine::signature::SignatureError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::signature::SignatureError
 impl core::marker::Send for zond_engine::signature::SignatureError
 impl core::marker::Sync for zond_engine::signature::SignatureError
@@ -17097,6 +17249,8 @@ impl core::fmt::Debug for zond_engine::transport::capture::CaptureError
 pub fn zond_engine::transport::capture::CaptureError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::transport::capture::CaptureError
 pub fn zond_engine::transport::capture::CaptureError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl zond_engine::error::Coded for zond_engine::transport::capture::CaptureError
+pub fn zond_engine::transport::capture::CaptureError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::transport::capture::CaptureError
 impl core::marker::Send for zond_engine::transport::capture::CaptureError
 impl core::marker::Sync for zond_engine::transport::capture::CaptureError
@@ -17258,6 +17412,8 @@ impl core::fmt::Debug for zond_engine::transport::channel::ChannelError
 pub fn zond_engine::transport::channel::ChannelError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::transport::channel::ChannelError
 pub fn zond_engine::transport::channel::ChannelError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl zond_engine::error::Coded for zond_engine::transport::channel::ChannelError
+pub fn zond_engine::transport::channel::ChannelError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::transport::channel::ChannelError
 impl core::marker::Send for zond_engine::transport::channel::ChannelError
 impl core::marker::Sync for zond_engine::transport::channel::ChannelError
@@ -17297,6 +17453,8 @@ impl core::fmt::Debug for zond_engine::transport::exchange::ExchangeError
 pub fn zond_engine::transport::exchange::ExchangeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::transport::exchange::ExchangeError
 pub fn zond_engine::transport::exchange::ExchangeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl zond_engine::error::Coded for zond_engine::transport::exchange::ExchangeError
+pub fn zond_engine::transport::exchange::ExchangeError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::transport::exchange::ExchangeError
 impl core::marker::Send for zond_engine::transport::exchange::ExchangeError
 impl core::marker::Sync for zond_engine::transport::exchange::ExchangeError
@@ -17494,6 +17652,8 @@ impl core::fmt::Debug for zond_engine::transport::probe::SendError
 pub fn zond_engine::transport::probe::SendError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::transport::probe::SendError
 pub fn zond_engine::transport::probe::SendError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl zond_engine::error::Coded for zond_engine::transport::probe::SendError
+pub fn zond_engine::transport::probe::SendError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::transport::probe::SendError
 impl core::marker::Send for zond_engine::transport::probe::SendError
 impl core::marker::Sync for zond_engine::transport::probe::SendError
@@ -17549,6 +17709,8 @@ impl core::fmt::Debug for zond_engine::transport::probe::TransportError
 pub fn zond_engine::transport::probe::TransportError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::transport::probe::TransportError
 pub fn zond_engine::transport::probe::TransportError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl zond_engine::error::Coded for zond_engine::transport::probe::TransportError
+pub fn zond_engine::transport::probe::TransportError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::transport::probe::TransportError
 impl core::marker::Send for zond_engine::transport::probe::TransportError
 impl core::marker::Sync for zond_engine::transport::probe::TransportError
@@ -17649,6 +17811,8 @@ pub fn zond_engine::transport::probe::UnknownSendMode::fmt(&self, &mut core::fmt
 impl core::fmt::Display for zond_engine::transport::probe::UnknownSendMode
 pub fn zond_engine::transport::probe::UnknownSendMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::transport::probe::UnknownSendMode
+impl zond_engine::error::Coded for zond_engine::transport::probe::UnknownSendMode
+pub fn zond_engine::transport::probe::UnknownSendMode::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::transport::probe::UnknownSendMode
 impl core::marker::Send for zond_engine::transport::probe::UnknownSendMode
 impl core::marker::Sync for zond_engine::transport::probe::UnknownSendMode
@@ -17686,6 +17850,8 @@ impl core::fmt::Debug for zond_engine::transport::raw::RawSocketError
 pub fn zond_engine::transport::raw::RawSocketError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::transport::raw::RawSocketError
 pub fn zond_engine::transport::raw::RawSocketError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl zond_engine::error::Coded for zond_engine::transport::raw::RawSocketError
+pub fn zond_engine::transport::raw::RawSocketError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::transport::raw::RawSocketError
 impl core::marker::Send for zond_engine::transport::raw::RawSocketError
 impl core::marker::Sync for zond_engine::transport::raw::RawSocketError
@@ -17997,6 +18163,8 @@ impl core::fmt::Debug for zond_engine::scanner::strategy::StrategyError
 pub fn zond_engine::scanner::strategy::StrategyError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for zond_engine::scanner::strategy::StrategyError
 pub fn zond_engine::scanner::strategy::StrategyError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl zond_engine::error::Coded for zond_engine::scanner::strategy::StrategyError
+pub fn zond_engine::scanner::strategy::StrategyError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::scanner::strategy::StrategyError
 impl core::marker::Send for zond_engine::scanner::strategy::StrategyError
 impl core::marker::Sync for zond_engine::scanner::strategy::StrategyError
@@ -18887,14 +19055,46 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::ip::scoped:
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::scoped::ZoneMap
 pub trait zond_engine::Coded
 pub fn zond_engine::Coded::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::config::UnknownOsDetection
+pub fn zond_engine::config::UnknownOsDetection::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::config::UnknownScanEffort
+pub fn zond_engine::config::UnknownScanEffort::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::config::UnknownServiceDetection
+pub fn zond_engine::config::UnknownServiceDetection::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::config::envelope::UnknownDetectionEnvelope
+pub fn zond_engine::config::envelope::UnknownDetectionEnvelope::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::cve::CatalogueError
+pub fn zond_engine::cve::CatalogueError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::detect::bundle::BundleError
+pub fn zond_engine::detect::bundle::BundleError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::detect::compute::CapError
+pub fn zond_engine::detect::compute::CapError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::detect::compute::LoadError
+pub fn zond_engine::detect::compute::LoadError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::detect::compute::ReplayError
+pub fn zond_engine::detect::compute::ReplayError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::detect::corpus::DetectionError
 pub fn zond_engine::detect::corpus::DetectionError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::detect::flow::ParseError
+pub fn zond_engine::detect::flow::ParseError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::evasion::EvasionError
 pub fn zond_engine::evasion::EvasionError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::export::ExportError
 pub fn zond_engine::export::ExportError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::fingerprint::DefinitionError
+pub fn zond_engine::fingerprint::DefinitionError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::fingerprint::InvalidDefinition
+pub fn zond_engine::fingerprint::InvalidDefinition::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::fingerprint::os::InvalidRule
+pub fn zond_engine::fingerprint::os::InvalidRule::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::fingerprint::os::RuleError
+pub fn zond_engine::fingerprint::os::RuleError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::import::ImportError
 pub fn zond_engine::import::ImportError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::import::kev::KevError
+pub fn zond_engine::import::kev::KevError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::import::nvd::NvdError
+pub fn zond_engine::import::nvd::NvdError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::import::request::RequestError
 pub fn zond_engine::import::request::RequestError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::import::settings::SettingsError
@@ -18909,14 +19109,58 @@ impl zond_engine::error::Coded for zond_engine::journal::manifest::PlanChanged
 pub fn zond_engine::journal::manifest::PlanChanged::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::journal::store::OpenError
 pub fn zond_engine::journal::store::OpenError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::finding::FindingError
+pub fn zond_engine::model::finding::FindingError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::finding::VersionParseError
+pub fn zond_engine::model::finding::VersionParseError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::ip::range::IpError
+pub fn zond_engine::model::ip::range::IpError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::ip::scoped::ScopedIpError
+pub fn zond_engine::model::ip::scoped::ScopedIpError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::ip::set::IpSetError
+pub fn zond_engine::model::ip::set::IpSetError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::mac::MacAddrParseError
+pub fn zond_engine::model::mac::MacAddrParseError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::model::parse::ip::IpParseError
 pub fn zond_engine::model::parse::ip::IpParseError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::model::parse::target::TargetParseError
 pub fn zond_engine::model::parse::target::TargetParseError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::model::port::set::PortSetParseError
 pub fn zond_engine::model::port::set::PortSetParseError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::target::TargetError
+pub fn zond_engine::model::target::TargetError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::technique::UnknownSctpTechnique
+pub fn zond_engine::model::technique::UnknownSctpTechnique::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::technique::UnknownTechnique
+pub fn zond_engine::model::technique::UnknownTechnique::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::model::tls::UnknownTlsVersion
+pub fn zond_engine::model::tls::UnknownTlsVersion::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::protocols::error::PacketError
+pub fn zond_engine::protocols::error::PacketError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::resolve::LinkError
+pub fn zond_engine::resolve::LinkError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::scanner::ScanError
 pub fn zond_engine::scanner::ScanError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::scanner::rdns::ResolverError
+pub fn zond_engine::scanner::rdns::ResolverError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::scanner::strategy::StrategyError
+pub fn zond_engine::scanner::strategy::StrategyError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::signature::SignatureError
+pub fn zond_engine::signature::SignatureError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::transport::capture::CaptureError
+pub fn zond_engine::transport::capture::CaptureError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::transport::channel::ChannelError
+pub fn zond_engine::transport::channel::ChannelError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::transport::exchange::ExchangeError
+pub fn zond_engine::transport::exchange::ExchangeError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::transport::probe::SendError
+pub fn zond_engine::transport::probe::SendError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::transport::probe::TransportError
+pub fn zond_engine::transport::probe::TransportError::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::transport::probe::UnknownSendMode
+pub fn zond_engine::transport::probe::UnknownSendMode::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::transport::raw::RawSocketError
+pub fn zond_engine::transport::raw::RawSocketError::code(&self) -> &'static str
 pub async fn zond_engine::discover(zond_engine::model::ip::set::IpSet, &zond_engine::config::ZondConfig) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
 pub async fn zond_engine::discover_with_journal(zond_engine::model::ip::set::IpSet, &zond_engine::config::ZondConfig, zond_engine::journal::store::Journal) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
 pub async fn zond_engine::listen(zond_engine::scanner::ListenScope, &zond_engine::config::ZondConfig) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
