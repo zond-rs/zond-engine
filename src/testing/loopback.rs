@@ -647,9 +647,165 @@ pub(crate) fn refused_port(ip: std::net::IpAddr) -> SocketAddr {
     SocketAddr::new(ip, refused_ports(ip, 1)[0])
 }
 
+/// A UDP port at a loopback address that nothing listens on and that this
+/// process holds for as long as the value lives, so a datagram sent there
+/// draws the system's port-unreachable and no other socket can take the port
+/// meanwhile.
+///
+/// Held by a socket connected to a second one, [`ClosedUdpPort::open`] binds
+/// both. A connected datagram socket takes only what its peer sends, so the
+/// system finds no socket for a datagram from anywhere else and answers it as
+/// it answers a closed port; and a port a socket is bound to is one the
+/// system never hands to a socket asking for any port, which is how a port
+/// found by binding one and letting it go ends up another test's service
+/// between the letting go and the probe. The peer is held too, since it is
+/// the one source whose datagrams the port would take.
+pub(crate) struct ClosedUdpPort {
+    port: u16,
+    _held: [std::net::UdpSocket; 2],
+}
+
+impl ClosedUdpPort {
+    /// Takes one at `ip`.
+    pub(crate) fn open(ip: std::net::IpAddr) -> Self {
+        let peer = std::net::UdpSocket::bind((ip, 0)).expect("binds loopback");
+        let held = std::net::UdpSocket::bind((ip, 0)).expect("binds loopback");
+        held.connect(peer.local_addr().expect("a local address"))
+            .expect("connects on loopback");
+        let port = held.local_addr().expect("a local address").port();
+        Self {
+            port,
+            _held: [held, peer],
+        }
+    }
+
+    /// Its number.
+    pub(crate) fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+/// A TCP port at a loopback address that nothing listens on and that this
+/// process holds for as long as the value lives, bound the way a scan binds a
+/// source port it was told to use, so a scan can use it as one.
+///
+/// For a test that needs a scan's source port and its target port to be one
+/// number. A port found by binding one and letting it go can be handed to
+/// another socket before the scan binds it, where this one cannot: the socket
+/// holding it is bound and never listens, so nothing accepts a connection
+/// there, and it shares the port as the scan's own socket does, with address
+/// and port reuse, so the scan binds beside it. What a connection from
+/// elsewhere meets is the system's to say: Linux refuses it, and macOS drops
+/// it unanswered, as it does anything sent to a bound socket that is not
+/// listening.
+pub(crate) struct HeldTcpPort {
+    port: u16,
+    _held: socket2::Socket,
+}
+
+impl HeldTcpPort {
+    /// Takes one at `ip`.
+    pub(crate) fn open(ip: std::net::IpAddr) -> Self {
+        use socket2::{Domain, Socket, Type};
+
+        let domain = match ip {
+            std::net::IpAddr::V4(_) => Domain::IPV4,
+            std::net::IpAddr::V6(_) => Domain::IPV6,
+        };
+        let held = Socket::new(domain, Type::STREAM, None).expect("a socket");
+        held.set_reuse_address(true).expect("address reuse");
+        #[cfg(unix)]
+        held.set_reuse_port(true).expect("port reuse");
+        held.bind(&SocketAddr::new(ip, 0).into())
+            .expect("binds loopback");
+        let port = held
+            .local_addr()
+            .ok()
+            .and_then(|addr| addr.as_socket())
+            .expect("a local address")
+            .port();
+        Self { port, _held: held }
+    }
+
+    /// Its number.
+    pub(crate) fn port(&self) -> u16 {
+        self.port
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A closed UDP port refuses a datagram for as long as it is held, and
+    /// no other socket can take it meanwhile.** What a test probing it
+    /// counts on is the refusal, and what makes the refusal last is that the
+    /// port is not free to be handed out.
+    #[test]
+    fn a_closed_udp_port_refuses_and_stays_taken_while_held() {
+        for ip in [
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+        ] {
+            let closed = ClosedUdpPort::open(ip);
+            let target = SocketAddr::new(ip, closed.port());
+
+            let asker = std::net::UdpSocket::bind((ip, 0)).expect("binds loopback");
+            asker.connect(target).expect("connects on loopback");
+            asker
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .expect("a timeout");
+            asker.send(b"anyone").expect("sends on loopback");
+            let answer = asker.recv(&mut [0u8; 16]).map_err(|error| error.kind());
+            assert_eq!(
+                answer,
+                Err(std::io::ErrorKind::ConnectionRefused),
+                "{ip}: the port did not refuse"
+            );
+
+            assert!(
+                std::net::UdpSocket::bind(target).is_err(),
+                "{ip}: another socket took the port while it was held"
+            );
+        }
+    }
+
+    /// **A held TCP port admits a socket bound the way a scan binds a pinned
+    /// source port**, where a socket asking for the port plainly is refused
+    /// it.
+    #[test]
+    fn a_held_tcp_port_stays_taken_and_admits_a_pinned_source() {
+        use socket2::{Domain, Socket, Type};
+
+        for ip in [
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+        ] {
+            let held = HeldTcpPort::open(ip);
+            let target = SocketAddr::new(ip, held.port());
+
+            assert!(
+                std::net::TcpListener::bind(target).is_err(),
+                "{ip}: another socket took the port while it was held"
+            );
+
+            let domain = match ip {
+                std::net::IpAddr::V4(_) => Domain::IPV4,
+                std::net::IpAddr::V6(_) => Domain::IPV6,
+            };
+            let pinned = Socket::new(domain, Type::STREAM, None).expect("a socket");
+            pinned.set_reuse_address(true).expect("address reuse");
+            #[cfg(unix)]
+            pinned.set_reuse_port(true).expect("port reuse");
+            let wildcard = match ip {
+                std::net::IpAddr::V4(_) => std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                std::net::IpAddr::V6(_) => std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+            };
+            pinned
+                .bind(&SocketAddr::new(wildcard, held.port()).into())
+                .unwrap_or_else(|error| panic!("{ip}: a pinned source was refused: {error}"));
+        }
+    }
 
     /// A connection's far end is one of this process's sockets while this
     /// process holds it and not once it lets go, which is the difference a

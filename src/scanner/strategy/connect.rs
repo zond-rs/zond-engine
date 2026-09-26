@@ -2575,22 +2575,14 @@ mod tests {
         )
     }
 
-    /// Reserves a loopback UDP port and releases it, yielding a number nothing
-    /// is listening on - so the kernel answers a probe with an ICMP error.
-    async fn closed_loopback_udp_port(ip: IpAddr) -> u16 {
-        let socket = UdpSocket::bind((ip, 0)).await.expect("bind to reserve");
-        let port = socket.local_addr().expect("reserved addr").port();
-        drop(socket);
-        port
-    }
-
     /// A socket bound IPv4-only would make a v6 target fail at `connect` and
     /// vanish without a record or a log. Loopback only, and no privileges
     /// required, so this runs everywhere the suite does.
     #[tokio::test]
     async fn closed_ipv6_port_is_classified_not_dropped() {
         let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
-        let port = closed_loopback_udp_port(ip).await;
+        let closed = crate::testing::loopback::ClosedUdpPort::open(ip);
+        let port = closed.port();
 
         let probed = udp_port_prober(
             udp_target(ip, port),
@@ -2611,7 +2603,8 @@ mod tests {
     #[tokio::test]
     async fn closed_ipv4_port_is_closed() {
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let port = closed_loopback_udp_port(ip).await;
+        let closed = crate::testing::loopback::ClosedUdpPort::open(ip);
+        let port = closed.port();
 
         let probed = udp_port_prober(
             udp_target(ip, port),
@@ -2649,7 +2642,8 @@ mod tests {
                 let _ = service.send_to(b"pong", from).await;
             }
         });
-        let closed = closed_loopback_udp_port(ip).await;
+        let held = crate::testing::loopback::ClosedUdpPort::open(ip);
+        let closed = held.port();
 
         for (port, reason) in [
             (open, ScanResponse::UdpResponse),
@@ -2972,10 +2966,8 @@ mod tests {
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             IpAddr::V6(Ipv6Addr::LOCALHOST),
         ] {
-            let port = {
-                let reserved = std::net::TcpListener::bind((ip, 0)).expect("a free port");
-                reserved.local_addr().expect("its address").port()
-            };
+            let held = crate::testing::loopback::HeldTcpPort::open(ip);
+            let port = held.port();
             let shaping = Shaping {
                 source_port: Some(port),
                 hop_limit: None,
@@ -3511,10 +3503,8 @@ mod tests {
                 });
             }
         });
-        let pinned = std::net::TcpListener::bind((ip, 0))
-            .and_then(|free| free.local_addr())
-            .expect("a free port to pin")
-            .port();
+        let held = crate::testing::loopback::HeldTcpPort::open(ip);
+        let pinned = held.port();
         let evasion = EvasionProfile {
             source_port: Some(pinned),
             ..EvasionProfile::default()
@@ -3749,10 +3739,8 @@ mod tests {
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             IpAddr::V6(Ipv6Addr::LOCALHOST),
         ] {
-            let port = std::net::TcpListener::bind((ip, 0))
-                .and_then(|free| free.local_addr())
-                .expect("a free port")
-                .port();
+            let held = crate::testing::loopback::HeldTcpPort::open(ip);
+            let port = held.port();
             let evasion = EvasionProfile {
                 source_port: Some(port),
                 ..EvasionProfile::default()

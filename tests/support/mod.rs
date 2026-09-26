@@ -210,15 +210,33 @@ pub async fn spawn_udp_server_on(port: u16, reply: &'static [u8]) -> Option<Serv
     Some(Server { port, _task: task })
 }
 
-/// Reserves and immediately frees a UDP loopback port, yielding a number that is
-/// guaranteed to generate an ICMP Port Unreachable.
-pub async fn closed_udp_loopback_port() -> u16 {
-    let socket = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .await
-        .expect("bind to reserve a udp port");
-    let port = socket.local_addr().expect("reserved addr").port();
-    drop(socket);
-    port
+/// A loopback UDP port nothing listens on, held by this process for as long
+/// as the value lives, so a datagram sent there draws the system's
+/// port-unreachable and no other socket can take the port meanwhile.
+///
+/// Held by a socket connected to a second one, which it also holds: a
+/// connected datagram socket takes only what its peer sends, so the system
+/// finds no socket for a datagram from anywhere else and answers it as a
+/// closed port, and a port a socket is bound to is never handed to one asking
+/// for any port. A port found by binding one and letting it go can be handed
+/// to another test's service between the letting go and the probe.
+pub struct ClosedUdpPort {
+    /// Its number.
+    pub port: u16,
+    _held: [std::net::UdpSocket; 2],
+}
+
+/// Takes a [`ClosedUdpPort`] on the IPv4 loopback.
+pub fn closed_udp_loopback_port() -> ClosedUdpPort {
+    let peer = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("binds loopback");
+    let held = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("binds loopback");
+    held.connect(peer.local_addr().expect("a local address"))
+        .expect("connects on loopback");
+    let port = held.local_addr().expect("a local address").port();
+    ClosedUdpPort {
+        port,
+        _held: [held, peer],
+    }
 }
 
 /// A single-IP [`TargetMap`] over the given comma/range port spec (e.g. `"80"`

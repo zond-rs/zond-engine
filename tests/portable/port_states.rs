@@ -153,7 +153,8 @@ async fn closed_udp_port_is_not_reported_open() {
         return;
     }
 
-    let port = closed_udp_loopback_port().await;
+    let closed = closed_udp_loopback_port();
+    let port = closed.port;
     let spec = format!("u:{}", port);
     let outcome = run_scan(target_map(LOOPBACK, &spec), &test_config()).await;
 
