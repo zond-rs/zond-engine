@@ -1940,7 +1940,8 @@ async fn sweep(
     let folder = ctx.clone();
     let mut starved = 0u128;
     let mut shortfall = Shortfall::default();
-    let segments = OnLinkTable::of_segments();
+    let segments = Arc::new(OnLinkTable::of_segments());
+    let edges = Arc::clone(&segments);
     // No more probes than the process has sockets for: past the budget a
     // probe would only queue at the gate, holding a task and nothing else.
     let mut pool = ProbePool::new(
@@ -1948,7 +1949,7 @@ async fn sweep(
         ctx.clone(),
         ScannerKind::Connect,
         |probed, audit: &mut ProbeAudit| {
-            absorb_host(&folder, probed, audit, &mut starved, &mut shortfall)
+            absorb_host(&folder, probed, audit, &mut starved, &mut shortfall, &edges)
         },
     );
 
@@ -2054,14 +2055,28 @@ enum Fate {
 /// An address starved of a socket is counted into `starved`, and one this
 /// machine refused to send to into `shortfall`, both of which the sweep
 /// reports once it has drained.
+///
+/// Except the network or broadcast address of one of this host's own
+/// `segments`, which the kernel refuses a connection to as it refuses one no
+/// route leads to. That refusal says the address is the segment's own rather
+/// than a host's, and the address is settled with nothing there, as the frame
+/// sweep's unanswered request to it is: filed unreachable, a sweep of a `/24`
+/// names its broadcast address as one this machine cannot reach.
 fn absorb_host(
     ctx: &ScanContext,
     probed: ProbedHost,
     audit: &mut ProbeAudit,
     starved: &mut u128,
     shortfall: &mut Shortfall,
+    segments: &OnLinkTable,
 ) {
     match probed.fate {
+        Fate::Refused(Refusal::NoRoute | Refusal::Forbidden)
+            if segments.is_segment_edge(probed.ip) =>
+        {
+            // Nothing left this machine, so no send is counted either way.
+            ctx.settle_address(probed.ip, Settled::Exhausted);
+        }
         Fate::Answered(host) => {
             let ip = host.primary_ip();
             audit.record_send(true);
@@ -3644,11 +3659,56 @@ mod tests {
             &mut audit,
             &mut 0,
             &mut shortfall,
+            &OnLinkTable::from_links(&[]),
         );
         shortfall.report(&ctx, ScannerKind::Connect, "address", "addresses");
 
         assert!(ctx.is_unroutable(ip));
         assert!(ctx.failures_snapshot().is_empty(), "nothing broke here");
+    }
+
+    /// A segment's own addresses, which the kernel refuses a connection to as
+    /// it refuses one no route leads to, are settled with no host there
+    /// rather than filed unreachable, as the frame sweep's unanswered request
+    /// settles them. A neighbour refused the same way is still unreachable.
+    ///
+    /// Filed unreachable, every sweep of a whole `/24` without raw sockets
+    /// reported one address this machine cannot reach, and it was the
+    /// segment's broadcast address.
+    #[test]
+    fn a_segment_s_own_addresses_are_settled_rather_than_filed_unreachable() {
+        use crate::system::interface::{Link, LinkAddress};
+
+        let segments = OnLinkTable::from_links(&[Link::new("test0", 1).with_addresses(vec![
+            LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24),
+        ])]);
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let mut audit = ProbeAudit::default();
+        let mut shortfall = Shortfall::default();
+        let edges = [Ipv4Addr::new(192, 0, 2, 0), Ipv4Addr::new(192, 0, 2, 255)];
+        let neighbour = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9));
+        for ip in edges.map(IpAddr::V4).into_iter().chain([neighbour]) {
+            absorb_host(
+                &ctx,
+                ProbedHost {
+                    ip,
+                    fate: Fate::Refused(Refusal::NoRoute),
+                },
+                &mut audit,
+                &mut 0,
+                &mut shortfall,
+                &segments,
+            );
+        }
+        shortfall.report(&ctx, ScannerKind::Connect, "address", "addresses");
+
+        let settled_silent = ctx.take_silent();
+        for edge in edges.map(IpAddr::V4) {
+            assert!(!ctx.is_unroutable(edge), "{edge} filed unreachable");
+            assert!(settled_silent.contains(&edge), "{edge} left unsettled");
+        }
+        assert!(ctx.is_unroutable(neighbour));
+        assert!(!settled_silent.contains(&neighbour));
     }
 
     /// A sweep that never gets a socket says so: the address is left

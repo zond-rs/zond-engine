@@ -107,7 +107,7 @@ impl OnLinkTable {
     /// one to an address a policy keeps out, and some still treat the network
     /// address as a broadcast, so a refusal for either says nothing about a
     /// route. A `/31` and a `/32` have no such addresses.
-    fn is_segment_edge(&self, target: IpAddr) -> bool {
+    pub(crate) fn is_segment_edge(&self, target: IpAddr) -> bool {
         self.held.iter().any(|held| {
             held.contains(&target)
                 && held.prefix() < 31
