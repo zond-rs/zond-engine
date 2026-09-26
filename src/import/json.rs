@@ -212,7 +212,10 @@ impl<'a> Emitter<'a> {
                 });
                 return false;
             };
-            let prefix = protocol.spec_prefix();
+            // Every port behind its own qualifier, TCP's included: the
+            // document lists ports in its own order, and a qualifier holds
+            // until the next one.
+            let prefix = protocol.qualifier();
             if !self.ports.is_empty() {
                 self.ports.push(',');
             }
@@ -548,7 +551,8 @@ mod tests {
     fn a_host_is_rescanned_on_the_ports_it_was_found_on() {
         let file = document(
             r#"{"primary_ip":"198.51.100.1","ips":["198.51.100.1"],
-                "ports":[{"port":22,"protocol":"tcp"},{"port":53,"protocol":"udp"}]}"#,
+                "ports":[{"port":22,"protocol":"tcp"},{"port":53,"protocol":"udp"},
+                         {"port":443,"protocol":"tcp"}]}"#,
         );
 
         let imported = read(ImportFormat::Json, &file).expect("imports");
@@ -558,6 +562,12 @@ mod tests {
         assert!(ports.has_tcp(22), "the TCP port came back as TCP");
         assert!(ports.has_udp(53), "the UDP port came back as UDP");
         assert!(!ports.has_tcp(53), "and not as both");
+        // A qualifier holds until the next one, so a TCP port listed after a
+        // UDP one has to be written as TCP rather than left to inherit it.
+        assert!(
+            ports.has_tcp(443) && !ports.has_udp(443),
+            "a TCP port after a UDP one stays TCP"
+        );
     }
 
     /// A discovery report has no ports at all, and has to read back as the

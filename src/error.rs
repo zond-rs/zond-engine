@@ -224,6 +224,8 @@ impl Coded for PortSetParseError {
             PortSetParseError::InvalidPort { .. } => "ports.invalid_port",
             PortSetParseError::InvalidRange { .. } => "ports.invalid_range",
             PortSetParseError::MalformedSpec(_) => "ports.malformed_spec",
+            PortSetParseError::SpacedRange(_) => "ports.spaced_range",
+            PortSetParseError::ServiceName(_) => "ports.service_name",
         }
     }
 }

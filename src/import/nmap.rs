@@ -248,7 +248,9 @@ fn emit(
         if !ports.is_empty() {
             ports.push(',');
         }
-        ports.push_str(protocol.spec_prefix());
+        // TCP's qualifier too, since a qualifier holds until the next one and
+        // nmap lists ports in its own order.
+        ports.push_str(protocol.qualifier());
         ports.push_str(&number.to_string());
     }
 
@@ -311,6 +313,7 @@ mod tests {
                 "<extraports state=\"closed\" count=\"998\"><extrareasons reason=\"resets\" count=\"998\"/></extraports>\n",
                 "<port protocol=\"tcp\" portid=\"22\"><state state=\"open\" reason=\"syn-ack\" reason_ttl=\"64\"/><service name=\"ssh\" product=\"OpenSSH\" method=\"probed\" conf=\"10\"/></port>\n",
                 "<port protocol=\"udp\" portid=\"53\"><state state=\"open\" reason=\"udp-response\"/></port>\n",
+                "<port protocol=\"tcp\" portid=\"443\"><state state=\"open\" reason=\"syn-ack\" reason_ttl=\"64\"/></port>\n",
                 "</ports>\n<times srtt=\"39\" rttvar=\"5000\" to=\"100000\"/>\n</host>\n",
                 "<host><status state=\"up\" reason=\"conn-refused\"/><address addr=\"2001:db8::1\" addrtype=\"ipv6\"/></host>\n",
                 "<runstats><finished time=\"3\" elapsed=\"0.01\" exit=\"success\"/><hosts up=\"2\" down=\"0\" total=\"2\"/></runstats>\n",
@@ -328,6 +331,14 @@ mod tests {
                 .iter()
                 .any(|unit| unit.ports().has_tcp(22) && unit.ports().has_udp(53)),
             "the ports nmap found have to come back on the host it found them on"
+        );
+        assert!(
+            imported
+                .map
+                .units
+                .iter()
+                .any(|unit| unit.ports().has_tcp(443) && !unit.ports().has_udp(443)),
+            "a TCP port listed after a UDP one comes back as TCP"
         );
         // The MAC is not a target, and the portless host takes the defaults.
         assert!(

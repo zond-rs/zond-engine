@@ -9,9 +9,10 @@
 //! # Which ports to ask about
 //!
 //! [`PortSet`] is the port half of a scan's target specification: what a person
-//! wrote, such as `"80, 443, u:53, s:2905, 1000-2000"`, held as disjoint ranges
-//! per protocol. The prefix in front of a token names the transport and belongs
-//! to [`Protocol::spec_prefix`].
+//! wrote, such as `"80, 443, 1000-2000, u:53, s:2905"`, held as disjoint ranges
+//! per protocol. A qualifier in front of a token names the transport for it and
+//! for every token after it until the next one, as nmap reads its own, and the
+//! spelling belongs to [`Protocol::spec_prefix`].
 //!
 //! It is built once and never mutated. Every construction path merges and
 //! sorts before returning, and there is no method that can undo that, so a
@@ -28,7 +29,12 @@
 //!   scanning the groups it has so far.
 
 use crate::model::port::Protocol;
-use std::{fmt, num::ParseIntError, ops::RangeInclusive, str::FromStr};
+use std::{
+    fmt,
+    num::{IntErrorKind, ParseIntError},
+    ops::RangeInclusive,
+    str::FromStr,
+};
 use thiserror::Error;
 
 /// The ports [`PortSet::common_discovery`] names: a handful that answer often
@@ -54,12 +60,15 @@ const FIRST_PORT: u16 = 1;
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// Errors that can occur when parsing a port range string.
+///
+/// Each one is printed at whoever wrote the specification, so each says what
+/// was wrong with which token and then, in parentheses, what to write instead.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum PortSetParseError {
     /// A port was not a number, or was too large to be one. Ports are 16-bit,
     /// so `70000` fails here rather than wrapping to `4464`.
-    #[error("Failed to parse port from '{input}': {source}")]
+    #[error("{}", invalid_port(input, source))]
     InvalidPort {
         /// The token as written, so a user can find it in what they typed.
         input: String,
@@ -69,7 +78,7 @@ pub enum PortSetParseError {
     },
 
     /// A range was written backwards, as in `80-20`.
-    #[error("Invalid port range: start ({start}) cannot be strictly greater than end ({end})")]
+    #[error("range {start}-{end} runs backwards (write {end}-{start})")]
     InvalidRange {
         /// The lower bound as written, which is the larger of the two.
         start: u16,
@@ -78,8 +87,38 @@ pub enum PortSetParseError {
     },
 
     /// The input segment did not match any known port or range format.
-    #[error("Malformed port specification, expected a single port or a range: '{0}'")]
+    #[error("'{0}' is not a port or a range (write 22 or 1-1024)")]
     MalformedSpec(String),
+
+    /// A range was written with spaces around its dash, as in `80 - 90`.
+    ///
+    /// Refused rather than read, because spaces separate ports: the halves of
+    /// `80 - 90` are an open-ended range each, and the dash between them
+    /// alone is every port there is. Carries the range as written.
+    #[error("'{0}' has spaces in a range (write {joined})", joined = .0.split_whitespace().collect::<String>())]
+    SpacedRange(String),
+
+    /// A name was written where a port number goes, as in `ssh`.
+    ///
+    /// Carries the token as written, qualifier included. Which port a name
+    /// stands for is not this grammar's to say: nmap reads one through its
+    /// services table, this engine has none to agree with it on, and a
+    /// specification that meant different ports on two builds would be a scan
+    /// nobody could repeat. A front end that wants to suggest the number can
+    /// ask the signature corpus, which knows the services it identifies.
+    #[error("'{0}' is a name, not a port number (write one, as 22)")]
+    ServiceName(String),
+}
+
+/// The message for a token that is not a port number, by why it is not one.
+fn invalid_port(input: &str, source: &ParseIntError) -> String {
+    match source.kind() {
+        IntErrorKind::PosOverflow => format!("'{input}' is not a port (the highest is 65535)"),
+        // Only a qualifier with nothing behind it gets this far empty: an end
+        // left off a range is an open end.
+        IntErrorKind::Empty => format!("'{input}' names no port (write {input}53)"),
+        _ => format!("'{input}' is not a port number (write 22, 1-1024 or u:53)"),
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -365,7 +404,10 @@ impl Default for PortSet {
 ///
 /// The canonical form: the protocols in [`Protocol::ALL`] order, each one's
 /// ranges ascending behind its own prefix, a single port written as itself and a
-/// run written `start-end`. Because the ranges are merged from construction, two
+/// run written `start-end`. TCP comes first and so needs no qualifier, and
+/// every other range carries its own although the one before it would do, so
+/// the rendering reads the same to a parser that takes a qualifier for one
+/// token as to one that takes it until the next. Because the ranges are merged from construction, two
 /// sets holding the same ports render identically, which is what lets a written
 /// scope be compared with another and what lets a report record a port set as
 /// one field.
@@ -400,25 +442,71 @@ impl fmt::Display for PortSet {
     }
 }
 
-/// Splits a written token into the protocol its prefix names and the range left
-/// behind, which is the token itself where no prefix is there to strip.
+/// Splits a written token into the protocol a qualifier in front of it names,
+/// if it carries one, and the port or range left behind.
 ///
-/// Case-insensitive, as every other parser here reads the words a person types.
-/// `U:53` was refused with "Failed to parse port from 'U:53'", which reads as a
-/// complaint about the number.
-fn split_prefix(part: &str) -> (Protocol, &str) {
+/// Case-insensitive, as every other parser here reads the words a person types:
+/// `U:53` is `u:53`. The qualifiers are [`Protocol::qualifier`]'s, so `t:`
+/// names TCP outright, which a specification needs once it has switched to
+/// another transport and wants to switch back.
+fn split_qualifier(word: &str) -> (Option<Protocol>, &str) {
     for protocol in Protocol::ALL {
-        let prefix = protocol.spec_prefix();
-        if prefix.is_empty() {
-            continue;
-        }
-        if let Some(head) = part.get(..prefix.len())
-            && head.eq_ignore_ascii_case(prefix)
+        let qualifier = protocol.qualifier();
+        if let Some(head) = word.get(..qualifier.len())
+            && head.eq_ignore_ascii_case(qualifier)
         {
-            return (protocol, &part[prefix.len()..]);
+            return (Some(protocol), &word[qualifier.len()..]);
         }
     }
-    (Protocol::Tcp, part)
+    (None, word)
+}
+
+/// Refuses a range written with spaces around its dash, as in `80 - 90`,
+/// `80- 90` or `80 -90`.
+///
+/// Spaces separate ports, so each of those arrives as words, one of them with
+/// an open end: a leading dash, a trailing one, or a dash on its own, which is
+/// all three. An open end facing another word across nothing but spaces is
+/// the one reading nobody means, since `80 - 90` would then be every port
+/// there is. An open end facing a comma or the edge of the specification is
+/// the ordinary open-ended range, so `80, -1024` and `-1024 8080` are what
+/// they look like.
+fn refuse_spaced_range(words: &[&str]) -> Result<(), PortSetParseError> {
+    for (index, word) in words.iter().enumerate() {
+        let opens_back = word.starts_with('-') && index > 0;
+        let opens_on = word.ends_with('-') && index + 1 < words.len();
+        if opens_back || opens_on {
+            let first = if opens_back { index - 1 } else { index };
+            let last = if opens_on { index + 1 } else { index };
+            return Err(PortSetParseError::SpacedRange(
+                words[first..=last].join(" "),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Parses one port where a number goes, telling a name written there apart
+/// from any other token that is not a number.
+///
+/// `whole` is the token the number came from, which is what the error carries,
+/// so a UDP port reports `u:http` rather than `http`, which is not what
+/// anybody typed.
+fn port_number(text: &str, whole: &str) -> Result<u16, PortSetParseError> {
+    text.parse::<u16>().map_err(|source| {
+        let named = text.starts_with(|c: char| c.is_ascii_alphabetic())
+            && text
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if named {
+            PortSetParseError::ServiceName(whole.to_string())
+        } else {
+            PortSetParseError::InvalidPort {
+                input: whole.to_string(),
+                source,
+            }
+        }
+    })
 }
 
 impl TryFrom<&str> for PortSet {
@@ -435,20 +523,28 @@ impl TryFrom<&str> for PortSet {
     ///   more use than a flag for the same thing would be, since it applies to
     ///   the UDP half (`u:-`) and to one side of a mixed specification just as
     ///   readily.
-    /// * **Protocols**: Defaults to TCP. `u:` prefixes a UDP port and `s:` an
-    ///   SCTP one, as [`Protocol::spec_prefix`] spells them.
-    /// * **Mixed**: `80, 443, u:53, s:2905, 161-162`
+    /// * **Protocols**: TCP until a qualifier says otherwise. `u:` switches to
+    ///   UDP, `s:` to SCTP and `t:` back to TCP, and a qualifier holds for
+    ///   every port after it until the next one, as nmap reads them:
+    ///   `u:53,161` is two UDP ports. Case-insensitive.
+    /// * **Separators**: commas and spaces, in any number. A range is written
+    ///   without spaces, and `80 - 90` is refused rather than read as the three
+    ///   open-ended ranges it would otherwise spell.
+    /// * **Mixed**: `80, 443, 161-162, u:53, s:2905`
     ///
     /// # Examples
     ///
     /// ```
     /// use zond_engine::model::port::set::PortSet;
     ///
-    /// let set = PortSet::try_from("80, u:53, s:2905, 1000-1005").unwrap();
-    /// assert!(set.has_tcp(80));
-    /// assert!(set.has_udp(53));
+    /// let set = PortSet::try_from("80, 1000-1005, u:53,161, s:2905").unwrap();
+    /// assert!(set.has_tcp(80) && set.has_tcp(1000));
+    /// assert!(set.has_udp(53) && set.has_udp(161));
     /// assert!(set.has_sctp(2905));
-    /// assert_eq!(set.len(), 9); // 1 + 1 + 1 + 6
+    /// assert_eq!(set.len(), 10); // 1 + 6 + 2 + 1
+    ///
+    /// // Back to TCP after another transport.
+    /// assert!(PortSet::try_from("u:53, t:80").unwrap().has_tcp(80));
     ///
     /// // Every port there is, which is what `-p-` means on a command line.
     /// let everything = PortSet::try_from("-").unwrap();
@@ -457,61 +553,47 @@ impl TryFrom<&str> for PortSet {
     /// ```
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let mut set = PortSet::new();
+        let mut protocol = Protocol::Tcp;
 
-        for part in value.split([',', ' ']).filter(|s| !s.trim().is_empty()) {
-            let part = part.trim();
-            let (protocol, raw_range) = split_prefix(part);
+        for part in value.split(',') {
+            let words: Vec<&str> = part.split_whitespace().collect();
+            refuse_spaced_range(&words)?;
 
-            let parts: Vec<&str> = raw_range.split('-').collect();
-
-            let range = match parts.as_slice() {
-                [single_port] => {
-                    let p = single_port.parse::<u16>().map_err(|source| {
-                        PortSetParseError::InvalidPort {
-                            // `part` rather than the stripped token, so the
-                            // field's promise to carry it "as written" holds for
-                            // a UDP port too: `u:http` reported `http`, which is
-                            // not what anybody typed.
-                            input: part.to_string(),
-                            source,
-                        }
-                    })?;
-                    p..=p
+            for word in words {
+                let (qualifier, raw_range) = split_qualifier(word);
+                if let Some(named) = qualifier {
+                    protocol = named;
                 }
-                // An end left off means "as far as there is", at whichever end
-                // it was left off. `-` on its own is both, and so is every port.
-                [start_str, end_str] => {
-                    let start = if start_str.is_empty() {
-                        FIRST_PORT
-                    } else {
-                        start_str.parse::<u16>().map_err(|source| {
-                            PortSetParseError::InvalidPort {
-                                input: start_str.to_string(),
-                                source,
-                            }
-                        })?
-                    };
-                    let end = if end_str.is_empty() {
-                        u16::MAX
-                    } else {
-                        end_str
-                            .parse::<u16>()
-                            .map_err(|source| PortSetParseError::InvalidPort {
-                                input: end_str.to_string(),
-                                source,
-                            })?
-                    };
 
-                    if start > end {
-                        return Err(PortSetParseError::InvalidRange { start, end });
+                let range = match raw_range.split('-').collect::<Vec<_>>().as_slice() {
+                    [single] => {
+                        let port = port_number(single, word)?;
+                        port..=port
                     }
+                    // An end left off means "as far as there is", at whichever
+                    // end it was left off. `-` on its own is both, and so is
+                    // every port.
+                    [start, end] => {
+                        let start = if start.is_empty() {
+                            FIRST_PORT
+                        } else {
+                            port_number(start, start)?
+                        };
+                        let end = if end.is_empty() {
+                            u16::MAX
+                        } else {
+                            port_number(end, end)?
+                        };
+                        if start > end {
+                            return Err(PortSetParseError::InvalidRange { start, end });
+                        }
+                        start..=end
+                    }
+                    _ => return Err(PortSetParseError::MalformedSpec(word.to_string())),
+                };
 
-                    start..=end
-                }
-                _ => return Err(PortSetParseError::MalformedSpec(part.to_string())),
-            };
-
-            set.lane_mut(protocol).push(range);
+                set.lane_mut(protocol).push(range);
+            }
         }
 
         for protocol in Protocol::ALL {
@@ -594,7 +676,8 @@ mod tests {
         assert_eq!(lower, upper);
         assert!(upper.has_udp(53) && !upper.has_tcp(53));
 
-        // Mixed into a specification, where it has to not swallow a TCP port.
+        // Mixed into a specification, where it must not reach back to a TCP
+        // port written before it.
         let mixed = PortSet::try_from("80, U:53, u:161-162").expect("parses");
         assert!(mixed.has_tcp(80));
         assert!(mixed.has_udp(53) && mixed.has_udp(161) && mixed.has_udp(162));
@@ -611,7 +694,7 @@ mod tests {
     #[test]
     fn a_specification_may_mix_ports_ranges_and_protocols() {
         let port_set_single = PortSet::try_from("21");
-        let port_set_multiple = PortSet::try_from("21, 22 80, 800-1000, u:53 8080");
+        let port_set_multiple = PortSet::try_from("21, 22 80, 800-1000, u:53 t:8080");
 
         assert!(port_set_single.is_ok());
         assert!(port_set_multiple.is_ok());
@@ -676,11 +759,11 @@ mod tests {
         assert!(PortSet::try_from("0").unwrap().has_tcp(0));
     }
 
-    /// The open ends compose with everything else the grammar has: the UDP
-    /// prefix, and the other members of a mixed specification.
+    /// The open ends compose with everything else the grammar has: the
+    /// qualifiers, and the other members of a mixed specification.
     #[test]
     fn an_open_ended_range_composes_with_the_rest_of_the_grammar() {
-        let mixed = PortSet::try_from("22, u:-, 9000-").unwrap();
+        let mixed = PortSet::try_from("22, u:-, t:9000-").unwrap();
 
         assert!(mixed.has_tcp(22));
         assert!(mixed.has_tcp(9000) && mixed.has_tcp(65_535));
@@ -742,7 +825,8 @@ mod tests {
         let port_set_invalid_port = PortSet::try_from("80 70000 22");
         let port_set_invalid_range = PortSet::try_from("21 8000-80");
         let port_set_malformed_spec = PortSet::try_from("22 60-70-80 8080");
-        let port_set_not_numeric = PortSet::try_from("u:53 abcdef 80");
+        let port_set_not_numeric = PortSet::try_from("u:53 12ab 80");
+        let port_set_named = PortSet::try_from("u:53 abcdef 80");
 
         assert!(matches!(
             port_set_invalid_port,
@@ -763,9 +847,96 @@ mod tests {
         ));
 
         assert!(matches!(
+            port_set_named,
+            Err(PortSetParseError::ServiceName(_))
+        ));
+
+        assert!(matches!(
             port_set_malformed_spec,
             Err(PortSetParseError::MalformedSpec(_))
         ));
+    }
+
+    /// A qualifier holds for every port after it until the next one, which is
+    /// how nmap reads `-p U:53,161,T:21-25,80` and how anybody who learned the
+    /// grammar there writes it. Read per token, `U:53,161` scans TCP 161, a
+    /// port nobody asked for, and reports it as if it were the answer.
+    #[test]
+    fn a_qualifier_holds_until_the_next_one_as_nmap_reads_it() {
+        let set = PortSet::try_from("U:53,161").expect("an nmap specification");
+        assert!(set.has_udp(53) && set.has_udp(161));
+        assert!(!set.has_tcp(161), "161 is UDP, as the qualifier said");
+
+        let mixed = PortSet::try_from("8080, u:53,161, T:21-25,80, s:2905").expect("parses");
+        assert!(mixed.has_tcp(8080) && mixed.has_tcp(23) && mixed.has_tcp(80));
+        assert!(mixed.has_udp(53) && mixed.has_udp(161));
+        assert!(!mixed.has_udp(80) && !mixed.has_tcp(161));
+        assert!(mixed.has_sctp(2905));
+        assert_eq!(mixed.len(), 1 + 2 + 5 + 1 + 1);
+
+        let tcp = PortSet::try_from("t:22").expect("TCP named outright");
+        assert!(tcp.has_tcp(22) && tcp.len() == 1);
+    }
+
+    /// A range written with spaces around its dash is refused, not read as the
+    /// open-ended ranges its halves spell apart. `80 - 90` is three tokens,
+    /// the middle one every port there is, and scanning 65,535 ports for a
+    /// request for eleven is the worst reading available.
+    ///
+    /// Spaces still separate ports, and an open end facing a comma or the
+    /// edge of the specification is still an open end.
+    #[test]
+    fn a_range_written_with_spaces_is_refused_rather_than_widened() {
+        for (written, fix) in [
+            ("80 - 90", "80-90"),
+            ("80- 90", "80-90"),
+            ("22, 80 -90", "80-90"),
+            ("u:80 - 90", "u:80-90"),
+        ] {
+            let error = PortSet::try_from(written)
+                .expect_err("a spaced range")
+                .to_string();
+            assert!(
+                error.contains(&format!("write {fix}")),
+                "{written}: {error}"
+            );
+        }
+
+        let open = PortSet::try_from("80, -1024 9000-, 443").expect("open ends by commas");
+        assert!(open.has_tcp(1) && open.has_tcp(65_535) && open.has_tcp(443));
+        assert!(PortSet::try_from("-1024 8080").unwrap().has_tcp(8080));
+    }
+
+    /// Each refusal says what to write instead, since it is printed at whoever
+    /// typed the specification and "invalid digit found in string" tells them
+    /// only that something somewhere was not a number.
+    #[test]
+    fn each_refusal_says_what_to_write_instead() {
+        let hint = |written: &str| PortSet::try_from(written).expect_err("refused").to_string();
+
+        let ssh = hint("ssh");
+        assert!(
+            ssh.contains("'ssh' is a name") && ssh.contains("as 22"),
+            "{ssh}"
+        );
+        let snmp = hint("U:snmp");
+        assert!(snmp.contains("'U:snmp' is a name"), "{snmp}");
+        let stray = hint("8o");
+        assert!(
+            stray.contains("'8o'") && stray.contains("write 22"),
+            "{stray}"
+        );
+        let large = hint("70000");
+        assert!(large.contains("65535"), "{large}");
+        let backwards = hint("80-20");
+        assert!(backwards.contains("write 20-80"), "{backwards}");
+        let bare = hint("u:");
+        assert!(bare.contains("write u:53"), "{bare}");
+        let dashes = hint("1-2-3");
+        assert!(
+            dashes.contains("'1-2-3'") && dashes.contains("write"),
+            "{dashes}"
+        );
     }
 
     /// The owned-string conversion has to agree with the borrowed one, since

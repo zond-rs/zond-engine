@@ -108,13 +108,31 @@ impl Protocol {
     /// What a written port specification puts in front of this protocol's
     /// ports: nothing for TCP, `u:` for UDP, `s:` for SCTP.
     ///
-    /// Read by both halves of [`PortSet`]'s spelling, so the prefix a caller
-    /// writes and the one a report renders cannot come apart.
+    /// Nothing for TCP because a specification is TCP until a qualifier says
+    /// otherwise, and a qualifier then holds until the next one. So this is
+    /// the spelling of a specification that lists its TCP ports first, as
+    /// [`PortSet`]'s rendering does, and the parser reads the same prefixes,
+    /// so what a caller writes and what a report renders cannot come apart.
+    /// TCP ports written after another protocol's need `t:` in front.
     pub const fn spec_prefix(self) -> &'static str {
         match self {
             Self::Tcp => "",
             Self::Udp => "u:",
             Self::Sctp => "s:",
+        }
+    }
+
+    /// The qualifier that switches a written specification to this protocol:
+    /// `t:`, `u:` or `s:`.
+    ///
+    /// A qualifier holds for every port after it until the next one, so TCP
+    /// needs one as well. [`spec_prefix`](Self::spec_prefix) leaves it off
+    /// because a specification starts out as TCP, and a writer that emits
+    /// ports in no fixed order has to name TCP to get back to it: `u:53,t:80`.
+    pub(crate) const fn qualifier(self) -> &'static str {
+        match self {
+            Self::Tcp => "t:",
+            Self::Udp | Self::Sctp => self.spec_prefix(),
         }
     }
 }
