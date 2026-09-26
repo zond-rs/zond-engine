@@ -2027,7 +2027,7 @@ pub async fn analyze_with(
     // Phase 2, CPU off the reactor: parse the shared responses plus each
     // analyzer's own frames into evidence, then resolve. A large match set can
     // never stall the scheduler from here.
-    tokio::task::spawn_blocking(move || {
+    off_the_reactor(move || {
         let mut evidence = Vec::new();
         for (analyzer, (interested, collected)) in analyzers.iter().zip(&collected) {
             if *interested {
@@ -2038,8 +2038,59 @@ pub async fn analyze_with(
         (!evidence.is_empty()).then(|| ServiceVerdict::resolve(evidence))
     })
     .await
-    .ok()
     .flatten()
+}
+
+/// How many threads the CPU phase of [`analyze_with`] runs on.
+///
+/// Few, and the same ones for the life of the process, for memory rather
+/// than speed. A compiled regex keeps a search cache for the first thread to
+/// use it and one more for each of up to eight groups of other threads,
+/// sorted by thread number, and keeps them all until it is dropped, which for
+/// the built-in signatures is never. A cache is sized by the regex, so a
+/// signature's caches cost several times the signature. Measured on 5,000
+/// identifications of ten banners, their signatures already compiled: on
+/// tokio's blocking pool, whose threads come and go, the process went from
+/// 57 MB to 200 MB, and on one thread from 53 MB to 60.
+///
+/// One costs little throughput. Matching a banner against the signatures that
+/// could match it is some tens of microseconds, and compiling a signature,
+/// which is the expensive part, happens once and on every core; see
+/// [`SignatureDb::warm`]. The same 5,000 took 185 ms on one thread against
+/// 140 on the blocking pool, and a scan spends its time waiting on the
+/// network.
+const ANALYSIS_THREADS: usize = 1;
+
+/// Runs `work` on the identification threads, see [`ANALYSIS_THREADS`], and
+/// hands back what it returns, or `None` if it panicked.
+///
+/// Falls back to tokio's blocking pool if the threads cannot be started, so
+/// identification never fails for want of them; it only costs more memory.
+async fn off_the_reactor<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+
+    let pool = POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(ANALYSIS_THREADS)
+            .thread_name(|index| format!("zond-identify-{index}"))
+            .build()
+            .ok()
+    });
+    let Some(pool) = pool else {
+        return tokio::task::spawn_blocking(work).await.ok();
+    };
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    pool.spawn(move || {
+        // Caught, since a panic on a rayon thread aborts the process, and a
+        // panicking analyzer is a finding lost rather than a scan lost, as it
+        // is on the blocking pool.
+        let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+        let _ = sender.send(done.ok());
+    });
+    receiver.await.ok().flatten()
 }
 
 /// Reads one bounded chunk from `stream`, giving up after `wait`. Returns `None`
@@ -2466,6 +2517,91 @@ mod tests {
     }
 
     use super::*;
+
+    /// Records the thread its CPU phase ran on, and panics on port 0.
+    struct ThreadWitness;
+
+    static WITNESSED: std::sync::Mutex<Vec<std::thread::ThreadId>> =
+        std::sync::Mutex::new(Vec::new());
+
+    #[async_trait::async_trait]
+    impl Analyzer for ThreadWitness {
+        fn id(&self) -> SourceId {
+            SourceId::BannerRegex
+        }
+
+        fn interested(&self, _ctx: &PortContext) -> bool {
+            true
+        }
+
+        fn analyze(&self, ctx: &PortContext, _: &ResponseSet, _: &Collected) -> Vec<Evidence> {
+            assert!(ctx.port != 0, "the witness was asked about port 0");
+            // Long enough that analyses started together overlap, which on a
+            // pool of threads puts them on several.
+            std::thread::sleep(Duration::from_millis(20));
+            WITNESSED
+                .lock()
+                .expect("the witness list")
+                .push(std::thread::current().id());
+            vec![
+                Evidence::new(
+                    SourceId::BannerRegex,
+                    crate::model::confidence::Confidence::Weak,
+                )
+                .with_service("witnessed"),
+            ]
+        }
+    }
+
+    static WITNESS: [&dyn Analyzer; 1] = [&ThreadWitness];
+
+    /// **Every identification's CPU phase runs on the one thread kept for it,
+    /// however many run at once, and a panic there loses one verdict and not
+    /// the process.**
+    ///
+    /// A compiled regex keeps a search cache for every thread that has used
+    /// it, for as long as it is compiled, so identifications spread over
+    /// threads that come and go leave each signature several caches, and the
+    /// caches were most of a full-range scan's memory. See
+    /// [`ANALYSIS_THREADS`].
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn identification_runs_on_one_kept_thread_and_survives_a_panic() {
+        let runs: Vec<_> = (1..=12u16)
+            .map(|port| {
+                tokio::spawn(analyze_with(
+                    PortContext::new(port, Protocol::Tcp),
+                    ResponseSet::default(),
+                    &WITNESS,
+                ))
+            })
+            .collect();
+        for run in runs {
+            assert!(run.await.expect("joins").is_some(), "every run is named");
+        }
+
+        let threads: std::collections::BTreeSet<String> = WITNESSED
+            .lock()
+            .expect("the witness list")
+            .iter()
+            .map(|id| format!("{id:?}"))
+            .collect();
+        assert_eq!(threads.len(), 1, "identification ran on {threads:?}");
+
+        let panicked = analyze_with(
+            PortContext::new(0, Protocol::Tcp),
+            ResponseSet::default(),
+            &WITNESS,
+        )
+        .await;
+        assert!(panicked.is_none(), "a panicking analyzer names nothing");
+        let after = analyze_with(
+            PortContext::new(1, Protocol::Tcp),
+            ResponseSet::default(),
+            &WITNESS,
+        )
+        .await;
+        assert!(after.is_some(), "and identification carries on after it");
+    }
 
     #[tokio::test]
     async fn analyze_runs_both_phases_and_resolves() {

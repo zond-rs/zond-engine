@@ -502,7 +502,8 @@ impl SignatureDb {
     /// # Two tiers
     ///
     /// The response is checked first against the signatures registered for its
-    /// port, which is a small set and the common case. The global set, narrowed
+    /// port, narrowed by the prefilter to the ones that could match it, which
+    /// is a small set and the common case. The global set, narrowed
     /// by the prefilter to a bounded candidate list and compiled on demand, is
     /// consulted when the port set identified nothing, and also when it named a
     /// service but said nothing about the machine**.
@@ -520,7 +521,6 @@ impl SignatureDb {
     /// about how the bytes arrived rather than about what they say.
     pub fn identify(&self, port: u16, protocol: Protocol, response: &str) -> Option<Evidence> {
         let port_signatures = self.signatures_for_port(port);
-        self.warm(port_signatures);
         let attested_by = super::extract::attested_by(port, protocol);
         identify_within(self, port_signatures, response, attested_by)
     }
@@ -1008,8 +1008,32 @@ fn identify_within(
     let extracted = super::extract::texts(banner);
     let texts: Vec<&str> = extracted.iter().map(AsRef::as_ref).collect();
 
+    // Every signature that could match any of the texts, narrowed by the
+    // prefilter against each and unioned: a literal that only appears in the
+    // extracted field would otherwise select no candidates and the field would
+    // go unmatched.
+    let mut candidates: Vec<usize> = texts
+        .iter()
+        .flat_map(|text| db.prefilter().candidates(text))
+        .collect();
+    candidates.sort_unstable();
+    candidates.dedup();
+
     // Matched against the signatures registered for this port: port-confirmed.
-    let mut found = best_match(db, port_signatures, &texts, attested_by);
+    //
+    // Only those the prefilter kept, which it keeps whenever one could match,
+    // so this is the port's answer at a fraction of the cost. A port a corpus
+    // writes for many products is registered with every rule for each, and
+    // compiling them all to find the few that could match, with a search cache
+    // for each, would compile most of the corpus for a single web server. The
+    // port's order is kept, since a tie goes to the earlier rule.
+    let port_candidates: Vec<usize> = port_signatures
+        .iter()
+        .copied()
+        .filter(|index| candidates.binary_search(index).is_ok())
+        .collect();
+    db.warm(&port_candidates);
+    let mut found = best_match(db, &port_candidates, &texts, attested_by);
     let mut port_confirmed = found.is_some();
 
     // The global set, narrowed by the prefilter to a small candidate list and
@@ -1028,16 +1052,6 @@ fn identify_within(
     // Regex compilation is cached, so a scan pays it once per signature rather
     // than once per host.
     if found.as_ref().is_none_or(|found| found.os.is_none()) {
-        // Narrowed against every text, unioned: a literal that only appears in
-        // the extracted field would otherwise select no candidates and the field
-        // would go unmatched here even though it matches on a known port.
-        let mut candidates: Vec<usize> = texts
-            .iter()
-            .flat_map(|text| db.prefilter().candidates(text))
-            .collect();
-        candidates.sort_unstable();
-        candidates.dedup();
-
         db.warm(&candidates);
         if let Some(global) = best_match(db, &candidates, &texts, attested_by) {
             match found.as_mut() {
@@ -1373,6 +1387,35 @@ mod tests {
             hit.and_then(|m| m.evidence.service),
             Some("acme".to_string())
         );
+    }
+
+    /// **A port's signatures are compiled only where the response could match
+    /// them, and the port still answers as it did.**
+    ///
+    /// A port the corpus writes for many products is registered with every
+    /// rule for each, and a compiled rule and its search caches are kept for
+    /// the life of the process. Compiling the lot to match one response put
+    /// most of the corpus in memory for a scan of a web server.
+    #[test]
+    fn a_ports_signatures_are_compiled_only_where_the_response_could_match() {
+        let db = SignatureDb::try_from_definitions(vec![
+            def("acme", vec![9999], &[r"^ACME/([\d.]+)"]),
+            def("zenith", vec![9999], &[r"^ZENITH/([\d.]+)"]),
+        ])
+        .expect("well-formed definitions");
+
+        let found = db
+            .identify(9999, Protocol::Tcp, "ACME/2.1")
+            .expect("the port names it");
+        assert_eq!(found.service.as_deref(), Some("acme"));
+        assert!(found.port_confirmed, "by the port's own signature");
+
+        let compiled: Vec<bool> = db
+            .signatures_for_port(9999)
+            .iter()
+            .map(|&index| db.signature(index).expect("a signature").is_compiled())
+            .collect();
+        assert_eq!(compiled, [true, false], "ZENITH is nowhere in the response");
     }
 
     /// And the checks are the build's, so a definition that would fail the build

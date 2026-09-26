@@ -224,6 +224,13 @@ impl Signature {
         self.compiled();
     }
 
+    /// Whether the regex has been compiled, for a test that has to see what a
+    /// match left compiled.
+    #[cfg(test)]
+    pub(crate) fn is_compiled(&self) -> bool {
+        self.compiled.get().is_some()
+    }
+
     fn compiled(&self) -> Option<&CompiledPattern> {
         self.compiled
             .get_or_init(
