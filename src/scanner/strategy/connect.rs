@@ -54,8 +54,8 @@ use crate::model::ip::set::IpSet;
 use crate::model::port::discovery::{Discovery, ScanResponse};
 use crate::model::port::{Port, PortState, Protocol};
 use crate::model::target::PlannedTarget;
-use crate::report::ScannerKind;
 use crate::report::StopReason;
+use crate::report::{Pass, ScannerKind};
 use crate::scanner::audit::ProbeAudit;
 use crate::scanner::dispatcher::dispatch_addresses_of;
 use crate::scanner::handle::ScanHandle;
@@ -708,6 +708,20 @@ pub async fn scan(
     // second askings they left owed.
     pool.drain().await;
     let audit = pool.into_audit();
+    // Identification runs inside this walk rather than as a pass after it, so
+    // a stop that came while it ran ended the identifications in flight and
+    // left every port it had not reached unidentified. Named as the pass it
+    // cut where the scan identifies what it finds and found something open.
+    if detection.connects()
+        && ctx.handle.should_stop()
+        && ctx.store.iter().any(|host| {
+            host.value()
+                .ports()
+                .any(|port| port.protocol() == Protocol::Tcp && port.state() == PortState::Open)
+        })
+    {
+        ctx.stopping_before(Pass::Services);
+    }
     crowds.ask_again(&ctx, ScannerKind::Connect).await;
     tarpits.report(&ctx, ScannerKind::Connect);
     shortfall.report(&ctx, ScannerKind::Connect, "port", "ports");

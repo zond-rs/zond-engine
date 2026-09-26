@@ -1382,13 +1382,15 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
                 if count == "1" { "target" } else { "targets" }
             ))
         });
+        let cut = (!phase.passes_cut.is_empty())
+            .then(|| esc(&format!("{} not finished", phase.passes_cut.join(", "))));
         fact(
             out,
             "stopped",
             &format!(
                 "{}{}",
                 esc(why),
-                dim(&unreached.into_iter().collect::<Vec<_>>())
+                dim(&unreached.into_iter().chain(cut).collect::<Vec<_>>())
             ),
         )?;
     }
@@ -1857,6 +1859,9 @@ fn shortfalls(report: &ScanReport) -> Vec<&'static str> {
     if report.unreached() > 0 {
         causes.push("targets were never asked");
     }
+    if !report.passes_cut().is_empty() {
+        causes.push("a stop cut passes over the findings short");
+    }
     causes
 }
 
@@ -2233,6 +2238,7 @@ mod tests {
         for cause in [
             "a strategy failed",
             "a strategy was cut short by a limit",
+            "a stop cut passes over the findings short",
             "a host's time budget ran out",
             "addresses were never decided",
         ] {

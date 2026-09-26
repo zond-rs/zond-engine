@@ -633,6 +633,7 @@ struct PhaseDto {
     liveness_skipped: Option<String>,
     silent: Vec<RangeDto>,
     stopped: Option<String>,
+    passes_cut: Vec<String>,
     unreached: Option<String>,
     unheard_probes: Option<String>,
     origin: Option<PhaseOriginDto>,
@@ -654,6 +655,9 @@ impl PhaseDto {
         }
         if let Some(stopped) = &self.stopped {
             known(wire::stop_reason(stopped), "a stop reason", stopped)?;
+        }
+        for pass in &self.passes_cut {
+            known(wire::pass(pass), "a pass", pass)?;
         }
 
         Ok(PhaseRecord {
@@ -709,6 +713,7 @@ impl PhaseDto {
                 .map(RangeDto::record)
                 .collect::<Result<_, _>>()?,
             stopped: self.stopped,
+            passes_cut: self.passes_cut,
             unreached: self
                 .unreached
                 .as_deref()
@@ -2368,6 +2373,11 @@ mod tests {
             );
             assert_eq!(after.probe_stats().len(), before.probe_stats().len());
             assert_eq!(
+                after.passes_cut(),
+                before.passes_cut(),
+                "what a stop left of the passes is ground the phase did not cover"
+            );
+            assert_eq!(
                 after.reached_by_connect(),
                 before.reached_by_connect(),
                 "which of a raw phase's evidence is connect evidence is part of what it covered"
@@ -2461,6 +2471,7 @@ mod tests {
             liveness_skipped: Some(LivenessSkip::PortsNoDearer),
             silent: vec![IpRange::V4(Ipv4Range::new(at(5), at(6)).expect("a range"))],
             stopped: None,
+            passes_cut: Vec::new(),
             unreached: 0,
             unheard_probes: 2,
             probes: Vec::new(),

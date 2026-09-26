@@ -913,11 +913,26 @@
           }
         },
         "stopped": {
-          "description": "Why the scan was stopped while this phase ran: `aborted`, the caller asked, or `timed_out`, the scan's own budget ran out. Absent for a phase that ended on its own, and for every `listen` phase, which a stop ends rather than cuts short. A marker rather than a verdict: what a stop cost is `unreached`, the ports on their hosts as `unasked` and `undecided`, and a phase stopped once it had asked everything is complete.",
+          "description": "Why the scan was stopped while this phase ran: `aborted`, the caller asked, or `timed_out`, the scan's own budget ran out. Absent for a phase that ended on its own, and for every `listen` phase, which a stop ends rather than cuts short. A marker rather than a verdict: what a stop cost is `unreached`, the ports on their hosts as `unasked`, `undecided` and `passes_cut`, and a phase stopped once it had asked everything and run every pass is complete.",
           "enum": [
             "aborted",
             "timed_out"
           ]
+        },
+        "passes_cut": {
+          "description": "The passes over this phase's findings that a stop skipped or cut short, in the order a scan runs them: `services` identifying what listens behind each open port, `detections` running the corpus over them, `tls` enumerating what each TLS port accepts, `os` asking each host what it runs, `traceroute`, `filters` characterising the filter in front of each host, and `ip_protocols`. Only a pass the scan was asked to run and had something to run over. Absent where no stop cut one, which is every phase that was not stopped and most that were stopped while their probes still had ground to cover. Each is ground the phase covered less of than it set out to, as a port never asked is, and a later sitting of the same job runs it again over every host this one found.",
+          "type": "array",
+          "items": {
+            "enum": [
+              "services",
+              "detections",
+              "tls",
+              "os",
+              "traceroute",
+              "filters",
+              "ip_protocols"
+            ]
+          }
         },
         "unreached": {
           "description": "How many of this port phase's targets it never asked and holds on no host: never reached by its walk because the scan was stopped first, passed for an address its liveness pass reached no verdict on, or left unasked at an address it names `undecided`. Absent when none were, which is every phase that asked everything it was handed and every phase that is not a `port_scan`. A count rather than a list: what a stop leaves is scattered across the plan, and every target the phase was handed is probed, on its host as `unasked`, counted here, or settled unprobed for an address its liveness pass found silent or could not reach. The record of this phase: what the job as a whole has left is the document's own `unreached`.",

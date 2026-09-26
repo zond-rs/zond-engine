@@ -81,7 +81,7 @@ use crate::model::finding::Finding;
 use crate::model::ip::scoped::ScopedIp;
 use crate::model::port::{PortState, Protocol};
 use crate::record::{DetectionIdRecord, wire};
-use crate::report::ScannerKind;
+use crate::report::{Pass, ScannerKind};
 use crate::scanner::pool::ProbePool;
 use crate::scanner::session::{ScanContext, Stage, Tapes};
 
@@ -191,6 +191,11 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
     if targets.is_empty() {
         return;
     }
+    // A stopped scan runs nothing further, and the report names the pass it
+    // left with ports in front of it.
+    if ctx.stopping_before(Pass::Detections) {
+        return;
+    }
 
     ctx.enter_stage(Stage::Detections, Some(targets.len() as u64));
 
@@ -224,7 +229,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         std::collections::HashMap::new();
 
     for target in targets {
-        if ctx.handle.should_stop() {
+        if ctx.stopping_before(Pass::Detections) {
             break;
         }
         // Nothing further is asked of a host that has spent its budget. A

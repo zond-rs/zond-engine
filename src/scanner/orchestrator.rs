@@ -57,7 +57,7 @@ use crate::model::{
     target::{PlannedTarget, TargetIndex, TargetMap, TargetSet},
     technique::{SctpScanTechnique, TcpScanTechnique},
 };
-use crate::report::{ScannerKind, TargetScope};
+use crate::report::{Pass, ScannerKind, TargetScope};
 use crate::scanner::pool::ProbePool;
 use crate::scanner::rdns::HostnameResolver;
 use crate::scanner::session::{ScanContext, Stage};
@@ -951,23 +951,49 @@ pub(super) struct BuiltPortScan {
     reached_by_connect: bool,
 }
 
-/// Whether the scan was asked to stop, or ran out of budget, before a pass
-/// that sends anything began.
+/// Whether the scan was asked to stop, or ran out of budget, before `pass`
+/// began, recording the pass as cut by the stop where some host was owed it.
 ///
-/// Every such pass asks this first, ahead of announcing its stage: a scan the
-/// caller stopped is owed a prompt end and nothing further on the wire, and a
-/// pass that only checked its stop between the hosts it probes would still
-/// open its sockets, announce itself and send its first burst. The passes that
-/// only read the store, correlation and the rest, run whatever happened, since
-/// what they conclude is part of the partial report a stop still produces.
-fn stopped(ctx: &ScanContext) -> bool {
-    ctx.handle.should_stop()
+/// Every pass that sends anything asks this first, ahead of announcing its
+/// stage: a scan the caller stopped is owed a prompt end and nothing further
+/// on the wire, and a pass that only checked its stop between the hosts it
+/// probes would still open its sockets, announce itself and send its first
+/// burst. The passes that only read the store, correlation and the rest, run
+/// whatever happened, since what they conclude is part of the partial report
+/// a stop still produces.
+///
+/// A pass these ask about asks something of a host that answered, so one is
+/// cut where a host is up and owed the passes; see
+/// [`ScanPhase::passes_cut`](crate::report::ScanPhase::passes_cut). Asked
+/// before the pass works out its own targets, which for some of them files
+/// what it could not reach, so a stopped scan is not charged with that too.
+fn stopped(ctx: &ScanContext, pass: Pass) -> bool {
+    stopped_with(ctx, pass, || {
+        ctx.hosts_owed_passes().into_iter().any(|key| {
+            !ctx.host_expired(key.addr())
+                && ctx
+                    .read_host(&key, |host| host.status().is_up())
+                    .unwrap_or(false)
+        })
+    })
+}
+
+/// [`stopped`], for a pass that knows more closely which hosts it is for:
+/// `owed` says whether it had anything to ask.
+fn stopped_with(ctx: &ScanContext, pass: Pass, owed: impl FnOnce() -> bool) -> bool {
+    if !ctx.handle.should_stop() {
+        return false;
+    }
+    if owed() {
+        ctx.stopping_before(pass);
+    }
+    true
 }
 
 /// Drives one port-scan strategy to completion. It streams targets through the
-/// strategy, and when the strategy succeeds and the scan was not aborted, lets
-/// the strategy run its own service-detection pass (a no-op for strategies that
-/// fingerprint inline).
+/// strategy, and when the strategy succeeds, lets the strategy run its own
+/// service-detection pass (a no-op for strategies that fingerprint inline) and
+/// then the detections, each of which runs nothing once the scan is stopping.
 ///
 /// A strategy failure is reported on the event stream, tagged with the
 /// strategy's own [`ScannerKind`], and otherwise swallowed so the surrounding
@@ -982,15 +1008,15 @@ pub(super) async fn run_port_scan(
     let kind = scanner.kind();
     match scanner.scan(rx).await {
         Ok(()) => {
-            if !ctx.handle.should_stop() {
-                scanner.detect_services(ctx).await;
-            }
+            // Each pass asks after the stop itself, once it knows it has ports
+            // in front of it, so a stopped scan opens nothing further and the
+            // report names what the stop left rather than a pass that had
+            // nothing to do.
+            scanner.detect_services(ctx).await;
             // Active detections run over the services just identified, on the same
             // terms service detection did: after it, and only if the scan is not
             // stopping.
-            if !ctx.handle.should_stop() {
-                super::detection::detect(ctx, service_detection, detection).await;
-            }
+            super::detection::detect(ctx, service_detection, detection).await;
         }
         Err(e) => ctx.record_failure(kind, e.to_string()),
     }
@@ -1107,7 +1133,7 @@ pub(super) async fn run_active_os_series(
     tuning: ProbeTuning,
     caps: ScanCapabilities,
 ) {
-    if !os_detection.is_active() || stopped(ctx) {
+    if !os_detection.is_active() || stopped(ctx, Pass::Os) {
         return;
     }
 
@@ -1235,7 +1261,7 @@ pub(super) async fn run_active_os_series(
 /// as `Linux · Debian 13` has been named perfectly well and still has nothing to
 /// say about its kernel, so it is exactly the host worth asking.
 pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetection) {
-    if !os_detection.is_active() || stopped(ctx) {
+    if !os_detection.is_active() || stopped(ctx, Pass::Os) {
         return;
     }
 
@@ -1301,7 +1327,7 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
     );
 
     for target in targets {
-        if ctx.handle.should_stop() {
+        if ctx.stopping_before(Pass::Os) {
             break;
         }
         let egress = ctx.egress_toward(target.addr());
@@ -1355,7 +1381,7 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
 /// the device-info question asks what the machine is rather than what it is
 /// called, of the host the scan is already probing.
 pub(super) async fn run_active_os_mdns(ctx: &ScanContext, os_detection: OsDetection, names: bool) {
-    if !os_detection.is_active() || stopped(ctx) {
+    if !os_detection.is_active() || stopped(ctx, Pass::Os) {
         return;
     }
 
@@ -1388,7 +1414,7 @@ pub(super) async fn run_active_os_mdns(ctx: &ScanContext, os_detection: OsDetect
     );
 
     for (target, hostname) in targets {
-        if ctx.handle.should_stop() {
+        if ctx.stopping_before(Pass::Os) {
             break;
         }
         let egress = ctx.egress_toward(target.addr());
@@ -1544,7 +1570,7 @@ pub(super) async fn run_traceroute(
     cfg: &crate::config::ZondConfig,
     caps: ScanCapabilities,
 ) {
-    if !cfg.traceroute || stopped(ctx) {
+    if !cfg.traceroute || stopped(ctx, Pass::Traceroute) {
         return;
     }
 
@@ -1686,7 +1712,7 @@ pub(super) async fn run_characterise(
     cfg: &crate::config::ZondConfig,
     caps: ScanCapabilities,
 ) {
-    if !cfg.characterise || stopped(ctx) {
+    if !cfg.characterise || stopped(ctx, Pass::Filters) {
         return;
     }
 
@@ -1751,7 +1777,7 @@ pub(super) async fn run_characterise(
 /// ports; a host with nothing open is exactly the one worth asking, because a
 /// tunnel endpoint or a router terminates a protocol and listens on nothing.
 pub(super) async fn run_ip_protocols(ctx: &ScanContext, cfg: &crate::config::ZondConfig) {
-    if cfg.ip_protocols.is_empty() || stopped(ctx) {
+    if cfg.ip_protocols.is_empty() || stopped(ctx, Pass::IpProtocols) {
         return;
     }
 
@@ -1802,7 +1828,7 @@ pub(super) async fn run_ip_protocols(ctx: &ScanContext, cfg: &crate::config::Zon
 /// question is put again before every offer of a walk, so a budget that runs
 /// out part way through one ends it there.
 pub(super) async fn run_tls_enumeration(ctx: &ScanContext, cfg: &crate::config::ZondConfig) {
-    if !cfg.tls_enumeration || stopped(ctx) {
+    if !cfg.tls_enumeration || stopped_with(ctx, Pass::Tls, || !tls_ports(ctx).is_empty()) {
         return;
     }
 
@@ -1844,7 +1870,7 @@ pub(super) async fn run_tls_enumeration(ctx: &ScanContext, cfg: &crate::config::
     );
 
     for (address, number) in targets {
-        if ctx.handle.should_stop() {
+        if ctx.stopping_before(Pass::Tls) {
             break;
         }
         if ctx.host_expired(address.addr()) {
@@ -1909,7 +1935,7 @@ async fn enumerate_one(
     let socket = address.to_socket_addr(number)?;
     let ip = address.addr();
     let support = crate::fingerprint::enumerate_tls_while(socket, ctx.egress_toward(ip), || {
-        !ctx.handle.should_stop() && !ctx.host_expired(ip)
+        !ctx.stopping_before(Pass::Tls) && !ctx.host_expired(ip)
     })
     .await;
     // An endpoint that accepted nothing and left no walk unfinished is left
@@ -1971,7 +1997,7 @@ pub(super) async fn run_active_os_probe(
     tuning: ProbeTuning,
     caps: ScanCapabilities,
 ) {
-    if !os_detection.is_active() || stopped(ctx) {
+    if !os_detection.is_active() || stopped(ctx, Pass::Os) {
         return;
     }
 
@@ -2208,7 +2234,7 @@ pub(super) async fn run_port_phase(
     // them with. The walk still runs, stopping at its first target, since
     // that is what accounts for the plan as unreached rather than leaving it
     // unsaid.
-    if stopped(ctx) {
+    if ctx.handle.should_stop() {
         let (rx, walk) = super::dispatcher::Dispatcher::new(target_map)
             .resuming(settled)
             .spawn(ctx);
@@ -2567,6 +2593,33 @@ fn push_single(set: &mut IpSet, ip: IpAddr, zone: Option<u32>) {
 #[cfg(test)]
 mod tests {
     use crate::testing::loopback::accept_from_this_process;
+
+    /// **A pass a stop skipped is named where a host was owed it, and only
+    /// there.** A scan whose budget ran out as its probes finished has asked
+    /// no host what it runs or how to reach it, and a report that did not say
+    /// so reads as one where those questions had no answer. A scan that found
+    /// no host lost nothing to the stop, and naming the pass there would call
+    /// a complete scan partial.
+    #[test]
+    fn a_pass_a_stop_skipped_is_named_only_where_a_host_was_owed_it() {
+        use crate::model::host::HostStatus;
+        use crate::scanner::session::ScanSession;
+        use std::net::Ipv4Addr;
+
+        let (_session, ctx) = ScanSession::new();
+        assert!(!stopped(&ctx, Pass::Traceroute), "not stopped");
+        ctx.handle.abort();
+        assert!(stopped(&ctx, Pass::Traceroute));
+        assert!(ctx.take_passes_cut().is_empty(), "no host was owed it");
+
+        ctx.update_host(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), |host| {
+            host.set_status(HostStatus::Up);
+        });
+        assert!(stopped(&ctx, Pass::Traceroute));
+        assert!(stopped(&ctx, Pass::Os));
+        assert!(stopped(&ctx, Pass::Os));
+        assert_eq!(ctx.take_passes_cut(), [Pass::Os, Pass::Traceroute]);
+    }
 
     /// **A scan forbidden name queries asks no host its name.** The mDNS pass
     /// learns what a nameless host calls itself by a reverse-name query, and a

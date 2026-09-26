@@ -124,9 +124,9 @@ pub use crate::report::ENGINE_VERSION;
 pub use crate::record::wire::{
     attachment_source_name, confidence_name, detection_ceiling_name, detection_class_name,
     filtering_name, host_status_name, ip_protocol_state_name, liveness_skip_name,
-    network_role_name, port_scope_name, port_state_name, protocol_name, reference_kind_name,
-    scan_kind_name, scan_response_name, scanner_kind_name, severity_name, status_protocol_name,
-    stop_reason_name, tcp_flags_name,
+    network_role_name, pass_name, port_scope_name, port_state_name, protocol_name,
+    reference_kind_name, scan_kind_name, scan_response_name, scanner_kind_name, severity_name,
+    status_protocol_name, stop_reason_name, tcp_flags_name,
 };
 
 /// The wire name of a send mode.
@@ -654,11 +654,19 @@ pub struct PhaseDto<'a> {
     ///
     /// Left out for a phase that ended on its own, and for every listen phase,
     /// which a stop ends rather than cuts short. A marker rather than a verdict:
-    /// what a stop cost is `unreached`, the ports on their hosts as `unasked`
-    /// and `undecided`, and a phase stopped once it had asked everything is
-    /// complete.
+    /// what a stop cost is `unreached`, the ports on their hosts as `unasked`,
+    /// `undecided` and `passes_cut`, and a phase stopped once it had asked
+    /// everything and run every pass is complete.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stopped: Option<&'static str>,
+    /// The passes over the phase's findings a stop skipped or cut short, in
+    /// the order a scan runs them: `services`, `detections`, `tls`, `os`,
+    /// `traceroute`, `filters`, `ip_protocols`. Only a pass the scan was asked
+    /// to run and had something to run over.
+    ///
+    /// Left out when empty, which is every phase no stop cut.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub passes_cut: Vec<&'static str>,
     /// How many of this port phase's targets it never asked and holds on no
     /// host, as a decimal string: never reached by its walk because the scan
     /// was stopped first, passed for an address its liveness pass reached no
@@ -789,6 +797,7 @@ impl<'a> PhaseDto<'a> {
             liveness_skipped: phase.liveness_skipped().map(liveness_skip_name),
             silent: phase.silent().iter().map(RangeDto::new).collect(),
             stopped: phase.stopped().map(stop_reason_name),
+            passes_cut: phase.passes_cut().iter().copied().map(pass_name).collect(),
             unreached: (phase.unreached() > 0).then(|| phase.unreached().to_string()),
             unheard_probes: (phase.unheard_probes() > 0)
                 .then(|| phase.unheard_probes().to_string()),

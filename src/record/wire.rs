@@ -47,7 +47,7 @@ use crate::model::port::discovery::ScanResponse;
 use crate::model::port::{PortSet, PortState, Protocol};
 use crate::protocols::tcp;
 use crate::report::ScannerKind;
-use crate::report::{AttachmentSource, LivenessSkip, PortScope, ScanKind, StopReason};
+use crate::report::{AttachmentSource, LivenessSkip, Pass, PortScope, ScanKind, StopReason};
 
 /// The prefix that marks a name a strategy supplied rather than one this engine
 /// defines.
@@ -614,6 +614,33 @@ pub fn stop_reason(name: &str) -> Option<StopReason> {
     })
 }
 
+/// A pass over a phase's findings.
+pub fn pass_name(pass: Pass) -> &'static str {
+    match pass {
+        Pass::Services => "services",
+        Pass::Detections => "detections",
+        Pass::Tls => "tls",
+        Pass::Os => "os",
+        Pass::Traceroute => "traceroute",
+        Pass::Filters => "filters",
+        Pass::IpProtocols => "ip_protocols",
+    }
+}
+
+/// [`pass_name`] read back.
+pub fn pass(name: &str) -> Option<Pass> {
+    Some(match name {
+        "services" => Pass::Services,
+        "detections" => Pass::Detections,
+        "tls" => Pass::Tls,
+        "os" => Pass::Os,
+        "traceroute" => Pass::Traceroute,
+        "filters" => Pass::Filters,
+        "ip_protocols" => Pass::IpProtocols,
+        _ => return None,
+    })
+}
+
 /// The wire name of a phase's port scope.
 ///
 /// The set itself travels separately, as a port specification; this names which
@@ -737,6 +764,10 @@ mod tests {
 
         for value in StopReason::ALL {
             assert_eq!(stop_reason(stop_reason_name(value)), Some(value));
+        }
+
+        for value in Pass::ALL {
+            assert_eq!(pass(pass_name(value)), Some(value));
         }
 
         for value in Protocol::ALL {

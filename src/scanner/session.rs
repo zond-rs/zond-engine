@@ -92,7 +92,7 @@ use crate::model::ip::set::{IpSet, Positions};
 use crate::model::mac::MacAddr;
 use crate::model::port::{PortState, Protocol};
 use crate::report::ScannerKind;
-use crate::report::{Attachment, AttachmentSource, ProbeStats, Refusal, ScannerFailure};
+use crate::report::{Attachment, AttachmentSource, Pass, ProbeStats, Refusal, ScannerFailure};
 use crate::scanner::handle::ScanHandle;
 
 /// What a scan is working on.
@@ -1033,6 +1033,27 @@ impl RateLimitedLog {
     }
 }
 
+/// The passes a stop skipped or cut short, gathered across a phase.
+///
+/// A set, since several strategies run the same pass: the OS pass is three
+/// separate askings, and a stop that cuts all three cut one pass.
+#[derive(Debug, Default)]
+pub(crate) struct PassLog {
+    entries: Mutex<std::collections::BTreeSet<Pass>>,
+}
+
+impl PassLog {
+    fn insert(&self, pass: Pass) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.insert(pass);
+    }
+
+    fn drain(&self) -> Vec<Pass> {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *entries).into_iter().collect()
+    }
+}
+
 /// Addresses whose own budget ran out, gathered across a phase.
 ///
 /// The same shape as [`UnroutableLog`] and for a related purpose: both are the
@@ -1603,6 +1624,8 @@ pub struct ScanContext {
     pub(crate) unroutable: Arc<UnroutableLog>,
     /// Addresses the scan stopped working on because their budget ran out.
     pub(crate) timed_out: Arc<TimedOutLog>,
+    /// The passes a stop skipped or cut short.
+    pub(crate) passes_cut: Arc<PassLog>,
     /// Addresses whose ICMP errors the scan found rate-limited.
     pub(crate) icmp_rate_limited: Arc<RateLimitedLog>,
     /// Addresses a raw phase reached by TCP connect instead.
@@ -2475,6 +2498,27 @@ impl ScanContext {
         self.timed_out.drain()
     }
 
+    /// Whether the scan is stopping, recording `pass` as cut by the stop if
+    /// it is.
+    ///
+    /// Asked by a pass that has work in front of it, before it begins and
+    /// between the items it works through, so the report names the pass a
+    /// stop left rather than reading as one whose findings had nothing more
+    /// to say; see [`ScanPhase::passes_cut`](crate::report::ScanPhase::passes_cut).
+    /// A pass with nothing to do asks nothing, since a stop cost it nothing.
+    pub(crate) fn stopping_before(&self, pass: Pass) -> bool {
+        let stopping = self.handle.should_stop();
+        if stopping {
+            self.passes_cut.insert(pass);
+        }
+        stopping
+    }
+
+    /// The passes a stop has cut so far, taken, in the order a scan runs them.
+    pub(crate) fn take_passes_cut(&self) -> Vec<Pass> {
+        self.passes_cut.drain()
+    }
+
     /// Records that `address` rate-limited the ICMP errors a scanner reads
     /// its verdicts from, so the ports it had no allowance to answer for
     /// read as silent; see
@@ -3196,6 +3240,7 @@ impl SessionBuilder {
             probe_stats: Arc::new(ProbeStatsLog::default()),
             unroutable: Arc::new(UnroutableLog::default()),
             timed_out: Arc::new(TimedOutLog::default()),
+            passes_cut: Arc::new(PassLog::default()),
             icmp_rate_limited: Arc::new(RateLimitedLog::default()),
             reached_by_connect: Arc::new(ConnectLog::default()),
             silent: Arc::new(SilenceLog::default()),

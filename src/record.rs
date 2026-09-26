@@ -1430,6 +1430,13 @@ pub struct PhaseRecord {
     /// absent: the marker qualifies the findings and changes none of them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped: Option<String>,
+    /// The passes a stop skipped or cut short, by wire name.
+    ///
+    /// Skipped when empty, which is every sitting no stop cut, and defaulted
+    /// on the way in. A name this build does not know is dropped as it is
+    /// read back: it names a pass this build does not run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passes_cut: Vec<String>,
     /// How many of a port sitting's targets it never asked and holds on no
     /// host.
     ///
@@ -1601,6 +1608,11 @@ impl From<&ScanPhase> for PhaseRecord {
             stopped: phase
                 .stopped()
                 .map(|reason| wire::stop_reason_name(reason).to_owned()),
+            passes_cut: phase
+                .passes_cut()
+                .iter()
+                .map(|pass| wire::pass_name(*pass).to_owned())
+                .collect(),
             unreached: phase.unreached(),
             unheard_probes: phase.unheard_probes(),
             probe_stats: phase
@@ -1662,6 +1674,11 @@ impl From<&PhaseRecord> for ScanPhase {
                 .filter_map(RangeRecord::rebuild)
                 .collect(),
             stopped: record.stopped.as_deref().and_then(wire::stop_reason),
+            passes_cut: record
+                .passes_cut
+                .iter()
+                .filter_map(|name| wire::pass(name))
+                .collect(),
             unreached: record.unreached,
             unheard_probes: record.unheard_probes,
             probes: record.probe_stats.iter().map(ProbeStats::from).collect(),

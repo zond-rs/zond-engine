@@ -401,6 +401,9 @@ pub(crate) fn report() -> ScanReport {
     // writer and reader is held to both.
     ctx.record_unreached(1_024);
     ctx.handle.abort();
+    // And a pass over the findings the stop left, filed the way a pass files
+    // one: by asking whether the scan is stopping before it begins.
+    assert!(ctx.stopping_before(crate::report::Pass::Tls));
 
     recorder.finish(&ctx)
 }
@@ -477,6 +480,7 @@ fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
         liveness_skipped: None,
         silent: Vec::new(),
         stopped: None,
+        passes_cut: Vec::new(),
         unreached: 0,
         unheard_probes: 0,
         probes: Vec::new(),

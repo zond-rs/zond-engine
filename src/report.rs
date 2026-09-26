@@ -172,6 +172,71 @@ impl LivenessSkip {
     pub const ALL: [LivenessSkip; 3] = [Self::AssumeUp, Self::IdleScan, Self::PortsNoDearer];
 }
 
+/// A pass a scan runs over what its probes found, named for what a stop can
+/// cut short.
+///
+/// A phase's probes decide which hosts are there and which ports answer. The
+/// passes run afterwards over those findings, and each asks something the
+/// caller chose to have asked: what service is behind a port, what the
+/// detections find there, what a TLS port accepts, what the host runs, the
+/// route to it, the filter in front of it, the IP protocols its stack takes.
+/// A scan stopped once its probes are done, by its budget or by the caller,
+/// leaves every one of them it had not finished with nothing to say, and a
+/// report that did not name them would read as one whose ports had nothing
+/// more to tell. See [`ScanPhase::passes_cut`].
+///
+/// Declared in the order a scan runs them, which is the order a report lists
+/// them in.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Pass {
+    /// Identifying what is listening behind each open port.
+    Services,
+    /// Running the detection corpus over the services identified.
+    Detections,
+    /// Asking each TLS port which versions and suites it accepts.
+    Tls,
+    /// Asking each host what it runs, beyond what its replies already said.
+    Os,
+    /// Tracing the path to each host.
+    Traceroute,
+    /// Characterising the filter in front of each host.
+    Filters,
+    /// Asking each host which IP protocols its stack takes.
+    IpProtocols,
+}
+
+impl Pass {
+    /// Every pass this build names, in the order a scan runs them.
+    ///
+    /// Here for the reason [`ScanKind::ALL`] is: the enum is
+    /// `#[non_exhaustive]`, and the export conformance suite reads this list
+    /// against the published schema's own.
+    pub const ALL: [Pass; 7] = [
+        Self::Services,
+        Self::Detections,
+        Self::Tls,
+        Self::Os,
+        Self::Traceroute,
+        Self::Filters,
+        Self::IpProtocols,
+    ];
+}
+
+impl fmt::Display for Pass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Pass::Services => "service detection",
+            Pass::Detections => "detections",
+            Pass::Tls => "TLS enumeration",
+            Pass::Os => "OS detection",
+            Pass::Traceroute => "traceroute",
+            Pass::Filters => "filter characterisation",
+            Pass::IpProtocols => "IP protocol scan",
+        })
+    }
+}
+
 /// Which ports a phase walked, and whether it walked the same ones everywhere.
 ///
 /// A scope records the addresses a phase covered, and for a port scan that is
@@ -1803,6 +1868,9 @@ pub struct PhaseParts {
     /// Why the scan was stopped while the phase was running, or `None`. See
     /// [`ScanPhase::stopped`].
     pub stopped: Option<StopReason>,
+    /// The passes over what the probes found that a stop skipped or cut
+    /// short. See [`ScanPhase::passes_cut`].
+    pub passes_cut: Vec<Pass>,
     /// How many of a port phase's targets it never asked and holds on no
     /// host. See [`ScanPhase::unreached`].
     pub unreached: u128,
@@ -1842,6 +1910,12 @@ impl ScanPhase {
             liveness_skipped: parts.liveness_skipped,
             silent: parts.silent,
             stopped: parts.stopped,
+            passes_cut: {
+                let mut passes = parts.passes_cut;
+                passes.sort_unstable();
+                passes.dedup();
+                passes
+            },
             unreached: parts.unreached,
             unheard_probes: parts.unheard_probes,
             probes: parts.probes,
@@ -1921,6 +1995,9 @@ pub struct ScanPhase {
     /// Why the scan was stopped while this phase ran. See
     /// [`stopped`](Self::stopped).
     stopped: Option<StopReason>,
+    /// The passes a stop skipped or cut short, in the order a scan runs them.
+    /// See [`passes_cut`](Self::passes_cut).
+    passes_cut: Vec<Pass>,
     /// Targets it never asked and holds on no host. See
     /// [`unreached`](Self::unreached).
     unreached: u128,
@@ -2136,15 +2213,36 @@ impl ScanPhase {
     /// rather than something that cut one short.
     ///
     /// A marker, not a verdict on the findings. A phase stopped once it had
-    /// asked everything is as complete as one that was not, and a stop that
-    /// did cut it short shows as what it cut: [`unreached`](Self::unreached)
-    /// targets, unasked ports and undecided addresses, which is what
+    /// asked everything and run every pass over the answers is as complete as
+    /// one that was not, and a stop that did cut it short shows as what it
+    /// cut: [`unreached`](Self::unreached) targets, unasked ports, undecided
+    /// addresses and [`passes_cut`](Self::passes_cut), which is what
     /// [`ScanReport::is_partial`] reads. What this adds is the reason, which
     /// none of those carries: a reader told the scan was stopped knows a
     /// short count for the budget or the interruption it was, rather than
     /// having to guess it from the probe counters.
     pub fn stopped(&self) -> Option<StopReason> {
         self.stopped
+    }
+
+    /// The passes over what the probes found that a stop skipped or cut
+    /// short, in the order a scan runs them. Empty for a phase no stop cut,
+    /// and for one stopped before any pass had work to do.
+    ///
+    /// Only a pass the scan was asked to run and had something to run over:
+    /// a scan with TLS enumeration off, or with no TLS port found, names no
+    /// TLS pass here however it was stopped. Such a pass is as much ground
+    /// the phase covered less of than it set out to as a port it never
+    /// asked, which is why [`ScanReport::is_partial`] counts it: a scan whose
+    /// budget ran out as the last port answered, before one service was
+    /// identified, has findings narrower than it was asked for.
+    ///
+    /// A pass a detection's own budget or the file limit cut short on some
+    /// ports is not here: that is a [failure](Self::failures) marked cut
+    /// short, naming the port. This names the pass a stop of the whole scan
+    /// left, which has no one port to name.
+    pub fn passes_cut(&self) -> &[Pass] {
+        &self.passes_cut
     }
 
     /// How many of this port phase's targets it never asked and holds on no
@@ -2582,11 +2680,11 @@ impl ScanReport {
     /// ([`refusals`](Self::refusals)), a host its own budget left early and no
     /// phase finished ([`timed_out`](Self::timed_out)), an address no phase
     /// reached a verdict on ([`undecided`](Self::undecided)), a port
-    /// recorded [`Unasked`](crate::model::port::PortState::Unasked), or a
-    /// target never asked that no host holds ([`unreached`](Self::unreached)).
-    /// Each of
-    /// those is the report covering less than it set out to, and a consumer
-    /// handed `false` for any of them would take a cut-short run as a
+    /// recorded [`Unasked`](crate::model::port::PortState::Unasked), a
+    /// target never asked that no host holds ([`unreached`](Self::unreached)),
+    /// or a pass over the findings a stop left ([`passes_cut`](Self::passes_cut)).
+    /// Each of those is the report covering less than it set out to, and a
+    /// consumer handed `false` for any of them would take a cut-short run as a
     /// complete one.
     ///
     /// Read over the report rather than phase by phase, where the report
@@ -2616,6 +2714,34 @@ impl ScanReport {
             || !self.undecided().is_empty()
             || self.left_ports_unasked()
             || self.unreached() > 0
+            || !self.passes_cut().is_empty()
+    }
+
+    /// The passes a stop left that no later sitting of the same account ran,
+    /// in the order a scan runs them.
+    ///
+    /// Stands until a later phase of the same kind from the same account, on
+    /// the terms [`unreached`](Self::unreached) gives: a resumed job's next
+    /// sitting runs the passes over every host the stopped one found, since
+    /// a sitting stopped before its end leaves its hosts owed them, so what
+    /// that sitting left is closed unless it too was cut. Across accounts a
+    /// pass stands, since another document's scan of the same ground says
+    /// nothing about which hosts its passes reached.
+    pub fn passes_cut(&self) -> Vec<Pass> {
+        let mut passes: Vec<Pass> = self
+            .phases
+            .iter()
+            .enumerate()
+            .filter(|(at, phase)| {
+                !self.phases[at + 1..]
+                    .iter()
+                    .any(|later| later.kind == phase.kind && later.origin == phase.origin)
+            })
+            .flat_map(|(_, phase)| phase.passes_cut.iter().copied())
+            .collect();
+        passes.sort_unstable();
+        passes.dedup();
+        passes
     }
 
     /// How many port targets this report's phases never asked and hold on no
@@ -3344,6 +3470,7 @@ mod tests {
             liveness_skipped: None,
             silent: Vec::new(),
             stopped: None,
+            passes_cut: Vec::new(),
             unreached: 0,
             unheard_probes: 0,
             probes: Vec::new(),
@@ -3743,6 +3870,40 @@ mod tests {
         let failure = report.failures().next().expect("filed");
         assert!(failure.is_cut_short());
         assert!(!ScannerFailure::new(ScannerKind::Connect, "refused").is_cut_short());
+    }
+
+    /// A pass over the findings a stop left makes the report partial, since
+    /// the scan covered less than it was asked to, and a later sitting of the
+    /// same job, which runs the passes again over every host the stopped one
+    /// found, closes it. Another document's scan of the same ground does not.
+    #[test]
+    fn a_pass_a_stop_cut_makes_a_scan_partial_until_a_later_sitting_runs_it() {
+        let stopped = |passes: Vec<Pass>, origin: Option<PhaseOrigin>| {
+            let recorded = phase(ScanKind::PortScan);
+            ScanPhase {
+                passes_cut: passes,
+                origin,
+                ..recorded
+            }
+        };
+
+        let cut = ScanReport::new(stopped(vec![Pass::Detections, Pass::Services], None), []);
+        assert!(cut.is_partial());
+        assert_eq!(cut.passes_cut(), [Pass::Services, Pass::Detections]);
+
+        let mut resumed = cut.clone();
+        resumed.merge(ScanReport::new(stopped(Vec::new(), None), []));
+        assert!(!resumed.is_partial(), "the next sitting ran them");
+
+        let mut merged = cut;
+        merged.merge(ScanReport::new(
+            stopped(
+                Vec::new(),
+                Some(PhaseOrigin::new("0.18").with_label("elsewhere")),
+            ),
+            [],
+        ));
+        assert!(merged.is_partial(), "another account says nothing of them");
     }
 
     /// A journal that could not be written is kept in the report and does not

@@ -131,6 +131,7 @@ impl Opened {
             liveness_skipped: self.liveness_skipped,
             silent: Vec::new(),
             stopped: None,
+            passes_cut: Vec::new(),
             unreached: 0,
             unheard_probes: 0,
             probes: Vec::new(),
@@ -287,6 +288,9 @@ impl PhaseRecorder {
                 ScanKind::Listen => None,
                 _ => ctx.handle.stopped().map(StopReason::from),
             },
+            // Taken whatever the kind, so a context reused for another phase
+            // starts from nothing.
+            passes_cut: ctx.take_passes_cut(),
             // Taken whatever the kind, so a context reused for another phase
             // starts from nothing.
             unreached: u128::from(ctx.take_unreached()),

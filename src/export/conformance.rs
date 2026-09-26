@@ -43,11 +43,11 @@ use crate::model::technique::{SctpScanTechnique, TcpScanTechnique};
 use crate::model::tls::{Interruption, SuiteFault, SuiteStrength, TlsVersion};
 use crate::record::wire::{
     attachment_source_name, confidence_name, detection_class_name, filtering_name,
-    host_status_name, ip_protocol_state_name, liveness_skip_name, network_role_name,
+    host_status_name, ip_protocol_state_name, liveness_skip_name, network_role_name, pass_name,
     port_state_name, protocol_name, scan_kind_name, scanner_kind_name, severity_name,
     stop_reason_name,
 };
-use crate::report::{AttachmentSource, LivenessSkip, ScanKind, ScannerKind, StopReason};
+use crate::report::{AttachmentSource, LivenessSkip, Pass, ScanKind, ScannerKind, StopReason};
 use crate::transport::probe::SendMode;
 
 /// The published schemas, compiled into the test binary so a test cannot pass
@@ -323,6 +323,10 @@ fn enumerations() -> Vec<(&'static str, Vec<String>)> {
             ),
         ),
         (
+            "/$defs/phase/properties/passes_cut/items/enum",
+            named(Pass::ALL.iter().copied().map(pass_name).collect()),
+        ),
+        (
             "/$defs/phase/properties/kind/enum",
             named(ScanKind::ALL.iter().copied().map(scan_kind_name).collect()),
         ),
@@ -542,6 +546,8 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         // of them, and so does every phase that is not a port scan.
         ("phase", "liveness_skipped"),
         ("phase", "origin"),
+        // A phase no stop cut a pass of, which is nearly every phase.
+        ("phase", "passes_cut"),
         // A phase that reached everything the way its privilege says leaves this
         // out, which is most phases and every unprivileged one.
         ("phase", "reached_by_connect"),

@@ -56,7 +56,7 @@ use crate::config::limits::{CONNECT_CONCURRENCY, CONNECT_PROBE_TIMEOUT};
 use crate::detect::contention::HostContention;
 use crate::fingerprint::Fingerprinted;
 use crate::model::port::{Port, PortState, Protocol};
-use crate::report::ScannerKind;
+use crate::report::{Pass, ScannerKind};
 use crate::scanner::pool::ProbePool;
 use crate::scanner::session::{ScanContext, Stage};
 use crate::system::descriptors;
@@ -89,6 +89,11 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
     let targets = fingerprintable_ports(ctx, over, detection, &tarpits);
     tarpits.report(ctx, ScannerKind::Service);
     if targets.is_empty() {
+        return;
+    }
+    // A stopped scan opens nothing further, and the report names the pass it
+    // left with ports in front of it.
+    if ctx.stopping_before(Pass::Services) {
         return;
     }
 
@@ -130,7 +135,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
     );
 
     for target in targets {
-        if ctx.handle.should_stop() {
+        if ctx.stopping_before(Pass::Services) {
             break;
         }
         let address = target.address.addr();
@@ -164,6 +169,9 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
 
     pool.drain().await;
     drop(pool);
+    // A stop that came while ports were being identified ended the ones in
+    // flight, which keep what the port phase recorded and nothing more.
+    ctx.stopping_before(Pass::Services);
     crowds.ask_again(ctx, ScannerKind::Service).await;
 
     quiet.report(ctx, asked);
@@ -1108,6 +1116,24 @@ mod tests {
             0,
             "a level that connects to nothing connected to the port"
         );
+        drop(session);
+    }
+
+    /// A scan stopped with open ports still to identify opens nothing further
+    /// and names the pass it left, so a report whose ports carry no service
+    /// is not read as ports that had none to name.
+    #[tokio::test]
+    async fn a_stop_before_identification_names_the_pass_it_left() {
+        let (session, ctx) = ScanSession::new();
+        let unreachable: IpAddr = "192.0.2.1".parse().expect("a documentation address");
+        ctx.update_host(unreachable, |host| {
+            host.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
+        });
+        ctx.handle.abort();
+
+        detect(&ctx, ServiceDetection::default(), Protocol::Tcp).await;
+
+        assert_eq!(ctx.take_passes_cut(), [crate::report::Pass::Services]);
         drop(session);
     }
 

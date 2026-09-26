@@ -3675,6 +3675,7 @@ pub zond_engine::export::schema::PhaseDto::icmp_rate_limited: alloc::vec::Vec<al
 pub zond_engine::export::schema::PhaseDto::kind: &'static str
 pub zond_engine::export::schema::PhaseDto::liveness_skipped: core::option::Option<&'static str>
 pub zond_engine::export::schema::PhaseDto::origin: core::option::Option<zond_engine::export::schema::PhaseOriginDto<'a>>
+pub zond_engine::export::schema::PhaseDto::passes_cut: alloc::vec::Vec<&'static str>
 pub zond_engine::export::schema::PhaseDto::privileged: core::option::Option<bool>
 pub zond_engine::export::schema::PhaseDto::probe_stats: alloc::vec::Vec<zond_engine::export::schema::ProbeStatsDto>
 pub zond_engine::export::schema::PhaseDto::reached_by_connect: alloc::vec::Vec<zond_engine::export::schema::RangeDto>
@@ -4148,6 +4149,7 @@ pub fn zond_engine::export::schema::host_status_name(zond_engine::model::host::s
 pub fn zond_engine::export::schema::ip_protocol_state_name(zond_engine::model::host::protocol::IpProtocolState) -> &'static str
 pub fn zond_engine::export::schema::liveness_skip_name(zond_engine::report::LivenessSkip) -> &'static str
 pub fn zond_engine::export::schema::network_role_name(zond_engine::model::host::NetworkRole) -> &'static str
+pub fn zond_engine::export::schema::pass_name(zond_engine::report::Pass) -> &'static str
 pub fn zond_engine::export::schema::port_scope_name(&zond_engine::report::PortScope) -> &'static str
 pub fn zond_engine::export::schema::port_state_name(zond_engine::model::port::PortState) -> &'static str
 pub fn zond_engine::export::schema::protocol_name(zond_engine::model::port::Protocol) -> &'static str
@@ -12904,6 +12906,8 @@ pub fn zond_engine::record::wire::network_role(&str) -> core::option::Option<zon
 pub fn zond_engine::record::wire::network_role_name(zond_engine::model::host::NetworkRole) -> &'static str
 pub fn zond_engine::record::wire::os_source(&str) -> core::option::Option<zond_engine::model::host::os::OsSource>
 pub fn zond_engine::record::wire::os_source_name(zond_engine::model::host::os::OsSource) -> &'static str
+pub fn zond_engine::record::wire::pass(&str) -> core::option::Option<zond_engine::report::Pass>
+pub fn zond_engine::record::wire::pass_name(zond_engine::report::Pass) -> &'static str
 pub fn zond_engine::record::wire::port_scope(&str, core::option::Option<zond_engine::model::port::set::PortSet>) -> core::option::Option<zond_engine::report::PortScope>
 pub fn zond_engine::record::wire::port_scope_name(&zond_engine::report::PortScope) -> &'static str
 pub fn zond_engine::record::wire::port_state(&str) -> core::option::Option<zond_engine::model::port::PortState>
@@ -13439,6 +13443,7 @@ pub zond_engine::record::PhaseRecord::icmp_rate_limited: alloc::vec::Vec<core::n
 pub zond_engine::record::PhaseRecord::kind: alloc::string::String
 pub zond_engine::record::PhaseRecord::liveness_skipped: core::option::Option<alloc::string::String>
 pub zond_engine::record::PhaseRecord::origin: core::option::Option<zond_engine::record::PhaseOriginRecord>
+pub zond_engine::record::PhaseRecord::passes_cut: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::record::PhaseRecord::privileged: core::option::Option<bool>
 pub zond_engine::record::PhaseRecord::probe_stats: alloc::vec::Vec<zond_engine::record::ProbeStatsRecord>
 pub zond_engine::record::PhaseRecord::reached_by_connect: alloc::vec::Vec<zond_engine::record::RangeRecord>
@@ -14036,6 +14041,40 @@ impl core::marker::Unpin for zond_engine::report::LivenessSkip
 impl core::marker::UnsafeUnpin for zond_engine::report::LivenessSkip
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::report::LivenessSkip
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::report::LivenessSkip
+#[non_exhaustive] pub enum zond_engine::report::Pass
+pub zond_engine::report::Pass::Detections
+pub zond_engine::report::Pass::Filters
+pub zond_engine::report::Pass::IpProtocols
+pub zond_engine::report::Pass::Os
+pub zond_engine::report::Pass::Services
+pub zond_engine::report::Pass::Tls
+pub zond_engine::report::Pass::Traceroute
+impl zond_engine::report::Pass
+pub const zond_engine::report::Pass::ALL: [zond_engine::report::Pass; 7]
+impl core::clone::Clone for zond_engine::report::Pass
+pub fn zond_engine::report::Pass::clone(&self) -> zond_engine::report::Pass
+impl core::cmp::Eq for zond_engine::report::Pass
+impl core::cmp::Ord for zond_engine::report::Pass
+pub fn zond_engine::report::Pass::cmp(&self, &zond_engine::report::Pass) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::report::Pass
+pub fn zond_engine::report::Pass::eq(&self, &zond_engine::report::Pass) -> bool
+impl core::cmp::PartialOrd for zond_engine::report::Pass
+pub fn zond_engine::report::Pass::partial_cmp(&self, &zond_engine::report::Pass) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::report::Pass
+pub fn zond_engine::report::Pass::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::report::Pass
+pub fn zond_engine::report::Pass::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::report::Pass
+pub fn zond_engine::report::Pass::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::report::Pass
+impl core::marker::StructuralPartialEq for zond_engine::report::Pass
+impl core::marker::Freeze for zond_engine::report::Pass
+impl core::marker::Send for zond_engine::report::Pass
+impl core::marker::Sync for zond_engine::report::Pass
+impl core::marker::Unpin for zond_engine::report::Pass
+impl core::marker::UnsafeUnpin for zond_engine::report::Pass
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::report::Pass
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::report::Pass
 #[non_exhaustive] pub enum zond_engine::report::PortScope
 pub zond_engine::report::PortScope::Every(zond_engine::model::port::set::PortSet)
 pub zond_engine::report::PortScope::Mixed(zond_engine::model::port::set::PortSet)
@@ -14278,6 +14317,7 @@ pub zond_engine::report::PhaseParts::icmp_rate_limited: alloc::vec::Vec<core::ne
 pub zond_engine::report::PhaseParts::kind: zond_engine::report::ScanKind
 pub zond_engine::report::PhaseParts::liveness_skipped: core::option::Option<zond_engine::report::LivenessSkip>
 pub zond_engine::report::PhaseParts::origin: core::option::Option<zond_engine::report::PhaseOrigin>
+pub zond_engine::report::PhaseParts::passes_cut: alloc::vec::Vec<zond_engine::report::Pass>
 pub zond_engine::report::PhaseParts::privilege: core::option::Option<zond_engine::system::privilege::Privilege>
 pub zond_engine::report::PhaseParts::probes: alloc::vec::Vec<zond_engine::report::ProbeStats>
 pub zond_engine::report::PhaseParts::reached_by_connect: alloc::vec::Vec<zond_engine::model::ip::range::IpRange>
@@ -14414,6 +14454,7 @@ pub fn zond_engine::report::ScanPhase::icmp_rate_limited(&self) -> &[core::net::
 pub fn zond_engine::report::ScanPhase::kind(&self) -> zond_engine::report::ScanKind
 pub fn zond_engine::report::ScanPhase::liveness_skipped(&self) -> core::option::Option<zond_engine::report::LivenessSkip>
 pub fn zond_engine::report::ScanPhase::origin(&self) -> core::option::Option<&zond_engine::report::PhaseOrigin>
+pub fn zond_engine::report::ScanPhase::passes_cut(&self) -> &[zond_engine::report::Pass]
 pub fn zond_engine::report::ScanPhase::privilege(&self) -> core::option::Option<zond_engine::system::privilege::Privilege>
 pub fn zond_engine::report::ScanPhase::probe_stats(&self) -> &[zond_engine::report::ProbeStats]
 pub fn zond_engine::report::ScanPhase::reached_by_connect(&self) -> &[zond_engine::model::ip::range::IpRange]
@@ -14464,6 +14505,7 @@ pub fn zond_engine::report::ScanReport::is_partial(&self) -> bool
 pub fn zond_engine::report::ScanReport::merge(&mut self, zond_engine::report::ScanReport)
 pub fn zond_engine::report::ScanReport::new(zond_engine::report::ScanPhase, impl core::iter::traits::collect::IntoIterator<Item = zond_engine::model::host::Host>) -> Self
 pub fn zond_engine::report::ScanReport::observed_at(&self) -> std::time::SystemTime
+pub fn zond_engine::report::ScanReport::passes_cut(&self) -> alloc::vec::Vec<zond_engine::report::Pass>
 pub fn zond_engine::report::ScanReport::phases(&self) -> &[zond_engine::report::ScanPhase]
 pub fn zond_engine::report::ScanReport::probe_stats(&self) -> impl core::iter::traits::iterator::Iterator<Item = &zond_engine::report::ProbeStats>
 pub fn zond_engine::report::ScanReport::recorded(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<zond_engine::report::ScanPhase>, impl core::iter::traits::collect::IntoIterator<Item = zond_engine::model::host::Host>) -> Self
@@ -18715,6 +18757,7 @@ pub fn zond_engine::report::ScanReport::is_partial(&self) -> bool
 pub fn zond_engine::report::ScanReport::merge(&mut self, zond_engine::report::ScanReport)
 pub fn zond_engine::report::ScanReport::new(zond_engine::report::ScanPhase, impl core::iter::traits::collect::IntoIterator<Item = zond_engine::model::host::Host>) -> Self
 pub fn zond_engine::report::ScanReport::observed_at(&self) -> std::time::SystemTime
+pub fn zond_engine::report::ScanReport::passes_cut(&self) -> alloc::vec::Vec<zond_engine::report::Pass>
 pub fn zond_engine::report::ScanReport::phases(&self) -> &[zond_engine::report::ScanPhase]
 pub fn zond_engine::report::ScanReport::probe_stats(&self) -> impl core::iter::traits::iterator::Iterator<Item = &zond_engine::report::ProbeStats>
 pub fn zond_engine::report::ScanReport::recorded(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<zond_engine::report::ScanPhase>, impl core::iter::traits::collect::IntoIterator<Item = zond_engine::model::host::Host>) -> Self
