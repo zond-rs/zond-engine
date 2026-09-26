@@ -213,6 +213,17 @@ fn create_missing_in_home(
 /// `~/.local/state` made a link between a file's staging and its rename would
 /// have root rename, link or remove there whatever stands under the fixed
 /// names a journal uses.
+///
+/// Each name is reached by a walk of its own, from the home, rather than
+/// through one descriptor a journal keeps for its directory. A walk resolves
+/// the path and opens a handful of directories, some tens of microseconds,
+/// and a journal reaches a handful of names at each checkpoint, one every few
+/// seconds, so it spends well under a millisecond on them in each interval,
+/// and only under `sudo`. Holding the directory instead would take its descriptor through
+/// every function a journal's files are reached by, the lock's and the
+/// cursor's public ones among them, which take a path, to save a cost no run
+/// can measure; and each walk is as safe as the one before it, being refused
+/// where a link leads out of the home whenever it is made.
 #[cfg(unix)]
 pub(crate) struct Place {
     /// The directory `name` is looked up in, or `None` for the working
