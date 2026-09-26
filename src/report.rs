@@ -2122,8 +2122,8 @@ impl ScanPhase {
     ///
     /// Named where the engine can tell a route refused: a neighbour on one of
     /// this host's segments, whose connected route only a policy overrides,
-    /// on a scan that frames its own probes; and any address the kernel
-    /// refuses in words only a policy uses, the permission denied of a
+    /// whether the scan frames its probes or connects; and any address the
+    /// kernel refuses in words only a policy uses, the permission denied of a
     /// `prohibit` route or the invalid argument of a `blackhole` one, where
     /// Linux has them. An `unreachable` route anywhere else answers as a
     /// missing route does, and its address is among the unreachable without

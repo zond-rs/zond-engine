@@ -68,7 +68,7 @@ use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::routed::SynPorts;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError, record_unasked};
 use crate::system::descriptors::{self, Descriptor};
-use crate::system::interface::OnLinkTable;
+use crate::system::interface::{OnLinkTable, ProbeSockets, refuses_neighbour};
 use crate::transport::dial::PathAllowance;
 use crate::transport::dial::{Connecting, Egress, Holder, Shaping, SourcePortHeld};
 use async_trait::async_trait;
@@ -378,7 +378,37 @@ impl Shortfall {
     /// raw path files one, unless it answered something else, since an
     /// address that answered was reached and a report saying otherwise would
     /// contradict the ports it holds for it.
+    ///
+    /// Among those, an address on one of this host's own segments is named
+    /// refused by a route where the routing table refuses it, asked as the raw
+    /// path's plan asks it; see [`refuses_neighbour`]. A segment this host
+    /// holds is reached by its connected route, so a refusal there is an
+    /// override: a `prohibit` route is told by its words, but an `unreachable`
+    /// one refuses in a missing route's, and only where the address sits
+    /// says which it is. The segment's own network and broadcast addresses
+    /// are left out, since the kernel refuses a connection to them on grounds
+    /// of its own.
     fn report(self, ctx: &ScanContext, scanner: ScannerKind, unit: &str, units: &str) {
+        // Read only where there is something to ask it about, which is rare.
+        let segments = if self.unroutable.is_empty() {
+            OnLinkTable::from_links(&[])
+        } else {
+            OnLinkTable::of_segments()
+        };
+        self.file(ctx, scanner, unit, units, &segments, refuses_neighbour);
+    }
+
+    /// [`report`](Self::report), with this host's `segments` and the routing
+    /// table's answer for one of them, `refuses`, handed in.
+    fn file(
+        self,
+        ctx: &ScanContext,
+        scanner: ScannerKind,
+        unit: &str,
+        units: &str,
+        segments: &OnLinkTable,
+        refuses: fn(IpAddr, &mut ProbeSockets) -> bool,
+    ) {
         if self.starved > 0 {
             let unasked = counted(self.starved, unit, units);
             report_starved(ctx, scanner, unasked, descriptors::PATIENCE);
@@ -397,12 +427,18 @@ impl Shortfall {
                 ),
             );
         }
+        let mut sockets = ProbeSockets::default();
         for address in self.unroutable {
             let reached = ctx
                 .read_host(address, |host| host.status() == HostStatus::Up)
                 .unwrap_or(false);
             if !reached {
-                if self.forbidden.contains(&address) {
+                let mut overrides_segment = || {
+                    segments.source_for(address).is_some()
+                        && !segments.is_segment_edge(address)
+                        && refuses(address, &mut sockets)
+                };
+                if self.forbidden.contains(&address) || overrides_segment() {
                     ctx.note_refused_by_route(address);
                 }
                 ctx.record_unroutable(address);
@@ -3665,6 +3701,45 @@ mod tests {
 
         assert!(ctx.is_unroutable(ip));
         assert!(ctx.failures_snapshot().is_empty(), "nothing broke here");
+    }
+
+    /// A neighbour refused a connect is named refused by a route where the
+    /// routing table refuses it, since only an override of the segment's
+    /// connected route can: an `unreachable` route refuses in the words a
+    /// missing route uses, and only where the address sits tells them apart.
+    /// An address off the segments, one the table does not refuse, and the
+    /// segment's broadcast address are unreachable and no more.
+    #[test]
+    fn a_neighbour_the_routing_table_refuses_is_named_refused_by_a_route() {
+        use crate::system::interface::{Link, LinkAddress};
+
+        let segments = OnLinkTable::from_links(&[Link::new("test0", 1).with_addresses(vec![
+            LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24),
+        ])]);
+        let address = |last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last));
+        let routed = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let mut shortfall = Shortfall::default();
+        for ip in [address(2), address(3), address(255), routed] {
+            shortfall.count(ip, &Attempt::Refused(Refusal::NoRoute));
+        }
+        // Refuses the neighbour at .2, the broadcast address, and anything
+        // off the segment, as a table with an `unreachable` route over .2
+        // and no route off it does.
+        shortfall.file(
+            &ctx,
+            ScannerKind::Connect,
+            "address",
+            "addresses",
+            &segments,
+            |target, _| target != IpAddr::V4(Ipv4Addr::new(192, 0, 2, 3)),
+        );
+
+        for ip in [address(2), address(3), address(255), routed] {
+            assert!(ctx.is_unroutable(ip), "{ip} not filed unreachable");
+        }
+        let refused = ctx.take_refused_by_route();
+        assert_eq!(refused, [address(2)]);
     }
 
     /// A segment's own addresses, which the kernel refuses a connection to as
