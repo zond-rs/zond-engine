@@ -505,6 +505,12 @@ pub struct Fingerprinted {
     /// A service answering that late fits one answer in a wait and not two,
     /// so a question queued behind one of its answers is not answered in time.
     pub(crate) answered_late: bool,
+    /// How long the waits that ran out were given, together.
+    ///
+    /// A host serving its questions one at a time still serves each question
+    /// nobody waits for any longer, and this is how long those can hold it,
+    /// as long as it answers any question within the wait it is given.
+    pub(crate) waited_in_vain: Duration,
 }
 
 /// [`fingerprint_tcp_detailed`], with every further connection to the port
@@ -543,6 +549,10 @@ pub(crate) async fn fingerprint_tcp_via(
         starved: tally.starved.load(Ordering::Relaxed),
         ran_out_waiting: tally.ran_out_waiting.load(Ordering::Relaxed),
         answered_late: tally.answered_late.load(Ordering::Relaxed),
+        waited_in_vain: *tally
+            .waited_in_vain
+            .lock()
+            .unwrap_or_else(|held| held.into_inner()),
     }
 }
 
@@ -733,6 +743,7 @@ async fn fingerprint_udp_within(
                 starved: true,
                 ran_out_waiting: false,
                 answered_late: false,
+                waited_in_vain: Duration::ZERO,
             });
         }
     };
@@ -768,6 +779,7 @@ async fn fingerprint_udp_within(
         starved: false,
         ran_out_waiting: false,
         answered_late: false,
+        waited_in_vain: Duration::ZERO,
     })
 }
 
@@ -1778,6 +1790,19 @@ struct Tally {
     ran_out_waiting: AtomicBool,
     /// A reply came only after more than half the wait it was given.
     answered_late: AtomicBool,
+    /// How long the waits that ran out were given, together.
+    waited_in_vain: std::sync::Mutex<Duration>,
+}
+
+impl Tally {
+    /// Notes a wait for the port to say something that ran out after `wait`.
+    fn ran_out(&self, wait: Duration) {
+        self.ran_out_waiting.store(true, Ordering::Relaxed);
+        *self
+            .waited_in_vain
+            .lock()
+            .unwrap_or_else(|held| held.into_inner()) += wait;
+    }
 }
 
 /// Tells the identification whose scope this runs in something its
@@ -2074,7 +2099,7 @@ where
             // told, since a port that said nothing in time may yet have been
             // about to.
             Err(_elapsed) if first => {
-                tell(|tally| tally.ran_out_waiting.store(true, Ordering::Relaxed));
+                tell(|tally| tally.ran_out(wait));
                 break;
             }
             // A clean close, an error, or the port going quiet: whatever has

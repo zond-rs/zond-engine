@@ -199,14 +199,11 @@ async fn handshake_within(
 ) -> Option<(TlsTunnel, TlsInfo)> {
     let connect = connector().connect(server, stream);
 
-    let Ok(done) = timeout(super::on_path(budget), connect).await else {
+    let given = super::on_path(budget);
+    let Ok(done) = timeout(given, connect).await else {
         // A handshake with no answer in time, which the identification is
         // told as it is told a read that heard nothing.
-        super::tell(|tally| {
-            tally
-                .ran_out_waiting
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-        });
+        super::tell(|tally| tally.ran_out(given));
         return None;
     };
     let tls = done.ok()?;

@@ -833,6 +833,12 @@ fn silence_line(silent: &[(ScopedIp, u16)]) -> Option<String> {
 /// process's budget: a pass identifying ports of many such hosts would
 /// otherwise have its places held by ports waiting on their neighbours.
 ///
+/// Nor does it go before the host could have worked through what the pass
+/// left it. A host serving in turn serves every question it was put, the ones
+/// whose wait ran out included, and a second asking put while it still holds
+/// them waits behind them as the first did, and runs out of its wait the same
+/// way; see [`Backlog`].
+///
 /// Whether an identification had company is counted as the detection stage
 /// counts it, per host; see [`HostContention`].
 #[derive(Debug, Default)]
@@ -844,6 +850,8 @@ pub(crate) struct Crowd {
     answered_late: AtomicBool,
     /// The ports owed a second asking, in the order their first ended.
     owed: Mutex<Vec<Owed>>,
+    /// The questions the host was left with that nobody waits for.
+    backlog: Mutex<Backlog>,
     /// The name a target reached the host by, which its web ports are asked
     /// for by; see
     /// [`ZondConfig::target_names`](crate::config::ZondConfig::target_names).
@@ -915,6 +923,10 @@ impl Crowd {
                 .unwrap_or_else(|held| held.into_inner())
                 .push((key.clone(), port.number()));
         }
+        self.backlog
+            .lock()
+            .unwrap_or_else(|held| held.into_inner())
+            .left(found.waited_in_vain);
         if let (Some(addr), false, true, true) = (
             addr,
             alone,
@@ -960,6 +972,19 @@ impl Crowd {
         handle: crate::scanner::handle::ScanHandle,
     ) -> AskedAlone {
         let mut asked = AskedAlone::default();
+        let through = self
+            .backlog
+            .lock()
+            .unwrap_or_else(|held| held.into_inner())
+            .through();
+        if let Some(through) = through
+            && handle
+                .or_stopped(tokio::time::sleep_until(through))
+                .await
+                .is_none()
+        {
+            return asked;
+        }
         for Owed {
             key,
             addr,
@@ -1023,6 +1048,57 @@ impl Crowd {
         }
     }
 }
+
+/// What a host serving its questions one at a time may still have to do,
+/// once a pass's identifications of it are over, before a question put now is
+/// the next it serves.
+///
+/// What the host is left with at the end is only what nobody waits for any
+/// longer: every question that was answered has been served. Each of those
+/// holds the host for no longer than the wait it was given, where the host
+/// answers a question within its wait at all, and a host that does not
+/// cannot be named by any asking. So the host is through them by the time
+/// the pass's last identification of it left, and those waits once over, and
+/// sooner where it had begun on them while the pass still ran.
+///
+/// That upper bound is what a second asking waits out, held to
+/// [`BACKLOG_WAIT_LIMIT`]: a host that answers late but side by side was left
+/// nothing, and a wait on its behalf is time the scan spends for no question.
+#[derive(Debug, Default)]
+struct Backlog {
+    /// The waits that ran out, together.
+    waited_in_vain: Duration,
+    /// When the last identification of the host left.
+    last_left: Option<tokio::time::Instant>,
+}
+
+impl Backlog {
+    /// Notes an identification leaving, whose waits that ran out were given
+    /// `waited_in_vain` together.
+    fn left(&mut self, waited_in_vain: Duration) {
+        self.waited_in_vain += waited_in_vain;
+        self.last_left = Some(tokio::time::Instant::now());
+    }
+
+    /// When a question put to the host is the next it serves, at the latest,
+    /// or `None` where the host was left nothing.
+    fn through(&self) -> Option<tokio::time::Instant> {
+        let last_left = self.last_left?;
+        if self.waited_in_vain.is_zero() {
+            return None;
+        }
+        let wait = self.waited_in_vain.min(BACKLOG_WAIT_LIMIT);
+        Some(last_left + wait)
+    }
+}
+
+/// The longest a second asking waits for its host to work through what the
+/// pass left it; see [`Backlog`].
+///
+/// Ten seconds is a pass's abandoned questions on a few ports, at the second
+/// or so each that a single worker the second asking is for spends on them,
+/// and short beside the identifications it waits to complete.
+const BACKLOG_WAIT_LIMIT: Duration = Duration::from_secs(10);
 
 /// Folds a freshly fingerprinted port back into its host and announces the
 /// update. [`Port::merge`] is confidence-driven, so the fingerprint overwrites
@@ -1797,6 +1873,60 @@ mod tests {
             in_part,
             vec![(silent.addr().ip().into(), silent.addr().port())],
             "a second asking refused a socket was not counted"
+        );
+    }
+
+    /// A second asking waits out what the pass left its host before it
+    /// connects: a host serving in turn still serves every question whose
+    /// wait ran out, and a question put behind them waits as the first did,
+    /// and runs out the same way.
+    #[tokio::test]
+    async fn a_second_asking_waits_out_what_the_pass_left_its_host() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (accepted_tx, mut accepted) = tokio::sync::mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            while let Ok(mut sock) = accept_from_this_process(&listener).await {
+                let _ = accepted_tx.send(tokio::time::Instant::now());
+                // Says nothing, and holds the connection to its close.
+                tokio::spawn(async move {
+                    let mut sink = [0u8; 256];
+                    while matches!(sock.read(&mut sink).await, Ok(n) if n > 0) {}
+                });
+            }
+        });
+
+        let (_session, ctx) = ScanSession::new();
+        let crowds = Crowds::default();
+        let crowd = crowds.of(addr.ip(), None);
+        crowd.answered_late.store(true, Ordering::Relaxed);
+        let company = crowd.contention.enter();
+        let found = crowd
+            .identify(
+                addr.ip().into(),
+                TcpStream::connect(addr).await.unwrap(),
+                crate::fingerprint::baseline_port(addr.port(), Protocol::Tcp, PortState::Open),
+                ServiceDetection::Banner,
+                Egress::KERNEL,
+                PathAllowance::NONE,
+            )
+            .await;
+        let left = tokio::time::Instant::now();
+        drop(company);
+        assert!(!found.waited_in_vain.is_zero(), "the banner wait ran out");
+
+        crowds.ask_again(&ctx, ScannerKind::Service).await;
+        server.abort();
+
+        let first = accepted.recv().await.expect("the first asking");
+        let second = accepted.recv().await.expect("the second asking");
+        assert!(first < left);
+        let margin = Duration::from_millis(100);
+        assert!(
+            second + margin >= left + found.waited_in_vain,
+            "asked again {:?} after the first left, with {:?} of its waits run out",
+            second.saturating_duration_since(left),
+            found.waited_in_vain
         );
     }
 }
