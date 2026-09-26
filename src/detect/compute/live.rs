@@ -403,7 +403,8 @@ mod tests {
             let mut buffer = [0u8; 64];
             let deadline = Instant::now() + Duration::from_secs(5);
             while Instant::now() < deadline {
-                if let Ok((read, from)) = agent.recv_from(&mut buffer)
+                if let Ok((read, from)) =
+                    crate::testing::loopback::recv_from_this_process_blocking(&agent, &mut buffer)
                     && &buffer[..read] == b"third"
                 {
                     let _ = agent.send_to(b"accepted", from);

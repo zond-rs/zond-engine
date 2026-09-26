@@ -27,6 +27,13 @@
 //! completed, is closed unread with any other process's, which a connection
 //! that asks nothing never notices. [`SilentPort`], which answers nothing and
 //! keeps a record of what reached it, keeps those too.
+//!
+//! A datagram is told the same way, by its source: the local end of a
+//! datagram socket this process holds. Every pass that sends one waits on the
+//! socket for the answer, so the socket is still held when a peer here reads
+//! what it sent. A peer that only counts what reaches it, and answers nothing,
+//! can read a datagram after the pass has given up and let its socket go, so
+//! it cannot tell a pass's datagram from another process's this way.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Condvar, Mutex};
@@ -47,6 +54,58 @@ pub(crate) fn held_here(endpoint: SocketAddr) -> bool {
     descriptors
         .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
         .any(|fd| local_end(fd) == Some(endpoint))
+}
+
+/// Whether `source` is the local end of a datagram socket this process holds,
+/// which is where a datagram from this process to one of its own peers was
+/// sent from.
+///
+/// A socket bound to the unspecified address is held at every address of its
+/// family, so one that sent from it matches at its port alone: a resolver's
+/// socket bound to `0.0.0.0` sends to loopback from `127.0.0.1`. Only datagram
+/// sockets are asked, since a stream socket at the same number is no sender of
+/// datagrams.
+#[cfg(unix)]
+pub(crate) fn sent_here(source: SocketAddr) -> bool {
+    let Ok(descriptors) = std::fs::read_dir("/dev/fd") else {
+        return false;
+    };
+    descriptors
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+        .filter(|fd| is_datagram_socket(*fd))
+        .filter_map(local_end)
+        .any(|local| {
+            local.port() == source.port()
+                && (local.ip().is_unspecified()
+                    || local.ip().to_canonical() == source.ip().to_canonical())
+        })
+}
+
+/// Anywhere without a directory of the process's descriptors, every datagram
+/// counts as this process's, as every connection does in [`held_here`].
+#[cfg(not(unix))]
+pub(crate) fn sent_here(_source: SocketAddr) -> bool {
+    true
+}
+
+/// Whether `fd` names a datagram socket.
+#[cfg(unix)]
+fn is_datagram_socket(fd: libc::c_int) -> bool {
+    let mut kind: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: `kind` and `len` are live locals, and `len` states the size of
+    // `kind`, which `getsockopt` writes no more than. A descriptor that is
+    // closed or no socket is an error it returns having written nothing.
+    let asked = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_TYPE,
+            (&raw mut kind).cast(),
+            &raw mut len,
+        )
+    };
+    asked == 0 && kind == libc::SOCK_DGRAM
 }
 
 /// Anywhere without a directory of the process's descriptors, every
@@ -97,6 +156,34 @@ pub(crate) async fn accept_from_this_process(
         let (sock, peer) = listener.accept().await?;
         if held_here(peer) {
             return Ok(sock);
+        }
+    }
+}
+
+/// The next datagram `socket` receives from this process, into `buf`, with
+/// its length and source. Any other process's is read and dropped.
+pub(crate) async fn recv_from_this_process(
+    socket: &tokio::net::UdpSocket,
+    buf: &mut [u8],
+) -> std::io::Result<(usize, SocketAddr)> {
+    loop {
+        let (len, source) = socket.recv_from(buf).await?;
+        if sent_here(source) {
+            return Ok((len, source));
+        }
+    }
+}
+
+/// [`recv_from_this_process`] for a peer served from a thread of its own. A
+/// read timeout set on `socket` ends the wait as it ends a plain read.
+pub(crate) fn recv_from_this_process_blocking(
+    socket: &std::net::UdpSocket,
+    buf: &mut [u8],
+) -> std::io::Result<(usize, SocketAddr)> {
+    loop {
+        let (len, source) = socket.recv_from(buf)?;
+        if sent_here(source) {
+            return Ok((len, source));
         }
     }
 }
@@ -474,6 +561,51 @@ mod tests {
                 "port {port}"
             );
         }
+    }
+
+    /// A datagram's source is one of this process's sockets while this
+    /// process holds it, bound to loopback or to every address, and not once
+    /// it lets go; and a stream socket at the same number is not taken for
+    /// the sender.
+    #[cfg(unix)]
+    #[test]
+    fn a_datagram_is_this_processs_while_it_holds_the_socket_it_came_from() {
+        let peer = std::net::UdpSocket::bind("127.0.0.1:0").expect("binds loopback");
+        let to = peer.local_addr().unwrap();
+        let mut buf = [0u8; 8];
+        for bound in ["127.0.0.1:0", "0.0.0.0:0"] {
+            let sender = std::net::UdpSocket::bind(bound).expect("binds");
+            sender.send_to(b"x", to).expect("sends");
+            let (_, source) = peer.recv_from(&mut buf).expect("receives");
+            assert!(sent_here(source), "a socket bound to {bound} was not found");
+            drop(sender);
+            assert!(!sent_here(source), "a socket let go of was taken for one");
+
+            // A listener that took the number over is no sender of datagrams.
+            if let Ok(listener) = std::net::TcpListener::bind(source) {
+                assert!(!sent_here(source), "a stream socket was taken for one");
+                drop(listener);
+            }
+        }
+    }
+
+    /// A peer's read passes over a datagram from a socket this process does
+    /// not hold and hands back the next from one it does.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_datagram_from_elsewhere_is_passed_over() {
+        let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let to = peer.local_addr().unwrap();
+        let elsewhere = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        elsewhere.send_to(b"elsewhere", to).unwrap();
+        drop(elsewhere);
+        let here = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        here.send_to(b"here", to).unwrap();
+
+        let mut buf = [0u8; 16];
+        let (len, source) = recv_from_this_process(&peer, &mut buf).await.unwrap();
+        assert_eq!(&buf[..len], b"here");
+        assert_eq!(source, here.local_addr().unwrap());
     }
 
     /// What was sent before the count is counted, all of it and nothing

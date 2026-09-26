@@ -580,7 +580,9 @@ mod tests {
             let reverse = Arc::clone(&names);
             let serving = tokio::spawn(async move {
                 let mut buf = [0u8; 1500];
-                while let Ok((len, from)) = socket.recv_from(&mut buf).await {
+                while let Ok((len, from)) =
+                    crate::testing::loopback::recv_from_this_process(&socket, &mut buf).await
+                {
                     let Ok(query) = Message::from_vec(&buf[..len]) else {
                         continue;
                     };

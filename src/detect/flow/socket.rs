@@ -567,7 +567,9 @@ mod tests {
         let addr = agent.local_addr().unwrap();
         std::thread::spawn(move || {
             let mut buffer = [0u8; 512];
-            while let Ok((read, from)) = agent.recv_from(&mut buffer) {
+            while let Ok((read, from)) =
+                crate::testing::loopback::recv_from_this_process_blocking(&agent, &mut buffer)
+            {
                 if &buffer[..read] == b"second" {
                     let _ = agent.send_to(b"accepted", from);
                 }

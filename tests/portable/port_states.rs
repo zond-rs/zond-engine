@@ -116,6 +116,35 @@ async fn open_udp_listener_is_reported_open() {
     );
 }
 
+/// A UDP listener answers the scan however many datagrams from elsewhere
+/// reached it first. Loopback is the whole machine's, and a peer that
+/// answered the first datagram to arrive and stopped would be spent on
+/// whichever other process's probe got there before the test's own. The
+/// datagram here comes from a socket let go of before the listener reads it,
+/// which is no socket of this process's, as another process's is not.
+#[tokio::test]
+async fn a_udp_listener_answers_the_scan_after_a_datagram_from_elsewhere() {
+    if is_privileged() {
+        eprintln!("SKIP: unprivileged connect path");
+        return;
+    }
+
+    let server = spawn_udp_server(b"hi\n").await;
+    let elsewhere = std::net::UdpSocket::bind((LOOPBACK, 0)).expect("binds loopback");
+    elsewhere
+        .send_to(b"ping", (LOOPBACK, server.port))
+        .expect("sends");
+    drop(elsewhere);
+
+    let spec = format!("u:{}", server.port);
+    let outcome = run_scan(target_map(LOOPBACK, &spec), &test_config()).await;
+
+    assert_eq!(
+        outcome.port_state(LOOPBACK, server.port),
+        Some(PortState::Open),
+    );
+}
+
 /// A refused (closed) UDP port is never reported Open.
 #[tokio::test]
 async fn closed_udp_port_is_not_reported_open() {

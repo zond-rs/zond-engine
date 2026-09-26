@@ -2475,7 +2475,10 @@ mod tests {
         let answerer = tokio::spawn(async move {
             let mut buf = [0u8; MAX_DNS_DATAGRAM];
             loop {
-                let (len, from) = answering.recv_from(&mut buf).await.expect("a query reads");
+                let (len, from) =
+                    crate::testing::loopback::recv_from_this_process(&answering, &mut buf)
+                        .await
+                        .expect("a query reads");
                 let reply = answer(&buf[..len], "host.example.com");
                 answering
                     .send_to(&reply, from)

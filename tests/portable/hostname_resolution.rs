@@ -250,7 +250,9 @@ impl FakeResolver {
         let recorded = Arc::clone(&asked);
         tokio::spawn(async move {
             let mut buf = [0u8; 1500];
-            while let Ok((len, from)) = socket.recv_from(&mut buf).await {
+            while let Ok((len, from)) =
+                crate::support::loopback::recv_from_this_process(&socket, &mut buf).await
+            {
                 let query = &buf[..len];
                 recorded
                     .lock()

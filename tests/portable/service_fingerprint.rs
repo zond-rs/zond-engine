@@ -646,7 +646,9 @@ async fn a_port_registering_two_probes_is_asked_both() {
     };
     let task = tokio::spawn(async move {
         let mut buf = vec![0u8; 2048];
-        while let Ok((read, from)) = socket.recv_from(&mut buf).await {
+        while let Ok((read, from)) =
+            crate::support::loopback::recv_from_this_process(&socket, &mut buf).await
+        {
             let reply = match buf.first().map(|first| first & 0b111) {
                 Some(6) => {
                     let mut out = vec![0x16, 0x82];

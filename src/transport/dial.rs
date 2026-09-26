@@ -1136,7 +1136,9 @@ mod tests {
             .expect("addressing the peer");
         socket.send(b"probe").await.expect("sending");
         let mut buf = [0u8; 8];
-        let (_, from) = server.recv_from(&mut buf).await.expect("the datagram");
+        let (_, from) = crate::testing::loopback::recv_from_this_process(&server, &mut buf)
+            .await
+            .expect("the datagram");
         assert_eq!(from.ip(), source, "the datagram's source");
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a listener");

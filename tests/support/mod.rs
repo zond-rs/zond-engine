@@ -62,7 +62,7 @@ use zond_engine::scanner::strategy::PortScanner;
 use zond_engine::scanner::{self, ScanTask};
 use zond_engine::system::interface::{Addressing, Link, LinkAddress, LinkKind, SourceResolver};
 
-use loopback::accept_from_this_process;
+use loopback::{accept_from_this_process, recv_from_this_process};
 
 /// The loopback address every portable test targets.
 pub const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -159,9 +159,10 @@ pub fn closed_loopback_ports(count: usize) -> Vec<u16> {
     loopback::refused_ports(Ipv4Addr::LOCALHOST.into(), count)
 }
 
-/// Serves a simple UDP response. On the first packet received, it writes `reply`
-/// back to the sender and exits. This ensures a valid UDP response is generated
-/// for the scanner to classify the port as Open.
+/// Serves a simple UDP response. On the first datagram this process sends it,
+/// it writes `reply` back to the sender and exits, so the port reads as open to
+/// a scan and as closed afterwards. A datagram from any other process is read
+/// and dropped rather than spending the answer.
 pub async fn spawn_udp_server(reply: &'static [u8]) -> Server {
     let socket = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
         .await
@@ -170,8 +171,7 @@ pub async fn spawn_udp_server(reply: &'static [u8]) -> Server {
 
     let task = tokio::spawn(async move {
         let mut buf = vec![0; 1024];
-        // Just wait for one packet and reply
-        if let Ok((_len, src)) = socket.recv_from(&mut buf).await {
+        if let Ok((_len, src)) = recv_from_this_process(&socket, &mut buf).await {
             let _ = socket.send_to(reply, src).await;
         }
     });
@@ -192,7 +192,8 @@ pub async fn spawn_udp_server(reply: &'static [u8]) -> Server {
 ///
 /// Answers every datagram rather than one, because a scan asks twice, once to
 /// establish the port is open and once for the service pass, and a responder
-/// that exited after the first would make the second read as silence.
+/// that exited after the first would make the second read as silence. Answers
+/// only this process's, as [`spawn_udp_server`] does.
 pub async fn spawn_udp_server_on(port: u16, reply: &'static [u8]) -> Option<Server> {
     let socket = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, port))
         .await
@@ -201,7 +202,7 @@ pub async fn spawn_udp_server_on(port: u16, reply: &'static [u8]) -> Option<Serv
 
     let task = tokio::spawn(async move {
         let mut buf = vec![0; 2048];
-        while let Ok((_len, src)) = socket.recv_from(&mut buf).await {
+        while let Ok((_len, src)) = recv_from_this_process(&socket, &mut buf).await {
             let _ = socket.send_to(reply, src).await;
         }
     });

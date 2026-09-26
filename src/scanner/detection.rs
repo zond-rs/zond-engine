@@ -1125,7 +1125,9 @@ mod tests {
         let addr = agent.local_addr().unwrap();
         tokio::spawn(async move {
             let mut buffer = [0u8; 64];
-            while let Ok((read, from)) = agent.recv_from(&mut buffer).await {
+            while let Ok((read, from)) =
+                crate::testing::loopback::recv_from_this_process(&agent, &mut buffer).await
+            {
                 if &buffer[..read] == b"WHORU" {
                     let _ = agent.send_to(b"i-am-here", from).await;
                 }

@@ -2339,7 +2339,9 @@ mod tests {
         let open = service.local_addr().expect("bound").port();
         tokio::spawn(async move {
             let mut buf = [0u8; 64];
-            if let Ok((_, from)) = service.recv_from(&mut buf).await {
+            if let Ok((_, from)) =
+                crate::testing::loopback::recv_from_this_process(&service, &mut buf).await
+            {
                 let _ = service.send_to(b"pong", from).await;
             }
         });
@@ -2485,7 +2487,9 @@ mod tests {
             let port = service.local_addr().unwrap().port();
             tokio::spawn(async move {
                 let mut buf = [0u8; 64];
-                if let Ok((_, from)) = service.recv_from(&mut buf).await {
+                if let Ok((_, from)) =
+                    crate::testing::loopback::recv_from_this_process(&service, &mut buf).await
+                {
                     let _ = service.send_to(b"pong", from).await;
                 }
             });
