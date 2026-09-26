@@ -14,3 +14,7 @@
 //! services behave exactly as the unit tests' do.
 
 pub(crate) mod loopback;
+// Unix alone here, where the only tests that need it run; the tiers load it
+// by path on every platform.
+#[cfg(unix)]
+pub(crate) mod own_process;

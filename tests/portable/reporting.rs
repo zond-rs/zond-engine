@@ -243,8 +243,18 @@ async fn an_aborted_scan_still_reports() {
 /// Without the count the rest of the plan is nowhere: a scan of every port of
 /// one host stopped a second in read thousands of targets short of 65,535, and
 /// nothing in the report said where they went.
+///
+/// Run in a process of its own: a scan of every loopback port reaches every
+/// service the tests beside it stand up, which tell their own test's pass by
+/// its connections being this process's.
 #[tokio::test]
 async fn an_aborted_port_scan_accounts_for_its_whole_plan() {
+    if !own_process::in_a_process_of_its_own(
+        module_path!(),
+        "an_aborted_port_scan_accounts_for_its_whole_plan",
+    ) {
+        return;
+    }
     let mut cfg = test_config();
     cfg.assume_up = true;
     let (session, task) = scanner::scan(

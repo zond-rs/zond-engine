@@ -38,6 +38,11 @@ pub mod fake_net;
 #[path = "../../src/testing/loopback.rs"]
 pub mod loopback;
 
+// The crate's own too, for a test that reaches past its share of the process
+// it runs in.
+#[path = "../../src/testing/own_process.rs"]
+pub mod own_process;
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use pnet_base::MacAddr;

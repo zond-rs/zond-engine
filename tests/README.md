@@ -14,7 +14,8 @@ A tier is one test binary, and its directory is what it contains:
 
 ```text
 tests/
-  support/       the shared harness: fixtures, fake_net, fake_lan, loopback
+  support/       the shared harness: fixtures, fake_net, fake_lan, loopback,
+                 own_process
   hygiene/       checks on the repository rather than on the engine
   portable/      Tier 1, loopback and files
   simulated/     Tier 2, fake_net and fake_lan
@@ -65,6 +66,12 @@ whether a raw socket opens, rather than whether the process is root, and it
 answers for loopback alone: a macOS user in the `access_bpf` group opens no raw
 socket and is not skipped here, while a scan of a LAN address from the same
 account injects its own frames and goes raw.
+
+The services these tests stand up hear only the process they run in, which is
+how each tells its own test's pass from another's. A test whose scan reaches
+every loopback port would reach them all, and its connections are that same
+process's, so it runs its body in a process of its own through
+`support::own_process`, the crate's own helper loaded by path.
 
 ## The wire parsers, against bytes nobody wrote
 
