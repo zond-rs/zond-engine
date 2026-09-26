@@ -1311,12 +1311,25 @@ impl Refusal {
 /// a report that carries failures still carries results - just narrower ones
 /// than the caller asked for. This is the record that lets a consumer tell a
 /// genuinely empty network from a sweep whose raw scanner never started.
+///
+/// Two kinds share this record, told apart by
+/// [`is_cut_short`](Self::is_cut_short). A strategy that failed met a fault: a
+/// socket that would not open, a capture that closed, a task that panicked,
+/// and the same scan might go through next time. One that was cut short ran as
+/// designed and stopped against a limit before it was done: a budget it was
+/// given, the process's file limit, a pinned source port still in use. Both
+/// leave the same ground unanswered, which is why they are one list and why
+/// [`ScanReport::is_partial`] counts both. The remedies differ, the first
+/// being to look for what broke and the second to raise or wait out the limit
+/// the reason names, so a reader told a scanner failed when nothing broke goes
+/// looking for a fault that is not there.
 #[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScannerFailure {
     scanner: ScannerKind,
     reason: String,
     at: SystemTime,
+    cut_short: bool,
 }
 
 impl ScannerFailure {
@@ -1326,7 +1339,26 @@ impl ScannerFailure {
             scanner,
             reason: reason.into(),
             at: SystemTime::now(),
+            cut_short: false,
         }
+    }
+
+    /// Records, as having happened now, work `scanner` stopped short of
+    /// because a limit it runs under was reached rather than because anything
+    /// broke. `reason` names the limit.
+    pub fn cut_short(scanner: ScannerKind, reason: impl Into<String>) -> Self {
+        Self {
+            cut_short: true,
+            ..Self::new(scanner, reason)
+        }
+    }
+
+    /// Whether this is work a limit cut short rather than a fault stopped.
+    ///
+    /// False for a record read from a document that predates the distinction,
+    /// which reads every entry as a failure, the conservative reading.
+    pub fn is_cut_short(&self) -> bool {
+        self.cut_short
     }
 
     /// The strategy that failed.
@@ -1371,7 +1403,12 @@ impl ScannerFailure {
 
 impl fmt::Display for ScannerFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?} scanner failed: {}", self.scanner, self.reason)
+        let outcome = if self.cut_short {
+            "cut short"
+        } else {
+            "failed"
+        };
+        write!(f, "{:?} scanner {outcome}: {}", self.scanner, self.reason)
     }
 }
 
@@ -3688,6 +3725,24 @@ mod tests {
 
         assert!(report.is_partial());
         assert_eq!(report.failures().count(), 1);
+    }
+
+    /// Work a limit cut short left its ground as unanswered as a failure
+    /// does, so it makes the report partial the same way, and only the mark
+    /// tells the two apart.
+    #[test]
+    fn work_a_limit_cut_short_narrows_the_report_as_a_failure_does() {
+        let mut phase = phase(ScanKind::PortScan);
+        phase.failures.push(ScannerFailure::cut_short(
+            ScannerKind::Connect,
+            "1 port left unasked: source port 53 still closing",
+        ));
+        let report = ScanReport::new(phase, []);
+
+        assert!(report.is_partial());
+        let failure = report.failures().next().expect("filed");
+        assert!(failure.is_cut_short());
+        assert!(!ScannerFailure::new(ScannerKind::Connect, "refused").is_cut_short());
     }
 
     /// A journal that could not be written is kept in the report and does not

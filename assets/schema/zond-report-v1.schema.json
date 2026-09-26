@@ -358,6 +358,10 @@
         },
         "at": {
           "$ref": "#/$defs/timestamp"
+        },
+        "cut_short": {
+          "description": "True where nothing broke: the strategy ran as designed and stopped against a limit before it was done, a budget it was given, the scanning process's file limit, or a pinned source port still in use, which `reason` names. The ground is as unanswered as a failure's, and the remedy is to raise or wait out the limit rather than to look for a fault. Absent where false, and in documents that predate the distinction, which read every entry as a failure.",
+          "type": "boolean"
         }
       }
     },

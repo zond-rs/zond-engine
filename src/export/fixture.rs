@@ -342,6 +342,12 @@ pub(crate) fn report() -> ScanReport {
     .skipping_liveness(crate::report::LivenessSkip::PortsNoDearer);
 
     ctx.record_failure(ScannerKind::Local, "raw socket unavailable".to_string());
+    // And one a limit cut short, so the document carries the marker that
+    // tells the two apart and every writer and reader is held to it.
+    ctx.file_cut_short(
+        ScannerKind::Connect,
+        "1 port left unasked: source port 53 still closing".to_string(),
+    );
     ctx.record_probe_stats(probe_stats());
     // A sweep covers the link it ran on as well as the addresses it was handed.
     // Without one, every test of that field compares two empty lists.

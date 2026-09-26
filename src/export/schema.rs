@@ -1262,6 +1262,11 @@ pub struct FailureDto<'a> {
     pub reason: &'a str,
     /// When it was observed.
     pub at: String,
+    /// Whether a limit the strategy runs under cut it short, rather than a
+    /// fault stopping it. Left out when false, so a document that predates
+    /// the distinction reads the same as one that has none to make.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cut_short: bool,
 }
 
 impl<'a> FailureDto<'a> {
@@ -1271,6 +1276,7 @@ impl<'a> FailureDto<'a> {
             scanner: scanner_kind_name(failure.scanner()),
             reason: failure.reason(),
             at: rfc3339(failure.at()),
+            cut_short: failure.is_cut_short(),
         }
     }
 }

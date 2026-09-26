@@ -2066,18 +2066,19 @@ impl ScanContext {
     }
 
     /// Where a strategy files work it began and could not finish because a
-    /// budget it runs under ran out: a detection whose declared time or bytes
-    /// were spent before its question was answered.
+    /// limit it runs under was reached: a detection whose declared time or
+    /// bytes were spent before its question was answered, a connection the
+    /// process had no descriptor for, a pinned source port still in use.
     ///
-    /// Filed exactly as [`record_failure`](Self::record_failure) files, as a
+    /// Filed where [`record_failure`](Self::record_failure) files, as a
     /// [`ScannerFailure`] and a [`ScanEvent::ScannerFailed`], because the report
     /// has one account of work that did not complete and a consumer reading it
     /// for coverage has to find this there. The run did cover less than it was
-    /// asked to. What differs is the console. Nothing broke, so this is a
+    /// asked to. What differs is that nothing broke. The entry is marked
+    /// [cut short](ScannerFailure::is_cut_short), and the console hears a
     /// warning in the caller's own words rather than an error announcing that
     /// the scanner failed: a reader told a scanner failed looks for a fault,
-    /// and here there is none to find, only a target that cost more than the
-    /// budget allowed.
+    /// and here there is none to find, only a limit the reason names.
     pub(crate) fn record_cut_short(&self, scanner: ScannerKind, reason: String) {
         crate::warn!("{reason}");
         self.file_cut_short(scanner, reason);
@@ -2089,7 +2090,7 @@ impl ScanContext {
     /// and the reader at the console acts on the port rather than on the count.
     pub(crate) fn file_cut_short(&self, scanner: ScannerKind, reason: String) {
         self.failures
-            .push(ScannerFailure::new(scanner, reason.clone()));
+            .push(ScannerFailure::cut_short(scanner, reason.clone()));
         let _ = self
             .events_tx
             .send(ScanEvent::ScannerFailed { scanner, reason });

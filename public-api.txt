@@ -3444,6 +3444,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::Ev
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::EvasionDto
 #[non_exhaustive] pub struct zond_engine::export::schema::FailureDto<'a>
 pub zond_engine::export::schema::FailureDto::at: alloc::string::String
+pub zond_engine::export::schema::FailureDto::cut_short: bool
 pub zond_engine::export::schema::FailureDto::reason: &'a str
 pub zond_engine::export::schema::FailureDto::scanner: &'static str
 impl<'a> zond_engine::export::schema::FailureDto<'a>
@@ -13127,6 +13128,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::EvasionSet
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::EvasionSettingsRecord
 pub struct zond_engine::record::FailureRecord
 pub zond_engine::record::FailureRecord::at: std::time::SystemTime
+pub zond_engine::record::FailureRecord::cut_short: bool
 pub zond_engine::record::FailureRecord::reason: alloc::string::String
 pub zond_engine::record::FailureRecord::scanner: alloc::string::String
 impl core::clone::Clone for zond_engine::record::FailureRecord
@@ -14554,6 +14556,8 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::report::ScanSummary
 pub struct zond_engine::report::ScannerFailure
 impl zond_engine::report::ScannerFailure
 pub fn zond_engine::report::ScannerFailure::at(&self) -> std::time::SystemTime
+pub fn zond_engine::report::ScannerFailure::cut_short(zond_engine::report::ScannerKind, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn zond_engine::report::ScannerFailure::is_cut_short(&self) -> bool
 pub fn zond_engine::report::ScannerFailure::new(zond_engine::report::ScannerKind, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn zond_engine::report::ScannerFailure::reason(&self) -> &str
 pub fn zond_engine::report::ScannerFailure::recorded_at(self, std::time::SystemTime) -> Self

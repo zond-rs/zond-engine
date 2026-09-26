@@ -515,6 +515,9 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         ("attachment", "management_address"),
         ("attachment", "native_vlan"),
         ("attachment", "port"),
+        // A strategy that failed rather than one a limit cut short, which is
+        // what every entry of a document predating the mark meant.
+        ("failure", "cut_short"),
         ("finding", "cpe"),
         ("finding", "cpes"),
         ("finding", "excerpt"),

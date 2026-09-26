@@ -93,7 +93,7 @@ use crate::export::{ExportError, ExportOptions, Exporter, write};
 use crate::format::time::rfc3339;
 use crate::model::host::{Host, HostStatus};
 use crate::model::port::{Port, PortState};
-use crate::report::ScanReport;
+use crate::report::{ScanReport, ScannerFailure};
 
 /// The heading a report carries when the caller names none.
 const DEFAULT_HEADING: &str = "Scan report";
@@ -1487,13 +1487,18 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
     if !phase.failures.is_empty() {
         writeln!(
             out,
-            "<div class=\"block\">\n<div class=\"block-title\">failures</div>\n<div class=\"scroll\">\n<table class=\"table\">\n<thead><tr><th>scanner</th><th>reason</th><th>at</th></tr></thead>\n<tbody>"
+            "<div class=\"block\">\n<div class=\"block-title\">failures</div>\n<div class=\"scroll\">\n<table class=\"table\">\n<thead><tr><th>scanner</th><th>outcome</th><th>reason</th><th>at</th></tr></thead>\n<tbody>"
         )?;
         for failure in &phase.failures {
             writeln!(
                 out,
-                "<tr><td class=\"mono\">{scanner}</td><td>{reason}</td><td class=\"mono\">{at}</td></tr>",
+                "<tr><td class=\"mono\">{scanner}</td><td>{outcome}</td><td>{reason}</td><td class=\"mono\">{at}</td></tr>",
                 scanner = Text(failure.scanner),
+                outcome = if failure.cut_short {
+                    "cut short"
+                } else {
+                    "failed"
+                },
                 reason = Text(failure.reason),
                 at = Text(&failure.at),
             )?;
@@ -1820,11 +1825,22 @@ fn fact(out: &mut dyn Write, key: &str, value: &str) -> Result<(), ExportError> 
 /// look for them: the faults first, then the ground left unfinished.
 ///
 /// Every cause [`ScanReport::is_partial`] counts is named here, so the notice
-/// never claims a shortfall it cannot name.
+/// never claims a shortfall it cannot name, and nothing it does not count: a
+/// journal that fell behind or a resolver that failed narrows no coverage. A
+/// strategy that failed and one a limit cut short are named apart, since one
+/// sends a reader looking for a fault and the other for the limit.
 fn shortfalls(report: &ScanReport) -> Vec<&'static str> {
     let mut causes = Vec::new();
-    if report.failures().next().is_some() {
-        causes.push("a strategy did not run to completion");
+    let narrowing = || {
+        report
+            .failures()
+            .filter(|failure| failure.narrows_coverage())
+    };
+    if narrowing().any(|failure| !failure.is_cut_short()) {
+        causes.push("a strategy failed");
+    }
+    if narrowing().any(ScannerFailure::is_cut_short) {
+        causes.push("a strategy was cut short by a limit");
     }
     if report.refusals().next().is_some() {
         causes.push("ground was declined");
@@ -2215,7 +2231,8 @@ mod tests {
 
         assert!(notice < hosts, "the notice sits below the findings");
         for cause in [
-            "a strategy did not run to completion",
+            "a strategy failed",
+            "a strategy was cut short by a limit",
             "a host's time budget ran out",
             "addresses were never decided",
         ] {

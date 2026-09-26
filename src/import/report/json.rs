@@ -1049,6 +1049,7 @@ struct FailureDto {
     scanner: String,
     reason: String,
     at: String,
+    cut_short: bool,
 }
 
 impl FailureDto {
@@ -1063,6 +1064,7 @@ impl FailureDto {
             at: timestamp(&self.at)?,
             scanner: self.scanner,
             reason: self.reason,
+            cut_short: self.cut_short,
         })
     }
 }
@@ -2078,6 +2080,20 @@ mod tests {
         let _ = read(&document).expect("an older document is not a broken one");
     }
 
+    /// A document written before a failure could be marked cut short reads
+    /// every entry as a failure, which is what its writer meant by all of
+    /// them, rather than refusing the document or guessing which were limits.
+    #[test]
+    fn a_document_predating_the_cut_short_marker_reads_every_entry_as_a_failure() {
+        let document = with_value(&exported(), r#","cut_short":true"#, "");
+
+        let report = read(&document).expect("an older document is not a broken one");
+
+        let failures: Vec<_> = report.failures().collect();
+        assert_eq!(failures.len(), 2, "both entries are kept");
+        assert!(failures.iter().all(|failure| !failure.is_cut_short()));
+    }
+
     // ─── The record-per-line shape ───────────────────────────────────────────
 
     /// A record-per-line export read back as the report it was written from.
@@ -2338,7 +2354,18 @@ mod tests {
                 "the fixture sweeps one, or this proves nothing"
             );
             assert_eq!(after.settings(), before.settings());
-            assert_eq!(after.failures().len(), before.failures().len());
+            let failures = |phase: &crate::report::ScanPhase| -> Vec<(crate::report::ScannerKind, String, bool)> {
+                phase
+                    .failures()
+                    .iter()
+                    .map(|f| (f.scanner(), f.reason().to_owned(), f.is_cut_short()))
+                    .collect()
+            };
+            assert_eq!(
+                failures(after),
+                failures(before),
+                "a failure and work a limit cut short are told apart"
+            );
             assert_eq!(after.probe_stats().len(), before.probe_stats().len());
             assert_eq!(
                 after.reached_by_connect(),

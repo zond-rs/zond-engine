@@ -1889,6 +1889,11 @@ pub struct FailureRecord {
     pub reason: String,
     /// When it was recorded.
     pub at: SystemTime,
+    /// Whether a limit cut the work short rather than a fault stopping it.
+    /// Absent, and so false, in a record written before the two were told
+    /// apart, which reads every entry as a failure.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cut_short: bool,
 }
 
 impl From<&ScannerFailure> for FailureRecord {
@@ -1897,17 +1902,21 @@ impl From<&ScannerFailure> for FailureRecord {
             scanner: wire::scanner_kind_name(failure.scanner()).to_owned(),
             reason: failure.reason().to_owned(),
             at: failure.at(),
+            cut_short: failure.is_cut_short(),
         }
     }
 }
 
 impl From<&FailureRecord> for ScannerFailure {
     fn from(record: &FailureRecord) -> Self {
-        ScannerFailure::new(
-            wire::scanner_kind(&record.scanner).unwrap_or(ScannerKind::Composite),
-            record.reason.clone(),
-        )
-        .recorded_at(record.at)
+        let scanner = wire::scanner_kind(&record.scanner).unwrap_or(ScannerKind::Composite);
+        let reason = record.reason.clone();
+        let failure = if record.cut_short {
+            ScannerFailure::cut_short(scanner, reason)
+        } else {
+            ScannerFailure::new(scanner, reason)
+        };
+        failure.recorded_at(record.at)
     }
 }
 

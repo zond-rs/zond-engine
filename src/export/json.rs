@@ -433,7 +433,7 @@ mod tests {
             .as_array()
             .expect("a failure array");
 
-        assert_eq!(failures.len(), 1);
+        assert_eq!(failures.len(), 2);
         assert_eq!(failures[0]["scanner"], "local");
         assert_eq!(failures[0]["reason"], "raw socket unavailable");
         assert!(
@@ -442,6 +442,23 @@ mod tests {
                 .expect("a timestamp")
                 .ends_with('Z')
         );
+    }
+
+    /// Work a limit cut short is marked so in the document, and a failure is
+    /// not, so a consumer can tell a fault to look for from a limit to raise.
+    /// Left out where false, so a failure reads as every document before the
+    /// marker wrote one.
+    #[test]
+    fn work_a_limit_cut_short_is_marked_apart_from_a_failure() {
+        let document = exported(&fixture::report());
+        let failures = document["phases"][0]["failures"]
+            .as_array()
+            .expect("a failure array");
+
+        assert_eq!(failures[0]["scanner"], "local");
+        assert!(failures[0].get("cut_short").is_none(), "{}", failures[0]);
+        assert_eq!(failures[1]["scanner"], "connect");
+        assert_eq!(failures[1]["cut_short"], true);
     }
 
     /// The two ways of building one of these have to produce the same exporter.

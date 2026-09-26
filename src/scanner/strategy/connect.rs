@@ -2509,7 +2509,8 @@ mod tests {
     /// is narrower for them, but nothing broke: the connection just made from
     /// that port is closing, or another socket has it, and the remedy is to
     /// wait or pin another. A line saying the scanner failed sends a reader
-    /// looking for a fault that is not there.
+    /// looking for a fault that is not there, and so does a report entry that
+    /// does not say it was cut short.
     #[test]
     fn a_pinned_source_port_held_is_warned_in_one_short_line_not_as_a_failure() {
         for (holder, by) in [
@@ -2528,14 +2529,18 @@ mod tests {
 
             let said: Vec<&str> = lines.iter().map(|line| line.message.as_str()).collect();
             assert_eq!(said, [format!("2 ports unasked (source port 40404 {by})")]);
-            let filed: Vec<String> = ctx
+            let filed: Vec<(String, bool)> = ctx
                 .failures_snapshot()
                 .iter()
-                .map(|failure| failure.reason().to_string())
+                .map(|failure| (failure.reason().to_string(), failure.is_cut_short()))
                 .collect();
             assert_eq!(
                 filed,
-                [format!("2 ports left unasked: source port 40404 {by}")]
+                [(
+                    format!("2 ports left unasked: source port 40404 {by}"),
+                    true
+                )],
+                "filed, and marked as cut short rather than failed"
             );
         }
     }
