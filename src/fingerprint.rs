@@ -963,12 +963,72 @@ async fn gather(
         };
 
         let (responses, tunnel) = rung.ask(stream, port, &peer, detection, egress).await;
-        if !responses.is_empty() {
-            return (responses, tunnel);
+        if responses.is_empty() {
+            continue;
         }
+        if matches!(rung, Rung::Plaintext)
+            && !tls::is_tls_port(port)
+            && refused_in_the_clear(&responses)
+        {
+            return asked_through_tls(responses, port, &peer, egress).await;
+        }
+        return (responses, tunnel);
     }
 
     (ResponseSet::default(), None)
+}
+
+/// Whether what a port answered in the clear is an HTTP server refusing the
+/// request, which is how a web server listening for TLS answers one that
+/// arrived without it.
+///
+/// nginx, Apache, Go and Caddy all answer a plaintext request on a TLS port
+/// with a plaintext `400` rather than a TLS alert, and each says why in its
+/// own words. The status is what is read, not the words: a well-formed `GET`
+/// is refused as a bad request by little else, and asking such a port for a
+/// handshake as well costs one connection.
+fn refused_in_the_clear(responses: &ResponseSet) -> bool {
+    responses.banners.first().is_some_and(|reply| {
+        reply.starts_with("HTTP/") && reply.split_whitespace().nth(1) == Some("400")
+    })
+}
+
+/// What a port that refused a request in the clear says through TLS, with
+/// `clear`, what it said in the clear, where it says nothing.
+///
+/// Reached on a port whose number does not say TLS, since one that does has
+/// been asked for a handshake before it was asked anything in the clear. A
+/// handshake that completes is the answer, the protocol inside it
+/// identified as on any TLS port. One refused on the terms a modern client
+/// offers is put the legacy question, and a port answering that in TLS is
+/// one that speaks HTTP through TLS and would not complete a handshake with
+/// this scanner: a server keeping its certificates by name refuses a client
+/// naming no site it holds. Its refusal in the clear is then the port's own
+/// account of what it serves, filed as served through TLS, since that is what
+/// the refusal said and the handshake bore out. A port answering neither in
+/// TLS keeps its answer in the clear.
+async fn asked_through_tls(
+    clear: ResponseSet,
+    port: u16,
+    peer: &Authority,
+    egress: Egress,
+) -> (ResponseSet, Option<Tunnel>) {
+    let Some(stream) = redial(peer.socket(), egress).await else {
+        return (clear, None);
+    };
+    let handshake = tls::speculative_handshake(stream, peer.server_name()).await;
+    let (through, tunnel) = tunneled(handshake, port, peer).await;
+    if !through.is_empty() {
+        return (through, tunnel);
+    }
+
+    let Some(stream) = redial(peer.socket(), egress).await else {
+        return (clear, None);
+    };
+    match legacy_tls(stream).await.tls {
+        Some(tls) => (clear.with_tls(tls), Some(Tunnel::Tls)),
+        None => (clear, None),
+    }
 }
 
 /// A second connection to a port already reached once.
@@ -2484,6 +2544,10 @@ mod tests {
         let claimed_then_tls = silent(probes) + rung + speculative + spoke(probes);
         let alert_then_tls = read_once + rung + speculative + spoke(1);
         let unclaimed_then_redirect = read_once + rung + read_once;
+        // A web server refusing the request in the clear, then asked for a
+        // handshake, and for the legacy one where that is refused.
+        let refused_then_tls = spoke(probes) + rung + speculative + spoke(probes);
+        let refused_then_legacy = spoke(probes) + rung + speculative + rung + legacy;
 
         // And the last rung, which is a connection and a read per probe, for
         // every probe, since a reply to one of them does not end it.
@@ -2499,10 +2563,12 @@ mod tests {
             claimed_then_tls,
             alert_then_tls,
             unclaimed_then_redirect,
+            refused_then_tls,
+            refused_then_legacy,
             silent(probes) + rung + speculative + last_resort,
         ];
-        let longest = paths.iter().map(|walk| walk.0).max().expect("six paths");
-        let most_waits = paths.iter().map(|walk| walk.1).max().expect("six paths");
+        let longest = paths.iter().map(|walk| walk.0).max().expect("eight paths");
+        let most_waits = paths.iter().map(|walk| walk.1).max().expect("eight paths");
 
         assert!(
             longest < COLLECTION_BUDGET,
@@ -3097,6 +3163,63 @@ mod tests {
         assert!(
             !SignatureDb::global().asked_first(21),
             "a port a greeting service claims is listened to first"
+        );
+    }
+
+    /// Identifies an HTTPS server, the one `https_by_name` stands up, on a
+    /// port whose number does not say TLS, asked for by `name`.
+    async fn https_off_the_list(name: Option<&str>) -> Fingerprinted {
+        let (addr, _heard) = https_by_name("box.example").await;
+        let number = 9443;
+        assert!(
+            !tls::is_tls_port(number),
+            "test assumes {number} is not numbered for TLS"
+        );
+        let stream = TcpStream::connect(addr).await.expect("connects");
+        fingerprint_tcp_via(
+            stream,
+            baseline_port(number, Protocol::Tcp, PortState::Open),
+            ServiceDetection::Probe,
+            Egress::KERNEL,
+            PathAllowance::NONE,
+            name.map(Arc::from),
+        )
+        .await
+    }
+
+    /// A web server listening for TLS answers a request in the clear with a
+    /// plaintext `400`, which is an answer and so ended the identification
+    /// there: HTTPS on a port its number does not name was reported as plain
+    /// `http`, with no certificate and none of the names it carries. The
+    /// refusal is what sends the port a handshake.
+    #[tokio::test]
+    async fn https_on_a_port_numbered_for_nothing_is_reached_through_its_handshake() {
+        let found = https_off_the_list(Some("box.example")).await;
+
+        let service = found.port.service().expect("a service was named");
+        assert_eq!(service.name(), "ssl/http");
+        assert_eq!(service.product(), Some("Caddy"));
+        let security = found.port.security().expect("the handshake is recorded");
+        assert!(
+            security.certificate().is_some(),
+            "the certificate was not read: {security:?}"
+        );
+    }
+
+    /// A server keeping its certificates by name refuses a handshake naming no
+    /// site it holds, which is every handshake where the target named an
+    /// address. It still answers in TLS, so the port is filed as the web
+    /// server over TLS its refusal in the clear said it was, not as a plain
+    /// `http` port the next pass would send requests to in the clear.
+    #[tokio::test]
+    async fn https_refusing_a_nameless_handshake_is_still_filed_as_https() {
+        let found = https_off_the_list(None).await;
+
+        let service = found.port.service().expect("a service was named");
+        assert_eq!(service.name(), "ssl/http");
+        assert!(
+            found.port.security().is_some(),
+            "the port's TLS went unrecorded"
         );
     }
 }
