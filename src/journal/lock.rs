@@ -72,6 +72,7 @@ use serde::{Deserialize, Serialize};
 pub const HEARTBEAT_STALE_AFTER: Duration = Duration::from_secs(60);
 
 /// What a lock file says about the process that wrote it.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockRecord {
     /// The process holding the journal.

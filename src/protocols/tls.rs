@@ -156,6 +156,7 @@ const KEY_SHARE_LEN: usize = 32;
 /// A version and the suites to offer under it. The suites are the caller's
 /// because an enumeration narrows them between attempts, which is the whole of
 /// how it discovers what a server accepts.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct Offer<'a> {
     /// The version to negotiate. Decides where the number is written and

@@ -46,6 +46,7 @@ use std::net::IpAddr;
 use crate::model::mac::MacAddr;
 
 /// One entry from the host's neighbour cache.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Neighbor {
     /// The neighbour's address.

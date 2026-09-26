@@ -64,6 +64,7 @@ const ENTRY_BYTES: usize = 18;
 const FLAG_RESPONSE: u16 = 0x8000;
 
 /// One registered name, as the table spells it.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisteredName {
     /// The fifteen-character name with its padding removed. May be empty, and
@@ -78,6 +79,7 @@ pub struct RegisteredName {
 }
 
 /// Every name a node-status response listed, and the adapter that answered.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NameTable {
     /// The registered names, in the order the responder listed them.

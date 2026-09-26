@@ -93,6 +93,7 @@ static DB: OnceLock<SignatureDb> = OnceLock::new();
 /// Carries where the definition sat and which service it was about, because a
 /// caller loading a corpus of hundreds needs to find the one that is wrong
 /// rather than be told that one of them is.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidDefinition {
     /// Where the definition sat in the list handed over.

@@ -264,6 +264,7 @@ impl fmt::Display for SctpScanTechnique {
 /// Built the way [`UnknownTechnique`] is, and separate from it so a message
 /// naming the alternatives names the ones for the right protocol.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 #[error(
     "unknown SCTP scan technique '{input}', expected one of: {}",
     Self::expected()
@@ -573,6 +574,7 @@ impl fmt::Display for TcpScanTechnique {
 /// fail, one thing to say about it, and the list of alternatives derived rather
 /// than stored.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 #[error(
     "unknown TCP scan technique '{input}', expected one of: {}",
     Self::expected()

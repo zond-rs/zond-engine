@@ -102,6 +102,7 @@ impl From<MacAddr> for [u8; 6] {
 /// so a second field would be a different type rather than a growth of this
 /// one, and sealing it would cost a caller the ability to write the literal
 /// without buying anything.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("'{input}' is not a MAC address: expected six hex octets separated by ':' or '-'")]
 pub struct MacAddrParseError {

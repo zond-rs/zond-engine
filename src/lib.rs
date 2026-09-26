@@ -244,6 +244,32 @@
 //!   point hands back carries, as one trait over all of them. Last, because it
 //!   names each module's own error type and none of them names it.
 //!
+//! # What the public surface promises
+//!
+//! Every public item is a commitment, so the surface is held to four rules,
+//! and `tests/hygiene/surface.rs` checks each of them against the published
+//! API listing.
+//!
+//! - **Machinery stays inside.** What a strategy is built from, its retry
+//!   ledger, adaptive deadline, congestion window, probe pool and the loop the
+//!   raw port scanners share, is not public. A caller driving a strategy builds
+//!   it through its constructor, which takes the settings that tune all of it.
+//!   Opening any of it later is an addition; withdrawing it would be a break.
+//! - **Structs can grow.** A struct whose fields are public is
+//!   `#[non_exhaustive]` and is built through a constructor or `Default`, with
+//!   the fields set afterwards. The exceptions are types a caller writes out
+//!   whole on purpose: the interchange shapes in [`record`], the `*Parts`
+//!   structs that mirror what they rebuild, and packet headers, whose fields
+//!   the protocol fixes.
+//! - **Enums can grow.** A vocabulary is `#[non_exhaustive]`, and its `ALL` is
+//!   a slice: an array's length is part of its type, and would make the next
+//!   variant a break after all.
+//! - **Other crates' types stay out.** A public signature names this crate's
+//!   types, the standard library's, and two dependencies it cannot usefully
+//!   hide: `tokio`, whose runtime every scan runs on, and `serde`, whose
+//!   derives are what the file formats are. Everything else, the packet
+//!   library and the capture binding among them, is converted at the boundary.
+//!
 //! # Platforms
 //!
 //! Linux, macOS and Windows.

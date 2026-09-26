@@ -53,8 +53,6 @@ use zond_engine::transport::capture::{CapturedFrame, FrameSink};
 use zond_engine::transport::channel::EthernetHandle;
 use zond_engine::transport::frame::LinkType;
 
-use std::time::SystemTime;
-
 use super::fake_net::{Loss, SplitMix64};
 
 /// An ARP payload is 28 bytes for IPv4 over Ethernet, and an Ethernet frame is
@@ -792,10 +790,8 @@ impl FakeSegment {
 
         let frames = self.frames.clone();
         let arrives = captured.received_at + delay;
-        let captured = CapturedFrame {
-            received_at: arrives,
-            ..captured
-        };
+        let mut captured = captured;
+        captured.received_at = arrives;
         tokio::spawn(async move {
             tokio::time::sleep_until((arrives + queued).into()).await;
             // The receiver is gone once the sweep ends, which is the normal way
@@ -806,13 +802,7 @@ impl FakeSegment {
 
     /// Wraps a built frame as though a capture had lifted it off this segment.
     fn capture(&self, bytes: Vec<u8>) -> CapturedFrame {
-        CapturedFrame {
-            zone: self.zone.clone(),
-            link: LinkType::Ethernet,
-            bytes,
-            observed_at: SystemTime::now(),
-            received_at: std::time::Instant::now(),
-        }
+        CapturedFrame::new(self.zone.clone(), LinkType::Ethernet, bytes)
     }
 }
 

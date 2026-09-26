@@ -114,10 +114,7 @@ async fn scan_segment(net: &FakeNet, swept: &[IpAddr], ports: &str) -> ScanRepor
     let mut scanner = RoutedScanner::with_transport(
         swept
             .iter()
-            .map(|ip| RoutedTarget {
-                target: *ip,
-                source: SCANNER_V4.into(),
-            })
+            .map(|ip| RoutedTarget::new(*ip, SCANNER_V4.into()))
             .collect(),
         ctx.clone(),
         None,

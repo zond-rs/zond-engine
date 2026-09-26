@@ -173,6 +173,7 @@ impl fmt::Display for TlsVersion {
 /// The error [`TlsVersion::from_str`] returns, naming the versions that would
 /// have worked.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 #[error(
     "unknown TLS version '{input}', expected one of: {}",
     TlsVersion::expected()

@@ -329,6 +329,7 @@ pub fn build_timestamp_request(identifier: u16, sequence: u16) -> Vec<u8> {
 /// part of the value: a target whose clock is not referenced to midnight UT sets
 /// it to say so, and the number underneath means nothing a reader can compare
 /// against. See [`is_standard`](Self::is_standard).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimestampReply {
     /// What the sender put in the request, which this engine sends as zero.

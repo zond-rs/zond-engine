@@ -49,6 +49,7 @@ const QUEUE_DEPTH: usize = 1024;
 /// and IP headers already stripped, which is all the SYN and UDP scanners need.
 /// Local discovery needs the whole frame: it identifies a neighbour by the
 /// Ethernet source MAC, and reads ARP, which has no Layer-4 segment to strip to.
+#[non_exhaustive]
 pub struct EthernetHandle {
     /// Where a frame goes to reach the wire, link header included.
     pub tx: Box<dyn FrameSink>,

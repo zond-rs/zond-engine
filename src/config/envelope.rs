@@ -92,6 +92,7 @@ impl fmt::Display for DetectionEnvelope {
 ///
 /// The list is built from [`DetectionClass::ALL`] rather than spelled here, so a
 /// class added to the model is a class this message names.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownDetectionEnvelope {
     /// What the caller wrote.

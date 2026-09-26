@@ -214,11 +214,7 @@ async fn a_connect_scan_reads_a_port_a_filter_rejects_as_filtered() {
     let (tx, rx) = tokio::sync::mpsc::channel(1);
     tx.send(PlannedTarget::new(
         0,
-        Target {
-            ip: target,
-            port: 443,
-            protocol: Protocol::Tcp,
-        },
+        Target::new(target, 443, Protocol::Tcp),
     ))
     .await
     .expect("queue");
@@ -277,11 +273,7 @@ async fn a_plain_udp_scan_reads_a_port_a_filter_rejects_as_filtered() {
     let (tx, rx) = tokio::sync::mpsc::channel(1);
     tx.send(PlannedTarget::new(
         0,
-        Target {
-            ip: target,
-            port: 161,
-            protocol: Protocol::Udp,
-        },
+        Target::new(target, 161, Protocol::Udp),
     ))
     .await
     .expect("queue");

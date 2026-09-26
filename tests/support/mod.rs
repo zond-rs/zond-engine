@@ -414,29 +414,17 @@ pub async fn run_port_scanner<S: PortScanner + ?Sized>(scanner: &mut S, targets:
 
 /// A TCP target, as a port scanner expects one.
 pub fn tcp(ip: IpAddr, port: u16) -> Target {
-    Target {
-        ip,
-        port,
-        protocol: Protocol::Tcp,
-    }
+    Target::new(ip, port, Protocol::Tcp)
 }
 
 /// A UDP target, as a port scanner expects one.
 pub fn udp(ip: IpAddr, port: u16) -> Target {
-    Target {
-        ip,
-        port,
-        protocol: Protocol::Udp,
-    }
+    Target::new(ip, port, Protocol::Udp)
 }
 
 /// An SCTP target, as a port scanner expects one.
 pub fn sctp(ip: IpAddr, port: u16) -> Target {
-    Target {
-        ip,
-        port,
-        protocol: Protocol::Sctp,
-    }
+    Target::new(ip, port, Protocol::Sctp)
 }
 
 /// The state recorded for `ip:port` in a session's store.

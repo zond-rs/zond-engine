@@ -44,10 +44,7 @@ use zond_engine::system::interface::RoutedTarget;
 async fn a_sweep_whose_probes_never_left_reports_why() {
     let (session, ctx) = ScanSession::new();
     let mut scanner = RoutedScanner::with_transport(
-        vec![RoutedTarget {
-            target: TARGET_V6,
-            source: SCANNER_V6.into(),
-        }],
+        vec![RoutedTarget::new(TARGET_V6, SCANNER_V6.into())],
         ctx,
         None,
         unsendable_transport("No route to host (os error 65)"),

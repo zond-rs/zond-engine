@@ -528,6 +528,7 @@ impl ScanDiff {
 /// appearing is a finding when the baseline covered all three addresses and is a
 /// wider scan when it covered none of them. A front end printing only one of
 /// these should print [`confirmed`](Self::confirmed).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Confirmed {
     /// How many records, whatever the other scan covered.

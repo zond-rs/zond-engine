@@ -439,6 +439,7 @@ const QUEUE_FULL_PAUSE: Duration = Duration::from_millis(1);
 /// more than one - a UDP port scan watches for both direct UDP replies and the
 /// ICMP errors that answer them - and Layer-4 headers are not self-describing
 /// enough to tell apart after the fact (see [`frame::IpSegment`]).
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapturedSegment {
     /// The address the segment came from.
@@ -503,9 +504,11 @@ impl CapturedSegment {
     /// A segment with no IP header behind it, for a receive stream that composed
     /// its Layer-4 bytes rather than capturing them.
     ///
-    /// Exists so the ordinary synthetic case is one call rather than a struct
-    /// literal ending in `observation: None`, and so that adding a further
-    /// observed field later does not break every test that builds one.
+    /// The way to build a segment outside this crate, which a struct literal is
+    /// not, so that a field observed later does not break every synthetic
+    /// transport that builds one. What a caller wants to state beyond the
+    /// bytes, such as a destination or an observed header, it sets on the
+    /// result.
     pub fn synthetic(source: IpAddr, protocol: u8, bytes: Vec<u8>) -> Self {
         Self {
             source,
@@ -533,6 +536,7 @@ pub type CaptureStream = mpsc::Receiver<CapturedSegment>;
 /// a switch announcing itself and an 802.1Q tag all live below the point where
 /// [`CapturedSegment`] begins, and by the time one of those exists the evidence
 /// is gone.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapturedFrame {
     /// The link this frame arrived on.
@@ -573,6 +577,19 @@ pub struct CapturedFrame {
     /// on a clock that can be stepped under a measurement, so it places a
     /// frame on a timeline and this one times it.
     pub received_at: Instant,
+}
+
+impl CapturedFrame {
+    /// A frame lifted off `zone` just now, framed as `link` says.
+    pub fn new(zone: Zone, link: LinkType, bytes: Vec<u8>) -> Self {
+        Self {
+            zone,
+            link,
+            bytes,
+            observed_at: SystemTime::now(),
+            received_at: Instant::now(),
+        }
+    }
 }
 
 /// The whole-frame receive stream produced by [`frames`]: [`CapturedFrame`]s

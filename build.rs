@@ -35,11 +35,17 @@ use std::path::{Path, PathBuf};
 /// derive macro through the splice — so `Serialize` and `Deserialize` appear
 /// unimplemented in an editor while `cargo` compiles it perfectly. A `#[path]`
 /// module is an ordinary module and analyses like one.
+///
+/// The constructors are for a caller writing a definition in code, and the
+/// build reads every definition from a file, so they are dead only here.
+#[allow(dead_code)]
 #[path = "src/fingerprint/signature.rs"]
 mod signature;
 
 /// The operating-system rule schema, likewise shared verbatim. A rule the build
 /// accepts is exactly a rule the runtime can match, because both read this file.
+/// Its constructors are dead here for the same reason.
+#[allow(dead_code)]
 #[path = "src/fingerprint/os/signature.rs"]
 mod os_schema;
 

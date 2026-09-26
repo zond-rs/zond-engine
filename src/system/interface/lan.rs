@@ -62,6 +62,7 @@ pub enum ViabilityError {
 /// carrying only a link-local IPv6 address is perfectly scannable, the
 /// all-nodes echo and neighbour discovery both work, and a return value that
 /// required an IPv4 network would force treating that as "no network found".
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct LanLink {
     /// The interface the sweep runs on, carrying the name and index a zone is

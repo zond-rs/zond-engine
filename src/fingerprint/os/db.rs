@@ -79,6 +79,7 @@ static DB: OnceLock<RuleDb> = OnceLock::new();
 /// Carries where the rule sat and what it called itself, because a caller
 /// loading a corpus of thousands needs to find the one that is wrong rather than
 /// be told that one of them is.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct InvalidRule {
     /// Where the rule sat in the list handed over.

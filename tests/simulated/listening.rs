@@ -73,17 +73,17 @@ fn tcp_frame(mac: MacAddr, from: Ipv4Addr, sport: u16, dport: u16, flags: u8) ->
         .build()
         .expect("a test datagram");
 
-    CapturedFrame {
-        zone: zone(),
-        link: LinkType::Ethernet,
-        bytes: [
+    let mut frame = CapturedFrame::new(
+        zone(),
+        LinkType::Ethernet,
+        [
             ethernet::build_header(mac, PEER, EtherTypes::Ipv4.0),
             datagram,
         ]
         .concat(),
-        observed_at: SystemTime::UNIX_EPOCH,
-        received_at: std::time::Instant::now(),
-    }
+    );
+    frame.observed_at = SystemTime::UNIX_EPOCH;
+    frame
 }
 
 /// The server's half of a handshake, which is the only thing that establishes a

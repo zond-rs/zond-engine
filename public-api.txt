@@ -36,7 +36,7 @@ impl core::marker::Unpin for zond_engine::config::envelope::DetectionEnvelope
 impl core::marker::UnsafeUnpin for zond_engine::config::envelope::DetectionEnvelope
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::envelope::DetectionEnvelope
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::envelope::DetectionEnvelope
-pub struct zond_engine::config::envelope::UnknownDetectionEnvelope
+#[non_exhaustive] pub struct zond_engine::config::envelope::UnknownDetectionEnvelope
 pub zond_engine::config::envelope::UnknownDetectionEnvelope::input: alloc::string::String
 impl core::clone::Clone for zond_engine::config::envelope::UnknownDetectionEnvelope
 pub fn zond_engine::config::envelope::UnknownDetectionEnvelope::clone(&self) -> zond_engine::config::envelope::UnknownDetectionEnvelope
@@ -312,7 +312,7 @@ impl core::marker::Unpin for zond_engine::config::TimeoutScale
 impl core::marker::UnsafeUnpin for zond_engine::config::TimeoutScale
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::TimeoutScale
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::TimeoutScale
-pub struct zond_engine::config::UnknownOsDetection
+#[non_exhaustive] pub struct zond_engine::config::UnknownOsDetection
 pub zond_engine::config::UnknownOsDetection::input: alloc::string::String
 impl core::clone::Clone for zond_engine::config::UnknownOsDetection
 pub fn zond_engine::config::UnknownOsDetection::clone(&self) -> zond_engine::config::UnknownOsDetection
@@ -334,7 +334,7 @@ impl core::marker::Unpin for zond_engine::config::UnknownOsDetection
 impl core::marker::UnsafeUnpin for zond_engine::config::UnknownOsDetection
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::UnknownOsDetection
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::UnknownOsDetection
-pub struct zond_engine::config::UnknownScanEffort
+#[non_exhaustive] pub struct zond_engine::config::UnknownScanEffort
 pub zond_engine::config::UnknownScanEffort::input: alloc::string::String
 impl core::clone::Clone for zond_engine::config::UnknownScanEffort
 pub fn zond_engine::config::UnknownScanEffort::clone(&self) -> zond_engine::config::UnknownScanEffort
@@ -356,7 +356,7 @@ impl core::marker::Unpin for zond_engine::config::UnknownScanEffort
 impl core::marker::UnsafeUnpin for zond_engine::config::UnknownScanEffort
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::UnknownScanEffort
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::UnknownScanEffort
-pub struct zond_engine::config::UnknownServiceDetection
+#[non_exhaustive] pub struct zond_engine::config::UnknownServiceDetection
 pub zond_engine::config::UnknownServiceDetection::input: alloc::string::String
 impl core::clone::Clone for zond_engine::config::UnknownServiceDetection
 pub fn zond_engine::config::UnknownServiceDetection::clone(&self) -> zond_engine::config::UnknownServiceDetection
@@ -1951,7 +1951,7 @@ impl core::marker::Unpin for zond_engine::diff::host::HostDelta
 impl core::marker::UnsafeUnpin for zond_engine::diff::host::HostDelta
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::diff::host::HostDelta
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::diff::host::HostDelta
-pub struct zond_engine::diff::host::IpProtocolChange
+#[non_exhaustive] pub struct zond_engine::diff::host::IpProtocolChange
 pub zond_engine::diff::host::IpProtocolChange::protocol: u8
 pub zond_engine::diff::host::IpProtocolChange::state: zond_engine::diff::change::Change<zond_engine::model::host::protocol::IpProtocolState>
 impl core::clone::Clone for zond_engine::diff::host::IpProtocolChange
@@ -1969,9 +1969,11 @@ impl core::marker::Unpin for zond_engine::diff::host::IpProtocolChange
 impl core::marker::UnsafeUnpin for zond_engine::diff::host::IpProtocolChange
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::diff::host::IpProtocolChange
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::diff::host::IpProtocolChange
-pub struct zond_engine::diff::host::Reassessment
+#[non_exhaustive] pub struct zond_engine::diff::host::Reassessment
 pub zond_engine::diff::host::Reassessment::finding: zond_engine::model::finding::Finding
 pub zond_engine::diff::host::Reassessment::severity: zond_engine::diff::change::Change<zond_engine::model::finding::Severity>
+impl zond_engine::diff::host::Reassessment
+pub fn zond_engine::diff::host::Reassessment::new(zond_engine::model::finding::Finding, zond_engine::diff::change::Change<zond_engine::model::finding::Severity>) -> Self
 impl core::clone::Clone for zond_engine::diff::host::Reassessment
 pub fn zond_engine::diff::host::Reassessment::clone(&self) -> zond_engine::diff::host::Reassessment
 impl core::cmp::Eq for zond_engine::diff::host::Reassessment
@@ -2451,7 +2453,7 @@ impl<T> core::marker::Unpin for zond_engine::diff::change::Change<T> where T: co
 impl<T> core::marker::UnsafeUnpin for zond_engine::diff::change::Change<T> where T: core::marker::UnsafeUnpin
 impl<T> core::panic::unwind_safe::RefUnwindSafe for zond_engine::diff::change::Change<T> where T: core::panic::unwind_safe::RefUnwindSafe
 impl<T> core::panic::unwind_safe::UnwindSafe for zond_engine::diff::change::Change<T> where T: core::panic::unwind_safe::UnwindSafe
-pub struct zond_engine::diff::Confirmed
+#[non_exhaustive] pub struct zond_engine::diff::Confirmed
 pub zond_engine::diff::Confirmed::confirmed: usize
 pub zond_engine::diff::Confirmed::total: usize
 impl core::clone::Clone for zond_engine::diff::Confirmed
@@ -2763,7 +2765,7 @@ impl core::marker::Unpin for zond_engine::evasion::EvasionError
 impl core::marker::UnsafeUnpin for zond_engine::evasion::EvasionError
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::evasion::EvasionError
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::evasion::EvasionError
-pub struct zond_engine::evasion::EvasionProfile
+#[non_exhaustive] pub struct zond_engine::evasion::EvasionProfile
 pub zond_engine::evasion::EvasionProfile::bad_tcp_checksum: bool
 pub zond_engine::evasion::EvasionProfile::decoys: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::evasion::EvasionProfile::flags: core::option::Option<u8>
@@ -2806,7 +2808,7 @@ impl core::marker::Unpin for zond_engine::evasion::EvasionProfile
 impl core::marker::UnsafeUnpin for zond_engine::evasion::EvasionProfile
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::evasion::EvasionProfile
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::evasion::EvasionProfile
-pub struct zond_engine::evasion::SegmentShaping
+#[non_exhaustive] pub struct zond_engine::evasion::SegmentShaping
 pub zond_engine::evasion::SegmentShaping::bad_tcp_checksum: bool
 pub zond_engine::evasion::SegmentShaping::padding: core::option::Option<u16>
 impl core::clone::Clone for zond_engine::evasion::SegmentShaping
@@ -4795,7 +4797,7 @@ impl core::marker::Unpin for zond_engine::fingerprint::os::EchoObservation
 impl core::marker::UnsafeUnpin for zond_engine::fingerprint::os::EchoObservation
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::os::EchoObservation
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::os::EchoObservation
-pub struct zond_engine::fingerprint::os::Example
+#[non_exhaustive] pub struct zond_engine::fingerprint::os::Example
 pub zond_engine::fingerprint::os::Example::clock_class: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::os::Example::dont_fragment: bool
 pub zond_engine::fingerprint::os::Example::echo_code: u8
@@ -4828,7 +4830,7 @@ impl core::marker::Unpin for zond_engine::fingerprint::os::Example
 impl core::marker::UnsafeUnpin for zond_engine::fingerprint::os::Example
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::os::Example
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::os::Example
-pub struct zond_engine::fingerprint::os::InvalidRule
+#[non_exhaustive] pub struct zond_engine::fingerprint::os::InvalidRule
 pub zond_engine::fingerprint::os::InvalidRule::error: zond_engine::fingerprint::os::RuleError
 pub zond_engine::fingerprint::os::InvalidRule::identity: alloc::string::String
 pub zond_engine::fingerprint::os::InvalidRule::index: usize
@@ -4852,7 +4854,7 @@ impl core::marker::Unpin for zond_engine::fingerprint::os::InvalidRule
 impl core::marker::UnsafeUnpin for zond_engine::fingerprint::os::InvalidRule
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::os::InvalidRule
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::os::InvalidRule
-pub struct zond_engine::fingerprint::os::MatchRule
+#[non_exhaustive] pub struct zond_engine::fingerprint::os::MatchRule
 pub zond_engine::fingerprint::os::MatchRule::clock_class: core::option::Option<zond_engine::fingerprint::os::Predicate<alloc::string::String>>
 pub zond_engine::fingerprint::os::MatchRule::dont_fragment: core::option::Option<zond_engine::fingerprint::os::Predicate<bool>>
 pub zond_engine::fingerprint::os::MatchRule::echo_code: core::option::Option<zond_engine::fingerprint::os::Predicate<u8>>
@@ -4888,13 +4890,15 @@ impl core::marker::Unpin for zond_engine::fingerprint::os::MatchRule
 impl core::marker::UnsafeUnpin for zond_engine::fingerprint::os::MatchRule
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::os::MatchRule
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::os::MatchRule
-pub struct zond_engine::fingerprint::os::OsDefinition
+#[non_exhaustive] pub struct zond_engine::fingerprint::os::OsDefinition
 pub zond_engine::fingerprint::os::OsDefinition::example: alloc::vec::Vec<zond_engine::fingerprint::os::Example>
 pub zond_engine::fingerprint::os::OsDefinition::match: zond_engine::fingerprint::os::MatchRule
 pub zond_engine::fingerprint::os::OsDefinition::notes: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::os::OsDefinition::os: zond_engine::fingerprint::os::OsIdentity
 pub zond_engine::fingerprint::os::OsDefinition::provenance: zond_engine::fingerprint::os::Provenance
 pub zond_engine::fingerprint::os::OsDefinition::weight: f32
+impl zond_engine::fingerprint::os::OsDefinition
+pub fn zond_engine::fingerprint::os::OsDefinition::new(zond_engine::fingerprint::os::OsIdentity, zond_engine::fingerprint::os::MatchRule) -> Self
 impl zond_engine::fingerprint::os::OsDefinition
 pub fn zond_engine::fingerprint::os::OsDefinition::validate(&self) -> core::result::Result<(), zond_engine::fingerprint::os::RuleError>
 impl core::clone::Clone for zond_engine::fingerprint::os::OsDefinition
@@ -4912,7 +4916,7 @@ impl core::marker::Unpin for zond_engine::fingerprint::os::OsDefinition
 impl core::marker::UnsafeUnpin for zond_engine::fingerprint::os::OsDefinition
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::os::OsDefinition
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::os::OsDefinition
-pub struct zond_engine::fingerprint::os::OsIdentity
+#[non_exhaustive] pub struct zond_engine::fingerprint::os::OsIdentity
 pub zond_engine::fingerprint::os::OsIdentity::cpe: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::os::OsIdentity::device: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::os::OsIdentity::family: core::option::Option<alloc::string::String>
@@ -4923,6 +4927,8 @@ impl zond_engine::fingerprint::os::OsIdentity
 pub fn zond_engine::fingerprint::os::OsIdentity::label(&self) -> &str
 impl core::clone::Clone for zond_engine::fingerprint::os::OsIdentity
 pub fn zond_engine::fingerprint::os::OsIdentity::clone(&self) -> zond_engine::fingerprint::os::OsIdentity
+impl core::default::Default for zond_engine::fingerprint::os::OsIdentity
+pub fn zond_engine::fingerprint::os::OsIdentity::default() -> zond_engine::fingerprint::os::OsIdentity
 impl core::fmt::Debug for zond_engine::fingerprint::os::OsIdentity
 pub fn zond_engine::fingerprint::os::OsIdentity::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl serde_core::ser::Serialize for zond_engine::fingerprint::os::OsIdentity
@@ -4996,7 +5002,7 @@ impl core::marker::Unpin for zond_engine::fingerprint::os::OsVerdict
 impl core::marker::UnsafeUnpin for zond_engine::fingerprint::os::OsVerdict
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::os::OsVerdict
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::os::OsVerdict
-pub struct zond_engine::fingerprint::os::Predicate<T>
+#[non_exhaustive] pub struct zond_engine::fingerprint::os::Predicate<T>
 pub zond_engine::fingerprint::os::Predicate::any_of: core::option::Option<alloc::vec::Vec<T>>
 pub zond_engine::fingerprint::os::Predicate::equals: core::option::Option<T>
 pub zond_engine::fingerprint::os::Predicate::range: core::option::Option<[T; 2]>
@@ -5113,7 +5119,7 @@ impl<T> core::marker::Unpin for zond_engine::fingerprint::os::SeriesReading<T> w
 impl<T> core::marker::UnsafeUnpin for zond_engine::fingerprint::os::SeriesReading<T> where T: core::marker::UnsafeUnpin
 impl<T> core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::os::SeriesReading<T> where T: core::panic::unwind_safe::RefUnwindSafe
 impl<T> core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::os::SeriesReading<T> where T: core::panic::unwind_safe::UnwindSafe
-pub struct zond_engine::fingerprint::os::SeriesSample
+#[non_exhaustive] pub struct zond_engine::fingerprint::os::SeriesSample
 pub zond_engine::fingerprint::os::SeriesSample::at: std::time::Instant
 pub zond_engine::fingerprint::os::SeriesSample::flags: u8
 pub zond_engine::fingerprint::os::SeriesSample::ip_id: core::option::Option<u16>
@@ -5356,7 +5362,7 @@ impl core::marker::Unpin for zond_engine::fingerprint::model::Tunnel
 impl core::marker::UnsafeUnpin for zond_engine::fingerprint::model::Tunnel
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::model::Tunnel
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::model::Tunnel
-pub struct zond_engine::fingerprint::AboutTheHost
+#[non_exhaustive] pub struct zond_engine::fingerprint::AboutTheHost
 pub zond_engine::fingerprint::AboutTheHost::hardware: core::option::Option<zond_engine::model::host::hardware::HardwareInfo>
 pub zond_engine::fingerprint::AboutTheHost::names: alloc::vec::Vec<zond_engine::model::host::name::HostName>
 pub zond_engine::fingerprint::AboutTheHost::os: alloc::vec::Vec<zond_engine::model::host::os::OsEvidence>
@@ -5406,7 +5412,7 @@ impl core::marker::Unpin for zond_engine::fingerprint::Collected
 impl core::marker::UnsafeUnpin for zond_engine::fingerprint::Collected
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::Collected
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::Collected
-pub struct zond_engine::fingerprint::Context
+#[non_exhaustive] pub struct zond_engine::fingerprint::Context
 pub zond_engine::fingerprint::Context::name: &'static str
 pub zond_engine::fingerprint::Context::note: &'static str
 pub zond_engine::fingerprint::Context::reach: zond_engine::fingerprint::Reach
@@ -5503,7 +5509,7 @@ impl core::marker::Unpin for zond_engine::fingerprint::HttpHeadersAnalyzer
 impl core::marker::UnsafeUnpin for zond_engine::fingerprint::HttpHeadersAnalyzer
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::HttpHeadersAnalyzer
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::HttpHeadersAnalyzer
-pub struct zond_engine::fingerprint::InvalidDefinition
+#[non_exhaustive] pub struct zond_engine::fingerprint::InvalidDefinition
 pub zond_engine::fingerprint::InvalidDefinition::error: zond_engine::fingerprint::DefinitionError
 pub zond_engine::fingerprint::InvalidDefinition::index: usize
 pub zond_engine::fingerprint::InvalidDefinition::service: alloc::string::String
@@ -5541,7 +5547,7 @@ impl core::marker::Unpin for zond_engine::fingerprint::JarmAnalyzer
 impl core::marker::UnsafeUnpin for zond_engine::fingerprint::JarmAnalyzer
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::JarmAnalyzer
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::JarmAnalyzer
-pub struct zond_engine::fingerprint::MatchRule
+#[non_exhaustive] pub struct zond_engine::fingerprint::MatchRule
 pub zond_engine::fingerprint::MatchRule::context: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::MatchRule::example: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::MatchRule::metadata: core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>
@@ -5550,6 +5556,8 @@ pub zond_engine::fingerprint::MatchRule::pattern: alloc::string::String
 pub zond_engine::fingerprint::MatchRule::product: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::MatchRule::vendor: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::MatchRule::version_group: core::option::Option<u8>
+impl zond_engine::fingerprint::MatchRule
+pub fn zond_engine::fingerprint::MatchRule::new(impl core::convert::Into<alloc::string::String>) -> Self
 impl core::clone::Clone for zond_engine::fingerprint::MatchRule
 pub fn zond_engine::fingerprint::MatchRule::clone(&self) -> zond_engine::fingerprint::MatchRule
 impl core::fmt::Debug for zond_engine::fingerprint::MatchRule
@@ -5591,12 +5599,14 @@ impl core::marker::Unpin for zond_engine::fingerprint::PortContext
 impl core::marker::UnsafeUnpin for zond_engine::fingerprint::PortContext
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::PortContext
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::PortContext
-pub struct zond_engine::fingerprint::Probe
+#[non_exhaustive] pub struct zond_engine::fingerprint::Probe
 pub zond_engine::fingerprint::Probe::generic: bool
 pub zond_engine::fingerprint::Probe::name: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::Probe::payload: alloc::string::String
 pub zond_engine::fingerprint::Probe::protocol: alloc::string::String
 pub zond_engine::fingerprint::Probe::rarity: u8
+impl zond_engine::fingerprint::Probe
+pub fn zond_engine::fingerprint::Probe::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 impl core::clone::Clone for zond_engine::fingerprint::Probe
 pub fn zond_engine::fingerprint::Probe::clone(&self) -> zond_engine::fingerprint::Probe
 impl core::fmt::Debug for zond_engine::fingerprint::Probe
@@ -5632,10 +5642,12 @@ impl core::marker::Unpin for zond_engine::fingerprint::ResponseSet
 impl core::marker::UnsafeUnpin for zond_engine::fingerprint::ResponseSet
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::ResponseSet
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::ResponseSet
-pub struct zond_engine::fingerprint::ServiceDefinition
+#[non_exhaustive] pub struct zond_engine::fingerprint::ServiceDefinition
 pub zond_engine::fingerprint::ServiceDefinition::match: alloc::vec::Vec<zond_engine::fingerprint::MatchRule>
 pub zond_engine::fingerprint::ServiceDefinition::probe: alloc::vec::Vec<zond_engine::fingerprint::Probe>
 pub zond_engine::fingerprint::ServiceDefinition::service: zond_engine::fingerprint::ServiceSignature
+impl zond_engine::fingerprint::ServiceDefinition
+pub fn zond_engine::fingerprint::ServiceDefinition::new(zond_engine::fingerprint::ServiceSignature) -> Self
 impl zond_engine::fingerprint::ServiceDefinition
 pub fn zond_engine::fingerprint::ServiceDefinition::validate(&self) -> core::result::Result<(), zond_engine::fingerprint::DefinitionError>
 impl core::clone::Clone for zond_engine::fingerprint::ServiceDefinition
@@ -5653,13 +5665,15 @@ impl core::marker::Unpin for zond_engine::fingerprint::ServiceDefinition
 impl core::marker::UnsafeUnpin for zond_engine::fingerprint::ServiceDefinition
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::ServiceDefinition
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::ServiceDefinition
-pub struct zond_engine::fingerprint::ServiceSignature
+#[non_exhaustive] pub struct zond_engine::fingerprint::ServiceSignature
 pub zond_engine::fingerprint::ServiceSignature::attribution: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::ServiceSignature::default_ports: alloc::vec::Vec<u16>
 pub zond_engine::fingerprint::ServiceSignature::description: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::ServiceSignature::name: alloc::string::String
 pub zond_engine::fingerprint::ServiceSignature::shared_ports: alloc::vec::Vec<u16>
 pub zond_engine::fingerprint::ServiceSignature::speaks: core::option::Option<alloc::string::String>
+impl zond_engine::fingerprint::ServiceSignature
+pub fn zond_engine::fingerprint::ServiceSignature::new(impl core::convert::Into<alloc::string::String>) -> Self
 impl core::clone::Clone for zond_engine::fingerprint::ServiceSignature
 pub fn zond_engine::fingerprint::ServiceSignature::clone(&self) -> zond_engine::fingerprint::ServiceSignature
 impl core::fmt::Debug for zond_engine::fingerprint::ServiceSignature
@@ -6962,7 +6976,7 @@ pub fn zond_engine::import::TargetCollector<'_>::accept(&mut self, &str, zond_en
 pub fn zond_engine::import::read_from(&std::path::Path, &mut dyn alloc::io::buf_read::BufRead, &zond_engine::import::ImportOptions<'_>) -> core::option::Option<core::result::Result<zond_engine::import::Imported, zond_engine::import::ImportError>>
 pub mod zond_engine::journal
 pub mod zond_engine::journal::cursor
-pub struct zond_engine::journal::cursor::Checkpoint
+#[non_exhaustive] pub struct zond_engine::journal::cursor::Checkpoint
 pub zond_engine::journal::cursor::Checkpoint::settled_above: alloc::vec::Vec<u64>
 pub zond_engine::journal::cursor::Checkpoint::walked: core::option::Option<zond_engine::journal::cursor::Walked>
 pub zond_engine::journal::cursor::Checkpoint::watermark: u64
@@ -7025,7 +7039,7 @@ impl core::marker::Unpin for zond_engine::journal::cursor::Cursor
 impl core::marker::UnsafeUnpin for zond_engine::journal::cursor::Cursor
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::cursor::Cursor
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::cursor::Cursor
-pub struct zond_engine::journal::cursor::Walked
+#[non_exhaustive] pub struct zond_engine::journal::cursor::Walked
 pub zond_engine::journal::cursor::Walked::ahead: u64
 pub zond_engine::journal::cursor::Walked::len: u64
 pub zond_engine::journal::cursor::Walked::reached: u64
@@ -7084,7 +7098,7 @@ impl core::marker::Unpin for zond_engine::journal::format::JournalError
 impl core::marker::UnsafeUnpin for zond_engine::journal::format::JournalError
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::format::JournalError
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::journal::format::JournalError
-pub struct zond_engine::journal::format::Header
+#[non_exhaustive] pub struct zond_engine::journal::format::Header
 pub zond_engine::journal::format::Header::engine: alloc::string::String
 pub zond_engine::journal::format::Header::engine_version: alloc::string::String
 pub zond_engine::journal::format::Header::journal_version: u32
@@ -7215,7 +7229,7 @@ impl core::marker::Unpin for zond_engine::journal::lock::Lock
 impl core::marker::UnsafeUnpin for zond_engine::journal::lock::Lock
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::lock::Lock
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::lock::Lock
-pub struct zond_engine::journal::lock::LockRecord
+#[non_exhaustive] pub struct zond_engine::journal::lock::LockRecord
 pub zond_engine::journal::lock::LockRecord::boot: alloc::string::String
 pub zond_engine::journal::lock::LockRecord::heartbeat: std::time::SystemTime
 pub zond_engine::journal::lock::LockRecord::pid: u32
@@ -7314,7 +7328,7 @@ impl core::marker::Unpin for zond_engine::journal::manifest::JournalManifest
 impl core::marker::UnsafeUnpin for zond_engine::journal::manifest::JournalManifest
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::manifest::JournalManifest
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::manifest::JournalManifest
-pub struct zond_engine::journal::manifest::OptionChanged
+#[non_exhaustive] pub struct zond_engine::journal::manifest::OptionChanged
 pub zond_engine::journal::manifest::OptionChanged::option: &'static str
 impl core::clone::Clone for zond_engine::journal::manifest::OptionChanged
 pub fn zond_engine::journal::manifest::OptionChanged::clone(&self) -> zond_engine::journal::manifest::OptionChanged
@@ -7363,7 +7377,7 @@ impl core::marker::Unpin for zond_engine::journal::manifest::Plan
 impl core::marker::UnsafeUnpin for zond_engine::journal::manifest::Plan
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::manifest::Plan
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::manifest::Plan
-pub struct zond_engine::journal::manifest::PlanChanged
+#[non_exhaustive] pub struct zond_engine::journal::manifest::PlanChanged
 pub zond_engine::journal::manifest::PlanChanged::expected: zond_engine::journal::manifest::PlanFingerprint
 pub zond_engine::journal::manifest::PlanChanged::expected_targets: u128
 pub zond_engine::journal::manifest::PlanChanged::found: zond_engine::journal::manifest::PlanFingerprint
@@ -7419,10 +7433,12 @@ impl core::marker::UnsafeUnpin for zond_engine::journal::manifest::PlanFingerpri
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::manifest::PlanFingerprint
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::manifest::PlanFingerprint
 pub mod zond_engine::journal::paths
-pub struct zond_engine::journal::paths::InvokingUser
+#[non_exhaustive] pub struct zond_engine::journal::paths::InvokingUser
 pub zond_engine::journal::paths::InvokingUser::gid: u32
 pub zond_engine::journal::paths::InvokingUser::home: std::path::PathBuf
 pub zond_engine::journal::paths::InvokingUser::uid: u32
+impl zond_engine::journal::paths::InvokingUser
+pub fn zond_engine::journal::paths::InvokingUser::new(u32, u32, std::path::PathBuf) -> Self
 impl core::clone::Clone for zond_engine::journal::paths::InvokingUser
 pub fn zond_engine::journal::paths::InvokingUser::clone(&self) -> zond_engine::journal::paths::InvokingUser
 impl core::cmp::Eq for zond_engine::journal::paths::InvokingUser
@@ -7557,7 +7573,7 @@ impl core::marker::Unpin for zond_engine::journal::store::OpenError
 impl core::marker::UnsafeUnpin for zond_engine::journal::store::OpenError
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::store::OpenError
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::journal::store::OpenError
-pub struct zond_engine::journal::store::Entry
+#[non_exhaustive] pub struct zond_engine::journal::store::Entry
 pub zond_engine::journal::store::Entry::checkpoint: core::option::Option<zond_engine::journal::cursor::Checkpoint>
 pub zond_engine::journal::store::Entry::directory: std::path::PathBuf
 pub zond_engine::journal::store::Entry::lock: zond_engine::journal::lock::LockState
@@ -7565,6 +7581,7 @@ pub zond_engine::journal::store::Entry::manifest: zond_engine::journal::manifest
 impl zond_engine::journal::store::Entry
 pub fn zond_engine::journal::store::Entry::is_complete(&self) -> bool
 pub fn zond_engine::journal::store::Entry::kind(&self) -> zond_engine::report::ScanKind
+pub fn zond_engine::journal::store::Entry::new(std::path::PathBuf, zond_engine::journal::manifest::JournalManifest, core::option::Option<zond_engine::journal::cursor::Checkpoint>, zond_engine::journal::lock::LockState) -> Self
 pub fn zond_engine::journal::store::Entry::settled(&self) -> core::option::Option<u128>
 impl core::clone::Clone for zond_engine::journal::store::Entry
 pub fn zond_engine::journal::store::Entry::clone(&self) -> zond_engine::journal::store::Entry
@@ -7577,9 +7594,11 @@ impl core::marker::Unpin for zond_engine::journal::store::Entry
 impl core::marker::UnsafeUnpin for zond_engine::journal::store::Entry
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::store::Entry
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::store::Entry
-pub struct zond_engine::journal::store::Held
+#[non_exhaustive] pub struct zond_engine::journal::store::Held
 pub zond_engine::journal::store::Held::id: alloc::string::String
 pub zond_engine::journal::store::Held::reason: alloc::string::String
+impl zond_engine::journal::store::Held
+pub fn zond_engine::journal::store::Held::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 impl core::clone::Clone for zond_engine::journal::store::Held
 pub fn zond_engine::journal::store::Held::clone(&self) -> zond_engine::journal::store::Held
 impl core::cmp::Eq for zond_engine::journal::store::Held
@@ -7624,7 +7643,7 @@ impl core::marker::Unpin for zond_engine::journal::store::Journal
 impl core::marker::UnsafeUnpin for zond_engine::journal::store::Journal
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::store::Journal
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::store::Journal
-pub struct zond_engine::journal::store::Pruned
+#[non_exhaustive] pub struct zond_engine::journal::store::Pruned
 pub zond_engine::journal::store::Pruned::held: alloc::vec::Vec<zond_engine::journal::store::Held>
 pub zond_engine::journal::store::Pruned::removed: alloc::vec::Vec<alloc::string::String>
 impl core::clone::Clone for zond_engine::journal::store::Pruned
@@ -7644,7 +7663,7 @@ impl core::marker::Unpin for zond_engine::journal::store::Pruned
 impl core::marker::UnsafeUnpin for zond_engine::journal::store::Pruned
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::store::Pruned
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::store::Pruned
-pub struct zond_engine::journal::store::Retention
+#[non_exhaustive] pub struct zond_engine::journal::store::Retention
 pub zond_engine::journal::store::Retention::completed_for: core::option::Option<core::time::Duration>
 pub zond_engine::journal::store::Retention::incomplete_for: core::option::Option<core::time::Duration>
 pub zond_engine::journal::store::Retention::keep_at_most: core::option::Option<usize>
@@ -7770,7 +7789,7 @@ impl core::marker::Unpin for zond_engine::model::capture::IpObservation
 impl core::marker::UnsafeUnpin for zond_engine::model::capture::IpObservation
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::capture::IpObservation
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::capture::IpObservation
-pub struct zond_engine::model::capture::CaptureCounts
+#[non_exhaustive] pub struct zond_engine::model::capture::CaptureCounts
 pub zond_engine::model::capture::CaptureCounts::dropped: u64
 pub zond_engine::model::capture::CaptureCounts::if_dropped: u64
 pub zond_engine::model::capture::CaptureCounts::received: u64
@@ -8145,7 +8164,7 @@ impl core::marker::Unpin for zond_engine::model::finding::Finding
 impl core::marker::UnsafeUnpin for zond_engine::model::finding::Finding
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::finding::Finding
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::finding::Finding
-pub struct zond_engine::model::finding::Version
+#[non_exhaustive] pub struct zond_engine::model::finding::Version
 pub zond_engine::model::finding::Version::major: u16
 pub zond_engine::model::finding::Version::minor: u16
 pub zond_engine::model::finding::Version::patch: u16
@@ -8178,7 +8197,7 @@ impl core::marker::Unpin for zond_engine::model::finding::Version
 impl core::marker::UnsafeUnpin for zond_engine::model::finding::Version
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::finding::Version
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::finding::Version
-pub struct zond_engine::model::finding::VersionParseError
+#[non_exhaustive] pub struct zond_engine::model::finding::VersionParseError
 pub zond_engine::model::finding::VersionParseError::input: alloc::string::String
 impl core::clone::Clone for zond_engine::model::finding::VersionParseError
 pub fn zond_engine::model::finding::VersionParseError::clone(&self) -> zond_engine::model::finding::VersionParseError
@@ -8204,7 +8223,7 @@ pub const zond_engine::model::finding::MAX_EXCERPT_BYTES: usize
 pub const zond_engine::model::finding::MAX_FINDINGS_PER_SUBJECT: usize
 pub mod zond_engine::model::host
 pub mod zond_engine::model::host::hardware
-pub struct zond_engine::model::host::hardware::HardwareDescription<'a>
+#[non_exhaustive] pub struct zond_engine::model::host::hardware::HardwareDescription<'a>
 pub zond_engine::model::host::hardware::HardwareDescription::cpe23: core::option::Option<&'a str>
 pub zond_engine::model::host::hardware::HardwareDescription::family: core::option::Option<&'a str>
 pub zond_engine::model::host::hardware::HardwareDescription::model: core::option::Option<&'a str>
@@ -8382,7 +8401,7 @@ impl core::marker::Unpin for zond_engine::model::host::os::OsSource
 impl core::marker::UnsafeUnpin for zond_engine::model::host::os::OsSource
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::os::OsSource
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::os::OsSource
-pub struct zond_engine::model::host::os::OsEvidence
+#[non_exhaustive] pub struct zond_engine::model::host::os::OsEvidence
 pub zond_engine::model::host::os::OsEvidence::arch: core::option::Option<alloc::string::String>
 pub zond_engine::model::host::os::OsEvidence::confidence: f32
 pub zond_engine::model::host::os::OsEvidence::cpe: core::option::Option<alloc::string::String>
@@ -8735,7 +8754,7 @@ impl core::marker::Unpin for zond_engine::model::host::telemetry::HostTelemetry
 impl core::marker::UnsafeUnpin for zond_engine::model::host::telemetry::HostTelemetry
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::telemetry::HostTelemetry
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::telemetry::HostTelemetry
-pub struct zond_engine::model::host::telemetry::RttSample
+#[non_exhaustive] pub struct zond_engine::model::host::telemetry::RttSample
 pub zond_engine::model::host::telemetry::RttSample::at: std::time::Instant
 pub zond_engine::model::host::telemetry::RttSample::protocol: core::option::Option<zond_engine::model::host::status::StatusProtocol>
 pub zond_engine::model::host::telemetry::RttSample::rtt: core::time::Duration
@@ -9033,7 +9052,7 @@ impl core::marker::Unpin for zond_engine::model::host::status::StatusProtocol
 impl core::marker::UnsafeUnpin for zond_engine::model::host::status::StatusProtocol
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::status::StatusProtocol
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::status::StatusProtocol
-pub struct zond_engine::model::host::HardwareDescription<'a>
+#[non_exhaustive] pub struct zond_engine::model::host::HardwareDescription<'a>
 pub zond_engine::model::host::HardwareDescription::cpe23: core::option::Option<&'a str>
 pub zond_engine::model::host::HardwareDescription::family: core::option::Option<&'a str>
 pub zond_engine::model::host::HardwareDescription::model: core::option::Option<&'a str>
@@ -9297,7 +9316,7 @@ impl core::marker::Unpin for zond_engine::model::host::path::NetworkPath
 impl core::marker::UnsafeUnpin for zond_engine::model::host::path::NetworkPath
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::path::NetworkPath
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::path::NetworkPath
-pub struct zond_engine::model::host::OsEvidence
+#[non_exhaustive] pub struct zond_engine::model::host::OsEvidence
 pub zond_engine::model::host::OsEvidence::arch: core::option::Option<alloc::string::String>
 pub zond_engine::model::host::OsEvidence::confidence: f32
 pub zond_engine::model::host::OsEvidence::cpe: core::option::Option<alloc::string::String>
@@ -10188,7 +10207,7 @@ impl core::marker::Unpin for zond_engine::model::mac::MacAddr
 impl core::marker::UnsafeUnpin for zond_engine::model::mac::MacAddr
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::mac::MacAddr
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::mac::MacAddr
-pub struct zond_engine::model::mac::MacAddrParseError
+#[non_exhaustive] pub struct zond_engine::model::mac::MacAddrParseError
 pub zond_engine::model::mac::MacAddrParseError::input: alloc::string::String
 impl core::clone::Clone for zond_engine::model::mac::MacAddrParseError
 pub fn zond_engine::model::mac::MacAddrParseError::clone(&self) -> zond_engine::model::mac::MacAddrParseError
@@ -10360,7 +10379,7 @@ impl<'a> core::marker::Unpin for zond_engine::model::parse::target::TargetContex
 impl<'a> core::marker::UnsafeUnpin for zond_engine::model::parse::target::TargetContext<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::parse::target::TargetContext<'a>
 impl<'a> !core::panic::unwind_safe::UnwindSafe for zond_engine::model::parse::target::TargetContext<'a>
-pub struct zond_engine::model::parse::target::TargetExpr<'a>
+#[non_exhaustive] pub struct zond_engine::model::parse::target::TargetExpr<'a>
 pub zond_engine::model::parse::target::TargetExpr::address: &'a str
 pub zond_engine::model::parse::target::TargetExpr::ports: core::option::Option<&'a str>
 impl<'a> zond_engine::model::parse::target::TargetExpr<'a>
@@ -10521,7 +10540,7 @@ impl<'a> core::marker::Unpin for zond_engine::model::parse::target::TargetContex
 impl<'a> core::marker::UnsafeUnpin for zond_engine::model::parse::target::TargetContext<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::parse::target::TargetContext<'a>
 impl<'a> !core::panic::unwind_safe::UnwindSafe for zond_engine::model::parse::target::TargetContext<'a>
-pub struct zond_engine::model::parse::TargetExpr<'a>
+#[non_exhaustive] pub struct zond_engine::model::parse::TargetExpr<'a>
 pub zond_engine::model::parse::TargetExpr::address: &'a str
 pub zond_engine::model::parse::TargetExpr::ports: core::option::Option<&'a str>
 impl<'a> zond_engine::model::parse::target::TargetExpr<'a>
@@ -11213,7 +11232,7 @@ impl core::marker::Unpin for zond_engine::model::target::TargetError
 impl core::marker::UnsafeUnpin for zond_engine::model::target::TargetError
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::target::TargetError
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::target::TargetError
-pub struct zond_engine::model::target::PlannedTarget
+#[non_exhaustive] pub struct zond_engine::model::target::PlannedTarget
 pub zond_engine::model::target::PlannedTarget::position: u64
 pub zond_engine::model::target::PlannedTarget::target: zond_engine::model::target::Target
 impl zond_engine::model::target::PlannedTarget
@@ -11239,10 +11258,12 @@ impl core::marker::Unpin for zond_engine::model::target::PlannedTarget
 impl core::marker::UnsafeUnpin for zond_engine::model::target::PlannedTarget
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::target::PlannedTarget
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::target::PlannedTarget
-pub struct zond_engine::model::target::Target
+#[non_exhaustive] pub struct zond_engine::model::target::Target
 pub zond_engine::model::target::Target::ip: core::net::ip_addr::IpAddr
 pub zond_engine::model::target::Target::port: u16
 pub zond_engine::model::target::Target::protocol: zond_engine::model::port::Protocol
+impl zond_engine::model::target::Target
+pub const fn zond_engine::model::target::Target::new(core::net::ip_addr::IpAddr, u16, zond_engine::model::port::Protocol) -> Self
 impl core::clone::Clone for zond_engine::model::target::Target
 pub fn zond_engine::model::target::Target::clone(&self) -> zond_engine::model::target::Target
 impl core::cmp::Eq for zond_engine::model::target::Target
@@ -11278,7 +11299,7 @@ impl core::marker::Unpin for zond_engine::model::target::TargetIndex
 impl core::marker::UnsafeUnpin for zond_engine::model::target::TargetIndex
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::target::TargetIndex
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::target::TargetIndex
-pub struct zond_engine::model::target::TargetMap
+#[non_exhaustive] pub struct zond_engine::model::target::TargetMap
 pub zond_engine::model::target::TargetMap::units: alloc::vec::Vec<zond_engine::model::target::TargetSet>
 impl zond_engine::model::target::TargetMap
 pub fn zond_engine::model::target::TargetMap::add_unit(&mut self, zond_engine::model::target::TargetSet)
@@ -11466,7 +11487,7 @@ impl core::marker::Unpin for zond_engine::model::technique::TcpScanTechnique
 impl core::marker::UnsafeUnpin for zond_engine::model::technique::TcpScanTechnique
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::technique::TcpScanTechnique
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::technique::TcpScanTechnique
-pub struct zond_engine::model::technique::UnknownSctpTechnique
+#[non_exhaustive] pub struct zond_engine::model::technique::UnknownSctpTechnique
 pub zond_engine::model::technique::UnknownSctpTechnique::input: alloc::string::String
 impl core::clone::Clone for zond_engine::model::technique::UnknownSctpTechnique
 pub fn zond_engine::model::technique::UnknownSctpTechnique::clone(&self) -> zond_engine::model::technique::UnknownSctpTechnique
@@ -11488,7 +11509,7 @@ impl core::marker::Unpin for zond_engine::model::technique::UnknownSctpTechnique
 impl core::marker::UnsafeUnpin for zond_engine::model::technique::UnknownSctpTechnique
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::technique::UnknownSctpTechnique
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::technique::UnknownSctpTechnique
-pub struct zond_engine::model::technique::UnknownTechnique
+#[non_exhaustive] pub struct zond_engine::model::technique::UnknownTechnique
 pub zond_engine::model::technique::UnknownTechnique::input: alloc::string::String
 impl core::clone::Clone for zond_engine::model::technique::UnknownTechnique
 pub fn zond_engine::model::technique::UnknownTechnique::clone(&self) -> zond_engine::model::technique::UnknownTechnique
@@ -11884,7 +11905,7 @@ impl core::marker::Unpin for zond_engine::model::tls::UnfinishedVersion
 impl core::marker::UnsafeUnpin for zond_engine::model::tls::UnfinishedVersion
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::tls::UnfinishedVersion
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::tls::UnfinishedVersion
-pub struct zond_engine::model::tls::UnknownTlsVersion
+#[non_exhaustive] pub struct zond_engine::model::tls::UnknownTlsVersion
 pub zond_engine::model::tls::UnknownTlsVersion::input: alloc::string::String
 impl core::clone::Clone for zond_engine::model::tls::UnknownTlsVersion
 pub fn zond_engine::model::tls::UnknownTlsVersion::clone(&self) -> zond_engine::model::tls::UnknownTlsVersion
@@ -12593,7 +12614,7 @@ impl<'a> core::marker::Unpin for zond_engine::protocols::ethernet::Frame<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::protocols::ethernet::Frame<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::ethernet::Frame<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::ethernet::Frame<'a>
-pub struct zond_engine::protocols::ethernet::VlanTag
+#[non_exhaustive] pub struct zond_engine::protocols::ethernet::VlanTag
 pub zond_engine::protocols::ethernet::VlanTag::drop_eligible: bool
 pub zond_engine::protocols::ethernet::VlanTag::id: u16
 pub zond_engine::protocols::ethernet::VlanTag::priority: u8
@@ -12672,7 +12693,7 @@ impl core::marker::Unpin for zond_engine::protocols::icmp::TimestampAnswer
 impl core::marker::UnsafeUnpin for zond_engine::protocols::icmp::TimestampAnswer
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::icmp::TimestampAnswer
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::icmp::TimestampAnswer
-pub struct zond_engine::protocols::icmp::TimestampReply
+#[non_exhaustive] pub struct zond_engine::protocols::icmp::TimestampReply
 pub zond_engine::protocols::icmp::TimestampReply::originate: u32
 pub zond_engine::protocols::icmp::TimestampReply::receive: u32
 pub zond_engine::protocols::icmp::TimestampReply::transmit: u32
@@ -12856,7 +12877,7 @@ pub fn zond_engine::protocols::ndp::is_router_advertisement(&zond_engine::protoc
 pub fn zond_engine::protocols::ndp::multicast_mac(core::net::ip_addr::Ipv6Addr) -> zond_engine::model::mac::MacAddr
 pub fn zond_engine::protocols::ndp::solicited_node_multicast(core::net::ip_addr::Ipv6Addr) -> core::net::ip_addr::Ipv6Addr
 pub mod zond_engine::protocols::netbios
-pub struct zond_engine::protocols::netbios::NameTable
+#[non_exhaustive] pub struct zond_engine::protocols::netbios::NameTable
 pub zond_engine::protocols::netbios::NameTable::names: alloc::vec::Vec<zond_engine::protocols::netbios::RegisteredName>
 pub zond_engine::protocols::netbios::NameTable::unit_id: [u8; 6]
 impl zond_engine::protocols::netbios::NameTable
@@ -12878,7 +12899,7 @@ impl core::marker::Unpin for zond_engine::protocols::netbios::NameTable
 impl core::marker::UnsafeUnpin for zond_engine::protocols::netbios::NameTable
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::netbios::NameTable
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::netbios::NameTable
-pub struct zond_engine::protocols::netbios::RegisteredName
+#[non_exhaustive] pub struct zond_engine::protocols::netbios::RegisteredName
 pub zond_engine::protocols::netbios::RegisteredName::group: bool
 pub zond_engine::protocols::netbios::RegisteredName::name: alloc::string::String
 pub zond_engine::protocols::netbios::RegisteredName::suffix: u8
@@ -12904,7 +12925,7 @@ pub const zond_engine::protocols::sctp::chunk_type::ABORT: u8
 pub const zond_engine::protocols::sctp::chunk_type::COOKIE_ECHO: u8
 pub const zond_engine::protocols::sctp::chunk_type::INIT: u8
 pub const zond_engine::protocols::sctp::chunk_type::INIT_ACK: u8
-pub struct zond_engine::protocols::sctp::Chunk<'a>
+#[non_exhaustive] pub struct zond_engine::protocols::sctp::Chunk<'a>
 pub zond_engine::protocols::sctp::Chunk::chunk_type: u8
 pub zond_engine::protocols::sctp::Chunk::flags: u8
 pub zond_engine::protocols::sctp::Chunk::value: &'a [u8]
@@ -13086,7 +13107,7 @@ impl core::marker::Unpin for zond_engine::protocols::tls::ServerResponse
 impl core::marker::UnsafeUnpin for zond_engine::protocols::tls::ServerResponse
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::protocols::tls::ServerResponse
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::protocols::tls::ServerResponse
-pub struct zond_engine::protocols::tls::Offer<'a>
+#[non_exhaustive] pub struct zond_engine::protocols::tls::Offer<'a>
 pub zond_engine::protocols::tls::Offer::server_name: core::option::Option<&'a str>
 pub zond_engine::protocols::tls::Offer::suites: &'a [zond_engine::model::tls::CipherSuite]
 pub zond_engine::protocols::tls::Offer::version: zond_engine::model::tls::TlsVersion
@@ -14497,7 +14518,7 @@ impl core::marker::Unpin for zond_engine::report::Attachment
 impl core::marker::UnsafeUnpin for zond_engine::report::Attachment
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::report::Attachment
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::report::Attachment
-pub struct zond_engine::report::EvasionRecord
+#[non_exhaustive] pub struct zond_engine::report::EvasionRecord
 pub zond_engine::report::EvasionRecord::bad_tcp_checksum: bool
 pub zond_engine::report::EvasionRecord::decoys: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::report::EvasionRecord::flags: core::option::Option<u8>
@@ -14523,7 +14544,7 @@ impl core::marker::Unpin for zond_engine::report::EvasionRecord
 impl core::marker::UnsafeUnpin for zond_engine::report::EvasionRecord
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::report::EvasionRecord
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::report::EvasionRecord
-pub struct zond_engine::report::FamilyCounts
+#[non_exhaustive] pub struct zond_engine::report::FamilyCounts
 pub zond_engine::report::FamilyCounts::dual_stack: usize
 pub zond_engine::report::FamilyCounts::ipv4: usize
 pub zond_engine::report::FamilyCounts::ipv6: usize
@@ -14790,7 +14811,7 @@ impl core::marker::Unpin for zond_engine::report::ScanReport
 impl core::marker::UnsafeUnpin for zond_engine::report::ScanReport
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::report::ScanReport
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::report::ScanReport
-pub struct zond_engine::report::ScanSettings
+#[non_exhaustive] pub struct zond_engine::report::ScanSettings
 pub zond_engine::report::ScanSettings::characterise: bool
 pub zond_engine::report::ScanSettings::detection: zond_engine::config::envelope::DetectionEnvelope
 pub zond_engine::report::ScanSettings::dns_enabled: bool
@@ -14953,12 +14974,14 @@ impl core::marker::Unpin for zond_engine::report::TargetScope
 impl core::marker::UnsafeUnpin for zond_engine::report::TargetScope
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::report::TargetScope
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::report::TargetScope
-pub struct zond_engine::report::WindowSummary
+#[non_exhaustive] pub struct zond_engine::report::WindowSummary
 pub zond_engine::report::WindowSummary::adaptive: bool
 pub zond_engine::report::WindowSummary::at_floor: bool
 pub zond_engine::report::WindowSummary::capacity: usize
 pub zond_engine::report::WindowSummary::peak: usize
 pub zond_engine::report::WindowSummary::reductions: u32
+impl zond_engine::report::WindowSummary
+pub const fn zond_engine::report::WindowSummary::new(usize, usize, u32, bool, bool) -> Self
 impl core::clone::Clone for zond_engine::report::WindowSummary
 pub fn zond_engine::report::WindowSummary::clone(&self) -> zond_engine::report::WindowSummary
 impl core::cmp::Eq for zond_engine::report::WindowSummary
@@ -15266,7 +15289,7 @@ impl core::marker::Unpin for zond_engine::scanner::plan::PortScanPlan
 impl core::marker::UnsafeUnpin for zond_engine::scanner::plan::PortScanPlan
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::plan::PortScanPlan
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::plan::PortScanPlan
-pub struct zond_engine::scanner::plan::RefusedStep
+#[non_exhaustive] pub struct zond_engine::scanner::plan::RefusedStep
 pub zond_engine::scanner::plan::RefusedStep::reason: alloc::string::String
 pub zond_engine::scanner::plan::RefusedStep::scanner: zond_engine::report::ScannerKind
 impl zond_engine::scanner::plan::RefusedStep
@@ -15658,7 +15681,7 @@ impl core::marker::Unpin for zond_engine::scanner::strategy::identify::series::O
 impl core::marker::UnsafeUnpin for zond_engine::scanner::strategy::identify::series::OsSeriesScanner
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::strategy::identify::series::OsSeriesScanner
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::identify::series::OsSeriesScanner
-pub struct zond_engine::scanner::strategy::identify::series::SeriesTarget
+#[non_exhaustive] pub struct zond_engine::scanner::strategy::identify::series::SeriesTarget
 pub zond_engine::scanner::strategy::identify::series::SeriesTarget::address: zond_engine::model::ip::scoped::ScopedIp
 pub zond_engine::scanner::strategy::identify::series::SeriesTarget::closed: core::option::Option<u16>
 pub zond_engine::scanner::strategy::identify::series::SeriesTarget::open: core::option::Option<u16>
@@ -15981,7 +16004,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::strategy:
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::routed::SynPorts
 pub mod zond_engine::scanner::strategy::topology
 pub mod zond_engine::scanner::strategy::topology::characterise
-pub struct zond_engine::scanner::strategy::topology::characterise::Subject
+#[non_exhaustive] pub struct zond_engine::scanner::strategy::topology::characterise::Subject
 pub zond_engine::scanner::strategy::topology::characterise::Subject::filtered_port: core::option::Option<u16>
 pub zond_engine::scanner::strategy::topology::characterise::Subject::host: core::net::ip_addr::IpAddr
 pub zond_engine::scanner::strategy::topology::characterise::Subject::open_port: core::option::Option<u16>
@@ -16365,7 +16388,7 @@ impl core::marker::Unpin for zond_engine::system::interface::ViabilityError
 impl core::marker::UnsafeUnpin for zond_engine::system::interface::ViabilityError
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::system::interface::ViabilityError
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::system::interface::ViabilityError
-pub struct zond_engine::system::interface::LanLink
+#[non_exhaustive] pub struct zond_engine::system::interface::LanLink
 pub zond_engine::system::interface::LanLink::ipv4: core::option::Option<zond_engine::system::interface::LinkAddress>
 pub zond_engine::system::interface::LanLink::ipv6: alloc::vec::Vec<zond_engine::system::interface::LinkAddress>
 pub zond_engine::system::interface::LanLink::link: zond_engine::system::interface::Link
@@ -16453,9 +16476,11 @@ impl core::marker::Unpin for zond_engine::system::interface::LinkAddress
 impl core::marker::UnsafeUnpin for zond_engine::system::interface::LinkAddress
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::system::interface::LinkAddress
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::system::interface::LinkAddress
-pub struct zond_engine::system::interface::RoutedTarget
+#[non_exhaustive] pub struct zond_engine::system::interface::RoutedTarget
 pub zond_engine::system::interface::RoutedTarget::source: core::net::ip_addr::IpAddr
 pub zond_engine::system::interface::RoutedTarget::target: core::net::ip_addr::IpAddr
+impl zond_engine::system::interface::RoutedTarget
+pub const fn zond_engine::system::interface::RoutedTarget::new(core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr) -> Self
 impl core::clone::Clone for zond_engine::system::interface::RoutedTarget
 pub fn zond_engine::system::interface::RoutedTarget::clone(&self) -> zond_engine::system::interface::RoutedTarget
 impl core::cmp::Eq for zond_engine::system::interface::RoutedTarget
@@ -16472,7 +16497,7 @@ impl core::marker::Unpin for zond_engine::system::interface::RoutedTarget
 impl core::marker::UnsafeUnpin for zond_engine::system::interface::RoutedTarget
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::system::interface::RoutedTarget
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::system::interface::RoutedTarget
-pub struct zond_engine::system::interface::RoutedTargets
+#[non_exhaustive] pub struct zond_engine::system::interface::RoutedTargets
 pub zond_engine::system::interface::RoutedTargets::ambiguous: alloc::vec::Vec<zond_engine::model::ip::range::Ipv6Range>
 pub zond_engine::system::interface::RoutedTargets::local: std::collections::hash::map::HashMap<zond_engine::system::interface::Link, zond_engine::model::ip::set::IpSet>
 pub zond_engine::system::interface::RoutedTargets::ours: zond_engine::model::ip::set::IpSet
@@ -16519,7 +16544,7 @@ pub fn zond_engine::system::interface::prioritized_interfaces(usize) -> alloc::v
 pub fn zond_engine::system::interface::resolve_keyword(zond_engine::model::parse::ip::Keyword, &mut zond_engine::model::ip::set::IpSet) -> core::result::Result<(), zond_engine::model::parse::ip::IpParseError>
 pub fn zond_engine::system::interface::resolve_zone(&str) -> core::option::Option<u32>
 pub mod zond_engine::system::neighbor_cache
-pub struct zond_engine::system::neighbor_cache::Neighbor
+#[non_exhaustive] pub struct zond_engine::system::neighbor_cache::Neighbor
 pub zond_engine::system::neighbor_cache::Neighbor::interface_index: u32
 pub zond_engine::system::neighbor_cache::Neighbor::ip: core::net::ip_addr::IpAddr
 pub zond_engine::system::neighbor_cache::Neighbor::mac: core::option::Option<zond_engine::model::mac::MacAddr>
@@ -16665,12 +16690,14 @@ impl core::marker::Unpin for zond_engine::transport::capture::CaptureOptions
 impl core::marker::UnsafeUnpin for zond_engine::transport::capture::CaptureOptions
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::capture::CaptureOptions
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::capture::CaptureOptions
-pub struct zond_engine::transport::capture::CapturedFrame
+#[non_exhaustive] pub struct zond_engine::transport::capture::CapturedFrame
 pub zond_engine::transport::capture::CapturedFrame::bytes: alloc::vec::Vec<u8>
 pub zond_engine::transport::capture::CapturedFrame::link: zond_engine::transport::frame::LinkType
 pub zond_engine::transport::capture::CapturedFrame::observed_at: std::time::SystemTime
 pub zond_engine::transport::capture::CapturedFrame::received_at: std::time::Instant
 pub zond_engine::transport::capture::CapturedFrame::zone: zond_engine::model::ip::scoped::Zone
+impl zond_engine::transport::capture::CapturedFrame
+pub fn zond_engine::transport::capture::CapturedFrame::new(zond_engine::model::ip::scoped::Zone, zond_engine::transport::frame::LinkType, alloc::vec::Vec<u8>) -> Self
 impl core::clone::Clone for zond_engine::transport::capture::CapturedFrame
 pub fn zond_engine::transport::capture::CapturedFrame::clone(&self) -> zond_engine::transport::capture::CapturedFrame
 impl core::cmp::Eq for zond_engine::transport::capture::CapturedFrame
@@ -16686,7 +16713,7 @@ impl core::marker::Unpin for zond_engine::transport::capture::CapturedFrame
 impl core::marker::UnsafeUnpin for zond_engine::transport::capture::CapturedFrame
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::capture::CapturedFrame
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::capture::CapturedFrame
-pub struct zond_engine::transport::capture::CapturedSegment
+#[non_exhaustive] pub struct zond_engine::transport::capture::CapturedSegment
 pub zond_engine::transport::capture::CapturedSegment::bytes: alloc::vec::Vec<u8>
 pub zond_engine::transport::capture::CapturedSegment::destination: core::option::Option<core::net::ip_addr::IpAddr>
 pub zond_engine::transport::capture::CapturedSegment::observation: core::option::Option<zond_engine::model::capture::IpObservation>
@@ -16788,7 +16815,7 @@ impl core::marker::Unpin for zond_engine::transport::channel::ChannelError
 impl core::marker::UnsafeUnpin for zond_engine::transport::channel::ChannelError
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::channel::ChannelError
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::transport::channel::ChannelError
-pub struct zond_engine::transport::channel::EthernetHandle
+#[non_exhaustive] pub struct zond_engine::transport::channel::EthernetHandle
 pub zond_engine::transport::channel::EthernetHandle::rx: zond_engine::transport::capture::FrameStream
 pub zond_engine::transport::channel::EthernetHandle::tx: alloc::boxed::Box<dyn zond_engine::transport::capture::FrameSink>
 impl zond_engine::transport::channel::EthernetHandle
@@ -16871,7 +16898,7 @@ impl core::marker::Unpin for zond_engine::transport::frame::LinkType
 impl core::marker::UnsafeUnpin for zond_engine::transport::frame::LinkType
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::frame::LinkType
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::frame::LinkType
-pub struct zond_engine::transport::frame::FrameSpec
+#[non_exhaustive] pub struct zond_engine::transport::frame::FrameSpec
 pub zond_engine::transport::frame::FrameSpec::dst: core::net::ip_addr::IpAddr
 pub zond_engine::transport::frame::FrameSpec::dst_mac: zond_engine::model::mac::MacAddr
 pub zond_engine::transport::frame::FrameSpec::hop_limit: u8
@@ -16890,7 +16917,7 @@ impl core::marker::Unpin for zond_engine::transport::frame::FrameSpec
 impl core::marker::UnsafeUnpin for zond_engine::transport::frame::FrameSpec
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::frame::FrameSpec
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::frame::FrameSpec
-pub struct zond_engine::transport::frame::IpSegment<'a>
+#[non_exhaustive] pub struct zond_engine::transport::frame::IpSegment<'a>
 pub zond_engine::transport::frame::IpSegment::destination: core::net::ip_addr::IpAddr
 pub zond_engine::transport::frame::IpSegment::observation: zond_engine::model::capture::IpObservation
 pub zond_engine::transport::frame::IpSegment::payload: &'a [u8]
@@ -17027,7 +17054,7 @@ impl core::marker::Unpin for zond_engine::transport::probe::TransportError
 impl core::marker::UnsafeUnpin for zond_engine::transport::probe::TransportError
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::probe::TransportError
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::transport::probe::TransportError
-pub struct zond_engine::transport::probe::Emission
+#[non_exhaustive] pub struct zond_engine::transport::probe::Emission
 pub zond_engine::transport::probe::Emission::fragment: core::option::Option<u16>
 pub zond_engine::transport::probe::Emission::hop_limit: u8
 pub zond_engine::transport::probe::Emission::source_mac: core::option::Option<zond_engine::model::mac::MacAddr>
@@ -17078,7 +17105,7 @@ impl core::marker::Unpin for zond_engine::transport::probe::IpProtocols
 impl core::marker::UnsafeUnpin for zond_engine::transport::probe::IpProtocols
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::probe::IpProtocols
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::probe::IpProtocols
-pub struct zond_engine::transport::probe::ProbeTransport
+#[non_exhaustive] pub struct zond_engine::transport::probe::ProbeTransport
 pub zond_engine::transport::probe::ProbeTransport::rx: zond_engine::transport::capture::CaptureStream
 pub zond_engine::transport::probe::ProbeTransport::tx: alloc::boxed::Box<dyn zond_engine::transport::probe::ProbeSender>
 impl zond_engine::transport::probe::ProbeTransport
@@ -17107,7 +17134,7 @@ impl core::marker::Unpin for zond_engine::transport::probe::RawIpSender
 impl core::marker::UnsafeUnpin for zond_engine::transport::probe::RawIpSender
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::probe::RawIpSender
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::probe::RawIpSender
-pub struct zond_engine::transport::probe::UnknownSendMode
+#[non_exhaustive] pub struct zond_engine::transport::probe::UnknownSendMode
 pub zond_engine::transport::probe::UnknownSendMode::input: alloc::string::String
 impl core::clone::Clone for zond_engine::transport::probe::UnknownSendMode
 pub fn zond_engine::transport::probe::UnknownSendMode::clone(&self) -> zond_engine::transport::probe::UnknownSendMode
@@ -17483,7 +17510,7 @@ impl core::marker::Unpin for zond_engine::scanner::Until
 impl core::marker::UnsafeUnpin for zond_engine::scanner::Until
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::Until
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::Until
-pub struct zond_engine::EvasionProfile
+#[non_exhaustive] pub struct zond_engine::EvasionProfile
 pub zond_engine::EvasionProfile::bad_tcp_checksum: bool
 pub zond_engine::EvasionProfile::decoys: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::EvasionProfile::flags: core::option::Option<u8>
@@ -18117,10 +18144,12 @@ impl core::marker::Unpin for zond_engine::model::port::service::Service
 impl core::marker::UnsafeUnpin for zond_engine::model::port::service::Service
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::service::Service
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::service::Service
-pub struct zond_engine::Target
+#[non_exhaustive] pub struct zond_engine::Target
 pub zond_engine::Target::ip: core::net::ip_addr::IpAddr
 pub zond_engine::Target::port: u16
 pub zond_engine::Target::protocol: zond_engine::model::port::Protocol
+impl zond_engine::model::target::Target
+pub const fn zond_engine::model::target::Target::new(core::net::ip_addr::IpAddr, u16, zond_engine::model::port::Protocol) -> Self
 impl core::clone::Clone for zond_engine::model::target::Target
 pub fn zond_engine::model::target::Target::clone(&self) -> zond_engine::model::target::Target
 impl core::cmp::Eq for zond_engine::model::target::Target
@@ -18139,7 +18168,7 @@ impl core::marker::Unpin for zond_engine::model::target::Target
 impl core::marker::UnsafeUnpin for zond_engine::model::target::Target
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::target::Target
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::target::Target
-pub struct zond_engine::TargetMap
+#[non_exhaustive] pub struct zond_engine::TargetMap
 pub zond_engine::TargetMap::units: alloc::vec::Vec<zond_engine::model::target::TargetSet>
 impl zond_engine::model::target::TargetMap
 pub fn zond_engine::model::target::TargetMap::add_unit(&mut self, zond_engine::model::target::TargetSet)

@@ -191,6 +191,7 @@ pub fn unescape(payload: &str) -> Vec<u8> {
 
 /// The `[service]` table: who a signature file is about, and where that service
 /// is expected to be found.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceSignature {
     /// The service's canonical name, the one a report prints and every rule and
@@ -245,11 +246,27 @@ pub struct ServiceSignature {
     pub speaks: Option<String>,
 }
 
+impl ServiceSignature {
+    /// A service named `name`, registered on no port until some are pushed
+    /// onto [`default_ports`](Self::default_ports).
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            default_ports: Vec::new(),
+            shared_ports: Vec::new(),
+            description: None,
+            attribution: None,
+            speaks: None,
+        }
+    }
+}
+
 /// Something to send to a port to make it answer.
 ///
 /// Sent to every port the owning service registers; a probe marked
 /// [`generic`](Self::generic) also goes to open ports that register none of
 /// their own.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Probe {
     /// A name for the probe, for authors and for the build's diagnostics.
@@ -312,9 +329,23 @@ pub struct Probe {
     pub generic: bool,
 }
 
+impl Probe {
+    /// An unnamed probe sending `payload` over `protocol`, at rarity zero.
+    pub fn new(protocol: impl Into<String>, payload: impl Into<String>) -> Self {
+        Self {
+            name: None,
+            payload: payload.into(),
+            protocol: protocol.into(),
+            rarity: 0,
+            generic: false,
+        }
+    }
+}
+
 /// One `[[match]]` rule: a pattern to run against a response, and what a match
 /// on it says about the service behind that response. Each rule becomes one
 /// signature in the flat, globally indexed set the engine matches against.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchRule {
     /// A name for the rule, such as `"nginx_server_header"`, for authors and
@@ -367,8 +398,25 @@ pub struct MatchRule {
     pub metadata: Option<HashMap<String, String>>,
 }
 
+impl MatchRule {
+    /// A rule matching `pattern` and naming nothing beyond the service.
+    pub fn new(pattern: impl Into<String>) -> Self {
+        Self {
+            name: None,
+            pattern: pattern.into(),
+            version_group: None,
+            vendor: None,
+            product: None,
+            context: None,
+            example: None,
+            metadata: None,
+        }
+    }
+}
+
 /// One `assets/fingerprinting` file, whole: the service it describes, what to
 /// send that service, and what to make of the answer.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceDefinition {
     /// The service this file is about, and the ports it registers.
@@ -380,6 +428,17 @@ pub struct ServiceDefinition {
     /// The rules run against whatever comes back.
     #[serde(default)]
     pub r#match: Vec<MatchRule>,
+}
+
+impl ServiceDefinition {
+    /// A definition of `service` with no probes and no rules yet.
+    pub fn new(service: ServiceSignature) -> Self {
+        Self {
+            service,
+            probe: Vec::new(),
+            r#match: Vec::new(),
+        }
+    }
 }
 
 /// Why an authored service definition cannot be used.

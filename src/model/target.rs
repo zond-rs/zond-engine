@@ -45,6 +45,7 @@ pub enum TargetError {
 
 /// One address, one port, one protocol: the smallest thing a scan can ask
 /// about.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Target {
     /// The address to probe.
@@ -63,6 +64,13 @@ pub struct Target {
     pub protocol: Protocol,
 }
 
+impl Target {
+    /// A target of `port` over `protocol` at `ip`.
+    pub const fn new(ip: IpAddr, port: u16, protocol: Protocol) -> Self {
+        Self { ip, port, protocol }
+    }
+}
+
 /// A target together with its position in the plan it came from.
 ///
 /// The position is the target's index in [`TargetMap::iter`], which is
@@ -73,6 +81,7 @@ pub struct Target {
 /// that came from a file or a hand-built set belongs to no plan and has no
 /// position. Only the dispatcher numbers targets, and only what it emits is
 /// wrapped.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PlannedTarget {
     /// Where in the plan's enumeration this target sits.
@@ -214,6 +223,7 @@ impl TargetSet {
 }
 
 /// A collection of multiple [`TargetSet`] units.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TargetMap {
     /// The units, in the order they were added.

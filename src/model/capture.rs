@@ -167,6 +167,7 @@ pub struct Ipv6Observation {
 /// crossing any captured interface, so `received` includes traffic that has
 /// nothing to do with the scan. It bounds the receive path's load, not the
 /// scan's share of it.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CaptureCounts {
     /// Frames the capture accepted and handed to this process.

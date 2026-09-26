@@ -669,6 +669,7 @@ fn ip_set_ranges(ips: &IpSet) -> Vec<IpRange> {
 /// `None`. A port's state under a probe from source port 53 is a different fact
 /// than the same state under an ordinary probe, and this is where a reader tells
 /// the two apart.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvasionRecord {
     /// The source port every probe left from, or `None` if the scan did not pin
@@ -727,6 +728,7 @@ impl EvasionRecord {
 /// Keeping this separate from [`ZondConfig`] also means the two can evolve
 /// independently: a new interface knob does not silently become part of every
 /// exported report.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScanSettings {
     /// How raw probes were placed on the wire.
@@ -2417,6 +2419,7 @@ pub struct ScanSummary {
 }
 
 /// Hosts counted by the address families they answered at.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FamilyCounts {
     /// Hosts with at least one IPv4 address.
@@ -3374,6 +3377,7 @@ pub enum ScannerKind {
 /// hard, which is the difference between "this host is firewalled" and "this
 /// host was asked too fast", and that difference is otherwise invisible in
 /// everything else a scan reports.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowSummary {
     /// The window at the end of the run.
@@ -3392,6 +3396,27 @@ pub struct WindowSummary {
     /// filtering, and the remedy is a narrower scan rather than a different
     /// setting.
     pub at_floor: bool,
+}
+
+impl WindowSummary {
+    /// A summary from what a window did: where it started, the widest it
+    /// reached, how often it was cut, whether it could move at all, and
+    /// whether it ended at its floor.
+    pub const fn new(
+        capacity: usize,
+        peak: usize,
+        reductions: u32,
+        adaptive: bool,
+        at_floor: bool,
+    ) -> Self {
+        Self {
+            capacity,
+            peak,
+            reductions,
+            adaptive,
+            at_floor,
+        }
+    }
 }
 
 impl ScannerKind {

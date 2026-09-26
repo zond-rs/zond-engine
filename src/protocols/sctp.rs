@@ -284,6 +284,7 @@ impl<'a> Segment<'a> {
 /// [`VlanTag`](crate::protocols::ethernet::VlanTag) sets out: RFC 4960 §3.2
 /// defines a chunk as a type byte, a flags byte, a length and the value it
 /// measures, and there is nothing else in one to read.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Chunk<'a> {
     /// What kind of chunk it is. See [`chunk_type`].

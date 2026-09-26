@@ -285,6 +285,7 @@ pub fn lookup_service_name(port: u16) -> Option<String> {
 /// host. They travel together because
 /// one banner routinely states both, and separating them at the source would
 /// mean two passes over the same evidence.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default)]
 pub struct AboutTheHost {
     /// What the responses implied about the operating system.

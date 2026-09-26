@@ -279,10 +279,7 @@ async fn established_traffic_does_not_discover_a_host() {
     let (session, ctx) = ScanSession::new();
 
     let mut scanner = RoutedScanner::with_transport(
-        vec![RoutedTarget {
-            target: TARGET_V6,
-            source: SCANNER_V6.into(),
-        }],
+        vec![RoutedTarget::new(TARGET_V6, SCANNER_V6.into())],
         ctx,
         None,
         net.transport(),
@@ -762,10 +759,7 @@ async fn a_host_already_in_the_store_is_still_credited_to_this_sweep() {
     });
 
     let mut scanner = RoutedScanner::with_transport(
-        vec![RoutedTarget {
-            target: TARGET,
-            source: SCANNER_V4.into(),
-        }],
+        vec![RoutedTarget::new(TARGET, SCANNER_V4.into())],
         ctx.clone(),
         None,
         net.transport(),
@@ -1076,10 +1070,7 @@ async fn an_init_sweep_finds_a_host_that_answers_only_sctp() {
     let (session, ctx) = ScanSession::new();
 
     let mut scanner = RoutedScanner::with_transport_asking(
-        vec![RoutedTarget {
-            target: TARGET,
-            source: SCANNER_V4.into(),
-        }],
+        vec![RoutedTarget::new(TARGET, SCANNER_V4.into())],
         ctx,
         None,
         net.transport(),
@@ -1114,10 +1105,7 @@ async fn an_init_sweep_files_its_counters_as_the_sctp_sweep() {
     let (_session, ctx) = ScanSession::new();
 
     let mut scanner = RoutedScanner::with_transport_asking(
-        vec![RoutedTarget {
-            target: TARGET,
-            source: SCANNER_V4.into(),
-        }],
+        vec![RoutedTarget::new(TARGET, SCANNER_V4.into())],
         ctx.clone(),
         None,
         net.transport(),
@@ -1153,10 +1141,7 @@ async fn an_abort_discovers_a_host_the_way_an_init_ack_does() {
     let (session, ctx) = ScanSession::new();
 
     let mut scanner = RoutedScanner::with_transport_asking(
-        vec![RoutedTarget {
-            target: TARGET,
-            source: SCANNER_V4.into(),
-        }],
+        vec![RoutedTarget::new(TARGET, SCANNER_V4.into())],
         ctx,
         None,
         net.transport(),

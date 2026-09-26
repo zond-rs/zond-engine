@@ -64,12 +64,20 @@ use std::net::IpAddr;
 
 /// An off-link target paired with the local source address a probe to it must
 /// be sent from.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RoutedTarget {
     /// The destination being probed.
     pub target: IpAddr,
     /// The source address to send its probe from.
     pub source: IpAddr,
+}
+
+impl RoutedTarget {
+    /// A probe of `target`, sent from `source`.
+    pub const fn new(target: IpAddr, source: IpAddr) -> Self {
+        Self { target, source }
+    }
 }
 
 /// The largest IPv6 range any strategy will turn into addresses one at a time.
@@ -110,6 +118,7 @@ pub const MAX_ENUMERABLE_ADDRESSES: u128 = 1 << 16;
 
 /// The result of classifying a set of targets against this host's interfaces
 /// and routing table.
+#[non_exhaustive]
 #[derive(Debug, Default)]
 pub struct RoutedTargets {
     /// Targets that share an interface's Layer-2 segment, grouped by that

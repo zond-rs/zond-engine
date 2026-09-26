@@ -1054,31 +1054,26 @@ impl FakeLink {
             tcp.set_checksum(checksum);
         }
 
-        Some(CapturedSegment {
-            received_at: Instant::now(),
-            source: target,
-            // The scanner's own address, because this is standing in for a
-            // packet that arrived. A reply with no destination is one a scan
-            // watching its own egress cannot place, and leaving it out here
-            // would exercise a receive stream no capture produces.
-            destination: Some(scanner),
-            protocol: IpNextHeaderProtocols::Tcp.0,
-            bytes: buffer,
-            // A real reply arrives under an IP header, and this one says what a
-            // Linux host on a local segment says. `synthetic` — which reports no
-            // header at all — is the honest answer for a stream that composed
-            // Layer-4 bytes out of nothing, and the wrong one here, because this
-            // is standing in for a packet.
-            observation: Some(IpObservation::V4(Ipv4Observation {
-                ttl: 64,
-                identification: 0,
-                dont_fragment: true,
-                more_fragments: false,
-                dscp: 0,
-                ecn: 0,
-            })),
-            source_mac: None,
-        })
+        let mut segment = CapturedSegment::synthetic(target, IpNextHeaderProtocols::Tcp.0, buffer);
+        // The scanner's own address, because this is standing in for a packet
+        // that arrived. A reply with no destination is one a scan watching its
+        // own egress cannot place, and leaving it out here would exercise a
+        // receive stream no capture produces.
+        segment.destination = Some(scanner);
+        // A real reply arrives under an IP header, and this one says what a
+        // Linux host on a local segment says. `synthetic` on its own, which
+        // reports no header at all, is the honest answer for a stream that
+        // composed Layer-4 bytes out of nothing, and the wrong one here,
+        // because this is standing in for a packet.
+        segment.observation = Some(IpObservation::V4(Ipv4Observation {
+            ttl: 64,
+            identification: 0,
+            dont_fragment: true,
+            more_fragments: false,
+            dscp: 0,
+            ecn: 0,
+        }));
+        Some(segment)
     }
 
     /// A UDP datagram from the probed port back to the scanner's source port,
@@ -1218,10 +1213,8 @@ impl FakeLink {
 
         let replies = self.replies.clone();
         let arrives = Instant::now() + policy.delay;
-        let segment = CapturedSegment {
-            received_at: arrives,
-            ..segment
-        };
+        let mut segment = segment;
+        segment.received_at = arrives;
         tokio::spawn(async move {
             tokio::time::sleep_until(arrives.into()).await;
             for _ in 0..copies {

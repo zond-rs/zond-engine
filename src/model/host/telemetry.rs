@@ -76,6 +76,7 @@ pub enum RttSource {
 /// kind of question produced it.
 /// Not [`Copy`]: [`protocol`](Self::protocol) may name a probe the engine has no
 /// variant for, and that name is an [`Arc<str>`](std::sync::Arc).
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RttSample {
     /// When the reply arrived, on the monotonic clock.

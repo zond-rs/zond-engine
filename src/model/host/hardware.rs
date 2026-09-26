@@ -122,6 +122,7 @@ pub struct HardwareInfo {
 /// A struct rather than seven positional arguments, because seven `Option<&str>`
 /// in a row is a call nobody can read and any two of which can be swapped
 /// without the compiler noticing.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HardwareDescription<'a> {
     /// Who made the box.

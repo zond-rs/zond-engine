@@ -143,6 +143,7 @@ pub(super) fn too_large(what: &str) -> JournalError {
 /// `engine` is recorded as well as the version because a journal is a file a
 /// user may find in a state directory months later, and a document that cannot
 /// name what produced it is a document nobody can act on.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Header {
     /// The format version, checked against [`JOURNAL_VERSION`] on open.

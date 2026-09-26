@@ -90,6 +90,7 @@ use crate::{counted, info, warn};
 /// thing a scanner may never do is stay quiet about ground it did not cover: a
 /// caller has to be able to tell "nothing is there" from "nobody looked", and
 /// only one of those is visible in a host count.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct RefusedStep {
     /// The strategy that would have taken this work.

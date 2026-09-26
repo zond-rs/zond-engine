@@ -55,6 +55,7 @@ use std::time::{Duration, Instant};
 ///
 /// Built from a captured segment by whoever is collecting the series; this
 /// type holds no packets and knows nothing about how the samples were drawn.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SeriesSample {
     /// When the reply arrived, as near the wire as its collector could stamp

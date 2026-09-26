@@ -53,6 +53,7 @@ pub const MAX_RULE_WEIGHT: f32 = 2.0;
 /// `{ equals = 64 }` and `{ range = [40, 64] }` without a tag, and so a
 /// malformed one produces an error naming the file rather than a deserialization
 /// message about variants.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Predicate<T> {
@@ -160,7 +161,8 @@ pub enum Provenance {
 /// and both lose. That is measured, not hypothetical: a Linux-based router
 /// announcing `Debian 12` over SSH resolved to nothing at all while a rule
 /// reading its hop counter called it a `Network device` in the family field.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OsIdentity {
     /// The broad family the host runs, such as `"Linux"`.
@@ -207,6 +209,7 @@ impl OsIdentity {
 /// Absence is "do not care", never "must be absent". A rule that needs a field
 /// to be missing says so with the field's own predicate: `mss` unset on a reset
 /// is a property of resets rather than something a rule has to assert.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MatchRule {
@@ -349,6 +352,7 @@ pub struct MatchRule {
 /// `source` is free text and is meant to say where the values came from and
 /// when, because a corpus entry nobody can trace is a corpus entry nobody can
 /// re-measure.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Example {
@@ -433,6 +437,7 @@ fn yes() -> bool {
 }
 
 /// One authored rule: who it names, what it tests, and what it must match.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OsDefinition {
@@ -454,6 +459,22 @@ pub struct OsDefinition {
     /// Observations this rule must match, from real hosts.
     #[serde(default)]
     pub example: Vec<Example>,
+}
+
+impl OsDefinition {
+    /// A rule naming `os` by `r#match`, with the defaults an authored file
+    /// gets for what it leaves out: published provenance, no notes, a weight
+    /// of one and no examples.
+    pub fn new(os: OsIdentity, r#match: MatchRule) -> Self {
+        Self {
+            os,
+            provenance: Provenance::default(),
+            notes: None,
+            weight: default_weight(),
+            r#match,
+            example: Vec::new(),
+        }
+    }
 }
 
 /// `#[serde(default)]` for a predicate's weight: unweighted means weighted one,

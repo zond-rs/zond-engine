@@ -20,8 +20,7 @@
 
 use async_trait::async_trait;
 use zond_engine::fingerprint::os::{
-    MatchRule as OsMatchRule, OsDefinition, OsIdentity, Predicate, Provenance, ReplyKind, RuleDb,
-    RuleError,
+    MatchRule as OsMatchRule, OsDefinition, OsIdentity, Predicate, ReplyKind, RuleDb, RuleError,
 };
 use zond_engine::fingerprint::{
     Analyzer, Collected, Evidence, MatchRule, PortContext, Probe, ResponseSet, ServiceDefinition,
@@ -101,27 +100,14 @@ async fn the_built_in_set_is_unchanged_by_the_seam() {
 }
 
 fn definition(name: &str, port: u16, pattern: &str) -> ServiceDefinition {
-    ServiceDefinition {
-        service: ServiceSignature {
-            name: name.to_string(),
-            default_ports: vec![port],
-            shared_ports: Vec::new(),
-            description: None,
-            attribution: None,
-            speaks: None,
-        },
-        probe: Vec::new(),
-        r#match: vec![MatchRule {
-            name: None,
-            pattern: pattern.to_string(),
-            version_group: Some(1),
-            vendor: None,
-            product: Some("ACME Appliance".to_string()),
-            context: None,
-            example: None,
-            metadata: None,
-        }],
-    }
+    let mut service = ServiceSignature::new(name);
+    service.default_ports.push(port);
+    let mut rule = MatchRule::new(pattern);
+    rule.version_group = Some(1);
+    rule.product = Some("ACME Appliance".to_string());
+    let mut definition = ServiceDefinition::new(service);
+    definition.r#match.push(rule);
+    definition
 }
 
 /// **Signatures authored outside the crate can be loaded and matched.**
@@ -164,29 +150,16 @@ fn a_definition_the_build_would_reject_does_not_load() {
 }
 
 fn os_rule(family: &str, hops: u8) -> OsDefinition {
-    OsDefinition {
-        os: OsIdentity {
-            family: Some(family.to_string()),
-            device: None,
-            vendor: None,
-            product: None,
-            version: None,
-            cpe: None,
-        },
-        provenance: Provenance::Published,
-        notes: Some("a rule an embedder wrote".to_string()),
-        weight: 1.0,
-        r#match: OsMatchRule {
-            reply: ReplyKind::SynAck,
-            initial_hops: Some(Predicate {
-                equals: Some(hops),
-                any_of: None,
-                range: None,
-            }),
-            ..Default::default()
-        },
-        example: Vec::new(),
-    }
+    let mut os = OsIdentity::default();
+    os.family = Some(family.to_string());
+    let mut hop_count = Predicate::default();
+    hop_count.equals = Some(hops);
+    let mut r#match = OsMatchRule::default();
+    r#match.reply = ReplyKind::SynAck;
+    r#match.initial_hops = Some(hop_count);
+    let mut rule = OsDefinition::new(os, r#match);
+    rule.notes = Some("a rule an embedder wrote".to_string());
+    rule
 }
 
 /// **Rules of one's own are held to the checks the build makes.**
@@ -213,13 +186,9 @@ fn rules_of_ones_own_are_checked_the_way_the_build_checks_them() {
 #[test]
 fn a_probe_over_an_unknown_transport_is_refused_rather_than_dropped() {
     let mut def = definition("odd", 9002, "^X");
-    def.probe = vec![Probe {
-        name: Some("nowhere".to_string()),
-        payload: "hello".to_string(),
-        protocol: "sctp".to_string(),
-        rarity: 0,
-        generic: false,
-    }];
+    let mut probe = Probe::new("sctp", "hello");
+    probe.name = Some("nowhere".to_string());
+    def.probe = vec![probe];
 
     assert!(SignatureDb::try_from_definitions(vec![def]).is_err());
 }

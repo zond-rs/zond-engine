@@ -223,6 +223,7 @@ impl DetectionClass {
 ///
 /// The `Ord` derive compares `major`, then `minor`, then `patch`, in field order,
 /// which is exactly the intended precedence.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Version {
     /// The leading component, and the one that settles a comparison whenever
@@ -246,6 +247,7 @@ impl Version {
 }
 
 /// Why a string is not a detection version.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("'{input}' is not a version: expected three dot-separated numbers, as in `1.2.3`")]
 pub struct VersionParseError {

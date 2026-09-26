@@ -152,11 +152,7 @@ async fn a_connect_scan_reads_an_open_port_two_seconds_away_open() {
     let (tx, rx) = tokio::sync::mpsc::channel(1);
     tx.send(PlannedTarget::new(
         0,
-        Target {
-            ip: target,
-            port: open,
-            protocol: zond_engine::model::port::Protocol::Tcp,
-        },
+        Target::new(target, open, zond_engine::model::port::Protocol::Tcp),
     ))
     .await
     .expect("queue");

@@ -59,6 +59,7 @@ const REPLY_QUEUE_DEPTH: usize = 4096;
 
 /// The error [`SendMode::from_str`] returns, carrying the names that would have
 /// worked so a front end can print it verbatim.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("unknown send mode '{input}', expected one of: auto, raw_socket, ethernet")]
 pub struct UnknownSendMode {
@@ -565,6 +566,7 @@ fn host_is_down(error: &std::io::Error) -> bool {
 /// already building the header and simply writes the field, while the raw-socket
 /// sender sets it on the socket before the send, under the lock that serialises
 /// sends anyway. See `raw::TransportSenderHandle::send_to`.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Emission {
     /// How many hops the probe may cross before a router discards it and
@@ -868,6 +870,7 @@ impl ProbeSender for NoopSender {
 /// A probe transport: a swappable sender paired with a capture-fed receive
 /// stream. Scanners hold one of these and depend only on [`ProbeTransport::tx`]
 /// and [`ProbeTransport::rx`], never on how either is realized.
+#[non_exhaustive]
 pub struct ProbeTransport {
     /// The send half. Boxed so the backend (raw socket today, Ethernet later)
     /// can vary without touching callers.

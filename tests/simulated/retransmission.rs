@@ -267,10 +267,7 @@ async fn a_lost_discovery_syn_is_retried_and_the_host_is_still_found() {
     let (session, ctx) = ScanSession::new();
     let audit_ctx = ctx.clone();
     let mut scanner = RoutedScanner::with_transport(
-        vec![RoutedTarget {
-            target: TARGET,
-            source: SCANNER_V4.into(),
-        }],
+        vec![RoutedTarget::new(TARGET, SCANNER_V4.into())],
         ctx,
         None,
         net.transport(),
@@ -324,10 +321,7 @@ async fn a_silent_address_is_probed_a_bounded_number_of_times() {
 
     let (session, ctx) = ScanSession::new();
     let mut scanner = RoutedScanner::with_transport(
-        vec![RoutedTarget {
-            target: TARGET,
-            source: SCANNER_V4.into(),
-        }],
+        vec![RoutedTarget::new(TARGET, SCANNER_V4.into())],
         ctx,
         None,
         net.transport(),
@@ -367,10 +361,7 @@ async fn a_spaced_sweep_asks_a_silent_address_its_whole_budget() {
     let mut scanner = RoutedScanner::with_transport(
         targets
             .iter()
-            .map(|&target| RoutedTarget {
-                target,
-                source: SCANNER_V4.into(),
-            })
+            .map(|&target| RoutedTarget::new(target, SCANNER_V4.into()))
             .collect(),
         ctx,
         None,
@@ -399,10 +390,7 @@ async fn a_discovered_host_is_not_probed_again() {
 
     let (session, ctx) = ScanSession::new();
     let mut scanner = RoutedScanner::with_transport(
-        vec![RoutedTarget {
-            target: TARGET,
-            source: SCANNER_V4.into(),
-        }],
+        vec![RoutedTarget::new(TARGET, SCANNER_V4.into())],
         ctx,
         None,
         net.transport(),
@@ -432,9 +420,11 @@ async fn a_paced_sweep_probes_every_target_without_bursting_them() {
 
     let net = FakeNet::new(Layer4::Tcp);
     let targets: Vec<RoutedTarget> = (0..TARGETS)
-        .map(|n| RoutedTarget {
-            target: IpAddr::V4(Ipv4Addr::new(198, 51, 100, n as u8)),
-            source: SCANNER_V4.into(),
+        .map(|n| {
+            RoutedTarget::new(
+                IpAddr::V4(Ipv4Addr::new(198, 51, 100, n as u8)),
+                SCANNER_V4.into(),
+            )
         })
         .collect();
 

@@ -99,6 +99,7 @@ use crate::transport::probe::SendMode;
 /// assert_eq!(chained, assigned);
 /// assert!(chained.is_active());
 /// ```
+#[non_exhaustive]
 #[must_use]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EvasionProfile {
@@ -527,6 +528,7 @@ impl EvasionProfile {
 /// The segment-level evasion a scan applies to every probe: the choices that
 /// live in the L4 segment rather than the IP header around it. Produced by
 /// [`EvasionProfile::segment_shaping`].
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SegmentShaping {
     /// How many random bytes to append to the probe's payload, or `None` for

@@ -141,11 +141,11 @@ async fn a_connect_scan_leaves_by_the_forced_source() {
     let (tx, rx) = tokio::sync::mpsc::channel(1);
     tx.send(PlannedTarget::new(
         0,
-        Target {
-            ip: std::net::IpAddr::V4(target),
-            port: open,
-            protocol: zond_engine::model::port::Protocol::Tcp,
-        },
+        Target::new(
+            std::net::IpAddr::V4(target),
+            open,
+            zond_engine::model::port::Protocol::Tcp,
+        ),
     ))
     .await
     .expect("queue");

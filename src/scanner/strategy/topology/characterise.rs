@@ -72,6 +72,7 @@ const TRUSTED_SOURCE_PORT: u16 = 53;
 const STATELESS_FRAGMENT_MTU: u16 = 28;
 
 /// One host and the ports the pass aims its diagnostic probes at.
+#[non_exhaustive]
 pub struct Subject {
     /// The host to characterise.
     pub host: IpAddr,

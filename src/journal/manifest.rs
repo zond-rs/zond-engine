@@ -706,6 +706,7 @@ impl JournalManifest {
 /// Carries both target counts because they are the half of the difference a
 /// person can act on: "40,960 then, 81,920 now" points at the edit, where two
 /// hashes do not.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlanChanged {
     /// What the journal was written against.
@@ -978,6 +979,7 @@ impl JobOptions {
 /// Names the option, by the name of the
 /// [`ZondConfig`] field that sets it, since that is what a caller changes to
 /// continue the job as it was recorded.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OptionChanged {
     /// The option, as a [`ZondConfig`] field path: `assume_up`, `retry.effort`.

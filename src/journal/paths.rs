@@ -87,6 +87,7 @@ const JOURNALS: &str = "journals";
 /// ownership too. A journal written into somebody's home and left owned by root
 /// is a directory they cannot prune, which is worse than not having written it
 /// there.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvokingUser {
     /// The uid to give the journal.
@@ -95,6 +96,13 @@ pub struct InvokingUser {
     pub gid: u32,
     /// That user's home directory, as the password database records it.
     pub home: PathBuf,
+}
+
+impl InvokingUser {
+    /// The user `uid` in group `gid`, whose home is `home`.
+    pub fn new(uid: u32, gid: u32, home: PathBuf) -> Self {
+        Self { uid, gid, home }
+    }
 }
 
 /// The root directory holding one subdirectory per scan.

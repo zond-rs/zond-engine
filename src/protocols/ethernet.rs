@@ -84,6 +84,7 @@ const VLAN_TPIDS: [u16; 3] = [0x8100, 0x88A8, 0x9100];
 /// information, and 802.1Q spends every one of those bits: three of priority,
 /// one drop-eligible, twelve of identifier. There is no room for a fifth field,
 /// so a caller may build one and match it exhaustively.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VlanTag {
     /// The tag protocol identifier this tag was introduced by, which says

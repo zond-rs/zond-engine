@@ -44,10 +44,7 @@ fn serving_only(port: u16) -> FakeNet {
 async fn liveness_then_ports(net: &FakeNet, probe: SweepProbe, scan_ports: &[u16]) -> ScanSession {
     let (session, ctx) = ScanSession::new();
     let mut sweep = RoutedScanner::with_transport_asking(
-        vec![RoutedTarget {
-            target: TARGET,
-            source: SCANNER_V4.into(),
-        }],
+        vec![RoutedTarget::new(TARGET, SCANNER_V4.into())],
         ctx.clone(),
         None,
         net.transport(),

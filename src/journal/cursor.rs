@@ -296,6 +296,7 @@ impl Cursor {
 /// index `reached` is settled. The walk is written down whole, rather than
 /// taken from the manifest's seed, so a checkpoint says on its own which
 /// positions it accounts for.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Walked {
     /// The key of the order walked.
@@ -354,6 +355,7 @@ impl Walked {
 /// Two watermarks and the positions neither has reached, each named. Settled in
 /// either order the scan counts in, that is a handful of positions however
 /// large the plan; see the module documentation.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checkpoint {
     /// The position below which everything is settled.

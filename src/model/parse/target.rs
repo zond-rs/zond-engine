@@ -329,6 +329,7 @@ fn blank_or_empty(token: &str) -> TargetParseError {
 ///
 /// Borrows from the token it was parsed out of, so splitting a large file costs
 /// no allocation.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TargetExpr<'a> {
     /// The address expression: a literal, a range, a CIDR block, a keyword or a

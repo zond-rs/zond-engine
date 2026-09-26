@@ -159,3 +159,75 @@ fn no_public_signature_names_a_crate_outside_the_allow_list() {
         "public signatures naming a crate outside the allow-list: {unexpected:#?}"
     );
 }
+
+/// The public structs whose fields are all public and which are nonetheless
+/// exhaustive, each a type a caller writes out whole.
+///
+/// Everything else with a public field is `#[non_exhaustive]`, so a field can
+/// be added without a breaking release: a caller reads the fields, and builds
+/// one through its constructor or its `Default`. These are the exceptions,
+/// and each says why a literal naming every field is the point.
+const EXHAUSTIVE: &[(&str, &str)] = &[
+    (
+        "zond_engine::record::",
+        "a record is interchange, built by naming every field; see the `record` module",
+    ),
+    (
+        "Parts",
+        "mirrors what it rebuilds field for field, so a field added there stops \
+         every rebuild until it says what the new one is",
+    ),
+    (
+        "zond_engine::protocols::craft::",
+        "a header's fields are the protocol's, fixed by its RFC, and a caller \
+         crafting one states the fields it means to get wrong",
+    ),
+    (
+        "zond_engine::diff::change::Change",
+        "a value before and after, which is all a change is",
+    ),
+    ("zond_engine::diff::Change", "the same type, re-exported"),
+    (
+        "zond_engine::model::capture::Ipv",
+        "what one IP header said, field for field, which the header's format \
+         fixes; a synthetic transport writes one out for the packet it stands in for",
+    ),
+    (
+        "zond_engine::transport::probe::IpProtocols",
+        "one number per address family, and there are two",
+    ),
+];
+
+/// Adding a field to a struct a caller can build with a literal breaks that
+/// caller, so a type expected to grow has to be sealed before the first
+/// release that promises it, not after the field it needed arrives.
+#[test]
+fn every_struct_with_public_fields_can_grow_unless_it_says_why_not() {
+    let listing = listing();
+    let exhaustive: BTreeMap<&str, ()> = listing
+        .lines()
+        .filter_map(|line| line.strip_prefix("pub struct "))
+        .map(|rest| (rest.split(['<', ' ', '(']).next().unwrap_or(rest), ()))
+        .collect();
+    let mut open: Vec<&str> = listing
+        .lines()
+        .filter_map(|line| line.strip_prefix("pub "))
+        .filter_map(|rest| rest.split_once(": ").map(|(path, _)| path))
+        .filter_map(|path| path.rsplit_once("::").map(|(owner, _)| owner))
+        .filter(|owner| exhaustive.contains_key(owner))
+        .filter(|owner| {
+            !EXHAUSTIVE
+                .iter()
+                .any(|(pattern, _)| owner.starts_with(pattern) || owner.ends_with(pattern))
+        })
+        .collect();
+    open.dedup();
+    assert!(
+        exhaustive.contains_key("zond_engine::record::HostRecord"),
+        "the listing still spells a struct the way this check reads it"
+    );
+    assert!(
+        open.is_empty(),
+        "exhaustive structs with public fields: {open:#?}"
+    );
+}

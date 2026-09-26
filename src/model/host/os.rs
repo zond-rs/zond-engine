@@ -746,6 +746,7 @@ pub enum OsSource {
 /// [`OsVerdict`](crate::fingerprint::os::OsVerdict)'s, and the confidence is a
 /// probability rather than a percentage, since the arithmetic that combines these
 /// only makes sense on `0.0..=1.0`.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct OsEvidence {
     /// What produced it.

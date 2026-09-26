@@ -246,6 +246,7 @@ pub enum HostChange {
 }
 
 /// One IP protocol both scans established something about, graded differently.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IpProtocolChange {
     /// The protocol number.
@@ -263,12 +264,20 @@ pub struct IpProtocolChange {
 /// Only the severity is compared. A detection re-running writes a fresh excerpt
 /// almost every time, so treating any difference as a reassessment would report
 /// every finding on every scan.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reassessment {
     /// The finding as the current scan states it.
     pub finding: Finding,
     /// Where the severity moved.
     pub severity: Change<Severity>,
+}
+
+impl Reassessment {
+    /// `finding`, whose severity moved as `severity` says.
+    pub fn new(finding: Finding, severity: Change<Severity>) -> Self {
+        Self { finding, severity }
+    }
 }
 
 /// Compares one host's two records, either of which may be absent.

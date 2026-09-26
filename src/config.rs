@@ -223,6 +223,7 @@ impl std::fmt::Display for ScanEffort {
 ///
 /// The list is built from [`ScanEffort::ALL`] rather than spelled here, so a
 /// level added to the enum is a level this message names.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownScanEffort {
     /// What the caller wrote.
@@ -459,6 +460,7 @@ impl fmt::Display for OsDetection {
 ///
 /// The list is built from [`OsDetection::ALL`] rather than spelled here, so a
 /// level added to the enum is a level this message names.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownOsDetection {
     /// What the caller wrote.
@@ -694,6 +696,7 @@ impl fmt::Display for ServiceDetection {
 ///
 /// The list is built from [`ServiceDetection::ALL`] rather than spelled here, so
 /// a level added to the enum is a level this message names.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownServiceDetection {
     /// What the caller wrote.

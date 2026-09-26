@@ -353,6 +353,7 @@ pub fn source_mac(link: LinkType, frame: &[u8]) -> Option<MacAddr> {
 /// it, but an ICMP error's *quoted* packet identifies the probe by its
 /// destination - and the router that reports the error is not the host the
 /// probe was aimed at.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IpSegment<'a> {
     /// Who sent the packet.
@@ -535,6 +536,7 @@ pub fn parse_captured(link: LinkType, frame: &[u8]) -> Option<(IpSegment<'_>, Op
 
 /// Everything a frame needs except its payload: where it goes at both layers,
 /// what it carries, and how far it may travel.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct FrameSpec {
     /// The sending interface's address, or a spoofed one.

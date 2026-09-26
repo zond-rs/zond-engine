@@ -84,6 +84,7 @@ impl Reach {
 }
 
 /// One field the corpus writes rules against.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct Context {
     /// The string a rule's `context` states.

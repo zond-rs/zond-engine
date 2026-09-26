@@ -1018,6 +1018,7 @@ fn mark(record: &impl serde::Serialize) -> Result<Mark, JournalError> {
 
 /// A journal as it appears to a caller choosing between them. Read without
 /// taking the lock, so listing never disturbs a running scan.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Entry {
     /// Where it lives.
@@ -1038,6 +1039,22 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// A listing entry from its parts, for a caller rendering one it did not
+    /// read off disk.
+    pub fn new(
+        directory: PathBuf,
+        manifest: JournalManifest,
+        checkpoint: Option<Checkpoint>,
+        lock: LockState,
+    ) -> Self {
+        Self {
+            directory,
+            manifest,
+            checkpoint,
+            lock,
+        }
+    }
+
     /// Whether this journal has anything left to do.
     ///
     /// A journal whose cursor covers the whole plan is finished; one that never
@@ -1819,6 +1836,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), JournalError> {
 /// accumulate in a state directory nobody looks at. It is also evidence, so it
 /// should not vanish at a moment nobody chose. The defaults below take the
 /// second more seriously than the first.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Retention {
     /// How long a finished journal is kept, or `None` to keep it indefinitely.
@@ -1924,6 +1942,7 @@ impl Retention {
 }
 
 /// What a prune did, and what it left alone.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pruned {
     /// The journals removed, by id.
@@ -1937,12 +1956,23 @@ pub struct Pruned {
 }
 
 /// A journal a prune could not remove.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Held {
     /// Which journal.
     pub id: String,
     /// Why it is still there.
     pub reason: String,
+}
+
+impl Held {
+    /// The journal `id`, kept for `reason`.
+    pub fn new(id: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            reason: reason.into(),
+        }
+    }
 }
 
 /// Removes the journals under `root` that `retention` no longer keeps.

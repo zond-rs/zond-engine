@@ -219,6 +219,7 @@ const RECV_TICK: Duration = Duration::from_millis(5);
 /// scanner revisits ports whose state is settled and asks a different question
 /// about them, and probing a port nobody established anything about would be a
 /// port scan wearing another name.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeriesTarget {
     /// The host to follow, as the store keys it.

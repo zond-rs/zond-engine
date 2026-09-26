@@ -179,11 +179,7 @@ async fn the_connect_path_settles_what_it_probed() {
     for (position, port) in [listener.port, closed].into_iter().enumerate() {
         tx.send(PlannedTarget::new(
             position as u64,
-            Target {
-                ip: LOOPBACK,
-                port,
-                protocol: zond_engine::model::port::Protocol::Tcp,
-            },
+            Target::new(LOOPBACK, port, zond_engine::model::port::Protocol::Tcp),
         ))
         .await
         .expect("queue");
