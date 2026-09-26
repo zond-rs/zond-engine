@@ -56,7 +56,7 @@ use crate::model::ip::range::{Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::ScopedIp;
 use crate::model::ip::set::IpSet;
 use crate::system::interface::source::{
-    ProbeSockets, RouteAnswer, ask_route, plausible_source, refuses_neighbour, viable_interfaces,
+    RouteAnswer, ask_route, plausible_source, refuses_neighbour, viable_interfaces,
 };
 use crate::system::interface::{Link, LinkAddress};
 use rayon::prelude::*;
@@ -220,7 +220,7 @@ fn map_ips_to_interfaces_asking(
     ip_set: IpSet,
     interfaces: Vec<Link>,
     forced: &[IpAddr],
-    route: fn(IpAddr, &mut ProbeSockets) -> RouteAnswer,
+    route: fn(IpAddr) -> RouteAnswer,
 ) -> RoutedTargets {
     let owned_ips: HashSet<IpAddr> = interfaces
         .iter()
@@ -283,7 +283,7 @@ fn map_ips_to_interfaces_asking(
 
     let processed: Vec<(IpAddr, Classification)> = singles_to_route
         .par_iter()
-        .map_init(ProbeSockets::default, |sockets, &target| {
+        .map(|&target| {
             // Loopback is this host, and nothing below may say otherwise. The
             // kernel answers `::1` with `::1`, which no interface here holds, and
             // the fallback after it would then pair the target with a global
@@ -332,7 +332,7 @@ fn map_ips_to_interfaces_asking(
             // the connect fallback, whose connect the kernel refuses too, and
             // which files the address as one nothing reaches. See
             // `RouteAnswer::Forbidden`.
-            let answer = route(target, sockets);
+            let answer = route(target);
             if matches!(answer, RouteAnswer::Forbidden) {
                 return (target, Classification::Unmapped);
             }
@@ -441,11 +441,7 @@ pub(crate) fn refused_neighbours(link: &Link, targets: &IpSet) -> IpSet {
 
 /// [`refused_neighbours`], asking the table through `refuses`, which a test
 /// hands in to have the table refuse as no host a test runs on does.
-fn refused_neighbours_asking(
-    link: &Link,
-    targets: &IpSet,
-    refuses: fn(IpAddr, &mut ProbeSockets) -> bool,
-) -> IpSet {
+fn refused_neighbours_asking(link: &Link, targets: &IpSet, refuses: fn(IpAddr) -> bool) -> IpSet {
     let edges: HashSet<IpAddr> = link
         .addresses()
         .iter()
@@ -467,9 +463,7 @@ fn refused_neighbours_asking(
     let refused: Vec<IpAddr> = walked
         .filter(|target| !edges.contains(target) && !ScopedIp::needs_zone(target))
         .par_bridge()
-        .map_init(ProbeSockets::default, |sockets, target| {
-            refuses(target, sockets).then_some(target)
-        })
+        .map(|target| refuses(target).then_some(target))
         .flatten()
         .collect();
 
@@ -922,14 +916,14 @@ mod tests {
             set
         };
 
-        let forbidden = map_ips_to_interfaces_asking(targets(), interfaces(), &[lan], |_, _| {
+        let forbidden = map_ips_to_interfaces_asking(targets(), interfaces(), &[lan], |_| {
             RouteAnswer::Forbidden
         });
         assert!(forbidden.routed.is_empty(), "{:?}", forbidden.routed);
         assert!(forbidden.unmapped.contains(&v6) && forbidden.unmapped.contains(&v4));
 
         let missing =
-            map_ips_to_interfaces_asking(targets(), interfaces(), &[], |_, _| RouteAnswer::NoRoute);
+            map_ips_to_interfaces_asking(targets(), interfaces(), &[], |_| RouteAnswer::NoRoute);
         assert!(
             missing
                 .routed
@@ -957,7 +951,7 @@ mod tests {
 
         // Refuses every address whose last group is 13, and the segment's
         // edges, as a kernel refuses a broadcast.
-        let refused = refused_neighbours_asking(&link, &targets, |target, _| match target {
+        let refused = refused_neighbours_asking(&link, &targets, |target| match target {
             IpAddr::V4(v4) => matches!(v4.octets()[3], 0 | 13 | 255),
             IpAddr::V6(v6) => v6.segments()[7] == 13,
         });

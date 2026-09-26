@@ -2494,13 +2494,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_source_lookup_short_of_descriptors_is_a_shortage_not_an_unreachable_host() {
-        use crate::system::interface::{ProbeSockets, RouteAnswer};
+        use crate::system::interface::RouteAnswer;
 
         let (mut core, _session) = core();
-        core.resolver =
-            SourceResolver::from_links(&[]).asking_with(|_: IpAddr, _: &mut ProbeSockets| {
-                RouteAnswer::Unasked(std::io::Error::from_raw_os_error(libc::EMFILE))
-            });
+        core.resolver = SourceResolver::from_links(&[]).asking_with(|_: IpAddr| {
+            RouteAnswer::Unasked(std::io::Error::from_raw_os_error(libc::EMFILE))
+        });
 
         assert_eq!(core.source_for((TARGET, 80), true), None);
         assert!(
@@ -2522,15 +2521,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_source_lookup_the_routing_table_did_not_answer_leaves_its_host_to_be_asked_again() {
-        use crate::system::interface::{Link, LinkAddress, ProbeSockets, RouteAnswer};
+        use crate::system::interface::{Link, LinkAddress, RouteAnswer};
 
         let (mut core, _session) = core();
         let segment = LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24);
         core.resolver =
             SourceResolver::from_links(&[Link::new("test0", 1).with_addresses(vec![segment])])
-                .asking_with(|_: IpAddr, _: &mut ProbeSockets| {
-                    RouteAnswer::connect_refused(libc::EHOSTDOWN)
-                });
+                .asking_with(|_: IpAddr| RouteAnswer::connect_refused(libc::EHOSTDOWN));
 
         assert_eq!(core.source_for((TARGET, 80), true), None);
         assert!(

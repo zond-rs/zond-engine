@@ -68,7 +68,7 @@ use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::routed::SynPorts;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError, record_unasked};
 use crate::system::descriptors::{self, Descriptor};
-use crate::system::interface::{OnLinkTable, ProbeSockets, refuses_neighbour};
+use crate::system::interface::{OnLinkTable, refuses_neighbour};
 use crate::transport::dial::PathAllowance;
 use crate::transport::dial::{Connecting, Egress, Holder, Shaping, SourcePortHeld};
 use async_trait::async_trait;
@@ -407,7 +407,7 @@ impl Shortfall {
         unit: &str,
         units: &str,
         segments: &OnLinkTable,
-        refuses: fn(IpAddr, &mut ProbeSockets) -> bool,
+        refuses: fn(IpAddr) -> bool,
     ) {
         if self.starved > 0 {
             let unasked = counted(self.starved, unit, units);
@@ -427,16 +427,15 @@ impl Shortfall {
                 ),
             );
         }
-        let mut sockets = ProbeSockets::default();
         for address in self.unroutable {
             let reached = ctx
                 .read_host(address, |host| host.status() == HostStatus::Up)
                 .unwrap_or(false);
             if !reached {
-                let mut overrides_segment = || {
+                let overrides_segment = || {
                     segments.source_for(address).is_some()
                         && !segments.is_segment_edge(address)
-                        && refuses(address, &mut sockets)
+                        && refuses(address)
                 };
                 if self.forbidden.contains(&address) || overrides_segment() {
                     ctx.note_refused_by_route(address);
@@ -3866,7 +3865,7 @@ mod tests {
             "address",
             "addresses",
             &segments,
-            |target, _| target != IpAddr::V4(Ipv4Addr::new(192, 0, 2, 3)),
+            |target| target != IpAddr::V4(Ipv4Addr::new(192, 0, 2, 3)),
         );
 
         for ip in [address(2), address(3), address(255), routed] {

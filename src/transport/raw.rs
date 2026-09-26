@@ -358,12 +358,7 @@ impl TransportSenderHandle {
     /// Asked by connecting a UDP socket, which sends nothing. A poisoned memo
     /// asks afresh rather than failing the send.
     fn kernel_source(&self, destination: IpAddr) -> Option<IpAddr> {
-        let ask = || {
-            crate::system::interface::probe_route_source(
-                destination,
-                &mut crate::system::interface::ProbeSockets::default(),
-            )
-        };
+        let ask = || crate::system::interface::probe_route_source(destination);
         let Ok(mut routes) = self.routes.lock() else {
             return ask();
         };

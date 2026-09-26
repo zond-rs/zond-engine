@@ -66,6 +66,4 @@ pub(crate) use routing::refused_neighbours;
 #[cfg(all(test, unix))]
 pub(crate) use source::RouteAnswer;
 pub use source::SourceResolver;
-pub(crate) use source::{
-    NoSource, OnLinkTable, ProbeSockets, probe_route_source, refuses_neighbour,
-};
+pub(crate) use source::{NoSource, OnLinkTable, probe_route_source, refuses_neighbour};

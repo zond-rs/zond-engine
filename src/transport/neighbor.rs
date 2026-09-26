@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use crate::model::mac::MacAddr;
 use crate::system::interface::LinkAddress;
-use crate::system::interface::{ProbeSockets, probe_route_source};
+use crate::system::interface::probe_route_source;
 
 /// A resolved link-layer path to a destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,11 +123,7 @@ impl NeighborResolver {
                 None => unframed.extend(held),
             }
         }
-        Self::from_interfaces(
-            interfaces,
-            unframed,
-            Box::new(|dst| probe_route_source(dst, &mut ProbeSockets::default())),
-        )
+        Self::from_interfaces(interfaces, unframed, Box::new(probe_route_source))
     }
 
     fn from_interfaces(

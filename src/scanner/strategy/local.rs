@@ -510,9 +510,6 @@ pub struct LocalScanner {
     /// mechanism keeps its own state rather than sharing this struct's, and the
     /// reasoning behind its timing lives with it.
     ipv6: Ipv6Discovery,
-    /// The sockets the routing table is asked through about an address the
-    /// sweep overheard, before it is asked about directly.
-    route_sockets: interface::ProbeSockets,
 }
 
 #[async_trait]
@@ -728,7 +725,6 @@ impl LocalScanner {
             scope,
             ipv6: Ipv6Discovery::new(target_count),
             send_failure: None,
-            route_sockets: interface::ProbeSockets::default(),
         })
     }
 
@@ -1006,7 +1002,7 @@ impl LocalScanner {
         // Nor one this host's routing table refuses, which the sweep's own
         // targets were withheld for before it started; see
         // `interface::refused_neighbours`.
-        if interface::refuses_neighbour(address, &mut self.route_sockets) {
+        if interface::refuses_neighbour(address) {
             info!(
                 verbosity = 2,
                 "{address} was overheard and a route refuses it, so it is not asked about"

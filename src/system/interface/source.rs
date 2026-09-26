@@ -18,9 +18,9 @@
 //! Two access patterns share the machinery here:
 //!
 //! - **Bulk, up-front** ([`crate::system::interface::map_ips_to_interfaces`]):
-//!   thousands of distinct targets classified once, in parallel. Callers reuse
-//!   [`ProbeSockets`] per worker thread and match on-link targets against an
-//!   [`OnLinkTable`].
+//!   thousands of distinct targets classified once, in parallel. Callers match
+//!   on-link targets against an [`OnLinkTable`] and ask the kernel about the
+//!   rest.
 //! - **Streaming, one-at-a-time** (the SYN port scanner): targets trickle in,
 //!   with the *same* host revisited across many ports. [`SourceResolver`]
 //!   wraps the same primitives behind a per-destination cache so that repeat
@@ -134,15 +134,6 @@ impl OnLinkTable {
     }
 }
 
-/// Lazily-created UDP sockets used to ask the kernel for a route's source
-/// address, kept one per family so a caller can amortize the bind across many
-/// probes. Cheap to default-construct and hand to a worker thread.
-#[derive(Default)]
-pub struct ProbeSockets {
-    v4: Option<UdpSocket>,
-    v6: Option<UdpSocket>,
-}
-
 /// Picks an address on `interfaces` that could plausibly reach `target` when
 /// the kernel's own route lookup has declined to answer.
 ///
@@ -205,10 +196,8 @@ pub(crate) fn plausible_source(links: &[Link], target: IpAddr) -> Option<IpAddr>
 /// from, by `connect`-ing an unbound UDP socket to it and reading back the
 /// address the routing layer selected. No datagram is ever sent - `connect`
 /// on a UDP socket only performs the route lookup and binds the local end.
-///
-/// `sockets` caches one socket per address family so repeated probes reuse it.
-pub fn probe_route_source(target: IpAddr, sockets: &mut ProbeSockets) -> Option<IpAddr> {
-    match ask_route(target, sockets) {
+pub fn probe_route_source(target: IpAddr) -> Option<IpAddr> {
+    match ask_route(target) {
         RouteAnswer::From(source) => Some(source),
         RouteAnswer::NoRoute
         | RouteAnswer::Forbidden
@@ -295,25 +284,26 @@ impl RouteAnswer {
 
 /// Asks the kernel how it routes to `target`, keeping its refusal apart from a
 /// question that could not be put. See [`probe_route_source`].
-pub(crate) fn ask_route(target: IpAddr, sockets: &mut ProbeSockets) -> RouteAnswer {
-    let slot = match target {
-        IpAddr::V4(_) => &mut sockets.v4,
-        IpAddr::V6(_) => &mut sockets.v6,
+///
+/// Each question is put on a socket of its own. A socket that has been
+/// connected keeps the source its first connect chose on Linux, where
+/// `__ip4_datagram_connect` fills the source in only while it is unset, so a
+/// second connect is routed from the first answer's address: it answers a
+/// target behind another link with an address that link does not hold, and
+/// after a question about loopback refuses every routed target with the
+/// `EINVAL` a loopback source off the loopback device gets, which reads as a
+/// route refusing it by policy. XNU disconnects a datagram socket before
+/// connecting it again and has no such memory, but a question that owes
+/// nothing to the one before it is the same on both.
+pub(crate) fn ask_route(target: IpAddr) -> RouteAnswer {
+    let unbound = if target.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
     };
-
-    let socket = match slot {
-        Some(socket) => socket,
-        None => {
-            let bind_addr = if target.is_ipv4() {
-                "0.0.0.0:0"
-            } else {
-                "[::]:0"
-            };
-            match UdpSocket::bind(bind_addr) {
-                Ok(socket) => slot.insert(socket),
-                Err(error) => return RouteAnswer::Unasked(error),
-            }
-        }
+    let socket = match UdpSocket::bind(unbound) {
+        Ok(socket) => socket,
+        Err(error) => return RouteAnswer::Unasked(error),
     };
     if let Err(error) = socket.connect((target, 53)) {
         return RouteAnswer::refused_with(error);
@@ -370,9 +360,9 @@ pub(crate) const UNANSWERED_LOOKUPS: u8 = 3;
 /// that could not be asked, for want of a socket to ask with, or that gave no
 /// answer, is not read as a refusal: a policy refuses in its own words, which
 /// [`RouteAnswer`] reads.
-pub(crate) fn refuses_neighbour(target: IpAddr, sockets: &mut ProbeSockets) -> bool {
+pub(crate) fn refuses_neighbour(target: IpAddr) -> bool {
     matches!(
-        ask_route(target, sockets),
+        ask_route(target),
         RouteAnswer::NoRoute | RouteAnswer::Forbidden
     )
 }
@@ -396,7 +386,7 @@ pub(crate) fn refuses_neighbour(target: IpAddr, sockets: &mut ProbeSockets) -> b
 pub struct SourceResolver {
     onlink: OnLinkTable,
     /// How the routing table is asked about a destination: [`ask_route`].
-    route: fn(IpAddr, &mut ProbeSockets) -> RouteAnswer,
+    route: fn(IpAddr) -> RouteAnswer,
     /// Whether the routing table is asked about a destination on one of the
     /// segments this resolver holds: for a resolver of this host's, and not
     /// for one built over links it was handed, which are not this host's
@@ -408,7 +398,6 @@ pub struct SourceResolver {
     /// How many lookups of each destination still unsettled the routing
     /// table gave no answer to. See [`UNANSWERED_LOOKUPS`].
     unanswered: HashMap<IpAddr, u8>,
-    sockets: ProbeSockets,
     cache: HashMap<IpAddr, Option<IpAddr>>,
     /// The interfaces themselves, kept for [`plausible_source`]. The
     /// [`OnLinkTable`] cannot answer for it: that table matches a destination
@@ -445,7 +434,6 @@ impl SourceResolver {
             asks_on_link: false,
             refused: std::collections::HashSet::new(),
             unanswered: HashMap::new(),
-            sockets: ProbeSockets::default(),
             cache: HashMap::new(),
             links: links.to_vec(),
             zones: ZoneMap::new(),
@@ -644,7 +632,7 @@ impl SourceResolver {
             if !self.asks_on_link {
                 return Ok(on_link);
             }
-            return match (self.route)(target, &mut self.sockets) {
+            return match (self.route)(target) {
                 RouteAnswer::NoRoute | RouteAnswer::Forbidden => {
                     // Unreached all the same, but not named refused by a
                     // route: the kernel refuses a segment's broadcast address
@@ -664,7 +652,7 @@ impl SourceResolver {
             };
         }
 
-        let routed = match (self.route)(target, &mut self.sockets) {
+        let routed = match (self.route)(target) {
             RouteAnswer::From(source) => Some(source),
             RouteAnswer::NoRoute => None,
             RouteAnswer::Forbidden => {
@@ -695,10 +683,7 @@ impl SourceResolver {
     /// destination a resolver of this host's asks about, for a test that
     /// needs the table to answer as no host a test runs on does.
     #[cfg(all(test, unix))]
-    pub(crate) fn asking_with(
-        mut self,
-        route: fn(IpAddr, &mut ProbeSockets) -> RouteAnswer,
-    ) -> Self {
+    pub(crate) fn asking_with(mut self, route: fn(IpAddr) -> RouteAnswer) -> Self {
         self.route = route;
         self.asks_on_link = true;
         self
@@ -837,7 +822,7 @@ mod tests {
         let refused = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 13));
         let neighbour = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 14));
         let mut resolver = SourceResolver {
-            route: |target, _| match target == IpAddr::V4(Ipv4Addr::new(192, 0, 2, 13)) {
+            route: |target| match target == IpAddr::V4(Ipv4Addr::new(192, 0, 2, 13)) {
                 true => RouteAnswer::NoRoute,
                 false => RouteAnswer::From(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10))),
             },
@@ -859,11 +844,30 @@ mod tests {
     /// could build takes privileges; that half is Tier 3's.
     #[test]
     fn an_address_the_kernel_routes_is_not_refused() {
-        let mut sockets = ProbeSockets::default();
         assert!(matches!(
-            ask_route(IpAddr::V4(Ipv4Addr::LOCALHOST), &mut sockets),
+            ask_route(IpAddr::V4(Ipv4Addr::LOCALHOST)),
             RouteAnswer::From(_)
         ));
+    }
+
+    /// A question about a route is answered as it would be were it the first
+    /// one asked. A socket connected once keeps the source it was given on
+    /// Linux, so asked through one, a question after loopback's was routed
+    /// from `127.0.0.1` and refused with `EINVAL`, which reads as a route
+    /// refusing the target by policy, and a target behind a second link was
+    /// answered with the first link's address. On a host a test runs on with
+    /// no route to the documentation range, both answers are the same
+    /// refusal, and the test says nothing.
+    #[test]
+    fn a_route_question_is_answered_whatever_was_asked_before_it() {
+        let routed = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+        let alone = format!("{:?}", ask_route(routed));
+
+        assert!(matches!(
+            ask_route(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            RouteAnswer::From(_)
+        ));
+        assert_eq!(format!("{:?}", ask_route(routed)), alone);
     }
 
     /// A routed target whose route refuses by policy has no source, and the
@@ -879,14 +883,14 @@ mod tests {
         let target = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 9, 0, 0, 0, 0, 1));
 
         let mut forbidden = SourceResolver {
-            route: |_, _| RouteAnswer::Forbidden,
+            route: |_| RouteAnswer::Forbidden,
             ..SourceResolver::from_links(&links)
         };
         assert_eq!(forbidden.resolve(target), None);
         assert!(forbidden.refused_by_route(target), "and says why");
 
         let mut missing = SourceResolver {
-            route: |_, _| RouteAnswer::NoRoute,
+            route: |_| RouteAnswer::NoRoute,
             ..SourceResolver::from_links(&links)
         };
         assert_eq!(missing.resolve(target), Some(IpAddr::V6(global)));
@@ -900,7 +904,7 @@ mod tests {
     fn a_forced_source_does_not_answer_for_a_target_a_route_forbids() {
         let lan = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
         let mut resolver = SourceResolver {
-            route: |_, _| RouteAnswer::Forbidden,
+            route: |_| RouteAnswer::Forbidden,
             ..SourceResolver::from_links(&[mock_interface(vec![v4net(192, 0, 2, 50, 24)])])
                 .with_forced(vec![lan])
         };
@@ -918,7 +922,7 @@ mod tests {
     #[test]
     fn a_segment_s_edges_are_unreached_without_being_named_refused_by_a_route() {
         let mut resolver = SourceResolver {
-            route: |_, _| RouteAnswer::Forbidden,
+            route: |_| RouteAnswer::Forbidden,
             asks_on_link: true,
             ..SourceResolver::from_links(&[mock_interface(vec![v4net(192, 0, 2, 10, 24)])])
         };
@@ -945,9 +949,8 @@ mod tests {
     #[test]
     fn a_route_asked_without_a_descriptor_is_a_shortage_asked_again() {
         let global = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xb1a0);
-        let short = |_: IpAddr, _: &mut ProbeSockets| {
-            RouteAnswer::Unasked(std::io::Error::from_raw_os_error(libc::EMFILE))
-        };
+        let short =
+            |_: IpAddr| RouteAnswer::Unasked(std::io::Error::from_raw_os_error(libc::EMFILE));
         let routed = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 9, 0, 0, 0, 0, 1));
         let mut resolver = SourceResolver::from_links(&[mock_interface(vec![v6net(global, 64)])])
             .asking_with(short);
@@ -958,7 +961,7 @@ mod tests {
         ));
         assert!(!resolver.refused_by_route(routed));
 
-        resolver.route = |_, _| {
+        resolver.route = |_| {
             RouteAnswer::From(IpAddr::V6(Ipv6Addr::new(
                 0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xb1a0,
             )))
@@ -1034,7 +1037,7 @@ mod tests {
         let neighbour = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 14));
         let routed = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1));
         let mut resolver = SourceResolver {
-            route: |_, _| RouteAnswer::connect_refused(libc::ENOBUFS),
+            route: |_| RouteAnswer::connect_refused(libc::ENOBUFS),
             asks_on_link: true,
             ..SourceResolver::from_links(&[mock_interface(vec![v4net(192, 0, 2, 10, 24)])])
         };
@@ -1044,7 +1047,7 @@ mod tests {
             assert!(!resolver.refused_by_route(target), "{target}");
         }
 
-        resolver.route = |_, _| RouteAnswer::From(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)));
+        resolver.route = |_| RouteAnswer::From(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)));
         for target in [neighbour, routed] {
             assert_eq!(
                 resolver.resolve(target),
@@ -1069,7 +1072,7 @@ mod tests {
 
         let segment = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
         let mut resolver = SourceResolver {
-            route: |_, _| {
+            route: |_| {
                 ASKED.fetch_add(1, Ordering::SeqCst);
                 RouteAnswer::connect_refused(libc::ENOBUFS)
             },
