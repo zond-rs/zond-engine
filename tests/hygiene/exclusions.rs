@@ -102,7 +102,7 @@ const DISCOVERY_SOURCE_WRITERS: &[(&str, &str)] = &[(
 /// settled it.
 const DISCOVERY_SOURCE: &str = ".with_source_ip(";
 
-/// The files belonging to a module some parent declared `#[cfg(test)]`.
+/// The files belonging to a module some parent compiles only for a test.
 ///
 /// `without_tests` strips a `#[cfg(test)] mod tests { … }` written *inside* a
 /// file. It cannot see `#[cfg(test)] pub(crate) mod fixture;` in the parent,
@@ -113,7 +113,11 @@ fn test_only_modules() -> BTreeSet<PathBuf> {
     for path in every_source() {
         let text = fs::read_to_string(&path).expect("a source file is readable");
         for (index, line) in text.lines().enumerate() {
-            if line.trim() != "#[cfg(test)]" {
+            let condition = line
+                .trim()
+                .strip_prefix("#[cfg(")
+                .and_then(|rest| rest.strip_suffix(")]"));
+            if !condition.is_some_and(implies_test) {
                 continue;
             }
             let Some(next) = text.lines().nth(index + 1) else {
@@ -171,40 +175,114 @@ fn sources() -> Vec<PathBuf> {
         .collect()
 }
 
-/// `text` with `#[cfg(test)]` items removed. A fixture seeding a store says
-/// nothing about how the engine writes one.
+/// `text` with the items compiled only for a test removed. A fixture seeding a
+/// store says nothing about how the engine writes one.
 fn without_tests(text: &str) -> String {
     let mut kept = String::with_capacity(text.len());
     let mut rest = text;
 
-    while let Some(at) = rest.find("#[cfg(test)]") {
+    while let Some((at, attribute_end)) = next_test_only_attribute(rest) {
         kept.push_str(&rest[..at]);
-        let after = &rest[at..];
-        let Some(open) = after.find('{') else {
-            break;
-        };
-        let mut depth = 0usize;
-        let mut end = None;
-        for (offset, byte) in after[open..].bytes().enumerate() {
-            match byte {
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = Some(open + offset + 1);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        match end {
-            Some(end) => rest = &after[end..],
-            None => break,
-        }
+        rest = &rest[attribute_end..];
+        rest = &rest[item_len(rest)..];
     }
     kept.push_str(rest);
     kept
+}
+
+/// Where the next `#[cfg(…)]` whose condition implies [`implies_test`] starts
+/// in `text`, and where the attribute ends.
+fn next_test_only_attribute(text: &str) -> Option<(usize, usize)> {
+    let mut from = 0;
+    while let Some(found) = text[from..].find("#[cfg(") {
+        let at = from + found;
+        let condition = at + "#[cfg(".len();
+        let close = condition + closing_paren(&text[condition..])?;
+        if text[close + 1..].starts_with(']') && implies_test(&text[condition..close]) {
+            return Some((at, close + 2));
+        }
+        from = condition;
+    }
+    None
+}
+
+/// The offset of the `)` closing a parenthesis opened just before `text`.
+fn closing_paren(text: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, byte) in text.bytes().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' if depth == 0 => return Some(offset),
+            b')' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether a `cfg` condition holds only when compiling a test: `test` itself,
+/// an `all` with such a term, or an `any` made only of them. `not(test)` names
+/// the word and is the opposite, and `any(test, feature = "…")` also compiles
+/// into a build that enables the feature, so neither counts.
+fn implies_test(condition: &str) -> bool {
+    let condition = condition.trim();
+    if condition == "test" {
+        return true;
+    }
+    let terms = |name: &str| {
+        condition
+            .strip_prefix(name)
+            .and_then(|rest| rest.trim_start().strip_prefix('('))
+            .and_then(|rest| rest.strip_suffix(')'))
+            .map(top_level_terms)
+    };
+    if let Some(terms) = terms("all") {
+        return terms.iter().any(|term| implies_test(term));
+    }
+    if let Some(terms) = terms("any") {
+        return !terms.is_empty() && terms.iter().all(|term| implies_test(term));
+    }
+    false
+}
+
+/// The comma-separated terms of a condition list, split only at its own level.
+fn top_level_terms(list: &str) -> Vec<&str> {
+    let mut terms = Vec::new();
+    let (mut depth, mut start) = (0usize, 0);
+    for (offset, byte) in list.bytes().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                terms.push(&list[start..offset]);
+                start = offset + 1;
+            }
+            _ => {}
+        }
+    }
+    terms.push(&list[start..]);
+    terms.retain(|term| !term.trim().is_empty());
+    terms
+}
+
+/// How many bytes of `text` the item it starts with takes up, attributes
+/// included: through the `}` closing its body, or through the `;` or `,`
+/// ending an item that has none (`mod fixture;`, a field, a variant), or up
+/// to the `}` closing whatever holds it. Lexical, like the rest of this
+/// census: brackets inside a string literal are counted as code.
+fn item_len(text: &str) -> usize {
+    let mut depth = 0usize;
+    for (offset, byte) in text.bytes().enumerate() {
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' if depth == 0 => return offset,
+            b'}' if depth == 1 => return offset + 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b';' | b',' if depth == 0 => return offset + 1,
+            _ => {}
+        }
+    }
+    text.len()
 }
 
 /// **Every path that can put a host in the report is one somebody has held to
@@ -294,5 +372,41 @@ fn every_store_writer_says_something() {
             how.len() > 60,
             "{path}'s note is too short to be an answer: {how:?}"
         );
+    }
+}
+
+/// **Code compiled only under a test is left out of the census, whatever
+/// spells the condition, and nothing else is.**
+///
+/// A fixture behind `#[cfg(all(test, unix))]` is as much test code as one
+/// behind `#[cfg(test)]`, and counting it would list a fixture as an ungated
+/// writer. The other way round is worse: a condition that merely names
+/// `test` without implying it, or an item without a body, must not take the
+/// production code after it out of the census with it.
+#[test]
+fn only_code_compiled_solely_for_tests_is_left_out() {
+    let text = "\
+fn production_one() { store.insert(1); }
+#[cfg(all(test, unix))]
+mod unix_tests { fn seed() { store.insert(2); } }
+#[cfg(any(test, feature = \"test-support\"))]
+fn support() { store.entry(3); }
+#[cfg(not(test))]
+fn release_only() { store.get_mut(4); }
+#[cfg(test)]
+mod fixture;
+fn production_two() { store.insert(5); }
+#[cfg(any(test, all(test, windows)))]
+fn helper() { store.insert(6); }
+";
+    let kept = without_tests(text);
+    for production in ["insert(1)", "entry(3)", "get_mut(4)", "insert(5)"] {
+        assert!(
+            kept.contains(production),
+            "{production} was dropped:\n{kept}"
+        );
+    }
+    for test_only in ["insert(2)", "insert(6)"] {
+        assert!(!kept.contains(test_only), "{test_only} was kept:\n{kept}");
     }
 }
