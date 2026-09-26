@@ -17,9 +17,11 @@
 //! part of the record that touches the machinery. Everything else in
 //! [`crate::report`] can be built, read and written with no scan in sight.
 
+use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use crate::config::ZondConfig;
+use crate::model::host::Host;
 use crate::model::ip::range::IpRange;
 use crate::model::ip::set::IpSet;
 use crate::report::{
@@ -227,6 +229,26 @@ impl PhaseRecorder {
         self.close(ctx).0
     }
 
+    /// [`finish`](Self::finish) for the last phase of a scan, which is handed
+    /// the context to keep.
+    ///
+    /// The hosts are moved into the report rather than copied when nothing
+    /// else can read the store any longer: no [`ScanSession`] a caller kept,
+    /// no journal still to write, no other part of the scan. A full-range scan
+    /// is hundreds of megabytes of hosts, and a copy is a second of them held
+    /// at once for nobody. Whoever does still hold the store is answered as
+    /// before, from a copy.
+    ///
+    /// [`ScanSession`]: crate::scanner::session::ScanSession
+    pub(crate) fn finish_last(self, ctx: ScanContext) -> ScanReport {
+        let phase = self.close_phase(&ctx).0;
+        let hosts: Vec<Host> = match Arc::try_unwrap(ctx.store) {
+            Ok(store) => store.into_iter().map(|(_, host)| host).collect(),
+            Err(shared) => shared.iter().map(|entry| entry.value().clone()).collect(),
+        };
+        ScanReport::new(phase, hosts)
+    }
+
     /// [`finish`](Self::finish), handing back as well what a discovery phase
     /// established about presence, for the port phase that follows it to act
     /// on. `None` for any other kind of phase.
@@ -234,6 +256,16 @@ impl PhaseRecorder {
     /// One reading serves both, so the port phase settles as found down exactly
     /// the addresses the report does not name as undecided.
     pub(super) fn close(self, ctx: &ScanContext) -> (ScanReport, Option<Liveness>) {
+        let (phase, liveness) = self.close_phase(ctx);
+        // Copied rather than taken: the store is shared with the `ScanSession`
+        // the caller kept, which goes on answering after this returns.
+        let hosts = ctx.store.iter().map(|entry| entry.value().clone());
+        (ScanReport::new(phase, hosts), liveness)
+    }
+
+    /// The phase this recorder describes, closed against what `ctx` holds,
+    /// and what a discovery phase established about presence.
+    fn close_phase(self, ctx: &ScanContext) -> (ScanPhase, Option<Liveness>) {
         // Which links the strategies reached is only knowable now: the scope was
         // fixed before the first probe went out, and a sweep of a segment covers
         // ground no target set named.
@@ -321,11 +353,7 @@ impl PhaseRecorder {
         });
 
         ctx.close_phase(&phase);
-
-        // Copied rather than taken: the store is shared with the `ScanSession`
-        // the caller kept, which goes on answering after this returns.
-        let hosts = ctx.store.iter().map(|entry| entry.value().clone());
-        (ScanReport::new(phase, hosts), liveness)
+        (phase, liveness)
     }
 }
 
@@ -408,6 +436,47 @@ mod tests {
 
         assert_eq!(first.phases()[0].refusals().len(), 1);
         assert!(second.phases()[0].refusals().is_empty());
+    }
+
+    /// **The last phase moves the hosts into the report when nothing else
+    /// holds the store, and copies them when something does, which then goes
+    /// on answering.**
+    ///
+    /// Told apart by where a host's name lives: moved, the report's host is
+    /// the store's, down to the allocation holding its name; copied, it has
+    /// one of its own. A copy made for nobody is a second full set of a scan's
+    /// hosts held at the moment the report is built.
+    #[test]
+    fn the_last_phase_moves_the_hosts_unless_a_session_still_reads_them() {
+        let cfg = ZondConfig::default();
+        let name_at = |host: &Host| host.hostname().expect("a name").as_ptr();
+        let seeded = |ctx: &ScanContext| {
+            let mut host = Host::new(ip(7));
+            host.set_status(crate::model::host::HostStatus::Up);
+            host.set_hostname(Some("gateway.example".to_string()));
+            let name = name_at(&host);
+            ctx.store.insert(ip(7).into(), host);
+            name
+        };
+
+        let (session, ctx) = ScanSession::new();
+        let name = seeded(&ctx);
+        drop(session);
+        let report = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, scope(), &cfg)
+            .finish_last(ctx);
+        let host = report.hosts().next().expect("the host is reported");
+        assert_eq!(name_at(host), name, "moved, not copied");
+
+        let (session, ctx) = ScanSession::new();
+        let name = seeded(&ctx);
+        let report = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, scope(), &cfg)
+            .finish_last(ctx);
+        let host = report.hosts().next().expect("the host is reported");
+        assert_ne!(name_at(host), name, "copied for the session that reads it");
+        assert!(
+            session.hosts().contains(ip(7)),
+            "and the session goes on answering"
+        );
     }
 
     /// Filed once per distinct reason. A plan that declines the same range on

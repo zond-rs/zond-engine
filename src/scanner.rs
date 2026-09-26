@@ -1168,7 +1168,7 @@ fn spawn_discovery(
         // machine's own interfaces and routes say about what was found.
         vantage::attribute(&ctx);
         orchestrator::run_correlation(&ctx, cfg.service_detection);
-        recorder.finish(&ctx)
+        recorder.finish_last(ctx)
     })
 }
 
@@ -1564,7 +1564,7 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
         // pass a scan ends with, and it sends nothing either.
         vantage::attribute(&ctx);
         orchestrator::run_correlation(&ctx, cfg.service_detection);
-        recorder.finish(&ctx)
+        recorder.finish_last(ctx)
     })
 }
 
@@ -1964,7 +1964,7 @@ fn spawn_scan(
         vantage::attribute(&ctx);
         orchestrator::run_correlation(&ctx, cfg.service_detection);
         orchestrator::run_cert_posture(&ctx);
-        let report = recorder.finish(&ctx);
+        let report = recorder.finish_last(ctx);
 
         match liveness {
             Some(mut first) => {
