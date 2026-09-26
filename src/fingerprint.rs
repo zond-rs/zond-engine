@@ -980,17 +980,32 @@ async fn gather(
     // it dials its own, because a handshake consumes the stream it was given and
     // a probe leaves its request on the one it wrote to.
     let mut opened = Some(stream);
+    // Both handshakes refused in TLS, on a port numbered for it, held while the
+    // port is asked in the clear; see `refused_every_handshake`.
+    let mut refused: Option<ResponseSet> = None;
     for rung in Rung::ladder(port) {
         let stream = match opened.take() {
             Some(stream) => stream,
             None => match redial(socket, egress).await {
                 Some(fresh) => fresh,
-                None => return (ResponseSet::default(), None),
+                None => return (refused.unwrap_or_default(), None),
             },
         };
 
         let (responses, tunnel) = rung.ask(stream, port, &peer, detection, egress).await;
+        if let Some(held) = refused.take() {
+            return match held.tls {
+                Some(tls) if refused_in_the_clear(&responses) => {
+                    (responses.with_tls(tls), Some(Tunnel::Tls))
+                }
+                tls => (ResponseSet { tls, ..held }, None),
+            };
+        }
         if responses.is_empty() {
+            continue;
+        }
+        if matches!(rung, Rung::LegacyTls) && refused_every_handshake(&responses) {
+            refused = Some(responses);
             continue;
         }
         if matches!(rung, Rung::Plaintext)
@@ -1002,7 +1017,27 @@ async fn gather(
         return (responses, tunnel);
     }
 
-    (ResponseSet::default(), None)
+    (refused.unwrap_or_default(), None)
+}
+
+/// Whether what the legacy handshake drew is a refusal in TLS and nothing
+/// else, on a port whose modern handshake had already failed.
+///
+/// Such a port speaks TLS and would complete a handshake with this scanner on
+/// neither version's terms, which is what a server keeping its certificates by
+/// name answers a client naming no site it holds: every handshake where the
+/// target named an address. The refusals say it speaks TLS and not what it
+/// serves, so the port is asked in the clear as well, once. A web server
+/// refuses that request with a plaintext `400`, and the port is then filed as
+/// the web server through TLS its refusal said it was, as on a port its number
+/// does not name (see `asked_through_tls`). Anything else it says leaves it
+/// filed on its refusals, as a port that speaks TLS.
+fn refused_every_handshake(responses: &ResponseSet) -> bool {
+    responses.banners.is_empty()
+        && responses
+            .tls
+            .as_ref()
+            .is_some_and(|tls| tls.version == Some(tls::REFUSED))
 }
 
 /// Whether what a port answered in the clear is an HTTP server refusing the
@@ -3649,6 +3684,34 @@ mod tests {
             found.port.security().is_some(),
             "the port's TLS went unrecorded"
         );
+    }
+
+    /// The same server on the port numbered for HTTPS, asked for by no name,
+    /// is filed as a web server over TLS too.
+    ///
+    /// Asked for a handshake first, as its number says, it refuses the modern
+    /// one for naming no site and the legacy one for its version, both in
+    /// TLS. Those two refusals were the whole of what the port was filed on:
+    /// a port that speaks TLS, with the name its number gives it and no word
+    /// of what it serves. Its refusal of a request in the clear is what says
+    /// that, as on a port its number does not name.
+    #[tokio::test]
+    async fn https_on_its_own_port_refusing_a_nameless_handshake_is_filed_as_https() {
+        let (addr, _heard) = https_by_name("box.example").await;
+        let stream = TcpStream::connect(addr).await.expect("connects");
+        let found = fingerprint_tcp_via(
+            stream,
+            baseline_port(443, Protocol::Tcp, PortState::Open),
+            ServiceDetection::Probe,
+            Egress::KERNEL,
+            PathAllowance::NONE,
+            None,
+        )
+        .await;
+
+        let service = found.port.service().expect("a service was named");
+        assert_eq!(service.name(), "ssl/http");
+        assert!(!service.is_inferred(), "the name is still the number's");
     }
 
     /// A redirect a web port answers with is followed wherever the port is
