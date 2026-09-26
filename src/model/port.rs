@@ -257,6 +257,7 @@ impl PortState {
 /// they arrive rather than collecting them keeps what a host costs bounded by
 /// the endpoints it can have, where a list grows with every entry a document
 /// repeats.
+#[cfg(any(feature = "import-json", feature = "import-nmap"))]
 pub(crate) fn fold(ports: &mut BTreeMap<(u16, Protocol), Port>, port: Port) {
     match ports.entry((port.number, port.protocol)) {
         std::collections::btree_map::Entry::Occupied(slot) => slot.into_mut().merge(port),
