@@ -916,3 +916,58 @@ async fn a_certificate_not_naming_a_named_target_is_reported_as_a_mismatch() {
     assert_eq!(mismatches(&outcome, port), 1, "the named scan");
     assert_eq!(mismatches(&by_address, port), 0, "the scan by address");
 }
+
+/// On Tor's SOCKS port, Tor is named from the answer only Tor gives, and any
+/// other SOCKS5 proxy there is named a proxy.
+///
+/// Both answer the SOCKS5 greeting alike, RFC 1928's version 5 and no
+/// authentication. Tor alone answers a web request with its 501; another proxy
+/// drops the connection, reading the request as a malformed greeting. Each
+/// question is asked on a connection of its own, since a proxy that has taken
+/// a greeting reads what follows as the request it announced.
+#[tokio::test]
+async fn tors_socks_port_is_named_tor_and_another_proxy_there_socks5() {
+    const TOR_501: &[u8] =
+        b"HTTP/1.0 501 Tor is not an HTTP Proxy\r\nContent-Type: text/html\r\n\r\n";
+
+    async fn spawn_socks5(answers_web: bool) -> u16 {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind a loopback proxy");
+        let port = listener.local_addr().expect("its address").port();
+        tokio::spawn(async move {
+            while let Ok(mut sock) = accept_from_this_process(&listener).await {
+                tokio::spawn(async move {
+                    let mut buffer = [0u8; 512];
+                    let Ok(read) = sock.read(&mut buffer).await else {
+                        return;
+                    };
+                    let request = &buffer[..read];
+                    if request.starts_with(b"\x05\x01\x00") {
+                        let _ = sock.write_all(b"\x05\x00").await;
+                        // Then waits for the request the greeting announced.
+                        let _ = sock.read(&mut buffer).await;
+                    } else if answers_web && request.starts_with(b"GET ") {
+                        let _ = sock.write_all(TOR_501).await;
+                    }
+                });
+            }
+        });
+        port
+    }
+
+    for (answers_web, expected) in [(true, "tor"), (false, "socks5")] {
+        let port = spawn_socks5(answers_web).await;
+        let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .expect("the proxy accepts");
+        let identified = fingerprint_tcp(
+            stream,
+            baseline_port(9050, Protocol::Tcp, PortState::Open),
+            ServiceDetection::default(),
+        )
+        .await;
+        let service = identified.service().expect("a service was identified");
+        assert_eq!(service.name(), expected);
+    }
+}

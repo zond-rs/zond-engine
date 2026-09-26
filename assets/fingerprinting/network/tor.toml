@@ -3,15 +3,20 @@ name = "tor"
 default_ports = [9050, 9001]
 description = "Tor Onion Router"
 
+# Tor's SOCKS port answers a SOCKS5 greeting as every SOCKS5 proxy does, so the
+# greeting names a proxy and not Tor; the socks5 service asks it here. What is
+# Tor's own is its answer to a web request: a client that mistook the SOCKS
+# port for an HTTP proxy is sent a 501 saying so, from `proto_socks.c` in the
+# Tor source. Each service's questions go on a connection of their own, so
+# the request and the greeting never share one, where a SOCKS server would
+# read the request as the one the greeting announced.
 [[probe]]
-name = "socks5_handshake"
-payload = '\x05\x01\x00'
+name = "http_request"
+payload = 'GET / HTTP/1.0\r\n\r\n'
 protocol = "tcp"
 
 [[match]]
 name = "tor_socks_match"
-# RFC 1928 §3, as for any SOCKS5 proxy: version 5 and no authentication, the
-# two bytes being the whole reply. A DCE/RPC reply opens with the same two.
-pattern = '^\x05\x00$'
+pattern = '^HTTP/1\.[01] 501 Tor is not an HTTP Proxy\r\n'
 product = "tor_socks"
-example = "\u0005\u0000"
+example = "HTTP/1.0 501 Tor is not an HTTP Proxy\r\nContent-Type: text/html; charset=iso-8859-1\r\n\r\n"

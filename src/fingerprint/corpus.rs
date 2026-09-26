@@ -743,10 +743,11 @@ fn a_binary_rule_does_not_claim_another_protocol_opening_the_same_way() {
             b"\x05\x00\x0c\x03\x10\x00\x00\x00\x44\x00\x00\x00".to_vec(),
         ),
         ("mssql", "mssql_prelogin_response", modbus([0x04, 0x01])),
+        // RFC 9110 §15.6.2: any other server declining a method it lacks.
         (
             "tor",
             "tor_socks_match",
-            b"\x05\x00\x0c\x03\x10\x00\x00\x00\x44\x00\x00\x00".to_vec(),
+            b"HTTP/1.0 501 Not Implemented\r\n\r\n".to_vec(),
         ),
         // RFC 1035 §4.2.2: a DNS reply over TCP, ninety bytes long.
         (
@@ -1215,4 +1216,26 @@ fn the_nrpe_probe_is_a_query_the_daemon_answers() {
         crc32(&zeroed),
         "the CRC-32 over the packet with its own field zeroed"
     );
+}
+
+/// Tor is named by what only Tor says, and a SOCKS5 proxy on Tor's port by what
+/// every SOCKS5 proxy says.
+///
+/// The greeting's answer, version 5 and no authentication, is RFC 1928's for
+/// any proxy that asks for none, so a rule reading Tor into it named every
+/// such proxy Tor. Tor's own mark is the 501 its SOCKS port sends a web
+/// request.
+#[test]
+fn tor_is_named_by_its_own_answer_and_not_by_a_socks5_greeting() {
+    use crate::model::port::Protocol::Tcp;
+
+    let greeting = named(9050, Tcp, "\u{5}\u{0}");
+    assert_eq!(greeting.service.as_deref(), Some("socks5"));
+
+    let web = "HTTP/1.0 501 Tor is not an HTTP Proxy\r\nContent-Type: text/html\r\n\r\n";
+    for port in [9050, 9150] {
+        let verdict = named(port, Tcp, web);
+        assert_eq!(verdict.service.as_deref(), Some("tor"), "on {port}");
+        assert_eq!(verdict.product.as_deref(), Some("tor_socks"), "on {port}");
+    }
 }

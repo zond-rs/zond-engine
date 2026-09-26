@@ -1,6 +1,9 @@
 [service]
 name = "socks5"
 default_ports = [1080]
+# Tor's SOCKS port, which Tor names; the greeting is asked there too, so a
+# proxy on that number that is not Tor is named what it is.
+shared_ports = [9050]
 description = "SOCKS5 Proxy"
 
 [[probe]]
