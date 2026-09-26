@@ -426,6 +426,10 @@ impl Journal {
     /// Its own file, created on the first run and appended after. The resume path
     /// never reads it: a tape is evidence for later analysis, not a settled
     /// verdict, so it does not advance a cursor or change what a resume skips.
+    ///
+    /// All or nothing: a write that fails part way is cut back to where it
+    /// began, so a caller that hands the same runs to a later write records
+    /// each of them once.
     pub fn record_detections(&mut self, runs: &[DetectionRunRecord]) -> Result<(), JournalError> {
         if runs.is_empty() {
             return Ok(());
@@ -436,19 +440,38 @@ impl Journal {
         // answer. `create_private` refuses a name that exists, so losing that
         // race is reported rather than costing every tape written before it.
         let path = self.directory.join(DETECTIONS);
-        let mut writer = match open_for_append(&path) {
-            Ok(file) => crate::journal::format::Writer::append(std::io::BufWriter::new(file)),
+        let (file, mut writer) = match open_for_append(&path) {
+            Ok(file) => {
+                let written = file.try_clone()?;
+                let writer =
+                    crate::journal::format::Writer::append(std::io::BufWriter::new(written));
+                (file, writer)
+            }
             Err(JournalError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                 let file = create_private_file(&path)?;
-                crate::journal::format::Writer::create(std::io::BufWriter::new(file))?
+                let written = file.try_clone()?;
+                let writer =
+                    crate::journal::format::Writer::create(std::io::BufWriter::new(written))?;
+                (file, writer)
             }
             Err(error) => return Err(error),
         };
-        for line in PortRunsRecord::grouping(runs) {
-            writer.write(&line)?;
-        }
+        // Where this write begins: past the header a new file was just given,
+        // which a write cut back leaves in place.
         writer.flush()?;
-        Ok(())
+        let began = file.metadata()?.len();
+        let outcome = PortRunsRecord::grouping(runs)
+            .iter()
+            .try_for_each(|line| writer.write(line))
+            .and_then(|()| writer.flush());
+        if outcome.is_err() {
+            // Dropped first, since dropping flushes what it still buffers,
+            // and then everything written past the start is cut away. A cut
+            // that fails too leaves a torn tail, which the next append mends.
+            drop(writer);
+            let _ = file.set_len(began);
+        }
+        outcome
     }
 
     /// Appends that a sitting ran every pass that follows its probes over

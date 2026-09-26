@@ -938,6 +938,22 @@ impl Tapes {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         )
     }
+
+    /// Puts back `runs` a journal took and could not write, ahead of any
+    /// captured since, so the next take hands them over again in the order
+    /// they ran.
+    #[cfg(feature = "journal-format")]
+    fn hand_back(&self, mut runs: Vec<DetectionRunRecord>) {
+        if runs.is_empty() {
+            return;
+        }
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        runs.append(&mut inner);
+        *inner = runs;
+    }
 }
 
 /// Ground a phase declined to cover, gathered as it is decided.
@@ -1523,6 +1539,17 @@ impl ScanProgress {
         for host in hosts {
             self.changed.insert(host.scoped_ip());
         }
+    }
+
+    /// Puts back detection tapes a journal took and could not write, for the
+    /// next write to take again.
+    ///
+    /// The counterpart of [`hand_back`](Self::hand_back) for tapes: nothing
+    /// captures a run's tape a second time, so one lost with a failed write
+    /// is a run that can never be replayed.
+    #[cfg(feature = "journal-format")]
+    pub(crate) fn hand_back_tapes(&self, runs: Vec<DetectionRunRecord>) {
+        self.tapes.hand_back(runs);
     }
 
     /// Every host found so far that is a finding to write down, ordered by the

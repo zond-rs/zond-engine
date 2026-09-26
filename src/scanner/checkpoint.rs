@@ -220,7 +220,12 @@ impl Writer {
         // Tapes are additive: they settle nothing, so a failed write does not
         // disturb the checkpoint and is not folded above. Nor does the
         // sitting's standing record, which the next checkpoint rewrites whole.
-        let _ = self.journal.record_detections(&ctx.take_tapes());
+        // Tapes are handed back as findings are, since nothing captures them
+        // again.
+        let tapes = ctx.take_tapes();
+        if self.journal.record_detections(&tapes).is_err() {
+            ctx.hand_back_tapes(tapes);
+        }
         let _ = self
             .journal
             .record_standing(&ctx.standing_phases(&self.silent));
@@ -475,6 +480,57 @@ mod tests {
             "the resume skips port 80 and restores no finding for it: {checkpoint:?}"
         );
         drop(resumed);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Detection tapes a checkpoint could not write are written by the next
+    /// one that can.
+    ///
+    /// A checkpoint takes the tapes captured since the last one before it
+    /// writes them, and nothing captures them again: lost with a failed write,
+    /// the runs they record can never be replayed. A directory standing at the
+    /// tapes' file name fails that write for one checkpoint, the way a full
+    /// disk or a revoked permission does.
+    #[test]
+    fn tapes_a_failed_checkpoint_took_are_written_by_the_next_one() {
+        use crate::detect::compute::{CapTape, CapTapeRecord, DetectionRunRecord};
+        use crate::record::DetectionIdRecord;
+
+        let root = scratch("tapes-handed-back");
+        let journal =
+            Journal::create(&root, &one_target(), Privilege::Raw, "test").expect("creates");
+        let directory = journal.directory().to_path_buf();
+        let tapes = directory.join("detections.jsonl");
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let progress = ctx.progress();
+        let run = |detection: &str| DetectionRunRecord {
+            host: "192.0.2.1".to_string(),
+            port: 80,
+            protocol: "tcp".to_string(),
+            detection: DetectionIdRecord {
+                id: detection.to_string(),
+                version: "1.0.0".to_string(),
+                content_hash: "0".repeat(64),
+            },
+            responses: vec!["HTTP/1.1 200 OK\r\n\r\n".to_string()],
+            tape: CapTapeRecord::from(&CapTape::default()),
+        };
+
+        ctx.tapes.record(|| run("first"));
+        let mut writer = Writer::new(journal);
+        std::fs::create_dir(&tapes).expect("stands a directory in the way");
+        writer.checkpoint(&progress);
+        std::fs::remove_dir(&tapes).expect("clears the way");
+        ctx.tapes.record(|| run("second"));
+        writer.checkpoint(&progress);
+        drop(writer);
+
+        let written: Vec<String> = crate::journal::store::read_detections(&directory)
+            .expect("reads")
+            .into_iter()
+            .map(|run| run.detection.id)
+            .collect();
+        assert_eq!(written, ["first", "second"], "in the order they ran");
         std::fs::remove_dir_all(&root).ok();
     }
 
