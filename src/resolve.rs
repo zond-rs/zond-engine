@@ -362,11 +362,43 @@ impl Snapshot {
         if let Some(name) = self.hosts.name_of(ip) {
             return Reverse::Listed(name.to_owned());
         }
-        match &self.unicast {
-            Some(unicast) if !ip.is_loopback() => unicast.reverse(ip).await,
+        match (&self.unicast, self.reverse_route(ip)) {
+            (Some(unicast), ReverseRoute::Scoped(_) | ReverseRoute::Global) => {
+                unicast.reverse(ip).await
+            }
             _ => Reverse::Unasked,
         }
     }
+
+    /// Which way [`reverse`](Self::reverse) takes `ip`, decided without
+    /// asking anything.
+    ///
+    /// For a caller that must tell one server's silence from another's: a
+    /// global resolver that answers nothing says nothing about the server a
+    /// VPN scopes to its own reverse zone, and giving up on both at once
+    /// leaves every address under that zone unnamed.
+    pub(crate) fn reverse_route(&self, ip: IpAddr) -> ReverseRoute {
+        match &self.unicast {
+            _ if self.hosts.name_of(ip).is_some() => ReverseRoute::Local,
+            Some(unicast) if !ip.is_loopback() => unicast
+                .reverse_scope(ip)
+                .map_or(ReverseRoute::Global, ReverseRoute::Scoped),
+            _ => ReverseRoute::Local,
+        }
+    }
+}
+
+/// The way a reverse lookup of one address goes; see
+/// [`Snapshot::reverse_route`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReverseRoute {
+    /// Answered on the machine or not at all: from the hosts file, for a
+    /// loopback address, or on a host with no server to ask.
+    Local,
+    /// The resolver scoped to a reverse zone, by its place among them.
+    Scoped(usize),
+    /// The global resolvers.
+    Global,
 }
 
 /// What the hosts file answers for `name`, saying so when a later line for it
@@ -933,6 +965,18 @@ mod tests {
             }],
         );
         let snapshot = resolver.snapshot();
+
+        // The route a caller keeps each resolver's silence by is the one the
+        // lookup takes.
+        assert_eq!(
+            snapshot.reverse_route(v4("198.51.100.20")),
+            ReverseRoute::Scoped(0)
+        );
+        assert_eq!(
+            snapshot.reverse_route(v4("203.0.113.80")),
+            ReverseRoute::Global
+        );
+        assert_eq!(snapshot.reverse_route(v4("127.0.0.9")), ReverseRoute::Local);
 
         assert_eq!(
             snapshot.reverse(v4("198.51.100.20")).await,

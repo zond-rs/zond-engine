@@ -241,12 +241,7 @@ impl Unicast {
     /// the scan found. A missing configuration is said as `lookup` says it,
     /// once per pass for both directions.
     pub(crate) async fn reverse(&self, ip: IpAddr) -> Reverse {
-        let name = reverse_name(ip);
-        if let Some(scope) = self
-            .scoped
-            .iter()
-            .find(|scope| covers(&scope.domain, &name))
-        {
+        if let Some(scope) = self.reverse_scope(ip).map(|index| &self.scoped[index]) {
             return match &scope.client {
                 Ok(client) => ask_reverse(client, ip).await,
                 Err(why) => {
@@ -264,6 +259,15 @@ impl Unicast {
                 Reverse::Unasked
             }
         }
+    }
+
+    /// Which scoped resolver [`reverse`](Self::reverse) asks about `ip`, by
+    /// its place among them, or `None` for the global ones.
+    pub(crate) fn reverse_scope(&self, ip: IpAddr) -> Option<usize> {
+        let name = reverse_name(ip);
+        self.scoped
+            .iter()
+            .position(|scope| covers(&scope.domain, &name))
     }
 
     /// Says, once per pass, that the host has no server for a name no scoped

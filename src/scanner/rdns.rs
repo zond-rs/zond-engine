@@ -1247,10 +1247,17 @@ pub(crate) async fn resolve(ctx: &ScanContext, unheard: Unheard) {
 
 /// [`resolve`], against a reading already taken.
 async fn resolve_from(ctx: &ScanContext, unheard: Unheard, snapshot: Arc<Snapshot>) {
-    resolve_with(ctx, unheard, REVERSE_LOOKUPS_IN_FLIGHT, move |ip| {
-        let snapshot = Arc::clone(&snapshot);
-        async move { snapshot.reverse(ip).await }
-    })
+    let routing = Arc::clone(&snapshot);
+    resolve_with(
+        ctx,
+        unheard,
+        REVERSE_LOOKUPS_IN_FLIGHT,
+        move |ip| routing.reverse_route(ip),
+        move |ip| {
+            let snapshot = Arc::clone(&snapshot);
+            async move { snapshot.reverse(ip).await }
+        },
+    )
     .await;
 }
 
@@ -1271,33 +1278,69 @@ async fn resolve_from(ctx: &ScanContext, unheard: Unheard, snapshot: Arc<Snapsho
 /// `in_flight` hosts found, and for a wide scan that is hours spent on a
 /// resolver that is not there. One that answers slowly has answered, and is
 /// asked on.
-async fn resolve_with<F, Fut>(ctx: &ScanContext, unheard: Unheard, in_flight: usize, lookup: F)
-where
+///
+/// That rule is kept per `route`, the way each address's lookup goes, as the
+/// other path keeps it per server: a global resolver that answers nothing
+/// says nothing about the server a VPN scopes to its own reverse zone, and
+/// the addresses under that zone are asked of it whatever the other does.
+/// The bound on lookups in flight is shared, since it is there for the
+/// descriptor table and the network as well as for any one resolver.
+async fn resolve_with<R, F, Fut>(
+    ctx: &ScanContext,
+    unheard: Unheard,
+    in_flight: usize,
+    route: impl Fn(IpAddr) -> R,
+    lookup: F,
+) where
+    R: PartialEq,
     F: Fn(IpAddr) -> Fut,
     Fut: Future<Output = Reverse> + Send + 'static,
 {
     let in_flight = in_flight.max(1);
-    let mut pending = to_resolve(ctx, unheard).into_iter();
+    let mut routes: Vec<(R, Route)> = Vec::new();
+    for key in to_resolve(ctx, unheard) {
+        let way = route(key.addr());
+        match routes.iter_mut().find(|(known, _)| *known == way) {
+            Some((_, route)) => route.waiting.push_back(key),
+            None => routes.push((way, Route::holding(key))),
+        }
+    }
     let mut set = tokio::task::JoinSet::new();
-    let (mut answered, mut unanswered) = (false, 0usize);
+    let mut spawned = std::collections::HashMap::new();
+    let mut turn = 0;
 
     loop {
-        // Until the resolver has answered once, the lookups it let lie
-        // count against the window as well as those in flight, so the
-        // first window is all a silent one is asked.
+        // Round the routes in turn, so a slow one does not hold the others'
+        // addresses back until its own are done.
         while set.len() < in_flight
-            && (answered || unanswered + set.len() < in_flight)
-            && let Some(key) = pending.next()
+            && let Some(index) = (0..routes.len())
+                .map(|offset| (turn + offset) % routes.len())
+                .find(|&index| routes[index].1.is_asked(in_flight))
         {
+            turn = index + 1;
+            let route = &mut routes[index].1;
+            let Some(key) = route.waiting.pop_front() else {
+                break;
+            };
+            route.in_flight += 1;
             // The query takes the address; the key comes back with the answer,
             // so the write below lands on the entry that was read.
             let asked = lookup(key.addr());
-            set.spawn(async move { (key, asked.await) });
+            let task = set.spawn(async move { (key, asked.await) });
+            spawned.insert(task.id(), index);
         }
-        let Some(Some(joined)) = ctx.handle.or_stopped(set.join_next()).await else {
+        let Some(Some(joined)) = ctx.handle.or_stopped(set.join_next_with_id()).await else {
             break;
         };
-        let Ok((key, reverse)) = joined else {
+        let id = match &joined {
+            Ok((id, _)) => *id,
+            Err(error) => error.id(),
+        };
+        let Some(route) = spawned.remove(&id).map(|index| &mut routes[index].1) else {
+            continue;
+        };
+        route.in_flight -= 1;
+        let Ok((_, (key, reverse))) = joined else {
             continue;
         };
         let name = match reverse {
@@ -1305,15 +1348,15 @@ where
             // about whether the resolver answers.
             Reverse::Listed(name) => name,
             Reverse::Named(name) => {
-                answered = true;
+                route.answered = true;
                 name
             }
             Reverse::Unnamed => {
-                answered = true;
+                route.answered = true;
                 continue;
             }
             Reverse::Unanswered => {
-                unanswered += 1;
+                route.unanswered += 1;
                 continue;
             }
             Reverse::Unasked => continue,
@@ -1335,13 +1378,47 @@ where
         });
     }
 
-    let unasked = pending.count();
-    if !answered && unasked > 0 && !ctx.handle.should_stop() {
+    // Whatever is left waits on a route that never answered: one that has
+    // answered is asked until it has nothing left.
+    let unasked: usize = routes.iter().map(|(_, route)| route.waiting.len()).sum();
+    if unasked > 0 && !ctx.handle.should_stop() {
         info!(
             verbosity = 1,
             "{} not looked up (resolver not answering)",
             counted(unasked as u128, "name", "names")
         );
+    }
+}
+
+/// The addresses [`resolve_with`] has still to ask one way, and what that
+/// way has answered so far.
+struct Route {
+    waiting: std::collections::VecDeque<crate::model::ip::scoped::ScopedIp>,
+    /// Lookups this way has in flight.
+    in_flight: usize,
+    /// Whether any lookup this way has been answered.
+    answered: bool,
+    /// How many lookups this way went unanswered.
+    unanswered: usize,
+}
+
+impl Route {
+    /// A way with one address to ask.
+    fn holding(key: crate::model::ip::scoped::ScopedIp) -> Self {
+        Self {
+            waiting: std::collections::VecDeque::from([key]),
+            in_flight: 0,
+            answered: false,
+            unanswered: 0,
+        }
+    }
+
+    /// Whether this way has an address to ask and may be asked it: until it
+    /// has answered once, the lookups it let lie count against the window as
+    /// well as those in flight, so the first window is all a silent one is
+    /// asked.
+    fn is_asked(&self, window: usize) -> bool {
+        !self.waiting.is_empty() && (self.answered || self.unanswered + self.in_flight < window)
     }
 }
 
@@ -1481,25 +1558,31 @@ mod tests {
 
         let in_flight = Arc::new(AtomicUsize::new(0));
         let most = Arc::new(AtomicUsize::new(0));
-        resolve_with(&ctx, Unheard::Skipped, BOUND, |ip| {
-            let (in_flight, most) = (Arc::clone(&in_flight), Arc::clone(&most));
-            async move {
-                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-                most.fetch_max(now, Ordering::SeqCst);
-                let IpAddr::V4(v4) = ip else {
-                    return Reverse::Unnamed;
-                };
-                let last = v4.octets()[3];
-                // The unnamed answer first, so an early one ends nothing.
-                let wait = if last % 2 == 0 { 1 } else { 5 };
-                tokio::time::sleep(Duration::from_millis(wait)).await;
-                in_flight.fetch_sub(1, Ordering::SeqCst);
-                match last % 2 {
-                    1 => Reverse::Named(format!("host{last}.example.")),
-                    _ => Reverse::Unnamed,
+        resolve_with(
+            &ctx,
+            Unheard::Skipped,
+            BOUND,
+            |_| (),
+            |ip| {
+                let (in_flight, most) = (Arc::clone(&in_flight), Arc::clone(&most));
+                async move {
+                    let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                    most.fetch_max(now, Ordering::SeqCst);
+                    let IpAddr::V4(v4) = ip else {
+                        return Reverse::Unnamed;
+                    };
+                    let last = v4.octets()[3];
+                    // The unnamed answer first, so an early one ends nothing.
+                    let wait = if last % 2 == 0 { 1 } else { 5 };
+                    tokio::time::sleep(Duration::from_millis(wait)).await;
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    match last % 2 {
+                        1 => Reverse::Named(format!("host{last}.example.")),
+                        _ => Reverse::Unnamed,
+                    }
                 }
-            }
-        })
+            },
+        )
         .await;
 
         assert!(
@@ -1575,9 +1658,13 @@ mod tests {
         // Generous, and only so a failure reads as one rather than as a hang.
         tokio::time::timeout(
             Duration::from_secs(60),
-            resolve_with(&ctx, Unheard::Skipped, 2, |_| {
-                std::future::pending::<Reverse>()
-            }),
+            resolve_with(
+                &ctx,
+                Unheard::Skipped,
+                2,
+                |_| (),
+                |_| std::future::pending::<Reverse>(),
+            ),
         )
         .await
         .expect("the stop ended the lookups");
@@ -1603,15 +1690,21 @@ mod tests {
                 });
             }
             async move {
-                resolve_with(&ctx, Unheard::Skipped, BOUND, move |_| {
-                    let n = counted.fetch_add(1, Ordering::SeqCst);
-                    async move {
-                        match (first_answers, n) {
-                            (true, 0) => Reverse::Unnamed,
-                            _ => Reverse::Unanswered,
+                resolve_with(
+                    &ctx,
+                    Unheard::Skipped,
+                    BOUND,
+                    |_| (),
+                    move |_| {
+                        let n = counted.fetch_add(1, Ordering::SeqCst);
+                        async move {
+                            match (first_answers, n) {
+                                (true, 0) => Reverse::Unnamed,
+                                _ => Reverse::Unanswered,
+                            }
                         }
-                    }
-                })
+                    },
+                )
                 .await;
                 asked.load(Ordering::SeqCst)
             }
@@ -1619,6 +1712,59 @@ mod tests {
 
         assert_eq!(asked(false).await, BOUND, "a silent resolver was asked on");
         assert_eq!(asked(true).await, 40, "one that answered was given up on");
+    }
+
+    /// **A silent resolver is given up on alone.** A VPN scopes a resolver to
+    /// the reverse zone of its own addresses, and that one answers whether or
+    /// not the global resolver does; giving up on both when the global one
+    /// goes quiet leaves every address under the zone unnamed.
+    #[tokio::test]
+    async fn a_silent_global_resolver_leaves_a_scoped_zone_asked() {
+        use std::sync::atomic::AtomicUsize;
+
+        const BOUND: usize = 4;
+        let (_session, ctx) = ScanSession::new();
+        // Whichever order the addresses are asked in, one count shared by both
+        // resolvers fails one of the two checks below: the scoped zone's
+        // answers keep the silent one asked, or the silent one's window of
+        // silence stops the scoped zone being asked.
+        for last in 1..=20 {
+            for network in [[192, 0, 2], [203, 0, 113]] {
+                ctx.update_host(v4(network[0], network[1], network[2], last), |host| {
+                    host.set_status(HostStatus::Up)
+                });
+            }
+        }
+        let scoped = |ip: IpAddr| matches!(ip, IpAddr::V4(v4) if v4.octets()[0] == 203);
+        let asked_global = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&asked_global);
+
+        resolve_with(&ctx, Unheard::Skipped, BOUND, scoped, move |ip| {
+            if !scoped(ip) {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }
+            async move {
+                if scoped(ip) {
+                    Reverse::Named("box.corp.example.".into())
+                } else {
+                    Reverse::Unanswered
+                }
+            }
+        })
+        .await;
+
+        let named = (1..=20)
+            .filter(|&last| {
+                ctx.read_host(v4(203, 0, 113, last), |host| host.hostname().is_some())
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(named, 20, "the scoped zone stopped being asked");
+        assert_eq!(
+            asked_global.load(Ordering::SeqCst),
+            BOUND,
+            "the silent resolver was asked past its window"
+        );
     }
 
     // -----------------------------------------------------------------------
