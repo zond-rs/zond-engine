@@ -1009,12 +1009,14 @@ impl IdleScan {
 pub struct ZondConfig {
     /// Forbids the scan from asking any name of its own: no A, AAAA or PTR
     /// query, whether of a resolver or of a host's own multicast DNS responder,
-    /// and so no name to go with the addresses it finds.
+    /// and so no name to go with the addresses it finds beyond what the hosts
+    /// file lists.
     ///
     /// Set when the traffic itself is the problem. A query to a resolver the
     /// target operates announces the scan to whoever runs it, and on an
     /// engagement that can be the whole of what goes wrong. The cost is hosts
-    /// reported by address alone, and active operating-system identification
+    /// the hosts file does not list reported by address, and active
+    /// operating-system identification
     /// asking a device-info record only of a host whose `.local` name the scan
     /// already holds, since learning the name is a reverse query.
     ///
@@ -1032,7 +1034,9 @@ pub struct ZondConfig {
     /// resolving the targets of such a scan resolves them with
     /// [`Resolver::hosts_file_only`](crate::Resolver::hosts_file_only), so a
     /// lab box a VPN user listed there is still a target and no name leaves
-    /// the machine.
+    /// the machine; and the scan names the hosts it finds from the same file,
+    /// so that box found by sweeping its range carries the name it would have
+    /// been found under as a target.
     pub no_dns: bool,
 
     /// Whether discovery may probe the whole segment rather than only the

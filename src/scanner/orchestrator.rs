@@ -482,7 +482,7 @@ impl Enrichment {
             let (tx, rx) = mpsc::unbounded_channel();
             (Some(tx), Some(spawn_resolver(rx, ctx.clone()).await))
         } else {
-            info!("DNS resolution skipped by user flag");
+            info!("DNS queries skipped by user flag");
             (None, None)
         };
 
@@ -1031,8 +1031,9 @@ pub(super) async fn run_port_scan(
 /// [`Enrichment`]; awaiting that here folds the collected hostnames and extra
 /// IPs into the store along with the rest of the enrichment strategies. A
 /// phase with no enrichment, which is every unprivileged one and every port
-/// phase, falls back to active reverse lookups when DNS is enabled and does
-/// nothing when it is not. This is the single place the "passive where a sweep
+/// phase, falls back to active reverse lookups when DNS is enabled. When it
+/// is not, either way, the hosts found are named from the hosts file alone,
+/// which sends nothing. This is the single place the "passive where a sweep
 /// ran, active otherwise" policy lives.
 ///
 /// `unheard` says whether the active lookups name hosts nothing was heard
@@ -1048,6 +1049,9 @@ pub(super) async fn finish_enrichment(
         Some(enrichment) => enrichment.finish(ctx).await,
         None if caps.dns => rdns::resolve(ctx, unheard).await,
         None => {}
+    }
+    if !caps.dns {
+        rdns::name_from_hosts_file(ctx, unheard);
     }
 }
 

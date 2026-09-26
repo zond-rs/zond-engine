@@ -192,7 +192,7 @@ mod tests {
     /// stream carrying `root privileges detected` beside `Successfully
     /// initialized hostname resolver` has two authors and reads like it.
     ///
-    /// An initialism keeps its capitals. `DNS resolution skipped` is not a
+    /// An initialism keeps its capitals. `DNS queries skipped` is not a
     /// sentence beginning with a capital, it is a sentence beginning with a
     /// name, so the rule is that the first *word* must not be capitalised unless
     /// it is capitalised throughout.

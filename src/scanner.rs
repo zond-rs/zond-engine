@@ -620,7 +620,7 @@ impl IntoFuture for ScanTask {
 /// a caller can follow a scan in progress instead of waiting for the end. Unless
 /// `cfg.no_dns` is set, hostnames are resolved in the background without slowing
 /// discovery: by sniffing DNS and mDNS when privileged, and by reverse lookup
-/// otherwise.
+/// otherwise. With it set, hosts are named from the hosts file alone.
 ///
 /// The returned [`ScanTask`] resolves once every strategy has finished, along
 /// with the resolver if one was started, and yields the [`ScanReport`]. To stop

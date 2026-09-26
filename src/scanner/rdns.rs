@@ -1362,20 +1362,7 @@ async fn resolve_with<R, F, Fut>(
             Reverse::Unasked => continue,
         };
 
-        let name = name.trim_end_matches('.').to_string();
-        if restates(&name, key.addr()) {
-            info!(
-                verbosity = 2,
-                "{} was named after itself ({name}), so it has no name",
-                key.addr()
-            );
-            continue;
-        }
-
-        ctx.write_host(key, |host| {
-            host.set_hostname(Some(name));
-            true
-        });
+        name_host(ctx, key, &name);
     }
 
     // Whatever is left waits on a route that never answered: one that has
@@ -1388,6 +1375,46 @@ async fn resolve_with<R, F, Fut>(
             counted(unasked as u128, "name", "names")
         );
     }
+}
+
+/// Names the hosts a scan found from the hosts file alone, sending nothing.
+///
+/// For a scan forbidden to ask names of anybody. The hosts file is not a
+/// query: reading it sends nothing, and it is where a lab box reached over a
+/// VPN gets its name, the same file that scan's targets were resolved from.
+/// A box named as a target is found under that name, and the same box found
+/// by sweeping its range is found under it too.
+pub(crate) fn name_from_hosts_file(ctx: &ScanContext, unheard: Unheard) {
+    name_listed(ctx, unheard, &HostsTable::read_system());
+}
+
+/// [`name_from_hosts_file`], from a table already read.
+fn name_listed(ctx: &ScanContext, unheard: Unheard, hosts: &HostsTable) {
+    for key in to_resolve(ctx, unheard) {
+        if let Some(name) = hosts.name_of(key.addr()) {
+            let name = name.to_owned();
+            name_host(ctx, key, &name);
+        }
+    }
+}
+
+/// Gives the host stored under `key` the name a lookup found for it, unless
+/// the name only restates the address.
+fn name_host(ctx: &ScanContext, key: crate::model::ip::scoped::ScopedIp, name: &str) {
+    let name = name.trim_end_matches('.').to_string();
+    if restates(&name, key.addr()) {
+        info!(
+            verbosity = 2,
+            "{} was named after itself ({name}), so it has no name",
+            key.addr()
+        );
+        return;
+    }
+
+    ctx.write_host(key, |host| {
+        host.set_hostname(Some(name));
+        true
+    });
 }
 
 /// The addresses [`resolve_with`] has still to ask one way, and what that
@@ -1634,6 +1661,34 @@ mod tests {
         };
         assert_eq!(name(1).as_deref(), Some("box.example"));
         assert_eq!(name(2), None);
+    }
+
+    /// **Under no name queries, a host the scan found is still named from
+    /// the hosts file.** Reading it sends nothing, and a lab box listed there
+    /// is the target a VPN user names; found by sweeping its range it would
+    /// otherwise be reported by address alone, where named as a target it is
+    /// found under its name. A host nothing was heard from is left alone, as
+    /// a lookup leaves it.
+    #[test]
+    fn the_hosts_file_names_found_hosts_without_a_query() {
+        let (_session, ctx) = ScanSession::new();
+        for last in [1, 2] {
+            ctx.update_host(v4(192, 0, 2, last), |host| host.set_status(HostStatus::Up));
+        }
+        ctx.update_host(v4(192, 0, 2, 3), |_| {});
+        let hosts = HostsTable::parse("192.0.2.1 box.example\n192.0.2.3 silent.example\n");
+
+        name_listed(&ctx, Unheard::Skipped, &hosts);
+
+        let name = |last| {
+            ctx.read_host(v4(192, 0, 2, last), |host| {
+                host.hostname().map(str::to_owned)
+            })
+            .flatten()
+        };
+        assert_eq!(name(1).as_deref(), Some("box.example"));
+        assert_eq!(name(2), None, "an unlisted host was named");
+        assert_eq!(name(3), None, "a host nothing was heard from was named");
     }
 
     /// **A stopped scan stops looking names up.** The lookups are the tail of
