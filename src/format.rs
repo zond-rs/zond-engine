@@ -47,6 +47,12 @@ pub const DIFF_SCHEMA_VERSION: u32 = 1;
 /// checks to decide whether a document is one this engine wrote.
 pub const ENGINE_NAME: &str = "zond-engine";
 
+/// The `scanner` an nmap XML document this engine wrote names, and the name
+/// the importer checks to read that document's own conventions: nmap's
+/// attribute names the program that ran the scan, not the library.
+#[cfg(any(feature = "export-nmap", feature = "import-nmap"))]
+pub(crate) const NMAP_SCANNER: &str = "zond";
+
 /// The mark a Windows editor leaves at the start of a file, as UTF-8.
 ///
 /// Every reader in [`crate::import`] strips it from the first thing it reads and

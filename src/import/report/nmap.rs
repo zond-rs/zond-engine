@@ -20,7 +20,7 @@
 //!
 //! ## Nmap's vocabulary is not this engine's, and the gaps are where the care is
 //!
-//! Three places where a literal translation would record something the scan did
+//! Four places where a literal translation would record something the scan did
 //! not establish.
 //!
 //! A host nmap calls `down` is [`Unknown`](HostStatus::Unknown) unless
@@ -48,6 +48,12 @@
 //! either apart from an identification. A comparison ignores both, so two tools
 //! with different port catalogues do not appear to disagree about every port on
 //! the network.
+//!
+//! The hostname is the first `<hostname>` nmap names the address by, whichever
+//! its type, except that a `user` name in a document this engine wrote is not
+//! read as one. Nmap types a name the operator gave as a target `user`; this
+//! engine's exporter types the DNS names a host gave for itself that way, and
+//! those are not the name a lookup resolved.
 //!
 //! ## What the report says it covered
 //!
@@ -313,9 +319,17 @@ impl State {
                 }
             }
             Tag::Address => self.record_address(parser)?,
+            // The first name for the address is the hostname, except a
+            // `user` name in this engine's own document: that is a DNS name
+            // the host gave for itself, which this format cannot carry back as
+            // one, and taking it for the resolved name would have a document
+            // read back disagree with the report it was written from.
             Tag::HostName => {
+                let stated = self.run.scanner.as_deref() == Some(crate::format::NMAP_SCANNER)
+                    && attr(&parser.element, b"type").as_deref() == Some("user");
                 if let Some(host) = self.host.as_mut()
                     && host.hostname.is_none()
+                    && !stated
                 {
                     host.hostname = attr(&parser.element, b"name");
                 }

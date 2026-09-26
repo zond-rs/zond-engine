@@ -90,7 +90,7 @@ use crate::export::{ExportError, ExportOptions, Exporter, HostRedaction};
 use crate::fingerprint::Tunnel;
 use crate::model::finding::Finding;
 use crate::model::host::{
-    EvidenceSource, Host, HostStatus, IpProtocolState, StatusProtocol, StatusReason,
+    EvidenceSource, Host, HostStatus, IpProtocolState, NameKind, StatusProtocol, StatusReason,
 };
 use crate::model::ip::range::IpRange;
 use crate::model::ip::set::IpSet;
@@ -147,9 +147,10 @@ impl Exporter for NmapXmlExporter {
         writeln!(
             out,
             concat!(
-                r#"<nmaprun scanner="zond" args="" start="{}" startstr="{}" "#,
+                r#"<nmaprun scanner="{}" args="" start="{}" startstr="{}" "#,
                 r#"version="{}" xmloutputversion="{}">"#
             ),
+            crate::format::NMAP_SCANNER,
             started,
             Attr(&time_string(report.started_at())),
             // This build's, since the attribute beside it says
@@ -487,18 +488,23 @@ fn write_host(
         }
     }
 
-    // The names a host gave for itself are not written. nmap's `<hostname>`
-    // is a name for the address, typed `PTR` or `user`, and every tool reading
-    // this format takes it as the host's identity: a NetBIOS domain written
-    // there would be read as the machine's DNS name. nmap reports them as the
-    // output of a script, and this engine runs no script to attribute them to.
-    if let Some(hostname) = host.hostname() {
+    let stated = stated_hostnames(host);
+    if host.hostname().is_some() || !stated.is_empty() {
         writeln!(out, "<hostnames>")?;
-        writeln!(
-            out,
-            r#"<hostname name="{}" type="PTR"/>"#,
-            Attr(&redaction.hostname(hostname)),
-        )?;
+        if let Some(hostname) = host.hostname() {
+            writeln!(
+                out,
+                r#"<hostname name="{}" type="PTR"/>"#,
+                Attr(&redaction.hostname(hostname)),
+            )?;
+        }
+        for name in stated {
+            writeln!(
+                out,
+                r#"<hostname name="{}" type="user"/>"#,
+                Attr(&redaction.hostname(name)),
+            )?;
+        }
         writeln!(out, "</hostnames>")?;
     }
 
@@ -550,6 +556,35 @@ fn write_host(
 
     writeln!(out, "</host>")?;
     Ok(())
+}
+
+/// The DNS names a host gave for itself that `<hostnames>` carries beside the
+/// one the scan resolved: each [`NameKind::Host`] once, in any case, and none
+/// the resolved name already is.
+///
+/// `<hostname>` is a name for the address, and every tool reading this format
+/// takes it as the host's identity, which is what these are: the machine's
+/// own DNS name, stated by its directory or its authentication. A NetBIOS
+/// name, a domain and a forest are not, and one written there would be read
+/// as the machine's DNS name, so they are left to the formats with a field
+/// for them. nmap's DTD types a hostname `PTR` or `user` and nothing else;
+/// these are written `user`, the type for a name that did not come from a
+/// reverse lookup, and the importer reads a `user` name in this engine's own
+/// document as what it is rather than as the resolved hostname.
+fn stated_hostnames(host: &Host) -> Vec<&str> {
+    let mut stated: Vec<&str> = Vec::new();
+    for name in host.names().filter(|name| name.kind() == NameKind::Host) {
+        let name = name.name();
+        let known = host
+            .hostname()
+            .into_iter()
+            .chain(stated.iter().copied())
+            .any(|seen| seen.eq_ignore_ascii_case(name));
+        if !known {
+            stated.push(name);
+        }
+    }
+    stated
 }
 
 /// Writes the host's `<ports>`: the ports worth reading one by one, and a
@@ -2439,6 +2474,83 @@ mod tests {
             .find(|section| !section.contains("<ports>"))
             .expect("the fixture has a host with no ports");
         assert!(portless.contains("<status state="));
+    }
+
+    /// The DNS name a host gave for itself is a name for it that the tools
+    /// reading this format should see, beside the one the scan resolved, and
+    /// masked as that one is. A NetBIOS name, a domain and a forest are not
+    /// names for the address, and a reader of `<hostnames>` would take any of
+    /// them for one.
+    #[test]
+    fn a_dns_name_the_host_gave_is_written_as_a_hostname_and_nothing_else_is() {
+        use crate::model::host::{HostName, NameKind, NameSource};
+
+        let mut host = Host::new("192.0.2.30".parse().expect("an address"));
+        host.set_hostname(Some("gw.example.net".to_string()));
+        for (kind, source, name) in [
+            (NameKind::Host, NameSource::Ntlm, "dc01.corp.example"),
+            (NameKind::Host, NameSource::Ldap, "DC01.corp.example"),
+            (NameKind::NetbiosHost, NameSource::Ntlm, "DC01"),
+            (NameKind::Domain, NameSource::Ntlm, "corp.example"),
+            (NameKind::Forest, NameSource::Ldap, "corp.example"),
+        ] {
+            host.record_name(HostName::new(kind, source, name).expect("a name"));
+        }
+        let report = ScanReport::recorded("zond", Vec::new(), vec![host]);
+        let render = |options: ExportOptions| {
+            let mut out = Vec::new();
+            NmapXmlExporter::new(options)
+                .export(&report, &mut out)
+                .expect("the report exports");
+            let document = String::from_utf8(out).expect("UTF-8");
+            let start = document.find("<hostnames>").expect("a hostnames element");
+            let end = document.find("</hostnames>").expect("closed");
+            document[start..end].to_string()
+        };
+
+        assert_eq!(
+            render(ExportOptions::new()),
+            "<hostnames>\n\
+             <hostname name=\"gw.example.net\" type=\"PTR\"/>\n\
+             <hostname name=\"dc01.corp.example\" type=\"user\"/>\n"
+        );
+        assert_eq!(
+            render(ExportOptions::new().with_redaction(crate::export::Redaction::Standard)),
+            "<hostnames>\n\
+             <hostname name=\"gwXXXXXet\" type=\"PTR\"/>\n\
+             <hostname name=\"dcXXXXXle\" type=\"user\"/>\n"
+        );
+    }
+
+    /// A document this engine wrote reads back with the hostname it had: the
+    /// name the scan resolved, and none where it resolved none, never the name
+    /// the host gave, which this format has no field to carry back as one.
+    #[cfg(feature = "import-nmap")]
+    #[test]
+    fn a_name_the_host_gave_does_not_come_back_as_its_hostname() {
+        use crate::import::report::ReportReader;
+        use crate::import::report::nmap::NmapXmlReportReader;
+        use crate::model::host::{HostName, NameKind, NameSource};
+
+        let named = |last: u8, hostname: Option<&str>| {
+            let mut host = Host::new(format!("192.0.2.{last}").parse().expect("an address"));
+            host.set_status(HostStatus::Up);
+            host.set_hostname(hostname.map(str::to_owned));
+            host.record_name(
+                HostName::new(NameKind::Host, NameSource::Ntlm, "dc01.corp.example")
+                    .expect("a name"),
+            );
+            host
+        };
+
+        let restored = NmapXmlReportReader::default()
+            .read(&mut std::io::Cursor::new(
+                export(&[named(31, None), named(32, Some("gw.example.net"))]).into_bytes(),
+            ))
+            .expect("this crate's own document reads back");
+        let hostnames: Vec<Option<&str>> = restored.hosts().map(Host::hostname).collect();
+
+        assert_eq!(hostnames, [None, Some("gw.example.net")]);
     }
 
     /// Redaction is an export-time policy and this format is not exempt from
