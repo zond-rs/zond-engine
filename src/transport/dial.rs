@@ -709,6 +709,7 @@ fn wildcard(family: IpAddr, port: u16) -> SocketAddr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::loopback::{accept_from_this_process, from_this_process};
 
     #[test]
     fn a_socket_binds_the_family_of_its_target() {
@@ -766,7 +767,11 @@ mod tests {
             hop_limit: Some(HOPS),
         };
 
-        let accept = tokio::spawn(async move { listener.accept().await });
+        let accept = tokio::spawn(async move {
+            let accepted = accept_from_this_process(&listener).await?;
+            let peer = accepted.peer_addr()?;
+            std::io::Result::Ok((accepted, peer))
+        });
         let stream = Egress::KERNEL
             .connect_shaped(addr, shaping)
             .await
@@ -1070,8 +1075,12 @@ mod tests {
         let addr = listener.local_addr().expect("its address");
 
         let accept = tokio::spawn(async move {
-            let (_, first) = listener.accept().await.expect("the pinned connection");
-            let (_, second) = listener.accept().await.expect("the plain connection");
+            let from = async || {
+                let accepted = accept_from_this_process(&listener).await?;
+                accepted.peer_addr()
+            };
+            let first = from().await.expect("the pinned connection");
+            let second = from().await.expect("the plain connection");
             (first, second)
         });
         let within = crate::config::limits::CONNECT_PROBE_TIMEOUT;
@@ -1136,7 +1145,11 @@ mod tests {
         // thread: closed at once, it can reach the connecting side as a hang-up
         // before the connect has seen its handshake finish, which macOS reports
         // as a failed connect.
-        let handle = std::thread::spawn(move || listener.accept());
+        let handle = std::thread::spawn(move || {
+            let accepted = from_this_process(&listener).next().expect("an accept");
+            let peer = accepted.peer_addr()?;
+            std::io::Result::Ok((accepted, peer))
+        });
         let _stream = egress
             .connect_within(addr, Duration::from_secs(1), descriptors::PATIENCE)
             .expect("the blocking connect");

@@ -1129,26 +1129,35 @@ mod tests {
         );
     }
 
+    /// A detection level that opens no connection opens none, even to an open
+    /// port identified as a service detections are written for. Counted on
+    /// the port rather than read off how long the pass took, which says
+    /// nothing about a connection that was made and answered at once.
     #[tokio::test]
     async fn detection_off_connects_to_nothing() {
         let (session, ctx) = ScanSession::new();
-        // An open, identified port on an address nothing is listening at:
-        // reaching the network would take the connect timeout, so a prompt
-        // return is the observable form of "no connection was attempted".
-        let unreachable: std::net::IpAddr = "192.0.2.1".parse().unwrap();
-        ctx.update_host(unreachable, |host| {
+        let silent = crate::testing::loopback::SilentPort::open();
+        let addr = silent.addr();
+        ctx.update_host(addr.ip(), |host| {
             host.add_port(
-                Port::new(6379, Protocol::Tcp, PortState::Open)
+                Port::new(addr.port(), Protocol::Tcp, PortState::Open)
                     .with_service(Service::new("redis", 100)),
             );
         });
 
-        let started = std::time::Instant::now();
-        detect(&ctx, ServiceDetection::Off, DetectionEnvelope::default()).await;
+        // A ceiling that grants the redis flow its socket, so the level is all
+        // that keeps it off the port.
+        detect(
+            &ctx,
+            ServiceDetection::Off,
+            DetectionEnvelope::up_to(crate::model::finding::DetectionClass::ActiveBenign),
+        )
+        .await;
 
-        assert!(
-            started.elapsed() < crate::config::limits::CONNECT_PROBE_TIMEOUT,
-            "a detection turned off cannot have waited on a connection"
+        assert_eq!(
+            silent.connections(),
+            0,
+            "a detection turned off connected to the port"
         );
         drop(session);
     }

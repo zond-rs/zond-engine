@@ -1079,21 +1079,18 @@ mod tests {
     #[tokio::test]
     async fn detection_turned_off_connects_to_nothing() {
         let (session, ctx) = ScanSession::new();
-
-        // An open port on an address nothing is listening at. Reaching the
-        // network here would take the connect timeout; returning promptly is the
-        // observable form of "no connection was attempted".
-        let unreachable: IpAddr = "192.0.2.1".parse().expect("a documentation address");
-        ctx.update_host(unreachable, |host| {
-            host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
+        let silent = SilentPort::open();
+        let addr = silent.addr();
+        ctx.update_host(addr.ip(), |host| {
+            host.add_port(Port::new(addr.port(), Protocol::Tcp, PortState::Open));
         });
 
-        let started = std::time::Instant::now();
         detect(&ctx, ServiceDetection::Off, Protocol::Tcp).await;
 
-        assert!(
-            started.elapsed() < CONNECT_PROBE_TIMEOUT,
-            "a level that connects to nothing cannot have waited on a connection"
+        assert_eq!(
+            silent.connections(),
+            0,
+            "a level that connects to nothing connected to the port"
         );
         drop(session);
     }

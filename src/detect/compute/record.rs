@@ -377,6 +377,7 @@ mod tests {
     use crate::fingerprint::PortContext;
     use crate::model::finding::{DetectionClass, DetectionId, Version};
     use crate::model::port::Protocol;
+    use crate::testing::loopback::from_this_process;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
@@ -422,7 +423,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         thread::spawn(move || {
-            if let Ok((mut sock, _)) = listener.accept() {
+            if let Some(mut sock) = from_this_process(&listener).next() {
                 let mut probe = [0u8; 64];
                 let _ = sock.read(&mut probe);
                 // A reply with a non-ASCII byte, so a lossy encoding would corrupt it.

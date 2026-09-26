@@ -1926,6 +1926,7 @@ fn spawn_scan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::loopback::accept_from_this_process;
 
     /// A scratch journal root, removed and made again for each test that
     /// names it.
@@ -2116,7 +2117,7 @@ mod tests {
         // Takes every connection and says nothing, for as long as the test runs.
         tokio::spawn(async move {
             let mut held = Vec::new();
-            while let Ok((stream, _)) = listener.accept().await {
+            while let Ok(stream) = accept_from_this_process(&listener).await {
                 held.push(stream);
             }
         });

@@ -179,6 +179,7 @@ impl ServerCertVerifier for AcceptAnyServerCert {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::loopback::from_this_process;
 
     /// A `None` tunnel is the identity: the plain socket comes back usable, so the
     /// common path pays nothing for the branch. Exercised over a loopback pair
@@ -188,11 +189,11 @@ mod tests {
         use std::net::TcpListener;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let accepted = std::thread::spawn(move || listener.accept().map(|(sock, _)| sock));
+        let accepted = std::thread::spawn(move || from_this_process(&listener).next());
 
         let tcp = TcpStream::connect(addr).unwrap();
         let mut wrapped = wrap(tcp, addr.ip(), None).expect("a plain socket wraps to itself");
-        let mut server = accepted.join().unwrap().unwrap();
+        let mut server = accepted.join().unwrap().expect("an accept");
 
         wrapped.write_all(b"ping").unwrap();
         let mut buf = [0u8; 4];

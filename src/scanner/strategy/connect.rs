@@ -1922,6 +1922,7 @@ fn answered(ip: IpAddr, start: Instant) -> ProbedHost {
 mod tests {
     use super::*;
     use crate::model::target::Target;
+    use crate::testing::loopback::accept_from_this_process;
     use std::net::{Ipv4Addr, Ipv6Addr};
     use tokio::net::UdpSocket;
 
@@ -2201,23 +2202,28 @@ mod tests {
         // for the stop once the first is in.
         let listening = tokio::spawn(async move {
             let mut held = Vec::new();
-            let (first, _) = listener.accept().await.expect("the probe connects");
+            let first = accept_from_this_process(&listener)
+                .await
+                .expect("the probe connects");
             held.push(first);
             stopper.abort();
             // Held open until the probe returns, so nothing ends its
             // identification but the stop.
             loop {
                 tokio::select! {
-                    accepted = listener.accept() => {
-                        held.push(accepted.expect("a connection").0);
+                    accepted = accept_from_this_process(&listener) => {
+                        held.push(accepted.expect("a connection"));
                     }
                     _ = &mut probe_done => break,
                 }
             }
             // Whatever else the probe made before it returned is already
             // queued on the listener; this only has to take it.
-            while let Ok(Ok((more, _))) =
-                tokio::time::timeout(Duration::from_millis(500), listener.accept()).await
+            while let Ok(Ok(more)) = tokio::time::timeout(
+                Duration::from_millis(500),
+                accept_from_this_process(&listener),
+            )
+            .await
             {
                 held.push(more);
             }
@@ -2442,7 +2448,7 @@ mod tests {
         let port = listener.local_addr().expect("bound").port();
         // Held until the scanner closes first, so the closing wait is its.
         tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
+            while let Ok(mut stream) = accept_from_this_process(&listener).await {
                 tokio::spawn(async move {
                     let mut buf = [0u8; 256];
                     while matches!(stream.read(&mut buf).await, Ok(read) if read > 0) {}

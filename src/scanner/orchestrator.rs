@@ -2566,6 +2566,7 @@ fn push_single(set: &mut IpSet, ip: IpAddr, zone: Option<u32>) {
 
 #[cfg(test)]
 mod tests {
+    use crate::testing::loopback::accept_from_this_process;
 
     /// **A scan forbidden name queries asks no host its name.** The mDNS pass
     /// learns what a nameless host calls itself by a reverse-name query, and a
@@ -4240,7 +4241,7 @@ mod tests {
         let addr = listener.local_addr().expect("has an address");
 
         tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
+            while let Ok(mut stream) = accept_from_this_process(&listener).await {
                 let mut hello = vec![0u8; 4096];
                 let Ok(read) = stream.read(&mut hello).await else {
                     continue;
@@ -4275,7 +4276,7 @@ mod tests {
         let counter = Arc::clone(&seen);
 
         tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
+            while let Ok(mut stream) = accept_from_this_process(&listener).await {
                 counter.fetch_add(1, Ordering::SeqCst);
                 tokio::spawn(async move {
                     let mut hello = vec![0u8; 4096];
