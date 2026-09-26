@@ -681,14 +681,19 @@ impl Dispatcher {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::model::ip::set::IpSet;
+    use crate::model::port::PortSet;
+    use crate::model::target::Target;
+    use crate::model::target::TargetSet;
+    use crate::scanner::session::ScanSession;
+    use std::net::IpAddr;
 
     /// A batch of zero would reach `mpsc::channel`, which asserts on an empty
     /// buffer, so the mistake would end the scan in a panic rather than in an
     /// empty result. Both entry points take the size from the caller.
     #[tokio::test]
     async fn a_zero_batch_is_read_as_one_probe_rather_than_panicking() {
-        use crate::scanner::session::ScanSession;
-
         let (_session, ctx) = ScanSession::new();
         let mut rx = Dispatcher::new(TargetMap::new())
             .with_batch_size(0)
@@ -705,13 +710,6 @@ mod tests {
 
         assert!(rx.recv().await.is_none());
     }
-    use super::*;
-    use crate::model::ip::set::IpSet;
-    use crate::model::port::PortSet;
-    use crate::model::target::Target;
-    use crate::model::target::TargetSet;
-    use crate::scanner::session::ScanSession;
-    use std::net::IpAddr;
 
     /// A context to dispatch against, and the session that keeps it alive.
     fn context() -> (ScanSession, ScanContext) {

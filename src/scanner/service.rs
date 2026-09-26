@@ -1022,6 +1022,12 @@ fn write_back(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scanner::session::ScanSession;
+    use crate::testing::loopback::{SilentPort, accept_from_this_process, from_this_process};
+    use std::net::IpAddr;
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     /// A port that takes the connection and answers nothing it is asked is
     /// said once at the console, and a port that answered is not.
@@ -1181,13 +1187,6 @@ mod tests {
 
         assert_eq!(quiet.first.as_deref(), Some("[2001:db8::1]:443"));
     }
-
-    use crate::scanner::session::ScanSession;
-    use crate::testing::loopback::{SilentPort, accept_from_this_process, from_this_process};
-    use std::net::IpAddr;
-    use std::sync::Arc;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
 
     #[tokio::test]
     async fn detect_fingerprints_an_open_tcp_port_end_to_end() {
