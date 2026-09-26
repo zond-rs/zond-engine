@@ -218,6 +218,11 @@ pub struct SignatureDb {
     /// services that declare one. See
     /// [`ServiceSignature::speaks`](crate::fingerprint::ServiceSignature::speaks).
     speaks: HashMap<Arc<str>, Arc<str>>,
+    /// The services a scan can meet on a port: those that register one or send
+    /// a probe. The rest are names the corpus files rules under without any
+    /// port speaking them, `x509` and `favicons.xml` among them; see
+    /// [`agree`](Self::agree).
+    protocols: HashSet<Arc<str>>,
     /// The ports every service reachable on which speaks HTTP; see
     /// [`asked_first`](Self::asked_first).
     asked_first: HashSet<u16>,
@@ -383,6 +388,17 @@ impl SignatureDb {
             }
         }
 
+        let protocols = defs
+            .iter()
+            .filter(|def| {
+                let service = &def.service;
+                !(service.default_ports.is_empty()
+                    && service.shared_ports.is_empty()
+                    && def.probe.is_empty())
+            })
+            .map(|def| Arc::from(def.service.name.as_str()))
+            .collect();
+
         // Primary name and reachable-service set per port. Both lists reach a
         // port; only `default_ports` names it. Every service naming a port
         // is collected before any that only shares it, so a port's services
@@ -467,6 +483,7 @@ impl SignatureDb {
             universal_tcp_probes,
             udp_probes,
             speaks,
+            protocols,
             asked_first,
             prefilter: OnceLock::new(),
         }
@@ -642,6 +659,35 @@ impl SignatureDb {
     pub fn speaks(&self, service: &str) -> Option<&str> {
         let bare = service.rsplit('/').next().unwrap_or(service);
         self.speaks.get(bare).map(|protocol| &**protocol)
+    }
+
+    /// Whether an observation filed under `other` can describe the software
+    /// behind `service`.
+    ///
+    /// Two names agree when they are the same, when one is carried over the
+    /// other, as Grafana is over HTTP and a `Server` header describes the web
+    /// server Grafana answers through, or when either is not a protocol any
+    /// port is registered or probed for. The last is the corpus filing rules
+    /// under a name for the text they read rather than the protocol that
+    /// carried it: a certificate subject under `x509`, an icon's digest under
+    /// `favicons.xml`, a `Server` header's modules under `apache`. Such a rule
+    /// describes whatever software presented that text, and so contradicts no
+    /// protocol.
+    ///
+    /// Two protocols that are both carried over a third do not agree. An
+    /// Elasticsearch rule that fired on a Grafana port has read the reply as a
+    /// different application, which is the disagreement this exists to catch.
+    pub(crate) fn agree(&self, service: &str, other: &str) -> bool {
+        let carried_over = |inner: &str, outer: &str| {
+            self.speaks
+                .get(inner)
+                .is_some_and(|protocol| &**protocol == outer)
+        };
+        service == other
+            || !self.protocols.contains(service)
+            || !self.protocols.contains(other)
+            || carried_over(service, other)
+            || carried_over(other, service)
     }
 
     /// The TCP probes to send to a port that registers none of its own.
@@ -1101,6 +1147,23 @@ mod tests {
         assert_eq!(db.speaks("redis"), None);
         assert_eq!(db.speaks("ssl/redis"), None);
         assert_eq!(db.speaks("nothing-here"), None);
+    }
+
+    /// Agreement over the shipped vocabulary, which is what a verdict consults:
+    /// an application agrees with the protocol carrying it, two applications
+    /// carried over the same protocol do not agree with each other, and a name
+    /// no port speaks agrees with everything.
+    #[test]
+    fn services_agree_through_what_carries_them_and_not_through_a_sibling() {
+        let db = SignatureDb::global();
+        assert!(db.agree("grafana", "http"));
+        assert!(db.agree("http", "grafana"));
+        assert!(!db.agree("grafana", "elasticsearch"));
+        assert!(!db.agree("kerberos", "lpd"));
+        assert!(!db.agree("ftp", "smtp"));
+        assert!(db.agree("http", "x509"));
+        assert!(db.agree("http", "favicons.xml"));
+        assert!(db.agree("http", "apache"));
     }
 
     #[test]

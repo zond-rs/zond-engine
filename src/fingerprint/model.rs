@@ -278,10 +278,13 @@ pub struct ServiceVerdict {
 impl ServiceVerdict {
     /// Reconciles independent observations into one verdict.
     ///
-    /// Evidence is ranked strongest-first; each field is filled from the
-    /// highest-confidence observation that carries it, so different analyzers
-    /// can contribute different fields. Ties preserve insertion order, keeping
-    /// the result deterministic. The full evidence set is retained.
+    /// Evidence is ranked strongest-first. The service comes from the strongest
+    /// observation that names one; each other field is filled from the
+    /// highest-confidence observation that carries it and agrees about the
+    /// service, so different analyzers can contribute different fields while a
+    /// reading of the reply as some other protocol contributes none. Ties
+    /// preserve insertion order, keeping the result deterministic. The full
+    /// evidence set is retained, disagreeing observations included.
     pub fn resolve(mut evidence: Vec<Evidence>) -> Self {
         // Rank strongest-first. Confidence dominates: a genuinely stronger
         // identification is never buried by port context. Within one confidence
@@ -305,13 +308,37 @@ impl ServiceVerdict {
             ..Default::default()
         };
 
-        for ev in &evidence {
-            // The tunnel travels with the service field: whichever evidence
-            // first supplies the service also decides how it is labelled.
-            if verdict.service.is_none() && ev.service.is_some() {
-                verdict.tunnel = ev.tunnel;
-            }
-            fill(&mut verdict.service, &ev.service);
+        // The tunnel travels with the service field: whichever evidence first
+        // supplies the service also decides how it is labelled.
+        if let Some(named) = evidence.iter().find(|ev| ev.service.is_some()) {
+            verdict.service = named.service.clone();
+            verdict.tunnel = named.tunnel;
+        }
+
+        // **Only an observation that agrees about the service may describe
+        // it.** Every field below says something about the software behind the
+        // protocol the verdict names, and an observation that read the reply as
+        // a different protocol was describing different software. A Kerberos
+        // reply over TCP opens with a zero length byte, which is also how a line
+        // printer daemon answers; with the KDC rule winning the service and the
+        // printer rule free to fill the product, the port read as Kerberos run
+        // by `lpd`. The same holds for any coincidental match a port-confirmed
+        // one outranked: the bare `220` that names FTP says nothing about which
+        // mail server the SMTP rule thought it was.
+        //
+        // Agreement is the corpus's judgement, since the names are its
+        // vocabulary; see `SignatureDb::agree`. An observation naming no service
+        // agrees with every one, and so does every observation where the verdict
+        // names none.
+        let db = super::db::SignatureDb::global();
+        let evidence_agrees =
+            |ev: &Evidence| match (verdict.service.as_deref(), ev.service.as_deref()) {
+                (Some(service), Some(other)) => db.agree(service, other),
+                _ => true,
+            };
+        let agreeing: Vec<&Evidence> = evidence.iter().filter(|ev| evidence_agrees(ev)).collect();
+
+        for ev in &agreeing {
             fill(&mut verdict.version, &ev.version);
             fill(&mut verdict.vendor, &ev.vendor);
             fill(&mut verdict.extrainfo, &ev.extrainfo);
@@ -331,8 +358,9 @@ impl ServiceVerdict {
         // one thing an echo is good for, naming the port where no service was
         // identified at all, is already covered, because a product is only an
         // echo when there *is* a service for it to echo.
-        let candidates: Vec<&Evidence> = evidence
+        let candidates: Vec<&Evidence> = agreeing
             .iter()
+            .copied()
             .filter(|ev| ev.product.is_some())
             .filter(|ev| ev.product.as_deref() != verdict.service.as_deref())
             .collect();
@@ -398,7 +426,7 @@ impl ServiceVerdict {
         // to report `gunicorn 21.2.0` beside an Apache CPE.
         verdict.cpe = match named {
             Some(ev) if ev.cpe.is_some() => ev.cpe.clone(),
-            Some(ev) => evidence
+            Some(ev) => agreeing
                 .iter()
                 .filter(|other| other.cpe.is_some())
                 .find(|other| {
@@ -406,7 +434,7 @@ impl ServiceVerdict {
                     product == ev.product.as_deref() || product == verdict.service.as_deref()
                 })
                 .and_then(|other| other.cpe.clone()),
-            None => evidence.iter().find_map(|ev| ev.cpe.clone()),
+            None => agreeing.iter().find_map(|ev| ev.cpe.clone()),
         };
 
         // An observation may state one name in both slots, so that it survives
@@ -666,6 +694,54 @@ mod tests {
 
         let verdict = ServiceVerdict::resolve(vec![global_smtp, port_ftp]);
         assert_eq!(verdict.service.as_deref(), Some("ftp"));
+    }
+
+    /// A Kerberos reply over TCP opens with a zero length byte, which a line
+    /// printer daemon's rule also reads as its own answer. The KDC rule names
+    /// the service and no product, so the printer rule was the only one
+    /// offering a product, and the port read as Kerberos run by `lpd`. What a
+    /// rule for another protocol says about the software is about software
+    /// this port is not running.
+    #[test]
+    fn a_reading_as_another_protocol_describes_nothing_on_the_port() {
+        let mut kdc = ev(Confidence::Probable).with_service("kerberos");
+        kdc.port_confirmed = true;
+        let mut printer = ev(Confidence::Probable)
+            .with_service("lpd")
+            .with_product("lpd")
+            .with_extrainfo("queue default");
+        printer.cpe = Some("cpe:/a:example:lpd:-".to_string());
+
+        let verdict = ServiceVerdict::resolve(vec![printer, kdc]);
+
+        assert_eq!(verdict.service.as_deref(), Some("kerberos"));
+        assert_eq!(verdict.product, None, "lpd's product is not the KDC's");
+        assert_eq!(verdict.extrainfo, None);
+        assert_eq!(verdict.cpe, None);
+        assert_eq!(
+            verdict.evidence.len(),
+            2,
+            "the disagreement stays on record"
+        );
+    }
+
+    /// The corpus files some rules under the text they read rather than a
+    /// protocol: a certificate subject under `x509`. Such a rule names whatever
+    /// software presented the certificate, which on a TLS web port is the web
+    /// application, so it still describes the port.
+    #[test]
+    fn a_rule_filed_under_the_text_it_reads_still_describes_the_port() {
+        let web = ev(Confidence::Strong).with_service("http");
+        let subject = ev(Confidence::Probable)
+            .with_service("x509")
+            .with_product("Zond Appliance")
+            .with_vendor("Zond");
+
+        let verdict = ServiceVerdict::resolve(vec![web, subject]);
+
+        assert_eq!(verdict.service.as_deref(), Some("http"));
+        assert_eq!(verdict.product.as_deref(), Some("Zond Appliance"));
+        assert_eq!(verdict.vendor.as_deref(), Some("Zond"));
     }
 
     #[test]
