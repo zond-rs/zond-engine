@@ -356,19 +356,36 @@ fn too_few_within(
         .map(|soft| (soft, needed))
 }
 
-/// How many descriptors this process holds open, where it can say: every one
-/// of `soft` when the table is too full to open the listing.
+/// How many of the `soft` descriptors this process's table has room for are
+/// taken, where it can say: every one when the table is too full to open the
+/// listing.
 ///
 /// Read from the directory the system lists a process's open descriptors
 /// in, which Linux and macOS both keep at `/dev/fd`, less the one the listing
-/// itself holds while it is read. Elsewhere, and wherever the listing will
-/// not open for another reason, nothing is counted and the limit alone
-/// decides.
+/// itself holds while it is read. Only descriptors numbered below `soft` are
+/// counted: both systems give a new descriptor the lowest number free and
+/// refuse one at the limit or above, so the room a table has is the numbers
+/// below its limit still free. A descriptor held at a higher number, one a
+/// parent passed down before the limit was lowered beneath it, takes none of
+/// that room, and counted it would leave a scan fewer connections than the
+/// table has sockets for. Elsewhere, and wherever the listing will not open
+/// for another reason, nothing is counted and the limit alone decides.
 fn open_descriptors(soft: usize) -> Option<usize> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
+        let below_the_limit = |entry: std::io::Result<std::fs::DirEntry>| {
+            entry.ok().and_then(|entry| {
+                let number = entry.file_name().to_str()?.parse::<usize>().ok()?;
+                (number < soft).then_some(())
+            })
+        };
         match std::fs::read_dir("/dev/fd") {
-            Ok(listing) => Some(listing.count().saturating_sub(1)),
+            Ok(listing) => Some(
+                listing
+                    .filter_map(below_the_limit)
+                    .count()
+                    .saturating_sub(1),
+            ),
             Err(error) if exhausted(&error) => Some(soft),
             Err(_) => None,
         }
@@ -704,15 +721,31 @@ mod tests {
     /// Held back in a process whose table is fuller than the reserve allows
     /// for, the gate hands out no more permits than the table has sockets
     /// for, and gives them back when the scan lets go.
+    ///
+    /// A descriptor held at a number above the limit, as a parent passes one
+    /// down before the limit is lowered beneath it, takes none of that room.
+    /// A test runner can leave a few such open in the tests it starts.
     #[cfg(unix)]
     #[test]
     fn a_scan_in_a_crowded_table_holds_back_what_it_has_no_socket_for() {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
         if !testing::in_a_process_of_its_own(
             module_path!(),
             "a_scan_in_a_crowded_table_holds_back_what_it_has_no_socket_for",
         ) {
             return;
         }
+        let null = std::fs::File::open("/dev/null").expect("a descriptor to copy");
+        // SAFETY: `fcntl` copies a live descriptor this function owns to the
+        // lowest free number from 100 up, and the copy is owned by nothing
+        // else once it is handed to `OwnedFd`.
+        let above = unsafe {
+            let copy = libc::fcntl(null.as_raw_fd(), libc::F_DUPFD, 100);
+            assert!(copy >= 100, "a descriptor above the limit");
+            OwnedFd::from_raw_fd(copy)
+        };
+        drop(null);
         let mut held = testing::exhaust(64);
         let free = 24;
         held.truncate(held.len() - free);
@@ -727,7 +760,7 @@ mod tests {
         let left = gate().available_permits();
         drop(held_back);
         let returned = gate().available_permits();
-        drop(held);
+        drop((held, above));
 
         assert_eq!(whole, 32);
         assert_eq!(
