@@ -296,10 +296,13 @@ impl TcpPortScanner {
         };
 
         // This scan's own probe leaving, witnessed rather than read as a reply.
-        // The destination check keeps a src==dst port collision reading as the
-        // reply it is.
+        // A segment from this scan's port to that same port is the probe of
+        // the port the scan sends from, which a full range asks, or the answer
+        // to it, and only the probe carries the probe's flags: an answer is a
+        // reset or a SYN+ACK, which no technique sends.
         if tcp_packet.source_port() == self.core.src_port
-            && tcp_packet.destination_port() != self.core.src_port
+            && (tcp_packet.destination_port() != self.core.src_port
+                || tcp_packet.flags() == self.effective_flags())
         {
             self.witness_probe(captured, &tcp_packet);
             return;
@@ -1468,6 +1471,37 @@ mod tests {
         scanner.handle_reply(&own_probe_leaving(frame), Instant::now());
 
         assert_eq!(scanner.core.audit.sends_witnessed(), 1);
+    }
+
+    /// The probe of the port the scan sends from is witnessed leaving too, and
+    /// its answer, between the same two ports, is still read as the answer.
+    ///
+    /// A scan of every port asks that one, and its probe, from the scan's port
+    /// to itself, read as an answer is a SYN answering nothing: filed off
+    /// target, and the one probe of the range never seen leaving.
+    #[test]
+    fn the_probe_of_the_scans_own_port_is_witnessed_and_its_answer_read() {
+        let (mut scanner, session, sent) = scanner_with_mock();
+        let own = scanner.core.src_port;
+        let token = probe(&mut scanner, &sent, own);
+
+        scanner.handle_reply(&own_probe_leaving(last_sent(&sent)), Instant::now());
+        assert_eq!(scanner.core.audit.sends_witnessed(), 1);
+        assert_eq!(scanner.core.audit.segments_off_target, 0);
+
+        let answer = tcp_segment(&scanner, own, token, SYN | ACK);
+        scanner.handle_reply(&captured_with_ttl(answer, 64), Instant::now());
+        assert!(
+            !scanner.core.ledger.contains(&(TARGET, own)),
+            "the answer did not settle the port"
+        );
+        assert_eq!(
+            session.hosts().get(TARGET).and_then(|host| host
+                .ports()
+                .find(|port| port.number() == own)
+                .map(|port| port.state())),
+            Some(PortState::Open)
+        );
     }
 
     /// A segment on this scan's port carrying no live nonce is someone else's
