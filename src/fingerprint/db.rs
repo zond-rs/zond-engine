@@ -1627,6 +1627,35 @@ mod tests {
         );
     }
 
+    /// A version is what a pattern captured, without the line ending or the
+    /// padding a greeting carried around it.
+    ///
+    /// A banner arrives with its CRLF, and a rule whose group runs to the end of
+    /// the line, or stops at a parenthesis after a space, captures that too. The
+    /// version then carries a `\r` into every report format, and compares
+    /// unequal to the same version read from a banner that ended differently.
+    #[test]
+    fn a_captured_version_keeps_no_surrounding_whitespace() {
+        let db = SignatureDb::global();
+        for (port, banner, expected) in [
+            (
+                25,
+                "220 mail.example ESMTP Postfix (Ubuntu)\r\n",
+                "Postfix (Ubuntu)",
+            ),
+            (
+                21,
+                "220 ProFTPD 1.3.5e Server (Debian) [192.0.2.1]\r\n",
+                "ProFTPD 1.3.5e Server",
+            ),
+        ] {
+            let found = db
+                .identify(port, Protocol::Tcp, banner)
+                .expect("the corpus names it");
+            assert_eq!(found.version.as_deref(), Some(expected), "for {banner:?}");
+        }
+    }
+
     /// `x86` matches inside `x86_64`, so both rules fire on one banner and the
     /// longer read is the one that saw the whole word.
     #[test]

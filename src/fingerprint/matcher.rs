@@ -269,10 +269,15 @@ impl Signature {
             wants_captures,
         )?;
         // A capture past the bound is a pattern that ran away over a hostile
-        // response, not a version. See `MAX_IDENTITY_BYTES`.
+        // response, not a version. See `MAX_IDENTITY_BYTES`. What is kept is
+        // the field as the bound reads it, trimmed: a group that runs to the
+        // end of a line takes the banner's CR with it, and one that stops at a
+        // parenthesis takes the space before it, and neither is the version.
         let version = matched
             .version
-            .filter(|version| super::identity_field(version).is_some());
+            .as_deref()
+            .and_then(super::identity_field)
+            .map(str::to_owned);
 
         // A captured version is a materially stronger signal than a bare match.
         let confidence = if version.is_some() {
