@@ -95,7 +95,7 @@ use std::time::{Duration, SystemTime};
 
 use crate::config::{OsDetection, ServiceDetection, ZondConfig};
 use crate::import::report::{ReportOptions, ReportReader};
-use crate::import::xml::{Element, Event, Parser};
+use crate::import::xml::{Element, Event, Parser, elements_within};
 use crate::import::{ImportError, ImportOrigin};
 use crate::model::exclusion::Exclusions;
 use crate::model::host::os::OsFingerprint;
@@ -193,11 +193,21 @@ impl NmapXmlReportReader {
 
 impl ReportReader for NmapXmlReportReader {
     fn read(&self, input: &mut dyn BufRead) -> Result<ScanReport, ImportError> {
+        let max_document_bytes = self.options.max_document_bytes;
+        crate::import::bounded::within(input, max_document_bytes, |input| self.read_within(input))
+    }
+}
+
+impl NmapXmlReportReader {
+    /// [`read`](ReportReader::read), over an input already cut off at the
+    /// document ceiling.
+    fn read_within(&self, input: &mut dyn BufRead) -> Result<ScanReport, ImportError> {
         crate::import::skip_bom(input)?;
 
         let mut parser = Parser::new(input, self.options.limits.max_line_bytes, FORMAT, KEPT)
             .with_max_value_bytes(MAX_VALUE_BYTES)
-            .with_lossy(LOSSY);
+            .with_lossy(LOSSY)
+            .with_max_elements(elements_within(self.options.max_document_bytes));
         let mut state = State::new(self.options.limits.max_addresses);
 
         loop {

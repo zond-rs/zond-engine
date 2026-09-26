@@ -96,16 +96,32 @@ pub(crate) const MAX_NAME_BYTES: usize = 64;
 /// `args` and `services` attributes through without a limit tuned around them.
 pub(crate) const MAX_VALUE_BYTES: usize = 256;
 
-/// The most elements one document may contain, unless its reader sets its own
+/// The most elements one document may contain, for a parser no document
+/// ceiling bounds. A reader that has one sets [`elements_within`] it instead,
 /// with [`Parser::with_max_elements`].
 ///
 /// A bound on work rather than on memory, since an element costs nothing
-/// held unless a reader builds something from it. Sized so that it is never
-/// what refuses this engine's own nmap XML: a host scanned across the full
-/// TCP range is 131,072 elements in 6.5 MB, a `<port>` and its `<state>` for
-/// each, so the report readers' byte ceiling admits about 165 such hosts and
-/// 21 million elements, and 2^25 is half as many again.
+/// held unless a reader builds something from it.
 pub(crate) const MAX_ELEMENTS: u64 = 1 << 25;
+
+/// The fewest bytes an element can be written in: `<a/>`.
+const SMALLEST_ELEMENT_BYTES: u64 = 4;
+
+/// The most elements a document of at most `bytes` can hold, which is the
+/// element ceiling for a reader whose byte ceiling is `bytes`.
+///
+/// Derived rather than fixed, because the byte ceiling is the one a caller
+/// sizes: it is what the documentation asks them to set to what the process
+/// can afford, and a separate count would refuse a document that ceiling
+/// admits, and go on refusing it however far the caller raised the ceiling.
+/// A host scanned across the full TCP range is 131,072 elements in 6.5 MB of
+/// this engine's nmap XML, so a fixed count of 2^25 refused anything past
+/// about 256 of them with the byte ceiling lifted. The count still bounds the
+/// work a parser does where the byte ceiling is not enforced on the stream it
+/// reads.
+pub(crate) fn elements_within(bytes: u64) -> u64 {
+    bytes / SMALLEST_ELEMENT_BYTES
+}
 
 /// The longest entity name accepted, in bytes, between the `&` and the `;`.
 pub(crate) const MAX_ENTITY_BYTES: usize = 16;
@@ -1320,6 +1336,32 @@ mod tests {
 
         let past = "v".repeat(MAX_VALUE_BYTES + 1);
         assert!(!refusal(&format!(r#"<a id="{past}"/>"#)).is_empty());
+    }
+
+    /// The element ceiling a byte ceiling implies never refuses a document
+    /// that ceiling admits, even one made of nothing but the smallest element
+    /// there is, so a caller who raises the one raises the other.
+    #[test]
+    fn a_byte_ceiling_admits_every_element_it_has_room_for() {
+        let document = format!("<r>{}</r>", "<a/>".repeat(1000));
+        let bytes = document.len() as u64;
+
+        let mut input = Cursor::new(document.into_bytes());
+        let mut parser = Parser::new(&mut input, 64 * 1024, FORMAT, KEPT)
+            .with_max_elements(elements_within(bytes));
+        let mut starts = 0;
+        loop {
+            match parser.next_event().expect("every element fits the ceiling") {
+                Event::Eof => break,
+                Event::Start { .. } => starts += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(starts, 1001);
+
+        // Three hundred hosts scanned across the full TCP range, in the
+        // 131,072 elements this engine writes each of them in.
+        assert!(elements_within(u64::MAX) > 300 * 131_072);
     }
 
     #[test]

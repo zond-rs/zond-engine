@@ -48,7 +48,7 @@
 use std::collections::BTreeSet;
 use std::io::BufRead;
 
-use crate::import::xml::{Element, Event, Parser};
+use crate::import::xml::{Element, Event, Parser, elements_within};
 use crate::import::{ImportError, ImportLimits, ImportOrigin, Importer, TargetSink};
 use crate::model::port::Protocol;
 
@@ -84,12 +84,8 @@ impl Importer for NmapXmlImporter {
         crate::import::bounded::within(input, self.limits.max_document_bytes, |input| {
             crate::import::skip_bom(input)?;
 
-            // The document ceiling bounds the elements, since each takes at
-            // least four bytes, and the element count sized for the report
-            // readers would refuse this engine's own export of a few hundred
-            // hosts scanned across the full range, which that ceiling admits.
             let mut parser = Parser::new(input, self.limits.max_line_bytes, FORMAT, KEPT)
-                .with_max_elements(u64::MAX);
+                .with_max_elements(elements_within(self.limits.max_document_bytes));
             let mut host: Option<Accumulator> = None;
             let mut saw_root = false;
             let mut token = String::new();

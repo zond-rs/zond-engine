@@ -147,6 +147,15 @@ impl JsonReportReader {
 
 impl ReportReader for JsonReportReader {
     fn read(&self, input: &mut dyn BufRead) -> Result<ScanReport, ImportError> {
+        let max_document_bytes = self.options.max_document_bytes;
+        crate::import::bounded::within(input, max_document_bytes, |input| self.read_within(input))
+    }
+}
+
+impl JsonReportReader {
+    /// [`read`](ReportReader::read), over an input already cut off at the
+    /// document ceiling.
+    fn read_within(&self, input: &mut dyn BufRead) -> Result<ScanReport, ImportError> {
         crate::import::skip_bom(input)?;
 
         let max_hosts = self.options.limits.max_addresses;
@@ -192,15 +201,23 @@ impl JsonLinesReportReader {
 
 impl ReportReader for JsonLinesReportReader {
     fn read(&self, input: &mut dyn BufRead) -> Result<ScanReport, ImportError> {
+        let max_document_bytes = self.options.max_document_bytes;
+        crate::import::bounded::within(input, max_document_bytes, |input| self.read_within(input))
+    }
+}
+
+impl JsonLinesReportReader {
+    /// [`read`](ReportReader::read), over an input already cut off at the
+    /// document ceiling.
+    fn read_within(&self, input: &mut dyn BufRead) -> Result<ScanReport, ImportError> {
         crate::import::skip_bom(input)?;
 
         let max_hosts = self.options.limits.max_addresses;
         // A line here is a record of a document, and a host record is as long
         // as its port list: megabytes for one scanned across the full range.
-        // So the document's ceiling bounds it, which also holds for a caller
-        // reading through this type rather than through the dispatch that
-        // wraps the input. The target readers' line limit is sized for an
-        // expression and would refuse any host past a few hundred ports.
+        // So the document's ceiling bounds it. The target readers' line limit
+        // is sized for an expression and would refuse any host past a few
+        // hundred ports.
         let max_line_bytes = usize::try_from(self.options.max_document_bytes).unwrap_or(usize::MAX);
         let mut buffer = Vec::new();
         let mut line_number = 0u64;

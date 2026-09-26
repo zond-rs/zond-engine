@@ -129,6 +129,11 @@ pub struct ReportOptions {
     /// about three times it in XML. Raise it with
     /// [`with_max_document_bytes`](Self::with_max_document_bytes) for a document
     /// that has been vetted, or pass [`u64::MAX`] to lift it.
+    ///
+    /// It is the one ceiling on a document's size. The most elements an XML
+    /// document may hold is derived from it, as the most a document of this
+    /// many bytes could hold, so raising it never leaves a document refused
+    /// for a count nobody can set.
     pub max_document_bytes: u64,
 }
 
@@ -317,20 +322,25 @@ impl ReportFormat {
     /// Refuses a document past
     /// [`ReportOptions::max_document_bytes`] before any reader sees the whole of
     /// it, and refuses one naming more hosts than
-    /// [`ImportLimits::max_addresses`] allows.
+    /// [`ImportLimits::max_addresses`] allows. Each reader holds its input to
+    /// both itself, so one used directly is bounded the same way.
+    #[cfg_attr(
+        not(any(feature = "import-json", feature = "import-nmap")),
+        allow(unused_variables)
+    )]
     pub fn read(
         self,
         input: &mut dyn BufRead,
         options: ReportOptions,
     ) -> Result<ScanReport, ImportError> {
-        crate::import::bounded::within(input, options.max_document_bytes, |input| match self {
+        match self {
             #[cfg(feature = "import-json")]
             ReportFormat::Json => json::JsonReportReader::new(options).read(input),
             #[cfg(feature = "import-json")]
             ReportFormat::JsonLines => json::JsonLinesReportReader::new(options).read(input),
             #[cfg(feature = "import-nmap")]
             ReportFormat::Nmap => nmap::NmapXmlReportReader::new(options).read(input),
-        })
+        }
     }
 }
 
@@ -340,6 +350,31 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    /// A reader used directly holds its input to the ceiling its options set,
+    /// as the dispatch over formats does. Its options are the only ceiling a
+    /// caller who picked the format themselves was given, and a reader that
+    /// left the bounding to a dispatch it was not called through would read a
+    /// document of any size.
+    #[test]
+    fn a_reader_used_directly_holds_a_document_to_its_byte_ceiling() {
+        let options = ReportOptions::new().with_max_document_bytes(16);
+        let json = format!("{{\"hosts\": []{}}}", " ".repeat(64));
+        let xml = format!("<nmaprun>{}</nmaprun>", "<a/>".repeat(16));
+
+        let readers: [(&dyn ReportReader, &str); 3] = [
+            (&json::JsonReportReader::new(options), &json),
+            (&json::JsonLinesReportReader::new(options), &json),
+            (&nmap::NmapXmlReportReader::new(options), &xml),
+        ];
+        for (reader, document) in readers {
+            let read = reader.read(&mut Cursor::new(document.as_bytes()));
+            assert!(
+                matches!(read, Err(ImportError::DocumentTooLarge { limit: 16 })),
+                "{document}: {read:?}"
+            );
+        }
+    }
 
     #[test]
     fn an_extension_names_the_format() {
@@ -433,7 +468,7 @@ mod tests {
         use crate::export::{
             ExportOptions, Exporter, JsonExporter, JsonLinesExporter, NmapXmlExporter,
         };
-        use crate::import::xml::MAX_ELEMENTS;
+        use crate::import::xml::elements_within;
         use crate::model::host::Host;
         use crate::model::port::{Discovery, Port, PortState, Protocol, ScanResponse};
 
@@ -523,9 +558,10 @@ mod tests {
             // The element count is not the bound this engine's own XML meets
             // first: every document the byte ceiling admits is under it.
             assert!(
-                ceiling / xml * elements <= MAX_ELEMENTS,
-                "a document of full-range hosts at the byte ceiling holds {} elements, past {MAX_ELEMENTS}",
+                ceiling / xml * elements <= elements_within(ceiling),
+                "a document of full-range hosts at the byte ceiling holds {} elements, past {}",
                 ceiling / xml * elements,
+                elements_within(ceiling),
             );
         }
     }
