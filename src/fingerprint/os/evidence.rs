@@ -167,12 +167,39 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
     // "Ubuntu 22.04" off the wire loses it the moment a stack rule corroborates
     // the family, which is more evidence producing a less specific answer. Two
     // sources naming different values still yield nothing.
+    //
+    //
+    // In a release, a version or a kernel, a value that only stops short of
+    // another is not a different one either. A domain controller's functional
+    // level can say `Windows Server` and no more, since three releases share
+    // it, while the build its SMB service states says `Windows Server 2022`;
+    // the second is the first carried further, and both are true. The most
+    // specific value stands where every other stated is a reading of it cut
+    // short at a word or a component; see `stops_short_of`. Any two that part
+    // ways still yield nothing. The other parts are names rather than readings
+    // taken to some depth, and `x86` is not `x86-64` cut short, so they agree
+    // only where they are equal.
+    let stated = |part: fn(&OsEvidence) -> &Option<String>| -> Vec<&str> {
+        items
+            .iter()
+            .filter_map(|item| part(item).as_deref())
+            .collect()
+    };
     let agreed = |part: fn(&OsEvidence) -> &Option<String>| -> Option<String> {
-        let mut stated = items.iter().filter_map(|item| part(item).as_deref());
-        let candidate = stated.next()?;
+        let stated = stated(part);
+        let candidate = stated.first()?;
         stated
+            .iter()
             .all(|other| other == candidate)
-            .then(|| candidate.to_owned())
+            .then(|| (*candidate).to_owned())
+    };
+    let deepest = |part: fn(&OsEvidence) -> &Option<String>| -> Option<String> {
+        let stated = stated(part);
+        let most = stated.iter().copied().max_by_key(|value| value.len())?;
+        stated
+            .iter()
+            .all(|other| stops_short_of(other, most))
+            .then(|| most.to_owned())
     };
 
     // Attributed to whichever source contributed most, since that is the one a
@@ -192,9 +219,9 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
 
     let (vendor, product, version, kernel, arch, cpe, device) = (
         agreed(|item| &item.vendor),
-        agreed(|item| &item.product),
-        agreed(|item| &item.version),
-        agreed(|item| &item.kernel),
+        deepest(|item| &item.product),
+        deepest(|item| &item.version),
+        deepest(|item| &item.kernel),
         agreed(|item| &item.arch),
         agreed(|item| &item.cpe),
         agreed(|item| &item.device),
@@ -264,6 +291,15 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
         source: strongest.source,
         evidence: lines.join(" | "),
     })
+}
+
+/// Whether `general` is `specific`, or `specific` cut short at a boundary
+/// between words or version components: `Windows Server` of `Windows Server
+/// 2022`, `10.0` of `10.0.20348`, and not `Windows Server 20` of either.
+fn stops_short_of(general: &str, specific: &str) -> bool {
+    specific
+        .strip_prefix(general)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '.', '-']))
 }
 
 /// A combined probability on the `0..=100` scale a report states, never above
@@ -652,6 +688,41 @@ mod tests {
         let resolved = resolve(vec![stack, banner]).expect("the family is agreed");
         assert_eq!(resolved.family.as_deref(), Some("Linux"));
         assert_eq!(resolved.product, None);
+    }
+
+    /// A reading that stops short of another agrees with it, and the more
+    /// specific one stands. Measured on a domain controller: its functional
+    /// level is shared by three releases and names `Windows Server`, its SMB
+    /// build names `Windows Server 2022`, and the two together were reported
+    /// as `Windows`, less than the SMB service said alone.
+    #[test]
+    fn a_reading_cut_short_of_another_keeps_the_more_specific_one() {
+        let named = |product: &str, kernel: Option<&str>| {
+            let mut item = evidence("Windows", 0.6, OsSource::ServiceBanner);
+            item.product = Some(product.to_string());
+            item.kernel = kernel.map(str::to_string);
+            item
+        };
+        let build = named("Windows Server 2022", Some("10.0.20348"));
+        let level = named("Windows Server", None);
+        let mut stack = evidence("Windows", 0.65, OsSource::TcpStack);
+        stack.kernel = Some("10.0".to_string());
+
+        for order in [
+            vec![build.clone(), level.clone(), stack.clone()],
+            vec![stack, level, build],
+        ] {
+            let resolved = resolve(order).expect("named");
+            assert_eq!(resolved.product.as_deref(), Some("Windows Server 2022"));
+            assert_eq!(resolved.kernel.as_deref(), Some("10.0.20348"));
+        }
+
+        // Cut short mid-word is no reading of it, and two releases part ways.
+        for other in ["Windows Server 20", "Windows Server 2019"] {
+            let resolved = resolve(vec![named("Windows Server 2022", None), named(other, None)])
+                .expect("the family is agreed");
+            assert_eq!(resolved.product, None, "{other}");
+        }
     }
 
     /// Two runs over the same evidence must resolve the same way. With scores
