@@ -1471,6 +1471,10 @@ fn candidates_for(link: &Link, table: &[neighbor_cache::Neighbor]) -> Vec<IpAddr
 mod tests {
     use super::*;
 
+    /// The port a raw TCP scanner built here probes from. Its transport sends
+    /// nothing, so which one does not matter.
+    const SRC_PORT: u16 = 54_321;
+
     fn v6(addr: &str) -> IpAddr {
         addr.parse().unwrap()
     }
@@ -2127,6 +2131,7 @@ mod tests {
                 technique,
                 ProbeTransport::from_parts(Box::new(Unsendable), rx),
                 1,
+                SRC_PORT,
             );
 
             assert_eq!(

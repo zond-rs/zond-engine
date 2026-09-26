@@ -23,12 +23,12 @@
 //! | module | what it is |
 //! |---|---|
 //! | [`local`], [`routed`], [`connect`] | which hosts are there: at the link layer, through a gateway, or by ordinary connect |
-//! | [`ports`] | which ports are open, and the machinery its four scanners share |
+//! | [`ports`] | which ports are open |
 //! | [`identify`] | what a machine is, asked of hosts already found |
 //! | [`topology`] | what is between here and a host |
 //! | [`passive`] | what a link already carries, having sent nothing |
 //! | [`composite`] | routes each target to a strategy that covers its protocol |
-//! | [`raw`], [`frames`], [`icmp_error`], [`sweep`] | not strategies: what they are built from, what they read, and what they all keep track of |
+//! | `raw`, `frames`, `icmp_error`, `sweep` | not strategies, and internal: what they are built from, what they read, and what they all keep track of |
 //!
 //! Arranged by the target's network position instead, the two axes cross:
 //! `routed` would mean "reached through a gateway" for one strategy and "opens a
@@ -231,7 +231,7 @@ pub mod connect;
 // The reader two scanners share for what an ICMP error says: a UDP port scan
 // reads a port's verdict out of one, and a trace reads a router's identity out
 // of one. Neither owns it, and it is a parser rather than a strategy.
-pub mod icmp_error;
+pub(crate) mod icmp_error;
 // The readers two strategies share: a local sweep interprets the replies its
 // probes draw with them, and a listener interprets frames nobody asked for with
 // the same ones. A frame that proves a host is there proves it either way.
@@ -239,7 +239,7 @@ pub mod icmp_error;
 // Named for what it reads rather than for the phase that reads it: `discovery`
 // collided with `scanner::discover` and `ScanKind::Discovery`, neither of which
 // this is.
-pub mod frames;
+pub(crate) mod frames;
 pub mod local;
 // What a machine is, asked of hosts a scan has already found. Neither of these
 // discovers anything: they revisit what the store holds and read a stack off
@@ -254,10 +254,10 @@ pub mod ports;
 pub mod protocols;
 // What every raw strategy is built from: how a probe reaches the wire, and the
 // timings a probe over a routed path is held to.
-pub mod raw;
+pub(crate) mod raw;
 pub mod routed;
 // What the three probing sweeps keep track of in common.
-pub mod sweep;
+pub(crate) mod sweep;
 // What is between here and a host, rather than what is at it. Both passes here
 // run after the ports are known, because what reaches a host is what decides
 // how to ask about the path to it.

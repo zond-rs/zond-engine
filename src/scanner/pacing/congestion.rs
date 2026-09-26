@@ -349,8 +349,7 @@ impl CongestionWindow {
     /// A window at its starting size, with nothing learned yet.
     ///
     /// Bounds that disagree do not panic. `floor` and `ceiling` are adjacent
-    /// arguments of one type on a public constructor, so a caller can cross
-    /// them; the floor wins, for the reason
+    /// arguments of one type, so a caller can cross them; the floor wins, for the reason
     /// [`suggest_timeout`](super::rtt_window::RttWindow::suggest_timeout) and
     /// [`ProbeLedger`](super::retry::ProbeLedger) give. A crossed pair then
     /// describes a range with nothing in it, so the window is stationary and
@@ -571,9 +570,9 @@ impl CongestionWindow {
 #[cfg(test)]
 mod tests {
 
-    /// `floor` and `ceiling` are adjacent `u32`s on a public constructor, so a
+    /// `floor` and `ceiling` are adjacent `u32`s on the constructor, so a
     /// caller can cross them. `u32::clamp` asserts, which would turn that into
-    /// a panic in the caller's process, two lines before the `adaptive` check
+    /// a panic in the scanning process, two lines before the `adaptive` check
     /// that already handles a range with nothing in it.
     #[test]
     fn crossed_bounds_freeze_the_window_rather_than_panicking() {

@@ -70,6 +70,7 @@ impl RttWindow {
 
     /// Whether nothing has been measured yet, which is when
     /// [`suggest_timeout`](Self::suggest_timeout) has only the floor to offer.
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.samples.is_empty()
     }
@@ -125,10 +126,10 @@ impl RttWindow {
     /// same reasoning [`ProbeLedger`](super::retry::ProbeLedger) applies to its
     /// own bounds: it is the one of the two imposed rather than chosen, and a
     /// pair that has been configured into disagreeing should still describe a
-    /// real range. `Duration::clamp` asserts instead, and this is public API
-    /// taking two adjacent arguments of one type, so an assertion would let the
-    /// mistake reach a live scan and take the caller's process with it on the
-    /// first host that answered.
+    /// real range. `Duration::clamp` asserts instead, and this takes two
+    /// adjacent arguments of one type, so an assertion would let the mistake
+    /// reach a live scan and take the process with it on the first host that
+    /// answered.
     pub fn suggest_timeout(&self, multiplier: f64, floor: Duration, ceiling: Duration) -> Duration {
         let Some(mean) = self.mean() else {
             return floor;

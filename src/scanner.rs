@@ -149,15 +149,12 @@ pub mod session;
 // The strategies, and the traits that make them interchangeable. Public
 // unconditionally: driving one scanner yourself is a supported way to use the
 // engine, not a test hatch.
-pub mod pacing;
 pub mod plan;
 pub mod strategy;
 
-// What a strategy needs, and what reads its output. `dispatcher` feeds targets
-// to a `PortScanner`, `audit` records how a run went, `rdns` is the hostname
-// tail, `service` identifies what is behind an open port, and `pool` and
-// `payload` are shared probe machinery.
-pub mod audit;
+// What a caller driving strategies itself needs beside them. `dispatcher` feeds
+// targets to a `PortScanner`, `rdns` is the hostname tail, and `service` and
+// `detection` are the passes run over the ports a scan found open.
 /// The timer that writes a running scan into its journal, and the handle that
 /// stops it. Behind `journal-format` because that is what compiles a
 /// [`Journal`](crate::journal::Journal) to write into.
@@ -165,14 +162,19 @@ pub mod audit;
 pub mod checkpoint;
 pub mod detection;
 pub mod dispatcher;
-/// The order a plan's targets are asked in. It lives with the plan's numbering
-/// in [`model`](crate::model), where a journal counting along the same order
-/// can reach it, and is named here too, where the order is taken.
-pub use crate::model::order;
-pub mod payload;
-pub mod pool;
 pub mod rdns;
 pub mod service;
+
+// The machinery the strategies are built from, and nothing a caller holds:
+// `pacing` decides when a probe is sent again and when silence is an answer,
+// `audit` counts what a raw scanner saw of its own run, `pool` bounds a
+// fan-out of connect probes, and `payload` is what a UDP probe carries. Each
+// is reached through the strategy that owns it, whose constructor takes the
+// settings that tune it, so none of it is a commitment to anyone outside.
+pub(crate) mod audit;
+pub(crate) mod pacing;
+pub(crate) mod payload;
+pub(crate) mod pool;
 
 // How the entry points below assemble a scan. Private, because it is one
 // implementation of this engine's policy: a caller who wants a different one

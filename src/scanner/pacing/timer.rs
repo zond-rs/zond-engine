@@ -156,6 +156,7 @@ impl ScanTimer {
     ///
     /// A timeout before the minimum runtime is a scan that has not waited long
     /// enough to conclude anything from quiet.
+    #[cfg(test)]
     pub fn should_break_on_timeout(&self) -> bool {
         Instant::now() >= self.min_runtime
     }

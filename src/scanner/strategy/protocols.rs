@@ -19,7 +19,7 @@
 //! - **A protocol unreachable** is the stack saying it does not implement the
 //!   number, which is [`Closed`](IpProtocolState::Closed). ICMPv4 has a code for
 //!   it; ICMPv6 reports it as a Parameter Problem instead, and
-//!   [`icmp_error`] resolves both to one meaning.
+//!   `icmp_error` resolves both to one meaning.
 //! - **A port unreachable** is the stack saying it does implement the number,
 //!   handed the datagram to that transport, and found nothing listening. It is
 //!   the one message that proves acceptance without the protocol having to

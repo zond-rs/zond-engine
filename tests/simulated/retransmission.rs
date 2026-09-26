@@ -96,6 +96,7 @@ async fn a_lost_syn_is_retried_and_the_port_still_reads_open() {
         TcpScanTechnique::Syn,
         net.transport(),
         1,
+        SCANNER_PORT,
     );
     run_port_scanner(&mut scanner, vec![tcp(TARGET, 80)]).await;
 
@@ -124,6 +125,7 @@ async fn a_lost_rst_is_retried_and_the_port_still_reads_closed() {
         TcpScanTechnique::Syn,
         net.transport(),
         1,
+        SCANNER_PORT,
     );
     run_port_scanner(&mut scanner, vec![tcp(TARGET, 81)]).await;
 
@@ -143,6 +145,7 @@ async fn a_silent_port_is_filtered_after_a_bounded_number_of_attempts() {
         TcpScanTechnique::Syn,
         net.transport(),
         1,
+        SCANNER_PORT,
     );
     run_port_scanner(&mut scanner, vec![tcp(TARGET, 82)]).await;
 
@@ -176,6 +179,7 @@ async fn an_answered_probe_is_never_retried() {
         TcpScanTechnique::Syn,
         net.transport(),
         1,
+        SCANNER_PORT,
     );
     run_port_scanner(&mut scanner, vec![tcp(TARGET, 80)]).await;
 
@@ -200,6 +204,7 @@ async fn retries_are_spaced_out_rather_than_burst() {
         TcpScanTechnique::Syn,
         net.transport(),
         1,
+        SCANNER_PORT,
     );
     run_port_scanner(&mut scanner, vec![tcp(TARGET, 82)]).await;
 
@@ -236,6 +241,7 @@ async fn a_late_reply_plus_its_retry_resolves_the_port_once() {
         TcpScanTechnique::Syn,
         net.transport(),
         1,
+        SCANNER_PORT,
     );
     run_port_scanner(&mut scanner, vec![tcp(TARGET, 80)]).await;
 

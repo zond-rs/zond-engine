@@ -156,13 +156,10 @@ impl Default for ProbeAudit {
 impl ProbeAudit {
     /// Starts an audit, with the clock running from now.
     ///
-    /// Public, along with everything below it that records or reads a counter,
-    /// because a caller driving their own strategy is the reader this module was
-    /// written for and could not reach it. The type was `pub` with nothing `pub`
-    /// on it: nameable, obtainable through
-    /// [`ProbePool::into_audit`](crate::scanner::pool::ProbePool::into_audit),
-    /// and inert. A third-party strategy files its counters the same way it
-    /// already files a [`ProbeStats`] through
+    /// Internal to the engine, as the whole tally is. What a run's counts are
+    /// worth to a caller is the [`ProbeStats`] they close into, which is part
+    /// of the report; a strategy written outside this crate files one of those
+    /// built from its parts, through
     /// [`record_probe_stats`](crate::scanner::session::ScanContext::record_probe_stats).
     pub fn new() -> Self {
         Self {
@@ -266,72 +263,10 @@ impl ProbeAudit {
         crate::report::send_rate(self.sends_attempted, self.started.elapsed()).unwrap_or(0.0)
     }
 
-    /// Probes this run tried to put on the wire.
-    pub fn sends_attempted(&self) -> u64 {
-        self.sends_attempted
-    }
-
-    /// Of those, the ones the sender refused.
-    ///
-    /// Non-zero means the shortfall starts at home, before the network is
-    /// implicated at all, which is the first of the three distinguishable
-    /// failures the module documentation sets out.
-    pub fn sends_failed(&self) -> u64 {
-        self.sends_failed
-    }
-
     /// How many probes were seen leaving on the wire.
+    #[cfg(test)]
     pub fn sends_witnessed(&self) -> u64 {
         self.sends_witnessed
-    }
-
-    /// Segments the capture handed up, before any of this scanner's own checks.
-    pub fn segments_seen(&self) -> u64 {
-        self.segments_seen
-    }
-
-    /// Of those, the ones from a source outside this scan's target set.
-    ///
-    /// Read against [`segments_seen`](Self::segments_seen) as the receive
-    /// path's load rather than as a fault. On an IPv6 scan it is ordinarily
-    /// large, because libpcap cannot narrow TCP by flags over IPv6.
-    pub fn segments_off_target(&self) -> u64 {
-        self.segments_off_target
-    }
-
-    /// In-set replies that answered no outstanding probe, so they proved a host
-    /// alive and yielded no round-trip sample.
-    ///
-    /// Duplicates and late arrivals land here, and so does a correlation bug,
-    /// which is the third of the three failures and the one no amount of extra
-    /// time or extra packets would fix.
-    pub fn replies_without_rtt(&self) -> u64 {
-        self.replies_without_rtt
-    }
-
-    /// Targets a reply resolved, counted once each.
-    ///
-    /// The number a run is judged on, and the numerator to the target count it
-    /// was given.
-    pub fn hosts_found(&self) -> u64 {
-        self.hosts_found
-    }
-
-    /// Found targets by the attempt whose reply revealed them, `[0]` being the
-    /// first send, with the last slot absorbing anything past
-    /// [`ATTEMPTS_COUNTED`].
-    ///
-    /// What says whether retransmission is earning its traffic: a target found
-    /// on its first attempt needed only for the scan to still be listening, and
-    /// one found on its third needed the packet sent again. The two call for
-    /// opposite fixes and the found count alone cannot tell them apart.
-    pub fn answered_on(&self) -> &[u64; ATTEMPTS_COUNTED] {
-        &self.answered_on
-    }
-
-    /// Found targets whose reply named no attempt.
-    pub fn answered_unattributed(&self) -> u64 {
-        self.answered_unattributed
     }
 
     /// The exported view of this run, for the scan's report.
@@ -666,37 +601,6 @@ fn format_window(window: Option<WindowSummary>) -> String {
 
 #[cfg(test)]
 mod tests {
-
-    /// The type was `pub` with no `pub` method and no `pub` field: a caller
-    /// could name it, could obtain one from `ProbePool`, and could do nothing
-    /// with it, while the module documentation argued at length that these
-    /// counters are what separates three failures a scan cannot otherwise tell
-    /// apart. This is that argument made reachable.
-    #[test]
-    fn a_caller_outside_the_engine_can_record_and_read_a_run() {
-        let mut audit = ProbeAudit::new();
-
-        audit.record_send(true);
-        audit.record_send(false);
-        audit.record_segment();
-        audit.record_off_target();
-        audit.record_reply_without_rtt();
-        audit.record_host_found(Some(2));
-        audit.record_host_found(None);
-
-        assert_eq!(audit.sends_attempted(), 2);
-        assert_eq!(audit.sends_failed(), 1, "the shortfall started at home");
-        assert_eq!(audit.segments_seen(), 1);
-        assert_eq!(audit.segments_off_target(), 1);
-        assert_eq!(audit.replies_without_rtt(), 1);
-        assert_eq!(audit.hosts_found(), 2);
-        assert_eq!(
-            audit.answered_on()[1],
-            1,
-            "one target answered its second ask"
-        );
-        assert_eq!(audit.answered_unattributed(), 1);
-    }
 
     /// The signal that separates a lost reply from a silent port.
     ///

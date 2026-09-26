@@ -14,7 +14,7 @@
 //! handshake to correlate against, so every probe in a scan leaves from one
 //! fixed source port and that port is the whole of the scan's identity on the
 //! wire. What makes an open port answer at all is the payload, which is
-//! [`payload`](crate::scanner::payload)'s business rather than this module's.
+//! `payload`'s business rather than this module's.
 
 use std::net::IpAddr;
 

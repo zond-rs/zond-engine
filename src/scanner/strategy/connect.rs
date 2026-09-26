@@ -20,7 +20,7 @@
 //! targets and classifies each port from a full connect handshake.
 //!
 //! Both draw their work in shuffled batches and cap their in-flight connections
-//! with a [`ProbePool`], and both record findings through the shared
+//! with a `ProbePool`, and both record findings through the shared
 //! [`ScanContext`] like every other strategy. What they draw differs with the
 //! phase: a sweep asks about an address and a port scan about an address paired
 //! with a port, which is the unit each of them settles.

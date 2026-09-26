@@ -280,7 +280,33 @@ impl UdpPortScanner {
         target_count: usize,
         src_port: u16,
     ) -> Self {
-        let tuning = ProbeTuning::default();
+        Self::with_transport_tuned(
+            resolver,
+            ctx,
+            transport,
+            target_count,
+            src_port,
+            ProbeTuning::default(),
+        )
+    }
+
+    /// [`with_transport`](Self::with_transport), paced and shaped by `tuning`
+    /// as [`new`](Self::new) would be: its retry schedule, its rate limits,
+    /// what the evasion profile does to each probe, and how far it identifies
+    /// what answers.
+    ///
+    /// Everything in `tuning` that decides how the transport is opened is the
+    /// caller's to have honoured already, since the transport arrives open.
+    /// That includes the profile's source port: `src_port` is the one the
+    /// transport's capture was built around, and it is the one probed from.
+    pub fn with_transport_tuned(
+        resolver: SourceResolver,
+        ctx: ScanContext,
+        transport: ProbeTransport,
+        target_count: usize,
+        src_port: u16,
+        tuning: ProbeTuning,
+    ) -> Self {
         Self {
             service_detection: tuning.service_detection,
             core: Self::core(resolver, ctx, transport, &tuning, src_port, target_count),

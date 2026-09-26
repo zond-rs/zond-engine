@@ -76,6 +76,7 @@ async fn liveness_then_ports(net: &FakeNet, probe: SweepProbe, scan_ports: &[u16
             TcpScanTechnique::Syn,
             net.transport(),
             targets.len(),
+            SCANNER_PORT,
         );
         run_port_scanner(&mut scanner, targets).await;
     }

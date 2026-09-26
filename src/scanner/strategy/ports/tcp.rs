@@ -41,7 +41,7 @@
 //! An ICMP error is correlated the same way, through the copy of the probe it
 //! quotes rather than through its own header - so an error relayed by a router
 //! still points at the host the probe was aimed at. See
-//! [`icmp_error`].
+//! `icmp_error`.
 
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
@@ -91,7 +91,7 @@ use crate::scanner::strategy::icmp_error::{self, Unreachable};
 /// acknowledgement answers, and a scanner that varies the value the reply echoes
 /// does not have that problem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TcpToken {
+pub(crate) struct TcpToken {
     nonce: u32,
 }
 
@@ -177,22 +177,20 @@ impl TcpPortScanner {
     /// Builds a scanner around an already-opened transport, so the caller
     /// decides how probes reach the wire and where replies come from.
     ///
-    /// Paired with a synthetic transport (`ProbeTransport::from_parts`, behind
-    /// the `test-support` feature) this is the seam that lets probe and reply
-    /// correlation be driven against a simulated network rather than a real
-    /// one, with no privileges and no interface.
-    ///
-    /// The source port is chosen here rather than passed in, unlike
-    /// [`UdpPortScanner::with_transport`](super::UdpPortScanner::with_transport):
-    /// a TCP reply is addressed back to whatever port the probe came from, so a
-    /// simulated network answers correctly without being told, where a
-    /// synthesized ICMP error has to be built around a port the test knows.
+    /// `src_port` must be the port the transport's capture filter was built
+    /// around, as [`ProbeKind::TcpProbe`]'s `reply_port` names it, since that
+    /// is what recognizes this scan's own replies. Paired with a synthetic
+    /// transport (`ProbeTransport::from_parts`, behind the `test-support`
+    /// feature) this is the seam that lets probe and reply correlation be
+    /// driven against a simulated network rather than a real one, with no
+    /// privileges and no interface.
     pub fn with_transport(
         resolver: SourceResolver,
         ctx: ScanContext,
         technique: TcpScanTechnique,
         transport: ProbeTransport,
         target_count: usize,
+        src_port: u16,
     ) -> Self {
         Self::with_transport_tuned(
             resolver,
@@ -200,28 +198,29 @@ impl TcpPortScanner {
             technique,
             transport,
             target_count,
+            src_port,
             ProbeTuning::default(),
         )
     }
 
     /// [`with_transport`](Self::with_transport), paced and shaped by `tuning`
     /// as [`new`](Self::new) would be: its retry schedule, its rate limits,
-    /// the evasion profile's source port and flags, and how far it identifies
-    /// what answers.
+    /// what the evasion profile does to each probe including the flag byte it
+    /// sends, and how far it identifies what answers.
     ///
     /// Everything in `tuning` that decides how the transport is opened is the
     /// caller's to have honoured already, since the transport arrives open.
+    /// That includes the profile's source port: `src_port` is the one the
+    /// transport's capture was built around, and it is the one probed from.
     pub fn with_transport_tuned(
         resolver: SourceResolver,
         ctx: ScanContext,
         technique: TcpScanTechnique,
         transport: ProbeTransport,
         target_count: usize,
+        src_port: u16,
         tuning: ProbeTuning,
     ) -> Self {
-        let src_port = tuning
-            .evasion
-            .source_port_or(rand::random_range(50_000..u16::MAX));
         Self::build(
             Self::core(resolver, ctx, transport, &tuning, src_port, target_count),
             technique,
@@ -1081,6 +1080,11 @@ mod tests {
     use crate::scanner::session::ScanSession;
     use crate::transport::probe::{MockSender, ProbeTransport};
 
+    /// The port a scanner under test probes from. A synthetic transport's
+    /// capture is built around no port at all, so any would do; a fixed one
+    /// keeps two runs of a test comparable.
+    const SRC_PORT: u16 = 54_321;
+
     const SYN: u8 = 1 << 1;
     const RST: u8 = 1 << 2;
     const PSH: u8 = 1 << 3;
@@ -1196,7 +1200,8 @@ mod tests {
         let sent = sender.sent.clone();
         let transport = ProbeTransport::from_parts(Box::new(sender), reply_rx);
         let resolver = SourceResolver::from_links(&[on_link_interface()]);
-        let scanner = TcpPortScanner::with_transport(resolver, ctx, technique, transport, 8);
+        let scanner =
+            TcpPortScanner::with_transport(resolver, ctx, technique, transport, 8, SRC_PORT);
         (scanner, session, sent)
     }
 
@@ -1322,8 +1327,14 @@ mod tests {
         let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
         let transport = ProbeTransport::from_parts(Box::new(RefusingSender), reply_rx);
         let resolver = SourceResolver::from_links(&[on_link_interface()]);
-        let mut scanner =
-            TcpPortScanner::with_transport(resolver, ctx, TcpScanTechnique::Syn, transport, 8);
+        let mut scanner = TcpPortScanner::with_transport(
+            resolver,
+            ctx,
+            TcpScanTechnique::Syn,
+            transport,
+            8,
+            SRC_PORT,
+        );
 
         scanner.send_probe(PlannedTarget::new(
             80,
@@ -1965,6 +1976,7 @@ mod tests {
             TcpScanTechnique::Syn,
             transport,
             8,
+            SRC_PORT,
         );
 
         let (targets, stream) = tokio::sync::mpsc::channel(32);
@@ -2058,6 +2070,7 @@ mod tests {
             TcpScanTechnique::Syn,
             transport,
             targets_total,
+            SRC_PORT,
         );
 
         let (targets, stream) = tokio::sync::mpsc::channel(targets_total);
@@ -2174,6 +2187,7 @@ mod tests {
             TcpScanTechnique::Syn,
             transport,
             targets_total,
+            SRC_PORT,
         );
         // A hundred probes a second: one a tick, a tick every ten milliseconds.
         scanner.core_mut().send_tick = Duration::from_millis(10);
@@ -2292,6 +2306,7 @@ mod tests {
             TcpScanTechnique::Syn,
             transport,
             8,
+            SRC_PORT,
         );
 
         // Twenty ports an address, one address after another, as a plan
@@ -2528,8 +2543,14 @@ mod tests {
         let sent = sender.sent.clone();
         let transport = ProbeTransport::from_parts(Box::new(sender), reply_rx);
         let resolver = SourceResolver::from_links(&[on_link_interface()]);
-        let mut scanner =
-            TcpPortScanner::with_transport(resolver, ctx, TcpScanTechnique::Syn, transport, 8);
+        let mut scanner = TcpPortScanner::with_transport(
+            resolver,
+            ctx,
+            TcpScanTechnique::Syn,
+            transport,
+            8,
+            SRC_PORT,
+        );
 
         let first = probe(&mut scanner, &sent, 80);
         super::super::retry_due(&mut scanner, Instant::now() + Duration::from_secs(1));
@@ -2781,6 +2802,7 @@ mod tests {
             TcpScanTechnique::Syn,
             transport,
             1,
+            SRC_PORT,
             tuning,
         );
 

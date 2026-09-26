@@ -93,12 +93,6 @@ where
         }
     }
 
-    /// The counters for this run, for a caller that records something the fold
-    /// cannot see - a probe admitted, say, which happens in the source loop.
-    pub fn audit(&mut self) -> &mut ProbeAudit {
-        &mut self.audit
-    }
-
     /// Takes the counters once the run is over.
     pub fn into_audit(self) -> ProbeAudit {
         self.audit

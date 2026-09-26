@@ -14,12 +14,12 @@
 //! four things becomes true. Only the packets and what they prove differ.
 //!
 //! Two pieces make up that machine, and the division between them is the point
-//! of the module. [`RawProbeScan`] is the state a raw port scan carries and the
-//! questions it can answer about itself. [`drive`] is the loop that asks them,
-//! and [`RawPortScan`] is the short list of things it cannot work out alone.
+//! of the module. `RawProbeScan` is the state a raw port scan carries and the
+//! questions it can answer about itself. `drive` is the loop that asks them,
+//! and `RawPortScan` is the short list of things it cannot work out alone.
 //!
-//! [`tcp`], [`udp`] and [`sctp`] each hold a [`RawProbeScan`] and implement
-//! [`RawPortScan`]. What stays with them is what is genuinely protocol
+//! [`tcp`], [`udp`] and [`sctp`] each hold a `RawProbeScan` and implement
+//! `RawPortScan`. What stays with them is what is genuinely protocol
 //! knowledge: how a probe is built, how a reply is recognised, what an answer
 //! proves about a port and its host, and what silence means once a probe has
 //! spent its budget. [`idle`] is the fourth and is not built this way, because
@@ -39,7 +39,7 @@
 //!
 //! Where two copies of the loop would differ, they differ in four expressions:
 //! which protocol to accept, what silence means, and two labels.
-//! [`RawPortScan`] is those four, written down.
+//! `RawPortScan` is those four, written down.
 //!
 //! ## Why the shared half is the half worth sharing
 //!
@@ -53,17 +53,23 @@
 //!
 //! ## Writing a fourth one
 //!
-//! Everything here is public because the argument above applies to a scanner
-//! this engine does not have. The SCTP INIT scan is built this way and needs
-//! nothing here that TCP and UDP do not, which is the evidence the line is in
-//! the right place; any other protocol needs the same stop conditions, the same
-//! congestion window and the same audit tail. Implementing [`RawPortScan`]
-//! gets all of it, and the only code to write is the part that is actually
-//! about the protocol.
+//! The SCTP INIT scan is built this way and needs nothing here that TCP and
+//! UDP do not, which is the evidence the line is in the right place; any other
+//! protocol needs the same stop conditions, the same congestion window and the
+//! same audit tail. Implementing `RawPortScan` gets all of it, and the only code
+//! to write is the part that is actually about the protocol.
+//!
+//! That holds inside this crate, and the machine is not public. Its state is
+//! the retry ledger, the adaptive deadline and the congestion window, and
+//! publishing it would make each of those a commitment in the shape it has
+//! today. A scanner written outside the crate implements
+//! [`PortScanner`], the contract every strategy here keeps.
+//! Opening the machine to one later is an addition; withdrawing it once open
+//! would be a break.
 
-// Public rather than private-with-re-exports. A caller writing a fifth scanner
-// has to be able to read the four that exist, and a module they cannot name is
-// a file they have to already know about.
+// Public as well as re-exported below, because each file's module
+// documentation is where what that protocol's probes prove is written down, and
+// a reader of a scanner should be able to reach it.
 pub mod idle;
 pub mod sctp;
 pub mod tcp;
@@ -72,8 +78,8 @@ pub mod udp;
 // And re-exported flat, because four scanners for one phase is exactly the case
 // where a caller wants them in one list.
 pub use idle::IdlePortScanner;
-pub use sctp::{SctpPortScanner, SctpToken};
-pub use tcp::{TcpPortScanner, TcpToken};
+pub use sctp::SctpPortScanner;
+pub use tcp::TcpPortScanner;
 pub use udp::UdpPortScanner;
 
 use std::net::IpAddr;
@@ -291,7 +297,7 @@ fn deadline_for(
 }
 
 /// A probe's identity within a scan: which address, which port.
-pub type ProbeTarget = (IpAddr, u16);
+pub(crate) type ProbeTarget = (IpAddr, u16);
 
 /// The state a raw port scan carries, and everything it does that does not
 /// depend on which protocol it speaks.
@@ -300,7 +306,7 @@ pub type ProbeTarget = (IpAddr, u16);
 /// whose type differs: a TCP probe carries a nonce that its answer must echo
 /// back, and a UDP probe has nothing to echo, so it correlates on the target
 /// alone and its token is `()`.
-pub struct RawProbeScan<T> {
+pub(crate) struct RawProbeScan<T> {
     /// Resolves the source address to send each target's probe from, consulting
     /// on-link subnets and the kernel routing table. Each answer is cached, so
     /// the many ports probed on one host cost a single lookup.
@@ -1232,13 +1238,13 @@ fn take_ready_from(
 /// the scan ends while it is still held. See
 /// [`resolve_held`](RawPortScan::resolve_held).
 ///
-/// Public because it names an argument of a public trait method, with private
-/// fields because nothing outside needs to read one: every scanner reaches the
-/// wire through [`RawPortScan::send`], and the defaulted methods above it are
-/// what turn a held probe back into that call. A position a caller could write
-/// is a resume told a target was covered by a probe that never went out.
+/// Its fields are private because nothing outside this module needs to read
+/// one: every scanner reaches the wire through [`RawPortScan::send`], and the
+/// defaulted methods above it are what turn a held probe back into that call.
+/// A position a caller could write is a resume told a target was covered by a
+/// probe that never went out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HeldProbe {
+pub(crate) struct HeldProbe {
     /// The address to probe.
     ip: IpAddr,
     /// The port to probe.
@@ -1285,7 +1291,7 @@ impl PartialOrd for HeldProbe {
 /// a RST and an ICMP port unreachable prove genuinely different things, while
 /// the machinery that decides when to stop asking does not know the difference
 /// and should not have to.
-pub trait RawPortScan: PortScanner {
+pub(crate) trait RawPortScan: PortScanner {
     /// The per-probe correlation token. A TCP probe carries a nonce its answer
     /// must echo; a UDP probe has nothing to echo and uses `()`.
     type Token: Copy + PartialEq;
@@ -1747,7 +1753,7 @@ fn read_waiting_replies<S: RawPortScan>(scanner: &mut S) {
 
 /// How a run names itself in the audit and in its own failure messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AuditLabels {
+pub(crate) struct AuditLabels {
     /// The tag the audit line is filed under, such as `"tcp-port"`.
     pub tag: &'static str,
     /// How a port that nothing answered for is described, such as
@@ -1784,7 +1790,10 @@ pub struct AuditLabels {
 /// is the one shortfall a reader cannot see, or filing a probe whose answer
 /// was still on its way as silence. See [`RawPortScan::resolve_remaining`] and
 /// [`RawPortScan::resolve_unasked`].
-pub async fn drive<S: RawPortScan>(scanner: &mut S, mut targets: mpsc::Receiver<PlannedTarget>) {
+pub(crate) async fn drive<S: RawPortScan>(
+    scanner: &mut S,
+    mut targets: mpsc::Receiver<PlannedTarget>,
+) {
     // The rate backstop. What paces the scan is `RawProbeScan::window`, which
     // the batch loop below re-checks after every send; this bounds how fast a
     // window's worth of probes may be released, so a defect in the controller

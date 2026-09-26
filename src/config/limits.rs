@@ -17,7 +17,7 @@
 //!
 //! Only the connect paths need constants at all. A raw scanner measures the
 //! round trips it is getting and sizes its own patience from them, through
-//! [`AdaptiveDeadline`](crate::scanner::pacing::deadline::AdaptiveDeadline). A
+//! `AdaptiveDeadline`. A
 //! connect probe cannot: it sends one SYN, the kernel owns the retransmission,
 //! and the scanner never sees a round trip it could learn from. Its numbers come
 //! from what the protocol guarantees instead, and each one below says which

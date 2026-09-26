@@ -61,6 +61,7 @@ async fn syn_scan(
         TcpScanTechnique::Syn,
         net.transport(),
         ports.len(),
+        SCANNER_PORT,
     );
 
     before_run(&session);
@@ -483,6 +484,7 @@ async fn a_probe_outstanding_at_the_stop_is_asked_again() {
         TcpScanTechnique::Syn,
         net.transport(),
         ports.len(),
+        SCANNER_PORT,
     );
 
     let targets: Vec<_> = ports.iter().map(|&port| tcp(TARGET, port)).collect();

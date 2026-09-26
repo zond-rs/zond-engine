@@ -3368,7 +3368,7 @@ pub enum ScannerKind {
     Resolver,
 }
 
-/// What a [`CongestionWindow`](crate::scanner::pacing::congestion::CongestionWindow) did over one run.
+/// What a `CongestionWindow` did over one run.
 ///
 /// Instrumentation rather than telemetry: it says whether pacing engaged and how
 /// hard, which is the difference between "this host is firewalled" and "this

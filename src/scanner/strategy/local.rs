@@ -16,7 +16,7 @@
 //! The two probes are repeated on different terms, because they ask different
 //! questions. An ARP request is put to one address, answered once, and retired
 //! by that answer, so it is retransmitted through the shared
-//! [`ProbeLedger`] like every other
+//! `ProbeLedger` like every other
 //! probe in the engine. The solicitation is put to the whole segment and
 //! answered by whoever is listening, so it is simply repeated a few times and
 //! given a window to be answered in.
@@ -440,8 +440,8 @@ enum Dispatched {
 ///
 /// Frames are built and read directly rather than through this host's IP
 /// stack, so a run takes root and reaches only the segment its [`Link`] is
-/// attached to. What a given reply proves is left to the [`DiscoveryProtocol`]
-/// implementations in [`frames`], and [`Scope`] decides whether a run probes
+/// attached to. What a given reply proves is left to the `DiscoveryProtocol`
+/// implementations in `frames`, and [`Scope`] decides whether a run probes
 /// the whole segment or only the addresses it was handed.
 pub struct LocalScanner {
     /// Shared state (host store, event channel, abort signal) for the scan

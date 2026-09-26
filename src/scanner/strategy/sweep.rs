@@ -226,6 +226,7 @@ impl<T: Copy + PartialEq> HostSweep<T> {
 
     /// Records that `target` answered, reporting whether this sweep had heard
     /// from it before.
+    #[cfg(test)]
     pub fn note_answered(&mut self, target: IpAddr) -> bool {
         self.responded.insert(target)
     }

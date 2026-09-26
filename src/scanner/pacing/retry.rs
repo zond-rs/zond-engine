@@ -227,6 +227,7 @@ impl RetryPolicy {
     /// Not a disabled feature but a working configuration: it is what an
     /// address-space-scale sweep wants, where per-probe state cannot be
     /// afforded and coverage is bought with a second pass instead.
+    #[cfg(test)]
     pub const fn none() -> Self {
         Self::new(
             1,
@@ -310,6 +311,7 @@ impl RetryPolicy {
     /// This is what a scan's own deadline has to accommodate. A hard budget
     /// shorter than this expires the scan between one attempt and the next, so
     /// probes are written off as unanswered having never been fully asked.
+    #[cfg(test)]
     pub fn worst_case_probe_lifetime(&self) -> Duration {
         let mut total = Duration::ZERO;
         for attempt in 1..=self.max_attempts {
@@ -323,7 +325,7 @@ impl RetryPolicy {
     /// as far as the jitter reaches.
     ///
     /// Longer than the first timeout of
-    /// [`worst_case_probe_lifetime`](Self::worst_case_probe_lifetime), which
+    /// `worst_case_probe_lifetime`, which
     /// assumes nothing has been measured. Measurement moves a host's timeout
     /// either way, and a host measured slow is timed at up to this on every
     /// attempt, the first included.
@@ -1059,7 +1061,7 @@ where
     /// [`congestion`](super::congestion).
     ///
     /// Not "has a round trip", which
-    /// [`host_rtt`](Self::host_rtt) answers: a reply that could not be
+    /// `host_rtt` answers: a reply that could not be
     /// attributed to an attempt still proves the host is talking, and a host
     /// whose every reply arrived ambiguously would otherwise look silent.
     pub fn host_has_answered(&self, host: &IpAddr) -> bool {
@@ -1067,6 +1069,7 @@ where
     }
 
     /// The smoothed round trip observed for `host`, if it has answered.
+    #[cfg(test)]
     pub fn host_rtt(&self, host: &IpAddr) -> Option<Duration> {
         self.hosts.get(host)?.estimator.smoothed
     }

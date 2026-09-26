@@ -138,6 +138,7 @@ async fn syn_scan(accepted: usize) -> (ScanSession, ScanContext) {
         TcpScanTechnique::Syn,
         behind_a_dead_neighbour(&net, accepted),
         targets.len(),
+        SCANNER_PORT,
     );
     run_port_scanner(&mut scanner, targets).await;
     (session, observer)
@@ -271,6 +272,7 @@ async fn a_refused_retry_is_not_reported_as_an_unasked_port() {
         TcpScanTechnique::Syn,
         transport,
         targets.len(),
+        SCANNER_PORT,
     );
     run_port_scanner(&mut scanner, targets).await;
 

@@ -29,26 +29,18 @@
 //! survives a switch, whether a low hop limit draws the error it is meant to,
 //! all belong to Tier 3.
 //!
-//! Two things are out of reach entirely:
-//!
-//! - [`EvasionProfile::flags`] reaches a TCP scan through a private field that
-//!   only [`TcpPortScanner::new`] sets, and that constructor opens its own
-//!   transport. `with_transport` hard-codes it off, so no test outside the
-//!   crate can send an arbitrary flag byte. The unit tests in
-//!   `scanner::strategy::routed::port_scan` reach it by setting the field
-//!   directly.
-//! - The idle scan reads a zombie's IP-ID counter, which lives in the IP header
-//!   the capture strips before a segment reaches here. `IdlePortScanner` has no
-//!   `with_transport` either.
+//! The idle scan is out of reach entirely: it reads a zombie's IP-ID counter,
+//! which lives in the IP header the capture strips before a segment reaches
+//! here, and `IdlePortScanner` has no `with_transport` either.
 //!
 //! ## How a profile gets into a scanner
 //!
-//! No `with_transport` constructor takes an [`EvasionProfile`]. What
-//! `TcpPortScanner::new` does with one is set four fields on the shared
-//! [`RawProbeScan`](zond_engine::scanner::strategy::ports::RawProbeScan) core,
-//! and those fields are public, so [`shaped`] does the same thing to a scanner
-//! built over a simulated transport. The step this does not cover is
-//! `new` itself reading `tuning.evasion`, which needs a real socket.
+//! Through `with_transport_tuned`, which applies a [`ProbeTuning`]'s profile to
+//! a scanner built over a transport it did not open, exactly as `new` applies
+//! it to one it did. The source port is the exception, and a constructor
+//! argument: a transport arrives open, and the port its capture was built
+//! around is the one a scan probes from. The step this does not cover is `new`
+//! itself reading `tuning.evasion`, which needs a real socket.
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::ops::Range;
@@ -58,13 +50,14 @@ use crate::support::*;
 use pnet_packet::Packet;
 use pnet_packet::tcp::TcpPacket;
 use pnet_packet::udp::UdpPacket;
+use zond_engine::config::ProbeTuning;
 use zond_engine::evasion::EvasionProfile;
 use zond_engine::model::mac::MacAddr;
 use zond_engine::model::port::PortState;
 use zond_engine::model::technique::TcpScanTechnique;
 use zond_engine::protocols::ip::HOP_LIMIT_ROUTED;
 use zond_engine::scanner::session::ScanSession;
-use zond_engine::scanner::strategy::ports::{RawPortScan, TcpPortScanner, UdpPortScanner};
+use zond_engine::scanner::strategy::ports::{TcpPortScanner, UdpPortScanner};
 use zond_engine::transport::probe::SendMode;
 
 /// The source port both protocols probe from where a test is not asserting on
@@ -80,16 +73,11 @@ const DNS_PORT: u16 = 53;
 /// How many bytes of padding the padding tests ask for.
 const PADDING: u16 = 16;
 
-/// Applies `profile` to a scanner built over a simulated transport, setting the
-/// same four fields `TcpPortScanner::new` sets from `tuning.evasion`.
-///
-/// `flags` is the fifth and cannot be reached from here; see the module note.
-fn shaped<S: RawPortScan>(scanner: &mut S, profile: &EvasionProfile) {
-    let core = scanner.core_mut();
-    core.src_port = profile.source_port_or(core.src_port);
-    core.emission = profile.emission();
-    core.shaping = profile.segment_shaping();
-    core.decoys = profile.decoys.clone();
+/// The tuning a scanner runs under when all it is asked to do is `profile`.
+fn tuned(profile: &EvasionProfile) -> ProbeTuning {
+    let mut tuning = ProbeTuning::default();
+    tuning.evasion = profile.clone();
+    tuning
 }
 
 /// Runs a SYN scan of [`TARGET`] over the given ports under `profile`, with the
@@ -101,15 +89,15 @@ async fn syn_scan(profile: &EvasionProfile, ports: &[(u16, Policy)]) -> (ScanSes
     }
 
     let (session, ctx) = ScanSession::new();
-    let mut scanner = TcpPortScanner::with_transport(
+    let mut scanner = TcpPortScanner::with_transport_tuned(
         scanner_resolver(),
         ctx,
         TcpScanTechnique::Syn,
         net.transport(),
         ports.len(),
+        profile.source_port_or(PINNED_SRC_PORT),
+        tuned(profile),
     );
-    scanner.core_mut().src_port = PINNED_SRC_PORT;
-    shaped(&mut scanner, profile);
 
     let targets = ports.iter().map(|(port, _)| tcp(TARGET, *port)).collect();
     run_port_scanner(&mut scanner, targets).await;
@@ -117,8 +105,7 @@ async fn syn_scan(profile: &EvasionProfile, ports: &[(u16, Policy)]) -> (ScanSes
     (session, net)
 }
 
-/// The UDP counterpart. The source port is a constructor argument here, because
-/// a synthesized ICMP error has to be built around a port the test knows.
+/// The UDP counterpart.
 async fn udp_scan(profile: &EvasionProfile, ports: &[(u16, Policy)]) -> (ScanSession, FakeNet) {
     let mut net = FakeNet::new(Layer4::Udp);
     for (port, policy) in ports {
@@ -126,14 +113,14 @@ async fn udp_scan(profile: &EvasionProfile, ports: &[(u16, Policy)]) -> (ScanSes
     }
 
     let (session, ctx) = ScanSession::new();
-    let mut scanner = UdpPortScanner::with_transport(
+    let mut scanner = UdpPortScanner::with_transport_tuned(
         scanner_resolver(),
         ctx,
         net.transport(),
         ports.len(),
         profile.source_port_or(PINNED_SRC_PORT),
+        tuned(profile),
     );
-    shaped(&mut scanner, profile);
 
     let targets = ports.iter().map(|(port, _)| udp(TARGET, *port)).collect();
     run_port_scanner(&mut scanner, targets).await;
@@ -591,11 +578,8 @@ async fn syn_scan_without_a_profile(ports: &[(u16, Policy)]) -> (ScanSession, Fa
         TcpScanTechnique::Syn,
         net.transport(),
         ports.len(),
+        PINNED_SRC_PORT,
     );
-    // The one thing pinned rather than left alone: an unpinned TCP scan draws a
-    // random source port per run, and two runs have to agree on it before their
-    // segments can be compared.
-    scanner.core_mut().src_port = PINNED_SRC_PORT;
 
     let targets = ports.iter().map(|(port, _)| tcp(TARGET, *port)).collect();
     run_port_scanner(&mut scanner, targets).await;

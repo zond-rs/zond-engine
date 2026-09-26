@@ -130,7 +130,7 @@ fn expected_levels<T: Copy>(
 /// How much effort a scan spends before accepting silence as an answer.
 ///
 /// Every probing path has its own tuned
-/// [`RetryPolicy`](crate::scanner::pacing::retry::RetryPolicy), set against what its
+/// `RetryPolicy`, set against what its
 /// protocol actually requires - a SYN is answered as fast as the path allows, an
 /// ICMP error only as fast as the host is permitted to send one. This scales
 /// that starting point rather than replacing it, so choosing "fast" does not
@@ -1335,7 +1335,7 @@ pub struct ZondConfig {
     /// It is a ceiling on a TCP port scan rather than its pace. That scan
     /// discovers how fast each target will answer and settles there, which is
     /// almost always well below any rate worth configuring; see
-    /// [`congestion`](crate::scanner::pacing::congestion). Setting this lowers
+    /// `congestion`. Setting this lowers
     /// the ceiling the window may reach and is the right knob for a target that
     /// must not be pushed at all, but on an ordinary scan it will not be what
     /// decides the pace. The discovery sweep and the UDP port scan *are* paced

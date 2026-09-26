@@ -20,7 +20,7 @@
 //! [`plan`](crate::scanner::plan) from this host's own routing table.
 //!
 //! Raw sockets, so root. What a probe is built from and how it reaches the wire
-//! is [`raw`](super::raw), shared with every other strategy that opens one.
+//! is `raw`, shared with every other strategy that opens one.
 
 use std::num::NonZeroU32;
 use std::{
@@ -437,7 +437,7 @@ impl SweepProbe {
 /// probe kind, so the two grow together.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SweepToken {
+pub(crate) enum SweepToken {
     /// A SYN's sequence number and source port. See [`SynToken`].
     Syn(SynToken),
     /// An INIT's Initiate Tag, which RFC 4960 §3.3.2 obliges a peer to echo in

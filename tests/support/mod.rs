@@ -343,6 +343,11 @@ pub const SCANNER_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x5
 /// an ICMPv6 neighbour must address its reply to.
 pub const SCANNER_LINK_LOCAL: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50);
 
+/// The port a simulated raw port scan probes from, where a test does not care
+/// which. The simulated network answers whatever port a probe came from, so
+/// any would do; a fixed one keeps two runs of a test comparable.
+pub const SCANNER_PORT: u16 = 54_321;
+
 /// The target every simulated scan is pointed at, on-link with the addresses
 /// above so a source always resolves.
 pub const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200));

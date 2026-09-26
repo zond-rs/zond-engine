@@ -66,6 +66,7 @@ async fn tcp_scan_on(
         technique,
         net.transport(),
         ports.len(),
+        SCANNER_PORT,
     );
     let targets = ports.iter().map(|(port, _)| tcp(TARGET, *port)).collect();
     run_port_scanner(&mut scanner, targets).await;
@@ -96,6 +97,7 @@ async fn syn_scan_on(target: std::net::IpAddr, ports: &[(u16, Policy)]) -> (Scan
         TcpScanTechnique::Syn,
         net.transport(),
         ports.len(),
+        SCANNER_PORT,
     );
     let targets = ports.iter().map(|(port, _)| tcp(target, *port)).collect();
     run_port_scanner(&mut scanner, targets).await;

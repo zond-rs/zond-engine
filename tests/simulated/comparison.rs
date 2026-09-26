@@ -162,6 +162,7 @@ async fn scan_segment(net: &FakeNet, swept: &[IpAddr], ports: &str) -> ScanRepor
         TcpScanTechnique::Syn,
         net.transport(),
         endpoints.len().max(1),
+        SCANNER_PORT,
     );
     run_port_scanner(&mut scanner, endpoints).await;
 

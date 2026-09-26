@@ -16,10 +16,9 @@
 //! as, which is indistinguishable from a firewall.
 //!
 //! So these tests assert on the outcome rather than on the controller. The unit
-//! tests beside
-//! [`CongestionWindow`](zond_engine::scanner::pacing::congestion::CongestionWindow)
-//! say what it does; these say that whatever it does, every port the scan was
-//! given leaves with the answer it earned.
+//! tests beside the engine's own `CongestionWindow` say what it does; these say
+//! that whatever it does, every port the scan was given leaves with the answer
+//! it earned.
 //!
 //! Each scan here is deliberately wider than the window starts, so admission
 //! control is exercised rather than skipped.
@@ -63,6 +62,7 @@ async fn wide_syn_scan(policy: Policy) -> Vec<PortState> {
         TcpScanTechnique::Syn,
         net.transport(),
         ports.len(),
+        SCANNER_PORT,
     );
 
     let targets = ports.iter().map(|&port| tcp(TARGET, port)).collect();
@@ -163,6 +163,7 @@ async fn a_host_that_talks_and_drops_is_recognised_as_being_outrun() {
         TcpScanTechnique::Syn,
         net.transport(),
         ports.len(),
+        SCANNER_PORT,
     );
     let targets = ports.iter().map(|&port| tcp(TARGET, port)).collect();
     run_port_scanner(&mut scanner, targets).await;
@@ -221,6 +222,7 @@ async fn wide_fin_scan(policy: impl Fn(usize) -> Policy) -> (Vec<PortState>, Win
         TcpScanTechnique::Fin,
         net.transport(),
         ports.len(),
+        SCANNER_PORT,
     );
     let targets = ports.iter().map(|&port| tcp(TARGET, port)).collect();
     run_port_scanner(&mut scanner, targets).await;
@@ -376,6 +378,7 @@ async fn a_scan_spaced_at_one_host_still_answers_every_port_and_takes_the_time()
         TcpScanTechnique::Syn,
         net.transport(),
         ports.len(),
+        SCANNER_PORT,
     );
 
     let targets = ports.iter().map(|&port| tcp(TARGET, port)).collect();
@@ -440,6 +443,7 @@ async fn probes_still_held_when_a_scan_stops_are_recorded_as_never_asked() {
         TcpScanTechnique::Syn,
         net.transport(),
         ports.len(),
+        SCANNER_PORT,
     );
 
     let targets = ports.iter().map(|&port| tcp(TARGET, port)).collect();
@@ -498,6 +502,7 @@ async fn the_longest_gap_asks_a_host_once_and_leaves_the_rest_unasked() {
         TcpScanTechnique::Syn,
         net.transport(),
         ports.len(),
+        SCANNER_PORT,
     );
 
     let targets = ports.iter().map(|&port| tcp(TARGET, port)).collect();
@@ -552,6 +557,7 @@ async fn a_spaced_scan_whose_answers_come_late_settles_every_port() {
         TcpScanTechnique::Syn,
         net.transport(),
         ports.len(),
+        SCANNER_PORT,
     );
 
     let targets = ports.iter().map(|&port| tcp(TARGET, port)).collect();
@@ -607,6 +613,7 @@ async fn a_probe_awaiting_its_answer_when_the_scan_stops_reads_unasked() {
         TcpScanTechnique::Syn,
         net.transport(),
         ports.len(),
+        SCANNER_PORT,
     );
 
     let targets = ports.iter().map(|&port| tcp(TARGET, port)).collect();
@@ -671,6 +678,7 @@ async fn a_scan_held_to_a_rate_ceiling_asks_every_port_and_takes_the_time() {
         TcpScanTechnique::Syn,
         net.transport(),
         ports.len(),
+        SCANNER_PORT,
         tuning,
     );
 
