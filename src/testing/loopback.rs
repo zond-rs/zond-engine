@@ -497,9 +497,17 @@ impl SilentPort {
 /// the check [`recv_from_this_process`] makes, made in time for a peer that
 /// is only read once the pass has returned. Any other process's datagram is
 /// read and dropped.
+///
+/// Dropping it stops the thread and closes the port before the drop returns,
+/// so a test run holding many of them one after another holds one descriptor
+/// at a time rather than one for every port it ever opened, which a run under
+/// a low descriptor limit would run out of.
 pub(crate) struct SilentUdpPort {
     addr: SocketAddr,
     heard: Arc<(Mutex<Heard>, Condvar)>,
+    /// Set by the drop, and read by the thread after every datagram.
+    stopping: Arc<std::sync::atomic::AtomicBool>,
+    reader: Option<std::thread::JoinHandle<()>>,
 }
 
 /// What a [`SilentUdpPort`] has kept.
@@ -532,16 +540,25 @@ impl SilentUdpPort {
         let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("binds loopback");
         let addr = socket.local_addr().expect("a local address");
         let heard = Arc::new((Mutex::new(Heard::default()), Condvar::new()));
-        let log = Arc::clone(&heard);
-        std::thread::spawn(move || {
+        let stopping = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (log, stop) = (Arc::clone(&heard), Arc::clone(&stopping));
+        let reader = std::thread::spawn(move || {
             let mut buffer = [0u8; 65_535];
             while let Ok((len, from)) = recv_from_this_process_blocking(&socket, &mut buffer) {
+                if stop.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
                 let mut heard = log.0.lock().unwrap();
                 heard.datagrams.push((from, buffer[..len].to_vec()));
                 log.1.notify_all();
             }
         });
-        Self { addr, heard }
+        Self {
+            addr,
+            heard,
+            stopping,
+            reader: Some(reader),
+        }
     }
 
     /// Where it listens.
@@ -595,6 +612,26 @@ impl SilentUdpPort {
         })
         .await
         .expect("the wait does not panic");
+    }
+}
+
+impl Drop for SilentUdpPort {
+    /// Stops the thread and closes the port. The thread waits in a read, and a
+    /// datagram is what ends a read on every platform, so one is sent from a
+    /// socket held until the thread has read it and returned, which is also
+    /// what the thread asks of a datagram before it reads one as this
+    /// process's.
+    fn drop(&mut self) {
+        self.stopping
+            .store(true, std::sync::atomic::Ordering::Release);
+        let Some(reader) = self.reader.take() else {
+            return;
+        };
+        if let Ok(waker) = std::net::UdpSocket::bind("127.0.0.1:0")
+            && waker.send_to(&[], self.addr).is_ok()
+        {
+            let _ = reader.join();
+        }
     }
 }
 
@@ -736,6 +773,26 @@ impl HeldTcpPort {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A silent port stops reading and lets go of its port when dropped.**
+    /// Its thread held the socket until the test process exited, and a run
+    /// under a descriptor limit of 256 that opened one per test would have run
+    /// out.
+    #[test]
+    fn a_silent_udp_port_lets_go_of_its_port_when_dropped() {
+        let silent = SilentUdpPort::open();
+        let addr = silent.addr();
+        assert!(
+            std::net::UdpSocket::bind(addr).is_err(),
+            "the port is held while it is open"
+        );
+
+        drop(silent);
+        assert!(
+            std::net::UdpSocket::bind(addr).is_ok(),
+            "the port was still held after the drop"
+        );
+    }
 
     /// **A closed UDP port refuses a datagram for as long as it is held, and
     /// no other socket can take it meanwhile.** What a test probing it
