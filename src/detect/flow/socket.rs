@@ -282,6 +282,7 @@ impl Probe for SocketProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scanner::loopback::from_this_process;
     use std::time::Duration;
 
     /// A budget with the ceilings this file is about, and nothing spent on the
@@ -333,7 +334,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
-            if let Ok((mut sock, _)) = listener.accept() {
+            if let Some(mut sock) = from_this_process(&listener).next() {
                 let _ = sock.read(&mut [0u8; 64]);
                 let _ = sock.write_all(&vec![b'A'; 4096]);
             }
@@ -357,7 +358,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
             // Answer the one connection the budget permits, and no more.
-            if let Ok((mut sock, _)) = listener.accept() {
+            if let Some(mut sock) = from_this_process(&listener).next() {
                 let _ = sock.write_all(b"ok");
             }
         });
@@ -408,8 +409,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
-            for sock in listener.incoming().take(3) {
-                let Ok(mut sock) = sock else { return };
+            for mut sock in from_this_process(&listener).take(3) {
                 std::thread::spawn(move || {
                     let _ = sock.read(&mut [0u8; 512]);
                     let _ = sock
@@ -421,9 +421,9 @@ mod tests {
             }
         });
 
-        let budget_ms = 1_500;
-        let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, budget_ms, 3));
-        let started = Instant::now();
+        // A reply taken as whole ended where its length said: the server never
+        // closes, and one ended by the port going quiet is not whole.
+        let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, 1_500, 3));
         for path in ["/a", "/b", "/c"] {
             let request = format!("GET {path} HTTP/1.1\r\nConnection: close\r\n\r\n");
             let reply = probe.speak(request.as_bytes());
@@ -439,11 +439,6 @@ mod tests {
                 "{path}'s reply was whole but not taken as such"
             );
         }
-        assert!(
-            started.elapsed() < Duration::from_millis(budget_ms / 2),
-            "three exchanges with an idle server took {:?}",
-            started.elapsed()
-        );
     }
 
     /// A service that answers and then keeps the connection open for the next
@@ -459,8 +454,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
-            for sock in listener.incoming().take(2) {
-                let Ok(mut sock) = sock else { return };
+            for mut sock in from_this_process(&listener).take(2) {
                 std::thread::spawn(move || {
                     let _ = sock.read(&mut [0u8; 512]);
                     let _ = sock.write_all(b"+PONG\r\n");
@@ -494,20 +488,24 @@ mod tests {
     fn a_reply_named_end_waits_through_a_pause_the_idle_gap_would_end_it_at() {
         use std::io::{Read as _, Write as _};
 
+        // Twice the idle gap the untold probe allows a port that answered at
+        // once, a quarter of its budget, and half the told probe's budget, so
+        // each side has a pause's margin whatever the machine's load.
+        const PAUSE: Duration = Duration::from_millis(3_000);
+
         // Two connections: one probe told where its reply ends, one not. Each
         // gets a fresh listener slot so the pause is the port's, not a queue.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
-            for sock in listener.incoming().take(2) {
-                let Ok(mut sock) = sock else { return };
+            for mut sock in from_this_process(&listener).take(2) {
                 std::thread::spawn(move || {
                     // Greet at once, as an FTP server does.
                     let _ = sock.write_all(b"220 service ready\r\n");
                     let _ = sock.read(&mut [0u8; 512]);
                     // Hold the verdict past the idle gap, as a failed login is
                     // held, then answer and close.
-                    std::thread::sleep(Duration::from_millis(1_100));
+                    std::thread::sleep(PAUSE);
                     let _ = sock.write_all(b"230 logged in\r\n");
                 });
             }
@@ -515,7 +513,7 @@ mod tests {
 
         // Told where the reply ends: the read waits through the pause and the
         // verdict line arrives.
-        let mut told = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, 3_000, 1));
+        let mut told = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, 6_000, 1));
         told.reads_until(Some("(?m)^230[ -]"));
         let reply = told.speak(b"USER anonymous\r\n").unwrap_or_default();
         assert!(
@@ -526,7 +524,7 @@ mod tests {
 
         // Not told: the idle gap ends the reply at the greeting, before the
         // verdict, which is the shortfall the named end exists to close.
-        let mut untold = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, 3_000, 1));
+        let mut untold = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, 6_000, 1));
         let greeting = untold.speak(b"USER anonymous\r\n").unwrap_or_default();
         assert!(
             !String::from_utf8_lossy(&greeting).contains("230"),
@@ -613,7 +611,7 @@ mod tests {
             // Answers the one connection and closes it, then stops listening.
             // The request is read first, so the close is a clean one rather
             // than a reset over unread bytes.
-            if let Ok((mut sock, _)) = listener.accept() {
+            if let Some(mut sock) = from_this_process(&listener).next() {
                 let _ = sock.read(&mut [0u8; 16]);
                 let _ = sock.write_all(b"ok");
             }
@@ -644,7 +642,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
-            if let Ok((mut sock, _)) = listener.accept() {
+            if let Some(mut sock) = from_this_process(&listener).next() {
                 // Takes the request and answers nothing until the client leaves.
                 let _ = sock.read(&mut [0u8; 512]);
                 let _ = sock.read(&mut [0u8; 1]);
