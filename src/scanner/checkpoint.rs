@@ -73,6 +73,11 @@ pub const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs
 pub struct Checkpointing {
     done: tokio::sync::oneshot::Sender<Vec<ScanPhase>>,
     task: tokio::task::JoinHandle<()>,
+    /// How many checkpoints the writer has written, for a test to wait on
+    /// one rather than on the timer that is due to start it; see
+    /// [`checkpointed`](Self::checkpointed).
+    #[cfg(test)]
+    written: tokio::sync::watch::Receiver<usize>,
 }
 
 impl Checkpointing {
@@ -95,11 +100,32 @@ impl Checkpointing {
         self.task.abort();
         let _ = self.task.await;
     }
+
+    /// Waits until the writer has written a checkpoint this has not already
+    /// waited for, and has the journal back from the thread that wrote it.
+    ///
+    /// For a test that needs a checkpoint on disk before it goes on. A sleep
+    /// past [`CHECKPOINT_EVERY`] is a guess at when the write ends: the timer
+    /// starts only once the task is first polled, and the write runs on the
+    /// blocking pool for as long as the machine makes it take, so a loaded
+    /// machine outlasts any margin, and a kill that lands mid-write leaves the
+    /// journal locked by a write still running. Past this, a kill leaves
+    /// exactly what that checkpoint wrote, the next being a whole interval
+    /// away.
+    #[cfg(test)]
+    pub(crate) async fn checkpointed(&mut self) {
+        self.written
+            .changed()
+            .await
+            .expect("the writer is still running");
+    }
 }
 
 /// Starts checkpointing `journal` from `ctx`'s progress until told to stop.
 pub fn spawn_checkpoints(journal: Journal, ctx: ScanProgress) -> Checkpointing {
     let (done, mut stop) = tokio::sync::oneshot::channel::<Vec<ScanPhase>>();
+    #[cfg(test)]
+    let (counted, written) = tokio::sync::watch::channel(0usize);
 
     let task = tokio::spawn(async move {
         let mut writer = Writer::new(journal);
@@ -117,6 +143,8 @@ pub fn spawn_checkpoints(journal: Journal, ctx: ScanProgress) -> Checkpointing {
                         return;
                     };
                     writer = returned;
+                    #[cfg(test)]
+                    counted.send_modify(|count| *count += 1);
                 }
                 // A dropped signal is a task nobody joined: there are no phases
                 // to record, and what has been settled so far still is.
@@ -130,7 +158,12 @@ pub fn spawn_checkpoints(journal: Journal, ctx: ScanProgress) -> Checkpointing {
         .await;
     });
 
-    Checkpointing { done, task }
+    Checkpointing {
+        done,
+        task,
+        #[cfg(test)]
+        written,
+    }
 }
 
 /// The journal a checkpoint task writes, and whether its last checkpoint

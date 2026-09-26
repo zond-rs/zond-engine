@@ -2464,7 +2464,8 @@ mod tests {
     }
 
     /// Identifies each of `silent` at once in `crowd`, each in the others'
-    /// company, and hands back how many connections each took.
+    /// company, and hands back how many connections each took from this
+    /// process; see [`SilentPort::connections_told`].
     async fn identified_together(crowd: &Crowd, silent: &[SilentPort; 3]) -> [usize; 3] {
         let one = |port: &SilentPort| {
             let addr = port.addr();
@@ -2491,7 +2492,7 @@ mod tests {
                 .all(|found| found.responses.is_empty() && found.ran_out_waiting),
             "every port says nothing"
         );
-        silent.each_ref().map(SilentPort::connections)
+        silent.each_ref().map(SilentPort::connections_told)
     }
 
     /// A host whose ports stay silent when asked again alone is asked again
@@ -2504,6 +2505,11 @@ mod tests {
     /// row, one connection open at a time, which is a scan that looks hung
     /// for the better part of an hour. The first silence alone refutes the
     /// queue the second asking is for.
+    ///
+    /// Counted by the connections each port can tell for this process's: a
+    /// connect scan of loopback by anything else on the machine reaches these
+    /// ports too, and a connection it has closed by the time the port takes
+    /// it reads as an asking nobody made.
     #[tokio::test]
     async fn a_host_silent_when_asked_again_alone_is_not_asked_again_port_by_port() {
         let silent = [SilentPort::open(), SilentPort::open(), SilentPort::open()];
@@ -2519,7 +2525,7 @@ mod tests {
         let again: Vec<usize> = silent
             .iter()
             .zip(first)
-            .map(|(port, first)| port.connections() - first)
+            .map(|(port, first)| port.connections_told() - first)
             .collect();
         let asked_again = again.iter().filter(|&&taken| taken > 0).count();
         assert_eq!(

@@ -290,6 +290,9 @@ struct Connection {
     sent: Vec<u8>,
     /// Whether it has been read to its close.
     closed: bool,
+    /// Whether it was told for this process's by its far end, which it was
+    /// unless that end had hung up by the time the port took it.
+    told: bool,
 }
 
 /// How long [`SilentPort::heard`] waits for the connections before it to
@@ -355,6 +358,7 @@ impl SilentPort {
                         from,
                         sent: ended.unwrap_or_default(),
                         closed,
+                        told: !closed,
                     });
                     log.1.notify_all();
                     connections.len() - 1
@@ -398,13 +402,16 @@ impl SilentPort {
     /// A connection closed before the port took it is not this process's by
     /// then, and goes unheard; see the [module](self) docs.
     pub(crate) fn heard(&self) -> usize {
-        self.settled().iter().map(Vec::len).sum()
+        self.settled().iter().map(|(sent, _)| sent.len()).sum()
     }
 
     /// The bytes [`heard`](Self::heard) counts, a connection's after the one
     /// before it, in the order the port took them.
     pub(crate) fn received(&self) -> Vec<u8> {
-        self.settled().concat()
+        self.settled()
+            .into_iter()
+            .flat_map(|(sent, _)| sent)
+            .collect()
     }
 
     /// How many connections this process has opened to it, once each opened
@@ -419,15 +426,32 @@ impl SilentPort {
         self.settled().len()
     }
 
+    /// How many connections this process has opened to it that were still
+    /// open when the port took them, once each opened before the call has been
+    /// read to its close.
+    ///
+    /// [`connections`](Self::connections) also keeps a connection whose far
+    /// end had hung up before the port took it, which no process can be told
+    /// for, so another process's connect scan of loopback moves that count,
+    /// the more often the busier the machine keeps the port from taking
+    /// connections. Only this process moves this one, and a pass whose
+    /// connections stay open while it asks, as an identification's stay open
+    /// for its walk, is counted here in full.
+    pub(crate) fn connections_told(&self) -> usize {
+        self.settled().iter().filter(|(_, told)| *told).count()
+    }
+
     /// What each connection this process opened before the call sent, other
-    /// than the counts' own, once each has been read to its close.
+    /// than the counts' own, once each has been read to its close, and
+    /// whether it was told for this process's rather than kept for having
+    /// ended too soon to be told.
     ///
     /// A pass that has returned has closed its connections, but what it sent
     /// on them may still be on its way to being read. A connection of the
     /// call's own is accepted after all of theirs, since a listener takes
     /// connections in the order they arrive, so once it is, which of theirs
     /// remain open is known, and each is waited on until it closes.
-    fn settled(&self) -> Vec<Vec<u8>> {
+    fn settled(&self) -> Vec<(Vec<u8>, bool)> {
         let marker = std::net::TcpStream::connect(self.addr).expect("connects to loopback");
         let from = marker.local_addr().expect("a local address");
         let mut markers = self.markers.lock().unwrap();
@@ -458,7 +482,7 @@ impl SilentPort {
         before
             .iter()
             .filter(|c| !markers.contains(&c.from))
-            .map(|c| c.sent.clone())
+            .map(|c| (c.sent.clone(), c.told))
             .collect()
     }
 }

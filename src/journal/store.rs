@@ -2045,7 +2045,7 @@ mod tests {
     use crate::model::port::PortSet;
     use crate::model::target::{TargetMap, TargetSet};
     use crate::model::technique::TcpScanTechnique;
-    use crate::scanner::checkpoint::{CHECKPOINT_EVERY, spawn_checkpoints};
+    use crate::scanner::checkpoint::spawn_checkpoints;
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("zond-store-{}-{name}", std::process::id()));
@@ -2269,8 +2269,8 @@ mod tests {
         }
 
         // One checkpoint lands, and the process dies before the phase ends.
-        let ticker = spawn_checkpoints(journal, ctx.progress());
-        tokio::time::sleep(CHECKPOINT_EVERY + Duration::from_millis(200)).await;
+        let mut ticker = spawn_checkpoints(journal, ctx.progress());
+        ticker.checkpointed().await;
         ticker.kill().await;
 
         let hosts = report(&directory)
@@ -2346,8 +2346,8 @@ mod tests {
         }
         ctx.record_outcome(Outcome::Exhausted { position: 4 });
 
-        let ticker = spawn_checkpoints(journal, ctx.progress());
-        tokio::time::sleep(CHECKPOINT_EVERY + Duration::from_millis(200)).await;
+        let mut ticker = spawn_checkpoints(journal, ctx.progress());
+        ticker.checkpointed().await;
         ticker.kill().await;
 
         let (journal, _) =
@@ -2391,8 +2391,8 @@ mod tests {
                 true
             },
         );
-        let ticker = spawn_checkpoints(journal, ctx.progress());
-        tokio::time::sleep(CHECKPOINT_EVERY + Duration::from_millis(200)).await;
+        let mut ticker = spawn_checkpoints(journal, ctx.progress());
+        ticker.checkpointed().await;
         ctx.verdicts_reached();
         ticker.finish(&[]).await;
 
@@ -3203,7 +3203,7 @@ mod tests {
         let directory = journal.directory().to_path_buf();
 
         let (_session, ctx) = crate::scanner::session::ScanSession::new();
-        let ticker = spawn_checkpoints(journal, ctx.progress());
+        let mut ticker = spawn_checkpoints(journal, ctx.progress());
 
         // What the liveness pass found.
         let ip: std::net::IpAddr = "192.0.2.1".parse().expect("an address");
@@ -3215,10 +3215,8 @@ mod tests {
             );
         });
 
-        // A checkpoint lands, taking that and leaving nothing behind. Real time
-        // rather than a paused clock, which would need `tokio/test-util` for one
-        // test, and the interval is three seconds rather than three minutes.
-        tokio::time::sleep(CHECKPOINT_EVERY + Duration::from_millis(200)).await;
+        // A checkpoint lands, taking that and leaving nothing behind.
+        ticker.checkpointed().await;
 
         // And then the enrichment finds something else, as it does.
         ctx.update_host(ip, |host| {

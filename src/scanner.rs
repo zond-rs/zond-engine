@@ -2728,7 +2728,7 @@ mod tests {
         use crate::model::host::HostStatus;
         use crate::model::ip::set::IpSet;
         use crate::model::target::TargetSet;
-        use crate::scanner::checkpoint::{CHECKPOINT_EVERY, spawn_checkpoints};
+        use crate::scanner::checkpoint::spawn_checkpoints;
 
         let address: std::net::IpAddr = "127.0.0.1".parse().expect("an address");
         let mut map = TargetMap::new();
@@ -2754,8 +2754,8 @@ mod tests {
         )
         .opening_in(&ctx);
         ctx.update_host(address, |host| host.set_status(HostStatus::Up));
-        let ticker = spawn_checkpoints(journal, ctx.progress());
-        tokio::time::sleep(CHECKPOINT_EVERY + std::time::Duration::from_millis(200)).await;
+        let mut ticker = spawn_checkpoints(journal, ctx.progress());
+        ticker.checkpointed().await;
         ticker.kill().await;
 
         let (journal, _) =
