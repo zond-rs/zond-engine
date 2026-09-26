@@ -89,7 +89,7 @@ use crate::format::time::rfc3339;
 use crate::model::capture::CaptureCounts;
 use crate::model::finding::{Finding, Reference};
 use crate::model::host::{
-    HardwareInfo, Hop, Host, HostStatus, HostTelemetry, OsFingerprint, StatusReason,
+    HardwareInfo, Hop, Host, HostName, HostStatus, HostTelemetry, OsFingerprint, StatusReason,
     ip_protocol_name,
 };
 use crate::model::ip::range::IpRange;
@@ -123,10 +123,10 @@ pub use crate::report::ENGINE_VERSION;
 // than called through, since a caller should not have to know where they live.
 pub use crate::record::wire::{
     attachment_source_name, confidence_name, detection_ceiling_name, detection_class_name,
-    filtering_name, host_status_name, ip_protocol_state_name, liveness_skip_name,
-    network_role_name, pass_name, port_scope_name, port_state_name, protocol_name,
-    reference_kind_name, scan_kind_name, scan_response_name, scanner_kind_name, severity_name,
-    status_protocol_name, stop_reason_name, tcp_flags_name,
+    filtering_name, host_status_name, ip_protocol_state_name, liveness_skip_name, name_kind_name,
+    name_source_name, network_role_name, pass_name, port_scope_name, port_state_name,
+    protocol_name, reference_kind_name, scan_kind_name, scan_response_name, scanner_kind_name,
+    severity_name, status_protocol_name, stop_reason_name, tcp_flags_name,
 };
 
 /// The wire name of a send mode.
@@ -1578,6 +1578,11 @@ pub struct HostDto<'a> {
     pub families: Vec<&'static str>,
     /// The resolved hostname, masked under redaction.
     pub hostname: Option<Cow<'a, str>>,
+    /// The names the host gave for itself through its own services, each
+    /// masked under redaction as `hostname` is, the machine's before its
+    /// domain's. Never a copy of `hostname`, which is what name resolution
+    /// answered for the address.
+    pub names: Vec<NameDto<'a>>,
     /// The reachability status: `up`, `filtered`, `down` or `unknown`.
     pub status: &'static str,
     /// Whether the host is confirmed present on the network. True for `up` and
@@ -1658,6 +1663,10 @@ impl<'a> HostDto<'a> {
             zone: host.zone().map(|zone| zone.name()),
             families,
             hostname: host.hostname().map(|name| redaction.hostname(name)),
+            names: host
+                .names()
+                .map(|name| NameDto::new(name, options))
+                .collect(),
             status: host_status_name(host.status()),
             alive: host.is_alive(),
             reasons,
@@ -1685,6 +1694,35 @@ impl<'a> HostDto<'a> {
             findings: findings_dto(host.findings()),
             first_seen: rfc3339(host.first_seen()),
             last_seen: rfc3339(host.last_seen()),
+        }
+    }
+}
+
+/// One name a host gave for itself.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize)]
+pub struct NameDto<'a> {
+    /// The protocol the host stated it in: `ntlm` or `ldap`.
+    pub source: &'static str,
+    /// What it names: `host` and `netbios_host` for the machine, `domain` and
+    /// `netbios_domain` for the domain or workgroup it belongs to, `forest`
+    /// for the root of that domain's forest.
+    pub kind: &'static str,
+    /// The name, masked under redaction.
+    ///
+    /// Every kind is masked, the domain and the forest as well as the machine:
+    /// a domain names the organisation that runs it, which is more than a
+    /// hostname says.
+    pub name: Cow<'a, str>,
+}
+
+impl<'a> NameDto<'a> {
+    /// Renders one name, applying the redaction policy in `options`.
+    pub fn new(name: &'a HostName, options: &ExportOptions) -> Self {
+        Self {
+            source: name_source_name(name.source()),
+            kind: name_kind_name(name.kind()),
+            name: options.redaction.hostname(name.name()),
         }
     }
 }

@@ -1902,6 +1902,9 @@ pub zond_engine::diff::host::HostChange::IpProtocols::changed: alloc::vec::Vec<z
 pub zond_engine::diff::host::HostChange::Macs
 pub zond_engine::diff::host::HostChange::Macs::gained: alloc::vec::Vec<zond_engine::model::mac::MacAddr>
 pub zond_engine::diff::host::HostChange::Macs::lost: alloc::vec::Vec<zond_engine::model::mac::MacAddr>
+pub zond_engine::diff::host::HostChange::Names
+pub zond_engine::diff::host::HostChange::Names::gained: alloc::vec::Vec<zond_engine::model::host::name::HostName>
+pub zond_engine::diff::host::HostChange::Names::lost: alloc::vec::Vec<zond_engine::model::host::name::HostName>
 pub zond_engine::diff::host::HostChange::Os(alloc::boxed::Box<zond_engine::diff::change::Change<core::option::Option<zond_engine::model::host::os::OsFingerprint>>>)
 pub zond_engine::diff::host::HostChange::Roles
 pub zond_engine::diff::host::HostChange::Roles::gained: alloc::vec::Vec<zond_engine::model::host::NetworkRole>
@@ -2238,6 +2241,9 @@ pub zond_engine::diff::HostChange::IpProtocols::changed: alloc::vec::Vec<zond_en
 pub zond_engine::diff::HostChange::Macs
 pub zond_engine::diff::HostChange::Macs::gained: alloc::vec::Vec<zond_engine::model::mac::MacAddr>
 pub zond_engine::diff::HostChange::Macs::lost: alloc::vec::Vec<zond_engine::model::mac::MacAddr>
+pub zond_engine::diff::HostChange::Names
+pub zond_engine::diff::HostChange::Names::gained: alloc::vec::Vec<zond_engine::model::host::name::HostName>
+pub zond_engine::diff::HostChange::Names::lost: alloc::vec::Vec<zond_engine::model::host::name::HostName>
 pub zond_engine::diff::HostChange::Os(alloc::boxed::Box<zond_engine::diff::change::Change<core::option::Option<zond_engine::model::host::os::OsFingerprint>>>)
 pub zond_engine::diff::HostChange::Roles
 pub zond_engine::diff::HostChange::Roles::gained: alloc::vec::Vec<zond_engine::model::host::NetworkRole>
@@ -3566,6 +3572,7 @@ pub zond_engine::export::schema::HostDto::hostname: core::option::Option<alloc::
 pub zond_engine::export::schema::HostDto::ip_protocols: alloc::vec::Vec<zond_engine::export::schema::IpProtocolDto>
 pub zond_engine::export::schema::HostDto::ips: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::export::schema::HostDto::last_seen: alloc::string::String
+pub zond_engine::export::schema::HostDto::names: alloc::vec::Vec<zond_engine::export::schema::NameDto<'a>>
 pub zond_engine::export::schema::HostDto::os: core::option::Option<zond_engine::export::schema::OsDto<'a>>
 pub zond_engine::export::schema::HostDto::path: alloc::vec::Vec<zond_engine::export::schema::HopDto>
 pub zond_engine::export::schema::HostDto::ports: alloc::vec::Vec<zond_engine::export::schema::PortDto<'a>>
@@ -3641,6 +3648,25 @@ impl core::marker::Unpin for zond_engine::export::schema::IpProtocolDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::IpProtocolDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::IpProtocolDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::IpProtocolDto
+#[non_exhaustive] pub struct zond_engine::export::schema::NameDto<'a>
+pub zond_engine::export::schema::NameDto::kind: &'static str
+pub zond_engine::export::schema::NameDto::name: alloc::borrow::Cow<'a, str>
+pub zond_engine::export::schema::NameDto::source: &'static str
+impl<'a> zond_engine::export::schema::NameDto<'a>
+pub fn zond_engine::export::schema::NameDto<'a>::new(&'a zond_engine::model::host::name::HostName, &zond_engine::export::ExportOptions) -> Self
+impl<'a> core::clone::Clone for zond_engine::export::schema::NameDto<'a>
+pub fn zond_engine::export::schema::NameDto<'a>::clone(&self) -> zond_engine::export::schema::NameDto<'a>
+impl<'a> core::fmt::Debug for zond_engine::export::schema::NameDto<'a>
+pub fn zond_engine::export::schema::NameDto<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> serde_core::ser::Serialize for zond_engine::export::schema::NameDto<'a>
+pub fn zond_engine::export::schema::NameDto<'a>::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'a> core::marker::Freeze for zond_engine::export::schema::NameDto<'a>
+impl<'a> core::marker::Send for zond_engine::export::schema::NameDto<'a>
+impl<'a> core::marker::Sync for zond_engine::export::schema::NameDto<'a>
+impl<'a> core::marker::Unpin for zond_engine::export::schema::NameDto<'a>
+impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::NameDto<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::NameDto<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::NameDto<'a>
 #[non_exhaustive] pub struct zond_engine::export::schema::OsDto<'a>
 pub zond_engine::export::schema::OsDto::accuracy: u8
 pub zond_engine::export::schema::OsDto::arch: core::option::Option<&'a str>
@@ -4151,6 +4177,8 @@ pub fn zond_engine::export::schema::filtering_name(zond_engine::model::host::Fil
 pub fn zond_engine::export::schema::host_status_name(zond_engine::model::host::status::HostStatus) -> &'static str
 pub fn zond_engine::export::schema::ip_protocol_state_name(zond_engine::model::host::protocol::IpProtocolState) -> &'static str
 pub fn zond_engine::export::schema::liveness_skip_name(zond_engine::report::LivenessSkip) -> &'static str
+pub fn zond_engine::export::schema::name_kind_name(zond_engine::model::host::name::NameKind) -> &'static str
+pub fn zond_engine::export::schema::name_source_name(zond_engine::model::host::name::NameSource) -> &'static str
 pub fn zond_engine::export::schema::network_role_name(zond_engine::model::host::NetworkRole) -> &'static str
 pub fn zond_engine::export::schema::pass_name(zond_engine::report::Pass) -> &'static str
 pub fn zond_engine::export::schema::port_scope_name(&zond_engine::report::PortScope) -> &'static str
@@ -4391,6 +4419,7 @@ pub zond_engine::fingerprint::model::SourceId::BannerRegex
 pub zond_engine::fingerprint::model::SourceId::Favicon
 pub zond_engine::fingerprint::model::SourceId::HttpHeaders
 pub zond_engine::fingerprint::model::SourceId::Jarm
+pub zond_engine::fingerprint::model::SourceId::Ldap
 pub zond_engine::fingerprint::model::SourceId::PortHeuristic
 pub zond_engine::fingerprint::model::SourceId::Ssh
 pub zond_engine::fingerprint::model::SourceId::TlsCert
@@ -4435,6 +4464,7 @@ pub zond_engine::fingerprint::model::Evidence::confidence: zond_engine::model::c
 pub zond_engine::fingerprint::model::Evidence::cpe: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::model::Evidence::extrainfo: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::model::Evidence::hardware: core::option::Option<zond_engine::model::host::hardware::HardwareInfo>
+pub zond_engine::fingerprint::model::Evidence::names: alloc::vec::Vec<zond_engine::model::host::name::HostName>
 pub zond_engine::fingerprint::model::Evidence::os: core::option::Option<zond_engine::model::host::os::OsEvidence>
 pub zond_engine::fingerprint::model::Evidence::port_confirmed: bool
 pub zond_engine::fingerprint::model::Evidence::product: core::option::Option<alloc::string::String>
@@ -4447,6 +4477,7 @@ impl zond_engine::fingerprint::model::Evidence
 pub fn zond_engine::fingerprint::model::Evidence::new(zond_engine::fingerprint::model::SourceId, zond_engine::model::confidence::Confidence) -> Self
 pub fn zond_engine::fingerprint::model::Evidence::with_cpe(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn zond_engine::fingerprint::model::Evidence::with_extrainfo(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn zond_engine::fingerprint::model::Evidence::with_names(self, alloc::vec::Vec<zond_engine::model::host::name::HostName>) -> Self
 pub fn zond_engine::fingerprint::model::Evidence::with_os(self, zond_engine::model::host::os::OsEvidence) -> Self
 pub fn zond_engine::fingerprint::model::Evidence::with_product(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn zond_engine::fingerprint::model::Evidence::with_service(self, impl core::convert::Into<alloc::string::String>) -> Self
@@ -5285,6 +5316,7 @@ pub zond_engine::fingerprint::SourceId::BannerRegex
 pub zond_engine::fingerprint::SourceId::Favicon
 pub zond_engine::fingerprint::SourceId::HttpHeaders
 pub zond_engine::fingerprint::SourceId::Jarm
+pub zond_engine::fingerprint::SourceId::Ldap
 pub zond_engine::fingerprint::SourceId::PortHeuristic
 pub zond_engine::fingerprint::SourceId::Ssh
 pub zond_engine::fingerprint::SourceId::TlsCert
@@ -5326,6 +5358,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::model
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::model::Tunnel
 pub struct zond_engine::fingerprint::AboutTheHost
 pub zond_engine::fingerprint::AboutTheHost::hardware: core::option::Option<zond_engine::model::host::hardware::HardwareInfo>
+pub zond_engine::fingerprint::AboutTheHost::names: alloc::vec::Vec<zond_engine::model::host::name::HostName>
 pub zond_engine::fingerprint::AboutTheHost::os: alloc::vec::Vec<zond_engine::model::host::os::OsEvidence>
 impl zond_engine::fingerprint::AboutTheHost
 pub fn zond_engine::fingerprint::AboutTheHost::apply(self, &mut zond_engine::model::host::Host) -> bool
@@ -5394,6 +5427,7 @@ pub zond_engine::fingerprint::Evidence::confidence: zond_engine::model::confiden
 pub zond_engine::fingerprint::Evidence::cpe: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::Evidence::extrainfo: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::Evidence::hardware: core::option::Option<zond_engine::model::host::hardware::HardwareInfo>
+pub zond_engine::fingerprint::Evidence::names: alloc::vec::Vec<zond_engine::model::host::name::HostName>
 pub zond_engine::fingerprint::Evidence::os: core::option::Option<zond_engine::model::host::os::OsEvidence>
 pub zond_engine::fingerprint::Evidence::port_confirmed: bool
 pub zond_engine::fingerprint::Evidence::product: core::option::Option<alloc::string::String>
@@ -5406,6 +5440,7 @@ impl zond_engine::fingerprint::model::Evidence
 pub fn zond_engine::fingerprint::model::Evidence::new(zond_engine::fingerprint::model::SourceId, zond_engine::model::confidence::Confidence) -> Self
 pub fn zond_engine::fingerprint::model::Evidence::with_cpe(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn zond_engine::fingerprint::model::Evidence::with_extrainfo(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn zond_engine::fingerprint::model::Evidence::with_names(self, alloc::vec::Vec<zond_engine::model::host::name::HostName>) -> Self
 pub fn zond_engine::fingerprint::model::Evidence::with_os(self, zond_engine::model::host::os::OsEvidence) -> Self
 pub fn zond_engine::fingerprint::model::Evidence::with_product(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn zond_engine::fingerprint::model::Evidence::with_service(self, impl core::convert::Into<alloc::string::String>) -> Self
@@ -8230,6 +8265,97 @@ impl core::marker::UnsafeUnpin for zond_engine::model::host::hardware::HardwareI
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::hardware::HardwareInfo
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::hardware::HardwareInfo
 pub const zond_engine::model::host::hardware::MAX_MACS_PER_HOST: usize
+pub mod zond_engine::model::host::name
+#[non_exhaustive] pub enum zond_engine::model::host::name::NameKind
+pub zond_engine::model::host::name::NameKind::Domain
+pub zond_engine::model::host::name::NameKind::Forest
+pub zond_engine::model::host::name::NameKind::Host
+pub zond_engine::model::host::name::NameKind::NetbiosDomain
+pub zond_engine::model::host::name::NameKind::NetbiosHost
+impl zond_engine::model::host::name::NameKind
+pub const zond_engine::model::host::name::NameKind::ALL: [zond_engine::model::host::name::NameKind; 5]
+pub const fn zond_engine::model::host::name::NameKind::label(self) -> &'static str
+impl core::clone::Clone for zond_engine::model::host::name::NameKind
+pub fn zond_engine::model::host::name::NameKind::clone(&self) -> zond_engine::model::host::name::NameKind
+impl core::cmp::Eq for zond_engine::model::host::name::NameKind
+impl core::cmp::Ord for zond_engine::model::host::name::NameKind
+pub fn zond_engine::model::host::name::NameKind::cmp(&self, &zond_engine::model::host::name::NameKind) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::host::name::NameKind
+pub fn zond_engine::model::host::name::NameKind::eq(&self, &zond_engine::model::host::name::NameKind) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::host::name::NameKind
+pub fn zond_engine::model::host::name::NameKind::partial_cmp(&self, &zond_engine::model::host::name::NameKind) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::host::name::NameKind
+pub fn zond_engine::model::host::name::NameKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::host::name::NameKind
+pub fn zond_engine::model::host::name::NameKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::host::name::NameKind
+impl core::marker::StructuralPartialEq for zond_engine::model::host::name::NameKind
+impl core::marker::Freeze for zond_engine::model::host::name::NameKind
+impl core::marker::Send for zond_engine::model::host::name::NameKind
+impl core::marker::Sync for zond_engine::model::host::name::NameKind
+impl core::marker::Unpin for zond_engine::model::host::name::NameKind
+impl core::marker::UnsafeUnpin for zond_engine::model::host::name::NameKind
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::name::NameKind
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::name::NameKind
+#[non_exhaustive] pub enum zond_engine::model::host::name::NameSource
+pub zond_engine::model::host::name::NameSource::Ldap
+pub zond_engine::model::host::name::NameSource::Ntlm
+impl zond_engine::model::host::name::NameSource
+pub const zond_engine::model::host::name::NameSource::ALL: [zond_engine::model::host::name::NameSource; 2]
+pub const fn zond_engine::model::host::name::NameSource::label(self) -> &'static str
+impl core::clone::Clone for zond_engine::model::host::name::NameSource
+pub fn zond_engine::model::host::name::NameSource::clone(&self) -> zond_engine::model::host::name::NameSource
+impl core::cmp::Eq for zond_engine::model::host::name::NameSource
+impl core::cmp::Ord for zond_engine::model::host::name::NameSource
+pub fn zond_engine::model::host::name::NameSource::cmp(&self, &zond_engine::model::host::name::NameSource) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::host::name::NameSource
+pub fn zond_engine::model::host::name::NameSource::eq(&self, &zond_engine::model::host::name::NameSource) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::host::name::NameSource
+pub fn zond_engine::model::host::name::NameSource::partial_cmp(&self, &zond_engine::model::host::name::NameSource) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::host::name::NameSource
+pub fn zond_engine::model::host::name::NameSource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::host::name::NameSource
+pub fn zond_engine::model::host::name::NameSource::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::host::name::NameSource
+impl core::marker::StructuralPartialEq for zond_engine::model::host::name::NameSource
+impl core::marker::Freeze for zond_engine::model::host::name::NameSource
+impl core::marker::Send for zond_engine::model::host::name::NameSource
+impl core::marker::Sync for zond_engine::model::host::name::NameSource
+impl core::marker::Unpin for zond_engine::model::host::name::NameSource
+impl core::marker::UnsafeUnpin for zond_engine::model::host::name::NameSource
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::name::NameSource
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::name::NameSource
+pub struct zond_engine::model::host::name::HostName
+impl zond_engine::model::host::name::HostName
+pub fn zond_engine::model::host::name::HostName::kind(&self) -> zond_engine::model::host::name::NameKind
+pub fn zond_engine::model::host::name::HostName::name(&self) -> &str
+pub fn zond_engine::model::host::name::HostName::new(zond_engine::model::host::name::NameKind, zond_engine::model::host::name::NameSource, &str) -> core::option::Option<Self>
+pub fn zond_engine::model::host::name::HostName::source(&self) -> zond_engine::model::host::name::NameSource
+impl core::clone::Clone for zond_engine::model::host::name::HostName
+pub fn zond_engine::model::host::name::HostName::clone(&self) -> zond_engine::model::host::name::HostName
+impl core::cmp::Eq for zond_engine::model::host::name::HostName
+impl core::cmp::Ord for zond_engine::model::host::name::HostName
+pub fn zond_engine::model::host::name::HostName::cmp(&self, &zond_engine::model::host::name::HostName) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::host::name::HostName
+pub fn zond_engine::model::host::name::HostName::eq(&self, &zond_engine::model::host::name::HostName) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::host::name::HostName
+pub fn zond_engine::model::host::name::HostName::partial_cmp(&self, &zond_engine::model::host::name::HostName) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<&zond_engine::model::host::name::HostName> for zond_engine::record::NameRecord
+pub fn zond_engine::record::NameRecord::from(&zond_engine::model::host::name::HostName) -> Self
+impl core::fmt::Debug for zond_engine::model::host::name::HostName
+pub fn zond_engine::model::host::name::HostName::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::model::host::name::HostName
+pub fn zond_engine::model::host::name::HostName::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::host::name::HostName
+pub fn zond_engine::model::host::name::HostName::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for zond_engine::model::host::name::HostName
+impl core::marker::Freeze for zond_engine::model::host::name::HostName
+impl core::marker::Send for zond_engine::model::host::name::HostName
+impl core::marker::Sync for zond_engine::model::host::name::HostName
+impl core::marker::Unpin for zond_engine::model::host::name::HostName
+impl core::marker::UnsafeUnpin for zond_engine::model::host::name::HostName
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::name::HostName
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::name::HostName
 pub mod zond_engine::model::host::os
 #[non_exhaustive] pub enum zond_engine::model::host::os::OsSource
 pub zond_engine::model::host::os::OsSource::HardwareVendor
@@ -8755,6 +8881,65 @@ impl core::marker::Unpin for zond_engine::model::host::protocol::IpProtocolState
 impl core::marker::UnsafeUnpin for zond_engine::model::host::protocol::IpProtocolState
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::protocol::IpProtocolState
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::protocol::IpProtocolState
+#[non_exhaustive] pub enum zond_engine::model::host::NameKind
+pub zond_engine::model::host::NameKind::Domain
+pub zond_engine::model::host::NameKind::Forest
+pub zond_engine::model::host::NameKind::Host
+pub zond_engine::model::host::NameKind::NetbiosDomain
+pub zond_engine::model::host::NameKind::NetbiosHost
+impl zond_engine::model::host::name::NameKind
+pub const zond_engine::model::host::name::NameKind::ALL: [zond_engine::model::host::name::NameKind; 5]
+pub const fn zond_engine::model::host::name::NameKind::label(self) -> &'static str
+impl core::clone::Clone for zond_engine::model::host::name::NameKind
+pub fn zond_engine::model::host::name::NameKind::clone(&self) -> zond_engine::model::host::name::NameKind
+impl core::cmp::Eq for zond_engine::model::host::name::NameKind
+impl core::cmp::Ord for zond_engine::model::host::name::NameKind
+pub fn zond_engine::model::host::name::NameKind::cmp(&self, &zond_engine::model::host::name::NameKind) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::host::name::NameKind
+pub fn zond_engine::model::host::name::NameKind::eq(&self, &zond_engine::model::host::name::NameKind) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::host::name::NameKind
+pub fn zond_engine::model::host::name::NameKind::partial_cmp(&self, &zond_engine::model::host::name::NameKind) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::host::name::NameKind
+pub fn zond_engine::model::host::name::NameKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::host::name::NameKind
+pub fn zond_engine::model::host::name::NameKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::host::name::NameKind
+impl core::marker::StructuralPartialEq for zond_engine::model::host::name::NameKind
+impl core::marker::Freeze for zond_engine::model::host::name::NameKind
+impl core::marker::Send for zond_engine::model::host::name::NameKind
+impl core::marker::Sync for zond_engine::model::host::name::NameKind
+impl core::marker::Unpin for zond_engine::model::host::name::NameKind
+impl core::marker::UnsafeUnpin for zond_engine::model::host::name::NameKind
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::name::NameKind
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::name::NameKind
+#[non_exhaustive] pub enum zond_engine::model::host::NameSource
+pub zond_engine::model::host::NameSource::Ldap
+pub zond_engine::model::host::NameSource::Ntlm
+impl zond_engine::model::host::name::NameSource
+pub const zond_engine::model::host::name::NameSource::ALL: [zond_engine::model::host::name::NameSource; 2]
+pub const fn zond_engine::model::host::name::NameSource::label(self) -> &'static str
+impl core::clone::Clone for zond_engine::model::host::name::NameSource
+pub fn zond_engine::model::host::name::NameSource::clone(&self) -> zond_engine::model::host::name::NameSource
+impl core::cmp::Eq for zond_engine::model::host::name::NameSource
+impl core::cmp::Ord for zond_engine::model::host::name::NameSource
+pub fn zond_engine::model::host::name::NameSource::cmp(&self, &zond_engine::model::host::name::NameSource) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::host::name::NameSource
+pub fn zond_engine::model::host::name::NameSource::eq(&self, &zond_engine::model::host::name::NameSource) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::host::name::NameSource
+pub fn zond_engine::model::host::name::NameSource::partial_cmp(&self, &zond_engine::model::host::name::NameSource) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::host::name::NameSource
+pub fn zond_engine::model::host::name::NameSource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::host::name::NameSource
+pub fn zond_engine::model::host::name::NameSource::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::host::name::NameSource
+impl core::marker::StructuralPartialEq for zond_engine::model::host::name::NameSource
+impl core::marker::Freeze for zond_engine::model::host::name::NameSource
+impl core::marker::Send for zond_engine::model::host::name::NameSource
+impl core::marker::Sync for zond_engine::model::host::name::NameSource
+impl core::marker::Unpin for zond_engine::model::host::name::NameSource
+impl core::marker::UnsafeUnpin for zond_engine::model::host::name::NameSource
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::name::NameSource
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::name::NameSource
 #[non_exhaustive] pub enum zond_engine::model::host::NetworkRole
 pub zond_engine::model::host::NetworkRole::DhcpServer
 pub zond_engine::model::host::NetworkRole::DnsServer
@@ -8971,6 +9156,7 @@ pub fn zond_engine::model::host::Host::max_rtt(&self) -> core::option::Option<co
 pub fn zond_engine::model::host::Host::median_rtt(&self) -> core::option::Option<core::time::Duration>
 pub fn zond_engine::model::host::Host::merge(&mut self, zond_engine::model::host::Host)
 pub fn zond_engine::model::host::Host::min_rtt(&self) -> core::option::Option<core::time::Duration>
+pub fn zond_engine::model::host::Host::names(&self) -> impl core::iter::traits::iterator::Iterator<Item = &zond_engine::model::host::name::HostName>
 pub fn zond_engine::model::host::Host::network_roles(&self) -> &std::collections::hash::set::HashSet<zond_engine::model::host::NetworkRole>
 pub fn zond_engine::model::host::Host::new(core::net::ip_addr::IpAddr) -> Self
 pub fn zond_engine::model::host::Host::open_port_count(&self) -> usize
@@ -8986,6 +9172,7 @@ pub fn zond_engine::model::host::Host::record_hop(&mut self, zond_engine::model:
 pub fn zond_engine::model::host::Host::record_hop_counter(&mut self, u8)
 pub fn zond_engine::model::host::Host::record_ip_protocol(&mut self, u8, zond_engine::model::host::protocol::IpProtocolState) -> bool
 pub fn zond_engine::model::host::Host::record_mac(&mut self, zond_engine::model::mac::MacAddr)
+pub fn zond_engine::model::host::Host::record_name(&mut self, zond_engine::model::host::name::HostName) -> bool
 pub fn zond_engine::model::host::Host::record_os_evidence(&mut self, zond_engine::model::host::os::OsEvidence) -> bool
 pub fn zond_engine::model::host::Host::restore_seen(&mut self, std::time::SystemTime, std::time::SystemTime)
 pub fn zond_engine::model::host::Host::rtt_protocol(&self) -> core::option::Option<zond_engine::model::host::status::StatusProtocol>
@@ -9018,6 +9205,37 @@ impl core::marker::Unpin for zond_engine::model::host::Host
 impl core::marker::UnsafeUnpin for zond_engine::model::host::Host
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::Host
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::Host
+pub struct zond_engine::model::host::HostName
+impl zond_engine::model::host::name::HostName
+pub fn zond_engine::model::host::name::HostName::kind(&self) -> zond_engine::model::host::name::NameKind
+pub fn zond_engine::model::host::name::HostName::name(&self) -> &str
+pub fn zond_engine::model::host::name::HostName::new(zond_engine::model::host::name::NameKind, zond_engine::model::host::name::NameSource, &str) -> core::option::Option<Self>
+pub fn zond_engine::model::host::name::HostName::source(&self) -> zond_engine::model::host::name::NameSource
+impl core::clone::Clone for zond_engine::model::host::name::HostName
+pub fn zond_engine::model::host::name::HostName::clone(&self) -> zond_engine::model::host::name::HostName
+impl core::cmp::Eq for zond_engine::model::host::name::HostName
+impl core::cmp::Ord for zond_engine::model::host::name::HostName
+pub fn zond_engine::model::host::name::HostName::cmp(&self, &zond_engine::model::host::name::HostName) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::host::name::HostName
+pub fn zond_engine::model::host::name::HostName::eq(&self, &zond_engine::model::host::name::HostName) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::host::name::HostName
+pub fn zond_engine::model::host::name::HostName::partial_cmp(&self, &zond_engine::model::host::name::HostName) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<&zond_engine::model::host::name::HostName> for zond_engine::record::NameRecord
+pub fn zond_engine::record::NameRecord::from(&zond_engine::model::host::name::HostName) -> Self
+impl core::fmt::Debug for zond_engine::model::host::name::HostName
+pub fn zond_engine::model::host::name::HostName::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::model::host::name::HostName
+pub fn zond_engine::model::host::name::HostName::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::host::name::HostName
+pub fn zond_engine::model::host::name::HostName::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for zond_engine::model::host::name::HostName
+impl core::marker::Freeze for zond_engine::model::host::name::HostName
+impl core::marker::Send for zond_engine::model::host::name::HostName
+impl core::marker::Sync for zond_engine::model::host::name::HostName
+impl core::marker::Unpin for zond_engine::model::host::name::HostName
+impl core::marker::UnsafeUnpin for zond_engine::model::host::name::HostName
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::name::HostName
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::name::HostName
 pub struct zond_engine::model::host::HostTelemetry
 impl zond_engine::model::host::telemetry::HostTelemetry
 pub fn zond_engine::model::host::telemetry::HostTelemetry::add_rtt(&mut self, core::time::Duration)
@@ -12913,6 +13131,10 @@ pub fn zond_engine::record::wire::ip_protocol_state(&str) -> core::option::Optio
 pub fn zond_engine::record::wire::ip_protocol_state_name(zond_engine::model::host::protocol::IpProtocolState) -> &'static str
 pub fn zond_engine::record::wire::liveness_skip(&str) -> core::option::Option<zond_engine::report::LivenessSkip>
 pub fn zond_engine::record::wire::liveness_skip_name(zond_engine::report::LivenessSkip) -> &'static str
+pub fn zond_engine::record::wire::name_kind(&str) -> core::option::Option<zond_engine::model::host::name::NameKind>
+pub fn zond_engine::record::wire::name_kind_name(zond_engine::model::host::name::NameKind) -> &'static str
+pub fn zond_engine::record::wire::name_source(&str) -> core::option::Option<zond_engine::model::host::name::NameSource>
+pub fn zond_engine::record::wire::name_source_name(zond_engine::model::host::name::NameSource) -> &'static str
 pub fn zond_engine::record::wire::network_role(&str) -> core::option::Option<zond_engine::model::host::NetworkRole>
 pub fn zond_engine::record::wire::network_role_name(zond_engine::model::host::NetworkRole) -> &'static str
 pub fn zond_engine::record::wire::os_source(&str) -> core::option::Option<zond_engine::model::host::os::OsSource>
@@ -13275,6 +13497,7 @@ pub zond_engine::record::HostRecord::hostname: core::option::Option<alloc::strin
 pub zond_engine::record::HostRecord::ip_protocols: alloc::vec::Vec<zond_engine::record::IpProtocolRecord>
 pub zond_engine::record::HostRecord::ips: alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub zond_engine::record::HostRecord::last_seen: std::time::SystemTime
+pub zond_engine::record::HostRecord::names: alloc::vec::Vec<zond_engine::record::NameRecord>
 pub zond_engine::record::HostRecord::os: core::option::Option<zond_engine::record::OsRecord>
 pub zond_engine::record::HostRecord::os_evidence: alloc::vec::Vec<zond_engine::record::OsEvidenceRecord>
 pub zond_engine::record::HostRecord::path: alloc::vec::Vec<zond_engine::record::HopRecord>
@@ -13351,6 +13574,33 @@ impl core::marker::Unpin for zond_engine::record::IpProtocolRecord
 impl core::marker::UnsafeUnpin for zond_engine::record::IpProtocolRecord
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::IpProtocolRecord
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::IpProtocolRecord
+pub struct zond_engine::record::NameRecord
+pub zond_engine::record::NameRecord::kind: alloc::string::String
+pub zond_engine::record::NameRecord::name: alloc::string::String
+pub zond_engine::record::NameRecord::source: alloc::string::String
+impl zond_engine::record::NameRecord
+pub fn zond_engine::record::NameRecord::rebuild(&self) -> core::option::Option<zond_engine::model::host::name::HostName>
+impl core::clone::Clone for zond_engine::record::NameRecord
+pub fn zond_engine::record::NameRecord::clone(&self) -> zond_engine::record::NameRecord
+impl core::cmp::Eq for zond_engine::record::NameRecord
+impl core::cmp::PartialEq for zond_engine::record::NameRecord
+pub fn zond_engine::record::NameRecord::eq(&self, &zond_engine::record::NameRecord) -> bool
+impl core::convert::From<&zond_engine::model::host::name::HostName> for zond_engine::record::NameRecord
+pub fn zond_engine::record::NameRecord::from(&zond_engine::model::host::name::HostName) -> Self
+impl core::fmt::Debug for zond_engine::record::NameRecord
+pub fn zond_engine::record::NameRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::record::NameRecord
+impl serde_core::ser::Serialize for zond_engine::record::NameRecord
+pub fn zond_engine::record::NameRecord::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::record::NameRecord
+pub fn zond_engine::record::NameRecord::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for zond_engine::record::NameRecord
+impl core::marker::Send for zond_engine::record::NameRecord
+impl core::marker::Sync for zond_engine::record::NameRecord
+impl core::marker::Unpin for zond_engine::record::NameRecord
+impl core::marker::UnsafeUnpin for zond_engine::record::NameRecord
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::NameRecord
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::NameRecord
 pub struct zond_engine::record::OsEvidenceRecord
 pub zond_engine::record::OsEvidenceRecord::arch: core::option::Option<alloc::string::String>
 pub zond_engine::record::OsEvidenceRecord::confidence: f32
@@ -18413,6 +18663,7 @@ pub fn zond_engine::model::host::Host::max_rtt(&self) -> core::option::Option<co
 pub fn zond_engine::model::host::Host::median_rtt(&self) -> core::option::Option<core::time::Duration>
 pub fn zond_engine::model::host::Host::merge(&mut self, zond_engine::model::host::Host)
 pub fn zond_engine::model::host::Host::min_rtt(&self) -> core::option::Option<core::time::Duration>
+pub fn zond_engine::model::host::Host::names(&self) -> impl core::iter::traits::iterator::Iterator<Item = &zond_engine::model::host::name::HostName>
 pub fn zond_engine::model::host::Host::network_roles(&self) -> &std::collections::hash::set::HashSet<zond_engine::model::host::NetworkRole>
 pub fn zond_engine::model::host::Host::new(core::net::ip_addr::IpAddr) -> Self
 pub fn zond_engine::model::host::Host::open_port_count(&self) -> usize
@@ -18428,6 +18679,7 @@ pub fn zond_engine::model::host::Host::record_hop(&mut self, zond_engine::model:
 pub fn zond_engine::model::host::Host::record_hop_counter(&mut self, u8)
 pub fn zond_engine::model::host::Host::record_ip_protocol(&mut self, u8, zond_engine::model::host::protocol::IpProtocolState) -> bool
 pub fn zond_engine::model::host::Host::record_mac(&mut self, zond_engine::model::mac::MacAddr)
+pub fn zond_engine::model::host::Host::record_name(&mut self, zond_engine::model::host::name::HostName) -> bool
 pub fn zond_engine::model::host::Host::record_os_evidence(&mut self, zond_engine::model::host::os::OsEvidence) -> bool
 pub fn zond_engine::model::host::Host::restore_seen(&mut self, std::time::SystemTime, std::time::SystemTime)
 pub fn zond_engine::model::host::Host::rtt_protocol(&self) -> core::option::Option<zond_engine::model::host::status::StatusProtocol>

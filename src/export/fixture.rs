@@ -31,8 +31,9 @@ use crate::model::finding::{
     DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Version,
 };
 use crate::model::host::{
-    EvidenceSource, Filtering, HardwareDescription, HardwareInfo, Hop, Host, HostStatus,
-    IpProtocolState, NetworkRole, OsFingerprint, StatusProtocol, StatusReason,
+    EvidenceSource, Filtering, HardwareDescription, HardwareInfo, Hop, Host, HostName, HostStatus,
+    IpProtocolState, NameKind, NameSource, NetworkRole, OsFingerprint, StatusProtocol,
+    StatusReason,
 };
 use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;
@@ -63,6 +64,15 @@ fn ip(last: u8) -> IpAddr {
 fn router() -> Host {
     let mut host = Host::new(ip(1));
     host.set_hostname(Some("router.local".to_string()));
+    // What a directory on the gateway says of itself: a name for the machine,
+    // and for the domain and the forest it serves.
+    for (kind, name) in [
+        (NameKind::Host, "gw01.corp.example"),
+        (NameKind::Domain, "corp.example"),
+        (NameKind::Forest, "corp.example"),
+    ] {
+        host.record_name(HostName::new(kind, NameSource::Ldap, name).expect("a name"));
+    }
     host.set_status(HostStatus::Up);
     host.add_reason(StatusReason::new(StatusProtocol::Arp, "reply from gateway"));
     // Every sender a reason can name besides the host itself: a middlebox the
@@ -527,6 +537,16 @@ fn compared_router(later: bool) -> Host {
             .with_family("Unix-like")
             .with_generation(if later { "6.1.0" } else { "5.15.0" }),
     );
+    // Renamed between the two scans, as its SMB server tells it, so the
+    // comparison carries a name gained and one lost.
+    host.record_name(
+        HostName::new(
+            NameKind::NetbiosHost,
+            NameSource::Ntlm,
+            if later { "GATEWAY" } else { "ROUTER" },
+        )
+        .expect("a name"),
+    );
 
     // A finding the later scan draws and the baseline did not, so the comparison
     // carries `finding_appeared`.
@@ -689,6 +709,9 @@ fn hostile_finding() -> Finding {
 fn hostile_host() -> Host {
     let mut host = Host::new(ip(3));
     host.set_hostname(Some(HOSTILE.to_string()));
+    host.record_name(
+        HostName::new(NameKind::NetbiosDomain, NameSource::Ntlm, HOSTILE).expect("a name"),
+    );
     host.set_status(HostStatus::Up);
     host.add_reason(StatusReason::new(StatusProtocol::Arp, HOSTILE));
     host.set_hardware(hostile_hardware());

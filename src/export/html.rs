@@ -364,7 +364,7 @@ fn write_notices(
             out,
             false,
             "redacted",
-            "hostnames, hardware addresses and certificate subjects are masked in this copy",
+            "host and domain names, hardware addresses and certificate subjects are masked in this copy",
         )?;
     }
 
@@ -611,6 +611,18 @@ fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), Export
         let addresses: Vec<String> = dto.ips.iter().map(|ip| esc(ip)).collect();
         fact(out, "addresses", &addresses.join(", "))?;
     }
+
+    // One line per name, qualified by what it names and who said it: a
+    // domain read as the machine's own name, or an LDAP claim as an NTLM one,
+    // is a different fact from the one the host stated. Beside the addresses
+    // because both say which machine this is; apart from the hostname in the
+    // header, which is what name resolution answered rather than the host.
+    let mut names = String::new();
+    for name in &dto.names {
+        let detail = [name.kind.replace('_', " "), name.source.to_owned()];
+        let _ = write!(names, "<div>{}{}</div>", esc(&name.name), dim(&detail));
+    }
+    fact(out, "names", &names)?;
 
     if let Some(os) = &dto.os {
         let mut detail = vec![format!("{}% confidence", os.accuracy)];
@@ -2301,6 +2313,9 @@ mod tests {
 
         assert!(!page.contains("router.local"));
         assert!(page.contains("roXXXXXal"));
+        // The names the host gave for itself, the domain among them.
+        assert!(!page.contains("corp.example"));
+        assert!(page.contains("gwXXXXXle"));
         assert!(page.contains("2c:cf:67:XX:XX:XX"));
         // The vendor comes from the OUI, which masking preserves.
         assert!(page.contains("Raspberry Pi Trading Ltd"));

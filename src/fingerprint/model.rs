@@ -45,6 +45,9 @@ pub enum SourceId {
     Favicon,
     /// A JARM hash: how a TLS stack answered ten deliberately awkward hellos.
     Jarm,
+    /// A structured read of an LDAP directory's root entry, for the names of
+    /// the controller serving it.
+    Ldap,
     // Future analyzers: Snmp, ...
 }
 
@@ -154,6 +157,15 @@ pub struct Evidence {
     /// are two facts about one machine rather than one fact told twice. Over
     /// five hundred shipped rules name a box and no system at all.
     pub hardware: Option<crate::model::host::HardwareInfo>,
+
+    /// The names this observation said the machine goes by, where it said any.
+    ///
+    /// About the machine, as [`os`](Self::os) is, and never folded into the
+    /// service's fields: a report masks a name and does not mask a service's
+    /// description. An observation that names the machine and identifies
+    /// nothing carries the lowest confidence, so it never leads a verdict it
+    /// has nothing to say about.
+    pub names: Vec<crate::model::host::HostName>,
 }
 
 impl Evidence {
@@ -171,6 +183,7 @@ impl Evidence {
             port_confirmed: false,
             os: None,
             hardware: None,
+            names: Vec::new(),
             confidence,
             source,
         }
@@ -228,6 +241,12 @@ impl Evidence {
     /// service.
     pub fn with_os(mut self, os: crate::model::host::OsEvidence) -> Self {
         self.os = Some(os);
+        self
+    }
+
+    /// Records the names this observation said the machine goes by.
+    pub fn with_names(mut self, names: Vec<crate::model::host::HostName>) -> Self {
+        self.names = names;
         self
     }
 }

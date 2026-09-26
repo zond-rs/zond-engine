@@ -175,6 +175,7 @@ fn one_reply_is_one_witness() {
                 super::AboutTheHost {
                     os: matched.os.into_iter().collect(),
                     hardware: matched.hardware,
+                    names: Vec::new(),
                 }
                 .apply(&mut host);
 

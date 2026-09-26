@@ -40,6 +40,7 @@ use std::{
 };
 
 pub mod hardware;
+pub mod name;
 pub mod os;
 pub mod path;
 pub mod protocol;
@@ -47,6 +48,7 @@ pub mod status;
 pub mod telemetry;
 
 pub use hardware::{HardwareDescription, HardwareInfo};
+pub use name::{HostName, NameKind, NameSource};
 pub use os::{OsEvidence, OsFingerprint, OsSource};
 pub use path::{Hop, NetworkPath};
 pub use protocol::{IpProtocolState, ip_protocol_name};
@@ -455,6 +457,17 @@ type OsClaim = (
 /// meaning anything.
 const MAX_OS_EVIDENCE: usize = 8;
 
+/// The most names one host will have recorded against it.
+///
+/// A host states at most five names over NTLM and three over LDAP, and states
+/// them the same way on every port and every sitting, so an honest one never
+/// comes near this. What reaches it is a peer inventing a new name for each
+/// connection, which would otherwise grow the record with every service asked
+/// and every scan folded in. Past it, what arrives is turned away and what is
+/// held stays: the first names a host gave are as much its claim as any later
+/// ones.
+const MAX_NAMES: usize = 16;
+
 /// A single machine, and what a scan established about it.
 ///
 /// Identity first: the addresses it answers at, its name and its hardware. Then
@@ -475,6 +488,12 @@ pub struct Host {
 
     /// The resolved hostname (FQDN or local network name).
     hostname: Option<String>,
+
+    /// The names the host gave for itself through its own services, each with
+    /// the protocol it was given in. Never a copy of [`hostname`](Self::hostname)
+    /// and never its source; [`name`] says why the two are kept apart. Bounded
+    /// by [`MAX_NAMES`].
+    names: BTreeSet<HostName>,
 
     /// The current reachability status.
     status: HostStatus,
@@ -669,6 +688,7 @@ impl Host {
             primary_ip,
             ips,
             hostname: None,
+            names: BTreeSet::new(),
             status: HostStatus::Unknown,
             reasons: HashSet::new(),
             os: None,
@@ -700,8 +720,18 @@ impl Host {
     }
 
     /// Returns the resolved hostname, if any.
+    ///
+    /// What name resolution answered for the address, and the name a host is
+    /// displayed under. The names a host gives for itself are
+    /// [`names`](Self::names), and never stand in for this one: see [`name`]
+    /// for why a machine's claim about itself is not the network's answer.
     pub fn hostname(&self) -> Option<&str> {
         self.hostname.as_deref()
+    }
+
+    /// The names this host gave for itself, the machine's before its domain's.
+    pub fn names(&self) -> impl Iterator<Item = &HostName> {
+        self.names.iter()
     }
 
     /// Returns the current reachability status.
@@ -967,6 +997,24 @@ impl Host {
     pub fn set_hostname(&mut self, hostname: Option<String>) {
         self.hostname = hostname;
         self.last_seen = SystemTime::now();
+    }
+
+    /// Records a name the host gave for itself, returning whether it is one not
+    /// already held.
+    ///
+    /// Accumulates rather than replaces, under the rule every other finding on
+    /// a host keeps: two services stating the same name are one claim, and two
+    /// stating different ones are two claims the host made, neither of which
+    /// the later one retracts. Past the ceiling a host's names are held to, a
+    /// new name is turned away and the names held stay. Bumps `last_seen`
+    /// either way, as [`add_network_role`](Self::add_network_role) does: the
+    /// host was heard from.
+    pub fn record_name(&mut self, name: HostName) -> bool {
+        self.last_seen = SystemTime::now();
+        if self.names.len() >= MAX_NAMES && !self.names.contains(&name) {
+            return false;
+        }
+        self.names.insert(name)
     }
 
     /// Raises the reachability status to `status`, if that is an improvement.
@@ -1472,6 +1520,7 @@ impl Host {
             primary_ip,
             ips,
             hostname,
+            names,
             status,
             reasons,
             os,
@@ -1512,6 +1561,7 @@ impl Host {
             primary_ip: *primary_ip,
             ips: ips.clone(),
             hostname: hostname.clone(),
+            names: names.clone(),
             status: *status,
             reasons: reasons.clone(),
             os: os.clone(),
@@ -1553,6 +1603,7 @@ impl Host {
             primary_ip: other_primary,
             ips,
             hostname,
+            names,
             status,
             reasons,
             os,
@@ -1592,6 +1643,9 @@ impl Host {
 
         if self.hostname.is_none() {
             self.hostname = hostname;
+        }
+        for name in names {
+            self.record_name(name);
         }
 
         if status > self.status {
@@ -1866,6 +1920,38 @@ mod tests {
             "os evidence is what corroboration is computed over, and the \
              fold is where a second source's reading arrives"
         );
+    }
+
+    /// The names a host gave for itself accumulate across a merge, since a
+    /// service detection pass is exactly what only the later of two snapshots
+    /// of one scan has run; and a peer inventing a name per connection is held
+    /// to [`MAX_NAMES`] without the names already held being displaced.
+    #[test]
+    fn names_accumulate_across_a_merge_up_to_the_ceiling() {
+        let name = |kind, text: &str| HostName::new(kind, NameSource::Ntlm, text).expect("a name");
+
+        let mut earlier = Host::new(IP_ADDR);
+        earlier.record_name(name(NameKind::Host, "dc01.corp.example"));
+        let mut later = Host::new(IP_ADDR);
+        later.record_name(name(NameKind::Host, "dc01.corp.example"));
+        later.record_name(name(NameKind::Domain, "corp.example"));
+        earlier.merge(later);
+        assert_eq!(
+            earlier.names().map(HostName::name).collect::<Vec<_>>(),
+            ["dc01.corp.example", "corp.example"],
+            "the same name from both records is one claim"
+        );
+
+        let mut flooded = Host::new(IP_ADDR);
+        for n in 0..MAX_NAMES {
+            assert!(flooded.record_name(name(NameKind::NetbiosHost, &format!("HOST{n:02}"))));
+        }
+        assert!(!flooded.record_name(name(NameKind::NetbiosHost, "ONE-MORE")));
+        assert!(
+            !flooded.record_name(name(NameKind::NetbiosHost, "HOST00")),
+            "a name already held is not news"
+        );
+        assert_eq!(flooded.names().count(), MAX_NAMES);
     }
 
     /// A merge folds in what only one side of it knows.

@@ -42,7 +42,13 @@
 //! What either reads is matched against the corpus like any banner, so the
 //! rules that name releases live in `assets/fingerprinting` beside the probe.
 //!
+//! The NTLM challenge also carries the machine's names and its domain's, which
+//! are recorded on the host as [`HostName`](crate::model::host::HostName)s
+//! rather than matched: they are a report's to mask, and a service's
+//! description is not masked. See [`framed::smb2_names`].
+//!
 //! [`framed::smb2_exchange`]: super::framed::smb2_exchange
+//! [`framed::smb2_names`]: super::framed::smb2_names
 //! [`framed::smb_session_setup`]: super::framed::smb_session_setup
 
 use std::net::SocketAddr;
@@ -56,6 +62,7 @@ use super::analyzer::{Analyzer, PortContext};
 use super::db::SignatureDb;
 use super::model::{Evidence, SourceId};
 use super::response::{Collected, ResponseSet};
+use crate::model::confidence::Confidence;
 
 /// The one port this analyzer dials. SMB over 139 sits behind a NetBIOS
 /// session request, and its own rung reads that.
@@ -130,7 +137,12 @@ impl Analyzer for SmbAnalyzer {
         Collected::from_frames(frames)
     }
 
-    /// CPU phase. What each exchange read, matched against the corpus.
+    /// CPU phase. What each exchange read, matched against the corpus, and the
+    /// names the NTLM challenge gave for the machine.
+    ///
+    /// The names travel as an observation of their own, at the lowest
+    /// confidence, because they identify the machine and nothing about the
+    /// service: whether any rule matched has no bearing on them.
     fn analyze(
         &self,
         ctx: &PortContext,
@@ -138,7 +150,7 @@ impl Analyzer for SmbAnalyzer {
         collected: &Collected,
     ) -> Vec<Evidence> {
         let db = SignatureDb::global();
-        collected
+        let mut evidence: Vec<Evidence> = collected
             .frames
             .iter()
             .flat_map(|frame| {
@@ -147,7 +159,17 @@ impl Analyzer for SmbAnalyzer {
                 texts
             })
             .filter_map(|text| db.identify(ctx.port, ctx.protocol, &text))
-            .collect()
+            .collect();
+
+        let names: Vec<_> = collected
+            .frames
+            .iter()
+            .flat_map(|frame| super::framed::smb2_names(frame))
+            .collect();
+        if !names.is_empty() {
+            evidence.push(Evidence::new(self.id(), Confidence::Heuristic).with_names(names));
+        }
+        evidence
     }
 }
 
@@ -324,6 +346,7 @@ fn der(tag: u8, content: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::fingerprint::framed;
+    use crate::model::host::{HostName, NameKind, NameSource};
     use crate::testing::loopback::accept_from_this_process;
 
     /// `message` behind its NetBIOS session header.
@@ -354,18 +377,46 @@ mod tests {
     /// A SESSION_SETUP response carrying an NTLM challenge (MS-NLMP 2.2.1.2)
     /// that states version `major.minor` build `build`.
     fn challenge_response(major: u8, minor: u8, build: u16) -> Vec<u8> {
+        challenge_naming(major, minor, build, &[])
+    }
+
+    /// The same challenge carrying `pairs` as its target information
+    /// (MS-NLMP 2.2.2.1), each an `AvId` and a value written in UTF-16, with
+    /// the end-of-list pair after them.
+    fn challenge_naming(major: u8, minor: u8, build: u16, pairs: &[(u16, &str)]) -> Vec<u8> {
+        /// The fixed part of a challenge, where its payload begins.
+        const PAYLOAD_AT: u32 = 56;
+
+        let mut info = Vec::new();
+        for (id, value) in pairs {
+            let value: Vec<u8> = value.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            info.extend_from_slice(&id.to_le_bytes());
+            info.extend_from_slice(&(value.len() as u16).to_le_bytes());
+            info.extend_from_slice(&value);
+        }
+        if !pairs.is_empty() {
+            info.extend_from_slice(&[0; 4]); // MsvAvEOL
+        }
+
         let mut ntlm = b"NTLMSSP\0".to_vec();
         ntlm.extend_from_slice(&2u32.to_le_bytes());
         ntlm.extend_from_slice(&[0; 8]); // target name fields
         ntlm.extend_from_slice(&0xE289_8215u32.to_le_bytes()); // flags, with version
         ntlm.extend_from_slice(b"\x01\x23\x45\x67\x89\xab\xcd\xef"); // challenge
         ntlm.extend_from_slice(&[0; 8]); // reserved
-        ntlm.extend_from_slice(&[0; 8]); // target info fields
+        ntlm.extend_from_slice(&(info.len() as u16).to_le_bytes()); // target info fields
+        ntlm.extend_from_slice(&(info.len() as u16).to_le_bytes());
+        ntlm.extend_from_slice(&PAYLOAD_AT.to_le_bytes());
         ntlm.extend_from_slice(&[major, minor]);
         ntlm.extend_from_slice(&build.to_le_bytes());
         ntlm.extend_from_slice(&[0, 0, 0, 0x0f]);
-        // Wrapped the way a server answers, in a SPNEGO NegTokenResp.
-        let token = der(0xa1, &der(0x30, &der(0xa2, &der(0x04, &ntlm))));
+        ntlm.extend_from_slice(&info);
+        // Wrapped the way a server answers, in a SPNEGO NegTokenResp, whose
+        // lengths pass 127 once the challenge names anything.
+        let token = long_der(
+            0xa1,
+            &long_der(0x30, &long_der(0xa2, &long_der(0x04, &ntlm))),
+        );
 
         let mut body = 9u16.to_le_bytes().to_vec();
         body.extend_from_slice(&[0; 2]); // session flags
@@ -373,6 +424,18 @@ mod tests {
         body.extend_from_slice(&(token.len() as u16).to_le_bytes());
         body.extend_from_slice(&token);
         smb2_response(1, 0xC000_0016, &body)
+    }
+
+    /// A DER element whose length takes the long form where it has to
+    /// (X.690 §8.1.3.5), which the requests this analyzer builds never need.
+    fn long_der(tag: u8, content: &[u8]) -> Vec<u8> {
+        if content.len() < 0x80 {
+            return der(tag, content);
+        }
+        let mut out = vec![tag, 0x82];
+        out.extend_from_slice(&(content.len() as u16).to_be_bytes());
+        out.extend_from_slice(content);
+        out
     }
 
     /// What a current Windows server answers: the dialect it chose, that it
@@ -429,9 +492,92 @@ mod tests {
             challenge_response(10, 0, 20348),
         ]
         .concat();
+        let named = [
+            negotiate_response(0x0001, 0x0311),
+            challenge_naming(10, 0, 20348, DOMAIN_CONTROLLER),
+        ]
+        .concat();
         for end in 0..stream.len() {
             let _ = framed::smb2_exchange(&stream[..end]);
         }
+        for end in 0..named.len() {
+            let _ = framed::smb2_exchange(&named[..end]);
+            let _ = framed::smb2_names(&named[..end]);
+        }
+    }
+
+    /// The target information a domain controller's challenge carries, in the
+    /// order Windows writes it: the two NetBIOS names, the three DNS names, and
+    /// a timestamp, which is not a name.
+    const DOMAIN_CONTROLLER: &[(u16, &str)] = &[
+        (2, "CORP"),
+        (1, "DC01"),
+        (4, "corp.example"),
+        (3, "dc01.corp.example"),
+        (5, "corp.example"),
+        (7, "\u{1}\u{2}\u{3}\u{4}"),
+    ];
+
+    /// What [`DOMAIN_CONTROLLER`] names, in the order it names them.
+    fn domain_controller_names() -> Vec<HostName> {
+        [
+            (NameKind::NetbiosDomain, "CORP"),
+            (NameKind::NetbiosHost, "DC01"),
+            (NameKind::Domain, "corp.example"),
+            (NameKind::Host, "dc01.corp.example"),
+            (NameKind::Forest, "corp.example"),
+        ]
+        .into_iter()
+        .map(|(kind, name)| HostName::new(kind, NameSource::Ntlm, name).expect("a name"))
+        .collect()
+    }
+
+    /// An unauthenticated challenge names the machine, its domain and its
+    /// forest, each pair read into the kind MS-NLMP gives it, and none of them
+    /// reaches the text the corpus matches, which is a service's description
+    /// and is not masked where a report is.
+    #[test]
+    fn an_ntlm_challenge_names_the_machine_its_domain_and_its_forest() {
+        let stream = [
+            negotiate_response(0x0001, 0x0311),
+            challenge_naming(10, 0, 20348, DOMAIN_CONTROLLER),
+        ]
+        .concat();
+
+        assert_eq!(framed::smb2_names(&stream), domain_controller_names());
+        assert_eq!(
+            framed::smb2_exchange(&stream),
+            [
+                "dialect 3.1.1; signing not required",
+                "Windows 10.0 Build 20348"
+            ],
+            "the names are not a service's description"
+        );
+    }
+
+    /// MS-NLMP allows each pair once, so a second of one is not read, and an
+    /// empty value is a server that states no such name rather than one whose
+    /// name is empty.
+    #[test]
+    fn a_pair_is_read_once_and_an_empty_one_names_nothing() {
+        let stream = challenge_naming(
+            10,
+            0,
+            20348,
+            &[(1, "DC01"), (1, "IMPOSTOR"), (2, ""), (4, "corp.example")],
+        );
+        let names = framed::smb2_names(&stream);
+        let named: Vec<(NameKind, &str)> = names
+            .iter()
+            .map(|name| (name.kind(), name.name()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                (NameKind::NetbiosHost, "DC01"),
+                (NameKind::Domain, "corp.example")
+            ]
+        );
     }
 
     /// The requests as MS-SMB2 lays them out: two whole NetBIOS messages, the
@@ -535,6 +681,59 @@ mod tests {
             .iter()
             .find_map(|os| os.product.as_deref());
         assert_eq!(os, Some("Windows Server 2022"));
+    }
+
+    /// **What a Windows server calls itself reaches its host, and is masked
+    /// where a report is asked to mask.** Over sockets end to end: the corpus
+    /// probe, the analyzer's own session setup, the challenge naming the
+    /// machine and its domain, and the host record a report is written from.
+    ///
+    /// The names are the most identifying strings a scan of a domain learns,
+    /// and a service's description is not masked; carried there, or not
+    /// carried at all, a redacted report would leak the domain or lose it.
+    #[tokio::test]
+    async fn a_server_s_ntlm_names_reach_its_host_masked_where_a_report_masks() {
+        use crate::export::schema::HostDto;
+        use crate::export::{ExportOptions, Redaction};
+        use crate::model::host::Host;
+
+        let addr = smb_server(
+            negotiate_response(0x0001, 0x02ff),
+            [
+                negotiate_response(0x0001, 0x0311),
+                challenge_naming(10, 0, 20348, DOMAIN_CONTROLLER),
+            ]
+            .concat(),
+        )
+        .await;
+
+        let identified = fingerprint_445(addr).await;
+        let service = identified.port.service().expect("the port is named");
+        assert_eq!(service.extrainfo(), Some("SMB 3.1.1, signing not required"));
+
+        let mut host = Host::new(addr.ip());
+        identified.about_the_host.apply(&mut host);
+
+        let render = |options: ExportOptions| {
+            serde_json::to_value(HostDto::new(&host, &options)).expect("a host renders")
+        };
+        let plain = render(ExportOptions::new());
+        let names = plain["names"].as_array().expect("the host carries names");
+        assert_eq!(names.len(), 5, "{names:?}");
+        assert!(
+            names.contains(&serde_json::json!({
+                "source": "ntlm",
+                "kind": "netbios_host",
+                "name": "DC01",
+            })),
+            "{names:?}"
+        );
+
+        let masked = render(ExportOptions::new().with_redaction(Redaction::Standard)).to_string();
+        assert!(
+            !masked.contains("corp") && !masked.contains("DC01") && masked.contains("dcXXXXXle"),
+            "a name survived redaction: {masked}"
+        );
     }
 
     /// A server from before SMB2 answers the probe in SMB1 and is asked for a

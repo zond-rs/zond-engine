@@ -416,6 +416,24 @@ fn fold_host(accounts: &[&Host]) -> Host {
         host.set_hostname(Some(hostname.to_owned()));
     }
 
+    // Per protocol, from the newest account that heard names in it, which is
+    // the rule the hostname above keeps applied to each protocol on its own.
+    // A machine renamed between two scans states its new name over NTLM and
+    // no longer its old one, so a union would report both as current; an
+    // account that asked no SMB server says nothing about what one calls the
+    // machine, so it cannot displace an older account that did.
+    let mut heard = std::collections::BTreeSet::new();
+    for account in accounts.iter().rev() {
+        let sources: std::collections::BTreeSet<_> =
+            account.names().map(|name| name.source()).collect();
+        for name in account.names() {
+            if !heard.contains(&name.source()) {
+                host.record_name(name.clone());
+            }
+        }
+        heard.extend(sources);
+    }
+
     // `Unknown` is the absence of evidence, by the model's own documentation, so
     // it never overrides. A host every source was silent about keeps the
     // `Unknown` that `Host::new` put there.
@@ -1042,6 +1060,36 @@ mod tests {
                 .expect("a report ends after it begins"),
             DAY + Duration::from_secs(60)
         );
+    }
+
+    /// **A name is the newest account's in each protocol.** A machine renamed
+    /// between two scans states only its new name, so a fold that kept both
+    /// would report a name the machine no longer answers to; and a newer scan
+    /// that asked no directory says nothing about what the directory calls
+    /// the machine, so the older account's LDAP names stand.
+    #[test]
+    fn a_name_is_the_newest_account_s_in_each_protocol() {
+        use crate::model::host::{HostName, NameKind, NameSource};
+
+        let name = |source, text| HostName::new(NameKind::Host, source, text).expect("a name");
+        let mut old = host(1);
+        old.record_name(name(NameSource::Ntlm, "old.corp.example"));
+        old.record_name(name(NameSource::Ldap, "dc.corp.example"));
+        let mut new = host(1);
+        new.record_name(name(NameSource::Ntlm, "new.corp.example"));
+
+        let folded = merged(vec![
+            report("0.18.0", day(1), vec![old]),
+            report("0.18.0", day(2), vec![new]),
+        ]);
+        let names: Vec<&str> = folded
+            .hosts()
+            .next()
+            .expect("the host")
+            .names()
+            .map(HostName::name)
+            .collect();
+        assert_eq!(names, ["new.corp.example", "dc.corp.example"]);
     }
 
     /// Folding a merged report keeps it merged: the origins its own sources were

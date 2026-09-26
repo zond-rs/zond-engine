@@ -79,6 +79,32 @@ pub(crate) fn reply_text(bytes: &[u8]) -> String {
     text
 }
 
+/// The bytes [`reply_text`] read `text` from, for a reader that decodes a
+/// reply as structure after it has become text.
+///
+/// Exact wherever the text says how it was read. A character from U+0100 up
+/// can only have been a UTF-8 sequence, and one below U+0080 only its own
+/// byte. What is ambiguous is U+0080 to U+00FF, which is either a byte that
+/// belonged to no sequence or a two-byte sequence led by 0xC2 or 0xC3, and it
+/// is read back as the single byte. That is right for every high byte a binary
+/// header carries, for the reason [`reply_text`] gives, and wrong only for text
+/// inside the reply that spells a Latin-1 letter in UTF-8. A decoder handed
+/// such a reply finds a length one short of what it states and stops there,
+/// which is the answer it gives any reply it cannot read.
+pub(crate) fn reply_bytes(text: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(text.len());
+    for character in text.chars() {
+        match u8::try_from(u32::from(character)) {
+            Ok(byte) => bytes.push(byte),
+            Err(_) => {
+                let mut buffer = [0; 4];
+                bytes.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+            }
+        }
+    }
+    bytes
+}
+
 /// The texts one banner should be matched against, most complete first.
 ///
 /// Usually just the banner. A structured one also yields the fields the corpus

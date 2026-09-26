@@ -49,6 +49,7 @@ mod favicon;
 mod framed;
 mod http;
 mod jarm;
+mod ldap;
 mod matcher;
 // Crate-visible so the Tier-1 flow interpreter compiles its `expect`/`bind`
 // patterns through the one engine every Tier-0 signature does.
@@ -279,8 +280,9 @@ pub fn lookup_service_name(port: u16) -> Option<String> {
 /// What a service said about the *machine* it runs on, as distinct from what it
 /// said about itself.
 ///
-/// Two findings filed in two places: the service belongs to the port, the
-/// operating system and the hardware to the host. They travel together because
+/// Two findings filed in two places: the service belongs to the port, and the
+/// operating system, the hardware and the names the machine goes by to the
+/// host. They travel together because
 /// one banner routinely states both, and separating them at the source would
 /// mean two passes over the same evidence.
 #[derive(Debug, Clone, Default)]
@@ -290,20 +292,22 @@ pub struct AboutTheHost {
     /// The hardware they described, where they described any. Over five hundred
     /// shipped rules name a box and no system at all.
     pub hardware: Option<crate::model::host::HardwareInfo>,
+    /// The names the machine gave for itself, in the order they were read.
+    pub names: Vec<crate::model::host::HostName>,
 }
 
 impl AboutTheHost {
     /// Whether nothing was concluded about the machine.
     pub fn is_empty(&self) -> bool {
-        self.os.is_empty() && self.hardware.is_none()
+        self.os.is_empty() && self.hardware.is_none() && self.names.is_empty()
     }
 
     /// Records everything this says about `host`, and reports whether the
     /// operating-system reading changed.
     ///
-    /// One call because the two findings arrive together and land in two places,
-    /// and a caller doing it in two steps is a caller that will one day do only
-    /// the first. Hardware is merged rather than replaced: a record read from an
+    /// One call because the findings arrive together and land in separate
+    /// places, and a caller doing it in steps is a caller that will one day do
+    /// only the first. Hardware is merged rather than replaced: a record read from an
     /// address block and one a banner described are both about the same box, and
     /// [`HardwareInfo::merge`](crate::model::host::HardwareInfo::merge) knows
     /// which half of each to keep.
@@ -316,6 +320,9 @@ impl AboutTheHost {
                 }
                 None => host.set_hardware(described),
             }
+        }
+        for name in self.names {
+            host.record_name(name);
         }
         os::identify(host, self.os)
     }
@@ -337,6 +344,10 @@ impl AboutTheHost {
                     best.merge(other);
                     best
                 }),
+            names: evidence
+                .iter()
+                .flat_map(|e| e.names.iter().cloned())
+                .collect(),
         }
     }
 }
@@ -1910,6 +1921,7 @@ static ANALYZERS: &[&dyn Analyzer] = &[
     &FaviconAnalyzer,
     &HttpHeadersAnalyzer,
     &JarmAnalyzer,
+    &ldap::LdapAnalyzer,
     &smb::SmbAnalyzer,
     &SshAnalyzer,
     &TlsCertAnalyzer,

@@ -338,6 +338,16 @@ mod tests {
         assert_eq!(plain["hosts"][0]["hostname"], "router.local");
         assert_eq!(masked["hosts"][0]["hostname"], "roXXXXXal");
 
+        // A name the host gave for itself is masked on the terms its hostname
+        // is, the domain as well as the machine, and keeps what says what it
+        // is: the kind and the protocol name no one.
+        assert_eq!(plain["hosts"][0]["names"][0]["name"], "gw01.corp.example");
+        assert_eq!(masked["hosts"][0]["names"][0]["name"], "gwXXXXXle");
+        assert_eq!(masked["hosts"][0]["names"][0]["kind"], "host");
+        assert_eq!(masked["hosts"][0]["names"][0]["source"], "ldap");
+        let domains = masked["hosts"][0]["names"].to_string();
+        assert!(!domains.contains("corp"), "a domain survived: {domains}");
+
         assert_eq!(plain["hosts"][0]["hardware"]["mac"], "2c:cf:67:00:00:01");
         assert_eq!(masked["hosts"][0]["hardware"]["mac"], "2c:cf:67:XX:XX:XX");
 

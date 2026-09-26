@@ -176,11 +176,14 @@ impl HostChange {
             },
 
             // A different system under an address, a different card answering for
-            // it, a role it did not have, a filter in front of it that changed
-            // behaviour, or a protocol its stack takes delivery of that it did
-            // not. Each is somebody having changed something.
+            // it, a machine renamed or joined to another domain, a role it did
+            // not have, a filter in front of it that changed behaviour, or a
+            // protocol its stack takes delivery of that it did not. Each is
+            // somebody having changed something. A name the machine states is
+            // set on the machine, unlike a reverse name, which is DNS's.
             HostChange::Os(_)
             | HostChange::Macs { .. }
+            | HostChange::Names { .. }
             | HostChange::Roles { .. }
             | HostChange::Filtering { .. }
             | HostChange::IpProtocols { .. } => Significance::Notable,

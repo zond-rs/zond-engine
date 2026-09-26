@@ -38,7 +38,9 @@ use crate::diff::port::{self, Clocks, PortDelta, PresenceFor};
 use crate::diff::scope::ScopeIndex;
 use crate::model::finding::{ClaimId, Finding, Severity};
 use crate::model::host::os::OsFingerprint;
-use crate::model::host::{Filtering, Host, HostStatus, IpProtocolState, NetworkRole};
+use crate::model::host::{
+    Filtering, Host, HostName, HostStatus, IpProtocolState, NameSource, NetworkRole,
+};
 use crate::model::mac::MacAddr;
 
 /// One host, as the two scans hold it.
@@ -136,6 +138,22 @@ pub enum HostChange {
     Status(Change<HostStatus>),
     /// The resolved name changed.
     Hostname(Change<Option<String>>),
+    /// The names the host gave for itself changed, each list in the model's
+    /// order.
+    ///
+    /// Compared only within the protocols the current scan heard names in. A
+    /// scan that asked no SMB server for a session, or read no directory,
+    /// established nothing about the names those state, and reporting them lost
+    /// on its word would have a quick scan compared against a thorough one
+    /// announce every domain controller renamed. The rule
+    /// [`Os`](Self::Os) follows, for the same reason.
+    Names {
+        /// Names the current scan heard and the baseline did not.
+        gained: Vec<HostName>,
+        /// Names the baseline heard, in a protocol the current scan also heard
+        /// names in, and the current scan did not.
+        lost: Vec<HostName>,
+    },
     /// The addresses the host answers at changed, each list ascending.
     Addresses {
         /// Addresses the current scan found it at and the baseline did not.
@@ -339,6 +357,20 @@ fn changes_between(before: &Host, after: &Host) -> Vec<HostChange> {
         after.hostname().map(str::to_owned),
     ) {
         changes.push(HostChange::Hostname(hostname));
+    }
+
+    // Only the protocols the current scan heard names in, so a scan that never
+    // asked reports nothing lost. See `HostChange::Names`.
+    let heard: BTreeSet<NameSource> = after.names().map(HostName::source).collect();
+    let (gained, lost) = difference(
+        before
+            .names()
+            .filter(|name| heard.contains(&name.source()))
+            .cloned(),
+        after.names().cloned(),
+    );
+    if !gained.is_empty() || !lost.is_empty() {
+        changes.push(HostChange::Names { gained, lost });
     }
 
     let (gained, lost) = difference(before.ips().iter().copied(), after.ips().iter().copied());
@@ -612,6 +644,49 @@ mod tests {
             changes_between(&host(1), &host(1))
                 .iter()
                 .all(|change| !matches!(change, HostChange::Filtering { .. }))
+        );
+    }
+
+    /// **A name is compared only in a protocol the current scan heard.** A
+    /// domain controller renamed is the change a rescan exists to surface, and
+    /// a rescan that asked no directory said nothing about what the directory
+    /// calls itself: reported as lost, every name a thorough baseline heard
+    /// would read as gone after a quick scan.
+    #[test]
+    fn a_name_is_compared_only_in_a_protocol_the_current_scan_heard() {
+        use crate::model::host::NameKind;
+
+        let name = |kind, source, name| HostName::new(kind, source, name).expect("a name");
+        let old_host = name(NameKind::Host, NameSource::Ntlm, "dc01.corp.example");
+        let new_host = name(NameKind::Host, NameSource::Ntlm, "dc02.corp.example");
+        let directory = name(NameKind::Domain, NameSource::Ldap, "corp.example");
+
+        let mut before = host(1);
+        before.record_name(old_host.clone());
+        before.record_name(directory);
+        let mut after = host(1);
+        after.record_name(new_host.clone());
+
+        let changes = changes_between(&before, &after);
+        let names = changes
+            .iter()
+            .find_map(|change| match change {
+                HostChange::Names { gained, lost } => Some((gained, lost)),
+                _ => None,
+            })
+            .expect("the renamed machine is a change");
+        assert_eq!(names.0, &[new_host]);
+        assert_eq!(
+            names.1,
+            &[old_host],
+            "the directory's domain is not lost: nothing asked it"
+        );
+
+        assert!(
+            changes_between(&before, &host(1))
+                .iter()
+                .all(|change| !matches!(change, HostChange::Names { .. })),
+            "a scan that heard no names says nothing about them"
         );
     }
 

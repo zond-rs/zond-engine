@@ -80,7 +80,7 @@ use crate::model::host::os::OsFingerprint;
 use crate::model::host::path::Hop;
 use crate::model::host::telemetry::HostTelemetry;
 use crate::model::host::{
-    EvidenceSource, HardwareInfo, Host, IpProtocolState, StatusProtocol, StatusReason,
+    EvidenceSource, HardwareInfo, Host, HostName, IpProtocolState, StatusProtocol, StatusReason,
 };
 use crate::model::host::{OsEvidence, OsSource};
 use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
@@ -115,6 +115,9 @@ pub struct HostRecord {
     /// Its resolved name, if one was found.
     #[serde(default)]
     pub hostname: Option<String>,
+    /// The names it gave for itself, in the order the model holds them.
+    #[serde(default)]
+    pub names: Vec<NameRecord>,
     /// Whether it answered, by wire name.
     pub status: String,
     /// What the status rests on.
@@ -173,6 +176,9 @@ impl From<&Host> for HostRecord {
             primary_ip: host.primary_ip(),
             ips: host.ips().iter().copied().collect(),
             hostname: host.hostname().map(str::to_owned),
+            // Already ordered by the model's set, so two runs that heard the
+            // same names write the same file.
+            names: host.names().map(NameRecord::from).collect(),
             status: wire::host_status_name(host.status()).to_owned(),
             // Sorted, because the model holds these in a set: two runs that
             // found the same things must write the same file, or a journal is
@@ -264,6 +270,9 @@ impl HostRecord {
         host.extend_ips(self.ips.iter().copied());
         if let Some(hostname) = &self.hostname {
             host.set_hostname(Some(hostname.clone()));
+        }
+        for name in self.names.iter().filter_map(NameRecord::rebuild) {
+            host.record_name(name);
         }
         // An unrecognised name leaves the status where `Host::new` put it,
         // which is `Unknown`, the reading that claims least.
@@ -864,6 +873,45 @@ impl PortRecord {
             port.add_finding(finding);
         }
         Some(port)
+    }
+}
+
+/// A name a host gave for itself, as a file holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NameRecord {
+    /// Which protocol it was given in, by wire name.
+    pub source: String,
+    /// What it names, by wire name.
+    pub kind: String,
+    /// The name.
+    pub name: String,
+}
+
+impl From<&HostName> for NameRecord {
+    fn from(name: &HostName) -> Self {
+        Self {
+            source: wire::name_source_name(name.source()).to_owned(),
+            kind: wire::name_kind_name(name.kind()).to_owned(),
+            name: name.name().to_owned(),
+        }
+    }
+}
+
+impl NameRecord {
+    /// The name this records, or `None` where it cannot be read.
+    ///
+    /// A source or a kind this build does not know was written by a later
+    /// one, and there is no reading of it that claims less than leaving the
+    /// name out: filed under another kind, a forest would read as the host's
+    /// own name, and under another source as a claim a different protocol
+    /// made. The same holds for a name the model refuses, which no build
+    /// writes and a hand-edited file can.
+    pub fn rebuild(&self) -> Option<HostName> {
+        HostName::new(
+            wire::name_kind(&self.kind)?,
+            wire::name_source(&self.source)?,
+            &self.name,
+        )
     }
 }
 
@@ -2584,6 +2632,14 @@ mod tests {
         host.add_ip("2001:db8::1".parse().expect("an address"));
         host.set_hostname(Some("router.example".to_string()));
         host.set_status(HostStatus::Up);
+        // Every kind, from every source, so a name the record drops for either
+        // reason fails the round trip below.
+        for kind in crate::model::host::NameKind::ALL {
+            for source in crate::model::host::NameSource::ALL {
+                let name = format!("{kind:?}-{source:?}.example");
+                host.record_name(HostName::new(kind, source, &name).expect("a name"));
+            }
+        }
 
         let mut arp = StatusReason::new(StatusProtocol::Arp, "reply from gateway");
         arp.source = EvidenceSource::Intermediary(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 254)));

@@ -1050,6 +1050,17 @@ struct IpProtocolDto {
     state: String,
 }
 
+/// One `hosts[].names[]` entry: a name the host gave for itself, and which
+/// protocol it gave it in. Read as written, masked or not: a redacted
+/// document's names are the masks, as its hostnames are.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct NameDto {
+    source: String,
+    kind: String,
+    name: String,
+}
+
 /// `settings.retry`, nested here where the record flattens it.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -1266,6 +1277,7 @@ struct HostDto {
     ips: IpsDto,
     zone: Option<String>,
     hostname: Option<String>,
+    names: Vec<NameDto>,
     status: String,
     reasons: Vec<ReasonDto>,
     roles: Vec<String>,
@@ -1302,6 +1314,14 @@ impl HostDto {
             "a host status",
             &self.status,
         )?;
+        for name in &self.names {
+            known(
+                wire::name_source(&name.source),
+                "a name source",
+                &name.source,
+            )?;
+            known(wire::name_kind(&name.kind), "a name kind", &name.kind)?;
+        }
         for role in &self.roles {
             known(wire::network_role(role), "a network role", role)?;
         }
@@ -1327,6 +1347,15 @@ impl HostDto {
             primary_ip: address(&self.primary_ip)?,
             ips: Vec::new(),
             hostname: self.hostname,
+            names: self
+                .names
+                .into_iter()
+                .map(|entry| crate::record::NameRecord {
+                    source: entry.source,
+                    kind: entry.kind,
+                    name: entry.name,
+                })
+                .collect(),
             status: self.status,
             reasons: self
                 .reasons
@@ -2348,6 +2377,10 @@ mod tests {
 
             assert_eq!(read_back.status(), host.status());
             assert_eq!(read_back.hostname(), host.hostname());
+            assert!(
+                read_back.names().eq(host.names()),
+                "the names a host gave for itself survive"
+            );
             assert_eq!(read_back.mac(), host.mac());
             assert_eq!(read_back.port_count(), host.port_count());
             assert_eq!(

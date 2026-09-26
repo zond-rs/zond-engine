@@ -171,10 +171,17 @@ pub trait Exporter {
 /// ## What is masked and what is not
 ///
 /// [`Standard`](Self::Standard) masks the two things that identify a person or a
-/// device: hostnames and hardware addresses. Hostnames keep their first and last
+/// device: names and hardware addresses. Hostnames keep their first and last
 /// two characters, so `workstation` and `wifi-printer` stay distinguishable
 /// without either being readable. MAC addresses keep their OUI, so the vendor
 /// survives and the individual NIC does not.
+///
+/// A name is masked wherever a host's name appears, not only in the hostname:
+/// the names a host gives for itself
+/// ([`Host::names`](crate::model::host::Host::names)) and a certificate's
+/// subject are masked the same way. That includes a domain or a forest, which
+/// names the organisation running the machine and is the most identifying
+/// string a report can carry.
 ///
 /// IP addresses are left alone. A report is a list of hosts, and a masking
 /// scheme that hides which host is which collapses ten records on a /24 into ten
@@ -191,12 +198,13 @@ pub enum Redaction {
     /// Export what the scan found, unchanged.
     #[default]
     None,
-    /// Mask hostnames and hardware addresses.
+    /// Mask host and domain names and hardware addresses.
     Standard,
 }
 
 impl Redaction {
-    /// Applies the policy to a hostname.
+    /// Applies the policy to a hostname, or to any other name a report
+    /// carries for a host or its domain.
     ///
     /// Borrows when nothing is masked, so an unredacted export of a large scan
     /// does not allocate a string per host to hand back what it was given.

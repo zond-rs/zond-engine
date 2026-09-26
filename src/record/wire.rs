@@ -42,7 +42,9 @@ use std::borrow::Cow;
 use crate::model::confidence::Confidence;
 use crate::model::finding::{DetectionClass, Reference, Severity};
 use crate::model::host::OsSource;
-use crate::model::host::{Filtering, HostStatus, IpProtocolState, NetworkRole, StatusProtocol};
+use crate::model::host::{
+    Filtering, HostStatus, IpProtocolState, NameKind, NameSource, NetworkRole, StatusProtocol,
+};
 use crate::model::port::discovery::ScanResponse;
 use crate::model::port::{PortSet, PortState, Protocol};
 use crate::protocols::tcp;
@@ -193,6 +195,46 @@ pub fn filtering(name: &str) -> Option<Filtering> {
         "stateful_filter" => Filtering::StatefulFilter,
         "port_trusting_acl" => Filtering::PortTrustingAcl,
         "stateless_filter" => Filtering::StatelessFilter,
+        _ => return None,
+    })
+}
+
+/// What a name a host gave for itself names.
+pub fn name_kind_name(kind: NameKind) -> &'static str {
+    match kind {
+        NameKind::Host => "host",
+        NameKind::NetbiosHost => "netbios_host",
+        NameKind::Domain => "domain",
+        NameKind::NetbiosDomain => "netbios_domain",
+        NameKind::Forest => "forest",
+    }
+}
+
+/// [`name_kind_name`] read back.
+pub fn name_kind(name: &str) -> Option<NameKind> {
+    Some(match name {
+        "host" => NameKind::Host,
+        "netbios_host" => NameKind::NetbiosHost,
+        "domain" => NameKind::Domain,
+        "netbios_domain" => NameKind::NetbiosDomain,
+        "forest" => NameKind::Forest,
+        _ => return None,
+    })
+}
+
+/// Which protocol a host gave a name for itself in.
+pub fn name_source_name(source: NameSource) -> &'static str {
+    match source {
+        NameSource::Ntlm => "ntlm",
+        NameSource::Ldap => "ldap",
+    }
+}
+
+/// [`name_source_name`] read back.
+pub fn name_source(name: &str) -> Option<NameSource> {
+    Some(match name {
+        "ntlm" => NameSource::Ntlm,
+        "ldap" => NameSource::Ldap,
         _ => return None,
     })
 }
@@ -749,6 +791,14 @@ mod tests {
 
         for value in Filtering::ALL {
             assert_eq!(filtering(filtering_name(value)), Some(value));
+        }
+
+        for value in NameKind::ALL {
+            assert_eq!(name_kind(name_kind_name(value)), Some(value));
+        }
+
+        for value in NameSource::ALL {
+            assert_eq!(name_source(name_source_name(value)), Some(value));
         }
 
         for value in AttachmentSource::ALL {

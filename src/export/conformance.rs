@@ -37,15 +37,17 @@ use crate::export::{ExportOptions, Exporter, JsonExporter, Redaction, fixture};
 use crate::model::confidence::Confidence;
 use crate::model::finding::{DetectionClass, Severity};
 use crate::model::host::status::StatusProtocol;
-use crate::model::host::{Filtering, HostStatus, IpProtocolState, NetworkRole};
+use crate::model::host::{
+    Filtering, HostStatus, IpProtocolState, NameKind, NameSource, NetworkRole,
+};
 use crate::model::port::{PortState, Protocol};
 use crate::model::technique::{SctpScanTechnique, TcpScanTechnique};
 use crate::model::tls::{Interruption, SuiteFault, SuiteStrength, TlsVersion};
 use crate::record::wire::{
     attachment_source_name, confidence_name, detection_class_name, filtering_name,
-    host_status_name, ip_protocol_state_name, liveness_skip_name, network_role_name, pass_name,
-    port_state_name, protocol_name, scan_kind_name, scanner_kind_name, severity_name,
-    stop_reason_name,
+    host_status_name, ip_protocol_state_name, liveness_skip_name, name_kind_name, name_source_name,
+    network_role_name, pass_name, port_state_name, protocol_name, scan_kind_name,
+    scanner_kind_name, severity_name, stop_reason_name,
 };
 use crate::report::{AttachmentSource, LivenessSkip, Pass, ScanKind, ScannerKind, StopReason};
 use crate::transport::probe::SendMode;
@@ -249,6 +251,20 @@ fn enumerations() -> Vec<(&'static str, Vec<String>)> {
                     .map(host_status_name)
                     .collect(),
             ),
+        ),
+        (
+            "/$defs/host/properties/names/items/properties/source/enum",
+            named(
+                NameSource::ALL
+                    .iter()
+                    .copied()
+                    .map(name_source_name)
+                    .collect(),
+            ),
+        ),
+        (
+            "/$defs/host/properties/names/items/properties/kind/enum",
+            named(NameKind::ALL.iter().copied().map(name_kind_name).collect()),
         ),
         (
             "/$defs/host/properties/roles/items/enum",
@@ -830,6 +846,14 @@ fn a_redacted_comparison_masks_what_a_redacted_report_masks() {
     assert!(
         !rendered.contains("router.local") && !rendered.contains("gateway.local"),
         "a hostname survived redaction into the comparison"
+    );
+    assert!(
+        document
+            .pointer("/hosts/0/changes")
+            .is_some_and(|changes| changes.to_string().contains("name_gained"))
+            && !rendered.contains("ROUTER")
+            && !rendered.contains("GATEWAY"),
+        "a name the host gave for itself survived redaction into the comparison"
     );
     assert!(
         !rendered.contains("2c:cf:67:00:00:01"),

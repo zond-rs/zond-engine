@@ -24,6 +24,8 @@
 //! finding where its text begins and ends: a service whose answer needs real
 //! decoding, an SNMP varbind or a DNS answer section, has a module of its own.
 
+use crate::model::host::{HostName, NameKind, NameSource};
+
 /// The reply's length as the SQL Server Browser states it, and the header that
 /// precedes the instance list.
 const BROWSER_HEADER_BYTES: usize = 3;
@@ -1027,93 +1029,150 @@ pub(super) fn smb_session_setup(stream: &[u8]) -> Vec<String> {
 /// that a Samba server is not read as a Windows release.
 ///
 /// The challenge also names the machine and its domain, and those are not
-/// returned. They are the host's names, which a report masks where it is asked
-/// to, and a service's description is not where it looks for them.
+/// returned here. They are the host's names, which a report masks where it is
+/// asked to, and a service's description is not masked; [`smb2_names`] reads
+/// them into the record that is.
 ///
 /// Empty for a stream that holds no SMB2 message.
 #[must_use]
 pub(super) fn smb2_exchange(stream: &[u8]) -> Vec<String> {
-    const NBSS_HEADER_BYTES: usize = 4;
-    const HEADER_BYTES: usize = 64;
     const NEGOTIATE: u16 = 0;
-    const SESSION_SETUP: u16 = 1;
     /// The dialect a server answers an SMB1 negotiate with when it wants the
     /// client to negotiate again in SMB2, which names no dialect it speaks.
     const WILDCARD: u16 = 0x02FF;
     const SIGNING_REQUIRED: u16 = 0x0002;
 
     let mut texts = Vec::new();
-    let mut at = 0;
-    while at + NBSS_HEADER_BYTES <= stream.len() {
-        let length =
-            u32::from_be_bytes([0, stream[at + 1], stream[at + 2], stream[at + 3]]) as usize;
-        let Some(message) = stream.get(at + NBSS_HEADER_BYTES..at + NBSS_HEADER_BYTES + length)
-        else {
-            break;
-        };
-        at += NBSS_HEADER_BYTES + length;
-
-        if !message.starts_with(b"\xfeSMB") || message.len() < HEADER_BYTES + 8 {
-            continue;
-        }
+    for message in smb2_messages(stream) {
         let word = |at: usize| u16::from_le_bytes([message[at], message[at + 1]]);
         let status = u32::from_le_bytes([message[8], message[9], message[10], message[11]]);
-        let body = HEADER_BYTES;
+        let body = SMB2_HEADER_BYTES;
 
-        match word(12) {
-            NEGOTIATE if status == 0 => {
-                let dialect = word(body + 4);
-                if dialect == WILDCARD {
-                    continue;
-                }
-                let signing = match word(body + 2) & SIGNING_REQUIRED {
-                    0 => "not required",
-                    _ => "required",
-                };
-                texts.push(format!(
-                    "dialect {}.{}{}; signing {signing}",
-                    dialect >> 8,
-                    (dialect >> 4) & 0xF,
-                    match dialect & 0xF {
-                        0 => String::new(),
-                        revision => format!(".{revision}"),
-                    }
-                ));
+        if word(12) == NEGOTIATE && status == 0 {
+            let dialect = word(body + 4);
+            if dialect == WILDCARD {
+                continue;
             }
-            // The challenge comes back under a status saying more is needed,
-            // which is the answer and not a refusal.
-            SESSION_SETUP => {
-                let offset = word(body + 4) as usize;
-                let length = word(body + 6) as usize;
-                if let Some(version) = message
-                    .get(offset..offset + length)
-                    .and_then(ntlm_challenge_version)
-                {
-                    texts.push(version);
+            let signing = match word(body + 2) & SIGNING_REQUIRED {
+                0 => "not required",
+                _ => "required",
+            };
+            texts.push(format!(
+                "dialect {}.{}{}; signing {signing}",
+                dialect >> 8,
+                (dialect >> 4) & 0xF,
+                match dialect & 0xF {
+                    0 => String::new(),
+                    revision => format!(".{revision}"),
                 }
-            }
-            _ => {}
+            ));
+        }
+        if let Some(version) = smb2_session_token(message).and_then(ntlm_challenge_version) {
+            texts.push(version);
         }
     }
     texts
 }
 
-/// The Windows version an NTLM challenge inside `token` states, as
-/// `Windows 10.0 Build 20348`.
+/// The names an SMB2 server gives for itself in the NTLM challenge its session
+/// setup answer carries: the target information of MS-NLMP 2.2.1.2, which
+/// Windows and Samba both fill in before anything is authenticated.
 ///
-/// The challenge is found by its signature rather than by unwrapping the
-/// SPNEGO around it, which a server may or may not send. [`None`] where there
-/// is none, where it carries no version, or where the build is zero.
-fn ntlm_challenge_version(token: &[u8]) -> Option<String> {
+/// Five of its pairs are names (MS-NLMP 2.2.2.1), and each is read into its
+/// own kind:
+///
+/// | pair | `AvId` | kind |
+/// |---|---|---|
+/// | `MsvAvNbComputerName` | 1 | [`NetbiosHost`](NameKind::NetbiosHost) |
+/// | `MsvAvNbDomainName` | 2 | [`NetbiosDomain`](NameKind::NetbiosDomain) |
+/// | `MsvAvDnsComputerName` | 3 | [`Host`](NameKind::Host) |
+/// | `MsvAvDnsDomainName` | 4 | [`Domain`](NameKind::Domain) |
+/// | `MsvAvDnsTreeName` | 5 | [`Forest`](NameKind::Forest) |
+///
+/// The first of each is taken, since the specification allows one of each, and
+/// the walk stops at the end-of-list pair or at the first pair the bytes cannot
+/// hold. A name the model refuses, such as an empty one, is left out; the rest
+/// of the list is still read.
+///
+/// Empty for a stream that holds no challenge, and for one whose challenge
+/// carries no target information.
+#[must_use]
+pub(super) fn smb2_names(stream: &[u8]) -> Vec<HostName> {
+    smb2_messages(stream)
+        .filter_map(smb2_session_token)
+        .find_map(|token| {
+            let names = ntlm_target_names(token);
+            (!names.is_empty()).then_some(names)
+        })
+        .unwrap_or_default()
+}
+
+/// Bytes of an SMB2 header (MS-SMB2 2.2.1.2).
+const SMB2_HEADER_BYTES: usize = 64;
+
+/// The SMB2 messages in `stream`, each without the NetBIOS length in front of
+/// it, and each long enough to hold a header and the first words of a body.
+///
+/// Stops at the first message the stream does not hold whole, which is where a
+/// truncated reply ends.
+fn smb2_messages(stream: &[u8]) -> impl Iterator<Item = &[u8]> {
+    const NBSS_HEADER_BYTES: usize = 4;
+
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        loop {
+            let header = stream.get(at..at + NBSS_HEADER_BYTES)?;
+            let length = u32::from_be_bytes([0, header[1], header[2], header[3]]) as usize;
+            let message = stream.get(at + NBSS_HEADER_BYTES..at + NBSS_HEADER_BYTES + length)?;
+            at += NBSS_HEADER_BYTES + length;
+            if message.starts_with(b"\xfeSMB") && message.len() >= SMB2_HEADER_BYTES + 8 {
+                return Some(message);
+            }
+        }
+    })
+}
+
+/// The security buffer of an SMB2 SESSION_SETUP response (MS-SMB2 2.2.6),
+/// where the server's NTLM challenge travels.
+///
+/// Read whatever the status, since the challenge comes back under one saying
+/// more is needed, which is the answer and not a refusal.
+fn smb2_session_token(message: &[u8]) -> Option<&[u8]> {
+    const SESSION_SETUP: u16 = 1;
+
+    let word = |at: usize| u16::from_le_bytes([message[at], message[at + 1]]);
+    if word(12) != SESSION_SETUP {
+        return None;
+    }
+    let offset = word(SMB2_HEADER_BYTES + 4) as usize;
+    let length = word(SMB2_HEADER_BYTES + 6) as usize;
+    message.get(offset..offset + length)
+}
+
+/// The NTLM CHALLENGE_MESSAGE inside `token`, from its signature to the end.
+///
+/// Found by its signature rather than by unwrapping the SPNEGO around it,
+/// which a server may or may not send.
+fn ntlm_challenge(token: &[u8]) -> Option<&[u8]> {
     const CHALLENGE: &[u8] = b"NTLMSSP\0\x02\0\0\0";
-    /// The flag saying the `Version` field is filled in.
-    const NEGOTIATE_VERSION: u32 = 0x0200_0000;
-    const VERSION_AT: usize = 48;
 
     let start = token
         .windows(CHALLENGE.len())
         .position(|window| window == CHALLENGE)?;
-    let message = &token[start..];
+    Some(&token[start..])
+}
+
+/// The Windows version an NTLM challenge inside `token` states, as
+/// `Windows 10.0 Build 20348`.
+///
+/// [`None`] where there is no challenge, where it carries no version, or where
+/// the build is zero.
+fn ntlm_challenge_version(token: &[u8]) -> Option<String> {
+    /// The flag saying the `Version` field is filled in.
+    const NEGOTIATE_VERSION: u32 = 0x0200_0000;
+    const VERSION_AT: usize = 48;
+
+    let message = ntlm_challenge(token)?;
     let flags = u32::from_le_bytes(message.get(20..24)?.try_into().ok()?);
     if flags & NEGOTIATE_VERSION == 0 {
         return None;
@@ -1121,6 +1180,67 @@ fn ntlm_challenge_version(token: &[u8]) -> Option<String> {
     let version = message.get(VERSION_AT..VERSION_AT + 4)?;
     let build = u16::from_le_bytes([version[2], version[3]]);
     (build != 0).then(|| format!("Windows {}.{} Build {build}", version[0], version[1]))
+}
+
+/// The names in the target information of an NTLM challenge inside `token`.
+/// See [`smb2_names`] for which pairs are read and how.
+fn ntlm_target_names(token: &[u8]) -> Vec<HostName> {
+    /// Where the challenge's `TargetInfoFields` sit: a length, a maximum
+    /// length, and an offset from the start of the message.
+    const TARGET_INFO_AT: usize = 40;
+    const AV_EOL: u16 = 0;
+
+    let Some(message) = ntlm_challenge(token) else {
+        return Vec::new();
+    };
+    let field = || -> Option<&[u8]> {
+        let fields = message.get(TARGET_INFO_AT..TARGET_INFO_AT + 8)?;
+        let length = u16::from_le_bytes([fields[0], fields[1]]) as usize;
+        let offset = u32::from_le_bytes([fields[4], fields[5], fields[6], fields[7]]) as usize;
+        message.get(offset..offset.checked_add(length)?)
+    };
+    let Some(pairs) = field() else {
+        return Vec::new();
+    };
+
+    let mut names: Vec<HostName> = Vec::new();
+    let mut seen = Vec::new();
+    let mut at = 0;
+    while let Some(pair) = pairs.get(at..at + 4) {
+        let id = u16::from_le_bytes([pair[0], pair[1]]);
+        let length = u16::from_le_bytes([pair[2], pair[3]]) as usize;
+        let Some(value) = pairs.get(at + 4..at + 4 + length) else {
+            break;
+        };
+        at += 4 + length;
+
+        let kind = match id {
+            AV_EOL => break,
+            1 => NameKind::NetbiosHost,
+            2 => NameKind::NetbiosDomain,
+            3 => NameKind::Host,
+            4 => NameKind::Domain,
+            5 => NameKind::Forest,
+            _ => continue,
+        };
+        if seen.contains(&kind) {
+            continue;
+        }
+        seen.push(kind);
+
+        let units: Vec<u16> = value
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_le_bytes(*pair))
+            .collect();
+        names.extend(HostName::new(
+            kind,
+            NameSource::Ntlm,
+            &String::from_utf16_lossy(&units),
+        ));
+    }
+    names
 }
 
 /// The NUL-terminated UTF-16 strings in `field`, in order.

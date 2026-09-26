@@ -497,6 +497,7 @@
         "primary_ip",
         "ips",
         "hostname",
+        "names",
         "status",
         "alive",
         "reasons",
@@ -551,6 +552,43 @@
             "string",
             "null"
           ]
+        },
+        "names": {
+          "description": "The names the host gave for itself through its own services, the machine's before its domain's: an NTLM challenge's target information, an LDAP directory's root entry. Every one is masked under export redaction as `hostname` is, the domain and the forest as well as the machine. Never a copy of `hostname`, which is what name resolution answered for the address; empty where no service the scan asked named anything.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source",
+              "kind",
+              "name"
+            ],
+            "properties": {
+              "source": {
+                "description": "The protocol the host stated the name in.",
+                "enum": [
+                  "ntlm",
+                  "ldap"
+                ]
+              },
+              "kind": {
+                "description": "What the name names: `host` is the machine's DNS name and `netbios_host` its flat NetBIOS name; `domain` and `netbios_domain` the same two for the domain or workgroup it belongs to; `forest` the root of that domain's forest.",
+                "enum": [
+                  "host",
+                  "netbios_host",
+                  "domain",
+                  "netbios_domain",
+                  "forest"
+                ]
+              },
+              "name": {
+                "description": "The name as the host stated it, masked under export redaction.",
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
         },
         "status": {
           "enum": [

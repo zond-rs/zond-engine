@@ -32,9 +32,10 @@ use crate::export::schema::{EngineDto, HostDto};
 use crate::format::time::rfc3339;
 use crate::model::finding::Finding;
 use crate::model::host::os::OsFingerprint;
-use crate::model::host::{IpProtocolState, ip_protocol_name};
+use crate::model::host::{HostName, IpProtocolState, ip_protocol_name};
 use crate::record::wire::{
-    host_status_name, ip_protocol_state_name, port_state_name, protocol_name, scan_kind_name,
+    host_status_name, ip_protocol_state_name, name_kind_name, name_source_name, port_state_name,
+    protocol_name, scan_kind_name,
 };
 
 pub use crate::format::{DIFF_SCHEMA_VERSION, ENGINE_NAME};
@@ -498,6 +499,7 @@ impl ChangeDto {
     /// |---|---|
     /// | `status` | whether the host answers |
     /// | `hostname` | its resolved name |
+    /// | `name_gained`, `name_lost` | one name it gave for itself each, as `ntlm domain: corp.example` |
     /// | `address_gained`, `address_lost` | one address each |
     /// | `os` | what it was identified as running |
     /// | `mac_gained`, `mac_lost` | one hardware address each |
@@ -536,6 +538,22 @@ impl ChangeDto {
                     .map(|n| redaction.hostname(n))
                     .as_deref(),
             ),
+            // The protocol and the kind lead, spelled as the report spells them,
+            // so a rule can key on `ntlm domain:` without parsing the name, and
+            // the name alone is masked, as it is everywhere a report carries it.
+            HostChange::Names { gained, lost } => {
+                let describe = |name: &HostName| {
+                    format!(
+                        "{} {}: {}",
+                        name_source_name(name.source()),
+                        name_kind_name(name.kind()),
+                        redaction.hostname(name.name())
+                    )
+                };
+                let gained: Vec<String> = gained.iter().map(describe).collect();
+                let lost: Vec<String> = lost.iter().map(describe).collect();
+                Self::set("name_gained", "name_lost", &gained, &lost)
+            }
             HostChange::Addresses { gained, lost } => {
                 Self::set("address_gained", "address_lost", gained, lost)
             }

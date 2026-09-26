@@ -454,6 +454,11 @@ fn write_host(
         }
     }
 
+    // The names a host gave for itself are not written. nmap's `<hostname>`
+    // is a name for the address, typed `PTR` or `user`, and every tool reading
+    // this format takes it as the host's identity: a NetBIOS domain written
+    // there would be read as the machine's DNS name. nmap reports them as the
+    // output of a script, and this engine runs no script to attribute them to.
     if let Some(hostname) = host.hostname() {
         writeln!(out, "<hostnames>")?;
         writeln!(
