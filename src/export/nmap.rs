@@ -84,9 +84,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::export::schema::{ENGINE_NAME, protocol_name, reference_text, severity_name};
 use crate::export::{ExportError, ExportOptions, Exporter};
 use crate::model::finding::Finding;
-use crate::model::host::{Host, HostStatus, IpProtocolState};
+use crate::model::host::{
+    EvidenceSource, Host, HostStatus, IpProtocolState, StatusProtocol, StatusReason,
+};
 use crate::model::ip::range::IpRange;
 use crate::model::ip::set::IpSet;
+use crate::model::port::discovery::ScanResponse;
 use crate::model::port::{Port, PortState, Protocol};
 use crate::model::technique::TcpScanTechnique;
 use crate::report::{ScanPhase, ScanReport, ScannerFailure};
@@ -349,7 +352,7 @@ fn write_host(
         out,
         r#"<status state="{}" reason="{}" reason_ttl="{}"/>"#,
         host_state(host.status()),
-        Attr(status_reason(host.status())),
+        Attr(status_reason(host)),
         // Nmap puts the TTL of the packet that established the host's state
         // here, and the attribute is required. This engine records none, so it
         // writes zero, which is what nmap writes for the same absence.
@@ -650,7 +653,7 @@ fn ip_protocol_reason(state: IpProtocolState) -> &'static str {
 /// was sent to; the caller filters those out, and this returns rather than
 /// writing an element with no `<state>` in it.
 fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
-    let (Some(state), Some(reason)) = (port_state(port.state()), port_reason(port.state())) else {
+    let (Some(state), Some(reason)) = (port_state(port.state()), port_reason(port)) else {
         return Ok(());
     };
 
@@ -662,9 +665,10 @@ fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
     )?;
     writeln!(
         out,
-        r#"<state state="{}" reason="{}" reason_ttl="0"/>"#,
+        r#"<state state="{}" reason="{}" reason_ttl="{}"/>"#,
         state,
         Attr(reason),
+        reason_ttl(port),
     )?;
 
     if let Some(service) = port.service() {
@@ -730,23 +734,83 @@ fn port_state(state: PortState) -> Option<&'static str> {
     })
 }
 
-/// What nmap would have written as the evidence for a state.
+/// The packet that decided a port's state, in nmap's words.
 ///
-/// Nmap's `reason` names the packet that decided a state. This engine records its
-/// evidence per host rather than per port, so these say only as much as is
-/// certainly true rather than naming a packet nobody saw. `no-response` is as far
-/// down as the vocabulary goes, and a port no probe was sent to did not fail to
-/// respond, so it answers [`None`] here for the reason [`port_state`] does.
-fn port_reason(state: PortState) -> Option<&'static str> {
-    Some(match state {
-        PortState::Open => "syn-ack",
-        PortState::Closed => "reset",
-        PortState::Filtered
-        | PortState::Unfiltered
-        | PortState::OpenFiltered
-        | PortState::ClosedFiltered => "no-response",
-        PortState::Unasked => return None,
+/// Nmap's `reason` names that packet, and this engine records it on the port's
+/// [`Discovery`], so the word is read from there: a UDP port that answered is
+/// `udp-response`, a connection the operating system refused `conn-refused`, an
+/// open port a window scan read off a reset `reset`. Nothing is inferred from the
+/// state where the record names the packet.
+///
+/// A port with no record of its packet falls back to the one packet its state
+/// and transport admit, where there is exactly one: only a SYN/ACK opens a TCP
+/// port, only a datagram a UDP one and only an INIT-ACK an SCTP one, only a
+/// reset closes a TCP port or leaves it unfiltered, only a port unreachable
+/// closes a UDP one and only an ABORT an SCTP one. The states silence decides
+/// fall back to `no-response`, which a UDP scan reaching `open|filtered` records
+/// no packet for because none arrived.
+///
+/// A port no probe was sent to did not fail to respond, so it answers [`None`]
+/// here for the reason [`port_state`] does.
+fn port_reason(port: &Port) -> Option<&str> {
+    port_state(port.state())?;
+
+    if let Some(discovery) = port.discovery() {
+        return Some(response_reason(discovery.reason(), port));
+    }
+
+    Some(match (port.state(), port.protocol()) {
+        (PortState::Open, Protocol::Tcp) => "syn-ack",
+        (PortState::Open, Protocol::Udp) => "udp-response",
+        (PortState::Open, Protocol::Sctp) => "init-ack",
+        (PortState::Closed | PortState::Unfiltered, Protocol::Tcp) => "reset",
+        (PortState::Closed, Protocol::Udp) => "port-unreach",
+        (PortState::Closed, Protocol::Sctp) => "abort",
+        _ => "no-response",
     })
+}
+
+/// A recorded response in nmap's reason vocabulary.
+///
+/// Nmap's words are finer than this engine's record in one place, the ICMP
+/// unreachable, which nmap names by its code and this engine records without
+/// one. A port unreachable is the only unreachable that closes a UDP port, so a
+/// closed UDP port's is `port-unreach`; any other is `dest-unreach`, nmap's word
+/// for a destination unreachable it does not single out by code, rather than a
+/// code nobody read.
+///
+/// A response this engine names and nmap does not is written in this engine's
+/// own name: an unfamiliar reason costs a reader a moment, where one naming a
+/// packet that never arrived costs them the truth.
+fn response_reason<'a>(response: &'a ScanResponse, port: &Port) -> &'a str {
+    match response {
+        // A SYN/ACK overheard on its way to another peer is still a SYN/ACK,
+        // which is the packet the word names.
+        ScanResponse::TcpSynAck | ScanResponse::OverheardSynAck => "syn-ack",
+        ScanResponse::TcpRst => "reset",
+        ScanResponse::ConnectionRefused => "conn-refused",
+        ScanResponse::UdpResponse => "udp-response",
+        ScanResponse::SctpInitAck => "init-ack",
+        ScanResponse::SctpAbort => "abort",
+        ScanResponse::NoResponse => "no-response",
+        ScanResponse::IcmpUnreachable
+            if port.state() == PortState::Closed && port.protocol() == Protocol::Udp =>
+        {
+            "port-unreach"
+        }
+        ScanResponse::IcmpUnreachable => "dest-unreach",
+        ScanResponse::IcmpProhibited => "admin-prohibited",
+        ScanResponse::Custom(name) => name.as_str(),
+    }
+}
+
+/// The TTL the reply that decided a port carried, which nmap writes beside the
+/// reason, or 0 where no reply was read from a header, which is what nmap
+/// writes for the same absence.
+fn reason_ttl(port: &Port) -> u8 {
+    port.discovery()
+        .and_then(|discovery| discovery.ttl())
+        .unwrap_or(0)
 }
 
 /// This engine's host statuses in nmap's spelling.
@@ -762,16 +826,96 @@ fn host_state(status: HostStatus) -> &'static str {
     }
 }
 
-/// The evidence behind a host's status, in as much of nmap's vocabulary as is
-/// honest.
-fn status_reason(status: HostStatus) -> &'static str {
-    match status {
-        HostStatus::Up => "echo-reply",
+/// The evidence behind a host's status, in nmap's words where nmap has one.
+///
+/// Read from the evidence the host holds rather than from its status, since
+/// nmap's reason names the packet that decided the state: a host its neighbour
+/// table answered for is `arp-response`, one that answered a ping `echo-reply`.
+/// Of several, the most direct is named, in the order [`host_reason_rank`]
+/// gives, so a document reads the same whichever arrived first.
+///
+/// A host holding no evidence for its status says so without naming a packet:
+/// `response` for one that is up for a reason nothing recorded, which is not a
+/// word of nmap's and is the honest one, and `no-response` for one nothing
+/// answered for, which is what an unknown host is.
+fn status_reason(host: &Host) -> &str {
+    let status = host.status();
+    if status == HostStatus::Filtered {
         // Nmap has no reason string for this because it has no such state. The
         // word is this engine's and says what happened.
-        HostStatus::Filtered => "probes-filtered",
-        HostStatus::Down => "no-response",
-        HostStatus::Unknown => "unknown-response",
+        return "probes-filtered";
+    }
+
+    let evidence = host
+        .reasons()
+        .iter()
+        .filter_map(|reason| Some((host_reason_rank(reason, status)?, reason)))
+        .min_by(|(rank, reason), (other_rank, other)| {
+            rank.cmp(other_rank)
+                .then_with(|| host_reason(reason).cmp(host_reason(other)))
+        });
+    if let Some((_, reason)) = evidence {
+        return host_reason(reason);
+    }
+
+    match status {
+        HostStatus::Up => "response",
+        HostStatus::Down => "dest-unreach",
+        HostStatus::Filtered | HostStatus::Unknown => "no-response",
+    }
+}
+
+/// How directly a piece of evidence establishes `status`, lowest first, or
+/// [`None`] for evidence that does not establish it at all.
+///
+/// A host keeps every reason it was given as its status rose, so one that is up
+/// may also hold the unreachable a router sent before it answered, and only
+/// evidence the host sent for itself says it is up. Among those, the neighbour
+/// table answering is the most direct and is what nmap names on a local
+/// segment, then the probes nmap's own discovery sends, in the order it sends
+/// them, then the rest.
+fn host_reason_rank(reason: &StatusReason, status: HostStatus) -> Option<u8> {
+    let from_host = reason.source == EvidenceSource::Host;
+    match status {
+        HostStatus::Up if from_host => Some(match reason.protocol {
+            StatusProtocol::Arp | StatusProtocol::Ndp => 0,
+            StatusProtocol::IcmpEcho => 1,
+            StatusProtocol::TcpSyn => 2,
+            StatusProtocol::Tcp => 3,
+            StatusProtocol::IcmpTimestamp => 4,
+            StatusProtocol::Udp | StatusProtocol::Sctp => 5,
+            StatusProtocol::IcmpUnreachable => 6,
+            StatusProtocol::Dhcp => 7,
+            StatusProtocol::Custom(_) => 8,
+        }),
+        // An unreachable is the only evidence that puts a host down, and
+        // whoever sent it is somebody in the path by definition.
+        HostStatus::Down => (reason.protocol == StatusProtocol::IcmpUnreachable).then_some(0),
+        HostStatus::Up | HostStatus::Filtered | HostStatus::Unknown => None,
+    }
+}
+
+/// One piece of host evidence in nmap's reason vocabulary.
+///
+/// Two of this engine's protocols carry either of two packets and record which
+/// only in prose, so their word names the transport rather than guessing the
+/// packet: `tcp-response` is nmap's word for a TCP reply it names no further,
+/// and `sctp-response` follows its shape. A DHCP server overheard on the segment has no
+/// word in nmap's vocabulary, which never listens, and is named for what it was.
+/// An ICMP unreachable is `dest-unreach` for the reason [`response_reason`]
+/// gives.
+fn host_reason(reason: &StatusReason) -> &str {
+    match &reason.protocol {
+        StatusProtocol::Arp => "arp-response",
+        StatusProtocol::Ndp => "nd-response",
+        StatusProtocol::IcmpEcho => "echo-reply",
+        StatusProtocol::IcmpTimestamp => "timestamp-reply",
+        StatusProtocol::IcmpUnreachable => "dest-unreach",
+        StatusProtocol::TcpSyn | StatusProtocol::Tcp => "tcp-response",
+        StatusProtocol::Sctp => "sctp-response",
+        StatusProtocol::Udp => "udp-response",
+        StatusProtocol::Dhcp => "dhcp-response",
+        StatusProtocol::Custom(name) => name,
     }
 }
 
@@ -991,6 +1135,180 @@ mod tests {
             "<!-- zond: excluded by policy, not scanned: \
              192.0.2.1-192.0.2.2, 192.0.2.9-192.0.2.9 -->"
         );
+    }
+
+    /// The `<state>` line of `port`, as written.
+    fn state_line(port: &Port) -> String {
+        let mut out = Vec::new();
+        write_port(&mut out, port).expect("writing to a vector");
+        let written = String::from_utf8(out).expect("UTF-8");
+        written
+            .lines()
+            .find(|line| line.starts_with("<state "))
+            .expect("a probed port has a state")
+            .to_owned()
+    }
+
+    /// A port's reason names the packet its record says decided it, with the
+    /// TTL that packet carried.
+    ///
+    /// Nmap's reason is per port and says which packet arrived, and a consumer
+    /// reading it learns how the verdict was reached: a UDP port that answered
+    /// is not a TCP handshake, and a connection the operating system refused is
+    /// not a reset anybody saw. A reason chosen by state alone told every
+    /// open UDP port's reader a SYN/ACK arrived.
+    #[test]
+    fn a_ports_reason_names_the_packet_that_decided_it() {
+        use crate::model::port::discovery::Discovery;
+
+        let udp_open = Port::new(53, Protocol::Udp, PortState::Open)
+            .with_discovery(Discovery::new(ScanResponse::UdpResponse).with_ttl(63));
+        assert_eq!(
+            state_line(&udp_open),
+            r#"<state state="open" reason="udp-response" reason_ttl="63"/>"#
+        );
+
+        let refused = Port::new(23, Protocol::Tcp, PortState::Closed)
+            .with_discovery(Discovery::new(ScanResponse::ConnectionRefused));
+        assert_eq!(
+            state_line(&refused),
+            r#"<state state="closed" reason="conn-refused" reason_ttl="0"/>"#
+        );
+
+        // A window scan opens a port on the reset it read, and says so.
+        let window = Port::new(80, Protocol::Tcp, PortState::Open)
+            .with_discovery(Discovery::new(ScanResponse::TcpRst).with_ttl(64));
+        assert!(state_line(&window).contains(r#"reason="reset" reason_ttl="64""#));
+
+        // The only unreachable that closes a UDP port is a port unreachable,
+        // and one that filters a port is named without a code nobody read.
+        let unreachable = |state| {
+            Port::new(161, Protocol::Udp, state)
+                .with_discovery(Discovery::new(ScanResponse::IcmpUnreachable))
+        };
+        assert!(state_line(&unreachable(PortState::Closed)).contains(r#"reason="port-unreach""#));
+        assert!(state_line(&unreachable(PortState::Filtered)).contains(r#"reason="dest-unreach""#));
+    }
+
+    /// A port with no record of its packet is given the one packet its state
+    /// and transport admit, and silence where silence is what decided it.
+    #[test]
+    fn a_port_with_no_recorded_packet_names_the_one_its_state_admits() {
+        let line = |number, protocol, state| state_line(&Port::new(number, protocol, state));
+
+        assert!(line(53, Protocol::Udp, PortState::Open).contains(r#"reason="udp-response""#));
+        assert!(line(22, Protocol::Tcp, PortState::Open).contains(r#"reason="syn-ack""#));
+        assert!(line(69, Protocol::Udp, PortState::Closed).contains(r#"reason="port-unreach""#));
+        assert!(line(2905, Protocol::Sctp, PortState::Closed).contains(r#"reason="abort""#));
+        assert!(
+            line(123, Protocol::Udp, PortState::OpenFiltered).contains(r#"reason="no-response""#)
+        );
+    }
+
+    /// A host's reason names the evidence it holds, the most direct first.
+    ///
+    /// Every live host was an `echo-reply`, including one only its neighbour
+    /// table answered for on a segment that drops pings, and one a router
+    /// reported unreachable was `no-response`, which a reader of this format
+    /// takes for silence and so reads back as unknown rather than down.
+    #[test]
+    fn a_hosts_reason_names_the_evidence_it_holds() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let status = |host: &Host| {
+            let document = export(std::slice::from_ref(host));
+            document
+                .lines()
+                .find(|line| line.starts_with("<status "))
+                .expect("a host has a status")
+                .to_owned()
+        };
+
+        let mut neighbour = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)));
+        neighbour.record_evidence(HostStatus::Up, StatusReason::basic(StatusProtocol::TcpSyn));
+        neighbour.record_evidence(HostStatus::Up, StatusReason::basic(StatusProtocol::Arp));
+        assert!(status(&neighbour).contains(r#"state="up" reason="arp-response""#));
+
+        let pinged = {
+            let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)));
+            // A router's unreachable, then the host answering for itself: the
+            // unreachable says nothing about a host that is up.
+            host.record_evidence(
+                HostStatus::Down,
+                StatusReason::basic(StatusProtocol::IcmpUnreachable)
+                    .from_source(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))),
+            );
+            host.record_evidence(
+                HostStatus::Up,
+                StatusReason::basic(StatusProtocol::IcmpEcho),
+            );
+            host
+        };
+        assert!(status(&pinged).contains(r#"state="up" reason="echo-reply""#));
+
+        let mut unreachable = Host::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 40)));
+        unreachable.record_evidence(
+            HostStatus::Down,
+            StatusReason::basic(StatusProtocol::IcmpUnreachable)
+                .from_source(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))),
+        );
+        assert!(status(&unreachable).contains(r#"state="down" reason="dest-unreach""#));
+
+        let mut asserted = Host::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 41)));
+        asserted.set_status(HostStatus::Up);
+        assert!(
+            status(&asserted).contains(r#"state="up" reason="response""#),
+            "a host up on no recorded evidence named a packet: {}",
+            status(&asserted)
+        );
+    }
+
+    /// The reasons this module writes read back as the evidence they came from,
+    /// and a filtered host as filtered.
+    #[cfg(feature = "import-nmap")]
+    #[test]
+    fn reasons_survive_the_round_trip() {
+        use crate::import::report::ReportReader;
+        use crate::import::report::nmap::NmapXmlReportReader;
+        use crate::model::port::discovery::Discovery;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let mut neighbour = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)));
+        neighbour.record_evidence(HostStatus::Up, StatusReason::basic(StatusProtocol::Arp));
+        neighbour.add_port(
+            Port::new(53, Protocol::Udp, PortState::Open)
+                .with_discovery(Discovery::new(ScanResponse::UdpResponse)),
+        );
+        let mut walled = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 21)));
+        walled.record_evidence(
+            HostStatus::Filtered,
+            StatusReason::basic(StatusProtocol::IcmpUnreachable),
+        );
+
+        let restored = NmapXmlReportReader::default()
+            .read(&mut std::io::Cursor::new(
+                export(&[neighbour, walled]).into_bytes(),
+            ))
+            .expect("this crate's own document reads back");
+        let mut hosts = restored.hosts();
+
+        let neighbour = hosts.next().expect("the neighbour survived");
+        assert!(
+            neighbour
+                .reasons()
+                .iter()
+                .any(|reason| reason.protocol == StatusProtocol::Arp),
+            "{:?}",
+            neighbour.reasons()
+        );
+        let port = neighbour.ports().next().expect("its port survived");
+        assert_eq!(
+            port.discovery().map(|discovery| discovery.reason()),
+            Some(&ScanResponse::UdpResponse)
+        );
+
+        let walled = hosts.next().expect("the filtered host survived");
+        assert_eq!(walled.status(), HostStatus::Filtered);
     }
 
     /// A run whose journal fell behind finished as a run that succeeded, and

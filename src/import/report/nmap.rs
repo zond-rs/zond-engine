@@ -1023,6 +1023,9 @@ fn status_of(state: Option<&str>, reason: Option<&str>) -> HostStatus {
         // Nothing was sent and nothing answered, so the word is an instruction
         // echoed back rather than a finding.
         Some("up") if reason == Some("user-set") => HostStatus::Unknown,
+        // This engine's own word for a host it found filtered, which nmap's
+        // vocabulary has no state for and which its exporter writes `up`.
+        Some("up") if reason == Some("probes-filtered") => HostStatus::Filtered,
         Some("up") => HostStatus::Up,
         Some("down") => match reason {
             Some(reason) if reason.ends_with("-prohibited") => HostStatus::Filtered,
@@ -1041,10 +1044,13 @@ fn status_protocol(reason: &str) -> StatusProtocol {
     match reason {
         "arp-response" => StatusProtocol::Arp,
         "nd-response" => StatusProtocol::Ndp,
-        "echo-reply" | "timestamp-reply" | "netmask-reply" => StatusProtocol::IcmpEcho,
+        "echo-reply" | "netmask-reply" | "addressmask-reply" => StatusProtocol::IcmpEcho,
+        "timestamp-reply" => StatusProtocol::IcmpTimestamp,
         "syn-ack" => StatusProtocol::TcpSyn,
-        "reset" | "conn-refused" => StatusProtocol::Tcp,
+        "reset" | "conn-refused" | "tcp-response" => StatusProtocol::Tcp,
         "udp-response" => StatusProtocol::Udp,
+        "init-ack" | "abort" | "sctp-response" => StatusProtocol::Sctp,
+        "dhcp-response" => StatusProtocol::Dhcp,
         reason if reason.ends_with("-unreach") || reason.ends_with("-prohibited") => {
             StatusProtocol::IcmpUnreachable
         }
@@ -1242,6 +1248,8 @@ fn scan_response(reason: &str) -> ScanResponse {
         "conn-refused" => ScanResponse::ConnectionRefused,
         "no-response" => ScanResponse::NoResponse,
         "udp-response" | "proto-response" => ScanResponse::UdpResponse,
+        "init-ack" => ScanResponse::SctpInitAck,
+        "abort" => ScanResponse::SctpAbort,
         reason if reason.ends_with("-prohibited") => ScanResponse::IcmpProhibited,
         reason if reason.ends_with("-unreach") => ScanResponse::IcmpUnreachable,
         other => ScanResponse::Custom(other.to_string()),
