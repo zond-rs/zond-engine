@@ -727,7 +727,10 @@ pub async fn scan(
     shortfall.identified_in_part +=
         crowds.ask_again(&ctx, ScannerKind::Connect).await.len() as u128;
     crowds.report_silence();
-    tarpits.report(&ctx, ScannerKind::Connect);
+    // Under the identification pass rather than this strategy: every port of
+    // the host has its verdict, and only what runs behind some of them went
+    // unasked, which is what a reader is told the raw path's own pass left.
+    tarpits.report(&ctx, ScannerKind::Service);
     shortfall.report(&ctx, ScannerKind::Connect, "port", "ports");
     finish(&ctx, audit, ScannerKind::Connect, probes, reason);
     Ok(())
@@ -2751,11 +2754,14 @@ mod tests {
                     .collect::<Vec<_>>()
             });
             assert_eq!(open, Some(vec![addr.port()]), "tarpit: {tarpit}");
+            // Filed as fingerprinting left unfinished, as the raw path's pass
+            // files it: this strategy gave every port its verdict.
             let reported = ctx.failures_snapshot().iter().any(|failure| {
-                failure.reason().starts_with(&format!(
-                    "{}: 1 open ports were not fingerprinted",
-                    addr.ip()
-                ))
+                failure.scanner() == ScannerKind::Service
+                    && failure.reason().starts_with(&format!(
+                        "{}: 1 open ports were not fingerprinted",
+                        addr.ip()
+                    ))
             });
             assert_eq!(reported, tarpit, "tarpit: {tarpit}");
             heard.push(silent.heard());

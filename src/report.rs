@@ -3254,7 +3254,10 @@ pub enum ScannerKind {
     /// Composite scanner that delegates to protocol-specific scanners.
     Composite,
     /// The service-identification pass, which opens a connection to each open
-    /// port a raw scan classified without ever holding one.
+    /// port a raw scan classified without ever holding one, and the same
+    /// identification made inline over the connection a connect scan found a
+    /// port open on, wherever what it left is about services rather than
+    /// states.
     ///
     /// Named apart from [`Connect`] though it makes the same kind of
     /// connection, because a report has to be able to say which pass lost work.
