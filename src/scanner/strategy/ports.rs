@@ -954,21 +954,25 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// and decides what the silence meant, given `silence`, the verdict this
     /// scan's technique reads it as.
     ///
-    /// Silence from a host that has never answered anything says nothing about
-    /// capacity. From a host that is answering, it is a dropped probe where
-    /// every port would have answered, the technique's silence meaning a
-    /// filter; and where it means anything else, an open port is silent by
-    /// design and the one timeout cannot say which it was, so the window reads
-    /// how much of it there is instead. See
-    /// [`service_retries`](RawPortScan::service_retries) for the argument and
+    /// Silence from a host that is not answering most of what it is asked says
+    /// nothing about capacity: it has answered nothing, or a few ports in
+    /// many, and its silence is its own, a firewall or open ports the
+    /// technique leaves silent. From a host that is answering, it is a dropped
+    /// probe where every port would have answered, the technique's silence
+    /// meaning a filter; and where it means anything else, an open port is
+    /// silent by design and the one timeout cannot say which it was, so the
+    /// window reads how much of it there is instead. See
+    /// [`service_retries`](RawPortScan::service_retries) for the argument,
+    /// [`host_is_answering`](ProbeLedger::host_is_answering) for where the
+    /// line between the first two falls, and
     /// [`congestion`](crate::scanner::pacing::congestion) for what each half
     /// cost to get wrong.
     pub fn judge_timeout(&mut self, host: IpAddr, silence: PortState) {
         self.window.release();
-        if !self.ledger.host_has_answered(&host) {
+        if !self.ledger.host_is_answering(&host) {
             self.window.record_progress();
         } else if silence == PortState::Filtered {
-            self.window.record_congestion();
+            self.window.record_loss();
         } else {
             self.window.record_ambiguous_silence();
         }
@@ -1527,10 +1531,10 @@ pub(crate) trait RawPortScan: PortScanner {
     /// exhaustion that follows it when the budget was one attempt.
     ///
     /// Which signal it carries depends on the host and on what this scan's
-    /// silence means, and not on the probe. A host that has never answered
-    /// anything is behind a firewall or is not there, and its silence says
-    /// nothing about capacity; a host that is answering most of what it is
-    /// asked and dropping the rest is being outrun, and that is the only
+    /// silence means, and not on the probe. A host that has answered nothing,
+    /// or a port or two in many, is behind a firewall or is not there, and its
+    /// silence says nothing about capacity; a host that is answering what it
+    /// is asked and dropping the rest is being outrun, and that is the only
     /// warning a scan gets before it starts reporting a firewall that is not
     /// there. Where an open port is silent by design, one timeout from an
     /// answering host is either, and only the share of them tells loss from a
@@ -2786,6 +2790,39 @@ mod tests {
             "a host that talks and then goes quiet is being outrun"
         );
         assert_eq!(core.window.in_flight(), 0, "and the slot still went back");
+    }
+
+    /// Silence from a host that answered, but no more than one probe in ten,
+    /// is its firewall rather than probes it dropped, and opens the window as
+    /// a host that answers nothing does.
+    ///
+    /// Read as loss, a Windows machine with one port open in a thousand held
+    /// a scan at the window's floor for every other port, and so every host
+    /// asked beside it.
+    #[test]
+    fn silence_from_a_firewall_that_lets_a_port_through_opens_the_window() {
+        let (mut core, _session) = core();
+        core.window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 512));
+        answer_once(&mut core, TARGET);
+
+        let now = Instant::now();
+        let mut due = Vec::new();
+        for port in 2..=10 {
+            core.ledger.arm(TARGET, (TARGET, port), (), 0, now);
+        }
+        core.ledger
+            .drain_due(now + Duration::from_secs(10), &mut due);
+        for _ in &due {
+            core.window.record_send();
+            core.judge_timeout(TARGET, PortState::Filtered);
+        }
+
+        assert_eq!(due.len(), 9, "every probe's first timeout was read");
+        assert!(
+            core.window.capacity() > 64,
+            "one answer in ten probes is a firewall, and asking it more slowly \
+             would not change what it lets through"
+        );
     }
 
     /// **A host verdict answers whether it was recorded**, and the usual case

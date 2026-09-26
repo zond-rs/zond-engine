@@ -54,13 +54,19 @@
 //! A machine that replies to seven hundred probes and drops two hundred is not
 //! running a two-hundred-port block list; it is failing to keep up. A machine
 //! that replies to nothing is behind a firewall, or is not there, and asking it
-//! more slowly discovers nothing at either. That one distinction separates the
-//! cases a timeout-driven controller confuses:
+//! more slowly discovers nothing at either, and neither is a machine that
+//! replies to a port or two in a thousand, which is a firewall letting those
+//! through. So a host is talking when it answers more than one probe in ten
+//! of those put to it: read as talking on the strength of one open port, a
+//! Windows machine behind its firewall held its scan at the window's floor.
+//! That one distinction separates the cases a timeout-driven controller
+//! confuses:
 //!
 //! | What is happening | What the controller sees | What it does |
 //! |---|---|---|
 //! | Host answers everything | Answers on the first ask | Grows to the ceiling |
 //! | Address is a black hole | Nothing ever answers | Grows; finishes at speed |
+//! | A firewall lets a port through | Answers, one in hundreds | Grows; finishes at speed |
 //! | Host is being outrun | Timeouts, from a host that talks | Cuts the window |
 //! | Host is being outrun badly | Answers arriving only on retries | Cuts the window |
 //!
@@ -441,6 +447,17 @@ impl CongestionWindow {
         self.record_progress();
     }
 
+    /// Records silence from a host that is answering, in a scan where every
+    /// port would have answered: a probe the target dropped.
+    ///
+    /// Cuts the window, while the scan still has questions to admit, for the
+    /// reason [`stop_admitting`](Self::stop_admitting) gives.
+    pub(crate) fn record_loss(&mut self) {
+        if !self.admission_over {
+            self.record_congestion();
+        }
+    }
+
     /// Records silence from a host that is answering, in a scan where silence
     /// is also what an open port gives: an open port found, or a probe lost,
     /// and nothing about this one outcome says which.
@@ -459,7 +476,8 @@ impl CongestionWindow {
     }
 
     /// Records that the scan has admitted its last question, so the window
-    /// paces nothing from here and the balance of silence is no longer read.
+    /// paces nothing from here and silence is no longer read as loss, one
+    /// timeout at a time or as a balance.
     ///
     /// A cut from here would slow nothing, and the outcomes still owed are
     /// whatever was left in flight, where silence is over-represented by
@@ -909,6 +927,28 @@ mod tests {
         }
 
         assert_eq!(window.summary().reductions, 0);
+    }
+
+    /// A dropped probe heard after the last question went out is weighed as
+    /// the balance above is not: a cut from there slows nothing, and the
+    /// probes still in flight are mostly the silent ones, so one filtered
+    /// port asked late would leave the window reported at its floor and the
+    /// scan read as outrun.
+    #[test]
+    fn a_dropped_probe_heard_after_the_last_admission_does_not_cut() {
+        let mut window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 64));
+
+        window.stop_admitting();
+        window.record_loss();
+        assert_eq!(window.summary().reductions, 0, "nothing left to pace");
+
+        let mut admitting = CongestionWindow::new(WindowLimits::new(64, 4, 512, 64));
+        admitting.record_loss();
+        assert_eq!(
+            admitting.summary().reductions,
+            1,
+            "while admitting, it cuts"
+        );
     }
 
     /// After a cut, the window has to be able to climb back: a target that was

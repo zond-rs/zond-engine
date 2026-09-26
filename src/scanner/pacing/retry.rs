@@ -363,12 +363,25 @@ impl RetryPolicy {
             return self.max_attempts;
         };
 
-        if !host.answered && host.exhausted_silently >= rule.threshold {
+        if host.answers == 0 && host.exhausted_silently >= rule.threshold {
             return rule.reduced_attempts.min(self.max_attempts);
         }
         self.max_attempts
     }
 }
+
+/// One in how many of the probes put to a host it has to answer before its
+/// silence is read as loss rather than as its own; see
+/// [`ProbeLedger::host_is_answering`].
+///
+/// Ten. A tenth of the ports asked is the most a scan promises to find open
+/// without reading their silence as loss (see
+/// [`congestion`](super::congestion)), and it serves from the other side
+/// here: a host that answers no more than a tenth is a firewall letting that
+/// many ports through, which asking it more slowly would not change. A host
+/// being outrun answers most of what reaches it, three quarters of its
+/// probes in the case measured.
+const ANSWERING_ONE_IN: u32 = 10;
 
 /// The smallest headroom a measured timeout keeps over the smoothed round
 /// trip, as that round trip divided by this. See [`RttEstimator::timeout`].
@@ -645,8 +658,11 @@ struct HostState {
     estimator: RttEstimator,
     /// Probes currently outstanding against this host.
     outstanding: u32,
-    /// Whether anything has ever come back from it.
-    answered: bool,
+    /// Probes to it a reply resolved, whichever attempt it answered.
+    answers: u32,
+    /// Probes to it whose first attempt went unanswered for its whole
+    /// timeout, answered later or not.
+    silences: u32,
     /// Probes that spent their whole budget while it stayed silent.
     exhausted_silently: u16,
 }
@@ -881,7 +897,7 @@ where
 
         let host_state = self.hosts.entry(host).or_default();
         host_state.outstanding = host_state.outstanding.saturating_sub(1);
-        host_state.answered = true;
+        host_state.answers = host_state.answers.saturating_add(1);
         if let Some(rtt) = rtt {
             host_state.estimator.record(rtt);
             self.global.record(rtt);
@@ -915,6 +931,12 @@ where
                 continue; // Superseded by a later arm.
             }
 
+            // The first attempt's timeout, which every probe has once at
+            // most: what `host_is_answering` weighs against the answers.
+            if record.sends == 1 {
+                let state = self.hosts.entry(record.host).or_default();
+                state.silences = state.silences.saturating_add(1);
+            }
             if record.sends >= record.budget {
                 let host = record.host;
                 let attempts = record.sends;
@@ -1085,19 +1107,36 @@ where
     /// Whether anything has ever come back from `host`: a SYN+ACK, a reset, an
     /// ICMP error, any reply at all.
     ///
-    /// The question a pacing controller asks about a probe that went unanswered,
-    /// and the one that decides what the silence means. A host that answers
-    /// nothing is behind a firewall or is not there, and neither is a reason to
-    /// ask more slowly; a host that answers most things and drops the rest is
-    /// failing to keep up, and that is exactly a reason to. See
-    /// [`congestion`](super::congestion).
+    /// Whether the address is there at all: a host that answered anything is
+    /// one the scan reaches, whose silence is silence rather than an address
+    /// nothing reaches. How much of it answers, which is what decides whether
+    /// its silence is loss, is
+    /// [`host_is_answering`](Self::host_is_answering)'s question.
     ///
     /// Not "has a round trip", which
     /// `host_rtt` answers: a reply that could not be
     /// attributed to an attempt still proves the host is talking, and a host
     /// whose every reply arrived ambiguously would otherwise look silent.
     pub fn host_has_answered(&self, host: &IpAddr) -> bool {
-        self.hosts.get(host).is_some_and(|state| state.answered)
+        self.hosts.get(host).is_some_and(|state| state.answers > 0)
+    }
+
+    /// Whether `host` has answered more than one in
+    /// [`ANSWERING_ONE_IN`] of the probes put to it: whether it is answering
+    /// what it is asked, which is the host whose silence a pacing controller
+    /// reads as loss.
+    ///
+    /// Not [`host_has_answered`](Self::host_has_answered). A firewall that
+    /// lets one port through is a host that has answered, and its silence is
+    /// still its firewall: read as loss, a Windows machine with one port open
+    /// in a thousand held a scan at its window's floor for all of them, and
+    /// cut the pace of every other host asked beside it. A probe answered
+    /// only on a retry counts on both sides, a silence and then an answer.
+    pub(crate) fn host_is_answering(&self, host: &IpAddr) -> bool {
+        self.hosts.get(host).is_some_and(|state| {
+            let (answers, silences) = (u64::from(state.answers), u64::from(state.silences));
+            answers * u64::from(ANSWERING_ONE_IN) > answers + silences
+        })
     }
 
     /// The smoothed round trip observed for `host`, if it has answered.
@@ -1146,7 +1185,7 @@ where
     fn retire(&mut self, host: IpAddr) {
         let state = self.hosts.entry(host).or_default();
         state.outstanding = state.outstanding.saturating_sub(1);
-        if !state.answered {
+        if state.answers == 0 {
             state.exhausted_silently = state.exhausted_silently.saturating_add(1);
         }
     }
@@ -1464,6 +1503,50 @@ mod tests {
             ledger.timeout_for(OTHER, 1),
             own,
             "and the scan's reply times a host with none of its own"
+        );
+    }
+
+    /// **A host answering one probe in ten or fewer is not answering what it
+    /// is asked**, and its silence is its own rather than probes it dropped.
+    ///
+    /// A firewall letting one port through has answered, and read as a host
+    /// that answers, its thousand silent ports each read as loss and held the
+    /// scan at its window's floor. Its first timeouts are counted as the
+    /// ledger meets them, one per probe, so a retry's does not count twice.
+    #[test]
+    fn a_host_answering_one_probe_in_ten_or_fewer_is_not_answering() {
+        let t0 = Instant::now();
+        let mut ledger = ledger(policy());
+        let mut due = Vec::new();
+
+        ledger.arm(HOST, (HOST, 1), 1, (), t0);
+        ledger.resolve(&(HOST, 1), Some(1), t0);
+        assert!(
+            ledger.host_is_answering(&HOST),
+            "one answer and nothing else"
+        );
+
+        for port in 2..=10 {
+            ledger.arm(HOST, (HOST, port), 1, (), t0);
+        }
+        // Past every probe's first timeout, and then past its second, which
+        // is not another silence.
+        ledger.drain_due(t0 + Duration::from_secs(1), &mut due);
+        ledger.drain_due(t0 + Duration::from_secs(2), &mut due);
+        assert!(
+            !ledger.host_is_answering(&HOST),
+            "one answer to ten probes is a firewall letting a port through"
+        );
+
+        ledger.arm(HOST, (HOST, 11), 1, (), t0);
+        ledger.resolve(&(HOST, 11), Some(1), t0);
+        assert!(
+            ledger.host_is_answering(&HOST),
+            "two in eleven is answering"
+        );
+        assert!(
+            !ledger.host_is_answering(&OTHER),
+            "and a host never asked is not"
         );
     }
 

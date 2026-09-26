@@ -23,6 +23,7 @@
 //! Each scan here is deliberately wider than the window starts, so admission
 //! control is exercised rather than skipped.
 
+use std::net::IpAddr;
 use std::num::{NonZeroU8, NonZeroU32};
 use std::time::{Duration, Instant};
 
@@ -333,6 +334,101 @@ async fn silence_past_any_plausible_share_of_open_ports_still_narrows_the_window
         window.reductions > 0,
         "a host answering three probes in four and dropping the fourth, retries \
          and all, is being outrun: {window:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A firewall that lets a port through
+// ---------------------------------------------------------------------------
+
+/// The address of a second host, for a scan asking two at once.
+const NEIGHBOUR: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 201));
+
+/// A thousand ports, as a scan of a host's most common ones asks.
+const COMMON: u16 = 1_000;
+
+/// How the port at each index of one host answers.
+type Ports = fn(usize) -> Policy;
+
+/// SYN-scans [`COMMON`] ports on each host, the port at each index of a host
+/// answering under its [`Ports`], and returns what the window did.
+async fn syn_scan_of(hosts: &[(IpAddr, Ports)]) -> WindowSummary {
+    let ports: Vec<u16> = (FIRST..FIRST + COMMON).collect();
+    let mut net = FakeNet::new(Layer4::Tcp);
+    let mut targets = Vec::new();
+    for &(host, policy) in hosts {
+        for (index, &port) in ports.iter().enumerate() {
+            net = net.host(host, port, policy(index));
+            targets.push(tcp(host, port));
+        }
+    }
+
+    let (_session, ctx) = ScanSession::new();
+    let mut scanner = zond_engine::scanner::strategy::ports::TcpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx.clone(),
+        TcpScanTechnique::Syn,
+        net.transport(),
+        targets.len(),
+        SCANNER_PORT,
+    );
+    run_port_scanner(&mut scanner, targets).await;
+
+    ctx.probe_stats_snapshot()
+        .iter()
+        .find_map(|stats| stats.window())
+        .expect("a raw port scan files what its window did")
+}
+
+/// A host whose firewall lets one port through, that port asked first.
+fn one_port_through(index: usize) -> Policy {
+    if index == 0 {
+        Policy::open()
+    } else {
+        Policy::silent()
+    }
+}
+
+/// A host that refuses every port but three, which its firewall drops.
+fn three_filtered(index: usize) -> Policy {
+    if index % 300 == 150 {
+        Policy::silent()
+    } else {
+        Policy::closed()
+    }
+}
+
+/// **A firewall that lets one port through is not a host being outrun.**
+///
+/// Its one answer made it a host that answers, and read that way every other
+/// port's silence was a probe it dropped: a Windows machine with one port
+/// open in a thousand held its scan at the window's floor from the first
+/// timeout to the last, and the scan reported its silence as loss rather
+/// than as a firewall. The open port is asked first here, so the silence
+/// arrives after the answer, as it does when the port is found early.
+#[tokio::test]
+async fn a_firewall_that_lets_one_port_through_does_not_hold_the_window_down() {
+    let window = syn_scan_of(&[(TARGET, one_port_through)]).await;
+
+    assert!(
+        !window.at_floor,
+        "a host answering one probe in a thousand is filtering the rest: {window:?}"
+    );
+}
+
+/// **One firewalled host does not make the scan of another read as outrun.**
+///
+/// Asked beside it, a router refusing all but three ports finished the scan
+/// with the window at its floor, which with the firewalled host's silence
+/// counted in is what reads the whole scan as outrun, and the router's three
+/// filtered ports were reported as unanswered.
+#[tokio::test]
+async fn a_firewalled_host_beside_an_answering_one_leaves_the_scan_readable() {
+    let window = syn_scan_of(&[(TARGET, one_port_through), (NEIGHBOUR, three_filtered)]).await;
+
+    assert!(
+        !window.at_floor,
+        "neither host was outrun, so the scan's silence is a verdict: {window:?}"
     );
 }
 
