@@ -2544,10 +2544,7 @@ mod tests {
     #[tokio::test]
     async fn a_refused_connect_times_the_host() {
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let port = {
-            let listener = std::net::TcpListener::bind((ip, 0)).expect("bind to reserve");
-            listener.local_addr().expect("reserved addr").port()
-        };
+        let port = crate::testing::loopback::refused_port(ip).port();
         let planned = PlannedTarget::new(
             0,
             Target {
@@ -2596,10 +2593,7 @@ mod tests {
     #[tokio::test]
     async fn a_host_the_connect_path_reached_is_credited_to_a_handshake() {
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let port = {
-            let listener = std::net::TcpListener::bind((ip, 0)).expect("bind to reserve");
-            listener.local_addr().expect("reserved addr").port()
-        };
+        let port = crate::testing::loopback::refused_port(ip).port();
         let (session, ctx) = crate::scanner::session::ScanSession::new();
         let probed = port_prober(
             tcp_target(ip, port),
