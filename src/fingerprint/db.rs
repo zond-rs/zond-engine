@@ -182,10 +182,11 @@ pub struct SignatureDb {
     /// all that service's signatures, so a service's port-less supplementary
     /// signatures are matched alongside its port-indexed ones.
     by_port: HashMap<u16, Vec<usize>>,
-    /// `port -> TCP active-probe payloads` of the services reachable on it.
+    /// `port -> TCP active-probe payloads` of the services reachable on it,
+    /// grouped by the service that registered them; see [`Conversations`].
     /// Payloads are decoded bytes (escapes resolved, see [`unescape`]), ready to
     /// go on the wire as they are, non-UTF-8 binary probes included.
-    tcp_probes: HashMap<u16, Vec<Vec<u8>>>,
+    tcp_probes: HashMap<u16, Conversations>,
     /// The TCP probes worth sending to a port that registered none of its own,
     /// decoded to wire bytes.
     ///
@@ -201,8 +202,8 @@ pub struct SignatureDb {
     /// probes authored with a rarity of 1 or more; see
     /// [`Probe::rarity`](crate::fingerprint::signature::Probe::rarity).
     universal_tcp_probes: Vec<(u8, Vec<u8>)>,
-    /// `port -> UDP probe payloads`, indexed exactly like [`Self::tcp_probes`]
-    /// but kept apart, because the two are sent by different machinery for
+    /// `port -> UDP probe payloads`, indexed like [`Self::tcp_probes`], in
+    /// the same order, but kept apart, because the two are sent by different machinery for
     /// different reasons.
     ///
     /// A TCP probe is a *fingerprinting* payload: the port is already known to
@@ -222,6 +223,50 @@ pub struct SignatureDb {
     asked_first: HashSet<u16>,
     /// The global-match prefilter, built on first use.
     prefilter: OnceLock<LiteralPrefilter>,
+}
+
+/// One port's TCP probes, in the order they are asked, grouped by the service
+/// that registered them.
+///
+/// Grouped because a shared port is several services' port at once, and each
+/// asks in its own protocol. A question in one protocol is very often the end
+/// of a conversation in another: an Aerospike info request draws a `400` and a
+/// closed connection from the web server that far more often holds 3000, and
+/// the web application's own request, sent after it down the same connection,
+/// meets a socket already shut. So each service's questions are asked on a
+/// connection of their own, and the grouping is what says where one service's
+/// questions end and the next's begin.
+///
+/// Ordered with the services that name the port as theirs first and those
+/// that only share it after, so the service the port most likely holds is
+/// asked first, on the connection the scan already opened, and heard before
+/// anything else has had a chance to confuse it.
+#[derive(Debug, Default)]
+struct Conversations {
+    /// Every probe, flat, in the order they are asked.
+    payloads: Vec<Vec<u8>>,
+    /// Where each service's run of [`payloads`](Self::payloads) ends.
+    ends: Vec<usize>,
+}
+
+impl Conversations {
+    /// Appends one service's probes as a conversation of its own, or nothing
+    /// where it registered none.
+    fn push(&mut self, probes: &[Vec<u8>]) {
+        if probes.is_empty() {
+            return;
+        }
+        self.payloads.extend_from_slice(probes);
+        self.ends.push(self.payloads.len());
+    }
+
+    /// Each service's probes, in the order they are asked.
+    fn each(&self) -> impl Iterator<Item = &[Vec<u8>]> {
+        let starts = std::iter::once(0).chain(self.ends.iter().copied());
+        starts
+            .zip(&self.ends)
+            .map(|(start, &end)| &self.payloads[start..end])
+    }
 }
 
 impl SignatureDb {
@@ -339,7 +384,9 @@ impl SignatureDb {
         }
 
         // Primary name and reachable-service set per port. Both lists reach a
-        // port; only `default_ports` names it.
+        // port; only `default_ports` names it. Every service naming a port
+        // is collected before any that only shares it, so a port's services
+        // are listed in the order its probes are asked; see `Conversations`.
         let mut name_index: HashMap<u16, Arc<str>> = HashMap::new();
         let mut port_services: HashMap<u16, Vec<String>> = HashMap::new();
         for def in &defs {
@@ -348,12 +395,11 @@ impl SignatureDb {
                     .entry(port)
                     .or_insert_with(|| Arc::from(def.service.name.as_str()));
             }
-            for &port in def
-                .service
-                .default_ports
-                .iter()
-                .chain(&def.service.shared_ports)
-            {
+        }
+        let naming = defs.iter().map(|def| &def.service.default_ports);
+        let sharing = defs.iter().map(|def| &def.service.shared_ports);
+        for (def, ports) in defs.iter().zip(naming).chain(defs.iter().zip(sharing)) {
+            for &port in ports {
                 let names = port_services.entry(port).or_default();
                 if !names.contains(&def.service.name) {
                     names.push(def.service.name.clone());
@@ -364,7 +410,7 @@ impl SignatureDb {
         // Link: a port's signatures (and probes) are those of every service
         // reachable on it.
         let mut by_port: HashMap<u16, Vec<usize>> = HashMap::new();
-        let mut tcp_probes: HashMap<u16, Vec<Vec<u8>>> = HashMap::new();
+        let mut tcp_probes: HashMap<u16, Conversations> = HashMap::new();
         let mut udp_probes: HashMap<u16, Vec<Vec<u8>>> = HashMap::new();
         for (port, names) in &port_services {
             let mut indices: Vec<usize> = names
@@ -377,19 +423,22 @@ impl SignatureDb {
             indices.dedup();
             by_port.insert(*port, indices);
 
-            for (source, index) in [
-                (&service_tcp_probes, &mut tcp_probes),
-                (&service_udp_probes, &mut udp_probes),
-            ] {
-                let payloads: Vec<Vec<u8>> = names
-                    .iter()
-                    .filter_map(|name| source.get(name))
-                    .flatten()
-                    .cloned()
-                    .collect();
-                if !payloads.is_empty() {
-                    index.insert(*port, payloads);
-                }
+            let mut conversations = Conversations::default();
+            for probes in names.iter().filter_map(|name| service_tcp_probes.get(name)) {
+                conversations.push(probes);
+            }
+            if !conversations.payloads.is_empty() {
+                tcp_probes.insert(*port, conversations);
+            }
+
+            let payloads: Vec<Vec<u8>> = names
+                .iter()
+                .filter_map(|name| service_udp_probes.get(name))
+                .flatten()
+                .cloned()
+                .collect();
+            if !payloads.is_empty() {
+                udp_probes.insert(*port, payloads);
             }
         }
 
@@ -646,9 +695,22 @@ impl SignatureDb {
     }
 
     /// The TCP active-probe payloads registered for `port` (service-linked), as
-    /// decoded bytes ready to send.
+    /// decoded bytes ready to send, in the order they are asked: the services
+    /// that name the port first, then those that share it.
     pub fn tcp_probe_payloads(&self, port: u16) -> &[Vec<u8>] {
-        self.tcp_probes.get(&port).map_or(&[], Vec::as_slice)
+        self.tcp_probes
+            .get(&port)
+            .map_or(&[], |conversations| conversations.payloads.as_slice())
+    }
+
+    /// [`tcp_probe_payloads`](Self::tcp_probe_payloads), one run per service
+    /// that registered them, for a caller that asks each service on a
+    /// connection of its own; see [`Conversations`] for why it should.
+    pub(crate) fn tcp_probe_conversations(&self, port: u16) -> impl Iterator<Item = &[Vec<u8>]> {
+        self.tcp_probes
+            .get(&port)
+            .into_iter()
+            .flat_map(Conversations::each)
     }
 
     /// Whether every service reachable on `port` waits to be asked, so its
@@ -1089,6 +1151,29 @@ mod tests {
 
         assert!(db.universal_tcp_probe_payloads(6379, 9).is_empty());
         assert_eq!(db.universal_tcp_probe_payloads(6380, 9).len(), 1);
+    }
+
+    /// A port's own service is asked before one that only shares it, however
+    /// the corpus happens to be laid out, and each is asked apart.
+    ///
+    /// The first question goes down the connection the scan already opened,
+    /// to a service nothing else has spoken to yet, and that is worth most
+    /// where the port most likely is what its number says. 1080 is the case in
+    /// the shipped corpus: SOCKS5 names it and SOCKS4 shares it, and the SOCKS4
+    /// file sorts first.
+    #[test]
+    fn a_ports_own_service_is_asked_before_one_that_shares_it() {
+        let mut sharer = probed("socks4", Vec::new(), "four", 0);
+        sharer.service.shared_ports = vec![1080];
+        let owner = probed("socks5", vec![1080], "five", 0);
+        let db = SignatureDb::from_defs(vec![sharer, owner]);
+
+        let asked: Vec<&[Vec<u8>]> = db.tcp_probe_conversations(1080).collect();
+        assert_eq!(asked, [&[b"five".to_vec()][..], &[b"four".to_vec()][..]]);
+        assert_eq!(
+            db.tcp_probe_payloads(1080),
+            [b"five".to_vec(), b"four".to_vec()]
+        );
     }
 
     #[test]

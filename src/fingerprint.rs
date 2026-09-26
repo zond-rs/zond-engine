@@ -208,11 +208,15 @@ const MAX_CONTINUATION: Duration = Duration::from_secs(2);
 /// The ceiling on everything one port's collection may spend on the network.
 ///
 /// A backstop rather than a working budget. Every stage below already has its
-/// own bound, and the longest honest walk down the ladder in [`gather`] runs a
-/// failed handshake, a failed legacy handshake, a silent port in the clear and
-/// then the last-resort probes, which at the thorough level comes to twenty-six
-/// seconds, three and a half more for each probe authored for strangers. This
-/// sits above that, so it never fires on a port behaving normally;
+/// own bound, and the longest honest walk down the ladder in [`gather`] comes
+/// to thirty-two seconds. It is a port several services share and none names:
+/// the generic question refused with a `400`, each sharing service asked on a
+/// connection of its own and a redirect followed, then a handshake whose
+/// tunnel is asked again and its redirect followed. The longest at the
+/// thorough level, a failed handshake, a failed legacy handshake, a port in
+/// the clear and then the last-resort probes, comes to thirty, three and a
+/// half more for each probe authored for strangers. This sits above both, so
+/// it never fires on a port behaving normally;
 /// `the_collection_budget_covers_every_path_through_gather` is what holds the
 /// two together.
 ///
@@ -231,12 +235,12 @@ const MAX_CONTINUATION: Duration = Duration::from_secs(2);
 /// every one allowing for the path, and a ceiling beneath that would cut short
 /// the identifications the allowance exists to finish. What the backstop is
 /// for is a stage with no bound, which a slow path does not make likelier.
-const COLLECTION_BUDGET: Duration = Duration::from_secs(30);
+const COLLECTION_BUDGET: Duration = Duration::from_secs(40);
 
 /// The most waits on the peer any walk down the ladder in [`gather`] makes in
 /// a row, each a connection or a read that allows for the path, with room for
-/// probes still to be authored. The longest walk makes fifteen at the thorough
-/// level, two more for each probe authored for strangers;
+/// probes still to be authored. The longest walk makes eighteen at the
+/// thorough level, two more for each probe authored for strangers;
 /// `the_collection_budget_covers_every_path_through_gather` holds the two
 /// together.
 const COLLECTION_WAITS: u32 = 20;
@@ -1241,6 +1245,20 @@ async fn last_resort(
 /// it is interrupted. An unclaimed port is asked generically; see
 /// [`ask_generically`].
 ///
+/// A port several services claim is asked each one's questions on a connection
+/// of its own, the likeliest service first and on the connection already open,
+/// since one protocol's question is often the end of another's conversation;
+/// see [`SignatureDb::tcp_probe_conversations`]. The connection before is
+/// closed before the next is dialled, so the identification holds one socket
+/// at a time. Without the peer's address there is nothing to dial, and every
+/// question goes down the one connection there is while it lasts.
+///
+/// A port services only share, and none names as its own, is asked the
+/// generic question first, and theirs after. Nothing says what such a port
+/// holds any more than it says what an unclaimed port holds, and what 3000 or
+/// 5000 most often holds is a development web server, which the generic
+/// question names and a sharing service's question does not.
+///
 /// A reply that is a TLS record is reported as nothing rather than as a banner,
 /// on either shape. The port spoke, but not in this rung's language, and the
 /// ladder has a rung that can read it.
@@ -1251,27 +1269,59 @@ async fn plaintext(
     egress: Egress,
 ) -> ResponseSet {
     let db = SignatureDb::global();
-    let probes = db.tcp_probe_payloads(port);
-    if !probes.is_empty() {
-        let listen = !db.asked_first(port);
-        let banners = collect_responses(&mut stream, port, probes, peer, listen).await;
-        drop(stream);
-        // Read back off the decoded text, which is sound only because every
-        // byte `looks_like_tls` constrains is under 0x80, comes first, and so
-        // survives `extract::reply_text` unchanged and in place.
-        if banners
-            .first()
-            .is_some_and(|first| looks_like_tls(first.as_bytes()))
-        {
-            return ResponseSet::default();
-        }
-        return ResponseSet::from_banners(with_redirect_followed(banners, peer, egress).await);
-    }
+    let mut conversations = db.tcp_probe_conversations(port).peekable();
+    let named = db.service_name(port).is_some();
 
-    match ask_generically(stream, peer, egress).await {
-        GenericReply::Spoke(banners) => ResponseSet::from_banners(banners),
-        GenericReply::Tls | GenericReply::Silent => ResponseSet::default(),
+    // The port's own service on the connection already open, or, where no
+    // service names the port, the generic question, which follows its own
+    // redirect.
+    let (mut banners, mut held) = match conversations.next_if(|_| named) {
+        Some(first) => {
+            let listen = !db.asked_first(port);
+            let banners = collect_responses(&mut stream, port, first, peer, listen).await;
+            // Read back off the decoded text, which is sound only because
+            // every byte `looks_like_tls` constrains is under 0x80, comes
+            // first, and so survives `extract::reply_text` unchanged and in
+            // place.
+            if banners
+                .first()
+                .is_some_and(|first| looks_like_tls(first.as_bytes()))
+            {
+                return ResponseSet::default();
+            }
+            (banners, Some(stream))
+        }
+        None => match ask_generically(stream, peer, egress).await {
+            GenericReply::Spoke(banners) => (banners, None),
+            GenericReply::Silent => (Vec::new(), None),
+            GenericReply::Tls => return ResponseSet::default(),
+        },
+    };
+
+    // Every other service's questions, each on a connection of its own.
+    let mut theirs = Vec::new();
+    for probes in conversations {
+        if let Some(peer) = peer {
+            drop(held.take());
+            held = redial(peer.socket(), egress).await;
+        }
+        let Some(stream) = held.as_mut() else {
+            break;
+        };
+        theirs.extend(ask_in_turn(stream, port, probes, peer).await);
     }
+    drop(held);
+
+    // A redirect among the services' own replies is followed once the last
+    // connection is closed. The generic question's was followed as it was
+    // asked, so on a port nothing names only the rest are looked through.
+    if named {
+        banners.extend(theirs);
+        banners = with_redirect_followed(banners, peer, egress).await;
+    } else {
+        banners.extend(with_redirect_followed(theirs, peer, egress).await);
+    }
+    ResponseSet::from_banners(banners)
 }
 
 /// What a generic probe drew out of a port nothing in the database claims.
@@ -1581,6 +1631,27 @@ where
         banners.push(banner);
     }
 
+    banners.extend(ask_in_turn(stream, port, probes, peer).await);
+    banners
+}
+
+/// Sends `probes` over `stream` one after another, each addressed to `peer`
+/// where there is one, and returns what each drew: the fields of a reply this
+/// engine reads as structure, then its text.
+///
+/// Nothing is listened for first. A service that greets has already sent its
+/// greeting by the time the first probe goes, and it arrives ahead of the
+/// reply; see [`ask_generically`], which relies on the same order.
+async fn ask_in_turn<S>(
+    stream: &mut S,
+    port: u16,
+    probes: &[Vec<u8>],
+    peer: Option<&Authority>,
+) -> Vec<String>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut banners = Vec::new();
     for payload in probes {
         let payload = match peer {
             Some(peer) => peer.addressed(payload),
@@ -2585,6 +2656,16 @@ mod tests {
         let silent = |count: u32| wait(BANNER_READ_TIMEOUT) + wait(PROBE_READ_TIMEOUT) * count;
         let read_once = wait(PROBE_READ_TIMEOUT) + continuation;
         let rung = wait(CONNECT_RETRY_TIMEOUT);
+
+        // In the clear, a port several services claim asks each after the
+        // first on a connection of its own, one dial more per service.
+        let services = SignatureDb::global()
+            .indexed_ports()
+            .map(|port| SignatureDb::global().tcp_probe_conversations(port).count())
+            .max()
+            .unwrap_or(0)
+            .max(1) as u32;
+        let redials = rung * (services - 1);
         let handshake = wait(tls::TLS_HANDSHAKE_TIMEOUT);
         let legacy = wait(tls::LEGACY_PROBE_TIMEOUT);
         let speculative = wait(tls::SPECULATIVE_TLS_TIMEOUT);
@@ -2597,19 +2678,31 @@ mod tests {
 
         // Numbered for TLS: [Tls, LegacyTls, Plaintext].
         let tls_then_redirect = handshake + spoke(probes) + followed_tls;
-        let tls_all_three = handshake + rung + legacy + rung + spoke(probes) + followed;
-        let tls_then_silence = handshake + rung + legacy + rung + silent(probes);
+        let tls_all_three = handshake + rung + legacy + rung + spoke(probes) + redials + followed;
+        let tls_then_silence = handshake + rung + legacy + rung + silent(probes) + redials;
 
         // Numbered for anything else: [Plaintext, SpeculativeTls]. Inside the
         // tunnel a claimed port asks its own probes again and an unclaimed one
         // asks the single generic question.
-        let claimed_then_tls = silent(probes) + rung + speculative + spoke(probes) + followed_tls;
+        let claimed_then_tls =
+            silent(probes) + redials + rung + speculative + spoke(probes) + followed_tls;
         let alert_then_tls = read_once + rung + speculative + spoke(1) + followed_tls;
         let unclaimed_then_redirect = read_once + rung + read_once;
         // A web server refusing the request in the clear, then asked for a
         // handshake, and for the legacy one where that is refused.
-        let refused_then_tls = spoke(probes) + rung + speculative + spoke(probes) + followed_tls;
-        let refused_then_legacy = spoke(probes) + rung + speculative + rung + legacy;
+        let refused_then_tls =
+            spoke(probes) + redials + rung + speculative + spoke(probes) + followed_tls;
+        let refused_then_legacy = spoke(probes) + redials + rung + speculative + rung + legacy;
+
+        // A port services only share is asked the generic question first and
+        // then each service's on a connection of its own, where every read is
+        // a probe's rather than a greeting's, and a redirect among theirs is
+        // followed too. A generic question refused with a 400 goes on to the
+        // handshakes.
+        let asked = |count: u32| (wait(PROBE_READ_TIMEOUT) + continuation) * count;
+        let unasked = |count: u32| wait(PROBE_READ_TIMEOUT) * count;
+        let shared_spoke = unclaimed_then_redirect + rung * services + asked(probes) + followed;
+        let shared_silent = unasked(1) + rung * services + unasked(probes);
 
         // And the last rung, which is a connection and a read per probe, for
         // every probe, since a reply to one of them does not end it.
@@ -2628,10 +2721,15 @@ mod tests {
             unclaimed_then_redirect,
             refused_then_tls,
             refused_then_legacy,
-            silent(probes) + rung + speculative + last_resort,
+            silent(probes) + redials + rung + speculative + last_resort,
+            shared_spoke,
+            shared_spoke + rung + speculative + spoke(probes) + followed_tls,
+            shared_spoke + rung + speculative + rung + legacy,
+            shared_silent + rung + speculative + spoke(probes) + followed_tls,
+            shared_silent + rung + speculative + last_resort,
         ];
-        let longest = paths.iter().map(|walk| walk.0).max().expect("nine paths");
-        let most_waits = paths.iter().map(|walk| walk.1).max().expect("nine paths");
+        let longest = paths.iter().map(|walk| walk.0).max().expect("a path");
+        let most_waits = paths.iter().map(|walk| walk.1).max().expect("a path");
 
         assert!(
             longest < COLLECTION_BUDGET,
@@ -2772,6 +2870,86 @@ mod tests {
             String::from_utf8_lossy(&print),
             String::from_utf8_lossy(&expected),
             "the raw-print port was asked something else"
+        );
+    }
+
+    /// A port two services share has each asked on a connection of its own,
+    /// so one's question cannot close the conversation before the other's.
+    ///
+    /// 3000 is shared by Aerospike and Grafana and named by neither, and what
+    /// most often answers there is a web server of some kind, which reads
+    /// Aerospike's binary info request as a malformed HTTP request, answers
+    /// `400` and closes, as Node and Go both do. Asked down one connection,
+    /// Grafana's `GET /login` then meets a socket already shut, and the port is
+    /// named by the `400` alone. The peer here answers exactly that way, and
+    /// what it heard first on each connection it took is what the test reads.
+    #[tokio::test]
+    async fn a_shared_port_asks_each_service_on_a_connection_of_its_own() {
+        use crate::scanner::loopback::accept_from_this_process;
+        use std::sync::{Arc, Mutex};
+
+        let shared = 3000;
+        let db = SignatureDb::global();
+        assert!(
+            db.service_name(shared).is_none() && db.tcp_probe_conversations(shared).count() >= 2,
+            "test assumes {shared} is shared by several services and named by none"
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binds loopback");
+        let addr = listener.local_addr().expect("a local address");
+        let heard: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let log = Arc::clone(&heard);
+        let server = tokio::spawn(async move {
+            while let Ok(mut sock) = accept_from_this_process(&listener).await {
+                let log = Arc::clone(&log);
+                tokio::spawn(async move {
+                    let mut buffer = [0u8; 1024];
+                    let read = sock.read(&mut buffer).await.unwrap_or(0);
+                    let request = buffer[..read].to_vec();
+                    let reply: &[u8] = if request.starts_with(b"GET /login ") {
+                        b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n<title>Grafana</title>"
+                    } else if request.starts_with(b"GET ") {
+                        b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"
+                    } else {
+                        b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"
+                    };
+                    log.lock().unwrap().push(request);
+                    let _ = sock.write_all(reply).await;
+                });
+            }
+        });
+
+        let stream = TcpStream::connect(addr).await.expect("connects");
+        let port = baseline_port(shared, Protocol::Tcp, PortState::Open);
+        let found = fingerprint_tcp_detailed(stream, port, ServiceDetection::Probe).await;
+        server.abort();
+
+        let firsts = heard.lock().unwrap().clone();
+        // Compared by the first line, since a request is addressed to the
+        // port it is sent to before it goes; see `Authority::addressed`.
+        let first_line = |bytes: &[u8]| -> Vec<u8> {
+            let end = bytes
+                .windows(2)
+                .position(|pair| pair == b"\r\n")
+                .unwrap_or(bytes.len());
+            bytes[..end].to_vec()
+        };
+        for probes in db.tcp_probe_conversations(shared) {
+            assert!(
+                firsts
+                    .iter()
+                    .any(|first| first_line(first) == first_line(&probes[0])),
+                "a service's question was never the first thing on a connection: \
+                 {:?} not in {firsts:?}",
+                String::from_utf8_lossy(&probes[0])
+            );
+        }
+        assert_eq!(
+            found.port.service().map(Service::name),
+            Some("grafana"),
+            "the port was named by another service's refusal"
         );
     }
 

@@ -278,7 +278,7 @@ mod tests {
 
     /// A wait raced against the stop ends when the scan is aborted, whoever
     /// is waiting. This is what lets an in-flight identification end with the
-    /// scan rather than after its own half-minute ceiling.
+    /// scan rather than after its own ceiling.
     #[tokio::test]
     async fn a_wait_raced_against_the_stop_ends_when_the_scan_is_aborted() {
         let handle = ScanHandle::new();
