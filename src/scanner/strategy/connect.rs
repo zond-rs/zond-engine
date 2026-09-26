@@ -789,14 +789,17 @@ fn file_probe(ctx: &ScanContext, probed: Probed) {
         if probed.answered {
             host.record_evidence(
                 HostStatus::Up,
-                StatusReason::new(StatusProtocol::TcpSyn, "tcp connect answered by the host"),
+                StatusReason::new(
+                    StatusProtocol::TcpConnect,
+                    "tcp connect answered by the host",
+                ),
             );
         }
         // The handshake's round trip, which is the host's as much as the
         // liveness pass's own connect is: a scan that ran no such pass has no
         // other on this path.
         if let Some(rtt) = probed.rtt {
-            host.add_rtt_from(rtt, StatusProtocol::TcpSyn);
+            host.add_rtt_from(rtt, StatusProtocol::TcpConnect);
         }
         if !probed.about_the_host.is_empty() {
             // The same call the service phase makes on the privileged path.
@@ -1902,14 +1905,17 @@ impl Knock {
 /// asked before it, so the round trip is that connect's alone.
 fn answered(ip: IpAddr, start: Instant) -> ProbedHost {
     let mut host = Host::new(ip);
-    host.add_rtt_from(start.elapsed(), StatusProtocol::TcpSyn);
+    host.add_rtt_from(start.elapsed(), StatusProtocol::TcpConnect);
     // Every outcome that reaches here required a segment from the target: a
     // completed handshake, or a reset the kernel surfaced as a connection error.
     // `Host::merge` keeps the stronger status, so this survives being folded
     // into an entry another strategy created first.
     host.record_evidence(
         HostStatus::Up,
-        StatusReason::new(StatusProtocol::TcpSyn, "tcp connect answered by the host"),
+        StatusReason::new(
+            StatusProtocol::TcpConnect,
+            "tcp connect answered by the host",
+        ),
     );
 
     ProbedHost {
@@ -2088,6 +2094,61 @@ mod tests {
             host.average_rtt().is_some(),
             "the connect's round trip was not recorded against the host"
         );
+    }
+
+    /// A host the connect path reaches is credited to a handshake its own
+    /// stack made, and not to a half-open SYN probe, both where a port scan
+    /// found it and where a sweep did. The two answer the same question and
+    /// differ in how visible they are: a completed connection reaches the
+    /// service and its logs, a half-open probe does not, and a report
+    /// naming a SYN probe for a connect tells a reader the target was asked
+    /// more quietly than it was.
+    #[tokio::test]
+    async fn a_host_the_connect_path_reached_is_credited_to_a_handshake() {
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let port = {
+            let listener = std::net::TcpListener::bind((ip, 0)).expect("bind to reserve");
+            listener.local_addr().expect("reserved addr").port()
+        };
+        let probed = port_prober(
+            tcp_target(ip, port),
+            ServiceDetection::Off,
+            Shaping::default(),
+            Egress::KERNEL,
+            SocketAddr::new(ip, port),
+            ScanHandle::new(),
+            Default::default(),
+        )
+        .await;
+        let (session, ctx) = crate::scanner::session::ScanSession::new();
+        absorb_probe(
+            &ctx,
+            probed,
+            &mut ProbeAudit::new(),
+            &mut Shortfall::default(),
+        );
+        let scanned = session
+            .hosts()
+            .get(ip)
+            .expect("the refusal proves the host");
+
+        let Fate::Answered(swept) = answered(ip, Instant::now()).fate else {
+            panic!("an answered address is answered");
+        };
+
+        for (found, host) in [("a port scan", &scanned), ("a sweep", &*swept)] {
+            let protocols: Vec<&StatusProtocol> = host
+                .reasons()
+                .iter()
+                .map(|reason| &reason.protocol)
+                .collect();
+            assert_eq!(protocols, [&StatusProtocol::TcpConnect], "{found}");
+            assert_eq!(
+                host.rtt_protocol(),
+                Some(StatusProtocol::TcpConnect),
+                "{found}"
+            );
+        }
     }
 
     /// A listener that answers is `Open` over either family.

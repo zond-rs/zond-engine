@@ -111,10 +111,11 @@ mod tests {
             StatusProtocol::IcmpTimestamp => Some(3),
             StatusProtocol::IcmpUnreachable => Some(4),
             StatusProtocol::TcpSyn => Some(5),
-            StatusProtocol::Tcp => Some(6),
-            StatusProtocol::Dhcp => Some(7),
-            StatusProtocol::Udp => Some(8),
-            StatusProtocol::Sctp => Some(9),
+            StatusProtocol::TcpConnect => Some(6),
+            StatusProtocol::Tcp => Some(7),
+            StatusProtocol::Dhcp => Some(8),
+            StatusProtocol::Udp => Some(9),
+            StatusProtocol::Sctp => Some(10),
             // Named by a strategy rather than by this enum, so there is no fixed
             // place for it and no list it belongs in.
             StatusProtocol::Custom(_) => None,

@@ -1166,7 +1166,7 @@ fn host_reason_rank(reason: &StatusReason, status: HostStatus) -> Option<u8> {
         HostStatus::Up if from_host => Some(match reason.protocol {
             StatusProtocol::Arp | StatusProtocol::Ndp => 0,
             StatusProtocol::IcmpEcho => 1,
-            StatusProtocol::TcpSyn => 2,
+            StatusProtocol::TcpSyn | StatusProtocol::TcpConnect => 2,
             StatusProtocol::Tcp => 3,
             StatusProtocol::IcmpTimestamp => 4,
             StatusProtocol::Udp | StatusProtocol::Sctp => 5,
@@ -1183,10 +1183,10 @@ fn host_reason_rank(reason: &StatusReason, status: HostStatus) -> Option<u8> {
 
 /// One piece of host evidence in nmap's reason vocabulary.
 ///
-/// Two of this engine's protocols carry either of two packets and record which
-/// only in prose, so their word names the transport rather than guessing the
-/// packet: `tcp-response` is nmap's word for a TCP reply it names no further,
-/// and `sctp-response` follows its shape. A DHCP server overheard on the segment has no
+/// The TCP and SCTP protocols carry either of two packets, an acceptance or a
+/// reset, and record which only in prose, so their word names the transport
+/// rather than guessing the packet: `tcp-response` is nmap's word for a TCP
+/// reply it names no further, and `sctp-response` follows its shape. A DHCP server overheard on the segment has no
 /// word in nmap's vocabulary, which never listens, and is named for what it was.
 /// An ICMP unreachable is `dest-unreach` for the reason [`response_reason`]
 /// gives.
@@ -1197,7 +1197,7 @@ fn host_reason(reason: &StatusReason) -> &str {
         StatusProtocol::IcmpEcho => "echo-reply",
         StatusProtocol::IcmpTimestamp => "timestamp-reply",
         StatusProtocol::IcmpUnreachable => "dest-unreach",
-        StatusProtocol::TcpSyn | StatusProtocol::Tcp => "tcp-response",
+        StatusProtocol::TcpSyn | StatusProtocol::TcpConnect | StatusProtocol::Tcp => "tcp-response",
         StatusProtocol::Sctp => "sctp-response",
         StatusProtocol::Udp => "udp-response",
         StatusProtocol::Dhcp => "dhcp-response",

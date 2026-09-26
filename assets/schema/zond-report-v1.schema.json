@@ -1382,6 +1382,7 @@
             "icmp_timestamp",
                 "icmp_unreachable",
                 "tcp_syn",
+                "tcp_connect",
                 "tcp",
                 "dhcp",
                 "udp",

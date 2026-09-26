@@ -8492,6 +8492,7 @@ pub zond_engine::model::host::status::StatusProtocol::IcmpUnreachable
 pub zond_engine::model::host::status::StatusProtocol::Ndp
 pub zond_engine::model::host::status::StatusProtocol::Sctp
 pub zond_engine::model::host::status::StatusProtocol::Tcp
+pub zond_engine::model::host::status::StatusProtocol::TcpConnect
 pub zond_engine::model::host::status::StatusProtocol::TcpSyn
 pub zond_engine::model::host::status::StatusProtocol::Udp
 impl zond_engine::model::host::status::StatusProtocol
@@ -8819,6 +8820,7 @@ pub zond_engine::model::host::StatusProtocol::IcmpUnreachable
 pub zond_engine::model::host::StatusProtocol::Ndp
 pub zond_engine::model::host::StatusProtocol::Sctp
 pub zond_engine::model::host::StatusProtocol::Tcp
+pub zond_engine::model::host::StatusProtocol::TcpConnect
 pub zond_engine::model::host::StatusProtocol::TcpSyn
 pub zond_engine::model::host::StatusProtocol::Udp
 impl zond_engine::model::host::status::StatusProtocol

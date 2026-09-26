@@ -108,9 +108,19 @@ pub enum StatusProtocol {
     /// probes. What it proves depends on who sent it and which code it carried,
     /// which is why [`StatusReason::source`] exists.
     IcmpUnreachable,
-    /// Discovered via a successful TCP 3-way handshake on an open port, or via
-    /// the SYN+ACK or RST a half-open SYN probe drew.
+    /// Discovered via the SYN+ACK or RST a half-open SYN probe drew.
     TcpSyn,
+    /// Discovered via a TCP connection the scanning host's own stack made:
+    /// a handshake it completed, or a reset it surfaced as a refused
+    /// connection.
+    ///
+    /// Kept apart from [`TcpSyn`](Self::TcpSyn), which proves the same thing
+    /// about the host, because the two differ in how visible they are. A
+    /// half-open probe is reset before any connection exists, and a
+    /// completed one reaches the service, which may log it. A reader weighing
+    /// what a scan left behind on its targets, or comparing two scans of the
+    /// same host, has to be able to tell which one asked.
+    TcpConnect,
     /// Discovered via a TCP segment answering a raw probe that was not a SYN.
     ///
     /// Kept apart from [`TcpSyn`](Self::TcpSyn) because the probes differ in
@@ -185,6 +195,7 @@ impl StatusProtocol {
         Self::IcmpTimestamp,
         Self::IcmpUnreachable,
         Self::TcpSyn,
+        Self::TcpConnect,
         Self::Tcp,
         Self::Dhcp,
         Self::Udp,
