@@ -428,14 +428,33 @@ fn panic_or_cancellation(error: tokio::task::JoinError) -> ScanError {
 /// [`ZondConfig::scan_timeout`](crate::config::ZondConfig::scan_timeout) stops
 /// itself the same way when its budget runs out, which is what lets this be
 /// awaited by something nobody is watching.
+///
+/// # Dropping it stops the scan
+///
+/// This is the scan's owner, and the one way to its report. Dropped before the
+/// scan has finished, or while being awaited, it stops the scan as
+/// [`abort`](crate::scanner::handle::ScanHandle::abort) would: nothing could
+/// read what the scan went on to find, and a scan nobody can collect would
+/// keep its sockets, its captures and its probes going until it ended on its
+/// own, which for a listener watching until it is stopped is never. It is a
+/// stop and not a cancellation: the scan winds down through the same checks,
+/// so a journal it writes gets its last checkpoint once the scan has wound
+/// down, and keeps its lock until then rather than handing the job to a
+/// resume while this one is still probing. That last write needs the runtime
+/// the scan runs on, and a task dropped after that runtime has shut down
+/// leaves the journal where its last timed checkpoint did.
+///
+/// The [`ScanSession`] is a view of the scan and stops nothing when dropped: a
+/// caller that wants only the report may let it go and await this.
 pub struct ScanTask {
-    handle: JoinHandle<ScanReport>,
+    /// The scan, until it is joined or dropped.
+    handle: Option<JoinHandle<ScanReport>>,
+    /// The scan's stop, which dropping this pulls.
+    stop: handle::ScanHandle,
     /// The journal this scan writes to, closed once the scan ends.
     ///
     /// A journal has to write its last checkpoint and release its lock when the
-    /// scan is over, and this is the type that knows when that is. Dropping the
-    /// task without joining still closes the journal, though the last few
-    /// settlements may go unrecorded.
+    /// scan is over, and this is the type that knows when that is.
     #[cfg(feature = "journal-format")]
     journal: Option<checkpoint::Checkpointing>,
     /// What earlier sittings of this job did, restored from the journal.
@@ -447,9 +466,10 @@ pub struct ScanTask {
 }
 
 impl ScanTask {
-    fn new(handle: JoinHandle<ScanReport>) -> Self {
+    fn new(handle: JoinHandle<ScanReport>, stop: handle::ScanHandle) -> Self {
         Self {
-            handle,
+            handle: Some(handle),
+            stop,
             #[cfg(feature = "journal-format")]
             journal: None,
             #[cfg(feature = "journal-format")]
@@ -461,11 +481,13 @@ impl ScanTask {
     #[cfg(feature = "journal-format")]
     fn journalling(
         handle: JoinHandle<ScanReport>,
+        stop: handle::ScanHandle,
         journal: checkpoint::Checkpointing,
         earlier: Vec<ScanPhase>,
     ) -> Self {
         Self {
-            handle,
+            handle: Some(handle),
+            stop,
             journal: Some(journal),
             earlier,
         }
@@ -478,14 +500,21 @@ impl ScanTask {
     /// [`failures`](ScanReport::failures) and announced on the [`ScanSession`]
     /// event stream, because whatever the surviving strategies found is still
     /// worth having.
-    pub async fn join(self) -> Result<ScanReport, ScanError> {
-        let report = self.handle.await.map_err(panic_or_cancellation);
+    ///
+    /// Dropped while it waits, the scan is stopped; see
+    /// [the type](ScanTask#dropping-it-stops-the-scan).
+    pub async fn join(mut self) -> Result<ScanReport, ScanError> {
+        // Awaited in place rather than taken, so a join dropped part way is a
+        // task dropped with its scan still running.
+        let running = self.handle.as_mut().expect("a task is joined at most once");
+        let report = running.await.map_err(panic_or_cancellation);
+        self.handle = None;
 
         // After the scan, so the last checkpoint sees everything it settled, and
         // the phases recorded are this sitting's own. A scan that failed gets a
         // checkpoint too: how far it got is what a resume needs.
         #[cfg(feature = "journal-format")]
-        if let Some(journal) = self.journal {
+        if let Some(journal) = self.journal.take() {
             let phases = report.as_ref().map(ScanReport::phases).unwrap_or_default();
             journal.finish(phases).await;
         }
@@ -493,14 +522,42 @@ impl ScanTask {
         // Earlier sittings in front of this one, in the order they ran.
         #[cfg(feature = "journal-format")]
         if !self.earlier.is_empty() {
+            let earlier = std::mem::take(&mut self.earlier);
             return report.map(|report| {
-                let mut whole = ScanReport::from_phases(self.earlier, []);
+                let mut whole = ScanReport::from_phases(earlier, []);
                 whole.merge(report);
                 whole
             });
         }
 
         report
+    }
+}
+
+impl Drop for ScanTask {
+    fn drop(&mut self) {
+        let Some(scan) = self.handle.take() else {
+            return;
+        };
+        self.stop.abort();
+
+        // The journal is closed once the scan has wound down, from a task of
+        // its own, since a drop cannot wait. Without a runtime to run it on
+        // there is no scan left to wait for either.
+        #[cfg(feature = "journal-format")]
+        if let Some(journal) = self.journal.take()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            runtime.spawn(async move {
+                let phases = match scan.await {
+                    Ok(report) => report.phases().to_vec(),
+                    Err(_) => Vec::new(),
+                };
+                journal.finish(&phases).await;
+            });
+        }
+        #[cfg(not(feature = "journal-format"))]
+        drop(scan);
     }
 }
 
@@ -561,7 +618,8 @@ pub async fn discover(
         .staging(discovery_stages(cfg))
         .build();
     let handle = spawn_discovery(targets, cfg, ctx);
-    Ok((session, ScanTask::new(handle)))
+    let stop = session.handle().clone();
+    Ok((session, ScanTask::new(handle, stop)))
 }
 
 /// [`discover`], writing down how far it got, so that a sweep cut short can be
@@ -684,7 +742,11 @@ pub async fn discover_with_journal(
     let ticker = checkpoint::spawn_checkpoints(journal, ctx.progress());
     let handle = spawn_discovery(sweep, cfg, ctx);
 
-    Ok((session, ScanTask::journalling(handle, ticker, earlier)))
+    let stop = session.handle().clone();
+    Ok((
+        session,
+        ScanTask::journalling(handle, stop, ticker, earlier),
+    ))
 }
 
 /// How many addresses a sweep plans to ask about, or `None` where they cannot
@@ -1319,7 +1381,8 @@ pub async fn listen(
         .staging(vec![Stage::Listening])
         .build();
     let handle = spawn_listen(scope, cfg, ctx);
-    Ok((session, ScanTask::new(handle)))
+    let stop = session.handle().clone();
+    Ok((session, ScanTask::new(handle, stop)))
 }
 
 /// [`listen`], writing down what it hears, so that a watch cut short keeps what
@@ -1393,7 +1456,11 @@ pub async fn listen_with_journal(
     let ticker = checkpoint::spawn_checkpoints(journal, ctx.progress());
     let handle = spawn_listen(scope, cfg, ctx);
 
-    Ok((session, ScanTask::journalling(handle, ticker, earlier)))
+    let stop = session.handle().clone();
+    Ok((
+        session,
+        ScanTask::journalling(handle, stop, ticker, earlier),
+    ))
 }
 
 /// Runs a listening phase against an existing context.
@@ -1550,7 +1617,8 @@ pub async fn scan(
         Checkpoint::default(),
         runs_liveness,
     );
-    Ok((session, ScanTask::new(handle)))
+    let stop = session.handle().clone();
+    Ok((session, ScanTask::new(handle, stop)))
 }
 
 /// [`scan`], recording its progress so that an interrupted run can be continued.
@@ -1658,7 +1726,11 @@ pub async fn scan_with_journal(
         runs_liveness,
     );
 
-    Ok((session, ScanTask::journalling(handle, ticker, earlier)))
+    let stop = session.handle().clone();
+    Ok((
+        session,
+        ScanTask::journalling(handle, stop, ticker, earlier),
+    ))
 }
 
 /// Runs both phases of a port scan against an existing context.
@@ -1992,6 +2064,50 @@ mod tests {
             .filter(|refusal| refusal.reason().contains("too large to walk"))
             .collect();
         assert_eq!(refused.len(), 1, "{:?}", report.phases());
+    }
+
+    /// **Dropping the task stops the scan.** Nothing can read the report of a
+    /// scan whose task is gone, and one left running keeps its sockets and
+    /// its probes going until it ends on its own, which for a listener is
+    /// never. The scan winds down rather than vanishing, so the session's
+    /// stream still ends, the way it ends for any scan that is over.
+    #[tokio::test]
+    async fn dropping_the_task_stops_the_scan() {
+        use crate::model::target::TargetSet;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a free port");
+        let port = listener.local_addr().expect("its address").port();
+        // Takes every connection and says nothing, for as long as the test runs.
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "127.0.0.1".parse().expect("an address"),
+            port.to_string().parse().expect("a port"),
+        ));
+        let cfg = ZondConfig {
+            no_dns: true,
+            service_detection: crate::config::ServiceDetection::Thorough,
+            ..ZondConfig::default()
+        };
+        let (mut session, task) = scan(map, &cfg, Detections::embedded())
+            .await
+            .expect("the scan starts");
+        drop(task);
+
+        assert_eq!(
+            session.handle().stopped(),
+            Some(handle::StopCause::Aborted),
+            "the scan runs on with nobody to collect it"
+        );
+        while session.events().recv().await.is_some() {}
     }
 
     /// A scan stopped before it reached its ports starts none of the passes

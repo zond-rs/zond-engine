@@ -698,6 +698,10 @@ fn ratio(done: u64, total: u64) -> f64 {
 /// This is the live half of that pair: it describes the present moment and
 /// keeps no history; the report is what answers a question asked afterwards.
 ///
+/// Dropping it stops nothing. The task is the scan's owner, and dropping that
+/// is what stops a scan; see
+/// [`ScanTask`](crate::scanner::ScanTask#dropping-it-stops-the-scan).
+///
 /// ```no_run
 /// # async fn example(mut session: zond_engine::ScanSession) {
 /// use zond_engine::ScanEvent;
