@@ -96,7 +96,8 @@ pub(crate) const MAX_NAME_BYTES: usize = 64;
 /// `args` and `services` attributes through without a limit tuned around them.
 pub(crate) const MAX_VALUE_BYTES: usize = 256;
 
-/// The most elements one document may contain.
+/// The most elements one document may contain, unless its reader sets its own
+/// with [`Parser::with_max_elements`].
 ///
 /// A bound on work rather than on memory, since an element costs nothing
 /// held unless a reader builds something from it. Sized so that it is never
@@ -189,6 +190,8 @@ pub(crate) struct Parser<'a> {
     element_bytes: usize,
     max_element_bytes: usize,
     elements: u64,
+    /// The most elements this document may contain. See [`MAX_ELEMENTS`].
+    max_elements: u64,
     pub(crate) element: Element,
     /// The format's name in errors, so a refusal names the document a caller
     /// handed over rather than the parser that read it.
@@ -258,6 +261,7 @@ impl<'a> Parser<'a> {
             element_bytes: 0,
             max_element_bytes,
             elements: 0,
+            max_elements: MAX_ELEMENTS,
             element: Element::default(),
             format,
             kept,
@@ -284,6 +288,15 @@ impl<'a> Parser<'a> {
     /// worse answer than not knowing.
     pub(crate) fn with_lossy(mut self, lossy: &'static [&'static [u8]]) -> Self {
         self.lossy = lossy;
+        self
+    }
+
+    /// Replaces [`MAX_ELEMENTS`] as the most elements the document may contain.
+    ///
+    /// For a reader whose work some other ceiling already bounds, and which
+    /// would otherwise be refused a document that ceiling admits.
+    pub(crate) fn with_max_elements(mut self, elements: u64) -> Self {
+        self.max_elements = elements;
         self
     }
 
@@ -438,8 +451,9 @@ impl<'a> Parser<'a> {
                 }
                 Some(_) => {
                     self.elements += 1;
-                    if self.elements > MAX_ELEMENTS {
-                        return Err(self.malformed(format!("more than {MAX_ELEMENTS} elements")));
+                    if self.elements > self.max_elements {
+                        let limit = self.max_elements;
+                        return Err(self.malformed(format!("more than {limit} elements")));
                     }
                     self.element.clear();
                     self.read_name()?;

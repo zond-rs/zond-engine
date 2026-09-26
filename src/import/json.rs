@@ -302,47 +302,51 @@ impl Importer for JsonImporter {
         input: &mut dyn BufRead,
         sink: &mut dyn TargetSink,
     ) -> Result<(), ImportError> {
-        crate::import::skip_bom(input)?;
+        crate::import::bounded::within(input, self.limits.max_document_bytes, |input| {
+            crate::import::skip_bom(input)?;
 
-        let mut emitter = Emitter::new(sink, self.limits);
-        let mut deserializer = serde_json::Deserializer::from_reader(input);
+            let mut emitter = Emitter::new(sink, self.limits);
+            let mut deserializer = serde_json::Deserializer::from_reader(input);
 
-        let outcome = Document {
-            emitter: &mut emitter,
-        }
-        .deserialize(&mut deserializer);
+            let outcome = Document {
+                emitter: &mut emitter,
+            }
+            .deserialize(&mut deserializer);
 
-        // The real error is the one the sink or a record produced; serde's is
-        // only the vehicle that carried the stop signal out.
-        if let Some(failure) = emitter.failure.take() {
-            return Err(failure);
-        }
+            // The real error is the one the sink or a record produced; serde's is
+            // only the vehicle that carried the stop signal out.
+            if let Some(failure) = emitter.failure.take() {
+                return Err(failure);
+            }
 
-        outcome.map_err(|error| ImportError::Malformed {
-            format: FORMAT,
-            origin: ImportOrigin::unknown(),
-            message: error.to_string(),
-        })?;
-
-        if !emitter.versioned {
-            return Err(ImportError::Malformed {
+            outcome.map_err(|error| ImportError::Malformed {
                 format: FORMAT,
                 origin: ImportOrigin::unknown(),
-                message: format!("no 'schema_version': this is not a document {ENGINE_NAME} wrote"),
-            });
-        }
+                message: error.to_string(),
+            })?;
 
-        if !emitter.hosted {
-            return Err(ImportError::Malformed {
-                format: FORMAT,
-                origin: ImportOrigin::unknown(),
-                message: "no 'hosts': a document with no host list names no targets, and a \
+            if !emitter.versioned {
+                return Err(ImportError::Malformed {
+                    format: FORMAT,
+                    origin: ImportOrigin::unknown(),
+                    message: format!(
+                        "no 'schema_version': this is not a document {ENGINE_NAME} wrote"
+                    ),
+                });
+            }
+
+            if !emitter.hosted {
+                return Err(ImportError::Malformed {
+                    format: FORMAT,
+                    origin: ImportOrigin::unknown(),
+                    message: "no 'hosts': a document with no host list names no targets, and a \
                           record-per-line export is read as JSON Lines"
-                    .to_string(),
-            });
-        }
+                        .to_string(),
+                });
+            }
 
-        Ok(())
+            Ok(())
+        })
     }
 }
 
@@ -456,61 +460,63 @@ impl Importer for JsonLinesImporter {
         input: &mut dyn BufRead,
         sink: &mut dyn TargetSink,
     ) -> Result<(), ImportError> {
-        crate::import::skip_bom(input)?;
+        crate::import::bounded::within(input, self.limits.max_document_bytes, |input| {
+            crate::import::skip_bom(input)?;
 
-        let mut emitter = Emitter::new(sink, self.limits);
-        let mut buffer = Vec::new();
-        let mut line_number = 0u64;
+            let mut emitter = Emitter::new(sink, self.limits);
+            let mut buffer = Vec::new();
+            let mut line_number = 0u64;
 
-        loop {
-            buffer.clear();
-            line_number += 1;
-            let origin = ImportOrigin::line(line_number);
+            loop {
+                buffer.clear();
+                line_number += 1;
+                let origin = ImportOrigin::line(line_number);
 
-            if !crate::import::list::read_line(
-                input,
-                &mut buffer,
-                self.limits.max_line_bytes,
-                origin,
-            )? {
-                break;
-            }
-
-            let text =
-                std::str::from_utf8(&buffer).map_err(|_| ImportError::InvalidUtf8 { origin })?;
-            if text.trim().is_empty() {
-                continue;
-            }
-
-            let record: LineRecord =
-                serde_json::from_str(text).map_err(|error| ImportError::Malformed {
-                    format: LINES_FORMAT,
+                if !crate::import::list::read_line(
+                    input,
+                    &mut buffer,
+                    self.limits.max_line_bytes,
                     origin,
-                    message: error.to_string(),
-                })?;
-
-            let carried_on = match record {
-                LineRecord::Report(header) => {
-                    emitter.accept_version(header.schema_version, LINES_FORMAT, origin)
+                )? {
+                    break;
                 }
-                LineRecord::Host(host) => emitter.emit(&host, LINES_FORMAT, origin),
-                LineRecord::Unknown => true,
-            };
 
-            if !carried_on {
-                return Err(emitter.failure.take().expect("a refusal records why"));
+                let text = std::str::from_utf8(&buffer)
+                    .map_err(|_| ImportError::InvalidUtf8 { origin })?;
+                if text.trim().is_empty() {
+                    continue;
+                }
+
+                let record: LineRecord =
+                    serde_json::from_str(text).map_err(|error| ImportError::Malformed {
+                        format: LINES_FORMAT,
+                        origin,
+                        message: error.to_string(),
+                    })?;
+
+                let carried_on = match record {
+                    LineRecord::Report(header) => {
+                        emitter.accept_version(header.schema_version, LINES_FORMAT, origin)
+                    }
+                    LineRecord::Host(host) => emitter.emit(&host, LINES_FORMAT, origin),
+                    LineRecord::Unknown => true,
+                };
+
+                if !carried_on {
+                    return Err(emitter.failure.take().expect("a refusal records why"));
+                }
             }
-        }
 
-        if !emitter.versioned {
-            return Err(ImportError::Malformed {
-                format: LINES_FORMAT,
-                origin: ImportOrigin::unknown(),
-                message: format!("no 'report' record: this is not output {ENGINE_NAME} wrote"),
-            });
-        }
+            if !emitter.versioned {
+                return Err(ImportError::Malformed {
+                    format: LINES_FORMAT,
+                    origin: ImportOrigin::unknown(),
+                    message: format!("no 'report' record: this is not output {ENGINE_NAME} wrote"),
+                });
+            }
 
-        Ok(())
+            Ok(())
+        })
     }
 }
 

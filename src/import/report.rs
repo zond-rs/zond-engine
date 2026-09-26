@@ -162,84 +162,6 @@ impl ReportOptions {
     }
 }
 
-/// A reader that refuses to hand out more than `limit` bytes.
-///
-/// Wrapped around the caller's input at the dispatch rather than inside each
-/// reader, so the ceiling holds for every format and a format added later
-/// inherits it instead of having to remember it.
-struct Bounded<'a> {
-    inner: &'a mut dyn BufRead,
-    left: u64,
-    /// Whether the budget ran out, which is all the dispatch needs back. A flag
-    /// rather than a distinguishable error: the refusal travels out through
-    /// `serde_json` and through [`xml`](crate::import::xml), and both rewrite an
-    /// I/O failure into an error of their own. Asking afterwards is exact where
-    /// reading the
-    /// message that came back would be a guess.
-    exhausted: bool,
-}
-
-impl<'a> Bounded<'a> {
-    fn new(inner: &'a mut dyn BufRead, limit: u64) -> Self {
-        Self {
-            inner,
-            left: limit,
-            exhausted: false,
-        }
-    }
-
-    fn over_budget(&mut self) -> std::io::Error {
-        self.exhausted = true;
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "the document is past its byte ceiling",
-        )
-    }
-}
-
-impl Bounded<'_> {
-    /// Whether a reader asking for more bytes is asking for more than the
-    /// budget, rather than asking how it ends.
-    ///
-    /// A spent budget is not by itself an overrun. A document of exactly
-    /// `max_document_bytes` has been handed over whole, and a parser then asks
-    /// once more because that is how it learns there is nothing after the value
-    /// it read. Refusing that reading would make the ceiling refuse the largest
-    /// document it is supposed to admit.
-    fn overran(&mut self) -> std::io::Result<bool> {
-        Ok(self.left == 0 && !self.inner.fill_buf()?.is_empty())
-    }
-}
-
-impl std::io::Read for Bounded<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.overran()? {
-            return Err(self.over_budget());
-        }
-        let ceiling = usize::try_from(self.left).unwrap_or(usize::MAX);
-        let take = buf.len().min(ceiling);
-        let read = self.inner.read(&mut buf[..take])?;
-        self.left -= read as u64;
-        Ok(read)
-    }
-}
-
-impl BufRead for Bounded<'_> {
-    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
-        if self.overran()? {
-            return Err(self.over_budget());
-        }
-        let ceiling = usize::try_from(self.left).unwrap_or(usize::MAX);
-        let available = self.inner.fill_buf()?;
-        Ok(&available[..available.len().min(ceiling)])
-    }
-
-    fn consume(&mut self, amount: usize) {
-        self.left = self.left.saturating_sub(amount as u64);
-        self.inner.consume(amount);
-    }
-}
-
 /// A document format a report can be read from.
 ///
 /// The mirror of [`ImportFormat`](crate::import::ImportFormat) for this
@@ -400,22 +322,14 @@ impl ReportFormat {
         input: &mut dyn BufRead,
         options: ReportOptions,
     ) -> Result<ScanReport, ImportError> {
-        let limit = options.max_document_bytes;
-        let mut bounded = Bounded::new(input, limit);
-
-        let read = match self {
+        crate::import::bounded::within(input, options.max_document_bytes, |input| match self {
             #[cfg(feature = "import-json")]
-            ReportFormat::Json => json::JsonReportReader::new(options).read(&mut bounded),
+            ReportFormat::Json => json::JsonReportReader::new(options).read(input),
             #[cfg(feature = "import-json")]
-            ReportFormat::JsonLines => json::JsonLinesReportReader::new(options).read(&mut bounded),
+            ReportFormat::JsonLines => json::JsonLinesReportReader::new(options).read(input),
             #[cfg(feature = "import-nmap")]
-            ReportFormat::Nmap => nmap::NmapXmlReportReader::new(options).read(&mut bounded),
-        };
-
-        match read {
-            Err(_) if bounded.exhausted => Err(ImportError::DocumentTooLarge { limit }),
-            other => other,
-        }
+            ReportFormat::Nmap => nmap::NmapXmlReportReader::new(options).read(input),
+        })
     }
 }
 

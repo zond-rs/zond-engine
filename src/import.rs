@@ -115,6 +115,9 @@ pub(crate) mod xml;
 #[cfg(feature = "import-settings")]
 pub mod settings;
 
+// The byte ceiling every document is read under, targets and reports alike.
+mod bounded;
+
 #[cfg(feature = "import-request")]
 pub mod request;
 
@@ -218,6 +221,21 @@ pub struct ImportLimits {
     /// addition rather than a re-merge of the whole set per line, and it errs
     /// towards refusing - which for a limit is the safe direction.
     pub max_addresses: u128,
+
+    /// The most bytes one document may be read from, in every format.
+    ///
+    /// A target reader streams, holding one record at a time, so this bounds
+    /// how long an import can run rather than what it holds. The counts above
+    /// do not: blank lines, comments and every element or field a reader skips
+    /// cost reading and are counted by none of them.
+    ///
+    /// The default is 16 GiB, sized to read back what this engine writes. One
+    /// host scanned across the whole TCP range is 6.5 MB of nmap XML, 14 MB of
+    /// JSON lines and 26 MB of the indented JSON the exporter writes by
+    /// default, so the default admits 2,048 such hosts in the first, a /21
+    /// scanned in full, 1,024 in the second and 512 in the third, each with a
+    /// margin for the services and findings on their open ports.
+    pub max_document_bytes: u64,
 }
 
 impl Default for ImportLimits {
@@ -226,9 +244,13 @@ impl Default for ImportLimits {
             max_line_bytes: 64 * 1024,
             max_tokens: 16_777_216,
             max_addresses: 1u128 << 32,
+            max_document_bytes: DEFAULT_MAX_DOCUMENT_BYTES,
         }
     }
 }
+
+/// 16 GiB. See [`ImportLimits::max_document_bytes`].
+const DEFAULT_MAX_DOCUMENT_BYTES: u64 = 16 << 30;
 
 impl ImportLimits {
     /// The defaults.
@@ -263,6 +285,12 @@ impl ImportLimits {
         self
     }
 
+    /// Sets the most bytes one document may be read from.
+    pub fn with_max_document_bytes(mut self, bytes: u64) -> Self {
+        self.max_document_bytes = bytes;
+        self
+    }
+
     /// Limits that refuse nothing, for input the caller has already vetted.
     ///
     /// `max_line_bytes` stays finite because it bounds a single allocation
@@ -272,6 +300,7 @@ impl ImportLimits {
             max_line_bytes: usize::MAX,
             max_tokens: u64::MAX,
             max_addresses: u128::MAX,
+            max_document_bytes: u64::MAX,
         }
     }
 }
@@ -453,11 +482,13 @@ pub enum ImportError {
         origin: ImportOrigin,
     },
 
-    /// A document ran past
+    /// A document ran past [`ImportLimits::max_document_bytes`], or, read as
+    /// a report, past
     /// [`ReportOptions::max_document_bytes`](crate::import::report::ReportOptions::max_document_bytes).
     ///
-    /// A whole-document reader holds the parsed document in memory, so this is
-    /// the ceiling on that allocation rather than a statement about the file.
+    /// A report reader holds the parsed document in memory, so there this is
+    /// the ceiling on that allocation; a target reader streams, and there it is
+    /// the ceiling on the work.
     #[error("the document is longer than the {limit} byte limit")]
     DocumentTooLarge {
         /// The limit it passed.
@@ -1288,43 +1319,6 @@ mod tests {
     /// crate could not read back.
     #[test]
     fn a_byte_order_mark_costs_no_format_its_document() {
-        /// The same document each format would carry, as short as it can be.
-        fn documents() -> Vec<(ImportFormat, String)> {
-            let mut all = vec![(ImportFormat::List, "198.51.100.1\n".to_string())];
-
-            // The header in full, because recognising a table means recognising
-            // this crate's own; the row can stop after the address, since a
-            // column a record does not reach is a column it does not set.
-            #[cfg(feature = "import-csv")]
-            all.push((
-                ImportFormat::Csv,
-                format!("{}\n198.51.100.1\n", crate::format::csv::COLUMNS.join(",")),
-            ));
-            #[cfg(feature = "import-json")]
-            {
-                let hosts = r#"{"primary_ip":"198.51.100.1","ips":["198.51.100.1"],"ports":[]}"#;
-                all.push((
-                    ImportFormat::Json,
-                    format!(r#"{{"schema_version":1,"hosts":[{hosts}]}}"#),
-                ));
-                all.push((
-                    ImportFormat::JsonLines,
-                    format!(
-                        "{{\"type\":\"report\",\"schema_version\":1}}\n{{\"type\":\"host\",{}\n",
-                        &hosts[1..]
-                    ),
-                ));
-            }
-            #[cfg(feature = "import-nmap")]
-            all.push((
-                ImportFormat::NmapXml,
-                r#"<nmaprun><host><address addr="198.51.100.1" addrtype="ipv4"/></host></nmaprun>"#
-                    .to_string(),
-            ));
-
-            all
-        }
-
         for (format, document) in documents() {
             let marked = |text: &str| {
                 let mut bytes = crate::format::UTF8_BOM.to_vec();
@@ -1348,6 +1342,140 @@ mod tests {
                 "{format} read no targets through a byte-order mark"
             );
         }
+    }
+
+    /// The same document each format would carry, as short as it can be.
+    fn documents() -> Vec<(ImportFormat, String)> {
+        let mut all = vec![(ImportFormat::List, "198.51.100.1\n".to_string())];
+
+        // The header in full, because recognising a table means recognising
+        // this crate's own; the row can stop after the address, since a
+        // column a record does not reach is a column it does not set.
+        #[cfg(feature = "import-csv")]
+        all.push((
+            ImportFormat::Csv,
+            format!("{}\n198.51.100.1\n", crate::format::csv::COLUMNS.join(",")),
+        ));
+        #[cfg(feature = "import-json")]
+        {
+            let hosts = r#"{"primary_ip":"198.51.100.1","ips":["198.51.100.1"],"ports":[]}"#;
+            all.push((
+                ImportFormat::Json,
+                format!(r#"{{"schema_version":1,"hosts":[{hosts}]}}"#),
+            ));
+            all.push((
+                ImportFormat::JsonLines,
+                format!(
+                    "{{\"type\":\"report\",\"schema_version\":1}}\n{{\"type\":\"host\",{}\n",
+                    &hosts[1..]
+                ),
+            ));
+        }
+        #[cfg(feature = "import-nmap")]
+        all.push((
+            ImportFormat::NmapXml,
+            r#"<nmaprun><host><address addr="198.51.100.1" addrtype="ipv4"/></host></nmaprun>"#
+                .to_string(),
+        ));
+
+        all
+    }
+
+    /// **Every format is read under the document ceiling, and a document
+    /// exactly at it is read whole.**
+    ///
+    /// The counts on expressions and addresses see none of what a reader
+    /// skips, so without this a file of comments or ignored elements could
+    /// keep an import reading for as long as it had bytes.
+    #[test]
+    fn every_format_refuses_a_document_past_its_byte_ceiling() {
+        for (format, document) in documents() {
+            let at = |bytes: u64| {
+                let options = options("80")
+                    .with_limits(ImportLimits::default().with_max_document_bytes(bytes));
+                format.read(&mut Cursor::new(document.as_bytes()), &options)
+            };
+
+            let whole = at(document.len() as u64)
+                .unwrap_or_else(|error| panic!("{format} refused itself at its ceiling: {error}"));
+            assert_eq!(whole.addresses, 1, "{format} read at its ceiling");
+
+            let error = at(document.len() as u64 - 1)
+                .expect_err(&format!("{format} read a byte past its ceiling"));
+            assert!(
+                matches!(error, ImportError::DocumentTooLarge { .. }),
+                "{format} should name the ceiling it passed, said: {error}"
+            );
+        }
+    }
+
+    /// The default ceiling is sized in hosts this engine wrote after scanning
+    /// the whole TCP range, and these are the counts its documentation
+    /// promises, held against what the writers produce. A writer that grows,
+    /// or a ceiling that shrinks, fails here rather than in front of somebody
+    /// scanning again what a large scan found.
+    #[cfg(all(
+        feature = "import-nmap",
+        feature = "export-json",
+        feature = "export-jsonl",
+        feature = "export-nmap"
+    ))]
+    #[test]
+    fn the_default_ceiling_admits_the_full_range_hosts_it_promises() {
+        use crate::export::{
+            ExportOptions, Exporter, JsonExporter, JsonLinesExporter, NmapXmlExporter,
+        };
+        use crate::model::host::Host;
+        use crate::model::port::{Discovery, Port, PortState, Protocol, ScanResponse};
+        use crate::report::ScanReport;
+
+        // Every port closed and carrying the fullest account a raw probe
+        // writes, the largest record per port a scan that found nothing leaves.
+        let mut host = Host::new("192.0.2.1".parse().expect("an address"));
+        for number in 1..=u16::MAX {
+            host.add_port(
+                Port::new(number, Protocol::Tcp, PortState::Closed).with_discovery(
+                    Discovery::new(ScanResponse::TcpRst)
+                        .with_rtt(std::time::Duration::from_micros(1_234))
+                        .with_ttl(64),
+                ),
+            );
+        }
+        let report = ScanReport::recorded("zond", Vec::new(), vec![host]);
+        let written = |exporter: &dyn Exporter| {
+            let mut out = Vec::new();
+            exporter.export(&report, &mut out).expect("exports");
+            out
+        };
+
+        let ceiling = ImportLimits::default().max_document_bytes;
+        let xml = written(&NmapXmlExporter::new(ExportOptions::new()));
+        for (format, bytes, promised) in [
+            ("nmap XML", xml.len(), 2_048),
+            (
+                "JSON lines",
+                written(&JsonLinesExporter::new(ExportOptions::new())).len(),
+                1_024,
+            ),
+            (
+                "indented JSON",
+                written(&JsonExporter::new(ExportOptions::new())).len(),
+                512,
+            ),
+        ] {
+            assert!(
+                bytes as u64 * promised <= ceiling,
+                "{promised} full-range hosts of {format} are {} bytes, past the {ceiling}-byte ceiling",
+                bytes as u64 * promised,
+            );
+        }
+
+        // And the ceiling is what bounds such a document: one host of it
+        // reads back as every port it lists.
+        let imported = ImportFormat::NmapXml
+            .read(&mut Cursor::new(xml), &options("80"))
+            .expect("this engine's own export reads as targets");
+        assert_eq!(imported.addresses, 1);
     }
 
     /// A name the caller was told beats bytes this crate worked out, and a name

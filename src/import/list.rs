@@ -84,40 +84,42 @@ impl Importer for ListImporter {
         input: &mut dyn BufRead,
         sink: &mut dyn TargetSink,
     ) -> Result<(), ImportError> {
-        let mut buffer = Vec::new();
-        let mut line_number = 0u64;
-        let mut first_line = true;
+        crate::import::bounded::within(input, self.limits.max_document_bytes, |input| {
+            let mut buffer = Vec::new();
+            let mut line_number = 0u64;
+            let mut first_line = true;
 
-        loop {
-            buffer.clear();
-            line_number += 1;
-            let origin = ImportOrigin::line(line_number);
+            loop {
+                buffer.clear();
+                line_number += 1;
+                let origin = ImportOrigin::line(line_number);
 
-            if !read_line(input, &mut buffer, self.limits.max_line_bytes, origin)? {
-                return Ok(());
+                if !read_line(input, &mut buffer, self.limits.max_line_bytes, origin)? {
+                    return Ok(());
+                }
+
+                let text = std::str::from_utf8(&buffer)
+                    .map_err(|_| ImportError::InvalidUtf8 { origin })?;
+
+                // Only the first line can carry one. Stripping it anywhere else
+                // would accept a file that is not what it claims to be.
+                let text = if first_line {
+                    first_line = false;
+                    text.strip_prefix(UTF8_BOM_CHAR).unwrap_or(text)
+                } else {
+                    text
+                };
+
+                let content = match text.split_once(COMMENT) {
+                    Some((before, _)) => before,
+                    None => text,
+                };
+
+                for token in content.split_whitespace() {
+                    sink.accept(token, origin)?;
+                }
             }
-
-            let text =
-                std::str::from_utf8(&buffer).map_err(|_| ImportError::InvalidUtf8 { origin })?;
-
-            // Only the first line can carry one. Stripping it anywhere else
-            // would accept a file that is not what it claims to be.
-            let text = if first_line {
-                first_line = false;
-                text.strip_prefix(UTF8_BOM_CHAR).unwrap_or(text)
-            } else {
-                text
-            };
-
-            let content = match text.split_once(COMMENT) {
-                Some((before, _)) => before,
-                None => text,
-            };
-
-            for token in content.split_whitespace() {
-                sink.accept(token, origin)?;
-            }
-        }
+        })
     }
 }
 

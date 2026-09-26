@@ -45,6 +45,7 @@
 //! is the caller's own selection, and rescanning what nmap found should not
 //! quietly mean rescanning some of it.
 
+use std::collections::BTreeSet;
 use std::io::BufRead;
 
 use crate::import::xml::{Element, Event, Parser};
@@ -80,66 +81,87 @@ impl Importer for NmapXmlImporter {
         input: &mut dyn BufRead,
         sink: &mut dyn TargetSink,
     ) -> Result<(), ImportError> {
-        crate::import::skip_bom(input)?;
+        crate::import::bounded::within(input, self.limits.max_document_bytes, |input| {
+            crate::import::skip_bom(input)?;
 
-        let mut parser = Parser::new(input, self.limits.max_line_bytes, FORMAT, KEPT);
-        let mut host: Option<Accumulator> = None;
-        let mut saw_root = false;
-        let mut token = String::new();
+            // The document ceiling bounds the elements, since each takes at
+            // least four bytes, and the element count sized for the report
+            // readers would refuse this engine's own export of a few hundred
+            // hosts scanned across the full range, which that ceiling admits.
+            let mut parser = Parser::new(input, self.limits.max_line_bytes, FORMAT, KEPT)
+                .with_max_elements(u64::MAX);
+            let mut host: Option<Accumulator> = None;
+            let mut saw_root = false;
+            let mut token = String::new();
 
-        loop {
-            match parser.next_event()? {
-                Event::Eof => break,
+            loop {
+                match parser.next_event()? {
+                    Event::Eof => break,
 
-                Event::Start { self_closing } => {
-                    match parser.element.name.as_slice() {
-                        b"nmaprun" => saw_root = true,
-                        b"host" => host = Some(Accumulator::default()),
-                        b"address" => {
-                            if let Some(accumulator) = host.as_mut() {
-                                accumulator.address(&parser.element)?;
+                    Event::Start { self_closing } => {
+                        match parser.element.name.as_slice() {
+                            b"nmaprun" => saw_root = true,
+                            b"host" => host = Some(Accumulator::default()),
+                            b"address" => {
+                                if let Some(accumulator) = host.as_mut() {
+                                    accumulator.address(&parser.element)?;
+                                    // Each address becomes a target expression,
+                                    // which the sink counts only once the host
+                                    // closes, so a host of nothing but addresses
+                                    // is held to the count here.
+                                    let limit = self.limits.max_tokens;
+                                    if accumulator.addresses.len() as u64 > limit {
+                                        return Err(ImportError::TooManyTokens { limit });
+                                    }
+                                }
                             }
-                        }
-                        b"port" => {
-                            if let Some(accumulator) = host.as_mut() {
-                                accumulator.port(&parser.element, &parser)?;
+                            b"port" => {
+                                if let Some(accumulator) = host.as_mut() {
+                                    accumulator.port(&parser.element, &parser)?;
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
+
+                        // A self-closing `<host/>` opens and closes in one event.
+                        if self_closing && parser.element.name == b"host" {
+                            emit(host.take(), sink, &mut token, parser.origin())?;
+                        }
                     }
 
-                    // A self-closing `<host/>` opens and closes in one event.
-                    if self_closing && parser.element.name == b"host" {
-                        emit(host.take(), sink, &mut token, parser.origin())?;
-                    }
-                }
-
-                Event::End => {
-                    if parser.element.name == b"host" {
-                        emit(host.take(), sink, &mut token, parser.origin())?;
+                    Event::End => {
+                        if parser.element.name == b"host" {
+                            emit(host.take(), sink, &mut token, parser.origin())?;
+                        }
                     }
                 }
             }
-        }
 
-        if !saw_root {
-            return Err(ImportError::Malformed {
-                format: FORMAT,
-                origin: ImportOrigin::unknown(),
-                message: "no <nmaprun> element: this is not an nmap document".to_string(),
-            });
-        }
+            if !saw_root {
+                return Err(ImportError::Malformed {
+                    format: FORMAT,
+                    origin: ImportOrigin::unknown(),
+                    message: "no <nmaprun> element: this is not an nmap document".to_string(),
+                });
+            }
 
-        Ok(())
+            Ok(())
+        })
     }
 }
 
 /// One host's addresses and ports, gathered until its element closes.
+///
+/// What a host holds is bounded apart from the document, so reading one costs
+/// memory in proportion to a host rather than to the file: the addresses by
+/// [`ImportLimits::max_tokens`], and the ports by there being only so many.
 #[derive(Debug, Default)]
 struct Accumulator {
     addresses: Vec<String>,
-    /// Port number and whether it is UDP, in the order the document listed them.
-    ports: Vec<(u16, Protocol)>,
+    /// Port number and transport. A set, so a document repeating one port
+    /// entry costs one port and a host holds at most every port on every
+    /// transport, however long its port list runs.
+    ports: BTreeSet<(u16, Protocol)>,
 }
 
 impl Accumulator {
@@ -188,7 +210,7 @@ impl Accumulator {
             )));
         };
 
-        self.ports.push((number, protocol));
+        self.ports.insert((number, protocol));
         Ok(())
     }
 }
@@ -202,10 +224,10 @@ impl Accumulator {
 /// 20 ms, 1 000×1 000 is 67 KB and 47 ms, 2 000×2 000 is 134 KB and 158 ms, so
 /// bytes double and time quadruples.
 ///
-/// Nothing else bounds the product. `max_tokens` bounds the addresses,
-/// `MAX_ELEMENTS` bounds the ports, and neither sees the multiplication, so
-/// without this the ceiling is the two of them multiplied together, which is to
-/// say there is none.
+/// Nothing else bounds the product. `max_tokens` bounds the addresses, the
+/// ports are bounded by there being only so many, and neither sees the
+/// multiplication, so without this the ceiling is the two of them multiplied
+/// together.
 ///
 /// 2^20 is past anything a real document can mean. A host has a handful of
 /// addresses, a MAC is skipped, so it is the IPv4 and IPv6 ones, and every port
@@ -249,7 +271,7 @@ fn emit(
             ports.push(',');
         }
         // TCP's qualifier too, since a qualifier holds until the next one and
-        // nmap lists ports in its own order.
+        // a host's transports interleave in port order.
         ports.push_str(protocol.qualifier());
         ports.push_str(&number.to_string());
     }
@@ -479,9 +501,9 @@ mod tests {
     /// that stops it running away.
     ///
     /// A host is K+N elements and K×N of work, because every address stringifies
-    /// and re-parses the whole port list. Nothing capped the product before:
-    /// `max_tokens` caps the addresses, `MAX_ELEMENTS` caps the ports, and neither
-    /// multiplies. Measured, release: 2 000×2 000 is 134 KB of document and 158
+    /// and re-parses the whole port list. Nothing else caps the product:
+    /// `max_tokens` caps the addresses, the port count caps the ports, and
+    /// neither multiplies. Measured, release: 2 000×2 000 is 134 KB of document and 158
     /// ms, so bytes double and time quadruples, and a document that fits in an
     /// email costs minutes.
     ///
@@ -532,6 +554,22 @@ mod tests {
             3,
             "three addresses, four thousand ports, well inside the ceiling"
         );
+    }
+
+    /// A host's ports are counted once each, however often the document
+    /// lists them, so repetition neither costs memory nor trips the expansion
+    /// ceiling that bounds what a host really names.
+    #[test]
+    fn a_port_listed_many_times_counts_once() {
+        let addresses = concat!(
+            "<address addr=\"198.51.100.1\" addrtype=\"ipv4\"/>",
+            "<address addr=\"198.51.100.2\" addrtype=\"ipv4\"/>",
+        );
+        let ports = "<port protocol=\"tcp\" portid=\"22\"/>".repeat(MAX_HOST_EXPANSION / 2 + 1);
+        let document = format!("<nmaprun><host>{addresses}<ports>{ports}</ports></host></nmaprun>");
+
+        let imported = read(&document).expect("one port twice over reads");
+        assert_eq!(imported.addresses, 2);
     }
 
     /// Nmap's `args` and `services` attributes are genuinely long, and this

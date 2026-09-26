@@ -185,53 +185,55 @@ impl Importer for CsvImporter {
         input: &mut dyn BufRead,
         sink: &mut dyn TargetSink,
     ) -> Result<(), ImportError> {
-        let mut record = Record::new();
-        let mut line = 1u64;
-        let mut layout: Option<Layout> = None;
-        let mut token = String::new();
-        let mut ports = String::new();
+        crate::import::bounded::within(input, self.limits.max_document_bytes, |input| {
+            let mut record = Record::new();
+            let mut line = 1u64;
+            let mut layout: Option<Layout> = None;
+            let mut token = String::new();
+            let mut ports = String::new();
 
-        while let Some(origin) = record.read(input, self.limits.max_line_bytes, &mut line)? {
-            if record.is_blank() {
-                continue;
+            while let Some(origin) = record.read(input, self.limits.max_line_bytes, &mut line)? {
+                if record.is_blank() {
+                    continue;
+                }
+
+                let layout = match &layout {
+                    Some(resolved) => resolved,
+                    None => {
+                        let resolved = Layout::resolve(&record, self, origin)?;
+                        let is_header = resolved.is_header;
+                        layout = Some(resolved);
+                        if is_header {
+                            // A header describes the records after it and is not one
+                            // of them.
+                            continue;
+                        }
+                        layout.as_ref().expect("just set")
+                    }
+                };
+
+                // A row with nothing in its address column is handed on rather than
+                // skipped. The grammar refuses it and the caller's `OnRefusal`
+                // decides what happens, where dropping it here would answer that
+                // silently. A row blank all the way across is not this; `is_blank`
+                // has already skipped it.
+                let address = record.field(layout.addresses, origin)?.unwrap_or("");
+
+                let port = match layout.ports {
+                    Some(column) => record.field(column, origin)?.filter(|s| !s.is_empty()),
+                    None => None,
+                };
+                let protocol = match layout.protocols {
+                    Some(column) => record.field(column, origin)?,
+                    None => None,
+                };
+
+                build_token(&mut token, &mut ports, address, port, protocol);
+                sink.accept(&token, origin)?;
             }
 
-            let layout = match &layout {
-                Some(resolved) => resolved,
-                None => {
-                    let resolved = Layout::resolve(&record, self, origin)?;
-                    let is_header = resolved.is_header;
-                    layout = Some(resolved);
-                    if is_header {
-                        // A header describes the records after it and is not one
-                        // of them.
-                        continue;
-                    }
-                    layout.as_ref().expect("just set")
-                }
-            };
-
-            // A row with nothing in its address column is handed on rather than
-            // skipped. The grammar refuses it and the caller's `OnRefusal`
-            // decides what happens, where dropping it here would answer that
-            // silently. A row blank all the way across is not this; `is_blank`
-            // has already skipped it.
-            let address = record.field(layout.addresses, origin)?.unwrap_or("");
-
-            let port = match layout.ports {
-                Some(column) => record.field(column, origin)?.filter(|s| !s.is_empty()),
-                None => None,
-            };
-            let protocol = match layout.protocols {
-                Some(column) => record.field(column, origin)?,
-                None => None,
-            };
-
-            build_token(&mut token, &mut ports, address, port, protocol);
-            sink.accept(&token, origin)?;
-        }
-
-        Ok(())
+            Ok(())
+        })
     }
 }
 

@@ -6566,12 +6566,14 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::csv::CsvIm
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::csv::CsvImporter
 #[non_exhaustive] pub struct zond_engine::import::ImportLimits
 pub zond_engine::import::ImportLimits::max_addresses: u128
+pub zond_engine::import::ImportLimits::max_document_bytes: u64
 pub zond_engine::import::ImportLimits::max_line_bytes: usize
 pub zond_engine::import::ImportLimits::max_tokens: u64
 impl zond_engine::import::ImportLimits
 pub fn zond_engine::import::ImportLimits::new() -> Self
 pub fn zond_engine::import::ImportLimits::none() -> Self
 pub fn zond_engine::import::ImportLimits::with_max_addresses(self, u128) -> Self
+pub fn zond_engine::import::ImportLimits::with_max_document_bytes(self, u64) -> Self
 pub fn zond_engine::import::ImportLimits::with_max_line_bytes(self, usize) -> Self
 pub fn zond_engine::import::ImportLimits::with_max_tokens(self, u64) -> Self
 impl core::clone::Clone for zond_engine::import::ImportLimits
