@@ -137,6 +137,7 @@ const KEPT: &[&[u8]] = &[
     b"product",
     b"version",
     b"extrainfo",
+    b"tunnel",
     b"conf",
     b"method",
     b"accuracy",
@@ -1184,7 +1185,14 @@ impl PortAcc {
             0
         };
 
-        let mut service = Service::new(name, confidence);
+        // Nmap names a protocol read through TLS by the protocol, with the
+        // tunnel in an attribute of its own. This engine's label carries both,
+        // `ssl/http`, and it is the label that decides whether a later probe of
+        // the port speaks through a handshake, so the two are joined here.
+        let mut service = match element.value(b"tunnel") {
+            Some("ssl") => Service::new(format!("ssl/{name}"), confidence),
+            _ => Service::new(name, confidence),
+        };
         if let Some(product) = element.value(b"product") {
             service = service.with_product(product);
         }
@@ -1385,6 +1393,28 @@ mod tests {
                 .iter()
                 .any(|cpe| &**cpe == "cpe:/o:linux:linux_kernel:5")
         );
+    }
+
+    /// A service nmap found inside TLS reads as this engine labels one, with
+    /// the tunnel in its name.
+    ///
+    /// Nmap writes HTTPS as `name="http" tunnel="ssl"`. Read by the name alone
+    /// it is plain HTTP, which a comparison against this engine's own scan
+    /// reports as a changed service and a detection speaks to in the clear.
+    #[test]
+    fn a_service_nmap_found_inside_tls_keeps_its_tunnel() {
+        let document = r#"<nmaprun scanner="nmap" version="7.94">
+<host><status state="up" reason="syn-ack" reason_ttl="0"/>
+<address addr="192.0.2.10" addrtype="ipv4"/>
+<ports><port protocol="tcp" portid="443">
+<state state="open" reason="syn-ack" reason_ttl="64"/>
+<service name="http" product="nginx" tunnel="ssl" method="probed" conf="10"/>
+</port></ports></host></nmaprun>"#;
+
+        let report = read(document).expect("a readable document");
+        let host = report.host(&ip(10)).expect("the host");
+        let https = host.ports().next().expect("443");
+        assert_eq!(https.service_name(), Some("ssl/http"));
     }
 
     /// A port-number lookup is recorded, and recorded as the guess it is.

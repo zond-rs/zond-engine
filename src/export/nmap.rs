@@ -83,6 +83,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::export::schema::{ENGINE_NAME, protocol_name, reference_text, severity_name};
 use crate::export::{ExportError, ExportOptions, Exporter};
+use crate::fingerprint::Tunnel;
 use crate::model::finding::Finding;
 use crate::model::host::{
     EvidenceSource, Host, HostStatus, IpProtocolState, StatusProtocol, StatusReason,
@@ -672,7 +673,8 @@ fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
     )?;
 
     if let Some(service) = port.service() {
-        write!(out, r#"<service name="{}""#, Attr(service.name()))?;
+        let (name, tunnel) = service_name(service.name());
+        write!(out, r#"<service name="{}""#, Attr(name))?;
         if let Some(product) = service.product() {
             write!(out, r#" product="{}""#, Attr(product))?;
         }
@@ -681,6 +683,9 @@ fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
         }
         if let Some(extrainfo) = service.extrainfo() {
             write!(out, r#" extrainfo="{}""#, Attr(extrainfo))?;
+        }
+        if let Some(tunnel) = tunnel {
+            write!(out, r#" tunnel="{tunnel}""#)?;
         }
         // `probed` is nmap's word for a service identified by talking to the
         // port, `table` for one read out of a port-number list. Every classified
@@ -916,6 +921,25 @@ fn host_reason(reason: &StatusReason) -> &str {
         StatusProtocol::Udp => "udp-response",
         StatusProtocol::Dhcp => "dhcp-response",
         StatusProtocol::Custom(name) => name,
+    }
+}
+
+/// A service label split into the protocol nmap names and the tunnel it names
+/// beside it.
+///
+/// This engine labels a protocol read through TLS `ssl/http`, one string holding
+/// both facts. Nmap keeps them apart, `name="http" tunnel="ssl"`, and what reads
+/// its XML keys on the name: an exploit search, a screenshot tool, an importer
+/// filing web services. Written whole, the label is a protocol none of them has
+/// heard of, and an HTTPS server is missing from every list of web servers built
+/// from the document.
+///
+/// A bare `ssl` is a handshake with nothing identified inside it, which nmap
+/// also writes as that name alone.
+fn service_name(label: &str) -> (&str, Option<&'static str>) {
+    match (Tunnel::from_service_label(label), label.split_once('/')) {
+        (Some(Tunnel::Tls), Some((_, protocol))) => (protocol, Some("ssl")),
+        _ => (label, None),
     }
 }
 
@@ -1309,6 +1333,51 @@ mod tests {
 
         let walled = hosts.next().expect("the filtered host survived");
         assert_eq!(walled.status(), HostStatus::Filtered);
+    }
+
+    /// A service read through TLS is written as nmap writes one, the protocol
+    /// named and the tunnel beside it, and reads back as the label it was.
+    ///
+    /// The tools that read this format find web servers by `name="http"`, so
+    /// an HTTPS port written `name="ssl/http"` is one none of them lists.
+    #[cfg(feature = "import-nmap")]
+    #[test]
+    fn a_service_read_through_tls_is_named_with_its_tunnel_beside_it() {
+        use crate::import::report::ReportReader;
+        use crate::import::report::nmap::NmapXmlReportReader;
+        use crate::model::port::Service;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 30)));
+        host.set_status(HostStatus::Up);
+        host.add_port(
+            Port::new(8443, Protocol::Tcp, PortState::Open)
+                .with_service(Service::new("ssl/http", 90).with_product("nginx")),
+        );
+        host.add_port(
+            Port::new(9443, Protocol::Tcp, PortState::Open).with_service(Service::new("ssl", 80)),
+        );
+
+        let document = export(&[host]);
+        assert!(
+            document.contains(r#"<service name="http" product="nginx" tunnel="ssl""#),
+            "{document}"
+        );
+        assert!(!document.contains("ssl/"), "{document}");
+        assert!(
+            document.contains(r#"<service name="ssl" method="probed""#),
+            "a handshake with nothing named inside it is nmap's bare `ssl`: {document}"
+        );
+
+        let restored = NmapXmlReportReader::default()
+            .read(&mut std::io::Cursor::new(document.into_bytes()))
+            .expect("this crate's own document reads back");
+        let names: Vec<_> = restored
+            .hosts()
+            .flat_map(Host::ports)
+            .filter_map(Port::service_name)
+            .collect();
+        assert_eq!(names, ["ssl/http", "ssl"]);
     }
 
     /// A run whose journal fell behind finished as a run that succeeded, and
