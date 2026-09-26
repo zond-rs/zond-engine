@@ -366,7 +366,15 @@ fn write_scan_info(out: &mut dyn Write, phase: &ScanPhase) -> Result<(), ExportE
 /// A UDP scan is `udp` and an SCTP one `sctpinit` whatever the TCP technique
 /// was, and an unprivileged phase is `connect` for the same reason nmap's is: no
 /// raw segment went out, so naming the technique would describe a probe that was
-/// never sent.
+/// never sent. So is a privileged phase that reached every address it covered
+/// by connect, as it reaches loopback and this host's own addresses; see
+/// [`ScanPhase::reached_by_connect`].
+///
+/// A phase that reached only some of its addresses that way names the
+/// technique it sent the rest. Nmap runs one TCP technique per scan and writes
+/// one `<scaninfo>` per transport, which is what its readers key on, so a
+/// second element for the same transport would be dropped or misread; the
+/// addresses probed by connect are in the report's own record of the phase.
 fn scan_type(phase: &ScanPhase, protocol: Protocol) -> &'static str {
     match protocol {
         Protocol::Udp => return "udp",
@@ -375,9 +383,10 @@ fn scan_type(phase: &ScanPhase, protocol: Protocol) -> &'static str {
         Protocol::Sctp => return "sctpinit",
         Protocol::Tcp => {}
     }
-    // Only where the phase is known to have been unprivileged. A phase this
-    // engine did not measure keeps whatever technique its own document named.
-    if phase.privilege() == Some(Privilege::Connect) {
+    // Only where the phase is known to have reached its addresses so. A phase
+    // this engine did not measure keeps whatever technique its own document
+    // named.
+    if phase.privilege() == Some(Privilege::Connect) || reached_wholly_by_connect(phase) {
         return "connect";
     }
 
@@ -390,6 +399,29 @@ fn scan_type(phase: &ScanPhase, protocol: Protocol) -> &'static str {
         TcpScanTechnique::Ack => "ack",
         TcpScanTechnique::Window => "window",
     }
+}
+
+/// Whether every address `phase` covered is one it reached by connect though
+/// it held the privilege its raw strategies need.
+///
+/// False for a phase that recorded no such address, which is also every phase
+/// whose scope names none: nothing is claimed of a phase that says nothing.
+fn reached_wholly_by_connect(phase: &ScanPhase) -> bool {
+    let reached = phase.reached_by_connect();
+    let covered = phase.targets().ranges();
+    if reached.is_empty() || covered.is_empty() {
+        return false;
+    }
+    let mut left = IpSet::new();
+    for range in covered {
+        left.insert_range(*range);
+    }
+    let mut by_connect = IpSet::new();
+    for range in reached {
+        by_connect.insert_range(*range);
+    }
+    left.subtract(&by_connect);
+    left.is_empty()
 }
 
 /// Writes one `<host>` element.
@@ -1376,7 +1408,16 @@ mod tests {
         targets: crate::report::TargetScope,
         failures: Vec<ScannerFailure>,
     ) -> ScanPhase {
-        ScanPhase::from_parts(crate::report::PhaseParts {
+        ScanPhase::from_parts(phase_parts(kind, targets, failures))
+    }
+
+    /// The parts of [`phase`], for a test that records something more.
+    fn phase_parts(
+        kind: crate::report::ScanKind,
+        targets: crate::report::TargetScope,
+        failures: Vec<ScannerFailure>,
+    ) -> crate::report::PhaseParts {
+        crate::report::PhaseParts {
             open: false,
             kind,
             started_at: std::time::SystemTime::UNIX_EPOCH,
@@ -1400,7 +1441,7 @@ mod tests {
             probes: Vec::new(),
             origin: None,
             attachments: Vec::new(),
-        })
+        }
     }
 
     /// A report of `phases` and `hosts`, exported.
@@ -1452,6 +1493,42 @@ mod tests {
             note,
             "<!-- zond: excluded by policy, not scanned: \
              192.0.2.1-192.0.2.2, 192.0.2.9-192.0.2.9 -->"
+        );
+    }
+
+    /// **A privileged phase that reached every address it covered by connect
+    /// is a connect scan, and one that reached only some of them so is not.**
+    ///
+    /// Loopback and this host's own addresses are beyond a raw probe, so a
+    /// privileged scan of them connects, and its closed ports carry the
+    /// refusal a connect draws. Named after the technique, the document
+    /// claims SYNs went to ports that were never sent one.
+    #[test]
+    fn a_privileged_phase_that_reached_everything_by_connect_is_a_connect_scan() {
+        use crate::report::{ScanKind, TargetScope};
+
+        let phase = |covered: &str, reached: &str| {
+            let mut covered: IpSet = covered.parse().expect("addresses");
+            let reached: IpSet = reached.parse().expect("addresses");
+            let targets = TargetScope::from_ip_set(&mut covered, &Exclusions::none());
+            let mut parts = phase_parts(ScanKind::PortScan, targets, Vec::new());
+            parts.privilege = Some(Privilege::Raw);
+            parts.reached_by_connect = reached.v4().iter().copied().map(IpRange::V4).collect();
+            ScanPhase::from_parts(parts)
+        };
+
+        assert_eq!(
+            scan_type(&phase("127.0.0.1", "127.0.0.1"), Protocol::Tcp),
+            "connect"
+        );
+        assert_eq!(
+            scan_type(&phase("127.0.0.1,192.0.2.1", "127.0.0.1"), Protocol::Tcp),
+            "syn",
+            "the rest were sent SYNs"
+        );
+        assert_eq!(
+            scan_type(&phase("127.0.0.1", "127.0.0.1"), Protocol::Udp),
+            "udp"
         );
     }
 
