@@ -334,6 +334,20 @@ impl SilentPort {
     /// say to. Another process's connection is kept by mistake only if it
     /// ends that soon too, and one that ends having sent nothing adds
     /// nothing but itself to the record.
+    ///
+    /// What such a connection sent is kept with it, and a test reading
+    /// [`heard`](Self::heard) as nothing leans on that: a pass that ought to
+    /// have written nothing and writes and hangs up at once, as a print job
+    /// does, is caught there alone. So another process moves what the record
+    /// holds in one way only: by connecting, writing and hanging up before the
+    /// port has read whether the connection's far end is still held, which on
+    /// loopback is within moments of the handshake. A scanner that asks a port
+    /// anything waits on its answer, or on a greeting before it, and one that
+    /// only knocks writes nothing, so it takes a process writing to a port it
+    /// has never been answered on and hanging up without a reply. Bytes have no
+    /// count another process cannot reach, as connections have where the crate
+    /// begins them: a pass writes wherever it holds its stream, and the crate
+    /// has no one place every write goes through.
     pub(crate) fn open() -> Self {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds loopback");
         let addr = listener.local_addr().expect("a local address");
