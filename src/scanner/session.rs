@@ -858,19 +858,56 @@ impl ProbeStatsLog {
 /// here, keyed by port, and *taken* by the detection phase, so a response body
 /// is held only across the two adjacent phases and freed as it is read, not
 /// retained through the whole paced scan.
+///
+/// # A port a sitting inherits
+///
+/// Held in memory alone, so they end with the sitting that drew them, while
+/// the port they were drawn from is written down and comes back to the next
+/// sitting of the job settled, never to be probed again. Such a port is
+/// [`lost`](Self::lost) here until this sitting identifies it again: a
+/// detection run over it before that reads nothing, and each passive one
+/// concludes nothing. A strategy that identifies what it finds over the
+/// connection that finds it has no second pass to draw them in, so it asks
+/// the ones it inherited in one; see
+/// [`service::detect_inherited`](crate::scanner::service::detect_inherited).
+///
+/// Drawing them again, rather than writing them into the journal, keeps a
+/// response body out of the record and the journal a record of findings: a
+/// raw scan's second pass identifies every open port of a host a resume owes
+/// its passes anyway, so the port is asked once more either way. Holding back
+/// the port's settlement until its detections ran instead would make a
+/// sitting killed during its passes probe its whole plan again, since those
+/// passes follow every probe.
 #[derive(Default)]
 pub(crate) struct Responses {
     inner: DashMap<(ScopedIp, u16, Protocol), Vec<String>>,
+    /// The open ports an earlier sitting identified that this one has not.
+    lost: DashMap<(ScopedIp, u16, Protocol), ()>,
 }
 
 impl Responses {
     /// Records what the service phase gathered for one port. An empty set is not
     /// stored: there is nothing for a detection to read, and a passive detection
-    /// over no bytes has nothing to do.
+    /// over no bytes has nothing to do. Either way the port is identified in
+    /// this sitting, and so no longer [`lost`](Self::lost).
     fn record(&self, ip: ScopedIp, number: u16, protocol: Protocol, banners: Vec<String>) {
+        let key = (ip, number, protocol);
+        self.lost.remove(&key);
         if !banners.is_empty() {
-            self.inner.insert((ip, number, protocol), banners);
+            self.inner.insert(key, banners);
         }
+    }
+
+    /// Notes that an earlier sitting drew this port's responses and they
+    /// ended with it.
+    fn inherit(&self, ip: ScopedIp, number: u16, protocol: Protocol) {
+        self.lost.insert((ip, number, protocol), ());
+    }
+
+    /// Whether this port's responses ended with an earlier sitting and this
+    /// one has drawn none since.
+    fn lost(&self, ip: &ScopedIp, number: u16, protocol: Protocol) -> bool {
+        self.lost.contains_key(&(ip.clone(), number, protocol))
     }
 
     /// Takes one port's gathered responses, removing them so the memory is freed
@@ -1988,6 +2025,12 @@ impl ScanContext {
         self.responses.record(ip, number, protocol, banners);
     }
 
+    /// Whether an earlier sitting identified this port and this one has not;
+    /// see [`Responses`] on a port a sitting inherits.
+    pub(crate) fn responses_lost(&self, ip: &ScopedIp, number: u16, protocol: Protocol) -> bool {
+        self.responses.lost(ip, number, protocol)
+    }
+
     /// Takes a port's gathered responses, freeing them as the detection phase
     /// reads it.
     pub(crate) fn take_responses(
@@ -2954,6 +2997,14 @@ impl ScanContext {
             host.withhold_intermediaries(keep);
 
             let key = host.scoped_ip();
+            // What the earlier sitting drew identifying these ports ended
+            // with it; see `Responses`.
+            for port in host.ports() {
+                if port.state() == PortState::Open {
+                    self.responses
+                        .inherit(key.clone(), port.number(), port.protocol());
+                }
+            }
             match self.store.get_mut(&key) {
                 Some(mut existing) => {
                     existing.merge(host);

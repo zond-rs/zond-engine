@@ -77,6 +77,38 @@ use crate::transport::dial::PathAllowance;
 /// would identify every TCP port twice, once per member, which is what kept the
 /// UDP scanner from running this phase at all.
 pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protocol) {
+    identify(ctx, detection, over, Which::Every).await;
+}
+
+/// Identifies the open ports over `over` that an earlier sitting of the job
+/// identified and this one has not, for a strategy that identifies what it
+/// finds over the connection that finds it and so has no second pass of its
+/// own.
+///
+/// What that sitting drew was the detections' to read and ended with it; the
+/// port comes back settled, so no probe of this sitting reaches it. See
+/// [`Responses`](crate::scanner::session::Responses) on a port a sitting
+/// inherits. A port this sitting found or asked again has been identified
+/// already, and nothing is asked of a host an earlier sitting finished with.
+pub(crate) async fn detect_inherited(
+    ctx: &ScanContext,
+    detection: ServiceDetection,
+    over: Protocol,
+) {
+    identify(ctx, detection, over, Which::Inherited).await;
+}
+
+/// Which of a transport's open ports a pass identifies.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Which {
+    /// Every one a host owed its passes holds.
+    Every,
+    /// Only those whose responses ended with an earlier sitting.
+    Inherited,
+}
+
+/// [`detect`], over the ports `which` names.
+async fn identify(ctx: &ScanContext, detection: ServiceDetection, over: Protocol, which: Which) {
     // A level that opens no connection has nothing for this phase to do. Checked
     // before the store is walked, so the phase costs nothing at all rather than
     // costing a snapshot it will not use.
@@ -86,7 +118,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
 
     // Snapshot the targets up front so no DashMap guard is held across an await.
     let tarpits = Tarpits::default();
-    let targets = fingerprintable_ports(ctx, over, detection, &tarpits);
+    let targets = fingerprintable_ports(ctx, over, detection, which, &tarpits);
     // A stopped scan opens nothing further, and the report names the pass it
     // left with ports in front of it.
     if targets.is_empty() || ctx.stopping_before(Pass::Services) {
@@ -366,6 +398,7 @@ fn fingerprintable_ports(
     ctx: &ScanContext,
     over: Protocol,
     detection: ServiceDetection,
+    which: Which,
     tarpits: &Tarpits,
 ) -> Vec<Target> {
     if over == Protocol::Udp && !detection.sends() {
@@ -383,6 +416,8 @@ fn fingerprintable_ports(
             if port.protocol() == over
                 && port.state() == PortState::Open
                 && crate::fingerprint::reads_replies(port.number(), port.protocol())
+                && (which == Which::Every
+                    || ctx.responses_lost(&address, port.number(), port.protocol()))
                 && tarpits.identifies(host.value(), None, port.number(), port.protocol())
             {
                 targets.push(Target {
@@ -1593,8 +1628,16 @@ mod tests {
             "SNMP is a UDP port the pass would otherwise ask"
         );
 
-        let taken =
-            |level| fingerprintable_ports(&ctx, Protocol::Udp, level, &Tarpits::default()).len();
+        let taken = |level| {
+            fingerprintable_ports(
+                &ctx,
+                Protocol::Udp,
+                level,
+                Which::Every,
+                &Tarpits::default(),
+            )
+            .len()
+        };
         assert_eq!(
             taken(ServiceDetection::Banner),
             0,
@@ -1637,7 +1680,13 @@ mod tests {
         });
 
         let tarpits = Tarpits::default();
-        let targets = fingerprintable_ports(&ctx, Protocol::Tcp, ServiceDetection::Probe, &tarpits);
+        let targets = fingerprintable_ports(
+            &ctx,
+            Protocol::Tcp,
+            ServiceDetection::Probe,
+            Which::Every,
+            &tarpits,
+        );
         let taken = |address: IpAddr| {
             let mut numbers: Vec<u16> = targets
                 .iter()
@@ -1764,6 +1813,7 @@ mod tests {
             &ctx,
             Protocol::Tcp,
             ServiceDetection::Probe,
+            Which::Every,
             &Tarpits::default(),
         );
         let allowed = targets[0].path.over(Duration::ZERO);

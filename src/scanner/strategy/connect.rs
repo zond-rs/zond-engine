@@ -489,6 +489,15 @@ impl PortScanner for ConnectPortScanner {
         )
         .await
     }
+
+    /// Identifies the open ports an earlier sitting of the job identified,
+    /// whose responses ended with it. This scanner identifies each port it
+    /// finds over the connection that found it, so a port that comes back
+    /// settled is one no connection of this sitting reaches, and without this
+    /// pass the detections would run over it with nothing to read.
+    async fn detect_services(&mut self, ctx: &ScanContext) {
+        crate::scanner::service::detect_inherited(ctx, self.detection, Protocol::Tcp).await;
+    }
 }
 
 /// Unprivileged UDP port scanner.

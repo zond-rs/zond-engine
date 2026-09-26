@@ -2887,6 +2887,125 @@ mod tests {
         assert!(!rewritten, "a finished host was written down again");
     }
 
+    /// A port an earlier sitting found open and identified, and was killed
+    /// before its detections ran, is given the findings a sitting that ran to
+    /// its end draws there.
+    ///
+    /// A passive detection reads what identifying the port drew, and a sitting
+    /// keeps that in memory alone. The port's record comes back from the
+    /// journal and settles its target, so the resume asks the port nothing
+    /// in its probes; without the port being identified again, every
+    /// detection that reads a service's own words has nothing to read, and
+    /// the resumed report is short of findings with nothing to say so.
+    #[cfg(feature = "journal-format")]
+    #[tokio::test]
+    async fn a_resume_draws_the_detections_a_killed_sitting_owed_a_port_it_settled() {
+        use crate::journal::Journal;
+        use crate::journal::manifest::Plan;
+        use crate::journal::settle::{Outcome, Settlements};
+        use crate::model::host::{Host, HostStatus};
+        use crate::model::port::{Port, PortState, Protocol, Service};
+        use crate::model::target::TargetSet;
+        use crate::testing::loopback::accept_from_this_process;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // A web server that sends none of the headers a browser is told to
+        // enforce, which a passive detection reads off its reply.
+        let web_server = || async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("binds loopback");
+            let addr = listener.local_addr().expect("a local address");
+            tokio::spawn(async move {
+                while let Ok(mut sock) = accept_from_this_process(&listener).await {
+                    tokio::spawn(async move {
+                        let mut buffer = [0u8; 1024];
+                        if !matches!(sock.read(&mut buffer).await, Ok(n) if n > 0) {
+                            return;
+                        }
+                        let _ = sock
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\nServer: nginx/1.24.0\r\n\
+                                  Content-Type: text/html\r\nContent-Length: 0\r\n\
+                                  Connection: close\r\n\r\n",
+                            )
+                            .await;
+                    });
+                }
+            });
+            addr
+        };
+        let addr = web_server().await;
+        // Another the killed sitting had not reached yet, which leaves the
+        // resume a target at the address: a sitting with one there asks it as
+        // a sitting mid-job does, where one with nothing left may take another
+        // strategy that identifies every port again anyway.
+        let unreached = web_server().await.port();
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            addr.ip().into(),
+            format!("{},{unreached}", addr.port())
+                .parse()
+                .expect("ports"),
+        ));
+        let cfg = ZondConfig {
+            no_dns: true,
+            ..ZondConfig::default()
+        };
+        let plan = Plan::port_scan(&map, &cfg.exclusions, cfg.tcp_technique);
+        let settled = map
+            .iter()
+            .position(|target| target.port == addr.port())
+            .expect("the server's port is planned") as u64;
+        let findings = |report: &ScanReport| {
+            report
+                .hosts()
+                .flat_map(Host::ports)
+                .flat_map(Port::findings)
+                .count()
+        };
+
+        let root = journal_root("owed-detections-whole");
+        let journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
+        let (_session, task) =
+            scan_with_journal(map.clone(), &cfg, Detections::embedded(), journal)
+                .await
+                .expect("the sitting starts");
+        let whole = findings(&task.join().await.expect("the sitting ends"));
+        std::fs::remove_dir_all(&root).ok();
+        assert!(whole > 0, "the server draws no finding to lose");
+
+        // The sitting killed between identifying the port and detecting on it:
+        // the port settled and on record with its service, and nothing
+        // finished.
+        let root = journal_root("owed-detections-killed");
+        let mut journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
+        let mut host = Host::new(addr.ip());
+        host.set_status(HostStatus::Up);
+        host.add_port(
+            Port::new(addr.port(), Protocol::Tcp, PortState::Open)
+                .with_service(Service::new("http", 90)),
+        );
+        journal.record_hosts(&[host]).expect("records the host");
+        let settlements = Settlements::default();
+        settlements.record(Outcome::Answered { position: settled });
+        journal.checkpoint(&settlements).expect("checkpoints");
+        let directory = journal.directory().to_path_buf();
+        journal.close().expect("closes");
+
+        let (journal, _) =
+            Journal::resume(&directory, &plan, Privilege::current()).expect("resumes");
+        let (_session, task) = scan_with_journal(map, &cfg, Detections::embedded(), journal)
+            .await
+            .expect("the sitting starts");
+        let resumed = findings(&task.join().await.expect("the sitting ends"));
+        std::fs::remove_dir_all(&root).ok();
+        assert_eq!(
+            resumed, whole,
+            "the resume drew other findings than one sitting"
+        );
+    }
+
     /// A port scan handed a journal counted over another plan, or under
     /// another privilege than this process sends with, is refused before it
     /// sends anything.
