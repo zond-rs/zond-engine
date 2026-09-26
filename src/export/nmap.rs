@@ -85,6 +85,8 @@ use crate::export::schema::{ENGINE_NAME, protocol_name, reference_text, severity
 use crate::export::{ExportError, ExportOptions, Exporter};
 use crate::model::finding::Finding;
 use crate::model::host::{Host, HostStatus, IpProtocolState};
+use crate::model::ip::range::IpRange;
+use crate::model::ip::set::IpSet;
 use crate::model::port::{Port, PortState, Protocol};
 use crate::model::technique::TcpScanTechnique;
 use crate::report::{ScanPhase, ScanReport, ScannerFailure};
@@ -218,29 +220,40 @@ impl Exporter for NmapXmlExporter {
 /// Saying nothing is not an option: a file reporting a scan of a range while
 /// omitting that part of it was deliberately skipped overstates its own
 /// coverage.
+///
+/// Every phase carries the policy it ran under, and most carry the same one, so
+/// the note is their union, merged as an address set merges it: a range two
+/// phases share is named once and two that touch read as the one range they
+/// amount to. The union is built in one sort, which keeps the note's cost
+/// proportional to the policy however many phases repeat it; a blocklist runs to
+/// tens of thousands of ranges, and a note deduplicated by searching what it has
+/// already written grows with the square of that.
 fn write_exclusion_note(out: &mut dyn Write, report: &ScanReport) -> Result<(), ExportError> {
-    let mut excluded: Vec<String> = Vec::new();
+    let mut excluded = IpSet::new();
     for phase in report.phases() {
         for range in phase.targets().excluded() {
-            let text = format!("{}-{}", range.start_addr(), range.end_addr());
-            if !excluded.contains(&text) {
-                excluded.push(text);
-            }
+            excluded.insert_range(*range);
         }
     }
 
     if excluded.is_empty() {
         return Ok(());
     }
+    excluded.canonicalize();
 
     // Rendered from addresses rather than anything a caller wrote, so no
     // attacker-controlled text reaches this line and `--` cannot appear in it
     // to close the comment early.
-    writeln!(
-        out,
-        "<!-- zond: excluded by policy, not scanned: {} -->",
-        excluded.join(", ")
-    )?;
+    write!(out, "<!-- zond: excluded by policy, not scanned: ")?;
+    let v4 = excluded.v4().iter().copied().map(IpRange::V4);
+    let v6 = excluded.v6().iter().copied().map(IpRange::V6);
+    for (index, range) in v4.chain(v6).enumerate() {
+        if index > 0 {
+            write!(out, ", ")?;
+        }
+        write!(out, "{}-{}", range.start_addr(), range.end_addr())?;
+    }
+    writeln!(out, " -->")?;
 
     Ok(())
 }
@@ -876,6 +889,7 @@ fn is_forbidden(character: char) -> bool {
 mod tests {
     use super::*;
     use crate::export::fixture;
+    use crate::model::exclusion::Exclusions;
 
     fn render() -> String {
         let mut out = Vec::new();
@@ -895,6 +909,90 @@ mod tests {
         String::from_utf8(out).expect("the document is UTF-8")
     }
 
+    /// A phase of `kind` over `targets`, which failed as `failures` say and
+    /// recorded nothing else.
+    fn phase(
+        kind: crate::report::ScanKind,
+        targets: crate::report::TargetScope,
+        failures: Vec<ScannerFailure>,
+    ) -> ScanPhase {
+        ScanPhase::from_parts(crate::report::PhaseParts {
+            kind,
+            started_at: std::time::SystemTime::UNIX_EPOCH,
+            elapsed: std::time::Duration::from_secs(1),
+            privilege: None,
+            targets,
+            settings: crate::report::ScanSettings::from(&crate::config::ZondConfig::default()),
+            failures,
+            refusals: Vec::new(),
+            unroutable: Vec::new(),
+            timed_out: Vec::new(),
+            icmp_rate_limited: Vec::new(),
+            reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
+            liveness_skipped: None,
+            silent: Vec::new(),
+            stopped: None,
+            unreached: 0,
+            unheard_probes: 0,
+            probes: Vec::new(),
+            origin: None,
+            attachments: Vec::new(),
+        })
+    }
+
+    /// A report of `phases` and `hosts`, exported.
+    fn export_phases(phases: Vec<ScanPhase>, hosts: Vec<Host>) -> String {
+        let report = ScanReport::recorded("zond", phases, hosts);
+        let mut out = Vec::new();
+        NmapXmlExporter::new(ExportOptions::new())
+            .export(&report, &mut out)
+            .expect("the report exports");
+        String::from_utf8(out).expect("the document is UTF-8")
+    }
+
+    /// The exclusion note names the policy once, however many phases ran
+    /// under it, and a range one phase added beside it joins it.
+    ///
+    /// Every phase records the policy in force, so a discovery sweep followed
+    /// by a port scan carries it twice, and a note listing each phase's copy
+    /// would state it twice. A phase can also widen it, by the other addresses
+    /// of a machine the policy names, and the note is the union: an address
+    /// set, merged as the policy itself is merged.
+    #[test]
+    fn the_exclusion_note_is_the_union_of_every_phases_policy() {
+        use crate::report::{ScanKind, TargetScope};
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let policy = |last: &[u8]| {
+            let mut set = IpSet::new();
+            for last in last {
+                set.insert(IpAddr::V4(Ipv4Addr::new(192, 0, 2, *last)));
+            }
+            Exclusions::new(set)
+        };
+        let scope =
+            |exclusions: &Exclusions| TargetScope::from_ip_set(&mut IpSet::new(), exclusions);
+
+        let document = export_phases(
+            vec![
+                phase(ScanKind::Discovery, scope(&policy(&[1, 9])), Vec::new()),
+                phase(ScanKind::PortScan, scope(&policy(&[1, 2, 9])), Vec::new()),
+            ],
+            Vec::new(),
+        );
+
+        let note = document
+            .lines()
+            .find(|line| line.starts_with("<!-- zond: excluded"))
+            .expect("a policy was in force");
+        assert_eq!(
+            note,
+            "<!-- zond: excluded by policy, not scanned: \
+             192.0.2.1-192.0.2.2, 192.0.2.9-192.0.2.9 -->"
+        );
+    }
+
     /// A run whose journal fell behind finished as a run that succeeded, and
     /// one whose strategy failed as one that did not.
     ///
@@ -904,41 +1002,15 @@ mod tests {
     /// the disk did.
     #[test]
     fn a_journal_that_fell_behind_is_not_a_run_that_failed() {
-        use crate::report::{PhaseParts, ScanKind, ScanSettings, ScannerKind, TargetScope};
+        use crate::report::{ScanKind, ScannerKind, TargetScope};
 
         let exit = |failed: ScannerKind| {
-            let phase = ScanPhase::from_parts(PhaseParts {
-                kind: ScanKind::PortScan,
-                started_at: std::time::SystemTime::UNIX_EPOCH,
-                elapsed: std::time::Duration::from_secs(1),
-                privilege: None,
-                targets: TargetScope::from_ip_set(
-                    &mut crate::model::ip::set::IpSet::new(),
-                    &crate::model::exclusion::Exclusions::none(),
-                ),
-                settings: ScanSettings::from(&crate::config::ZondConfig::default()),
-                failures: vec![ScannerFailure::new(failed, "it could not")],
-                refusals: Vec::new(),
-                unroutable: Vec::new(),
-                timed_out: Vec::new(),
-                icmp_rate_limited: Vec::new(),
-                reached_by_connect: Vec::new(),
-                undecided: Vec::new(),
-                liveness_skipped: None,
-                silent: Vec::new(),
-                stopped: None,
-                unreached: 0,
-                unheard_probes: 0,
-                probes: Vec::new(),
-                origin: None,
-                attachments: Vec::new(),
-            });
-            let report = ScanReport::recorded("zond", vec![phase], Vec::new());
-            let mut out = Vec::new();
-            NmapXmlExporter::new(ExportOptions::new())
-                .export(&report, &mut out)
-                .expect("the report exports");
-            let document = String::from_utf8(out).expect("the document is UTF-8");
+            let phase = phase(
+                ScanKind::PortScan,
+                TargetScope::from_ip_set(&mut IpSet::new(), &Exclusions::none()),
+                vec![ScannerFailure::new(failed, "it could not")],
+            );
+            let document = export_phases(vec![phase], Vec::new());
             let at = document.find(r#" exit=""#).expect("a finished element") + 7;
             document[at..]
                 .split('"')
