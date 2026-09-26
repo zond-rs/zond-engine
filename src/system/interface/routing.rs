@@ -55,7 +55,7 @@ use crate::model::ip::range::IpRange::{self, V4, V6};
 use crate::model::ip::range::{Ipv4Range, Ipv6Range};
 use crate::model::ip::set::IpSet;
 use crate::system::interface::source::{
-    ProbeSockets, plausible_source, probe_route_source, viable_interfaces,
+    ProbeSockets, RouteAnswer, ask_route, plausible_source, viable_interfaces,
 };
 use crate::system::interface::{Link, LinkAddress};
 use rayon::prelude::*;
@@ -209,6 +209,18 @@ pub(crate) fn map_ips_to_interfaces_with(
     interfaces: Vec<Link>,
     forced: &[IpAddr],
 ) -> RoutedTargets {
+    map_ips_to_interfaces_asking(ip_set, interfaces, forced, ask_route)
+}
+
+/// [`map_ips_to_interfaces_with`], asking the routing table about a routed
+/// target through `route`, which a test hands in to have the table answer as
+/// no host a test runs on does.
+fn map_ips_to_interfaces_asking(
+    ip_set: IpSet,
+    interfaces: Vec<Link>,
+    forced: &[IpAddr],
+    route: fn(IpAddr, &mut ProbeSockets) -> RouteAnswer,
+) -> RoutedTargets {
     let owned_ips: HashSet<IpAddr> = interfaces
         .iter()
         .flat_map(|link| link.addresses().iter().map(|held| held.address()))
@@ -312,10 +324,22 @@ pub(crate) fn map_ips_to_interfaces_with(
                 };
             }
 
-            // A forced source outranks the routing table. On-link and tunnel
-            // targets are already settled above and answer through their own
-            // link; a routed target the kernel would send from the wrong
-            // interface is what the override exists for.
+            // A route that refuses by policy is the host's decision about the
+            // target, and neither a forced source nor the fallback below
+            // steps around it: each sends from an address named outright,
+            // which the kernel sends from wherever the table refuses. Left to
+            // the connect fallback, whose connect the kernel refuses too, and
+            // which files the address as one nothing reaches. See
+            // `RouteAnswer::Forbidden`.
+            let answer = route(target, sockets);
+            if matches!(answer, RouteAnswer::Forbidden) {
+                return (target, Classification::Unmapped);
+            }
+
+            // A forced source outranks the routing table otherwise. On-link
+            // and tunnel targets are already settled above and answer through
+            // their own link; a routed target the kernel would send from the
+            // wrong interface is what the override exists for.
             if let Some(source) = forced
                 .iter()
                 .copied()
@@ -324,16 +348,16 @@ pub(crate) fn map_ips_to_interfaces_with(
                 return (target, Classification::Routed(source));
             }
 
-            if let Some(source) = probe_route_source(target, sockets)
+            if let RouteAnswer::From(source) = answer
                 && owned_ips.contains(&source)
             {
                 return (target, Classification::Routed(source));
             }
 
-            // The kernel declined, but this host may still hold an address of
-            // the right scope - see `plausible_source`. Without this a laptop
-            // whose VPN swallowed the IPv6 default route sends no probe at all
-            // and reports the targets as unreachable.
+            // The kernel has no route, but this host may still hold an address
+            // of the right scope - see `plausible_source`. Without this a
+            // laptop whose VPN swallowed the IPv6 default route sends no probe
+            // at all and reports the targets as unreachable.
             if let Some(source) = plausible_source(&interfaces, target) {
                 return (target, Classification::Routed(source));
             }
@@ -809,6 +833,44 @@ mod tests {
         assert_eq!(holder([192, 0, 2, 50]), Some(0));
         assert_eq!(holder([198, 51, 100, 200]), Some(1));
         assert_eq!(holder([203, 0, 113, 1]), None, "held by neither");
+    }
+
+    /// A routed target whose route refuses by policy is given to no raw
+    /// strategy, forced source or fallback source: each would send from an
+    /// address named outright, which the kernel sends from wherever its
+    /// table refuses. Left to the connect fallback, it meets the refusal the
+    /// rest of the machine meets. A missing route still gets the fallback,
+    /// which is the case the fallback is for.
+    #[test]
+    fn a_routed_target_a_route_forbids_is_left_to_the_connect_fallback() {
+        let global = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 5));
+        let lan = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+        let interfaces = || vec![mock_interface(global, 64), mock_interface(lan, 24)];
+        let v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 9, 0, 0, 0, 0, 1));
+        let v4 = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1));
+        let targets = || {
+            let mut set = IpSet::new();
+            set.insert(v6);
+            set.insert(v4);
+            set
+        };
+
+        let forbidden = map_ips_to_interfaces_asking(targets(), interfaces(), &[lan], |_, _| {
+            RouteAnswer::Forbidden
+        });
+        assert!(forbidden.routed.is_empty(), "{:?}", forbidden.routed);
+        assert!(forbidden.unmapped.contains(&v6) && forbidden.unmapped.contains(&v4));
+
+        let missing =
+            map_ips_to_interfaces_asking(targets(), interfaces(), &[], |_, _| RouteAnswer::NoRoute);
+        assert!(
+            missing
+                .routed
+                .iter()
+                .any(|routed| routed.target == v6 && routed.source == global),
+            "{:?}",
+            missing.routed
+        );
     }
 
     #[test]

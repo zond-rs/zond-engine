@@ -119,7 +119,9 @@ pub struct ProbeSockets {
 /// answered in 22 ms once a source was named explicitly.
 ///
 /// What follows from that is not that the kernel is wrong, but that giving up
-/// here is worse than trying. A probe sourced from an address the host really
+/// here is worse than trying, where the kernel said it has no route. A route
+/// that refuses by policy is another answer, and this is never asked after
+/// one; see [`RouteAnswer::Forbidden`]. A probe sourced from an address the host really
 /// holds either reaches the target or does not, and either way the scan reports
 /// what it observed. Giving up produces a scan that reports nothing and blames
 /// the network.
@@ -173,64 +175,78 @@ pub(crate) fn plausible_source(links: &[Link], target: IpAddr) -> Option<IpAddr>
 pub fn probe_route_source(target: IpAddr, sockets: &mut ProbeSockets) -> Option<IpAddr> {
     match ask_route(target, sockets) {
         RouteAnswer::From(source) => Some(source),
-        RouteAnswer::Refused | RouteAnswer::Unasked => None,
+        RouteAnswer::NoRoute | RouteAnswer::Forbidden | RouteAnswer::Unasked => None,
     }
 }
 
 /// What the kernel's routing table said about one destination.
+#[derive(Debug)]
 enum RouteAnswer {
     /// It routes there, from this address.
     From(IpAddr),
-    /// It refuses to route there.
-    Refused,
+    /// It has no route there it can use: `ENETUNREACH` or `EHOSTUNREACH`, or
+    /// anything else that is not [`Forbidden`](Self::Forbidden).
+    ///
+    /// What a missing route answers, and what a VPN holding the IPv6 default
+    /// route without carrying IPv6 answers too, which is the case
+    /// [`plausible_source`] steps around. An `unreachable` route an
+    /// administrator added answers the same and cannot be told apart from
+    /// here.
+    NoRoute,
+    /// A route there refuses by policy: a `prohibit` route answers `EACCES`
+    /// and a `blackhole` route `EINVAL`, where Linux has them. No missing or
+    /// unusable route answers either, so a refusal in these words is a
+    /// decision this host's administrator made about the destination, and a
+    /// scan that stepped around it by naming a source would be the one
+    /// program on the machine that ignored it.
+    Forbidden,
     /// Nothing was asked: no socket to ask with, which says nothing about the
     /// destination.
     Unasked,
 }
 
+impl RouteAnswer {
+    /// What a refused `connect` says of the route, by the error it refused
+    /// with. See [`Forbidden`](Self::Forbidden).
+    fn refused_with(error: &std::io::Error) -> Self {
+        match error.kind() {
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::InvalidInput => {
+                Self::Forbidden
+            }
+            _ => Self::NoRoute,
+        }
+    }
+}
+
 /// Asks the kernel how it routes to `target`, keeping its refusal apart from a
 /// question that could not be put. See [`probe_route_source`].
-fn ask_route(target: IpAddr, sockets: &mut ProbeSockets) -> RouteAnswer {
+pub(crate) fn ask_route(target: IpAddr, sockets: &mut ProbeSockets) -> RouteAnswer {
     let slot = match target {
         IpAddr::V4(_) => &mut sockets.v4,
         IpAddr::V6(_) => &mut sockets.v6,
     };
 
-    if slot.is_none() {
-        let bind_addr = if target.is_ipv4() {
-            "0.0.0.0:0"
-        } else {
-            "[::]:0"
-        };
-        *slot = UdpSocket::bind(bind_addr).ok();
-    }
-
-    let Some(socket) = slot.as_ref() else {
-        return RouteAnswer::Unasked;
+    let socket = match slot {
+        Some(socket) => socket,
+        None => {
+            let bind_addr = if target.is_ipv4() {
+                "0.0.0.0:0"
+            } else {
+                "[::]:0"
+            };
+            match UdpSocket::bind(bind_addr) {
+                Ok(socket) => slot.insert(socket),
+                Err(_) => return RouteAnswer::Unasked,
+            }
+        }
     };
-    if socket.connect((target, 53)).is_err() {
-        return RouteAnswer::Refused;
+    if let Err(error) = socket.connect((target, 53)) {
+        return RouteAnswer::refused_with(&error);
     }
     match socket.local_addr() {
         Ok(local) => RouteAnswer::From(local.ip()),
         Err(_) => RouteAnswer::Unasked,
     }
-}
-
-/// Whether the kernel's routing table refuses `target` outright, for a
-/// destination on one of this host's own segments.
-///
-/// A segment this host holds is reached directly, so the table's answer for
-/// it is the connected route unless a more specific one overrides it, and
-/// the overrides that refuse are the host's policy: a `prohibit`,
-/// `unreachable` or `blackhole` route an administrator added, or the rules a
-/// VPN's kill switch keeps the local network out with. A packet socket or
-/// a raw socket held to its interface never consults the table, so asking
-/// it here is the only way such a policy is heard. Only a refusal counts: a
-/// socket that could not be opened to ask with is no answer about the
-/// destination.
-pub(crate) fn kernel_refuses(target: IpAddr, sockets: &mut ProbeSockets) -> bool {
-    matches!(ask_route(target, sockets), RouteAnswer::Refused)
 }
 
 /// Resolves the source address for arbitrary destinations seen one at a time,
@@ -244,19 +260,22 @@ pub(crate) fn kernel_refuses(target: IpAddr, sockets: &mut ProbeSockets) -> bool
 /// destinations are answered from an in-memory table of each interface's own
 /// subnets. Everything else is put to the kernel, by connecting a UDP socket to
 /// the target and reading back the address it chose, which asks the routing
-/// table without sending a packet. When the kernel declines, the last resort is
-/// any address on an interface that could plausibly carry the traffic. A
-/// source the scan [forced](Self::with_forced) answers between the subnets and
-/// the kernel.
+/// table without sending a packet. When the kernel has no route, the last
+/// resort is any address on an interface that could plausibly carry the
+/// traffic. A source the scan [forced](Self::with_forced) answers between the
+/// subnets and the kernel, and a route that refuses by policy is answered by
+/// none of them.
 pub struct SourceResolver {
     onlink: OnLinkTable,
-    /// Whether the routing table refuses a destination on one of this host's
-    /// segments: [`kernel_refuses`] for a resolver of this host's, and never
+    /// How the routing table is asked about a destination: [`ask_route`].
+    route: fn(IpAddr, &mut ProbeSockets) -> RouteAnswer,
+    /// Whether the routing table is asked about a destination on one of the
+    /// segments this resolver holds: for a resolver of this host's, and not
     /// for one built over links it was handed, which are not this host's
     /// table's to refuse.
-    refuses: fn(IpAddr, &mut ProbeSockets) -> bool,
-    /// The destinations on this host's segments the routing table refused.
-    /// See [`refused_by_route`](Self::refused_by_route).
+    asks_on_link: bool,
+    /// The destinations the routing table refused. See
+    /// [`refused_by_route`](Self::refused_by_route).
     refused: std::collections::HashSet<IpAddr>,
     sockets: ProbeSockets,
     cache: HashMap<IpAddr, Option<IpAddr>>,
@@ -282,7 +301,7 @@ impl SourceResolver {
     /// on this host's own segments; see [`resolve`](Self::resolve).
     pub fn from_system() -> Self {
         Self {
-            refuses: kernel_refuses,
+            asks_on_link: true,
             ..Self::from_links(&viable_interfaces())
         }
     }
@@ -291,7 +310,8 @@ impl SourceResolver {
     pub fn from_links(links: &[Link]) -> Self {
         Self {
             onlink: OnLinkTable::from_links(links),
-            refuses: |_, _| false,
+            route: ask_route,
+            asks_on_link: false,
             refused: std::collections::HashSet::new(),
             sockets: ProbeSockets::default(),
             cache: HashMap::new(),
@@ -412,28 +432,61 @@ impl SourceResolver {
     /// be framed to the neighbour, or sent by a socket held to the link,
     /// neither of which asks the table, and would reach a host the machine's
     /// own policy keeps it from: the one scanner on the box that ignored a
-    /// route its administrator added, found out by the probes arriving. The
-    /// table is asked by connecting a UDP socket, as for a routed target.
+    /// route its administrator added, found out by the probes arriving. A
+    /// segment this host holds is reached directly, so the table's answer for
+    /// it is the connected route unless a more specific one overrides it, and
+    /// every override that refuses is the host's policy: a `prohibit`,
+    /// `unreachable` or `blackhole` route, or the rules a VPN's kill switch
+    /// keeps the local network out with. The table is asked by connecting a
+    /// UDP socket, as for a routed target.
+    ///
+    /// A routed target whose route refuses by policy has no source either,
+    /// forced or fallen back on. Both send by a socket held to an address,
+    /// which the kernel sends from wherever the table refuses, and a routed
+    /// target's refusal can be the kernel's own absence of a route as well as
+    /// a policy, so only the policy's words decline it: the permission denied
+    /// of a `prohibit` route and the invalid argument of a `blackhole` one,
+    /// where Linux has them.
     pub fn resolve(&mut self, target: IpAddr) -> Option<IpAddr> {
         if let Some(cached) = self.cache.get(&target) {
             return *cached;
         }
 
-        let scoped = self.scoped_source(target);
-        let on_link = self.onlink.source_for(target);
-        if scoped.is_none() && on_link.is_some() && (self.refuses)(target, &mut self.sockets) {
-            self.refused.insert(target);
-            self.cache.insert(target, None);
-            return None;
-        }
-        let source = scoped
-            .or(on_link)
-            .or_else(|| self.forced_source(target))
-            .or_else(|| probe_route_source(target, &mut self.sockets))
-            .or_else(|| plausible_source(&self.links, target));
-
+        let source = self.find(target);
         self.cache.insert(target, source);
         source
+    }
+
+    /// [`resolve`](Self::resolve), asked afresh.
+    fn find(&mut self, target: IpAddr) -> Option<IpAddr> {
+        if let Some(scoped) = self.scoped_source(target) {
+            return Some(scoped);
+        }
+        if let Some(on_link) = self.onlink.source_for(target) {
+            if !self.asks_on_link {
+                return Some(on_link);
+            }
+            return match (self.route)(target, &mut self.sockets) {
+                RouteAnswer::NoRoute | RouteAnswer::Forbidden => {
+                    self.refused.insert(target);
+                    None
+                }
+                RouteAnswer::From(_) | RouteAnswer::Unasked => Some(on_link),
+            };
+        }
+
+        let route = (self.route)(target, &mut self.sockets);
+        if matches!(route, RouteAnswer::Forbidden) {
+            self.refused.insert(target);
+            return None;
+        }
+        if let Some(forced) = self.forced_source(target) {
+            return Some(forced);
+        }
+        match route {
+            RouteAnswer::From(source) => Some(source),
+            _ => plausible_source(&self.links, target),
+        }
     }
 }
 
@@ -569,7 +622,11 @@ mod tests {
         let refused = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 13));
         let neighbour = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 14));
         let mut resolver = SourceResolver {
-            refuses: |target, _| target == IpAddr::V4(Ipv4Addr::new(192, 0, 2, 13)),
+            route: |target, _| match target == IpAddr::V4(Ipv4Addr::new(192, 0, 2, 13)) {
+                true => RouteAnswer::NoRoute,
+                false => RouteAnswer::From(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10))),
+            },
+            asks_on_link: true,
             ..SourceResolver::from_links(&[mock_interface(vec![v4net(192, 0, 2, 10, 24)])])
         };
 
@@ -588,10 +645,66 @@ mod tests {
     #[test]
     fn an_address_the_kernel_routes_is_not_refused() {
         let mut sockets = ProbeSockets::default();
-        assert!(!kernel_refuses(
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            &mut sockets
+        assert!(matches!(
+            ask_route(IpAddr::V4(Ipv4Addr::LOCALHOST), &mut sockets),
+            RouteAnswer::From(_)
         ));
+    }
+
+    /// A routed target whose route refuses by policy has no source, and the
+    /// fallback that steps around a missing route does not step around it:
+    /// a `prohibit` route over an off-link IPv6 address was probed through a
+    /// socket held to the global address, the one program on the box that
+    /// ignored the route. A missing route still gets the fallback, which is
+    /// the case the fallback is for.
+    #[test]
+    fn a_routed_target_a_route_forbids_is_given_no_fallback() {
+        let global = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xb1a0);
+        let links = [mock_interface(vec![v6net(global, 64)])];
+        let target = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 9, 0, 0, 0, 0, 1));
+
+        let mut forbidden = SourceResolver {
+            route: |_, _| RouteAnswer::Forbidden,
+            ..SourceResolver::from_links(&links)
+        };
+        assert_eq!(forbidden.resolve(target), None);
+        assert!(forbidden.refused_by_route(target), "and says why");
+
+        let mut missing = SourceResolver {
+            route: |_, _| RouteAnswer::NoRoute,
+            ..SourceResolver::from_links(&links)
+        };
+        assert_eq!(missing.resolve(target), Some(IpAddr::V6(global)));
+        assert!(!missing.refused_by_route(target));
+    }
+
+    /// Nor does a forced source step around it: a scan pinned to an interface
+    /// chose which link its probes leave by, not which of this host's routes
+    /// they may ignore.
+    #[test]
+    fn a_forced_source_does_not_answer_for_a_target_a_route_forbids() {
+        let lan = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
+        let mut resolver = SourceResolver {
+            route: |_, _| RouteAnswer::Forbidden,
+            ..SourceResolver::from_links(&[mock_interface(vec![v4net(192, 0, 2, 50, 24)])])
+                .with_forced(vec![lan])
+        };
+        let target = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1));
+        assert_eq!(resolver.resolve(target), None);
+        assert!(resolver.refused_by_route(target));
+    }
+
+    /// A policy route is told from a missing one by the words the kernel
+    /// refuses in: `prohibit` answers `EACCES` and `blackhole` `EINVAL`, and a
+    /// missing or `unreachable` route `ENETUNREACH` or `EHOSTUNREACH`.
+    #[cfg(unix)]
+    #[test]
+    fn a_policy_route_is_told_apart_by_its_refusal() {
+        let refused = |code| RouteAnswer::refused_with(&std::io::Error::from_raw_os_error(code));
+        assert!(matches!(refused(libc::EACCES), RouteAnswer::Forbidden));
+        assert!(matches!(refused(libc::EINVAL), RouteAnswer::Forbidden));
+        assert!(matches!(refused(libc::ENETUNREACH), RouteAnswer::NoRoute));
+        assert!(matches!(refused(libc::EHOSTUNREACH), RouteAnswer::NoRoute));
     }
 
     /// A link-local written with its interface is not this case at all: it
