@@ -17,7 +17,7 @@
 //! module](super::compute) gate on, so the two tiers select ports by one rule
 //! rather than each restating it.
 
-use crate::fingerprint::SignatureDb;
+use crate::fingerprint::{SignatureDb, Tunnel};
 use crate::model::port::Protocol;
 use crate::record::wire;
 
@@ -31,16 +31,23 @@ impl Rule {
     /// so a wrong one probes a service nobody asked about, and a `speaks` the
     /// application protocol the identified service is carried over, which the
     /// fingerprint corpus is asked for rather than the gate listing names.
+    ///
+    /// A service name is held against the protocol a label names, not the
+    /// label whole: a port labelled `ssl/http` is HTTP carried inside TLS, and
+    /// the detection seam opens that tunnel before the detection speaks, so a
+    /// gate naming `http` is written about exactly that port. The scheme is a
+    /// fact about the transport, which a detection does not gate on.
     pub fn applies(&self, service: Option<&str>, number: u16, protocol: Protocol) -> bool {
+        let carried = service.map(|label| Tunnel::split_label(label).1);
         let service_ok = self
             .service
             .as_deref()
-            .is_none_or(|name| service == Some(name))
+            .is_none_or(|name| carried == Some(name))
             && (self.services.is_empty()
                 || self
                     .services
                     .iter()
-                    .any(|wanted| service == Some(wanted.as_str())));
+                    .any(|wanted| carried == Some(wanted.as_str())));
         let number_ok = self.port.is_none_or(|wanted| wanted == number)
             && (self.ports.is_empty() || self.ports.contains(&number));
         let protocol_ok = self
@@ -171,5 +178,29 @@ mod tests {
         assert!(gate.applies(Some("grafana"), 3000, Protocol::Tcp));
         assert!(!gate.applies(Some("redis"), 6379, Protocol::Tcp));
         assert!(!gate.applies(None, 8080, Protocol::Tcp));
+    }
+
+    /// A service identified inside TLS fits a gate naming that service, the
+    /// way it fits a `speaks` gate.
+    ///
+    /// The detection seam opens the tunnel before a detection speaks, so a
+    /// detection written about Grafana or FTP is as right about a TLS-wrapped
+    /// one as a clear one. A gate matching the label whole never ran on either.
+    #[test]
+    fn a_service_identified_inside_tls_fits_a_gate_naming_that_service() {
+        let services = Rule {
+            services: vec!["http".to_string(), "grafana".to_string()],
+            ..Rule::default()
+        };
+        assert!(services.applies(Some("ssl/http"), 443, Protocol::Tcp));
+        assert!(services.applies(Some("ssl/grafana"), 3000, Protocol::Tcp));
+        assert!(!services.applies(Some("ssl/redis"), 6379, Protocol::Tcp));
+
+        let service = rule(Some("ftp"), None, None);
+        assert!(service.applies(Some("ssl/ftp"), 990, Protocol::Tcp));
+
+        // A bare handshake names the tunnel and nothing inside it, which is
+        // not the protocol a gate asked about.
+        assert!(!service.applies(Some("ssl"), 990, Protocol::Tcp));
     }
 }

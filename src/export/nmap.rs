@@ -1255,9 +1255,9 @@ fn host_reason(reason: &StatusReason) -> &str {
 /// A bare `ssl` is a handshake with nothing identified inside it, which nmap
 /// also writes as that name alone.
 fn service_name(label: &str) -> (&str, Option<&'static str>) {
-    match (Tunnel::from_service_label(label), label.split_once('/')) {
-        (Some(Tunnel::Tls), Some((_, protocol))) => (protocol, Some("ssl")),
-        _ => (label, None),
+    match Tunnel::split_label(label) {
+        (Some(Tunnel::Tls), protocol) => (protocol, Some("ssl")),
+        (None, _) => (label, None),
     }
 }
 

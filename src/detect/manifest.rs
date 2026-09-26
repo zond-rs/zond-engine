@@ -79,7 +79,10 @@ pub struct DetectionManifest {
 #[serde(deny_unknown_fields)]
 pub struct Rule {
     /// The identified service name, `redis` or `http`. A port whose service the
-    /// scan could not name never fits a rule that names one.
+    /// scan could not name never fits a rule that names one, and a service
+    /// identified inside TLS fits by the protocol it carries: a port labelled
+    /// `ssl/http` fits `http`, since the detection reaches it through the
+    /// tunnel.
     #[serde(default)]
     pub service: Option<String>,
     /// A set of service names, any of which fits. Empty leaves the service

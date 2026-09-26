@@ -81,9 +81,21 @@ impl Tunnel {
     /// so the detection phase reads the label back to decide whether to speak to
     /// the port in the clear or through a handshake.
     pub fn from_service_label(label: &str) -> Option<Self> {
+        Self::split_label(label).0
+    }
+
+    /// A service label split into the tunnel it names and the protocol carried
+    /// inside: `ssl/http` is TLS and `http`, a bare `http` no tunnel and
+    /// `http`. A bare `ssl` is a handshake with nothing identified inside it,
+    /// and so is the protocol `ssl` with no tunnel around it.
+    ///
+    /// Whatever asks which protocol a port speaks asks it of the second half,
+    /// since the label is two facts and a name compared against it whole
+    /// matches neither.
+    pub(crate) fn split_label(label: &str) -> (Option<Self>, &str) {
         match label.split_once('/') {
-            Some(("ssl", _)) => Some(Tunnel::Tls),
-            _ => None,
+            Some(("ssl", protocol)) => (Some(Tunnel::Tls), protocol),
+            _ => (None, label),
         }
     }
 }

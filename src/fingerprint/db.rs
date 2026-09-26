@@ -75,7 +75,7 @@ fn versioned_product(rule: &super::signature::MatchRule) -> Option<String> {
 /// The context whose rules read a JARM hash, held in an index of their own.
 const JARM_CONTEXT: &str = "tls.jarm";
 
-use super::model::Evidence;
+use super::model::{Evidence, Tunnel};
 use crate::model::host::OsEvidence;
 
 use super::matcher::Signature;
@@ -658,7 +658,7 @@ impl SignatureDb {
     /// facts rather than a name, so the scheme is stripped before the lookup:
     /// what a TLS-wrapped web server speaks is still HTTP.
     pub fn speaks(&self, service: &str) -> Option<&str> {
-        let bare = service.rsplit('/').next().unwrap_or(service);
+        let (_, bare) = Tunnel::split_label(service);
         self.speaks.get(bare).map(|protocol| &**protocol)
     }
 
