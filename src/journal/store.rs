@@ -65,7 +65,7 @@ use std::time::{Duration, SystemTime};
 use super::cursor::Checkpoint;
 use super::file::{
     append_existing, claim_directory_for_invoking_user, create_private as create_private_file,
-    create_staged, open_existing,
+    create_private_directory, create_staged, open_existing,
 };
 use super::format::JournalError;
 use super::lock::{Lock, LockRefused, LockState};
@@ -1807,32 +1807,6 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), JournalError> {
     // mode and the ownership `create_staged` gave it.
     fs::rename(&temporary, path)?;
     Ok(())
-}
-
-/// Creates one scan's directory, private from the moment it exists.
-///
-/// The mode is set as the directory is created rather than chmod'd afterwards,
-/// which is the same rule [`file`](super::file) applies to everything inside it
-/// and for the same two reasons. Creating at the default mode leaves a window in
-/// which the addresses an engagement was pointed at are world-readable, and a
-/// `chmod` by path is a privileged operation on a name in a directory this
-/// engine has just given to an unprivileged user.
-///
-/// Fails with [`AlreadyExists`](std::io::ErrorKind::AlreadyExists) on a
-/// directory that is already there, which is what makes a minted id that
-/// collides a retry rather than two scans sharing one journal.
-#[cfg(unix)]
-fn create_private_directory(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
-
-    fs::DirBuilder::new().mode(0o700).create(path)
-}
-
-/// The platforms with no mode to set at creation, where the directory is created
-/// and nothing more is promised about it.
-#[cfg(not(unix))]
-fn create_private_directory(path: &Path) -> std::io::Result<()> {
-    fs::create_dir(path)
 }
 
 /// How long journals are kept.

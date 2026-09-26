@@ -42,6 +42,15 @@
 //! into place.
 //!
 //! Directories are opened the same way for the same reason.
+//!
+//! ## Why nothing here is created through a link above it either
+//!
+//! `O_NOFOLLOW` guards the last name, and every name above it is the invoking
+//! user's to place as well. Under `sudo` a journal's files and directories are
+//! created relative to a directory reached from that user's home without
+//! following a link out of it; see
+//! [`ownership::Place`](crate::journal::ownership::Place) for why, and for why a link
+//! that stays inside the home still works.
 
 use std::fs;
 use std::path::Path;
@@ -64,11 +73,7 @@ use std::path::Path;
 /// over from an interrupted run; they use [`create_staged`], which is this with
 /// one deliberate retry.
 pub(super) fn create_private(path: &Path) -> std::io::Result<fs::File> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    private(&mut options);
-
-    let file = options.open(path)?;
+    let file = open(path, Access::CreateNew)?;
     claim(&file, path);
     Ok(file)
 }
@@ -91,7 +96,7 @@ pub(super) fn create_private(path: &Path) -> std::io::Result<fs::File> {
 pub(super) fn create_staged(path: &Path) -> std::io::Result<fs::File> {
     match create_private(path) {
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            fs::remove_file(path)?;
+            remove(path)?;
             create_private(path)
         }
         other => other,
@@ -103,15 +108,7 @@ pub(super) fn create_staged(path: &Path) -> std::io::Result<fs::File> {
 /// [`create_private`] for the files written a record at a time. The mode is not
 /// set, because the file exists and the one that created it set it.
 pub(super) fn append_existing(path: &Path) -> std::io::Result<fs::File> {
-    let mut options = fs::OpenOptions::new();
-    options.append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-
-    options.open(path)
+    open(path, Access::Append)
 }
 
 /// Opens an existing journal file for reading and writing, to inspect and mend
@@ -127,15 +124,7 @@ pub(super) fn append_existing(path: &Path) -> std::io::Result<fs::File> {
 /// not set for the same reason [`append_existing`] does not set it: the file
 /// exists, and the call that created it set it.
 pub(super) fn open_existing(path: &Path) -> std::io::Result<fs::File> {
-    let mut options = fs::OpenOptions::new();
-    options.read(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-
-    options.open(path)
+    open(path, Access::ReadWrite)
 }
 
 /// Opens a journal's rendezvous file, creating it if it is not there yet.
@@ -150,27 +139,87 @@ pub(super) fn open_existing(path: &Path) -> std::io::Result<fs::File> {
 /// one more thing a racer could do to a file another racer holds. The mode and
 /// `O_NOFOLLOW` are the same as everywhere else here.
 pub(super) fn open_or_create_private(path: &Path) -> std::io::Result<fs::File> {
-    let mut options = fs::OpenOptions::new();
-    options.read(true).write(true).create(true);
-    private(&mut options);
-
-    let file = options.open(path)?;
+    let file = open(path, Access::CreateOrOpen)?;
     claim(&file, path);
     Ok(file)
 }
 
-/// The mode and the refusal every journal file is opened under.
+/// Creates one scan's directory, private from the moment it exists.
+///
+/// The mode is set as the directory is created rather than chmod'd afterwards,
+/// which is the same rule this module applies to everything inside it and for
+/// the same two reasons. Creating at the default mode leaves a window in which
+/// the addresses an engagement was pointed at are world-readable, and a `chmod`
+/// by path is a privileged operation on a name in a directory this engine has
+/// just given to an unprivileged user.
+///
+/// Fails with [`AlreadyExists`](std::io::ErrorKind::AlreadyExists) on a
+/// directory that is already there, which is what makes a minted id that
+/// collides a retry rather than two scans sharing one journal.
 #[cfg(unix)]
-fn private(options: &mut fs::OpenOptions) {
-    use std::os::unix::fs::OpenOptionsExt;
-    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+pub(super) fn create_private_directory(path: &Path) -> std::io::Result<()> {
+    super::ownership::Place::of(path)?.create_directory(0o700)
+}
+
+/// The platforms with no mode to set at creation, where the directory is created
+/// and nothing more is promised about it.
+#[cfg(not(unix))]
+pub(super) fn create_private_directory(path: &Path) -> std::io::Result<()> {
+    fs::create_dir(path)
+}
+
+/// The four ways a journal file is opened.
+#[derive(Clone, Copy)]
+enum Access {
+    /// Created, and refused if the name exists.
+    CreateNew,
+    /// Created if missing, opened for reading and writing either way.
+    CreateOrOpen,
+    /// Opened to add to its end.
+    Append,
+    /// Opened for reading and writing.
+    ReadWrite,
+}
+
+/// Opens a journal file private, refusing a link at its name, and reached the
+/// way [`Place`](super::ownership::Place) reaches it.
+#[cfg(unix)]
+fn open(path: &Path, how: Access) -> std::io::Result<fs::File> {
+    let flags = match how {
+        Access::CreateNew => libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+        Access::CreateOrOpen => libc::O_RDWR | libc::O_CREAT,
+        Access::Append => libc::O_WRONLY | libc::O_APPEND,
+        Access::ReadWrite => libc::O_RDWR,
+    };
+    super::ownership::Place::of(path)?.open(flags, 0o600)
 }
 
 /// The platforms with no mode to set at open. Nothing is promised about who else
 /// can read a journal there, which is one of the reasons the crate does not claim
 /// to support them.
 #[cfg(not(unix))]
-fn private(_options: &mut fs::OpenOptions) {}
+fn open(path: &Path, how: Access) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    match how {
+        Access::CreateNew => options.write(true).create_new(true),
+        Access::CreateOrOpen => options.read(true).write(true).create(true),
+        Access::Append => options.append(true),
+        Access::ReadWrite => options.read(true).write(true),
+    };
+    options.open(path)
+}
+
+/// Removes a journal file's name, reached as [`open`] reaches it.
+#[cfg(unix)]
+fn remove(path: &Path) -> std::io::Result<()> {
+    super::ownership::Place::of(path)?.remove()
+}
+
+/// [`remove`] where there is no walk to take.
+#[cfg(not(unix))]
+fn remove(path: &Path) -> std::io::Result<()> {
+    fs::remove_file(path)
+}
 
 /// Gives a directory a journal created under `sudo` to the user who invoked
 /// it, when it lies in their home.

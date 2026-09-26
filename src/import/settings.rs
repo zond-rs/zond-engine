@@ -792,16 +792,7 @@ pub fn provision_document(path: &Path, document: &str) -> Result<Provisioned, Se
         crate::journal::ownership::hand_over(parent, &created);
     }
 
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-
-    match options.open(path) {
+    match create_file(path) {
         Ok(mut file) => {
             use std::io::Write;
             file.write_all(document.as_bytes())
@@ -823,6 +814,26 @@ pub fn provision_document(path: &Path, document: &str) -> Result<Provisioned, Se
             source,
         }),
     }
+}
+
+/// Creates the settings file, `0600` on Unix and refusing a name that exists.
+///
+/// Reached as a journal's files are, so that under `sudo` a link on the way
+/// out of the invoking user's home is refused rather than followed; see
+/// `journal::ownership::Place`.
+#[cfg(unix)]
+fn create_file(path: &Path) -> std::io::Result<std::fs::File> {
+    crate::journal::ownership::Place::of(path)?
+        .open(libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL, 0o600)
+}
+
+/// [`create_file`] where there is no mode to set and no `sudo`.
+#[cfg(not(unix))]
+fn create_file(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
 }
 
 /// Creates a directory and its parents, with restrictive permissions on Unix,
