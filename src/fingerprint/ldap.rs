@@ -448,6 +448,52 @@ mod tests {
         addr
     }
 
+    /// A directory's names are the machine's whether or not any rule names
+    /// the service that gave them. A root entry under a message id of two
+    /// bytes, as the three hundredth message on a connection has, is one no
+    /// rule reads as LDAP, and its names still reach the host.
+    #[tokio::test]
+    async fn a_directory_no_rule_names_still_names_its_host() {
+        use crate::model::port::{PortState, Protocol};
+
+        let mut entry = controller();
+        // The message id `02 01 02` becomes `02 02 01 2c`, and the envelope's
+        // four-byte length one longer for it.
+        assert_eq!(&entry[6..9], [INTEGER, 1, 2]);
+        entry.splice(6..9, [INTEGER, 2, 0x01, 0x2c]);
+        let length = u32::from_be_bytes(entry[2..6].try_into().expect("four bytes")) + 1;
+        entry[2..6].copy_from_slice(&length.to_be_bytes());
+
+        let addr = directory(vec![entry]).await;
+        let stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connects");
+        let port = crate::fingerprint::baseline_port(40389, Protocol::Tcp, PortState::Open);
+        let identified = crate::fingerprint::fingerprint_tcp_detailed(
+            stream,
+            port,
+            crate::config::ServiceDetection::Probe,
+        )
+        .await;
+
+        assert!(
+            identified
+                .port
+                .service()
+                .is_none_or(|service| service.name() != "ldap"),
+            "a rule named the service, so this checks nothing: {:?}",
+            identified.port.service()
+        );
+        assert_eq!(
+            named(&identified.about_the_host.names),
+            [
+                (NameKind::Domain, "corp.example"),
+                (NameKind::Forest, "corp.example"),
+                (NameKind::Host, "dc01.corp.example"),
+            ]
+        );
+    }
+
     /// **A controller's names reach its host, over sockets end to end**: the
     /// corpus's bind and root DSE search, the reply read as text, and the
     /// names read back out of it.

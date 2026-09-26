@@ -328,6 +328,26 @@ impl AboutTheHost {
         os::identify(host, self.os)
     }
 
+    /// What a verdict says about the machine: everything, where it named the
+    /// service, and the names alone where it did not.
+    ///
+    /// A name is read from a reply's structure by an analyzer, not matched by
+    /// a rule, so it is the machine's whether or not any rule named the
+    /// service that gave it: a directory on a port nothing registers still
+    /// names its controller. An operating system and hardware are what a rule
+    /// concluded about the software it identified, and a verdict that
+    /// identified nothing has no such conclusion to stand behind.
+    fn of_verdict(verdict: Option<&ServiceVerdict>) -> Self {
+        match verdict {
+            Some(verdict) if !verdict.is_empty() => Self::from_evidence(&verdict.evidence),
+            Some(verdict) => Self {
+                names: names_in(&verdict.evidence),
+                ..Self::default()
+            },
+            None => Self::default(),
+        }
+    }
+
     /// Reads both from a resolved verdict's whole evidence set.
     ///
     /// Taken from every observation rather than the winning one: a host running
@@ -345,12 +365,17 @@ impl AboutTheHost {
                     best.merge(other);
                     best
                 }),
-            names: evidence
-                .iter()
-                .flat_map(|e| e.names.iter().cloned())
-                .collect(),
+            names: names_in(evidence),
         }
     }
+}
+
+/// Every name an observation in `evidence` gave for the machine, in order.
+fn names_in(evidence: &[Evidence]) -> Vec<crate::model::host::HostName> {
+    evidence
+        .iter()
+        .flat_map(|e| e.names.iter().cloned())
+        .collect()
 }
 
 /// The text a UDP reply from `port` carries, where this engine can read one.
@@ -618,7 +643,6 @@ async fn identify_tcp(
     let fallback = first_printable(&responses.banners);
     let banners = responses.banners.clone();
     let stated = responses.names.clone();
-    let mut about_the_host = AboutTheHost::default();
     // The analyzers dial through the port's egress. They are handed a context
     // whose shape is public and cannot carry it, so it reaches them as the
     // scope their collection runs in; see `DIALLING`.
@@ -632,14 +656,9 @@ async fn identify_tcp(
         name,
     )
     .await;
+    let mut about_the_host = AboutTheHost::of_verdict(verdict.as_ref());
     match verdict {
         Some(verdict) if !verdict.is_empty() => {
-            // Taken from the whole retained evidence set rather than from the
-            // winning service alone: a host running two identifiable services
-            // says the same thing about itself twice, and a signature that lost
-            // the ranking for *service* may still be the one that named the
-            // operating system.
-            about_the_host = AboutTheHost::from_evidence(&verdict.evidence);
             if let Some(service) = verdict.to_service() {
                 port.set_service(service);
             }
@@ -785,20 +804,17 @@ async fn fingerprint_udp_within(
         ServiceDetection::default(),
         None,
     )
-    .await
-    .filter(|verdict| !verdict.is_empty());
-    if verdict.is_none() && stated.is_empty() {
-        return None;
-    }
+    .await;
 
     // The names a reply gave are the machine's whether or not any rule named
     // the service that gave them.
-    let mut about_the_host = verdict
-        .as_ref()
-        .map(|verdict| AboutTheHost::from_evidence(&verdict.evidence))
-        .unwrap_or_default();
+    let mut about_the_host = AboutTheHost::of_verdict(verdict.as_ref());
     about_the_host.names.extend(stated);
-    if let Some(service) = verdict.and_then(|verdict| verdict.to_service()) {
+    let service = verdict.and_then(|verdict| verdict.to_service());
+    if service.is_none() && about_the_host.names.is_empty() {
+        return None;
+    }
+    if let Some(service) = service {
         port.set_service(service);
     }
 
