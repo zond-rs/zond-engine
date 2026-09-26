@@ -282,6 +282,29 @@ impl TargetMap {
     pub fn iter(&self) -> impl Iterator<Item = Target> + Send + '_ {
         self.units.iter().flat_map(|unit| unit.iter())
     }
+
+    /// Takes `excluded` out of every unit's ports, and drops a unit left with
+    /// none.
+    ///
+    /// A unit whose every port was excluded has nothing left to ask its
+    /// addresses, so it leaves no target to number and no address for a
+    /// liveness pass to spend probes on. A scan does this itself with
+    /// [`ZondConfig::excluded_ports`](crate::config::ZondConfig::excluded_ports);
+    /// a caller measuring what a scan will cost before starting it does it to
+    /// a copy.
+    pub fn withhold_ports(&mut self, excluded: &PortSet) {
+        if excluded.is_empty() {
+            return;
+        }
+        self.units = std::mem::take(&mut self.units)
+            .into_iter()
+            .filter_map(|unit| {
+                let (ips, ports) = unit.into_parts();
+                let kept = ports.difference(excluded);
+                (!kept.is_empty()).then(|| TargetSet::new(ips, kept))
+            })
+            .collect();
+    }
 }
 
 /// The same targets [`TargetMap::iter`] yields, addressed by position instead of

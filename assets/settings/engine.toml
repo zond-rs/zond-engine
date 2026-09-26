@@ -227,6 +227,17 @@
 #
 # exclude = ["198.51.100.0/24", "192.0.2.10-20", "2001:db8:dead::/48"]
 
+# Ports no scan reading this file may probe on any target: not the port scan,
+# not the liveness check before it, and nothing after it. Written the way a
+# port list is, `u:` for UDP and `s:` for SCTP. It adds up across layers the
+# way `exclude` does.
+#
+# A printer's raw-print ports, 9100-9107, are already sent nothing but the
+# probe that finds them open; name them here to send them nothing at all, at
+# the cost of not finding the printers.
+#
+# exclude_ports = "9100-9107"
+
 
 # ─── Profiles ─────────────────────────────────────────────────────────────────
 #

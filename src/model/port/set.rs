@@ -332,6 +332,50 @@ impl PortSet {
         merged
     }
 
+    /// The ports in this set and not in `other`.
+    ///
+    /// Cut as ranges rather than expanded, for the reason [`union`](Self::union)
+    /// merges them: taking one port out of a full sweep leaves two entries, not
+    /// sixty-five thousand. The result is canonical, as every set is.
+    ///
+    /// ```
+    /// use zond_engine::model::port::set::PortSet;
+    ///
+    /// let scan = PortSet::try_from("1-1024,9100,u:53").unwrap();
+    /// let kept = scan.difference(&PortSet::try_from("22,9100-9107").unwrap());
+    /// assert_eq!(kept.to_string(), "1-21,23-1024,u:53");
+    /// ```
+    pub fn difference(&self, other: &PortSet) -> PortSet {
+        let mut kept = PortSet::new();
+        for protocol in Protocol::ALL {
+            let cuts = other.ranges(protocol);
+            let lane = kept.lane_mut(protocol);
+            for range in self.ranges(protocol) {
+                // What is left of `range` from here up; `None` once a cut
+                // reached its end. Both lists are sorted and disjoint, so each
+                // cut past the range's end is one no later range reaches first.
+                let mut rest = Some(*range.start());
+                for cut in cuts {
+                    let Some(start) = rest else { break };
+                    if *cut.end() < start {
+                        continue;
+                    }
+                    if *cut.start() > *range.end() {
+                        break;
+                    }
+                    if *cut.start() > start {
+                        lane.push(start..=*cut.start() - 1);
+                    }
+                    rest = cut.end().checked_add(1).filter(|next| next <= range.end());
+                }
+                if let Some(start) = rest {
+                    lane.push(start..=*range.end());
+                }
+            }
+        }
+        kept
+    }
+
     /// Whether the set holds `port` on `protocol`. A binary search over the
     /// merged ranges, so the cost follows how many ranges were written rather
     /// than how many ports they cover.
@@ -666,6 +710,41 @@ impl FromIterator<(u16, Protocol)> for PortSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Taking ports out of a set leaves exactly the rest, per transport.
+    ///
+    /// A port kept that should have gone is a probe sent to a port the caller
+    /// excluded, and one lost beside it is a port nobody asked to skip. The
+    /// cases are the edges a range cut can get wrong: a cut at either end of a
+    /// range, one inside it, one spanning two ranges, one at 65535, and a cut
+    /// on another transport leaving this one alone.
+    #[test]
+    fn a_difference_keeps_every_port_outside_the_cut_and_none_inside_it() {
+        let set = |spec: &str| PortSet::try_from(spec).expect("a specification");
+
+        let cases = [
+            ("1-100", "1", "2-100"),
+            ("1-100", "100", "1-99"),
+            ("1-100", "50-60", "1-49,61-100"),
+            ("1-10,20-30", "5-25", "1-4,26-30"),
+            ("1-65535", "65535", "1-65534"),
+            ("1-65535", "1-65535", ""),
+            ("80,443", "u:80", "80,443"),
+            ("80,u:53,s:2905", "u:53", "80,s:2905"),
+            ("9100-9107", "9000-9007,9100-9107", ""),
+        ];
+        for (from, cut, left) in cases {
+            let kept = set(from).difference(&set(cut));
+            assert_eq!(kept.to_string(), left, "{from} less {cut}");
+            for (port, protocol) in set(from).iter() {
+                assert_eq!(
+                    kept.contains(port, protocol),
+                    !set(cut).contains(port, protocol),
+                    "{from} less {cut}, at {port}/{protocol:?}"
+                );
+            }
+        }
+    }
 
     /// Three transports in one specification, each behind its own prefix, and
     /// the rendering reads back as what was written.

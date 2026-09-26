@@ -268,6 +268,20 @@ impl RefusedStep {
         }
     }
 
+    /// A TCP sweep left with no port to ask, every one it would ask being
+    /// excluded.
+    ///
+    /// Refused rather than run, since a sweep asking nothing reports every
+    /// address it holds as silent when nothing was put to them. Whatever the
+    /// sweep would have reached by TCP is left unasked, and a segment swept at
+    /// the link layer is not affected. `scanner` is the sweep refused.
+    pub(crate) fn every_discovery_port_excluded(scanner: ScannerKind) -> Self {
+        Self {
+            scanner,
+            reason: "tcp liveness: every port it asks is excluded".to_owned(),
+        }
+    }
+
     /// A port target range with more addresses than a port scan can walk.
     ///
     /// Whatever the privilege: the multicast that sweeps a segment's `/64` in
@@ -744,7 +758,22 @@ impl DiscoveryPlan {
     /// A segment is swept at the link layer, where a host answers ARP and
     /// neighbour discovery whatever it filters above them, and is left as it
     /// was.
+    ///
+    /// An empty set takes the routed and connect steps out and refuses each,
+    /// which is what a sweep whose every port was excluded comes to; see
+    /// `RefusedStep::every_discovery_port_excluded`.
     pub fn asking_tcp(&mut self, ports: SynPorts) {
+        if ports.is_empty() {
+            let refusals = &mut self.refusals;
+            self.steps.retain(|step| match step {
+                DiscoveryStep::Routed { .. } | DiscoveryStep::Connect { .. } => {
+                    refusals.push(RefusedStep::every_discovery_port_excluded(step.kind()));
+                    false
+                }
+                _ => true,
+            });
+            return;
+        }
         for step in &mut self.steps {
             if let DiscoveryStep::Routed { ports: asked, .. }
             | DiscoveryStep::Connect { ports: asked, .. } = step
@@ -1659,6 +1688,40 @@ mod tests {
             "the connect step asks {:?}",
             plan.steps()
         );
+    }
+
+    /// A plan whose every TCP port is excluded refuses its routed and connect
+    /// steps rather than running them asking nothing.
+    ///
+    /// A sweep asking no port files every address it holds as silent, which
+    /// reads as hosts that are not there when nothing was put to them. The
+    /// refusal is what says why those addresses went unasked.
+    #[test]
+    fn a_plan_left_no_tcp_port_refuses_its_tcp_steps() {
+        let mut plan = DiscoveryPlan {
+            ours: IpSet::new(),
+            steps: vec![
+                DiscoveryStep::Routed {
+                    targets: vec![RoutedTarget {
+                        target: v6("198.51.100.1"),
+                        source: v6("192.0.2.9"),
+                    }],
+                    ports: SynPorts::common(),
+                },
+                DiscoveryStep::Connect {
+                    targets: set_of(&["127.0.0.1"]),
+                    ports: SynPorts::common(),
+                },
+            ],
+            refusals: Vec::new(),
+        };
+        let everything = "1-65535".try_into().expect("a port specification");
+
+        plan.asking_tcp(SynPorts::common().excluding(&everything));
+
+        assert!(plan.steps().is_empty(), "left {:?}", plan.steps());
+        let refused: Vec<ScannerKind> = plan.refusals().iter().map(|r| r.scanner).collect();
+        assert_eq!(refused, [ScannerKind::Routed, ScannerKind::Connect]);
     }
 
     /// And a connect step made after the ports were chosen, for what a frame

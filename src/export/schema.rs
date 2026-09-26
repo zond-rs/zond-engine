@@ -1108,6 +1108,13 @@ pub struct SettingsDto {
     /// left unprobed on purpose, since a printer prints whatever arrives on
     /// one, rather than found to have nothing to say.
     pub listen_only_ports: Vec<u16>,
+    /// The ports the phase sent nothing to on any target, written as the
+    /// specification a scanner takes, omitted when it excluded none.
+    ///
+    /// Why a port is missing from the scope's `spec`: one written here was
+    /// named and kept out, where one absent from both was never named.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub excluded_ports: String,
     /// What the scan changed about the packets it sent, omitted when it changed
     /// nothing. See [`EvasionDto`].
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1219,6 +1226,7 @@ impl SettingsDto {
             ip_protocols: settings.ip_protocols.clone(),
             tls_enumeration: settings.tls_enumeration,
             listen_only_ports: settings.listen_only_ports.clone(),
+            excluded_ports: settings.excluded_ports.to_string(),
             evasion: settings.evasion.as_ref().map(EvasionDto::new),
             idle_scan: settings.idle_scan.map(|idle| IdleScanDto {
                 zombie: idle.zombie.to_string(),

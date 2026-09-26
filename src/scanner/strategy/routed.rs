@@ -235,9 +235,34 @@ impl SynPorts {
         usize::from(self.len)
     }
 
-    /// Always false: every constructor puts at least one port in the set.
+    /// Whether the set asks no port at all, which only
+    /// `excluding` can leave it: every other constructor
+    /// puts at least one port in it.
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// This set less every port `excluded` names on TCP, in the order the rest
+    /// leave.
+    ///
+    /// For a sweep held to
+    /// [`ZondConfig::excluded_ports`](crate::config::ZondConfig::excluded_ports):
+    /// a port a caller excluded is one no probe may be aimed at, and a liveness
+    /// probe is one. Nothing takes the excluded port's place, since a set the
+    /// caller narrowed is still the caller's choice of what to ask. It may
+    /// leave the set empty, and a sweep asking nothing is its caller's to
+    /// decline.
+    pub(crate) fn excluding(self, excluded: &PortSet) -> Self {
+        let mut kept = Self {
+            ports: [0; Self::CAPACITY],
+            len: 0,
+        };
+        for &port in self.as_slice() {
+            if !excluded.has_tcp(port) {
+                kept.push(port);
+            }
+        }
+        kept
     }
 
     fn push(&mut self, port: u16) {
@@ -1255,6 +1280,32 @@ mod tests {
     #[test]
     fn a_scan_port_among_the_common_five_is_asked_once() {
         assert_eq!(asked_for("22,443"), COMMON_DISCOVERY_PORTS);
+    }
+
+    /// An excluded port leaves the set and nothing else does, and a UDP
+    /// exclusion of the same number leaves it alone.
+    ///
+    /// A liveness probe aimed at an excluded port is a packet the caller
+    /// forbade, sent before the port scan that honours the exclusion has
+    /// started.
+    #[test]
+    fn an_excluded_port_is_not_asked_and_the_rest_keep_their_order() {
+        let excluded = |spec: &str| PortSet::try_from(spec).expect("a port specification");
+
+        let asked = SynPorts::for_scan(&excluded("8443"));
+        assert_eq!(
+            asked.excluding(&excluded("22,445,u:80")).as_slice(),
+            [80, 443, 3389, 8443]
+        );
+        assert!(
+            SynPorts::common()
+                .excluding(&excluded("1-65535"))
+                .is_empty()
+        );
+        assert_eq!(
+            SynPorts::common().excluding(&PortSet::new()),
+            SynPorts::common()
+        );
     }
 
     /// The hard deadline a sweep of `targets` addresses runs under.

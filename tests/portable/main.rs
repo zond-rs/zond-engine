@@ -32,6 +32,7 @@ mod support;
 
 mod detections;
 mod discovery;
+mod excluded_ports;
 mod exclusions;
 mod export;
 mod fingerprint_embedding;

@@ -53,7 +53,7 @@ use crate::model::ip::range::{IpRange, Ipv4Range, Ipv6Range};
 use crate::model::ip::scoped::{Zone, ZoneMap};
 use crate::model::{
     ip::set::IpSet,
-    port::{Discovery as PortDiscovery, PortState, Protocol, ScanResponse},
+    port::{Discovery as PortDiscovery, PortSet, PortState, Protocol, ScanResponse},
     target::{PlannedTarget, TargetIndex, TargetMap, TargetSet},
     technique::{SctpScanTechnique, TcpScanTechnique},
 };
@@ -1260,8 +1260,19 @@ pub(super) async fn run_active_os_series(
 /// different and better test than "could not be named". A host already reported
 /// as `Linux · Debian 13` has been named perfectly well and still has nothing to
 /// say about its kernel, so it is exactly the host worth asking.
-pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetection) {
+///
+/// Nobody where `excluded` names the agent's port: see
+/// [`ZondConfig::excluded_ports`](crate::config::ZondConfig::excluded_ports).
+pub(super) async fn run_active_os_snmp(
+    ctx: &ScanContext,
+    os_detection: OsDetection,
+    excluded: &PortSet,
+) {
     if !os_detection.is_active() || stopped(ctx, Pass::Os) {
+        return;
+    }
+    if excluded.has_udp(SNMP_PORT) {
+        info!(verbosity = 1, "kernel not asked (udp {SNMP_PORT} excluded)");
         return;
     }
 
@@ -1380,8 +1391,23 @@ pub(super) async fn run_active_os_snmp(ctx: &ScanContext, os_detection: OsDetect
 /// its own, and only the hosts it already holds a `.local` name for are asked:
 /// the device-info question asks what the machine is rather than what it is
 /// called, of the host the scan is already probing.
-pub(super) async fn run_active_os_mdns(ctx: &ScanContext, os_detection: OsDetection, names: bool) {
+///
+/// Nobody where `excluded` names the responder's port, for the reason
+/// [`run_active_os_snmp`] asks nobody.
+pub(super) async fn run_active_os_mdns(
+    ctx: &ScanContext,
+    os_detection: OsDetection,
+    names: bool,
+    excluded: &PortSet,
+) {
     if !os_detection.is_active() || stopped(ctx, Pass::Os) {
+        return;
+    }
+    if excluded.has_udp(MDNS_PORT) {
+        info!(
+            verbosity = 1,
+            "hardware not asked (udp {MDNS_PORT} excluded)"
+        );
         return;
     }
 
@@ -3920,7 +3946,7 @@ mod tests {
         // No SNMP agent answers there, so nothing is recorded. What this pins
         // is the selection: the phase must run at all, and must not fail, for a
         // store in exactly this state.
-        run_active_os_snmp(&ctx, OsDetection::Active).await;
+        run_active_os_snmp(&ctx, OsDetection::Active, &PortSet::new()).await;
 
         assert!(ctx.take_failures().is_empty(), "declining is not failing");
         assert!(
@@ -3979,7 +4005,7 @@ mod tests {
                 );
             });
 
-            run_active_os_snmp(&ctx, level).await;
+            run_active_os_snmp(&ctx, level, &PortSet::new()).await;
 
             assert!(
                 ctx.take_probe_stats().is_empty(),

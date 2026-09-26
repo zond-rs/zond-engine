@@ -763,8 +763,8 @@ impl std::error::Error for PlanChanged {}
 /// techniques, the retry policy, whether a port scan asks first whether a host
 /// is there, the passes beyond the port scan (operating system and service
 /// identification, the detection ceiling, TLS enumeration, route tracing, filter
-/// characterisation and the IP protocol pass), the ports held back from probing,
-/// the evasion profile and an idle scan's zombie. A sitting under a different
+/// characterisation and the IP protocol pass), the ports held back from probing
+/// and the ports excluded outright, the evasion profile and an idle scan's zombie. A sitting under a different
 /// one answers a different question, and its answers would stand in one report
 /// beside the first sitting's as though they were answers to the same one.
 /// These are restored, and a sitting that asks for a different one is refused;
@@ -845,6 +845,7 @@ impl JobOptions {
         cfg.ip_protocols = recorded.ip_protocols.into_iter().collect();
         cfg.tls_enumeration = recorded.tls_enumeration;
         cfg.listen_only_ports = recorded.listen_only_ports.into_iter().collect();
+        cfg.excluded_ports = recorded.excluded_ports;
         cfg.evasion = recorded
             .evasion
             .map(|evasion| EvasionProfile {
@@ -932,6 +933,10 @@ impl JobOptions {
             (
                 "listen_only_ports",
                 recorded.listen_only_ports != offered.listen_only_ports,
+            ),
+            (
+                "excluded_ports",
+                recorded.excluded_ports != offered.excluded_ports,
             ),
             ("evasion", recorded.evasion != offered.evasion),
             ("idle_scan", recorded.idle_scan != offered.idle_scan),
@@ -1485,6 +1490,7 @@ mod tests {
         cfg.retry.effort = crate::config::ScanEffort::Thorough;
         cfg.ip_protocols = [1, 6].into_iter().collect();
         cfg.listen_only_ports.clear();
+        cfg.excluded_ports = "22,u:161".try_into().expect("a port specification");
         cfg.target_names.insert(
             "192.0.2.1".parse().expect("an address"),
             "box.example".into(),
@@ -1511,6 +1517,7 @@ mod tests {
         assert_eq!(restored.evasion, set_apart().evasion);
         assert_eq!(restored.ip_protocols, set_apart().ip_protocols);
         assert!(restored.listen_only_ports.is_empty(), "print ports probed");
+        assert_eq!(restored.excluded_ports, set_apart().excluded_ports);
         assert_eq!(restored.max_probe_rate, std::num::NonZeroU32::new(200));
         assert_eq!(
             restored.scan_timeout,
@@ -1547,6 +1554,10 @@ mod tests {
         assert_eq!(
             changed(|cfg| cfg.listen_only_ports.clear()),
             Some("listen_only_ports")
+        );
+        assert_eq!(
+            changed(|cfg| cfg.excluded_ports = "9100".try_into().expect("a port")),
+            Some("excluded_ports")
         );
         assert_eq!(
             changed(|cfg| cfg.evasion = EvasionProfile::default().with_ttl(3)),

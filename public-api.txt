@@ -383,6 +383,7 @@ pub zond_engine::config::ZondConfig::assume_up: bool
 pub zond_engine::config::ZondConfig::characterise: bool
 pub zond_engine::config::ZondConfig::detection: zond_engine::config::envelope::DetectionEnvelope
 pub zond_engine::config::ZondConfig::evasion: zond_engine::evasion::EvasionProfile
+pub zond_engine::config::ZondConfig::excluded_ports: zond_engine::model::port::set::PortSet
 pub zond_engine::config::ZondConfig::exclusions: zond_engine::model::exclusion::Exclusions
 pub zond_engine::config::ZondConfig::host_probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::config::ZondConfig::host_timeout: core::option::Option<core::time::Duration>
@@ -4021,6 +4022,7 @@ pub zond_engine::export::schema::SettingsDto::characterise: bool
 pub zond_engine::export::schema::SettingsDto::detection: &'static str
 pub zond_engine::export::schema::SettingsDto::dns_enabled: bool
 pub zond_engine::export::schema::SettingsDto::evasion: core::option::Option<zond_engine::export::schema::EvasionDto>
+pub zond_engine::export::schema::SettingsDto::excluded_ports: alloc::string::String
 pub zond_engine::export::schema::SettingsDto::host_probe_interval_us: core::option::Option<u64>
 pub zond_engine::export::schema::SettingsDto::host_timeout_us: core::option::Option<u64>
 pub zond_engine::export::schema::SettingsDto::icmp_evidence: bool
@@ -6283,6 +6285,7 @@ pub zond_engine::import::settings::Settings::dampen_silent_hosts: core::option::
 pub zond_engine::import::settings::Settings::default_ports: core::option::Option<alloc::string::String>
 pub zond_engine::import::settings::Settings::effort: core::option::Option<zond_engine::config::ScanEffort>
 pub zond_engine::import::settings::Settings::exclude: zond_engine::model::exclusion::Exclusions
+pub zond_engine::import::settings::Settings::exclude_ports: zond_engine::model::port::set::PortSet
 pub zond_engine::import::settings::Settings::host_probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::import::settings::Settings::host_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::import::settings::Settings::max_attempts: core::option::Option<core::num::nonzero::NonZeroU8>
@@ -6808,6 +6811,7 @@ pub zond_engine::import::Settings::dampen_silent_hosts: core::option::Option<boo
 pub zond_engine::import::Settings::default_ports: core::option::Option<alloc::string::String>
 pub zond_engine::import::Settings::effort: core::option::Option<zond_engine::config::ScanEffort>
 pub zond_engine::import::Settings::exclude: zond_engine::model::exclusion::Exclusions
+pub zond_engine::import::Settings::exclude_ports: zond_engine::model::port::set::PortSet
 pub zond_engine::import::Settings::host_probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::import::Settings::host_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::import::Settings::max_attempts: core::option::Option<core::num::nonzero::NonZeroU8>
@@ -10567,6 +10571,7 @@ pub struct zond_engine::model::port::set::PortSet
 impl zond_engine::model::port::set::PortSet
 pub fn zond_engine::model::port::set::PortSet::common_discovery() -> Self
 pub fn zond_engine::model::port::set::PortSet::contains(&self, u16, zond_engine::model::port::Protocol) -> bool
+pub fn zond_engine::model::port::set::PortSet::difference(&self, &zond_engine::model::port::set::PortSet) -> zond_engine::model::port::set::PortSet
 pub fn zond_engine::model::port::set::PortSet::has_sctp(&self, u16) -> bool
 pub fn zond_engine::model::port::set::PortSet::has_tcp(&self, u16) -> bool
 pub fn zond_engine::model::port::set::PortSet::has_udp(&self, u16) -> bool
@@ -10838,6 +10843,7 @@ pub struct zond_engine::model::port::PortSet
 impl zond_engine::model::port::set::PortSet
 pub fn zond_engine::model::port::set::PortSet::common_discovery() -> Self
 pub fn zond_engine::model::port::set::PortSet::contains(&self, u16, zond_engine::model::port::Protocol) -> bool
+pub fn zond_engine::model::port::set::PortSet::difference(&self, &zond_engine::model::port::set::PortSet) -> zond_engine::model::port::set::PortSet
 pub fn zond_engine::model::port::set::PortSet::has_sctp(&self, u16) -> bool
 pub fn zond_engine::model::port::set::PortSet::has_tcp(&self, u16) -> bool
 pub fn zond_engine::model::port::set::PortSet::has_udp(&self, u16) -> bool
@@ -11062,6 +11068,7 @@ pub fn zond_engine::model::target::TargetMap::is_empty(&self) -> bool
 pub fn zond_engine::model::target::TargetMap::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = zond_engine::model::target::Target> + core::marker::Send + '_
 pub fn zond_engine::model::target::TargetMap::names(&self, zond_engine::model::port::Protocol) -> bool
 pub fn zond_engine::model::target::TargetMap::new() -> Self
+pub fn zond_engine::model::target::TargetMap::withhold_ports(&mut self, &zond_engine::model::port::set::PortSet)
 impl core::clone::Clone for zond_engine::model::target::TargetMap
 pub fn zond_engine::model::target::TargetMap::clone(&self) -> zond_engine::model::target::TargetMap
 impl core::cmp::Eq for zond_engine::model::target::TargetMap
@@ -13786,6 +13793,7 @@ pub zond_engine::record::SettingsRecord::characterise: bool
 pub zond_engine::record::SettingsRecord::detection: alloc::string::String
 pub zond_engine::record::SettingsRecord::dns_enabled: bool
 pub zond_engine::record::SettingsRecord::evasion: core::option::Option<zond_engine::record::EvasionSettingsRecord>
+pub zond_engine::record::SettingsRecord::excluded_ports: alloc::string::String
 pub zond_engine::record::SettingsRecord::host_probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::record::SettingsRecord::host_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::record::SettingsRecord::icmp_evidence: bool
@@ -14531,6 +14539,7 @@ pub zond_engine::report::ScanSettings::characterise: bool
 pub zond_engine::report::ScanSettings::detection: zond_engine::config::envelope::DetectionEnvelope
 pub zond_engine::report::ScanSettings::dns_enabled: bool
 pub zond_engine::report::ScanSettings::evasion: core::option::Option<zond_engine::report::EvasionRecord>
+pub zond_engine::report::ScanSettings::excluded_ports: zond_engine::model::port::set::PortSet
 pub zond_engine::report::ScanSettings::host_probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::report::ScanSettings::host_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::report::ScanSettings::icmp_evidence: bool
@@ -18581,6 +18590,7 @@ pub struct zond_engine::PortSet
 impl zond_engine::model::port::set::PortSet
 pub fn zond_engine::model::port::set::PortSet::common_discovery() -> Self
 pub fn zond_engine::model::port::set::PortSet::contains(&self, u16, zond_engine::model::port::Protocol) -> bool
+pub fn zond_engine::model::port::set::PortSet::difference(&self, &zond_engine::model::port::set::PortSet) -> zond_engine::model::port::set::PortSet
 pub fn zond_engine::model::port::set::PortSet::has_sctp(&self, u16) -> bool
 pub fn zond_engine::model::port::set::PortSet::has_tcp(&self, u16) -> bool
 pub fn zond_engine::model::port::set::PortSet::has_udp(&self, u16) -> bool
@@ -18948,6 +18958,7 @@ pub fn zond_engine::model::target::TargetMap::is_empty(&self) -> bool
 pub fn zond_engine::model::target::TargetMap::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = zond_engine::model::target::Target> + core::marker::Send + '_
 pub fn zond_engine::model::target::TargetMap::names(&self, zond_engine::model::port::Protocol) -> bool
 pub fn zond_engine::model::target::TargetMap::new() -> Self
+pub fn zond_engine::model::target::TargetMap::withhold_ports(&mut self, &zond_engine::model::port::set::PortSet)
 impl core::clone::Clone for zond_engine::model::target::TargetMap
 pub fn zond_engine::model::target::TargetMap::clone(&self) -> zond_engine::model::target::TargetMap
 impl core::cmp::Eq for zond_engine::model::target::TargetMap
@@ -19003,6 +19014,7 @@ pub zond_engine::ZondConfig::assume_up: bool
 pub zond_engine::ZondConfig::characterise: bool
 pub zond_engine::ZondConfig::detection: zond_engine::config::envelope::DetectionEnvelope
 pub zond_engine::ZondConfig::evasion: zond_engine::evasion::EvasionProfile
+pub zond_engine::ZondConfig::excluded_ports: zond_engine::model::port::set::PortSet
 pub zond_engine::ZondConfig::exclusions: zond_engine::model::exclusion::Exclusions
 pub zond_engine::ZondConfig::host_probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::ZondConfig::host_timeout: core::option::Option<core::time::Duration>

@@ -101,10 +101,11 @@
 //! never override a system file back to a default, since doing so would be
 //! indistinguishable from saying nothing.
 //!
-//! [`exclude`](Settings::exclude) is the exception and is a bare [`Exclusions`].
-//! It is the one key that accumulates rather than overrides, so it has no silence
-//! to be told apart from: an empty set adds nothing. See
-//! [`overlay`](Settings::overlay) for why that key accumulates.
+//! [`exclude`](Settings::exclude) and [`exclude_ports`](Settings::exclude_ports)
+//! are the exceptions, a bare [`Exclusions`] and a bare [`PortSet`]. They are the
+//! keys that accumulate rather than override, so they have no silence to be
+//! told apart from: an empty set adds nothing. See
+//! [`overlay`](Settings::overlay) for why those keys accumulate.
 //!
 //! Layers, each overriding the one before:
 //!
@@ -428,6 +429,22 @@ pub struct Settings {
     /// the full grammar.
     #[serde(deserialize_with = "de_exclusions")]
     pub exclude: Exclusions,
+    /// Ports no scan reading this document may probe on any target.
+    ///
+    /// Written as the port specification a scan takes, with the same `u:` and
+    /// `s:` qualifiers:
+    ///
+    /// ```toml
+    /// exclude_ports = "9100-9107, u:161"
+    /// ```
+    ///
+    /// Parsed on the way in and unioned across layers, for the reasons
+    /// [`exclude`](Self::exclude) is: it can only narrow a scan, and a
+    /// malformed one quietly read as nothing would send to the ports somebody
+    /// wrote down to keep out of. See
+    /// [`ZondConfig::excluded_ports`] for what it holds a scan to.
+    #[serde(deserialize_with = "de_exclude_ports")]
+    pub exclude_ports: PortSet,
 }
 
 impl Settings {
@@ -468,12 +485,13 @@ impl Settings {
             default_ports,
         );
 
-        // The one key that accumulates. Every setting above says how a scan
-        // should be run and the latest answer wins; `exclude` says where it may
-        // not go, and a later layer overriding that would let a user's file drop
+        // The two keys that accumulate. Every setting above says how a scan
+        // should be run and the latest answer wins; `exclude` and
+        // `exclude_ports` say where it may not go, and a later layer overriding that would let a user's file drop
         // the range an administrator wrote into the system-wide one. Unioning
         // can only ever make a scan smaller. See `Exclusions::extend`.
         self.exclude.extend(&other.exclude);
+        self.exclude_ports = self.exclude_ports.union(&other.exclude_ports);
     }
 
     /// The default port set this document names, if it names one.
@@ -546,6 +564,7 @@ impl Settings {
         // from the command line before applying a document must not
         // lose it to one, and the reverse order must not lose the document's.
         config.exclusions.extend(&self.exclude);
+        config.excluded_ports = config.excluded_ports.union(&self.exclude_ports);
     }
 }
 
@@ -562,8 +581,9 @@ impl Settings {
 /// `the_template_documents_every_key_and_no_others` holds this list and the
 /// template to each other in both directions; nothing can hold either to the
 /// struct, so that step is by hand.
-const KNOWN_KEYS: [&str; 17] = [
+const KNOWN_KEYS: [&str; 18] = [
     "exclude",
+    "exclude_ports",
     "no_dns",
     "redact",
     "send_mode",
@@ -1057,6 +1077,15 @@ fn de_exclusions<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Exclusions, D
     Ok(Exclusions::new(ips))
 }
 
+/// Reads `exclude_ports` as a port specification, refusing one that does not
+/// parse. See [`Settings::exclude_ports`] for why that is a document error
+/// rather than a value read as nothing.
+fn de_exclude_ports<'de, D: serde::Deserializer<'de>>(d: D) -> Result<PortSet, D::Error> {
+    let written = String::deserialize(d)?;
+    PortSet::try_from(written.as_str())
+        .map_err(|error| serde::de::Error::custom(format!("exclude_ports = '{written}': {error}")))
+}
+
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -1252,6 +1281,52 @@ mod tests {
             ))
             .expect_err("the document must not load");
 
+            assert!(
+                error.to_string().contains(written),
+                "the error names what was written: {error}"
+            );
+        }
+    }
+
+    /// Excluded ports accumulate across every layer and onto what the caller
+    /// already excluded, and one that does not parse stops the document.
+    ///
+    /// For the reasons exclusions do: a later layer replacing an earlier one's
+    /// ports would send to a port an administrator kept out, and a malformed
+    /// one read as nothing would do the same with nothing in the output saying
+    /// so.
+    #[test]
+    fn excluded_ports_add_up_across_layers_and_a_malformed_one_refuses_the_document() {
+        let mut system = document(
+            r#"
+            [defaults]
+            exclude_ports = "9100-9107"
+            "#,
+        )
+        .document;
+        let user = document(
+            r#"
+            [defaults]
+            exclude_ports = "22, u:161"
+            "#,
+        )
+        .document;
+        system.defaults.overlay(&user.defaults);
+
+        let mut config = ZondConfig {
+            excluded_ports: "3389".try_into().expect("a port"),
+            ..ZondConfig::default()
+        };
+        system
+            .resolve(None)
+            .expect("the defaults")
+            .apply_to(&mut config);
+
+        assert_eq!(config.excluded_ports.to_string(), "22,3389,9100-9107,u:161");
+
+        for written in ["80-20", "http", "70000"] {
+            let error = parse(&format!("[defaults]\nexclude_ports = \"{written}\"\n"))
+                .expect_err("the document must not load");
             assert!(
                 error.to_string().contains(written),
                 "the error names what was written: {error}"

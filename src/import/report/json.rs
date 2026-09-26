@@ -883,6 +883,10 @@ struct SettingsDto {
     /// The TCP ports the scan only listened on, absent in a document written
     /// before a scan held any back, which probed every port alike.
     listen_only_ports: Vec<u16>,
+    /// The ports the scan sent nothing to, as a port specification, absent
+    /// when it excluded none and in a document written before a scan could.
+    #[serde(default)]
+    excluded_ports: String,
     /// What the scan changed about its packets, absent when it changed nothing.
     /// Deserialized into the journal's own record, then checked by
     /// [`checked_evasion`]: four of its fields are named vocabularies or
@@ -991,6 +995,14 @@ impl SettingsDto {
         if let Some(idle) = &self.idle_scan {
             checked_idle_scan(idle)?;
         }
+        // Checked for the reason `detection` is: it states what the scan was
+        // forbidden to send, and reading an unreadable one as empty would say a
+        // scan sent to ports it kept out.
+        known(
+            crate::model::port::PortSet::try_from(self.excluded_ports.as_str()).ok(),
+            "a port specification",
+            &self.excluded_ports,
+        )?;
 
         Ok(SettingsRecord {
             send_mode: self.send_mode,
@@ -1015,6 +1027,7 @@ impl SettingsDto {
             ip_protocols: self.ip_protocols,
             tls_enumeration: self.tls_enumeration,
             listen_only_ports: self.listen_only_ports,
+            excluded_ports: self.excluded_ports,
             evasion: self.evasion,
             idle_scan: self.idle_scan,
             icmp_evidence: self.icmp_evidence,

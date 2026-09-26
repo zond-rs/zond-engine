@@ -1179,6 +1179,8 @@ pub struct ZondConfig {
     /// this set, so a reader can tell a port left unprobed on purpose from one
     /// that had nothing to say; see
     /// [`ScanSettings::listen_only_ports`](crate::report::ScanSettings::listen_only_ports).
+    /// To send a port nothing at all, the probe that finds it open included,
+    /// exclude it; see [`excluded_ports`](Self::excluded_ports).
     ///
     /// Clear it to probe these ports like any other, accepting that a printer
     /// behind one prints what it is sent. Add to it to spare any other port
@@ -1229,6 +1231,45 @@ pub struct ZondConfig {
     /// `import::settings::Settings`, where that asymmetry is the argument for
     /// which keys a document is allowed to carry.
     pub exclusions: Exclusions,
+
+    /// Ports this scan may not probe on any target, whatever else it was asked
+    /// to cover.
+    ///
+    /// Empty by default. Taken out of the port list before anything numbers it,
+    /// so no pass is handed an excluded port to begin with: the port scan never
+    /// asks one, and the passes that follow it, identification, detection, TLS
+    /// enumeration, the operating-system series, filter characterisation and
+    /// route tracing, work from the ports it found. The ports a pass picks for
+    /// itself are held to it as well: a liveness pass asks none of its common
+    /// ports that is excluded, and the operating-system passes send no SNMP or
+    /// device-info question to a port excluded on UDP. A report records the set,
+    /// and the ports its scope says were walked are what was left; see
+    /// [`ScanSettings::excluded_ports`](crate::report::ScanSettings::excluded_ports).
+    ///
+    /// For a port whose device misbehaves when anything at all arrives, or
+    /// that an engagement puts out of bounds. It is the stronger of two
+    /// settings: [`listen_only_ports`](Self::listen_only_ports) still finds a
+    /// port open and only withholds what would be said to it, and this sends
+    /// the port nothing. The raw-print ports are held back the weaker way by
+    /// default and not excluded, since a printer prints what a connection
+    /// carries and not the handshake that opens one, and a scan that never
+    /// touched them would not find the printers.
+    ///
+    /// Not governed: a name lookup, which [`no_dns`](Self::no_dns) decides, and
+    /// the [IP protocol pass](Self::ip_protocols), which asks a host about a
+    /// protocol rather than a port and aims at one chosen to be closed.
+    ///
+    /// Narrowing only, as [`exclusions`](Self::exclusions) is, which is what
+    /// makes it safe to accept from a settings file.
+    ///
+    /// ```
+    /// # use zond_engine::ZondConfig;
+    /// # use zond_engine::model::port::PortSet;
+    /// let mut cfg = ZondConfig::default();
+    /// // The raw-print ports, sent nothing at all.
+    /// cfg.excluded_ports = PortSet::try_from("9100-9107").unwrap();
+    /// ```
+    pub excluded_ports: crate::model::port::PortSet,
 
     /// The name each address was asked for by, where a target named a host
     /// rather than an address.
@@ -1602,6 +1643,7 @@ impl Default for ZondConfig {
             listen_only_ports: RAW_PRINT_PORTS.into_iter().collect(),
             idle_scan: Default::default(),
             exclusions: Default::default(),
+            excluded_ports: Default::default(),
             target_names: Default::default(),
             redact: Default::default(),
             send_mode: Default::default(),
@@ -1657,6 +1699,9 @@ impl ZondConfig {
             // on a port asks first.
             listen_only_ports: _,
             exclusions: _,
+            // Taken out of the port list before a scan starts, and read by the
+            // passes that pick a port of their own.
+            excluded_ports: _,
             // Read by the identification, which asks each port by it.
             target_names: _,
             redact: _,

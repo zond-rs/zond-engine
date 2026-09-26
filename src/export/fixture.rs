@@ -327,6 +327,9 @@ pub(crate) fn report() -> ScanReport {
         // value the writer had to look up rather than the one it would emit for
         // a default it never read.
         sctp_technique: crate::model::technique::SctpScanTechnique::CookieEcho,
+        // Across two transports, so a writer that renders one lane and a reader
+        // that parses it are both caught short of the other.
+        excluded_ports: "9100-9107,u:161".try_into().expect("a port specification"),
         ..Default::default()
     };
 

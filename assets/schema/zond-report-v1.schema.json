@@ -1971,6 +1971,10 @@
             "maximum": 65535
           }
         },
+        "excluded_ports": {
+          "description": "The ports the phase sent nothing to on any target, written as the specification a scanner takes: comma separated, `start-end` for a run, `u:` prefixing the UDP half and `s:` the SCTP half. Absent where none were excluded. It says why a port is missing from the scope's `spec`: one written here was named and kept out, where one absent from both was never named.",
+          "type": "string"
+        },
         "evasion": {
           "description": "What the scan changed about the packets it sent, present only when it changed something - so an ordinary scan omits this object entirely and reads exactly as one produced before the option existed. Each field is present only for a technique the scan actually used. A finding read against it means more than one read without: a filtered port under a probe from a trusted source port is a different fact about the network than the same port under an ordinary one.",
           "type": "object",

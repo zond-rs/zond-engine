@@ -1270,6 +1270,20 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
+    // Ports kept out of the scan: one missing from the ports walked was named
+    // and excluded rather than never named.
+    if !settings.excluded_ports.is_empty() {
+        fact(
+            out,
+            "excluded ports",
+            &format!(
+                "{}{}",
+                esc(&settings.excluded_ports),
+                dim(&[esc("sent nothing on any target")])
+            ),
+        )?;
+    }
+
     // Addresses the caller named that nothing was sent to. No probe left this
     // machine for them, so the report says nothing about what is there.
     if !phase.unroutable.is_empty() {

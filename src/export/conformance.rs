@@ -586,6 +586,7 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         // not enumerate and nearly every one it did.
         ("security", "unfinished"),
         ("settings", "evasion"),
+        ("settings", "excluded_ports"),
         ("settings", "idle_scan"),
     ];
 
@@ -1180,6 +1181,7 @@ fn the_hostile_fixture_poisons_every_string_the_schema_declares() {
         "digest_algorithm",
         "end",
         "engine_version",
+        "excluded_ports",
         "family",
         "first_seen",
         "flags",

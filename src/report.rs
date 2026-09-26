@@ -858,6 +858,17 @@ pub struct ScanSettings {
     /// asks of one port.
     pub listen_only_ports: Vec<u16>,
 
+    /// The ports the phase sent nothing to on any target, empty where none
+    /// were excluded.
+    ///
+    /// Recorded as the policy rather than read off the scope, because the
+    /// scope's ports say what was walked and cannot say why a port is missing:
+    /// a port a caller never named and one a caller named and excluded look
+    /// the same there. It also bounds the probes a phase picked for itself, a
+    /// liveness pass's ports among them, which no scope lists. See
+    /// [`ZondConfig::excluded_ports`] for what it holds a scan to.
+    pub excluded_ports: PortSet,
+
     /// What the scan changed about the packets it sent, or `None` if it changed
     /// nothing. A filtered port found with a probe from a trusted source port is
     /// a different fact than the same port found with an ordinary probe; see
@@ -935,6 +946,7 @@ impl From<&ZondConfig> for ScanSettings {
             ip_protocols,
             tls_enumeration,
             listen_only_ports,
+            excluded_ports,
             evasion,
             idle_scan,
             icmp_evidence,
@@ -978,6 +990,7 @@ impl From<&ZondConfig> for ScanSettings {
             ip_protocols: ip_protocols.iter().copied().collect(),
             tls_enumeration: *tls_enumeration,
             listen_only_ports: listen_only_ports.iter().copied().collect(),
+            excluded_ports: excluded_ports.clone(),
             evasion: EvasionRecord::from_profile(evasion),
             idle_scan: *idle_scan,
             icmp_evidence: *icmp_evidence,

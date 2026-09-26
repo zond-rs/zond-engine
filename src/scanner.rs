@@ -889,11 +889,23 @@ fn asks_liveness(cfg: &ZondConfig) -> bool {
 ///
 /// `false` for an [idle scan](ZondConfig::idle_scan) and for
 /// [`assume_up`](ZondConfig::assume_up), which decline the pass for their own
-/// reasons; see [`asks_liveness`].
+/// reasons; see [`asks_liveness`]. `false` too where the
+/// [excluded ports](ZondConfig::excluded_ports) leave the pass no port to ask:
+/// it would leave every address it reaches by TCP unasked and so unscanned,
+/// where the port probes standing in reach them all.
 fn liveness_earns_its_place(cfg: &ZondConfig, map: &TargetMap) -> bool {
     use crate::model::port::Protocol;
 
     if !asks_liveness(cfg) {
+        return false;
+    }
+
+    let asked = SynPorts::for_scan(&tcp_ports_of(map))
+        .excluding(&cfg.excluded_ports)
+        .len()
+        + usize::from(orchestrator::sctp_discovery_port(map).is_some());
+    // Nothing left to ask; see above.
+    if asked == 0 {
         return false;
     }
 
@@ -908,8 +920,6 @@ fn liveness_earns_its_place(cfg: &ZondConfig, map: &TargetMap) -> bool {
         return true;
     }
 
-    let asked = SynPorts::for_scan(&tcp_ports_of(map)).len()
-        + usize::from(orchestrator::sctp_discovery_port(map).is_some());
     // The dearest address to probe decides it: the pass pays as soon as one
     // unit asks more ports than the pass would, since that is where a dead
     // address would cost the port scan more than the pass.
@@ -1184,6 +1194,8 @@ fn address_scope(targets: &mut IpSet, ctx: &ScanContext) -> TargetScope {
 /// routed SYN sweep and a connect sweep alike: the common five for a sweep,
 /// and those with some of the scan's own ports for a port scan's liveness
 /// pass. See [`SynPorts`] for why a host behind a filter needs the second.
+/// Held here to [`ZondConfig::excluded_ports`], so neither caller can send a
+/// liveness probe to a port the scan may not probe.
 ///
 /// `sctp_port` adds an INIT sweep beside the SYN one, for a port scan whose
 /// ports name SCTP. `None` for a run that never mentioned it, which is every
@@ -1203,6 +1215,7 @@ async fn run_discovery(
     syn_ports: SynPorts,
     sctp_port: Option<u16>,
 ) {
+    let syn_ports = syn_ports.excluding(&cfg.excluded_ports);
     if caps.privilege.is_raw() {
         let unframed =
             caps.beyond_frames(&targets, &cfg.send_source, interface::FrameSender::Sweep);
@@ -1218,7 +1231,11 @@ async fn run_discovery(
         finish_enrichment(Some(enrichment), caps, ctx, rdns::Unheard::Skipped).await;
     } else {
         let targets = orchestrator::walkable(targets, ctx);
-        if let Err(error) =
+        if syn_ports.is_empty() {
+            ctx.record_refusal(
+                plan::RefusedStep::every_discovery_port_excluded(ScannerKind::Connect).into(),
+            );
+        } else if let Err(error) =
             strategy::connect::discover_on(targets, ctx.clone(), &cfg.evasion, syn_ports).await
         {
             ctx.record_failure(ScannerKind::Connect, error.to_string());
@@ -1608,6 +1625,7 @@ pub async fn scan(
     enough_descriptors()?;
 
     let mut target_map = target_map;
+    target_map.withhold_ports(&cfg.excluded_ports);
     let unwalkable = orchestrator::withhold_unwalkable_targets(&mut target_map);
     let planned = planned_targets(&target_map);
     let runs_liveness = liveness_earns_its_place(cfg, &target_map);
@@ -1689,8 +1707,10 @@ pub async fn scan_with_journal(
     let cfg = &under_the_recorded_technique(&journal, cfg);
     let journal = recording_options(journal, cfg);
     // After the plan is held to the journal's, which records it as the caller
-    // named it, and before anything numbers it.
+    // named it, and before anything numbers it. The excluded ports are held to
+    // the job's by its options, so every sitting numbers what is left alike.
     let mut target_map = target_map;
+    target_map.withhold_ports(&cfg.excluded_ports);
     let unwalkable = orchestrator::withhold_unwalkable_targets(&mut target_map);
     let runs_liveness = liveness_earns_its_place(cfg, &target_map);
     let finished = journal.finished_hosts().unwrap_or_else(|e| {
@@ -1887,12 +1907,13 @@ fn spawn_scan(
         // every host with a TCP answer, so the echo probe is left with the
         // machines that answered nothing at all.
         orchestrator::run_active_os_series(&ctx, cfg.os_detection, cfg.probe_tuning(), caps).await;
-        orchestrator::run_active_os_snmp(&ctx, cfg.os_detection).await;
+        orchestrator::run_active_os_snmp(&ctx, cfg.os_detection, &cfg.excluded_ports).await;
         // After the two that read a stack, because it asks only hosts that have
         // a name and answers a question neither of those can: macOS and iOS
         // share a kernel and are indistinguishable to a probe, while a
         // device-info record names the model outright.
-        orchestrator::run_active_os_mdns(&ctx, cfg.os_detection, !cfg.no_dns).await;
+        orchestrator::run_active_os_mdns(&ctx, cfg.os_detection, !cfg.no_dns, &cfg.excluded_ports)
+            .await;
         orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning(), caps).await;
         // Last: the ports are what decide a trace's shape.
         orchestrator::run_traceroute(&ctx, &cfg, caps).await;
