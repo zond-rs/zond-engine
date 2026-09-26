@@ -89,7 +89,8 @@
 //! request.
 //!
 //! [`resolve`](ScanRequest::resolve) turns the target and exclusion expressions
-//! into addresses. It reads this host's interface table for `lan` and for the
+//! into addresses, and into the plan a port scan runs, which keeps the ports a
+//! target was written with: `192.0.2.1:8080` is scanned on 8080. It reads this host's interface table for `lan` and for the
 //! `%interface` suffix, and it may send DNS queries, so it is asynchronous and
 //! fallible and the caller decides when to take it. Target expressions are held
 //! as written for the same reason
@@ -111,7 +112,7 @@ use crate::model::ip::set::IpSet;
 use crate::model::mac::MacAddr;
 use crate::model::parse::target::TargetParseError;
 use crate::model::port::PortSet;
-use crate::resolve::{self, DiscoveryTargets, Resolver};
+use crate::resolve::{self, DiscoveryTargets, PortScanTargets, Resolver};
 
 /// What went wrong turning a request into a scan.
 #[non_exhaustive]
@@ -334,7 +335,7 @@ impl ScanRequest {
             return Err(RequestError::NoTargets);
         }
 
-        let targets = resolve::for_discovery(&self.targets, names).await?;
+        let (targets, plan) = resolve::for_request(&self.targets, names).await?;
         let exclude = if self.exclude.is_empty() {
             Exclusions::none()
         } else {
@@ -344,6 +345,7 @@ impl ScanRequest {
 
         Ok(Resolved {
             targets,
+            plan,
             exclude,
             ports,
         })
@@ -359,6 +361,9 @@ impl ScanRequest {
 #[derive(Debug, Clone)]
 pub struct Resolved {
     targets: DiscoveryTargets,
+    /// The targets with the ports each wrote, and the empty set on those that
+    /// wrote none; see [`port_scan`](Self::port_scan).
+    plan: PortScanTargets,
     exclude: Exclusions,
     ports: Option<PortSet>,
 }
@@ -375,8 +380,24 @@ impl Resolved {
     }
 
     /// The ports the request settled on, if it settled any.
+    ///
+    /// What a target written without ports of its own is scanned on. One
+    /// written with them, such as `192.0.2.1:8080`, is scanned on those; see
+    /// [`port_scan`](Self::port_scan).
     pub fn ports(&self) -> Option<&PortSet> {
         self.ports.as_ref()
+    }
+
+    /// The port scan these targets ask for, and the name each address was
+    /// reached by.
+    ///
+    /// A target written with ports, such as `192.0.2.1:8080`, is scanned on
+    /// those. Every other target is scanned on the request's ports, or on
+    /// `default_ports` where the request settled none, which leaves the
+    /// choice where [`ScanRequest::ports`] leaves it: with the caller.
+    pub fn port_scan(&self, default_ports: &PortSet) -> PortScanTargets {
+        self.plan
+            .with_unported_on(self.ports.as_ref().unwrap_or(default_ports))
     }
 
     /// The addresses this scan may not probe.
@@ -384,20 +405,24 @@ impl Resolved {
         &self.exclude
     }
 
-    /// Takes both halves, for a caller building a
-    /// [`TargetMap`](crate::model::target::TargetMap) of its own.
+    /// Takes the addresses and the request's ports.
+    ///
+    /// The ports written on a target are not among them, so a map built from
+    /// these scans `192.0.2.1:8080` on the request's ports rather than on
+    /// 8080. [`port_scan`](Self::port_scan) is the plan that keeps them.
     pub fn into_parts(self) -> (IpSet, Option<PortSet>) {
         (self.targets.into_ips(), self.ports)
     }
 
     /// Writes what these targets imply into `config`.
     ///
-    /// The exclusions, and whether a network was named rather than a set of
-    /// addresses. Exclusions are added to what `config` already forbids, so the
-    /// order a caller applies a request and a settings file in cannot lose
-    /// either one's scope.
+    /// The exclusions, whether a network was named rather than a set of
+    /// addresses, and the name each address was reached by. Exclusions are
+    /// added to what `config` already forbids, so the order a caller applies a
+    /// request and a settings file in cannot lose either one's scope.
     pub fn apply_to(&self, config: &mut ZondConfig) {
         self.targets.apply_to(config);
+        self.plan.apply_to(config);
         config.exclusions.extend(&self.exclude);
     }
 }
@@ -730,6 +755,40 @@ mod tests {
                 .excludes(&"192.0.2.8".parse().expect("literal"))
         );
         assert_eq!(resolved.ips().len(), 256);
+    }
+
+    /// A port written on a target is the port that target is scanned on.
+    /// Dropped, `192.0.2.1:8080` scans the request's ports or the caller's
+    /// defaults instead, and the report answers a question nobody asked about
+    /// the one port somebody did.
+    #[tokio::test]
+    async fn a_port_written_on_a_target_is_the_port_it_is_scanned_on() {
+        let defaults = PortSet::try_from("22").expect("a specification");
+        let on = |plan: &PortScanTargets, address: &str| {
+            let address: IpAddr = address.parse().expect("literal");
+            plan.map()
+                .units
+                .iter()
+                .find(|unit| unit.ips().contains(&address))
+                .map(|unit| unit.ports().to_string())
+        };
+
+        let unported = request("targets = [\"192.0.2.1:8080\", \"192.0.2.2\"]\n")
+            .resolve(None)
+            .await
+            .expect("literal addresses resolve without a resolver");
+        let plan = unported.port_scan(&defaults);
+        assert_eq!(on(&plan, "192.0.2.1").as_deref(), Some("8080"));
+        assert_eq!(on(&plan, "192.0.2.2").as_deref(), Some("22"));
+        assert_eq!(unported.ips().len(), 2, "both reach the discovery sweep");
+
+        let ported = request("targets = [\"192.0.2.1:u:53\", \"192.0.2.2\"]\nports = \"443\"\n")
+            .resolve(None)
+            .await
+            .expect("resolves");
+        let plan = ported.port_scan(&defaults);
+        assert_eq!(on(&plan, "192.0.2.1").as_deref(), Some("u:53"));
+        assert_eq!(on(&plan, "192.0.2.2").as_deref(), Some("443"));
     }
 
     #[tokio::test]

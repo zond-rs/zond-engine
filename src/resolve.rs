@@ -92,6 +92,8 @@ mod targets;
 mod unicast;
 
 pub use links::{LinkError, for_listening, for_listening_on};
+#[cfg(feature = "import-request")]
+pub(crate) use targets::for_request;
 pub use targets::{
     DiscoveryTargets, PortScanTargets, for_discovery, for_discovery_with, for_exclusion,
     for_exclusion_with, for_port_scan, resolve_names, to_set, to_target_map,

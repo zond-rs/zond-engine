@@ -138,6 +138,56 @@ impl PortScanTargets {
     pub fn apply_to(&self, cfg: &mut ZondConfig) {
         cfg.target_names = self.names.clone();
     }
+
+    /// The same plan with `ports` in place of the empty set on every group
+    /// that has none, which in a plan [`for_request`] built are the targets
+    /// written without a port half.
+    #[cfg(feature = "import-request")]
+    pub(crate) fn with_unported_on(&self, ports: &PortSet) -> Self {
+        let mut map = TargetMap::new();
+        for unit in &self.map.units {
+            if unit.ports().is_empty() {
+                map.add_unit(crate::model::target::TargetSet::new(
+                    unit.ips().clone(),
+                    ports.clone(),
+                ));
+            } else {
+                map.add_unit(unit.clone());
+            }
+        }
+        Self {
+            map,
+            names: self.names.clone(),
+        }
+    }
+}
+
+/// Resolves target expressions once into what a discovery sweep needs and a
+/// port scan's plan, for a caller that settles the ports an unported target
+/// takes only afterwards, as a scan request does.
+///
+/// The plan keeps the ports each expression wrote, and groups every
+/// expression that wrote none under the empty set, which no written port half
+/// can be, since one naming nothing is refused.
+/// [`PortScanTargets::with_unported_on`] gives those the ports settled later.
+/// One pass rather than [`for_discovery`] and [`for_port_scan`] in turn, so a
+/// name is looked up once and both halves hold the same answer.
+#[cfg(feature = "import-request")]
+pub(crate) async fn for_request<S: AsRef<str>>(
+    exprs: &[S],
+    names: Option<&Resolver>,
+) -> Result<(DiscoveryTargets, PortScanTargets), TargetParseError> {
+    let ctx = TargetContext {
+        keywords: Some(&interface::resolve_keyword),
+        zones: Some(&interface::resolve_zone),
+        hosts: None,
+    };
+    let plan = for_port_scan(exprs, PortSet::new(), &ctx, names).await?;
+    let discovery = DiscoveryTargets {
+        ips: ips_of(&plan.map),
+        segment_sweep: names_keyword(exprs, Keyword::Lan),
+    };
+    Ok((discovery, plan))
 }
 
 /// Parses `exprs` into a port scan's plan, resolving any hostnames under the
