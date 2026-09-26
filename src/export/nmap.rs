@@ -1602,6 +1602,34 @@ mod tests {
         assert_eq!(reset, Some(ScanResponse::TcpRst));
     }
 
+    /// An SCTP port reads back as one, listed or summarised.
+    ///
+    /// Nmap writes SCTP as `protocol="sctp"` and this engine scans it, so a
+    /// reader refusing the transport refused every document an SCTP scan
+    /// exported, not just the port.
+    #[cfg(feature = "import-nmap")]
+    #[test]
+    fn an_sctp_port_survives_the_round_trip() {
+        use crate::import::report::ReportReader;
+        use crate::import::report::nmap::NmapXmlReportReader;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 60)));
+        host.set_status(HostStatus::Up);
+        host.add_port(Port::new(2905, Protocol::Sctp, PortState::Open));
+        for number in 3000..3030 {
+            host.add_port(Port::new(number, Protocol::Sctp, PortState::Closed));
+        }
+
+        let restored = NmapXmlReportReader::default()
+            .read(&mut std::io::Cursor::new(export(&[host]).into_bytes()))
+            .expect("an SCTP scan's document reads back");
+        let host = restored.hosts().next().expect("the host survived");
+
+        assert_eq!(host.port_count(), 31);
+        assert!(host.ports().all(|port| port.protocol() == Protocol::Sctp));
+    }
+
     /// Runs of port numbers are written as nmap writes them.
     #[test]
     fn a_port_list_is_written_in_runs() {

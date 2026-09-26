@@ -593,14 +593,13 @@ impl Run {
     /// Takes a `<scaninfo>`, which is where nmap says which probe it sent and
     /// which ports it sent it to.
     fn scan_info(&mut self, element: &Element) {
-        let protocol = match element.value(b"protocol") {
-            Some("tcp") => Some(Protocol::Tcp),
-            Some("udp") => Some(Protocol::Udp),
-            // `ip` and `sctp` name transports this engine's scope has no word
-            // for. Ignored rather than refused: an unreadable `<scaninfo>` is
-            // not a reason to refuse the findings under it.
-            _ => None,
-        };
+        // `ip` names no transport, since a protocol scan walks protocol
+        // numbers rather than ports. Ignored rather than refused, as anything
+        // else unreadable is: an unreadable `<scaninfo>` is not a reason to
+        // refuse the findings under it.
+        let protocol = element
+            .value(b"protocol")
+            .and_then(crate::record::wire::protocol);
         if let Some(protocol) = protocol {
             // Nmap writes one `<scaninfo>` per scan type, so `-sS -sA` names TCP
             // twice. The scope is a set of transports and the document says it is
@@ -891,12 +890,15 @@ impl HostAcc {
         let Some(list) = element.value(b"ports") else {
             return;
         };
+        // TCP where the attribute is absent, as it is from the nmap releases
+        // that predate it, and anything this engine has no word for is left
+        // alone rather than recorded as TCP.
         let protocol = match element.value(b"proto") {
-            Some("udp") => Protocol::Udp,
-            // `tcp`, and anything this engine has no word for is left alone
-            // rather than recorded as TCP.
-            Some("tcp") | None => Protocol::Tcp,
-            Some(_) => return,
+            Some(name) => match crate::record::wire::protocol(name) {
+                Some(protocol) => protocol,
+                None => return,
+            },
+            None => Protocol::Tcp,
         };
 
         let Some(ports) = services(list, protocol) else {
@@ -1090,8 +1092,6 @@ impl PortAcc {
         // reason the target reader gives: it is not a field a reader can skip,
         // it is the value that decides what the record says.
         let protocol = match element.value(b"protocol") {
-            Some("tcp") => Protocol::Tcp,
-            Some("udp") => Protocol::Udp,
             // Not a transport at all. Nmap reports a protocol scan by reusing
             // this element with `protocol="ip"`, where `portid` is an IP
             // protocol number rather than a port; this engine keeps the two
@@ -1112,11 +1112,11 @@ impl PortAcc {
                     ip_protocol: true,
                 });
             }
-            Some(other) => {
-                return Err(parser.malformed(format!(
-                    "port {number} names transport '{other}', which this engine cannot scan"
-                )));
-            }
+            Some(name) => crate::record::wire::protocol(name).ok_or_else(|| {
+                parser.malformed(format!(
+                    "port {number} names transport '{name}', which this engine cannot scan"
+                ))
+            })?,
             None => return Err(parser.malformed(format!("port {number} names no transport"))),
         };
 
