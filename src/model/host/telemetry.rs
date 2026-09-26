@@ -112,6 +112,18 @@ pub struct RttSample {
     pub protocol: Option<StatusProtocol>,
 }
 
+impl RttSample {
+    /// Whether the probe that drew this sample was an address resolution,
+    /// answered off the link layer rather than across the host's IP stack.
+    /// See [`HostTelemetry::round_trips`].
+    fn resolves_the_link(&self) -> bool {
+        matches!(
+            self.protocol,
+            Some(StatusProtocol::Arp | StatusProtocol::Ndp)
+        )
+    }
+}
+
 /// A host's recent round trips, and the summaries drawn from them.
 ///
 /// A sliding window rather than every sample ever taken: a monitor watching one
@@ -228,14 +240,42 @@ impl HostTelemetry {
     }
 
     /// The round trips a wait on the path to this host is sized from, oldest
-    /// first: the direct samples, or where there are none the one figure the
-    /// segment-wide ones support; see [`tightest_bound`](Self::tightest_bound).
-    /// Empty until something has answered.
+    /// first: the direct samples that crossed the host's IP stack, or where
+    /// there are none every direct sample, or where there are none of those
+    /// the one figure the segment-wide ones support; see
+    /// [`tightest_bound`](Self::tightest_bound). Empty until something has
+    /// answered.
+    ///
+    /// An answer to an address resolution, ARP or a neighbour solicitation,
+    /// is a round trip to the host but not across what a wait on the path
+    /// waits for. The request goes to every station on the link, which a
+    /// wireless access point holds for a dozing station until its next
+    /// delivery beacon, a tenth of a second or more apart, and it is the
+    /// first frame a neighbour asleep has to wake for. The segments of a
+    /// conversation go to that one host once it is awake. Measured on one
+    /// segment, neighbours answered ARP in 80 to 250 ms and SYNs in 10 to 20,
+    /// and pooled, the slow resolution became the smoothed round trip every
+    /// wait is sized from: each wait of a TLS port's conversation took about
+    /// 800 ms of allowance rather than 50, and naming the port took twice as
+    /// long.
+    /// So the resolution sizes waits only for a host that answered nothing
+    /// else. A sample whose probe is not named, as a record rebuilt from a
+    /// journal holds when two probes measured it, is counted as having
+    /// crossed the IP stack, since nothing says it did not.
     pub(crate) fn round_trips(&self) -> Vec<Duration> {
-        if self.has_direct() {
+        if !self.has_direct() {
+            return self.tightest_bound().into_iter().collect();
+        }
+        let crossed: Vec<Duration> = self
+            .rtt_history
+            .iter()
+            .filter(|sample| sample.source == RttSource::Direct && !sample.resolves_the_link())
+            .map(|sample| sample.rtt)
+            .collect();
+        if crossed.is_empty() {
             self.direct().collect()
         } else {
-            self.tightest_bound().into_iter().collect()
+            crossed
         }
     }
 
@@ -618,6 +658,45 @@ mod tests {
         telemetry.add_rtt_from(Duration::from_micros(220), StatusProtocol::TcpSyn);
 
         assert_eq!(telemetry.rtt_protocol(), None);
+    }
+
+    /// **A wait on the path is sized from the host's answers across its IP
+    /// stack once it has any, not from the address resolution before them.**
+    ///
+    /// The resolution goes to the whole link and can wait on a dozing
+    /// neighbour: one segment's hosts answered ARP in 80 to 250 ms and SYNs in
+    /// 10 to 20. Pooled as the oldest sample, a 246 ms ARP answer anchored the
+    /// smoothed round trip every wait of a conversation allows for, and a TLS
+    /// port that never answered HTTP took twice as long to name.
+    #[test]
+    fn a_wait_is_sized_from_answers_across_the_ip_stack_rather_than_the_resolution() {
+        let mut telemetry = HostTelemetry::default();
+        telemetry.add_rtt_from(Duration::from_millis(246), StatusProtocol::Arp);
+        telemetry.add_rtt_from(Duration::from_millis(18), StatusProtocol::TcpSyn);
+        telemetry.add_rtt_from(Duration::from_millis(80), StatusProtocol::Ndp);
+        telemetry.add_rtt(Duration::from_millis(20));
+
+        assert_eq!(
+            telemetry.round_trips(),
+            [18, 20].map(Duration::from_millis),
+            "the SYN's, and the one no probe was named for"
+        );
+    }
+
+    /// A host that answered nothing but the resolution is still waited on for
+    /// it, since a guess is all the alternative would be.
+    #[test]
+    fn a_host_that_answered_only_the_resolution_is_sized_from_it() {
+        let mut telemetry = HostTelemetry::default();
+        telemetry.add_segment_wide_rtt_from(Duration::from_millis(5), StatusProtocol::IcmpEcho);
+        telemetry.add_rtt_from(Duration::from_millis(246), StatusProtocol::Arp);
+        telemetry.add_rtt_from(Duration::from_millis(90), StatusProtocol::Arp);
+
+        assert_eq!(
+            telemetry.round_trips(),
+            [246, 90].map(Duration::from_millis),
+            "a direct answer still outranks the segment-wide bound"
+        );
     }
 
     /// A caller that did not say leaves them unnamed, which is a rebuilt host.
