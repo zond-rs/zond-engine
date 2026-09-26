@@ -1162,7 +1162,12 @@ fn spawn_discovery(
     // sweeps a segment, which it may with no address of its own; see
     // `sitting_probes`.
     let sends = !targets.is_empty() || cfg.segment_sweep;
-    let caps = ScanCapabilities::resolve(cfg, sends.then(orchestrator::Probing::sweep));
+    let caps = ScanCapabilities::resolve(
+        cfg,
+        sends.then(orchestrator::Probing::sweep),
+        &targets,
+        interface::FrameSender::Sweep,
+    );
 
     // Narrows `targets` as it records them, so nothing below can probe an
     // excluded address. Addresses a sweep finds for itself never pass through
@@ -1878,8 +1883,12 @@ fn spawn_scan(
     // it, and known before anything is announced.
     let mut numbered = target_map.clone();
     cfg.exclusions.withhold_targets(&mut numbered);
-    let caps =
-        ScanCapabilities::resolve(cfg, sitting_probes(cfg, &target_map, &numbered, &settled));
+    let caps = ScanCapabilities::resolve(
+        cfg,
+        sitting_probes(cfg, &target_map, &numbered, &settled),
+        &orchestrator::unsettled_ips(&numbered, &settled),
+        interface::FrameSender::Probe,
+    );
     // What the caller set, kept so the passes an idle scan turns off can be
     // named as declined rather than dropped, and the config the scan actually
     // runs under, which an idle scan holds to what sends the target nothing.

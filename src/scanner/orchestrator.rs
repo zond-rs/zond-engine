@@ -155,8 +155,16 @@ impl ScanCapabilities {
     ///
     /// `probing` is what the run sends beyond its liveness probes, which is
     /// what the announcement names; `None` for a sitting an earlier one left
-    /// nothing to ask, which sends no probe and so announces none.
-    pub(super) fn resolve(cfg: &ZondConfig, probing: Option<Probing>) -> Self {
+    /// nothing to ask, which sends no probe and so announces none. `targets`
+    /// is what it will probe, asked by `sender`'s frames, since a run that
+    /// sends frames alone asks what no frame reaches by connect, and where
+    /// that is every target the connect is the route to announce.
+    pub(super) fn resolve(
+        cfg: &ZondConfig,
+        probing: Option<Probing>,
+        targets: &IpSet,
+        sender: interface::FrameSender,
+    ) -> Self {
         let privilege = Privilege::current();
         let mode = cfg.evasion.effective_send_mode(cfg.send_mode);
         let frames_only =
@@ -168,7 +176,14 @@ impl ScanCapabilities {
             dns: !cfg.no_dns,
         };
         if let Some(probing) = probing {
-            caps.announce(probing, by_raw_socket(mode, privilege::can_send_raw()));
+            let beyond = caps.beyond_frames(targets, &cfg.send_source, sender);
+            let unframed = beyond.targets.len() == targets.len() && !beyond.is_empty();
+            let reasons = unframed.then(|| beyond.reasons());
+            caps.announce(
+                probing,
+                by_raw_socket(mode, privilege::can_send_raw()),
+                reasons.as_deref(),
+            );
         }
         caps
     }
@@ -176,14 +191,23 @@ impl ScanCapabilities {
     /// Says what the privilege this run holds lets it probe with.
     ///
     /// `raw_sockets` is which of the two routes to raw probing carries the
-    /// probes; see [`by_raw_socket`].
+    /// probes; see [`by_raw_socket`]. `unframed` is why no frame reaches any
+    /// target, where none does, and the run then probes by connect alone,
+    /// which is what the line names: loopback scanned from a run holding the
+    /// link layer is asked by connect, and a line naming link-layer frames
+    /// would name a route nothing took.
     ///
     /// Without raw sockets the line carries what root would add, in brackets,
     /// and is the only place a run says so: a front end reading the report
     /// afterwards has the privilege level, and a second line at the end of a
     /// run repeating this one is the same fact twice.
-    fn announce(self, probing: Probing, raw_sockets: bool) {
-        if self.privilege.is_raw() {
+    fn announce(self, probing: Probing, raw_sockets: bool, unframed: Option<&str>) {
+        if let (true, None, Some(why)) = (self.privilege.is_raw(), probing.zombie, unframed) {
+            match probing.udp {
+                true => success!("probing by TCP connect and plain UDP ({why})"),
+                false => success!("probing by TCP connect ({why})"),
+            }
+        } else if self.privilege.is_raw() {
             let route = if raw_sockets {
                 "raw sockets"
             } else {
@@ -3406,7 +3430,7 @@ mod tests {
         ] {
             let heard = Heard::default();
             tracing::subscriber::with_default(heard.clone(), || {
-                unprivileged.announce(probing, false);
+                unprivileged.announce(probing, false, None);
             });
 
             let said = heard.0.lock().expect("an unpoisoned log").clone();
@@ -3449,7 +3473,7 @@ mod tests {
             };
             let heard = Heard::default();
             tracing::subscriber::with_default(heard.clone(), || {
-                caps.announce(probing, false);
+                caps.announce(probing, false, None);
             });
 
             let said = heard.0.lock().expect("an unpoisoned log").clone();
@@ -3507,12 +3531,66 @@ mod tests {
         ] {
             let heard = Heard::default();
             tracing::subscriber::with_default(heard.clone(), || {
-                raw.announce(probing, raw_sockets);
+                raw.announce(probing, raw_sockets, None);
             });
 
             let said = heard.0.lock().expect("an unpoisoned log").clone();
             assert_eq!(said, [expected], "{probing:?}");
         }
+    }
+
+    /// A run that sends frames alone, whose every target is one no frame
+    /// reaches, announces the connect it probes by and why, rather than the
+    /// frames it holds and sends none of. Loopback is the everyday case: a
+    /// scan of it told it probes with ARP and SYN as link-layer frames has its
+    /// reader expect a SYN scan's verdicts from what were connects.
+    #[test]
+    fn a_run_whose_every_target_is_beyond_frames_announces_the_connect() {
+        let frames = ScanCapabilities {
+            privilege: Privilege::Raw,
+            frames_only: true,
+            dns: false,
+        };
+        let mut map = TargetMap::new();
+        map.add_unit(crate::model::target::TargetSet::new(
+            "127.0.0.1".parse().expect("an address"),
+            "22, u:53".parse().expect("a specification"),
+        ));
+        let tcp_only = {
+            let mut map = TargetMap::new();
+            map.add_unit(crate::model::target::TargetSet::new(
+                "127.0.0.1".parse().expect("an address"),
+                "22".parse().expect("a specification"),
+            ));
+            map
+        };
+        let cfg = ZondConfig::default();
+        for (probing, expected) in [
+            (Probing::sweep(), "probing by TCP connect (loopback)"),
+            (
+                Probing::ports(&cfg, &tcp_only),
+                "probing by TCP connect (loopback)",
+            ),
+            (
+                Probing::ports(&cfg, &map),
+                "probing by TCP connect and plain UDP (loopback)",
+            ),
+        ] {
+            let heard = Heard::default();
+            tracing::subscriber::with_default(heard.clone(), || {
+                frames.announce(probing, false, Some("loopback"));
+            });
+            let said = heard.0.lock().expect("an unpoisoned log").clone();
+            assert_eq!(said, [expected], "{probing:?}");
+        }
+
+        let beyond = frames.beyond_frames(
+            &ip_set(&["127.0.0.1", "::1"]),
+            &[],
+            interface::FrameSender::Probe,
+        );
+        assert_eq!(beyond.targets.len(), 2);
+        assert_eq!(beyond.reasons(), "loopback");
     }
 
     /// The opening line names the route the probes leave by, not the one the

@@ -477,6 +477,17 @@ impl BeyondFrames {
             .collect()
     }
 
+    /// Each reason that applied, in order, joined for the brackets after a
+    /// line naming what the set was asked by.
+    pub(crate) fn reasons(&self) -> String {
+        let named: Vec<String> = self
+            .reasons
+            .iter()
+            .map(|(reason, _)| reason.to_string())
+            .collect();
+        named.join(", ")
+    }
+
     /// These, together with every address of `unmapped` they do not already
     /// hold, each under the reason nothing routes a frame to it.
     ///
