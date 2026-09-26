@@ -1017,7 +1017,7 @@ async fn asked_through_tls(
         return (clear, None);
     };
     let handshake = tls::speculative_handshake(stream, peer.server_name()).await;
-    let (through, tunnel) = tunneled(handshake, port, peer).await;
+    let (through, tunnel) = tunneled(handshake, port, peer, egress).await;
     if !through.is_empty() {
         return (through, tunnel);
     }
@@ -1168,11 +1168,11 @@ impl Rung {
         match self {
             Rung::Tls => {
                 let handshake = tls::handshake(stream, peer.server_name()).await;
-                tunneled(handshake, port, peer).await
+                tunneled(handshake, port, peer, egress).await
             }
             Rung::SpeculativeTls => {
                 let handshake = tls::speculative_handshake(stream, peer.server_name()).await;
-                tunneled(handshake, port, peer).await
+                tunneled(handshake, port, peer, egress).await
             }
             Rung::LegacyTls => (legacy_tls(stream).await, None),
             Rung::Plaintext => (plaintext(stream, port, Some(peer), egress).await, None),
@@ -1254,6 +1254,7 @@ async fn plaintext(
     if !probes.is_empty() {
         let listen = !db.asked_first(port);
         let banners = collect_responses(&mut stream, port, probes, peer, listen).await;
+        drop(stream);
         // Read back off the decoded text, which is sound only because every
         // byte `looks_like_tls` constrains is under 0x80 and survives
         // `from_utf8_lossy` unchanged.
@@ -1263,7 +1264,7 @@ async fn plaintext(
         {
             return ResponseSet::default();
         }
-        return ResponseSet::from_banners(banners);
+        return ResponseSet::from_banners(with_redirect_followed(banners, peer, egress).await);
     }
 
     match ask_generically(stream, peer, egress).await {
@@ -1416,11 +1417,30 @@ fn redirect_path(response: &str, peer: Option<&Authority>) -> Option<String> {
 /// peer has already gone away from is a write that succeeds and a read that
 /// never returns. One round trip, and only on a response that asked for it,
 /// leaving by `egress` as the connection that drew the redirect did.
+///
+/// Through a handshake of its own where the port is spoken to through TLS,
+/// naming the site the port is asked for as the first did.
 async fn follow_redirect(peer: &Authority, path: &str, egress: Egress) -> Option<String> {
-    let mut stream = dial_again(peer.socket(), egress, Some(on_path(CONNECT_RETRY_TIMEOUT)))
+    let stream = dial_again(peer.socket(), egress, Some(on_path(CONNECT_RETRY_TIMEOUT)))
         .await
         .ok()?;
+    match peer.is_tls() {
+        true => {
+            let (mut tunnel, _) = tls::handshake(stream, peer.server_name()).await?;
+            ask_for(&mut tunnel, peer, path).await
+        }
+        false => {
+            let mut stream = stream;
+            ask_for(&mut stream, peer, path).await
+        }
+    }
+}
 
+/// Asks `stream` for `path` on `peer` and reads the document that comes back.
+async fn ask_for<S>(stream: &mut S, peer: &Authority, path: &str) -> Option<String>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     // `Host` names the port actually being identified, which is what a virtual
     // host would route on and is in any case more truthful than a placeholder.
     let request = format!(
@@ -1430,7 +1450,36 @@ async fn follow_redirect(peer: &Authority, path: &str, egress: Egress) -> Option
     );
     stream.write_all(request.as_bytes()).await.ok()?;
 
-    read_document(&mut stream, PROBE_READ_TIMEOUT).await
+    read_document(stream, PROBE_READ_TIMEOUT).await
+}
+
+/// `banners` with the page the first HTTP reply among them redirects to
+/// added, where the redirect leads back to `peer`; see [`redirect_path`].
+///
+/// Asked wherever a port answers its probes, a claimed one and one through TLS
+/// as much as one nothing claims, since the root of a self-hosted application
+/// is often a redirect and nothing else, and the ports it is served on most
+/// are the ones a service claims. The connection that drew the redirect is to
+/// be closed before this runs, so the identification holds one socket at a
+/// time.
+async fn with_redirect_followed(
+    mut banners: Vec<String>,
+    peer: Option<&Authority>,
+    egress: Egress,
+) -> Vec<String> {
+    let Some(peer) = peer else {
+        return banners;
+    };
+    let path = banners
+        .iter()
+        .find(|reply| reply.starts_with("HTTP/"))
+        .and_then(|reply| redirect_path(reply, Some(peer)));
+    if let Some(path) = path
+        && let Some(page) = follow_redirect(peer, &path, egress).await
+    {
+        banners.push(page);
+    }
+    banners
 }
 
 /// Whether `bytes` open a TLS record.
@@ -1472,6 +1521,7 @@ async fn tunneled(
     handshake: Option<(tls::TlsTunnel, TlsInfo)>,
     port: u16,
     peer: &Authority,
+    egress: Egress,
 ) -> (ResponseSet, Option<Tunnel>) {
     let Some((mut tunnel, info)) = handshake else {
         return (ResponseSet::default(), None);
@@ -1490,6 +1540,8 @@ async fn tunneled(
     };
     let peer = peer.through_tls();
     let banners = collect_responses(&mut tunnel, port, probes, Some(&peer), listen).await;
+    drop(tunnel);
+    let banners = with_redirect_followed(banners, Some(&peer), egress).await;
     let responses = ResponseSet {
         banners,
         tls: Some(info),
@@ -2534,19 +2586,26 @@ mod tests {
         let legacy = wait(tls::LEGACY_PROBE_TIMEOUT);
         let speculative = wait(tls::SPECULATIVE_TLS_TIMEOUT);
 
+        // A reply that redirects back to the port is followed on a
+        // connection of its own, through a handshake of its own where the
+        // port is spoken to through TLS.
+        let followed = rung + read_once;
+        let followed_tls = rung + handshake + read_once;
+
         // Numbered for TLS: [Tls, LegacyTls, Plaintext].
-        let tls_all_three = handshake + rung + legacy + rung + spoke(probes);
+        let tls_then_redirect = handshake + spoke(probes) + followed_tls;
+        let tls_all_three = handshake + rung + legacy + rung + spoke(probes) + followed;
         let tls_then_silence = handshake + rung + legacy + rung + silent(probes);
 
         // Numbered for anything else: [Plaintext, SpeculativeTls]. Inside the
         // tunnel a claimed port asks its own probes again and an unclaimed one
         // asks the single generic question.
-        let claimed_then_tls = silent(probes) + rung + speculative + spoke(probes);
-        let alert_then_tls = read_once + rung + speculative + spoke(1);
+        let claimed_then_tls = silent(probes) + rung + speculative + spoke(probes) + followed_tls;
+        let alert_then_tls = read_once + rung + speculative + spoke(1) + followed_tls;
         let unclaimed_then_redirect = read_once + rung + read_once;
         // A web server refusing the request in the clear, then asked for a
         // handshake, and for the legacy one where that is refused.
-        let refused_then_tls = spoke(probes) + rung + speculative + spoke(probes);
+        let refused_then_tls = spoke(probes) + rung + speculative + spoke(probes) + followed_tls;
         let refused_then_legacy = spoke(probes) + rung + speculative + rung + legacy;
 
         // And the last rung, which is a connection and a read per probe, for
@@ -2558,6 +2617,7 @@ mod tests {
         let last_resort = (rung + read_once) * universal;
 
         let paths = [
+            tls_then_redirect,
             tls_all_three + last_resort,
             tls_then_silence + last_resort,
             claimed_then_tls,
@@ -2567,8 +2627,8 @@ mod tests {
             refused_then_legacy,
             silent(probes) + rung + speculative + last_resort,
         ];
-        let longest = paths.iter().map(|walk| walk.0).max().expect("eight paths");
-        let most_waits = paths.iter().map(|walk| walk.1).max().expect("eight paths");
+        let longest = paths.iter().map(|walk| walk.0).max().expect("nine paths");
+        let most_waits = paths.iter().map(|walk| walk.1).max().expect("nine paths");
 
         assert!(
             longest < COLLECTION_BUDGET,
@@ -2958,7 +3018,8 @@ mod tests {
     /// A loopback HTTPS server keeping a certificate for `name` alone, as a
     /// server holding its sites by name keeps one per site, so a handshake
     /// naming nothing, or something else, is refused. A request in the clear is
-    /// answered the way Go's server answers one, with a plaintext `400`.
+    /// answered the way Go's server answers one, with a plaintext `400`. Its
+    /// root redirects to `/web/`, as a self-hosted application's often does.
     async fn https_by_name(name: &str) -> (SocketAddr, Heard) {
         use rustls::server::ResolvesServerCertUsingSni;
         use rustls::sign::CertifiedKey;
@@ -3019,16 +3080,19 @@ mod tests {
                         return;
                     };
                     let read = tls.read(&mut buffer).await.unwrap_or(0);
-                    record
-                        .lock()
-                        .expect("not poisoned")
-                        .push(String::from_utf8_lossy(&buffer[..read]).into_owned());
-                    let _ = tls
-                        .write_all(
+                    let request = String::from_utf8_lossy(&buffer[..read]).into_owned();
+                    let reply: &[u8] = match request.starts_with("GET / ") {
+                        true => {
+                            b"HTTP/1.1 302 Found\r\nServer: Caddy\r\nLocation: /web/\r\n\
+                              Content-Length: 0\r\nConnection: close\r\n\r\n"
+                        }
+                        false => {
                             b"HTTP/1.1 200 OK\r\nServer: Caddy\r\n\
-                              Content-Length: 0\r\nConnection: close\r\n\r\n",
-                        )
-                        .await;
+                              Content-Length: 0\r\nConnection: close\r\n\r\n"
+                        }
+                    };
+                    record.lock().expect("not poisoned").push(request);
+                    let _ = tls.write_all(reply).await;
                     let _ = tls.shutdown().await;
                 });
             }
@@ -3221,5 +3285,68 @@ mod tests {
             found.port.security().is_some(),
             "the port's TLS went unrecorded"
         );
+    }
+
+    /// A redirect a web port answers with is followed wherever the port is
+    /// asked, through TLS as in the clear and on a port its own service
+    /// claims as on one nothing claims, provided it stays on the port. The
+    /// root of a self-hosted application is often a redirect and nothing
+    /// else, and the ports it is most often served on are the claimed ones.
+    #[tokio::test]
+    async fn a_redirect_is_followed_on_a_claimed_port_and_through_tls() {
+        let (addr, heard) = https_by_name("box.example").await;
+        let stream = TcpStream::connect(addr).await.expect("connects");
+        let found = fingerprint_tcp_via(
+            stream,
+            baseline_port(443, Protocol::Tcp, PortState::Open),
+            ServiceDetection::Probe,
+            Egress::KERNEL,
+            PathAllowance::NONE,
+            Some(Arc::from("box.example")),
+        )
+        .await;
+        let asked = heard.lock().expect("not poisoned").clone();
+        assert!(
+            asked
+                .iter()
+                .any(|request| request.starts_with("GET /web/ ")),
+            "the redirect through TLS was not followed: {asked:?}"
+        );
+        assert_eq!(found.responses.len(), 2, "{:?}", found.responses);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binds loopback");
+        let clear = listener.local_addr().expect("a local address");
+        let server = tokio::spawn(async move {
+            let mut asked = Vec::new();
+            for reply in [
+                &b"HTTP/1.1 302 Found\r\nLocation: /web/\r\nContent-Length: 0\r\n\r\n"[..],
+                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+            ] {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buffer = [0u8; 1024];
+                let read = sock.read(&mut buffer).await.unwrap_or(0);
+                asked.push(String::from_utf8_lossy(&buffer[..read]).into_owned());
+                let _ = sock.write_all(reply).await;
+            }
+            asked
+        });
+        let number = 8080;
+        assert!(!SignatureDb::global().tcp_probe_payloads(number).is_empty());
+        let stream = TcpStream::connect(clear).await.expect("connects");
+        let banners = plaintext(stream, number, Some(&Authority::new(clear)), Egress::KERNEL)
+            .await
+            .banners;
+        let asked = server.await.expect("the listener finishes");
+        assert!(
+            asked
+                .iter()
+                .any(|request| request.starts_with("GET /web/ ")),
+            "the redirect in the clear was not followed: {asked:?}"
+        );
+        assert_eq!(banners.len(), 2, "{banners:?}");
     }
 }

@@ -70,6 +70,11 @@ impl Authority {
         }
     }
 
+    /// Whether the port is spoken to through TLS.
+    pub(crate) fn is_tls(&self) -> bool {
+        self.tls
+    }
+
     /// The server name a TLS handshake with this port carries: the name, where
     /// it is one a handshake can carry, and otherwise the address, which puts
     /// no server name on the wire at all.

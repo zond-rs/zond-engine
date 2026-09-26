@@ -171,10 +171,11 @@ impl Analyzer for HttpHeadersAnalyzer {
             .header("server")
             .and_then(parse_server)
             .map(|(product, _)| product);
-        if let Some(application) = parsed
+        let application = parsed
             .iter()
             .find_map(|response| application_hint(response, named.as_deref()))
-        {
+            .or_else(|| leads_elsewhere(http, ctx).map(|to| format!("redirects to {to}")));
+        if let Some(application) = application.as_deref().and_then(super::identity_field) {
             evidence.push(stamp(
                 Evidence::new(SourceId::HttpHeaders, Confidence::Probable)
                     .with_service("http")
@@ -225,6 +226,11 @@ fn application_hint(http: &HttpResponse<'_>, named: Option<&str>) -> Option<Stri
         return Some(vendor);
     }
 
+    // A redirect's page is the server's, whatever it is titled: nginx titles
+    // every one it serves `301 Moved Permanently`.
+    if http.is_redirect() {
+        return None;
+    }
     let title = document_title(http.body)?;
     let echoes_the_server = named.is_some_and(|product| {
         let (title, product) = (title.to_ascii_lowercase(), product.to_ascii_lowercase());
@@ -232,6 +238,41 @@ fn application_hint(http: &HttpResponse<'_>, named: Option<&str>) -> Option<Stri
     });
 
     (!echoes_the_server).then_some(title)
+}
+
+/// Where a redirect the port answered with leads, when that is somewhere the
+/// identification did not follow it: another name, another port or another
+/// scheme.
+///
+/// Recorded because it is the port's answer. A server that sends every visitor
+/// to `http://box.example/` is saying which site it holds, and a scan of its
+/// address that follows only redirects back to the port it was asked about
+/// would otherwise report nothing but the server that sent the hop. A
+/// redirect that stays on the port was followed, and the page it led to
+/// speaks for itself.
+///
+/// Only an absolute URL leads elsewhere. With no address to compare it to,
+/// every absolute one is taken to, which is the most it can be shown to do.
+fn leads_elsewhere<'a>(http: &HttpResponse<'a>, ctx: &PortContext) -> Option<&'a str> {
+    if !http.is_redirect() {
+        return None;
+    }
+    let location = http.header("location")?;
+    if !(location.contains("://") || location.starts_with("//"))
+        || location.chars().any(char::is_control)
+    {
+        return None;
+    }
+    let stays = ctx.addr.is_some_and(|addr| {
+        let peer =
+            super::authority::Authority::new(addr).named(ctx.host_name.as_deref().map(Into::into));
+        let peer = match ctx.tunnel {
+            Some(_) => peer.through_tls(),
+            None => peer,
+        };
+        peer.path_of(location).is_some()
+    });
+    (!stays).then_some(location)
 }
 
 /// Header names that begin with `x-` and name no vendor.
@@ -608,6 +649,8 @@ fn is_placeholder(product: &str) -> bool {
 /// discarded, leaving the status line as the marker that this is HTTP, and the
 /// header block.
 struct HttpResponse<'a> {
+    /// The status code, where the status line carries one.
+    status: Option<u16>,
     /// `(lowercased name, trimmed value)` in wire order. The value borrows from
     /// the response, so a field handed to the matcher costs no copy.
     headers: Vec<(String, &'a str)>,
@@ -649,7 +692,21 @@ impl<'a> HttpResponse<'a> {
             }
         }
 
-        Some(HttpResponse { headers, body })
+        let status = head
+            .split_whitespace()
+            .nth(1)
+            .and_then(|code| code.parse().ok());
+        Some(HttpResponse {
+            status,
+            headers,
+            body,
+        })
+    }
+
+    /// Whether this is a redirect, whose body is the server's note about the
+    /// hop rather than a page of the site's.
+    fn is_redirect(&self) -> bool {
+        self.status.is_some_and(|code| (300..400).contains(&code))
     }
 
     /// Every header name this response carries, plus the names it *mentions* in
@@ -764,6 +821,39 @@ mod tests {
         analyze(port, banner)
             .into_iter()
             .find_map(|evidence| evidence.extrainfo)
+    }
+
+    /// The page a redirect serves is the server's note about the hop, not an
+    /// application's own, and its title says so: `301 Moved Permanently` is
+    /// what nginx titles every redirect it serves. Where the redirect leads
+    /// somewhere this scan does not go, where it leads is the finding, and it
+    /// names a site the address serves under another name.
+    #[test]
+    fn a_redirect_off_the_port_is_recorded_and_its_title_is_not_a_product() {
+        let nginx = "HTTP/1.1 301 Moved Permanently\r\nServer: nginx/1.24.0\r\n\
+                     Location: http://box.example/\r\nContent-Type: text/html\r\n\r\n\
+                     <html><head><title>301 Moved Permanently</title></head></html>";
+        let evidence = analyze(80, nginx);
+
+        assert!(
+            evidence
+                .iter()
+                .all(|e| e.extrainfo.as_deref() != Some("301 Moved Permanently")),
+            "the redirect's title was taken for an application: {evidence:?}"
+        );
+        assert_eq!(
+            extrainfo(80, nginx).as_deref(),
+            Some("redirects to http://box.example/")
+        );
+    }
+
+    /// A redirect that stays on the port is followed, and the page it leads
+    /// to speaks for itself; where the hop leads is nothing a reader needs.
+    #[test]
+    fn a_redirect_that_stays_on_the_port_is_not_recorded() {
+        let relative = "HTTP/1.1 302 Found\r\nLocation: /login\r\n\r\n\
+                        <html><head><title>Found</title></head></html>";
+        assert_eq!(extrainfo(80, relative), None);
     }
 
     /// A media server that names no product anywhere in its response, and then
