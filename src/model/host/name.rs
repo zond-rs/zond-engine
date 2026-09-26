@@ -140,11 +140,16 @@ pub enum NameSource {
     /// serve. Recorded only where it differs from the realm the request named,
     /// since a KDC otherwise repeats what it was asked about.
     Kerberos,
+    /// The primary domain an SMB1 server names in answer to a session setup
+    /// (MS-CIFS 2.2.4.53.2), the NetBIOS name of the domain or workgroup it
+    /// belongs to. Asked of a server that speaks SMB1, and of one whose SMB2
+    /// answer named no Windows build.
+    Smb,
 }
 
 impl NameSource {
     /// Every source this build knows, in declaration order.
-    pub const ALL: &'static [Self] = &[Self::Ntlm, Self::Ldap, Self::Kerberos];
+    pub const ALL: &'static [Self] = &[Self::Ntlm, Self::Ldap, Self::Kerberos, Self::Smb];
 
     /// How a source is written for a person to read.
     ///
@@ -156,6 +161,7 @@ impl NameSource {
             Self::Ntlm => "NTLM",
             Self::Ldap => "LDAP",
             Self::Kerberos => "Kerberos",
+            Self::Smb => "SMB",
         }
     }
 }

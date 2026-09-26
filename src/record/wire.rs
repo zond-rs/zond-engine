@@ -228,6 +228,7 @@ pub fn name_source_name(source: NameSource) -> &'static str {
         NameSource::Ntlm => "ntlm",
         NameSource::Ldap => "ldap",
         NameSource::Kerberos => "kerberos",
+        NameSource::Smb => "smb",
     }
 }
 
@@ -237,6 +238,7 @@ pub fn name_source(name: &str) -> Option<NameSource> {
         "ntlm" => NameSource::Ntlm,
         "ldap" => NameSource::Ldap,
         "kerberos" => NameSource::Kerberos,
+        "smb" => NameSource::Smb,
         _ => return None,
     })
 }

@@ -42,13 +42,15 @@
 //! What either reads is matched against the corpus like any banner, so the
 //! rules that name releases live in `assets/fingerprinting` beside the probe.
 //!
-//! The NTLM challenge also carries the machine's names and its domain's, which
-//! are recorded on the host as [`HostName`](crate::model::host::HostName)s
-//! rather than matched: they are a report's to mask, and a service's
-//! description is not masked. See [`framed::smb2_names`].
+//! The NTLM challenge also carries the machine's names and its domain's, and
+//! an SMB1 session setup the domain's, which are recorded on the host as
+//! [`HostName`](crate::model::host::HostName)s rather than matched: they are a
+//! report's to mask, and a service's description is not masked. See
+//! [`framed::smb2_names`] and [`framed::smb_session_names`].
 //!
 //! [`framed::smb2_exchange`]: super::framed::smb2_exchange
 //! [`framed::smb2_names`]: super::framed::smb2_names
+//! [`framed::smb_session_names`]: super::framed::smb_session_names
 //! [`framed::smb_session_setup`]: super::framed::smb_session_setup
 
 use std::net::SocketAddr;
@@ -138,7 +140,8 @@ impl Analyzer for SmbAnalyzer {
     }
 
     /// CPU phase. What each exchange read, matched against the corpus, and the
-    /// names the NTLM challenge gave for the machine.
+    /// names the NTLM challenge and the SMB1 session setup gave for the
+    /// machine.
     ///
     /// The names travel as an observation of their own, at the lowest
     /// confidence, because they identify the machine and nothing about the
@@ -164,7 +167,11 @@ impl Analyzer for SmbAnalyzer {
         let names: Vec<_> = collected
             .frames
             .iter()
-            .flat_map(|frame| super::framed::smb2_names(frame))
+            .flat_map(|frame| {
+                let mut names = super::framed::smb2_names(frame);
+                names.extend(super::framed::smb_session_names(frame));
+                names
+            })
             .collect();
         if !names.is_empty() {
             evidence.push(Evidence::new(self.id(), Confidence::Heuristic).with_names(names));
@@ -797,38 +804,48 @@ mod tests {
         );
     }
 
+    /// An SMB1 message for `command` behind its NetBIOS header, succeeding,
+    /// with its strings in UTF-16 where `unicode` says so.
+    fn smb1(command: u8, unicode: bool, words: &[u8], bytes: &[u8]) -> Vec<u8> {
+        let mut message = b"\xffSMB".to_vec();
+        message.push(command);
+        message.extend_from_slice(&[0; 4]); // status
+        message.push(0x98); // flags
+        let flags2: u16 = if unicode { 0xc801 } else { 0x4801 };
+        message.extend_from_slice(&flags2.to_le_bytes());
+        message.resize(32, 0);
+        message.push((words.len() / 2) as u8);
+        message.extend_from_slice(words);
+        message.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+        message.extend_from_slice(bytes);
+        framed_message(&message)
+    }
+
+    /// `text` in UTF-16 with its terminator.
+    fn utf16(text: &str) -> Vec<u8> {
+        text.encode_utf16()
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    }
+
+    /// An accepted SMB1 session setup (MS-CIFS 2.2.4.53.2) naming `strings`
+    /// in UTF-16, behind the byte that pads them to an even offset.
+    fn session_naming(strings: &[&str]) -> Vec<u8> {
+        let mut bytes = vec![0u8]; // pad to an even offset
+        for text in strings {
+            bytes.extend(utf16(text));
+        }
+        smb1(0x73, true, &[0xff, 0, 0, 0, 0, 0], &bytes)
+    }
+
     /// A server from before SMB2 answers the probe in SMB1 and is asked for a
     /// session in SMB1, whose answer names its operating system as it did
     /// before SMB2 was asked for.
     #[tokio::test]
     async fn a_server_that_speaks_only_smb1_still_names_its_system() {
-        /// An SMB1 header for `command`, Unicode strings, success.
-        fn smb1(command: u8, words: &[u8], bytes: &[u8]) -> Vec<u8> {
-            let mut message = b"\xffSMB".to_vec();
-            message.push(command);
-            message.extend_from_slice(&[0; 4]); // status
-            message.push(0x98); // flags
-            message.extend_from_slice(&0xc801u16.to_le_bytes()); // flags2
-            message.resize(32, 0);
-            message.push((words.len() / 2) as u8);
-            message.extend_from_slice(words);
-            message.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
-            message.extend_from_slice(bytes);
-            framed_message(&message)
-        }
-        let utf16 = |text: &str| -> Vec<u8> {
-            text.encode_utf16()
-                .chain([0])
-                .flat_map(u16::to_le_bytes)
-                .collect()
-        };
-        let mut names = vec![0u8]; // pad to an even offset
-        for name in ["Windows 5.1", "Windows 2000 LAN Manager", "WORKGROUP"] {
-            names.extend(utf16(name));
-        }
-
-        let negotiated = smb1(0x72, &[0, 0], &[]);
-        let session = smb1(0x73, &[0xff, 0, 0, 0, 0, 0], &names);
+        let negotiated = smb1(0x72, true, &[0, 0], &[]);
+        let session = session_naming(&["Windows 5.1", "Windows 2000 LAN Manager", "WORKGROUP"]);
         let addr = smb_server(negotiated.clone(), [negotiated, session].concat()).await;
 
         let identified = fingerprint_445(addr).await;
@@ -839,5 +856,94 @@ mod tests {
             .iter()
             .find_map(|os| os.product.as_deref());
         assert_eq!(os, Some("Windows XP"));
+    }
+
+    /// **The domain an SMB1 server names reaches its host as a name, masked
+    /// where a report masks, and never the text the corpus matches.** Over
+    /// sockets end to end, as a scan meets a server from before SMB2.
+    ///
+    /// The domain names the organisation. Offered to the corpus as text, any
+    /// rule capturing it would carry it into the service's description, which
+    /// a redacted report does not mask.
+    #[tokio::test]
+    async fn an_smb1_server_s_domain_reaches_its_host_masked_and_not_its_description() {
+        use crate::export::schema::HostDto;
+        use crate::export::{ExportOptions, Redaction};
+        use crate::model::host::Host;
+
+        let negotiated = smb1(0x72, true, &[0, 0], &[]);
+        let session = session_naming(&["Windows 5.1", "Windows 2000 LAN Manager", "CORPDOM"]);
+        let addr = smb_server(negotiated.clone(), [negotiated, session].concat()).await;
+
+        let identified = fingerprint_445(addr).await;
+        let mut host = Host::new(addr.ip());
+        identified.about_the_host.apply(&mut host);
+        let render = |options: ExportOptions| {
+            serde_json::to_value(HostDto::new(&host, &options)).expect("a host renders")
+        };
+        assert_eq!(
+            render(ExportOptions::new())["names"],
+            serde_json::json!([{"source": "smb", "kind": "netbios_domain", "name": "CORPDOM"}])
+        );
+        let masked = render(ExportOptions::new().with_redaction(Redaction::Standard)).to_string();
+        assert!(
+            !masked.contains("CORPDOM") && masked.contains(r#""source":"smb""#),
+            "the domain survived redaction: {masked}"
+        );
+    }
+
+    /// Each string is the one its position makes it. A server that sends its
+    /// operating system empty still has its LAN manager read as the LAN
+    /// manager and its domain as the domain, rather than each moved up one.
+    #[test]
+    fn a_session_setup_s_strings_are_read_by_position() {
+        let stream = session_naming(&["", "Samba 3.0.37", "CORPDOM"]);
+        assert_eq!(framed::smb_session_setup(&stream), ["Samba 3.0.37"]);
+        assert_eq!(
+            framed::smb_session_names(&stream),
+            [HostName::new(NameKind::NetbiosDomain, NameSource::Smb, "CORPDOM").expect("a name")]
+        );
+
+        // No domain at all is none recorded, rather than the LAN manager read
+        // as one.
+        let stream = session_naming(&["Unix", "Samba 3.0.37"]);
+        assert_eq!(framed::smb_session_setup(&stream), ["Unix", "Samba 3.0.37"]);
+        assert!(framed::smb_session_names(&stream).is_empty());
+
+        // And a reply cut short anywhere is read as far as it goes.
+        let stream = session_naming(&["Windows 5.1", "Windows 2000 LAN Manager", "CORPDOM"]);
+        for end in 0..stream.len() {
+            let _ = framed::smb_session_setup(&stream[..end]);
+            let _ = framed::smb_session_names(&stream[..end]);
+        }
+    }
+
+    /// The two other layouts a server may answer in: strings in the OEM
+    /// character set, which take no padding, and the extended-security form
+    /// (MS-SMB 2.2.4.6.2), whose security blob comes before them.
+    #[test]
+    fn a_session_setup_is_read_in_oem_strings_and_behind_a_security_blob() {
+        let oem = smb1(
+            0x73,
+            false,
+            &[0xff, 0, 0, 0, 0, 0],
+            b"Unix\0Samba 3.0.37\0CORPDOM\0",
+        );
+        assert_eq!(framed::smb_session_setup(&oem), ["Unix", "Samba 3.0.37"]);
+        assert_eq!(framed::smb_session_names(&oem)[0].name(), "CORPDOM");
+
+        // Four words, the last the blob's length; seven bytes of blob leave
+        // the strings at an even offset, so no padding follows it.
+        let blob = [0xa1, 0x05, 0x30, 0x03, 0x0a, 0x01, 0x00];
+        let mut bytes = blob.to_vec();
+        for text in ["Windows 5.1", "Windows 2000 LAN Manager", "CORPDOM"] {
+            bytes.extend(utf16(text));
+        }
+        let extended = smb1(0x73, true, &[0xff, 0, 0, 0, 0, 0, 7, 0], &bytes);
+        assert_eq!(
+            framed::smb_session_setup(&extended),
+            ["Windows 5.1", "Windows 2000 LAN Manager"]
+        );
+        assert_eq!(framed::smb_session_names(&extended)[0].name(), "CORPDOM");
     }
 }

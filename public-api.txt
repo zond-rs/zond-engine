@@ -8318,6 +8318,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::name::Na
 pub zond_engine::model::host::name::NameSource::Kerberos
 pub zond_engine::model::host::name::NameSource::Ldap
 pub zond_engine::model::host::name::NameSource::Ntlm
+pub zond_engine::model::host::name::NameSource::Smb
 impl zond_engine::model::host::name::NameSource
 pub const zond_engine::model::host::name::NameSource::ALL: &'static [Self]
 pub const fn zond_engine::model::host::name::NameSource::label(self) -> &'static str
@@ -8936,6 +8937,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::name::Na
 pub zond_engine::model::host::NameSource::Kerberos
 pub zond_engine::model::host::NameSource::Ldap
 pub zond_engine::model::host::NameSource::Ntlm
+pub zond_engine::model::host::NameSource::Smb
 impl zond_engine::model::host::name::NameSource
 pub const zond_engine::model::host::name::NameSource::ALL: &'static [Self]
 pub const fn zond_engine::model::host::name::NameSource::label(self) -> &'static str

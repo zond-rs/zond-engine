@@ -974,15 +974,14 @@ pub(super) fn l2tp_control(datagram: &[u8]) -> Option<String> {
     }
 }
 
-/// The three strings an SMB1 session setup answers with.
+/// The operating system and LAN manager an SMB1 session setup answers with.
 ///
-/// A server that accepts a session names the operating system it runs, the LAN
-/// manager dialect it speaks, and the domain it belongs to:
+/// A server that accepts a session names the operating system it runs and the
+/// LAN manager dialect it speaks:
 ///
 /// ```text
 /// Windows 6.1
 /// Samba 4.17.12-Debian
-/// ZONDLAB
 /// ```
 ///
 /// Each is returned on its own, because the corpus rules are anchored at both
@@ -993,6 +992,11 @@ pub(super) fn l2tp_control(datagram: &[u8]) -> Option<String> {
 /// stops at a protocol negotiate leaves every one of them unread, since a
 /// negotiate response carries none of these: they arrive only in answer to a
 /// session setup, which is a second message on the same connection.
+///
+/// The domain the server names third is not returned. It names the
+/// organisation, which a report masks where it is asked to and a service's
+/// description does not; [`smb_session_names`] reads it as one of the host's
+/// names instead.
 ///
 /// ## Why this reads a stream rather than a datagram
 ///
@@ -1007,61 +1011,164 @@ pub(super) fn l2tp_control(datagram: &[u8]) -> Option<String> {
 /// the ordinary answer from anything current.
 #[must_use]
 pub(super) fn smb_session_setup(stream: &[u8]) -> Vec<String> {
-    /// `SESSION_SETUP_ANDX`.
-    const SESSION_SETUP: u8 = 0x73;
-    /// The flags2 bit saying the strings are UTF-16.
-    const UNICODE: u16 = 0x8000;
-    /// The NetBIOS session header before each SMB message.
-    const NBSS_HEADER_BYTES: usize = 4;
-    const SMB_HEADER_BYTES: usize = 32;
+    SessionSetup::read(stream)
+        .map(|setup| {
+            [setup.native_os, setup.native_lan_man]
+                .into_iter()
+                .filter(|text| !text.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
-    let mut at = 0;
-    while at + NBSS_HEADER_BYTES <= stream.len() {
-        // A NetBIOS length is three bytes, big-endian, behind a message type.
-        let length =
-            u32::from_be_bytes([0, stream[at + 1], stream[at + 2], stream[at + 3]]) as usize;
-        let Some(message) = stream.get(at + NBSS_HEADER_BYTES..at + NBSS_HEADER_BYTES + length)
-        else {
-            break;
-        };
-        at += NBSS_HEADER_BYTES + length;
+/// The domain an SMB1 session setup names, as the NetBIOS name of the domain
+/// or workgroup the server belongs to.
+///
+/// Empty where no session setup was accepted, and where the server named no
+/// domain.
+#[must_use]
+pub(super) fn smb_session_names(stream: &[u8]) -> Vec<HostName> {
+    SessionSetup::read(stream)
+        .and_then(|setup| {
+            HostName::new(
+                NameKind::NetbiosDomain,
+                NameSource::Smb,
+                &setup.primary_domain,
+            )
+        })
+        .into_iter()
+        .collect()
+}
 
-        if !message.starts_with(b"\xffSMB") || message.get(4) != Some(&SESSION_SETUP) {
-            continue;
-        }
-        if message.len() < SMB_HEADER_BYTES + 3 {
-            continue;
-        }
-        // A non-zero status is a refusal, and the fields behind it are absent.
-        if u32::from_le_bytes([message[5], message[6], message[7], message[8]]) != 0 {
-            continue;
-        }
+/// The three strings of an accepted SMB1 `SESSION_SETUP_ANDX` response, each
+/// trimmed, and empty where the server sent it empty or left it out.
+struct SessionSetup {
+    /// `NativeOS`, the operating system the server runs.
+    native_os: String,
+    /// `NativeLanMan`, the LAN manager it speaks.
+    native_lan_man: String,
+    /// `PrimaryDomain`, the domain or workgroup it belongs to.
+    primary_domain: String,
+}
 
-        let unicode = u16::from_le_bytes([message[10], message[11]]) & UNICODE != 0;
-        // The parameter block: a word count, that many words, then a byte count.
-        let words = message[SMB_HEADER_BYTES] as usize;
-        let bytes_at = SMB_HEADER_BYTES + 1 + words * 2;
-        let (Some(low), Some(high)) = (message.get(bytes_at), message.get(bytes_at + 1)) else {
-            continue;
-        };
-        let count = u16::from_le_bytes([*low, *high]) as usize;
-        let Some(field) = message.get(bytes_at + 2..bytes_at + 2 + count) else {
-            continue;
-        };
+impl SessionSetup {
+    /// The first accepted session setup in `stream`, read by position.
+    ///
+    /// MS-CIFS 2.2.4.53.2 lays the response out as three words, a byte count,
+    /// and then `NativeOS`, `NativeLanMan` and `PrimaryDomain` in that order,
+    /// each ended by a NUL, behind one byte of padding where the strings are
+    /// UTF-16 and would otherwise start at an odd offset from the header. The
+    /// extended-security form, MS-SMB 2.2.4.6.2, adds a fourth word giving the
+    /// length of a security blob that comes before the padding. Read by
+    /// position because the position is what says which string is which: a
+    /// server that sends its operating system empty would otherwise have its
+    /// LAN manager read as the operating system, and its domain as the LAN
+    /// manager.
+    fn read(stream: &[u8]) -> Option<Self> {
+        /// `SESSION_SETUP_ANDX`.
+        const SESSION_SETUP: u8 = 0x73;
+        /// The flags2 bit saying the strings are UTF-16.
+        const UNICODE: u16 = 0x8000;
+        /// The NetBIOS session header before each SMB message.
+        const NBSS_HEADER_BYTES: usize = 4;
+        const SMB_HEADER_BYTES: usize = 32;
+        /// The word counts of the two forms: MS-CIFS 2.2.4.53.2 and, with a
+        /// security blob, MS-SMB 2.2.4.6.2.
+        const PLAIN_WORDS: u8 = 3;
+        const EXTENDED_WORDS: u8 = 4;
 
-        let names = match unicode {
-            true => utf16_strings(field),
-            false => field
-                .split(|byte| *byte == 0)
-                .map(|part| String::from_utf8_lossy(part).trim().to_string())
-                .filter(|part| !part.is_empty())
-                .collect(),
-        };
-        if !names.is_empty() {
-            return names;
+        let mut at = 0;
+        while at + NBSS_HEADER_BYTES <= stream.len() {
+            // A NetBIOS length is three bytes, big-endian, behind a message type.
+            let length =
+                u32::from_be_bytes([0, stream[at + 1], stream[at + 2], stream[at + 3]]) as usize;
+            let Some(message) = stream.get(at + NBSS_HEADER_BYTES..at + NBSS_HEADER_BYTES + length)
+            else {
+                break;
+            };
+            at += NBSS_HEADER_BYTES + length;
+
+            if !message.starts_with(b"\xffSMB") || message.get(4) != Some(&SESSION_SETUP) {
+                continue;
+            }
+            if message.len() < SMB_HEADER_BYTES + 3 {
+                continue;
+            }
+            // A non-zero status is a refusal, and the fields behind it are absent.
+            if u32::from_le_bytes([message[5], message[6], message[7], message[8]]) != 0 {
+                continue;
+            }
+
+            let unicode = u16::from_le_bytes([message[10], message[11]]) & UNICODE != 0;
+            let word = |index: usize| {
+                let at = SMB_HEADER_BYTES + 1 + index * 2;
+                Some(u16::from_le_bytes([*message.get(at)?, *message.get(at + 1)?]) as usize)
+            };
+            // The parameter block: a word count, that many words, then a byte
+            // count and the bytes it counts.
+            let words = message[SMB_HEADER_BYTES];
+            let blob = match words {
+                PLAIN_WORDS => 0,
+                EXTENDED_WORDS => word(3)?,
+                _ => continue,
+            };
+            let count = word(usize::from(words))?;
+            let bytes_at = SMB_HEADER_BYTES + 1 + usize::from(words) * 2 + 2;
+            let Some(bytes) = message.get(bytes_at..bytes_at + count) else {
+                continue;
+            };
+
+            // The padding is counted from the start of the SMB header, which
+            // is where `bytes_at` is counted from as well.
+            let mut strings_at = blob;
+            if unicode && (bytes_at + strings_at) % 2 == 1 {
+                strings_at += 1;
+            }
+            let mut strings = bytes.get(strings_at..).unwrap_or_default();
+            let mut next = || -> String {
+                let (text, rest) = match unicode {
+                    true => utf16_string(strings),
+                    false => oem_string(strings),
+                };
+                strings = rest;
+                text.trim().to_string()
+            };
+            return Some(Self {
+                native_os: next(),
+                native_lan_man: next(),
+                primary_domain: next(),
+            });
         }
+        None
     }
-    Vec::new()
+}
+
+/// The NUL-terminated UTF-16 string at the start of `bytes`, and what follows
+/// its terminator. A string the field ends before terminating runs to the end.
+fn utf16_string(bytes: &[u8]) -> (String, &[u8]) {
+    let (units, _) = bytes.as_chunks::<2>();
+    let end = units.iter().position(|unit| *unit == [0, 0]);
+    let text: Vec<u16> = units[..end.unwrap_or(units.len())]
+        .iter()
+        .map(|unit| u16::from_le_bytes(*unit))
+        .collect();
+    let rest = match end {
+        Some(end) => &bytes[(end + 1) * 2..],
+        None => &[],
+    };
+    (String::from_utf16_lossy(&text), rest)
+}
+
+/// The NUL-terminated OEM string at the start of `bytes`, and what follows its
+/// terminator. A string the field ends before terminating runs to the end.
+fn oem_string(bytes: &[u8]) -> (String, &[u8]) {
+    match bytes.iter().position(|byte| *byte == 0) {
+        Some(end) => (
+            String::from_utf8_lossy(&bytes[..end]).into_owned(),
+            &bytes[end + 1..],
+        ),
+        None => (String::from_utf8_lossy(bytes).into_owned(), &[]),
+    }
 }
 
 /// What an SMB2 server says in answer to a negotiate and a session setup that
@@ -1297,31 +1404,6 @@ fn ntlm_target_names(token: &[u8]) -> Vec<HostName> {
         ));
     }
     names
-}
-
-/// The NUL-terminated UTF-16 strings in `field`, in order.
-///
-/// A server may pad to an even offset before the first, so a leading odd byte is
-/// skipped rather than folded into the text.
-fn utf16_strings(field: &[u8]) -> Vec<String> {
-    let field = match field.first() {
-        Some(0) if field.len() % 2 == 1 => &field[1..],
-        _ => field,
-    };
-
-    let units: Vec<u16> = field
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|pair| u16::from_le_bytes(*pair))
-        .collect();
-
-    units
-        .split(|unit| *unit == 0)
-        .filter(|part| !part.is_empty())
-        .map(|part| String::from_utf16_lossy(part).trim().to_string())
-        .filter(|part| !part.is_empty())
-        .collect()
 }
 
 /// The `Server` value of an RTSP response.

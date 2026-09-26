@@ -1636,8 +1636,22 @@ mod framed_replies {
         let texts = crate::fingerprint::framed::smb_session_setup(&hex(SAMBA));
         assert_eq!(
             texts,
-            vec!["Windows 6.1", "Samba 4.17.12-Debian", "ZONDLAB"],
+            vec!["Windows 6.1", "Samba 4.17.12-Debian"],
             "each field on its own, since the rules anchor at both ends of one"
+        );
+        // The workgroup is the host's name, and never text a rule could
+        // capture into a service's description.
+        let names = crate::fingerprint::framed::smb_session_names(&hex(SAMBA));
+        assert_eq!(
+            names
+                .iter()
+                .map(|name| (name.kind(), name.source(), name.name()))
+                .collect::<Vec<_>>(),
+            [(
+                crate::model::host::NameKind::NetbiosDomain,
+                crate::model::host::NameSource::Smb,
+                "ZONDLAB"
+            )]
         );
 
         // The imported rule reads the release and stops at the packager's
