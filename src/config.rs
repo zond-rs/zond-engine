@@ -553,6 +553,13 @@ pub enum ServiceDetection {
     /// That last part is what identifies the long tail: an open port on a number
     /// nobody registered is most often an HTTP server, and one request names it.
     ///
+    /// A port that answers none of that, in the clear or through TLS, is then
+    /// asked the likeliest of the questions other services registered, the
+    /// bottom of the scale [`probe_intensity`](Self::probe_intensity) reaches.
+    /// What such a port most often turns out to be is a database moved off its
+    /// number, which speaks only when spoken to in its own protocol. Each costs
+    /// a connection and a read, and only on a port that said nothing else.
+    ///
     /// The default, because it is both the most informative level and, against
     /// an unrecognised port, the *fastest*. The alternative to asking is waiting
     /// for a greeting that never comes and then guessing at TLS, which costs two
@@ -562,10 +569,11 @@ pub enum ServiceDetection {
     Probe,
     /// Level 3. Everything above, and then every question the corpus has.
     ///
-    /// A port that walked the whole collection and still said nothing gets the
-    /// probes authored for *other* services, in rarity order. That is what
-    /// reaches a service which speaks only when spoken to and is not on the
-    /// port its own probe is registered against.
+    /// A port that walked the whole collection and still said nothing gets
+    /// every probe authored for *other* services, in rarity order, where the
+    /// default asks only the likeliest of them. That is what reaches a service
+    /// which speaks only when spoken to, is not on the port its own probe is
+    /// registered against, and is rarer than the default's guesses.
     ///
     /// Paid only where everything else drew a blank, which on an ordinary host
     /// is a port or two, and costing a connection and a round trip per probe.
@@ -649,9 +657,11 @@ impl ServiceDetection {
     /// on; see [`Probe::rarity`](crate::fingerprint::Probe::rarity). Zero
     /// reaches nothing, which is what every level below [`Probe`] wants.
     ///
-    /// The default stops at 1 because only the bottom of the scale is authored
-    /// so far. It is a floor to raise as the corpus fills in, not a judgement
-    /// that rarity 2 is too expensive.
+    /// The default reaches 1, the questions a port silent to everything else
+    /// most often answers, and the thorough level the whole scale. The default
+    /// stops there because only the bottom of the scale is authored so far. It
+    /// is a floor to raise as the corpus fills in, not a judgement that rarity
+    /// 2 is too expensive.
     ///
     /// ```
     /// use zond_engine::config::ServiceDetection;
