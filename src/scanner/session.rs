@@ -1957,6 +1957,9 @@ pub struct ScanContext {
     /// The TCP ports this scan connects to and listens on and sends nothing;
     /// see [`listens_only`](Self::listens_only).
     pub(crate) listen_only: Arc<BTreeSet<u16>>,
+    /// The ports a sitting continuing a job excludes beyond what the job's
+    /// plan is numbered without; see [`may_ask`](Self::may_ask).
+    withheld_ports: Arc<crate::model::port::PortSet>,
     /// The name each address was asked for by, where a target named a host;
     /// see [`ZondConfig::target_names`](crate::config::ZondConfig::target_names).
     target_names: Arc<BTreeMap<IpAddr, Arc<str>>>,
@@ -2062,6 +2065,19 @@ impl ScanContext {
     /// [the machine an address names](crate::model::exclusion#an-address-names-a-machine).
     pub fn may_probe(&self, address: &IpAddr) -> bool {
         !self.exclusions.excludes(address) && !self.hardware.withholds(address)
+    }
+
+    /// Whether this scan may send `target` its probe: [`may_probe`](Self::may_probe)
+    /// its address, and its port is not one this sitting withholds.
+    ///
+    /// A port the caller excluded is out of the plan before anything numbers
+    /// it. One a sitting continuing a job excludes beyond what the job did
+    /// cannot be, since the job's plan is numbered without the recorded ports
+    /// alone and taking another out would move every target after it; the walk
+    /// passes over its targets instead, settling each as withheld. See
+    /// [`JobOptions`](crate::journal::manifest::JobOptions).
+    pub(crate) fn may_ask(&self, target: &crate::model::target::Target) -> bool {
+        self.may_probe(&target.ip) && !self.withheld_ports.contains(target.port, target.protocol)
     }
 
     /// The single place a host finding enters the store.
@@ -2995,6 +3011,7 @@ impl ScanContext {
                 continue;
             }
             host.withhold_intermediaries(keep);
+            host.withhold_ports(&self.withheld_ports);
 
             let key = host.scoped_ip();
             // What the earlier sitting drew identifying these ports ended
@@ -3235,6 +3252,7 @@ pub struct SessionBuilder {
     send_source: Vec<IpAddr>,
     /// `None` for the default, [`RAW_PRINT_PORTS`](crate::config::RAW_PRINT_PORTS).
     listen_only: Option<BTreeSet<u16>>,
+    withheld_ports: crate::model::port::PortSet,
     /// The neighbour tables the exclusions are read against for the machines
     /// they name, in place of the host's own; `None` to read the host's.
     neighbours: Option<Vec<(IpAddr, Option<MacAddr>)>>,
@@ -3459,6 +3477,13 @@ impl SessionBuilder {
         self
     }
 
+    /// The ports a sitting continuing a job sends nothing to beyond those the
+    /// job's plan is numbered without; see [`ScanContext::may_ask`].
+    pub(crate) fn withholding_ports(mut self, ports: crate::model::port::PortSet) -> Self {
+        self.withheld_ports = ports;
+        self
+    }
+
     /// Opens the session and the context.
     ///
     /// This is where a scan's own clock starts, so a caller holding a builder
@@ -3555,6 +3580,7 @@ impl SessionBuilder {
                 self.listen_only
                     .unwrap_or_else(|| crate::config::RAW_PRINT_PORTS.into_iter().collect()),
             ),
+            withheld_ports: Arc::new(self.withheld_ports),
             target_names: Arc::new(
                 self.target_names
                     .into_iter()

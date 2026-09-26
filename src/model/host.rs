@@ -32,7 +32,7 @@
 use crate::model::finding::{ClaimId, Finding, MAX_FINDINGS_PER_SUBJECT};
 use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::mac::MacAddr;
-use crate::model::port::{Port, PortState, Protocol};
+use crate::model::port::{Port, PortSet, PortState, Protocol};
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     net::IpAddr,
@@ -67,7 +67,7 @@ pub use telemetry::HostTelemetry;
 /// an answer, records a thousand ports, so a cap there drops the last
 /// twenty-four without a word and marks a domestic router as a tarpit. One
 /// protocol's port space is not the largest port set a person can write
-/// either: [`PortSet`](crate::model::port::PortSet) spells the UDP half, so
+/// either: [`PortSet`] spells the UDP half, so
 /// `1-65535,u:1-65535` is one specification and twice that number, and a cap
 /// there drops half of it.
 ///
@@ -985,6 +985,26 @@ impl Host {
         }
 
         routers || senders
+    }
+
+    /// Drops every port of this record that `ports` holds.
+    ///
+    /// For a record restored into a sitting that sends those ports nothing,
+    /// the port half of what [`retain_ips`](Self::retain_ips) is for an
+    /// address: kept, a port would be handed to every pass that follows the
+    /// probes, each of which works from the ports a host holds and would open
+    /// a connection to it.
+    pub(crate) fn withhold_ports(&mut self, ports: &PortSet) {
+        if ports.is_empty() {
+            return;
+        }
+        self.ports
+            .retain(|&(number, protocol), _| !ports.contains(number, protocol));
+        self.open_ports = self
+            .ports
+            .values()
+            .filter(|port| port.state() == PortState::Open)
+            .count();
     }
 
     /// Records the name this host resolved to, replacing any already recorded.

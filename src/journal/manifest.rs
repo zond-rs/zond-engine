@@ -83,6 +83,7 @@ use crate::evasion::EvasionProfile;
 use crate::model::exclusion::Exclusions;
 use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;
+use crate::model::port::PortSet;
 use crate::model::target::TargetMap;
 use crate::model::technique::TcpScanTechnique;
 use crate::record::{PlanRecord, SettingsRecord, wire};
@@ -756,19 +757,31 @@ impl std::error::Error for PlanChanged {}
 ///
 /// # What is recorded, and what a later sitting may change
 ///
-/// Four kinds of option, told apart by what changing one between two sittings
+/// Five kinds of option, told apart by what changing one between two sittings
 /// would do to the job.
 ///
 /// **What the job asks, and what its answers mean.** The TCP and SCTP
 /// techniques, the retry policy, whether a port scan asks first whether a host
 /// is there, the passes beyond the port scan (operating system and service
 /// identification, the detection ceiling, TLS enumeration, route tracing, filter
-/// characterisation and the IP protocol pass), the ports held back from probing
-/// and the ports excluded outright, the evasion profile and an idle scan's zombie. A sitting under a different
-/// one answers a different question, and its answers would stand in one report
-/// beside the first sitting's as though they were answers to the same one.
-/// These are restored, and a sitting that asks for a different one is refused;
-/// see [`check`](Self::check).
+/// characterisation and the IP protocol pass), the ports held back from
+/// probing, the evasion profile and an idle scan's zombie. A sitting under a
+/// different one answers a different question, and its answers would stand in
+/// one report beside the first sitting's as though they were answers to the
+/// same one. These are restored, and a sitting that asks for a different one is
+/// refused; see [`check`](Self::check).
+///
+/// **Which ports the job sends nothing.** The ports excluded outright. An
+/// exclusion only narrows what a scan asks, and it is how a device that cannot
+/// take a probe is kept from one, so a later sitting may exclude more than the
+/// first did and may not exclude less: restored as the union of the recorded
+/// set and the caller's, and a sitting that drops one is refused. The job's
+/// plan stays numbered without the recorded set alone, since a numbering
+/// without the added ports too would move every target after one of them to
+/// another position. A sitting sends its added ones nothing, settling each
+/// target at them it walks past as withheld, and drops them from the hosts it
+/// restores, so no pass after its probes reaches one either; a target settled
+/// so is owed to no later sitting, whatever that one excludes.
 ///
 /// **Who each address is asked as.** The name a target gave an address, which
 /// a web port is asked for by. Restored, so a sitting given nothing but the
@@ -824,7 +837,8 @@ impl JobOptions {
     }
 
     /// Restores every recorded option onto `cfg`, leaving the ones that are not
-    /// recorded as they are.
+    /// recorded as they are, and adding the recorded excluded ports to the ones
+    /// `cfg` already excludes; see the type on why a sitting may exclude more.
     ///
     /// A caller continuing a job by its id starts from here, and lays whatever
     /// its user set for this sitting on top: what the job asks is then checked
@@ -845,7 +859,7 @@ impl JobOptions {
         cfg.ip_protocols = recorded.ip_protocols.into_iter().collect();
         cfg.tls_enumeration = recorded.tls_enumeration;
         cfg.listen_only_ports = recorded.listen_only_ports.into_iter().collect();
-        cfg.excluded_ports = recorded.excluded_ports;
+        cfg.excluded_ports = recorded.excluded_ports.union(&cfg.excluded_ports);
         cfg.evasion = recorded
             .evasion
             .map(|evasion| EvasionProfile {
@@ -870,11 +884,18 @@ impl JobOptions {
         cfg.no_dns = !recorded.dns_enabled;
     }
 
+    /// The ports the job's first sitting excluded outright, which its plan is
+    /// numbered without; see the type on the ones a later sitting adds.
+    pub(crate) fn excluded_ports(&self) -> PortSet {
+        ScanSettings::from(&self.settings).excluded_ports
+    }
+
     /// Whether a sitting under `cfg` asks what this job asks, naming the first
     /// option where it does not.
     ///
     /// Only the options that decide what the job asks and what its answers
-    /// mean; the type's documentation lists them, and why the others may move.
+    /// mean, and the ports it sends nothing, of which a sitting may exclude
+    /// more; the type's documentation lists them, and why the others may move.
     /// Compared in the form the journal writes, so a value is the same value
     /// however it was read back.
     pub fn check(&self, cfg: &ZondConfig) -> Result<(), OptionChanged> {
@@ -936,7 +957,10 @@ impl JobOptions {
             ),
             (
                 "excluded_ports",
-                recorded.excluded_ports != offered.excluded_ports,
+                !self
+                    .excluded_ports()
+                    .difference(&cfg.excluded_ports)
+                    .is_empty(),
             ),
             ("evasion", recorded.evasion != offered.evasion),
             ("idle_scan", recorded.idle_scan != offered.idle_scan),
@@ -1556,10 +1580,6 @@ mod tests {
             Some("listen_only_ports")
         );
         assert_eq!(
-            changed(|cfg| cfg.excluded_ports = "9100".try_into().expect("a port")),
-            Some("excluded_ports")
-        );
-        assert_eq!(
             changed(|cfg| cfg.evasion = EvasionProfile::default().with_ttl(3)),
             Some("evasion")
         );
@@ -1579,6 +1599,37 @@ mod tests {
         ] {
             assert_eq!(changed(pace), None);
         }
+    }
+
+    /// A sitting may exclude ports the job did not, and is restored with the
+    /// job's beside its own, but one that drops a port the job excluded is
+    /// refused by that option.
+    ///
+    /// An exclusion keeps a device that cannot take a probe from one. Held to
+    /// the record like the rest, a port added between sittings is either
+    /// refused, costing the job, or overwritten by the record on restoring,
+    /// and probed; dropped, a port the job promised to spare is asked.
+    #[test]
+    fn a_sitting_may_exclude_more_ports_than_its_job_and_never_fewer() {
+        let excluding = |ports: &str| ZondConfig {
+            excluded_ports: ports.try_into().expect("ports"),
+            ..ZondConfig::default()
+        };
+        let recorded = JobOptions::of(&excluding("22"));
+
+        let mut more = excluding("9100");
+        recorded.apply_to(&mut more);
+        assert_eq!(more.excluded_ports.to_string(), "22,9100");
+        assert_eq!(recorded.check(&more), Ok(()));
+        assert_eq!(recorded.excluded_ports().to_string(), "22");
+
+        assert_eq!(
+            recorded
+                .check(&excluding("9100"))
+                .err()
+                .map(|changed| changed.option),
+            Some("excluded_ports")
+        );
     }
 
     /// The recorded plan has to survive the round trip through a manifest, or a

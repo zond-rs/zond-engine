@@ -1765,10 +1765,16 @@ pub async fn scan_with_journal(
     let cfg = &under_the_recorded_technique(&journal, cfg);
     let journal = recording_options(journal, cfg);
     // After the plan is held to the journal's, which records it as the caller
-    // named it, and before anything numbers it. The excluded ports are held to
-    // the job's by its options, so every sitting numbers what is left alike.
+    // named it, and before anything numbers it. Numbered without the ports the
+    // job excluded, so every sitting numbers what is left alike; the ones this
+    // sitting adds are passed over where they stand. See `JobOptions`.
+    let numbered_without = journal.options().map_or_else(
+        || cfg.excluded_ports.clone(),
+        crate::journal::manifest::JobOptions::excluded_ports,
+    );
+    let withheld_ports = cfg.excluded_ports.difference(&numbered_without);
     let mut target_map = target_map;
-    target_map.withhold_ports(&cfg.excluded_ports);
+    target_map.withhold_ports(&numbered_without);
     let withheld = orchestrator::withhold_unprobeable_targets(&mut target_map);
     let runs_liveness = liveness_earns_its_place(cfg, &target_map);
     let finished = journal.finished_hosts().unwrap_or_else(|e| {
@@ -1788,6 +1794,7 @@ pub async fn scan_with_journal(
         .host_probe_interval(cfg.host_probe_interval)
         .send_source(cfg.send_source.clone())
         .listening_only_to(cfg.listen_only_ports.clone())
+        .withholding_ports(withheld_ports)
         .resuming(journal.resume_point())
         .finished(finished, asked)
         .detections(detections)
@@ -3003,6 +3010,101 @@ mod tests {
         assert_eq!(
             resumed, whole,
             "the resume drew other findings than one sitting"
+        );
+    }
+
+    /// A sitting that excludes a port the job did not is continued, sends the
+    /// port nothing, neither its probe nor a pass over what an earlier sitting
+    /// found open there, and still skips what the job had settled.
+    ///
+    /// An exclusion only narrows a scan, and it is how a device that cannot
+    /// take a probe is kept from one: refused, the one way to spare the port
+    /// is to give up the job. Taken into the numbering, it would move every
+    /// target after the port to another position, and the sitting would ask
+    /// again what an earlier one settled and skip what it had not.
+    #[cfg(feature = "journal-format")]
+    #[tokio::test]
+    async fn a_resume_excluding_another_port_sends_it_nothing_and_keeps_the_numbering() {
+        use crate::journal::Journal;
+        use crate::journal::manifest::{JobOptions, Plan};
+        use crate::journal::settle::{Outcome, Settlements};
+        use crate::model::host::{Host, HostStatus};
+        use crate::model::port::{Port, PortSet, PortState, Protocol};
+        use crate::model::target::TargetSet;
+        use crate::testing::loopback::SilentPort;
+
+        let (first, second) = (SilentPort::open(), SilentPort::open());
+        // The one excluded is walked first, so a numbering without it would
+        // give the other its position.
+        let (excluded, settled) = if first.addr().port() < second.addr().port() {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "127.0.0.1".parse().expect("an address"),
+            format!("{},{}", excluded.addr().port(), settled.addr().port())
+                .parse()
+                .expect("ports"),
+        ));
+        let recorded = ZondConfig {
+            no_dns: true,
+            assume_up: true,
+            ..ZondConfig::default()
+        };
+        let plan = Plan::port_scan(&map, &recorded.exclusions, recorded.tcp_technique);
+
+        let root = journal_root("added-exclusion");
+        let mut journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
+        journal
+            .record_options(JobOptions::of(&recorded))
+            .expect("records the options");
+        // The port to be excluded found open already, and so on record for
+        // every pass after the probes to reach.
+        let mut host = Host::new("127.0.0.1".parse().expect("an address"));
+        host.set_status(HostStatus::Up);
+        host.add_port(Port::new(
+            excluded.addr().port(),
+            Protocol::Tcp,
+            PortState::Open,
+        ));
+        journal.record_hosts(&[host]).expect("records the host");
+        let settlements = Settlements::default();
+        settlements.record(Outcome::Answered { position: 1 });
+        journal.checkpoint(&settlements).expect("checkpoints");
+        let directory = journal.directory().to_path_buf();
+        journal.close().expect("closes");
+
+        let mut cfg = recorded.clone();
+        cfg.excluded_ports =
+            PortSet::try_from(excluded.addr().port().to_string().as_str()).expect("a port");
+        let (journal, _) =
+            Journal::resume(&directory, &plan, Privilege::current()).expect("resumes");
+        let (_session, task) = scan_with_journal(map, &cfg, Detections::embedded(), journal)
+            .await
+            .expect("a sitting excluding more is continued");
+        let report = task.join().await.expect("the sitting ends");
+        std::fs::remove_dir_all(&root).ok();
+
+        assert_eq!(excluded.connections(), 0, "the excluded port was asked");
+        assert_eq!(settled.connections(), 0, "a settled target was asked again");
+        assert!(
+            report
+                .hosts()
+                .flat_map(Host::ports)
+                .all(|port| port.number() != excluded.addr().port()),
+            "the excluded port is still reported"
+        );
+        assert!(
+            report
+                .phases()
+                .last()
+                .expect("the sitting's phase")
+                .settings()
+                .excluded_ports
+                .contains(excluded.addr().port(), Protocol::Tcp),
+            "the report does not say the port was excluded"
         );
     }
 

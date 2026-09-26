@@ -552,7 +552,7 @@ impl Dispatcher {
                 // walk the rest of the plan before noticing. What it leaves is
                 // unsettled, and is asked again.
                 let passes_over = self.settled.is_settled(planned.position)
-                    || !ctx.may_probe(&planned.target.ip)
+                    || !ctx.may_ask(&planned.target)
                     || self
                         .screen
                         .as_ref()
@@ -571,10 +571,12 @@ impl Dispatcher {
                 // The machine behind a named address, which the plan's
                 // subtraction by address cannot see: the neighbour tables, or
                 // a reply earlier in the scan, tied this one to a machine the
-                // exclusions name. Settled, since the policy is the job's and
-                // a resume is owed nothing here, and before the screen, which
-                // never heard it and would leave it for the next sitting.
-                if !ctx.may_probe(&planned.target.ip) {
+                // exclusions name. Or a port this sitting excludes beyond what
+                // the job's plan is numbered without. Settled, since the
+                // policy is the job's and a resume is owed nothing here, and
+                // before the screen, which never heard it and would leave it
+                // for the next sitting.
+                if !ctx.may_ask(&planned.target) {
                     ctx.record_outcome(Outcome::Withheld {
                         position: planned.position,
                     });
