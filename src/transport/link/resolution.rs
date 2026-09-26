@@ -592,10 +592,7 @@ impl UnansweredNeighbors {
 /// An [`Unresolved`](SendError::Unresolved) rather than a
 /// [`Refused`](SendError::Refused), because it is a fact about that address
 /// and not about this sender: the neighbour is not answering, so the address
-/// was asked about and not covered. A scan reads it as it reads no route, and
-/// it is the class the raw-socket path reports for the same case where the
-/// kernel says so, as macOS does with `EHOSTDOWN`, so a dead on-link host reads
-/// the same whichever backend a scan uses.
+/// was asked about and not covered. A scan reads it as it reads no route.
 ///
 /// Not [`Unroutable`](SendError::Unroutable), which a transport holding the raw
 /// socket behind this sender reads as a reason to try the socket. This one is

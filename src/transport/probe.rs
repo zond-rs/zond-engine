@@ -460,7 +460,8 @@ impl ProbeKind {
 /// response. [`Unroutable`](Self::Unroutable) and
 /// [`Unresolved`](Self::Unresolved) are facts about the destination: the
 /// address was asked about and cannot be reached from here, and the sender is
-/// still working. [`Unsupported`](Self::Unsupported) is a fact about this
+/// still working. [`HeldDown`](Self::HeldDown) is one too, for as long as the
+/// kernel holds it: asked again after that, the address may answer. [`Unsupported`](Self::Unsupported) is a fact about this
 /// transport that will be just as true for the next probe, so retrying is
 /// pointless and a scan should give up on the path. [`Refused`](Self::Refused)
 /// came from this host and may not hold next time: a full send buffer clears.
@@ -500,12 +501,31 @@ pub enum SendError {
     /// would only ask the same neighbour the same question again, at a pace and
     /// with a memory of its own that decide per probe whether it is accepted,
     /// queued or refused. See [`SendMode::Auto`] on macOS.
-    ///
-    /// Also what a kernel reports once it has given up on the neighbour itself,
-    /// as `EHOSTDOWN`, which BSD-derived stacks return for a next hop whose
-    /// resolution recently failed.
     #[error("{0}")]
     Unresolved(String),
+
+    /// The kernel would not send to this neighbour because a resolution of it
+    /// failed lately, and it will not ask again until a hold-down of its own
+    /// has passed.
+    ///
+    /// What macOS says, as `EHOSTDOWN`, to every write to an on-link neighbour
+    /// for twenty seconds, by default, after it has asked for the neighbour
+    /// five times and heard nothing (`net.link.ether.inet.host_down_time` and
+    /// `maxtries`); it asks at most once a second, and only when a write needs
+    /// it. The write it gives up on is refused with `EHOSTUNREACH`, as is
+    /// every write through a gateway it holds down, so this is the one refusal
+    /// that names a hold-down. Linux keeps none: its sockets take every write
+    /// to a neighbour it gave up on, and the write starts the asking over.
+    ///
+    /// A fact about the destination, as [`Unresolved`](Self::Unresolved) is,
+    /// and kept apart from it because it answers a different question. That
+    /// one is a resolution this sender asked for and waited out. This one is a
+    /// kernel declining to ask, on the strength of a failure it remembers from
+    /// whoever asked last, which may be another process, or a moment the
+    /// neighbour was asleep and is no longer. The same question put after the
+    /// hold-down is asked afresh.
+    #[error("{0}")]
+    HeldDown(String),
 
     /// The host would not send the packet, in its own words.
     #[error("{0}")]
@@ -542,10 +562,8 @@ impl SendError {
     /// failure says nothing about whether the destination exists.
     ///
     /// `EHOSTDOWN` has no [`ErrorKind`](std::io::ErrorKind) of its own and is
-    /// read by number. It is what macOS returns for every probe to a neighbour
-    /// whose resolution failed, for as long as it remembers the failure. Read
-    /// as a refusal, it would have a scan of one dead address report itself
-    /// broken.
+    /// read by number, as [`HeldDown`](Self::HeldDown). Read as a refusal, it
+    /// would have a scan of one dead address report itself broken.
     pub(crate) fn from_io<E: std::error::Error + 'static>(error: E) -> Self {
         let chain = || {
             std::iter::successors(Some(&error as &dyn std::error::Error), |cause| {
@@ -557,7 +575,7 @@ impl SendError {
         if chain().any(crate::system::descriptors::exhausted) {
             Self::OutOfDescriptors
         } else if chain().any(host_is_down) {
-            Self::Unresolved(error.to_string())
+            Self::HeldDown(error.to_string())
         } else if chain().any(|io| {
             matches!(
                 io.kind(),
@@ -583,18 +601,21 @@ impl SendError {
 
     /// Whether this failure is about the destination rather than about the
     /// sending host: no route to it, or no answer from the neighbour a route
-    /// leads through.
+    /// leads through, lately or just now.
     ///
     /// What separates "the scan could not run" from "that address is not
     /// reachable from here", which are reported differently and should be.
     pub fn is_unroutable(&self) -> bool {
-        matches!(self, Self::Unroutable(_) | Self::Unresolved(_))
+        matches!(
+            self,
+            Self::Unroutable(_) | Self::Unresolved(_) | Self::HeldDown(_)
+        )
     }
 }
 
 /// Whether `error` is the kernel's `EHOSTDOWN`: the next hop's address
-/// resolution failed, and the kernel is refusing sends to it rather than ask
-/// again yet.
+/// resolution failed lately, and the kernel is refusing sends to it rather
+/// than ask again yet. See [`SendError::HeldDown`].
 fn host_is_down(error: &std::io::Error) -> bool {
     #[cfg(unix)]
     {
@@ -1687,6 +1708,7 @@ mod tests {
                 SendError::Refused(why) => SendError::Refused(why.clone()),
                 SendError::Unroutable(why) => SendError::Unroutable(why.clone()),
                 SendError::Unresolved(why) => SendError::Unresolved(why.clone()),
+                SendError::HeldDown(why) => SendError::HeldDown(why.clone()),
                 SendError::OutOfDescriptors => SendError::OutOfDescriptors,
             })
         }
@@ -1947,15 +1969,17 @@ mod filter_conformance {
         }
     }
 
-    /// The kernel's own word for a neighbour it asked for and gave up on is a
-    /// fact about the destination, the same one the frame path reaches by
-    /// asking itself.
+    /// The kernel's own word for a neighbour it gave up on lately is a fact
+    /// about the destination, and named as the hold-down it is rather than as
+    /// a resolution this sender waited out.
     ///
     /// macOS answers every probe to such a neighbour with `EHOSTDOWN` for as
     /// long as it remembers the failure, and `std` has no error kind for it, so
     /// it is the one case read by number. Read as a refusal it would file a
-    /// dead address as a scanner that broke. A full send buffer is the case
-    /// that must stay a refusal beside it, as it is this host's.
+    /// dead address as a scanner that broke; read as an unanswered resolution,
+    /// a failure from before the scan asked would stand as the scan's verdict.
+    /// A full send buffer is the case that must stay a refusal beside it, as
+    /// it is this host's.
     #[cfg(unix)]
     #[test]
     fn a_neighbour_the_kernel_gave_up_on_is_not_a_broken_send_path() {
@@ -1964,8 +1988,8 @@ mod filter_conformance {
 
         let error = SendError::from_io(Error::from_raw_os_error(libc::EHOSTDOWN));
         assert!(
-            matches!(error, SendError::Unresolved(_)),
-            "an unanswered resolution: {error:?}"
+            matches!(error, SendError::HeldDown(_)),
+            "the kernel's hold-down: {error:?}"
         );
         assert!(error.is_unroutable(), "and about the destination");
 

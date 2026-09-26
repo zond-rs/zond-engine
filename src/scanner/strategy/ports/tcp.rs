@@ -1463,6 +1463,104 @@ mod tests {
         );
     }
 
+    /// A probe the kernel refused for a hold-down on its host's neighbour is
+    /// held through the hold-down and then sent, and so is every probe to the
+    /// host behind it, without being put to the kernel to be refused.
+    ///
+    /// Recorded unasked, the port would have no verdict for a refusal that
+    /// said nothing about it: macOS turns away every write to a neighbour it
+    /// gave up on for twenty seconds, whoever it gave up for, and asks again
+    /// after.
+    #[cfg(unix)]
+    #[test]
+    fn a_probe_refused_for_a_hold_down_is_sent_after_it() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        /// Refuses its first write as macOS does inside a hold-down, and
+        /// records every write after it.
+        struct HeldDownOnce {
+            writes: Arc<AtomicUsize>,
+            sent: SentProbes,
+        }
+        impl crate::transport::probe::ProbeSender for HeldDownOnce {
+            fn send(
+                &self,
+                segment: &[u8],
+                src: IpAddr,
+                dst: IpAddr,
+                _zone: Option<u32>,
+                _emission: Emission,
+            ) -> Result<(), crate::transport::probe::SendError> {
+                if self.writes.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Err(crate::transport::probe::SendError::from_io(
+                        std::io::Error::from_raw_os_error(libc::EHOSTDOWN),
+                    ));
+                }
+                self.sent.lock().unwrap().push((segment.to_vec(), src, dst));
+                Ok(())
+            }
+        }
+
+        let (session, ctx) = ScanSession::new();
+        let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
+        let writes = Arc::new(AtomicUsize::new(0));
+        let sent: SentProbes = Arc::new(Mutex::new(Vec::new()));
+        let sender = HeldDownOnce {
+            writes: Arc::clone(&writes),
+            sent: Arc::clone(&sent),
+        };
+        let transport = ProbeTransport::from_parts(Box::new(sender), reply_rx);
+        let resolver = SourceResolver::from_links(&[on_link_interface()]);
+        let mut scanner = TcpPortScanner::with_transport(
+            resolver,
+            ctx,
+            TcpScanTechnique::Syn,
+            transport,
+            8,
+            SRC_PORT,
+        );
+        let planned = |port: u16| {
+            PlannedTarget::new(
+                u64::from(port),
+                Target {
+                    ip: TARGET,
+                    port,
+                    protocol: Protocol::Tcp,
+                },
+            )
+        };
+
+        let before = Instant::now();
+        scanner.send_probe(planned(80));
+        scanner.send_probe(planned(81));
+
+        assert_eq!(
+            port_state(&session, 80),
+            None,
+            "the refused port was settled"
+        );
+        assert_eq!(scanner.core.held.len(), 2, "both probes are held");
+        assert_eq!(
+            writes.load(Ordering::SeqCst),
+            1,
+            "a probe behind the refused one was put to the kernel"
+        );
+
+        let after = before + scanner.core.hold_down_for + Duration::from_secs(1);
+        while let Some(held) = scanner.core.take_ready(after) {
+            scanner.send_held(held, after);
+        }
+
+        assert_eq!(
+            sent.lock().unwrap().len(),
+            2,
+            "not sent after the hold-down"
+        );
+        assert!(scanner.core.ledger.contains(&(TARGET, 80)));
+        assert!(scanner.core.ledger.contains(&(TARGET, 81)));
+    }
+
     /// A port nothing answered records the silence, which is an answer of its
     /// own. Leaving the evidence off would give a verdict no account of itself,
     /// and a reader could not tell that from a report where the account was

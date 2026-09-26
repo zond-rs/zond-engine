@@ -35,13 +35,13 @@
 //! routing table names for it, asked of rtnetlink the same way.
 //!
 //! Linux only. macOS refuses a write to a neighbour it gave up on with
-//! `EHOSTDOWN`, which the send path already reads, and the frame path runs its
-//! own resolution and remembers it.
+//! `EHOSTDOWN`, which the send path reads as a hold-down lasting
+//! [`hold_down`], and the frame path runs its own resolution and remembers it.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Mutex;
-use std::time::Instant;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 /// Where the resolution of one neighbour's hardware address stands, as the
 /// kernel's neighbour table says or as a frame sender's own resolution does.
@@ -204,6 +204,55 @@ impl KernelNeighbors {
         }
         snapshot.as_ref()?.1.get(&address).copied()
     }
+}
+
+/// How long a kernel that gave up on a neighbour refuses writes to it, as
+/// [`SendError::HeldDown`](crate::transport::probe::SendError::HeldDown),
+/// before it asks for the neighbour again.
+///
+/// XNU's own default, the time `arp_lookup_ip` in `bsd/netinet/in_arp.c` adds
+/// to a route it marks `RTF_REJECT` once its asking runs out.
+const DEFAULT_HOLD_DOWN: Duration = Duration::from_secs(20);
+
+/// The kernel's hold-down on a neighbour it gave up on: macOS's
+/// `net.link.ether.inet.host_down_time`, read once, and [`DEFAULT_HOLD_DOWN`]
+/// where it cannot be read.
+///
+/// Counted by the kernel from the moment it gave up, which comes before any
+/// write it refuses, so a write put off this long from a refusal is past the
+/// hold-down, and is what starts the asking over.
+pub(crate) fn hold_down() -> Duration {
+    static HOLD_DOWN: OnceLock<Duration> = OnceLock::new();
+    *HOLD_DOWN.get_or_init(|| host_down_time().unwrap_or(DEFAULT_HOLD_DOWN))
+}
+
+/// The hold-down as the running kernel is configured, where it keeps one.
+#[cfg(target_os = "macos")]
+fn host_down_time() -> Option<Duration> {
+    let mut seconds: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+
+    // SAFETY: the name is a NUL-terminated string, `seconds` is a live
+    // `c_int` and `size` names its exact size, which is what this integer
+    // sysctl writes. Nothing is written back to the kernel.
+    let code = unsafe {
+        libc::sysctlbyname(
+            c"net.link.ether.inet.host_down_time".as_ptr(),
+            (&raw mut seconds).cast::<libc::c_void>(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+
+    let seconds = u64::try_from(seconds).ok().filter(|_| code == 0)?;
+    Some(Duration::from_secs(seconds))
+}
+
+/// The hold-down as the running kernel is configured, where it keeps one.
+#[cfg(not(target_os = "macos"))]
+fn host_down_time() -> Option<Duration> {
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -592,6 +641,17 @@ mod tests {
     use std::time::Duration;
 
     const ON_LINK: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));
+
+    /// The hold-down is read from the running kernel where it keeps one, so a
+    /// machine tuned away from the default is held for what it holds. A name
+    /// the kernel does not know would fall back to the default without a word.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_hold_down_is_the_kernel_s_own() {
+        let held = host_down_time().expect("macOS names its hold-down");
+        assert!(held > Duration::ZERO);
+        assert_eq!(hold_down(), held);
+    }
 
     /// One `RTM_NEWNEIGH` message naming `address` in `state`, as the kernel
     /// lays it out.
