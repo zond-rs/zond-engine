@@ -413,8 +413,9 @@ impl SilentPort {
     /// Every byte this process has sent it, once each connection opened to it
     /// before the call has been read to its close.
     ///
-    /// A connection closed before the port took it is not this process's by
-    /// then, and goes unheard; see the [module](self) docs.
+    /// A connection closed before the port took it can no longer be told for
+    /// this process's, and what it sent is counted all the same, as another
+    /// process's that ended as soon would be; see [`open`](Self::open).
     pub(crate) fn heard(&self) -> usize {
         self.settled().iter().map(|(sent, _)| sent.len()).sum()
     }
