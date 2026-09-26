@@ -75,6 +75,16 @@ impl NmapXmlImporter {
     }
 }
 
+impl NmapXmlImporter {
+    /// The parser a document is read with, its element ceiling the one the
+    /// document ceiling implies, so a caller who raises the byte ceiling for a
+    /// large scan is not refused its document by a fixed element count.
+    fn parser<'a>(&self, input: &'a mut dyn BufRead) -> Parser<'a> {
+        Parser::new(input, self.limits.max_line_bytes, FORMAT, KEPT)
+            .with_max_elements(elements_within(self.limits.max_document_bytes))
+    }
+}
+
 impl Importer for NmapXmlImporter {
     fn import(
         &self,
@@ -84,8 +94,7 @@ impl Importer for NmapXmlImporter {
         crate::import::bounded::within(input, self.limits.max_document_bytes, |input| {
             crate::import::skip_bom(input)?;
 
-            let mut parser = Parser::new(input, self.limits.max_line_bytes, FORMAT, KEPT)
-                .with_max_elements(elements_within(self.limits.max_document_bytes));
+            let mut parser = self.parser(input);
             let mut host: Option<Accumulator> = None;
             let mut saw_root = false;
             let mut token = String::new();
@@ -311,6 +320,26 @@ mod tests {
 
     fn read(input: &str) -> Result<Imported, ImportError> {
         ImportFormat::NmapXml.read(&mut Cursor::new(input), &options())
+    }
+
+    /// The element ceiling follows the document ceiling, as the report
+    /// reader's does and for the reason its test gives.
+    #[test]
+    fn the_element_ceiling_is_the_one_the_document_ceiling_implies() {
+        for importer in [
+            NmapXmlImporter::default(),
+            NmapXmlImporter::new(ImportLimits::default().with_max_document_bytes(1 << 36)),
+        ] {
+            let mut input = Cursor::new(Vec::new());
+            let parser = importer.parser(&mut input);
+            let implied = elements_within(importer.limits.max_document_bytes);
+            assert_ne!(
+                implied,
+                crate::import::xml::MAX_ELEMENTS,
+                "a ceiling that shows it"
+            );
+            assert_eq!(parser.max_elements(), implied);
+        }
     }
 
     /// The whole point: a file nmap actually writes, preamble and all.

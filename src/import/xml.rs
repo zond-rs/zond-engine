@@ -316,6 +316,13 @@ impl<'a> Parser<'a> {
         self
     }
 
+    /// The most elements the document may contain, for a test that a reader
+    /// set the ceiling it means to.
+    #[cfg(test)]
+    pub(crate) fn max_elements(&self) -> u64 {
+        self.max_elements
+    }
+
     /// Raises the bound on a kept attribute value.
     ///
     /// The default suits a reader whose kept attributes are addresses and port

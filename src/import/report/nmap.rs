@@ -205,15 +205,23 @@ impl ReportReader for NmapXmlReportReader {
 }
 
 impl NmapXmlReportReader {
+    /// The parser a document is read with, bounded as this reader's options
+    /// say: the element ceiling is the one the document ceiling implies, so a
+    /// caller who raises the byte ceiling for a large scan is not refused its
+    /// document by a fixed element count.
+    fn parser<'a>(&self, input: &'a mut dyn BufRead) -> Parser<'a> {
+        Parser::new(input, self.options.limits.max_line_bytes, FORMAT, KEPT)
+            .with_max_value_bytes(MAX_VALUE_BYTES)
+            .with_lossy(LOSSY)
+            .with_max_elements(elements_within(self.options.max_document_bytes))
+    }
+
     /// [`read`](ReportReader::read), over an input already cut off at the
     /// document ceiling.
     fn read_within(&self, input: &mut dyn BufRead) -> Result<ScanReport, ImportError> {
         crate::import::skip_bom(input)?;
 
-        let mut parser = Parser::new(input, self.options.limits.max_line_bytes, FORMAT, KEPT)
-            .with_max_value_bytes(MAX_VALUE_BYTES)
-            .with_lossy(LOSSY)
-            .with_max_elements(elements_within(self.options.max_document_bytes));
+        let mut parser = self.parser(input);
         let mut state = State::new(self.options.limits.max_addresses);
 
         loop {
@@ -1324,6 +1332,32 @@ mod tests {
 
     fn ip(last: u8) -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(192, 0, 2, last))
+    }
+
+    /// The element ceiling follows the document ceiling, at its default and at
+    /// one a caller set.
+    ///
+    /// Only a document past the parser's fixed count, some 134 MB of the
+    /// smallest element, could show the difference by reading it, which is too
+    /// much for a test to stream; so the parser the reader builds is asked
+    /// directly. Without the wiring, a caller who raised the byte ceiling to
+    /// read a full-range scan of a few hundred hosts would be refused it.
+    #[test]
+    fn the_element_ceiling_is_the_one_the_document_ceiling_implies() {
+        for reader in [
+            NmapXmlReportReader::default(),
+            NmapXmlReportReader::new(ReportOptions::default().with_max_document_bytes(1 << 36)),
+        ] {
+            let mut input = Cursor::new(Vec::new());
+            let parser = reader.parser(&mut input);
+            let implied = elements_within(reader.options.max_document_bytes);
+            assert_ne!(
+                implied,
+                crate::import::xml::MAX_ELEMENTS,
+                "a ceiling that shows it"
+            );
+            assert_eq!(parser.max_elements(), implied);
+        }
     }
 
     /// A timestamp no clock can name is a field to drop, not a process to end.
