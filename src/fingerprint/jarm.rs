@@ -66,6 +66,25 @@ use crate::protocols::tls;
 /// measured on top (see [`on_path`](super::on_path)).
 const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 
+/// How long all ten probes may take between them: three of them running out
+/// their [`PROBE_TIMEOUT`].
+///
+/// A server answers or refuses a hello in a round trip, so ten of them from
+/// one that answers take ten round trips and come nowhere near this. What
+/// reaches it is a peer letting hellos go unanswered, which a tarpit or a
+/// filter in front of the server does and a TLS stack does not, and each one it
+/// lets go costs the whole of a probe's wait. Without a bound on the ten, that
+/// is forty seconds a port, which is more than the rest of the port's
+/// identification together may take; see
+/// [`COLLECTION_BUDGET`](super::COLLECTION_BUDGET).
+///
+/// A fingerprint that runs out of it is abandoned rather than finished with
+/// the rest of its answers empty. A hash is matched whole against published
+/// ones, and one whose last answers are missing because this scan stopped
+/// asking is not the server's, however like a published one it looks. A scan
+/// allows for the path once for each probe on top.
+const BUDGET: Duration = Duration::from_secs(12);
+
 /// The most of a `ServerHello` worth reading. A record may be far larger, and
 /// nothing past the extension list is part of the fingerprint.
 const MAX_REPLY_BYTES: usize = 8192;
@@ -951,14 +970,43 @@ fn hex(bytes: &[u8]) -> String {
 /// servers answer a nameless hello differently, or not at all, so the name a
 /// target was reached by is part of the question and the address stands in
 /// where there is no name.
+///
+/// All ten are asked within [`BUDGET`], each within [`PROBE_TIMEOUT`], both
+/// allowing for the path; a fingerprint the budget cuts short is [`None`].
 pub async fn fingerprint(addr: SocketAddr, host: &str) -> Option<String> {
-    let mut answers = Vec::with_capacity(PROBES.len());
-    for probe in &PROBES {
-        answers.push(match exchange(addr, probe, host).await {
-            Some(reply) => read_answer(&reply),
-            None => Answer::default(),
-        });
-    }
+    let waits = u32::try_from(PROBES.len()).unwrap_or(u32::MAX);
+    let limits = Limits {
+        probe: super::on_path(PROBE_TIMEOUT),
+        all: super::on_path_each(BUDGET, waits),
+    };
+    fingerprint_within(addr, host, limits).await
+}
+
+/// How long a fingerprint may wait, set apart from [`fingerprint`] so a test
+/// can shorten both.
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    /// One probe, connection included.
+    probe: Duration,
+    /// All ten.
+    all: Duration,
+}
+
+/// [`fingerprint`], within `limits`.
+async fn fingerprint_within(addr: SocketAddr, host: &str, limits: Limits) -> Option<String> {
+    let asked = async {
+        let mut answers = Vec::with_capacity(PROBES.len());
+        for probe in &PROBES {
+            answers.push(
+                match timeout(limits.probe, exchange(addr, probe, host)).await {
+                    Ok(Some(reply)) => read_answer(&reply),
+                    Ok(None) | Err(_) => Answer::default(),
+                },
+            );
+        }
+        answers
+    };
+    let answers = timeout(limits.all, asked).await.ok()?;
 
     let found = hash(&answers);
     (found != EMPTY_HASH).then_some(found)
@@ -971,29 +1019,27 @@ pub async fn fingerprint(addr: SocketAddr, host: &str) -> Option<String> {
 /// record in as many pieces as it likes, and the first piece taken for the
 /// whole answer is a hello the reader has to refuse. Where the first read
 /// holds the whole hello, which is nearly always, this is the one read the
-/// reference makes. What has arrived when the peer stops or the budget runs
-/// out is handed on, and the reader refuses it if it is short of a hello.
+/// reference makes. What has arrived when the peer stops is handed on, and the
+/// reader refuses it if it is short of a hello.
+///
+/// Unbounded in itself: the caller gives it [`PROBE_TIMEOUT`] for the whole,
+/// connection, hello and answer together, and what has arrived when that runs
+/// out is lost with it. That loses no answer, since the reader would refuse a
+/// hello still arriving then as short.
 async fn exchange(addr: SocketAddr, probe: &Probe, host: &str) -> Option<Vec<u8>> {
-    let wait = super::on_path(PROBE_TIMEOUT);
-    let mut stream = timeout(wait, super::analyzer_connect(addr))
-        .await
-        .ok()?
-        .ok()?;
+    let mut stream = super::analyzer_connect(addr).await.ok()?;
     let hello = hello(probe, host, &Entropy::Live);
 
-    timeout(wait, stream.write_all(&hello)).await.ok()?.ok()?;
+    stream.write_all(&hello).await.ok()?;
 
     let mut reply = vec![0u8; MAX_REPLY_BYTES];
     let mut filled = 0;
-    let _ = timeout(wait, async {
-        while filled < reply.len() && wants_more(&reply[..filled]) {
-            match stream.read(&mut reply[filled..]).await {
-                Ok(0) | Err(_) => break,
-                Ok(read) => filled += read,
-            }
+    while filled < reply.len() && wants_more(&reply[..filled]) {
+        match stream.read(&mut reply[filled..]).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => filled += read,
         }
-    })
-    .await;
+    }
     reply.truncate(filled);
 
     (!reply.is_empty()).then_some(reply)
@@ -1587,6 +1633,53 @@ mod tests {
     async fn a_server_that_refuses_everything_has_no_fingerprint() {
         let addr = stub_server(true).await;
         assert_eq!(fingerprint(addr, "127.0.0.1").await, None);
+    }
+
+    /// A server that stops answering part-way through costs the fingerprint
+    /// its budget and no more, and yields no fingerprint rather than one with
+    /// the unasked answers left empty.
+    ///
+    /// Each hello it lets go costs a probe's whole wait, so ten of them would
+    /// cost the port ten, more than the rest of its identification together.
+    /// And the two answers it gave are real, so a hash finished with the rest
+    /// empty would be a hash, one this server does not have. Shortened limits
+    /// stand in for the real ones, which are the same arithmetic in seconds.
+    #[tokio::test]
+    async fn a_server_that_stops_answering_costs_the_budget_and_yields_nothing() {
+        use crate::scanner::loopback::accept_from_this_process;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
+        let addr = listener.local_addr().expect("has an address");
+        tokio::spawn(async move {
+            let mut taken = 0;
+            while let Ok(mut stream) = accept_from_this_process(&listener).await {
+                taken += 1;
+                let answers = taken <= 2;
+                tokio::spawn(async move {
+                    let mut hello = vec![0u8; 4096];
+                    let _ = stream.read(&mut hello).await;
+                    if answers {
+                        let _ = stream.write_all(&server_hello(false)).await;
+                    }
+                    while stream.read(&mut hello).await.is_ok_and(|read| read > 0) {}
+                });
+            }
+        });
+
+        let limits = Limits {
+            probe: Duration::from_secs(1),
+            all: Duration::from_millis(1_500),
+        };
+        let started = std::time::Instant::now();
+        let found = fingerprint_within(addr, "127.0.0.1", limits).await;
+        let took = started.elapsed();
+
+        assert_eq!(found, None, "a fingerprint cut short was finished");
+        assert!(
+            took < Duration::from_secs(5),
+            "the eight hellos it let go took {took:?}, a probe's wait each"
+        );
     }
 
     /// The registry runs it. `interested` and `collect` are exercised above on

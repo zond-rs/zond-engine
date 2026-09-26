@@ -1743,6 +1743,14 @@ fn on_path(wait: Duration) -> Duration {
         .unwrap_or(wait)
 }
 
+/// [`on_path`] for a budget spanning `waits` waits on the port one after
+/// another, each allowing for the path once.
+fn on_path_each(budget: Duration, waits: u32) -> Duration {
+    DIALLING
+        .try_with(|dialling| dialling.path.over_each(budget, waits))
+        .unwrap_or(budget)
+}
+
 tokio::task_local! {
     /// How the port being fingerprinted is dialled, by its later questions
     /// and by its analyzers.
