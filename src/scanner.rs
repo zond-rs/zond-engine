@@ -1284,6 +1284,9 @@ async fn run_discovery(
         for address in plan.refused_by_route().iter() {
             ctx.note_refused_by_route(address);
         }
+        for address in plan.withheld().iter() {
+            ctx.note_withheld_neighbour(address);
+        }
         if let Some(port) = sctp_port {
             plan.also_over_sctp(port);
         }

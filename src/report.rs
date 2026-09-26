@@ -574,27 +574,37 @@ impl TargetScope {
         }
     }
 
-    /// Records `addresses` among what this phase's policy excluded: the other
-    /// addresses of a machine it names, which the neighbour tables tied to it
-    /// or which answered from its hardware during the phase. See
+    /// Records what this phase's policy withheld beyond the targets it was
+    /// handed: `machines`, the other addresses of a machine it names, which
+    /// the neighbour tables tied to it or which answered from its hardware
+    /// during the phase; and `neighbours`, the neighbour-table addresses it
+    /// kept from a sweep that would have taken them as candidates. See
     /// [`Exclusions::hardware_in`](crate::model::exclusion::Exclusions::hardware_in).
     ///
     /// Called once a phase is over, for the reason
-    /// [`record_sweeps`](Self::record_sweeps) is. Nothing is added to
-    /// [`withheld`](Self::withheld), which measures the policy against the
-    /// targets the phase was handed: a target the tables tied to such a
-    /// machine was counted there when the scope was taken, and one heard
-    /// during the phase was withheld from what it recorded, not from what it
-    /// was handed.
-    pub(crate) fn record_withheld_machines(&mut self, addresses: Vec<IpAddr>) {
-        if addresses.is_empty() {
-            return;
-        }
+    /// [`record_sweeps`](Self::record_sweeps) is. Both join
+    /// [`excluded`](Self::excluded). [`withheld`](Self::withheld) gains each
+    /// address the phase would have asked or recorded but for the policy and
+    /// did not already count: every neighbour kept from the sweep, and every
+    /// address heard from an excluded machine's hardware during the phase,
+    /// which is one the excluded ranges did not yet hold. An address the
+    /// tables tied to a machine before the phase began is among those ranges
+    /// already, and was counted with the targets if the phase was handed it.
+    pub(crate) fn record_withheld(&mut self, machines: Vec<IpAddr>, neighbours: Vec<IpAddr>) {
         let mut excluded = IpSet::new();
         for range in self.excluded.drain(..) {
             excluded.insert_range(range);
         }
-        for address in addresses {
+        excluded.canonicalize();
+        let mut beyond: std::collections::BTreeSet<IpAddr> = neighbours.iter().copied().collect();
+        beyond.extend(
+            machines
+                .iter()
+                .copied()
+                .filter(|address| !excluded.contains(address)),
+        );
+        self.withheld += beyond.len() as u128;
+        for address in machines.into_iter().chain(neighbours) {
             excluded.insert(address);
         }
         excluded.canonicalize();
@@ -641,11 +651,16 @@ impl TargetScope {
 
     /// How many addresses the exclusion policy took out of this phase.
     ///
-    /// Measured against what the phase was handed, at the moment its scope was
-    /// recorded, so it is the overlap between the policy and this phase's
-    /// input, not the size of the policy. Zero from a policy that named ground
-    /// this phase was never going to walk, and zero again from a phase whose
-    /// input an earlier one had already narrowed.
+    /// The overlap between the policy and what this phase would have asked,
+    /// not the size of the policy: the targets it was handed that the policy
+    /// names or ties to a machine it names; the addresses a sweep would have
+    /// taken from this host's neighbour table as candidates and the policy
+    /// kept from it; and the addresses heard from an excluded machine's
+    /// hardware during the phase, whose findings it withheld. Each of these
+    /// is an address the report lists among the excluded or one its targets
+    /// named, so the count and the list agree. Zero from a policy that named
+    /// ground this phase was never going to walk, and zero again from a phase
+    /// whose input an earlier one had already narrowed.
     ///
     /// It is the difference between a scope document that was applied and one
     /// that was merely configured, and those look identical without it.
@@ -3610,6 +3625,54 @@ mod tests {
 
         stats.elapsed = Duration::ZERO;
         assert_eq!(stats.achieved_send_rate(), None);
+    }
+
+    /// A phase counts every address its policy kept out of it, not only the
+    /// targets it was handed: the neighbours a sweep would have taken from the
+    /// tables, and the addresses an excluded machine answered from during the
+    /// phase, each once. The report lists all of them among the excluded, and
+    /// a count short of that list reads as the policy meeting fewer addresses
+    /// than the list shows it met.
+    #[test]
+    fn a_phase_counts_every_address_its_policy_withheld_once() {
+        let address = |text: &str| -> IpAddr { text.parse().expect("literal") };
+        let mut targets = IpSet::new();
+        targets.insert_range("192.0.2.0/29".parse().expect("a valid range"));
+        let mut named = IpSet::new();
+        named.insert(address("192.0.2.5"));
+        // The machine at .5, as the tables tied it before the phase began: its
+        // global IPv6 address, which is no target of the phase.
+        let policy = Exclusions::new(named).widened([address("2001:db8::5")]);
+
+        let mut scope = TargetScope::from_ip_set(&mut targets, &policy);
+        assert_eq!(scope.withheld(), 1, "the one target the policy names");
+
+        scope.record_withheld(
+            // Tied before the phase, and heard during it.
+            vec![address("2001:db8::5"), address("fe80::5")],
+            // Kept from the sweep, which would have taken the tied address
+            // from the neighbour table as a candidate.
+            vec![address("2001:db8::5")],
+        );
+
+        assert_eq!(
+            scope.withheld(),
+            3,
+            "the target, the neighbour kept from the sweep and the address heard"
+        );
+        let excluded: Vec<IpAddr> = scope
+            .excluded()
+            .iter()
+            .map(|range| range.start_addr())
+            .collect();
+        assert_eq!(
+            excluded,
+            vec![
+                address("192.0.2.5"),
+                address("2001:db8::5"),
+                address("fe80::5")
+            ]
+        );
     }
 
     /// A phase given one port set for every address can say a particular

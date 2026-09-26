@@ -1861,6 +1861,9 @@ pub struct ScanContext {
     /// Addresses this host's routing table refuses. See
     /// [`note_refused_by_route`](Self::note_refused_by_route).
     pub(crate) refused_by_route: Arc<UnroutableLog>,
+    /// Neighbour-table addresses the exclusions kept from a sweep. See
+    /// [`note_withheld_neighbour`](Self::note_withheld_neighbour).
+    pub(crate) withheld_neighbours: Arc<UnroutableLog>,
     /// Addresses the scan stopped working on because their budget ran out.
     pub(crate) timed_out: Arc<TimedOutLog>,
     /// The passes a stop skipped or cut short.
@@ -2165,10 +2168,12 @@ impl ScanContext {
     /// the phase's exclusions. See
     /// [the machine an address names](crate::model::exclusion#an-address-names-a-machine).
     ///
-    /// A drop is logged rather than counted. The property worth checking is that
-    /// no excluded address appears in the report, and a reader can confirm that
-    /// against the ranges the report already records, which is a better
-    /// guarantee than a number this engine reports about itself.
+    /// A drop is logged rather than counted here. The property worth checking
+    /// is that no excluded address appears in the report, and a reader can
+    /// confirm that against the ranges the report already records, which is a
+    /// better guarantee than a number this engine reports about itself. The
+    /// addresses a machine's drop withholds are counted once, when the phase
+    /// closes; see [`TargetScope::withheld`](crate::report::TargetScope::withheld).
     pub fn write_host(
         &self,
         key: impl Into<ScopedIp>,
@@ -2569,6 +2574,20 @@ impl ScanContext {
     /// The addresses noted refused by a route so far, taken.
     pub(crate) fn take_refused_by_route(&self) -> Vec<IpAddr> {
         self.refused_by_route.drain()
+    }
+
+    /// Notes that the exclusions kept `address`, from this host's neighbour
+    /// table, out of the phase's sweep, which would otherwise have taken it
+    /// as a candidate. The phase counts it among the addresses its policy
+    /// withheld; see
+    /// [`TargetScope::withheld`](crate::report::TargetScope::withheld).
+    pub(crate) fn note_withheld_neighbour(&self, address: IpAddr) {
+        self.withheld_neighbours.insert(address);
+    }
+
+    /// The neighbour-table addresses noted withheld so far, taken.
+    pub(crate) fn take_withheld_neighbours(&self) -> Vec<IpAddr> {
+        self.withheld_neighbours.drain()
     }
 
     /// Whether `address` has been filed as unroutable in this phase, left in
@@ -3583,6 +3602,7 @@ impl SessionBuilder {
             probe_stats: Arc::new(ProbeStatsLog::default()),
             unroutable: Arc::new(UnroutableLog::default()),
             refused_by_route: Arc::new(UnroutableLog::default()),
+            withheld_neighbours: Arc::new(UnroutableLog::default()),
             timed_out: Arc::new(TimedOutLog::default()),
             passes_cut: Arc::new(PassLog::default()),
             icmp_rate_limited: Arc::new(RateLimitedLog::default()),

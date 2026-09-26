@@ -586,6 +586,8 @@ pub struct DiscoveryPlan {
     /// The neighbours this host's routing table refuses, left to the connect
     /// step rather than asked by frame.
     refused_by_route: IpSet,
+    /// The neighbour-table candidates the exclusions kept from a sweep.
+    withheld: IpSet,
 }
 
 impl DiscoveryPlan {
@@ -643,9 +645,10 @@ impl DiscoveryPlan {
 
         // A sweep may probe addresses nobody named, so it may also take leads
         // from the host itself. A targeted run may not.
+        let mut withheld = IpSet::new();
         if matches!(scope, Scope::Sweep) {
             include_swept_link(&mut local);
-            seed_from_neighbor_table(&mut local, exclusions);
+            withheld = seed_from_neighbor_table(&mut local, exclusions);
         }
 
         for (interface, mut targets) in local {
@@ -736,7 +739,44 @@ impl DiscoveryPlan {
             refusals,
             ours,
             refused_by_route,
+            withheld,
         }
+    }
+
+    /// The addresses from this host's IPv6 neighbour table that a plan
+    /// [built](Self::build) from the same arguments would take as candidates
+    /// for its sweep and the exclusions keep from it, read from the same
+    /// tables without planning anything or saying anything.
+    ///
+    /// A scan counts these among the addresses its policy withheld, beside
+    /// the targets it names, so a caller stating that count before the scan
+    /// runs has them to add. Empty for [`Scope::Targeted`], which takes no
+    /// candidates. A plan like this one is how a run holding raw sockets or
+    /// the link layer sweeps; a run without either takes no candidates and so
+    /// withholds none.
+    pub fn withheld_neighbours(
+        targets: IpSet,
+        scope: Scope,
+        exclusions: &Exclusions,
+        forced: &[IpAddr],
+    ) -> IpSet {
+        if !matches!(scope, Scope::Sweep) {
+            return IpSet::new();
+        }
+        let mut local = interface::map_ips_to_interfaces_forced(targets, forced).local;
+        include_swept_link(&mut local);
+        let table = neighbor_cache::ipv6_neighbors();
+        let machines = machines_named(exclusions, &table);
+        let mut withheld = IpSet::new();
+        for intf in local.keys() {
+            for candidate in candidates_on(intf, &table, exclusions, &machines) {
+                if candidate.withheld {
+                    withheld.insert_range(candidate.range);
+                }
+            }
+        }
+        withheld.canonicalize();
+        withheld
     }
 
     /// The neighbours this host's routing table refuses, which the plan left
@@ -744,6 +784,13 @@ impl DiscoveryPlan {
     /// [`refused_neighbours`](interface::refused_neighbours).
     pub(crate) fn refused_by_route(&self) -> &IpSet {
         &self.refused_by_route
+    }
+
+    /// The neighbour-table candidates the exclusions kept from this plan's
+    /// sweep, which its phase counts among the addresses its policy withheld;
+    /// see [`withheld_neighbours`](Self::withheld_neighbours).
+    pub(crate) fn withheld(&self) -> &IpSet {
+        &self.withheld
     }
 
     /// Adds an SCTP sweep beside every routed step, asking `port`.
@@ -1388,20 +1435,30 @@ fn include_swept_link(local: &mut HashMap<Link, IpSet>) {
 /// Nothing seeded here is treated as a discovered host. Every entry is an
 /// address that answered *once*, from a table that goes stale, so each becomes a
 /// probe like any other and earns its place in the report by answering now.
-fn seed_from_neighbor_table(local: &mut HashMap<Link, IpSet>, exclusions: &Exclusions) {
+///
+/// Returns the candidates `exclusions` kept from the sweep, which the phase
+/// counts among the addresses its policy withheld.
+fn seed_from_neighbor_table(local: &mut HashMap<Link, IpSet>, exclusions: &Exclusions) -> IpSet {
     let table = neighbor_cache::ipv6_neighbors();
-    if !table.is_empty() {
-        // The machines the policy names, read off both tables, since an
-        // excluded IPv4 address is tied to its machine's IPv6 ones by nothing
-        // but the hardware address they share.
-        let machines = if exclusions.is_empty() {
-            BTreeSet::new()
-        } else {
-            let v4 = neighbor_cache::ipv4_neighbors();
-            exclusions.hardware_in(v4.iter().chain(&table).map(|entry| (entry.ip, entry.mac)))
-        };
-        seed_from_neighbor_table_with(local, &table, exclusions, &machines);
+    if table.is_empty() {
+        return IpSet::new();
     }
+    let machines = machines_named(exclusions, &table);
+    seed_from_neighbor_table_with(local, &table, exclusions, &machines)
+}
+
+/// The machines `exclusions` name, by hardware address, read off both
+/// neighbour tables, `v6_table` among them: an excluded IPv4 address is tied
+/// to its machine's IPv6 ones by nothing but the hardware address they share.
+fn machines_named(
+    exclusions: &Exclusions,
+    v6_table: &[neighbor_cache::Neighbor],
+) -> BTreeSet<MacAddr> {
+    if exclusions.is_empty() {
+        return BTreeSet::new();
+    }
+    let v4 = neighbor_cache::ipv4_neighbors();
+    exclusions.hardware_in(v4.iter().chain(v6_table).map(|entry| (entry.ip, entry.mac)))
 }
 
 /// [`seed_from_neighbor_table`] against an explicit table, so the exclusions can
@@ -1415,15 +1472,11 @@ fn seed_from_neighbor_table_with(
     table: &[neighbor_cache::Neighbor],
     exclusions: &Exclusions,
     machines: &BTreeSet<MacAddr>,
-) {
-    let withheld: HashSet<IpAddr> = table
-        .iter()
-        .filter(|entry| entry.mac.is_some_and(|mac| machines.contains(&mac)))
-        .map(|entry| entry.ip)
-        .collect();
+) -> IpSet {
+    let mut withheld = IpSet::new();
     for (intf, targets) in local.iter_mut() {
         let mut seeded = 0usize;
-        for addr in candidates_for(intf, table) {
+        for candidate in candidates_on(intf, table, exclusions, machines) {
             // **The policy, not one of this function's own three filters.**
             //
             // `withhold_targets` subtracts excluded addresses from the list
@@ -1439,24 +1492,17 @@ fn seed_from_neighbor_table_with(
             // `write_host` would then drop the finding, so the *report* would
             // stay clean and the packet would still go out — which is the half
             // of the promise that cannot be checked from the report afterwards.
-            if exclusions.excludes(&addr) || withheld.contains(&addr) {
+            if candidate.withheld {
                 info!(
                     verbosity = 2,
-                    "neighbour {addr} is excluded, so it is not taken as a candidate"
+                    "neighbour {} is excluded, so it is not taken as a candidate",
+                    candidate.address
                 );
+                withheld.insert_range(candidate.range);
                 continue;
             }
-
-            let IpAddr::V6(addr) = addr else { continue };
-            // The zone matters for exactly the addresses that cannot be probed
-            // without one, and is dropped for the rest for the reason
-            // `ScopedIp` drops it: the same global address through two
-            // interfaces is one address, not two.
-            let zone = addr.is_unicast_link_local().then_some(intf.index());
-            if let Ok(range) = Ipv6Range::scoped(addr, addr, zone) {
-                targets.insert_range(IpRange::V6(range));
-                seeded += 1;
-            }
+            targets.insert_range(candidate.range);
+            seeded += 1;
         }
 
         if seeded > 0 {
@@ -1469,6 +1515,55 @@ fn seed_from_neighbor_table_with(
             );
         }
     }
+    withheld.canonicalize();
+    withheld
+}
+
+/// One neighbour-table address a sweep of a link would take as a candidate.
+struct Candidate {
+    /// The address as the table lists it.
+    address: IpAddr,
+    /// What a sweep probes for it: the address, with the link's interface
+    /// where the address is link-local.
+    range: IpRange,
+    /// Whether the exclusions keep it from the sweep: they name it, or it is
+    /// listed under the hardware of a machine they name.
+    withheld: bool,
+}
+
+/// The neighbour-table candidates on `intf`, in table order, each with
+/// whether `exclusions` keep it from a sweep; see [`candidates_for`] for which
+/// entries are candidates at all.
+fn candidates_on(
+    intf: &Link,
+    table: &[neighbor_cache::Neighbor],
+    exclusions: &Exclusions,
+    machines: &BTreeSet<MacAddr>,
+) -> Vec<Candidate> {
+    let tied: HashSet<IpAddr> = table
+        .iter()
+        .filter(|entry| entry.mac.is_some_and(|mac| machines.contains(&mac)))
+        .map(|entry| entry.ip)
+        .collect();
+    candidates_for(intf, table)
+        .into_iter()
+        .filter_map(|address| {
+            let IpAddr::V6(v6) = address else {
+                return None;
+            };
+            // The zone matters for exactly the addresses that cannot be probed
+            // without one, and is dropped for the rest for the reason
+            // `ScopedIp` drops it: the same global address through two
+            // interfaces is one address, not two.
+            let zone = v6.is_unicast_link_local().then_some(intf.index());
+            let range = IpRange::V6(Ipv6Range::scoped(v6, v6, zone).ok()?);
+            Some(Candidate {
+                address,
+                range,
+                withheld: exclusions.excludes(&address) || tied.contains(&address),
+            })
+        })
+        .collect()
 }
 
 /// The neighbour-table addresses worth probing on `intf`, in table order.
@@ -1626,6 +1721,7 @@ mod tests {
         let mut plan = DiscoveryPlan {
             ours: IpSet::new(),
             refused_by_route: IpSet::new(),
+            withheld: IpSet::new(),
             steps: vec![
                 DiscoveryStep::Local {
                     interface: Box::new(interface_with(20, "utun9", vec![v6("198.51.100.2")])),
@@ -1688,6 +1784,7 @@ mod tests {
         let mut plan = DiscoveryPlan {
             ours: IpSet::new(),
             refused_by_route: IpSet::new(),
+            withheld: IpSet::new(),
             steps: vec![
                 DiscoveryStep::Local {
                     interface: Box::new(framed(4, "en0", vec![v6("192.0.2.10")])),
@@ -1724,6 +1821,7 @@ mod tests {
         let mut plan = DiscoveryPlan {
             ours: IpSet::new(),
             refused_by_route: IpSet::new(),
+            withheld: IpSet::new(),
             steps: vec![DiscoveryStep::Connect {
                 targets: set_of(&["127.0.0.1"]),
                 ports: SynPorts::common(),
@@ -1748,6 +1846,7 @@ mod tests {
         let mut plan = DiscoveryPlan {
             ours: IpSet::new(),
             refused_by_route: IpSet::new(),
+            withheld: IpSet::new(),
             steps: vec![DiscoveryStep::Routed {
                 targets: vec![RoutedTarget {
                     target: v6("198.51.100.1"),
@@ -1777,6 +1876,7 @@ mod tests {
         let mut plan = DiscoveryPlan {
             ours: IpSet::new(),
             refused_by_route: IpSet::new(),
+            withheld: IpSet::new(),
             steps: vec![
                 DiscoveryStep::Routed {
                     targets: vec![RoutedTarget {
@@ -1817,6 +1917,7 @@ mod tests {
         let mut plan = DiscoveryPlan {
             ours: IpSet::new(),
             refused_by_route: IpSet::new(),
+            withheld: IpSet::new(),
             steps: vec![
                 DiscoveryStep::Routed {
                     targets: vec![RoutedTarget {
@@ -1849,6 +1950,7 @@ mod tests {
         let mut plan = DiscoveryPlan {
             ours: IpSet::new(),
             refused_by_route: IpSet::new(),
+            withheld: IpSet::new(),
             steps: vec![DiscoveryStep::Routed {
                 targets: vec![
                     RoutedTarget {
@@ -1888,6 +1990,7 @@ mod tests {
         let mut plan = DiscoveryPlan {
             ours: IpSet::new(),
             refused_by_route: IpSet::new(),
+            withheld: IpSet::new(),
             steps: vec![
                 DiscoveryStep::Routed {
                     targets: vec![RoutedTarget {
@@ -2302,6 +2405,9 @@ mod tests {
     /// share nothing but the hardware address the neighbour tables list them
     /// under, and a sweep that took those from the table solicited the
     /// machine the operator excluded, at an address the policy never named.
+    ///
+    /// What the sweep kept back is handed on, since the phase counts it among
+    /// what its policy withheld.
     #[test]
     fn a_swept_plan_takes_no_candidate_from_an_excluded_machine() {
         let machine = MacAddr::new(0x02, 0, 0, 0, 0, 0x30);
@@ -2326,12 +2432,17 @@ mod tests {
 
         let intf = interface_with(7, "en0", Vec::new());
         let mut local = std::collections::HashMap::from([(intf, IpSet::new())]);
-        seed_from_neighbor_table_with(&mut local, &v6_table, &exclusions, &machines);
+        let withheld = seed_from_neighbor_table_with(&mut local, &v6_table, &exclusions, &machines);
 
         let targets = local.into_values().next().expect("the one interface");
         assert!(
             !targets.contains(&v6("2001:db8::30")),
             "the excluded machine's IPv6 address became a target"
+        );
+        assert_eq!(
+            withheld.iter().collect::<Vec<_>>(),
+            vec![v6("2001:db8::30")],
+            "what the sweep kept back went uncounted"
         );
         assert!(
             targets.contains(&v6("2001:db8::31")),

@@ -15307,6 +15307,7 @@ pub fn zond_engine::scanner::plan::DiscoveryPlan::ours(&self) -> &zond_engine::m
 pub fn zond_engine::scanner::plan::DiscoveryPlan::refusals(&self) -> &[zond_engine::scanner::plan::RefusedStep]
 pub fn zond_engine::scanner::plan::DiscoveryPlan::steps(&self) -> &[zond_engine::scanner::plan::DiscoveryStep]
 pub fn zond_engine::scanner::plan::DiscoveryPlan::steps_mut(&mut self) -> &mut alloc::vec::Vec<zond_engine::scanner::plan::DiscoveryStep>
+pub fn zond_engine::scanner::plan::DiscoveryPlan::withheld_neighbours(zond_engine::model::ip::set::IpSet, zond_engine::scanner::strategy::local::Scope, &zond_engine::model::exclusion::Exclusions, &[core::net::ip_addr::IpAddr]) -> zond_engine::model::ip::set::IpSet
 impl core::clone::Clone for zond_engine::scanner::plan::DiscoveryPlan
 pub fn zond_engine::scanner::plan::DiscoveryPlan::clone(&self) -> zond_engine::scanner::plan::DiscoveryPlan
 impl core::fmt::Debug for zond_engine::scanner::plan::DiscoveryPlan

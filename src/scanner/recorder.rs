@@ -276,7 +276,7 @@ impl PhaseRecorder {
         // ground no target set named.
         let mut targets = self.opened.targets;
         targets.record_sweeps(ctx.take_swept_links());
-        targets.record_withheld_machines(ctx.withheld_by_hardware());
+        targets.record_withheld(ctx.withheld_by_hardware(), ctx.take_withheld_neighbours());
 
         let unroutable = ctx.take_unroutable();
         // Only what the phase filed: a note on why an address went unasked
