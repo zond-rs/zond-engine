@@ -65,7 +65,7 @@ use std::time::{Duration, SystemTime};
 use super::cursor::Checkpoint;
 use super::file::{
     append_existing, claim_directory_for_invoking_user, create_private as create_private_file,
-    create_private_directory, create_staged, open_existing,
+    create_private_directory, create_staged, open_existing, open_to_read,
 };
 use super::format::JournalError;
 use super::lock::{Lock, LockRefused, LockState};
@@ -531,7 +531,7 @@ impl Journal {
     /// Empty for a journal no sitting finished, and for one written before the
     /// record was kept, which a resume reads as owing every pass to every host.
     pub(crate) fn finished_hosts(&self) -> Result<HashSet<String>, JournalError> {
-        let file = match fs::File::open(self.directory.join(FINISHED)) {
+        let file = match open_to_read(&self.directory.join(FINISHED)) {
             Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashSet::new()),
             Err(e) => return Err(e.into()),
@@ -1340,7 +1340,7 @@ struct FinishedRecord {
 /// A missing file is no findings rather than a failure, since a journal can be
 /// read before its first host is written.
 fn read_findings(directory: &Path) -> Result<Vec<Host>, JournalError> {
-    let file = match fs::File::open(directory.join(HOSTS)) {
+    let file = match open_to_read(&directory.join(HOSTS)) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e.into()),
@@ -1418,7 +1418,7 @@ fn merge_into(hosts: &mut [Option<Host>], slot: usize, host: Host) {
 
 /// Reads back what a journal's earlier sittings did, oldest first.
 fn read_phases(directory: &Path) -> Result<Vec<ScanPhase>, JournalError> {
-    let file = match fs::File::open(directory.join(PHASES)) {
+    let file = match open_to_read(&directory.join(PHASES)) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e.into()),
@@ -1467,8 +1467,8 @@ fn sitting_file(directory: &Path, lock: &Lock) -> PathBuf {
 /// The phases of every sitting in `directory` that never ended, oldest first.
 ///
 /// A standing record is written whole by rename, so one that cannot be read
-/// is not a torn write but something else at the name, and is passed over
-/// rather than failing a journal whose own files read.
+/// is not a torn write but something else at the name, a link among them, and
+/// is passed over rather than failing a journal whose own files read.
 fn standing_phases(directory: &Path) -> Vec<ScanPhase> {
     let Ok(entries) = fs::read_dir(directory) else {
         return Vec::new();
@@ -1486,7 +1486,7 @@ fn standing_phases(directory: &Path) -> Vec<ScanPhase> {
 
     let mut phases = Vec::new();
     for path in files {
-        let Ok(file) = fs::File::open(&path) else {
+        let Ok(file) = open_to_read(&path) else {
             continue;
         };
         let Ok(mut reader) = crate::journal::format::Reader::open(std::io::BufReader::new(file))
@@ -1505,7 +1505,7 @@ fn standing_phases(directory: &Path) -> Vec<ScanPhase> {
 /// A missing file is no runs rather than a failure, the same as a journal read
 /// before any detection ran.
 pub fn read_detections(directory: &Path) -> Result<Vec<DetectionRunRecord>, JournalError> {
-    let file = match fs::File::open(directory.join(DETECTIONS)) {
+    let file = match open_to_read(&directory.join(DETECTIONS)) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e.into()),
@@ -1652,12 +1652,11 @@ fn last_whole_line(file: &mut fs::File, length: u64) -> Result<u64, JournalError
 
 /// The options a journal's job runs under, or `None` where none were recorded.
 fn read_options(directory: &Path) -> Result<Option<JobOptions>, JournalError> {
-    let path = directory.join(OPTIONS);
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let text = read_bounded(&path, "a journal's options")?;
+    let text = match read_bounded(&directory.join(OPTIONS), "a journal's options") {
+        Ok(text) => text,
+        Err(JournalError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
     Ok(Some(
         serde_json::from_str(&text).map_err(JournalError::json)?,
     ))
@@ -1785,12 +1784,13 @@ fn claim_directory(root: &Path) -> Result<(String, PathBuf), JournalError> {
 /// whole, the manifest and the cursor, are the journal's own, in a directory
 /// this crate documents as belonging to a user while the process reading them
 /// is usually root; see [`MAX_READ_BYTES`](super::format::MAX_READ_BYTES) for
-/// what that is and is not worth.
+/// what that is and is not worth. Opened as every journal file is read, so a
+/// link at the name is refused rather than followed; see [`open_to_read`].
 pub(super) fn read_bounded(path: &Path, what: &str) -> Result<String, JournalError> {
     use std::io::Read;
 
     let mut text = String::new();
-    let read = fs::File::open(path)?
+    let read = open_to_read(path)?
         .take(super::format::MAX_READ_BYTES + 1)
         .read_to_string(&mut text)?;
 
@@ -3532,6 +3532,84 @@ mod tests {
         );
 
         journal.close().expect("closes");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Reading a journal refuses a link standing where one of its files
+    /// should be, and says so, rather than reading what it points to.
+    ///
+    /// The journal directory is the invoking user's and the process reading
+    /// it to resume a scan is usually root, so a link planted at a fixed name
+    /// would have root read whatever the user chose: another job's plan
+    /// continued as this one's, or a file only root may read taken for a
+    /// journal's. No writer here ever leaves a link at those names, so one is
+    /// a job that cannot be read, named as such rather than read as damaged.
+    #[cfg(unix)]
+    #[test]
+    fn reading_refuses_a_link_where_a_journal_file_should_be() {
+        let root = scratch("read-nofollow");
+        let mut ours = begin(&root, &plan("192.0.2.1", "80"));
+        ours.record_hosts(&[Host::new("192.0.2.1".parse().expect("an address"))])
+            .expect("records");
+        ours.write_cursor(&Checkpoint::default())
+            .expect("checkpoints");
+        let directory = ours.directory().to_path_buf();
+        ours.close().expect("closes");
+
+        let mut theirs = begin(&root, &plan("198.51.100.7", "80"));
+        theirs
+            .record_hosts(&[Host::new("198.51.100.7".parse().expect("an address"))])
+            .expect("records");
+        theirs
+            .write_cursor(&Checkpoint::new(1, []))
+            .expect("checkpoints");
+        let elsewhere = theirs.directory().to_path_buf();
+        theirs.close().expect("closes");
+        let text = root.join("not-a-journal-file");
+        fs::write(&text, b"somebody else's bytes").expect("writes");
+
+        let refused = |name: &str, error: String| {
+            assert!(
+                error.contains("is a link"),
+                "{name}: refused, but not as a link: {error}"
+            );
+        };
+        for name in [MANIFEST, CURSOR, HOSTS, PHASES] {
+            let kept = directory.join(format!("{name}.kept"));
+            fs::rename(directory.join(name), &kept).expect("moves aside");
+            std::os::unix::fs::symlink(elsewhere.join(name), directory.join(name)).expect("links");
+
+            match Journal::reopen(&directory, Privilege::Raw) {
+                Ok(_) => panic!("{name}: resumed through a link"),
+                Err(error) => refused(name, error.to_string()),
+            }
+            if matches!(name, MANIFEST | HOSTS | PHASES) {
+                match report(&directory) {
+                    Ok(_) => panic!("{name}: reported through a link"),
+                    Err(error) => refused(name, error.to_string()),
+                }
+            }
+
+            fs::remove_file(directory.join(name)).expect("removes the link");
+            fs::rename(&kept, directory.join(name)).expect("restores");
+        }
+
+        // The files read after a job's start are refused the same way, where
+        // what the link reaches would otherwise have read as nothing recorded.
+        let journal = begin(&root, &plan("192.0.2.2", "80"));
+        for name in [DETECTIONS, FINISHED] {
+            std::os::unix::fs::symlink(&text, journal.directory().join(name)).expect("links");
+        }
+        match read_detections(journal.directory()) {
+            Ok(runs) => panic!("detections read through a link: {runs:?}"),
+            Err(error) => refused(DETECTIONS, error.to_string()),
+        }
+        match journal.finished_hosts() {
+            Ok(hosts) => panic!("finished hosts read through a link: {hosts:?}"),
+            Err(error) => refused(FINISHED, error.to_string()),
+        }
+        journal.close().expect("closes");
+
         std::fs::remove_dir_all(&root).ok();
     }
 

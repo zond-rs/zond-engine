@@ -393,18 +393,23 @@ mod persistence {
     use std::time::SystemTime;
 
     use super::{HEARTBEAT_STALE_AFTER, LockRecord, LockState, boot_identity, classify};
-    use crate::journal::file::{create_staged, open_or_create_private};
+    use crate::journal::file::{create_staged, open_or_create_private, open_to_read};
     use crate::journal::format::JournalError;
 
     /// Reads a lock file and says what it means.
     ///
     /// A missing file is [`LockState::Free`], and so is a file that cannot be
-    /// parsed. A truncated or corrupt lock is one a crashed writer left
+    /// parsed, or a link at the name, which is read as no lock rather than
+    /// followed: nothing that takes a lock leaves one there. A truncated or corrupt lock is one a crashed writer left
     /// mid-write, and treating it as a permanent refusal would make a crash
     /// unrecoverable. The journal is protected by the heartbeat of whoever holds
     /// it next, not by a file nobody can read.
     pub fn inspect(path: &Path) -> LockState {
-        let Ok(text) = fs::read_to_string(path) else {
+        let text = open_to_read(path).and_then(|mut file| {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut file, &mut text).map(|_| text)
+        });
+        let Ok(text) = text else {
             return LockState::Free;
         };
 

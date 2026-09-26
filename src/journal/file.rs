@@ -43,6 +43,13 @@
 //!
 //! Directories are opened the same way for the same reason.
 //!
+//! Reading is opened the same way too. A root process resuming a scan reads
+//! the manifest, the cursor and the findings out of that user's directory, and
+//! a link at one of those names would have it read whatever the user chose and
+//! take it for the job's; see
+//! [`open_to_read`](crate::journal::file::open_to_read) for why such a job is
+//! refused by name rather than read as one that recorded nothing.
+//!
 //! ## Why nothing here is created through a link above it either
 //!
 //! `O_NOFOLLOW` guards the last name, and every name above it is the invoking
@@ -168,7 +175,23 @@ pub(super) fn create_private_directory(path: &Path) -> std::io::Result<()> {
     fs::create_dir(path)
 }
 
-/// The four ways a journal file is opened.
+/// Opens a journal file to read it, refusing a link standing at its name.
+///
+/// Every file a journal holds is created by this module, and none of its
+/// openers ever leaves a link at a journal's name, so one there is not a
+/// journal file of any shape: it is a job that cannot be read, and the error
+/// says a link is why. Read as damaged instead, the job would list as a scan
+/// that found nothing, which is not what happened to it. Followed, it would
+/// have a process that is usually root read whatever the directory's owner
+/// pointed it at, and report what it found there as the job's own.
+///
+/// Reached as every other opener here reaches a name, so under `sudo` a link
+/// above it that leads out of the invoking user's home is refused as well.
+pub(super) fn open_to_read(path: &Path) -> std::io::Result<fs::File> {
+    open(path, Access::Read)
+}
+
+/// The five ways a journal file is opened.
 #[derive(Clone, Copy)]
 enum Access {
     /// Created, and refused if the name exists.
@@ -179,10 +202,16 @@ enum Access {
     Append,
     /// Opened for reading and writing.
     ReadWrite,
+    /// Opened for reading.
+    Read,
 }
 
 /// Opens a journal file private, refusing a link at its name, and reached the
 /// way [`Place`](super::ownership::Place) reaches it.
+///
+/// A link refused at the name is said to be one: the system's own word for it
+/// is a loop of links, which names no link the reader placed and sends them
+/// looking for a cycle there is none of.
 #[cfg(unix)]
 fn open(path: &Path, how: Access) -> std::io::Result<fs::File> {
     let flags = match how {
@@ -190,8 +219,24 @@ fn open(path: &Path, how: Access) -> std::io::Result<fs::File> {
         Access::CreateOrOpen => libc::O_RDWR | libc::O_CREAT,
         Access::Append => libc::O_WRONLY | libc::O_APPEND,
         Access::ReadWrite => libc::O_RDWR,
+        Access::Read => libc::O_RDONLY,
     };
-    super::ownership::Place::of(path)?.open(flags, 0o600)
+    super::ownership::Place::of(path)?
+        .open(flags, 0o600)
+        .map_err(|error| {
+            // Asked of the name without following it, to tell a link at it from
+            // a loop further up, which fails the same way.
+            let linked = error.raw_os_error() == Some(libc::ELOOP)
+                && fs::symlink_metadata(path).is_ok_and(|held| held.file_type().is_symlink());
+            if linked {
+                std::io::Error::other(format!(
+                    "{} is a link, not a journal file (not followed)",
+                    path.display()
+                ))
+            } else {
+                error
+            }
+        })
 }
 
 /// The platforms with no mode to set at open. Nothing is promised about who else
@@ -205,6 +250,7 @@ fn open(path: &Path, how: Access) -> std::io::Result<fs::File> {
         Access::CreateOrOpen => options.read(true).write(true).create(true),
         Access::Append => options.append(true),
         Access::ReadWrite => options.read(true).write(true),
+        Access::Read => options.read(true),
     };
     options.open(path)
 }
