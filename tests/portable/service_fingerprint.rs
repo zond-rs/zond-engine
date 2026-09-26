@@ -8,18 +8,18 @@
 
 //! Portable service-fingerprinting tests.
 //!
-//! These scan a *real* speak-first server on loopback and assert the full
-//! pipeline — connect, banner grab, analyzer, verdict — identifies its product
-//! and version. Speak-first protocols (SSH here) are the ones the engine can
-//! identify on any port from the banner alone, which is what makes this portable
-//! without root. Fingerprinting that needs a port-specific probe (HTTP, TLS,
-//! Postgres, Redis) needs root to bind its real port, so its classification
-//! logic is covered by in-crate unit tests instead (see `tests/README.md`).
+//! These run a *real* server on an ephemeral loopback port and assert the full
+//! pipeline — connect, banner grab or probe, analyzer, verdict — identifies it.
+//! None needs root. A speak-first server (SSH here) is read from its banner on
+//! any port, and a scan asks a web request and a TLS handshake of any port that
+//! stays quiet, so a scan of the ephemeral port reaches all three as it would
+//! their real ones.
 //!
-//! The last test here runs the same servers against port numbers registered to
-//! something else. `fingerprint_tcp` takes the number as an argument rather than
-//! reading it off the socket, so a misleading one can be handed to the real
-//! engine over an ephemeral listener, with no root and no privileged bind.
+//! A service that answers only the probe its port number registers (Postgres,
+//! Redis, a SOCKS proxy on Tor's port) is reached through `fingerprint_tcp`,
+//! which takes the number as an argument rather than reading it off the
+//! socket. That hands the real engine the number the service belongs on, or one
+//! registered to something else, with no privileged bind.
 
 use std::net::Ipv4Addr;
 

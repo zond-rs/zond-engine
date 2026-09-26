@@ -54,9 +54,7 @@
 //! times wider to allocate and zero without filtering anything more, and
 //! dropping it to let the closing sort absorb the duplicates is slower still:
 //! a response at the 4 KiB read cap can carry over a hundred thousand literal
-//! hits, and the sort would see every one. Measured over the shipped corpus of
-//! 4,737 signatures and 36,503 literals: 1.4 µs for a recorded example, 38 µs
-//! for a full 4 KiB HTTP response.
+//! hits, and the sort would see every one.
 //!
 //! [`Prefilter`] is a trait so a faster backend (e.g. `hyperscan`/`vectorscan`)
 //! can replace the engine without touching callers.
