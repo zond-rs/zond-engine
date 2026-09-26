@@ -14804,6 +14804,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::resolve::ResolveConfi
 pub struct zond_engine::resolve::Resolver
 impl zond_engine::resolve::Resolver
 pub fn zond_engine::resolve::Resolver::from_system() -> Self
+pub fn zond_engine::resolve::Resolver::hosts_file_only() -> Self
 pub async fn zond_engine::resolve::Resolver::resolve(&self, &str) -> alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub fn zond_engine::resolve::Resolver::with_config(zond_engine::resolve::ResolveConfig) -> Self
 impl core::clone::Clone for zond_engine::resolve::Resolver
@@ -18679,6 +18680,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::resolve::ResolveConfi
 pub struct zond_engine::Resolver
 impl zond_engine::resolve::Resolver
 pub fn zond_engine::resolve::Resolver::from_system() -> Self
+pub fn zond_engine::resolve::Resolver::hosts_file_only() -> Self
 pub async fn zond_engine::resolve::Resolver::resolve(&self, &str) -> alloc::vec::Vec<core::net::ip_addr::IpAddr>
 pub fn zond_engine::resolve::Resolver::with_config(zond_engine::resolve::ResolveConfig) -> Self
 impl core::clone::Clone for zond_engine::resolve::Resolver

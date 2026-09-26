@@ -79,10 +79,12 @@
 //!
 //! Whether a scan is allowed to resolve at all, which is what
 //! [`ZondConfig::no_dns`](crate::config::ZondConfig::no_dns) means at request
-//! time, is the caller's policy rather than this module's: a resolver that
-//! refused to run would
-//! be a strange thing to hold. A front end that must not emit DNS supplies no
-//! resolver, and the parse layer then refuses a name with
+//! time, is the caller's policy rather than this module's. A front end that
+//! must not emit name queries resolves with [`Resolver::hosts_file_only`],
+//! which answers the names the hosts file lists and sends nothing, so a lab
+//! box listed there is still a target; a name the file does not list is then
+//! an unknown host. One that supplies no resolver at all has every name
+//! refused with
 //! [`NoHostLookup`](crate::model::parse::target::TargetParseError::NoHostLookup)
 //! rather than covering less than its input said.
 
@@ -178,6 +180,9 @@ impl Default for ResolveConfig {
 pub struct Resolver {
     origin: Origin,
     config: ResolveConfig,
+    /// Whether a lookup may put a question on the network, unicast or
+    /// multicast, or is answered from the hosts file alone.
+    asks: bool,
 }
 
 /// Where a resolver reads what the host says about names.
@@ -195,7 +200,9 @@ enum Origin {
 /// unicast servers, read once and shared by every lookup of a pass.
 pub(crate) struct Snapshot {
     hosts: HostsTable,
-    unicast: Unicast,
+    /// `None` for a resolver that asks nobody, which reads no server
+    /// configuration either.
+    unicast: Option<Unicast>,
 }
 
 impl Resolver {
@@ -216,6 +223,25 @@ impl Resolver {
         Self {
             origin: Origin::System,
             config,
+            asks: true,
+        }
+    }
+
+    /// Builds a resolver that answers from the host's hosts file alone and
+    /// puts nothing on the network: no unicast query and no multicast one.
+    ///
+    /// For a caller forbidden to send name queries, as a scan under
+    /// [`ZondConfig::no_dns`](crate::config::ZondConfig::no_dns) is. Reading
+    /// the file sends nothing, and it is where a lab box reached over a VPN
+    /// gets its name, so refusing every name would refuse the one kind a
+    /// caller avoiding leaks can resolve without one. A name the file does
+    /// not list resolves to nothing, which the target functions report as an
+    /// unknown host rather than asking anybody about it.
+    pub fn hosts_file_only() -> Self {
+        Self {
+            origin: Origin::System,
+            config: ResolveConfig::default(),
+            asks: false,
         }
     }
 
@@ -229,6 +255,7 @@ impl Resolver {
         Self {
             origin: Origin::Given(std::sync::Arc::new(read)),
             config,
+            asks: true,
         }
     }
 
@@ -239,16 +266,19 @@ impl Resolver {
     /// target list sees the same file and the same servers.
     pub(crate) fn snapshot(&self) -> Snapshot {
         let (hosts, dns) = match &self.origin {
-            Origin::System => (HostsTable::read_system(), DnsConfig::read_system()),
+            Origin::System => (
+                HostsTable::read_system(),
+                self.asks.then(DnsConfig::read_system),
+            ),
             #[cfg(test)]
             Origin::Given(read) => {
                 let (hosts, dns) = read();
-                (HostsTable::parse(&hosts), dns)
+                (HostsTable::parse(&hosts), self.asks.then_some(dns))
             }
         };
         Snapshot {
             hosts,
-            unicast: Unicast::from_config(dns),
+            unicast: dns.map(Unicast::from_config),
         }
     }
 
@@ -270,7 +300,9 @@ impl Resolver {
         if let Some(listed) = from_hosts(snapshot, name) {
             return listed;
         }
-        let unicast = &snapshot.unicast;
+        let Some(unicast) = &snapshot.unicast else {
+            return Vec::new();
+        };
 
         if is_multicast_local(name) {
             return self.resolve_local(unicast, name).await;
@@ -330,10 +362,10 @@ impl Snapshot {
         if let Some(name) = self.hosts.name_of(ip) {
             return Reverse::Listed(name.to_owned());
         }
-        if ip.is_loopback() {
-            return Reverse::Unasked;
+        match &self.unicast {
+            Some(unicast) if !ip.is_loopback() => unicast.reverse(ip).await,
+            _ => Reverse::Unasked,
         }
-        self.unicast.reverse(ip).await
     }
 }
 
@@ -363,6 +395,7 @@ impl fmt::Debug for Resolver {
         f.debug_struct("Resolver")
             .field("origin", &origin)
             .field("config", &self.config)
+            .field("asks", &self.asks)
             .finish()
     }
 }
@@ -1010,5 +1043,25 @@ mod tests {
             .filter(|l| l.verbosity == 0 && l.message.contains("no DNS server configured"))
             .collect();
         assert_eq!(said.len(), 1, "{lines:?}");
+    }
+
+    /// A resolver confined to the hosts file answers the names it lists and
+    /// asks nobody about any other.
+    ///
+    /// It is what a caller forbidden to send name queries resolves with: a
+    /// lab box listed in the file is a target it can reach without a query,
+    /// and every other name staying on this machine is the whole promise.
+    #[tokio::test]
+    async fn a_hosts_file_only_resolver_answers_listed_names_and_asks_nobody() {
+        let dns = FakeDns::start(&[("www.example", Ipv4Addr::new(203, 0, 113, 80))]).await;
+        let mut resolver =
+            resolver_over("198.51.100.9 box.htb\n", Ok(dns.as_global(&[])), Vec::new());
+        resolver.asks = false;
+
+        assert_eq!(resolver.resolve("box.htb").await, vec![v4("198.51.100.9")]);
+        for name in ["www.example", "printer.local", "nas"] {
+            assert_eq!(resolver.resolve(name).await, Vec::<IpAddr>::new(), "{name}");
+        }
+        assert_eq!(dns.asked(), Vec::<String>::new());
     }
 }

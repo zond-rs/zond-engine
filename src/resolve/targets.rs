@@ -278,10 +278,8 @@ pub async fn to_set<S: AsRef<str>>(
 /// The addresses `exprs` names, under the caller's DNS policy.
 ///
 /// The one decision [`for_discovery_with`] and [`for_exclusion_with`] both make,
-/// made here once rather than in two identical blocks. `Some`
-/// resolves hostnames; `None` refuses them, which is what a scan running under
-/// [`ZondConfig::no_dns`](crate::config::ZondConfig::no_dns) needs, since looking
-/// a target up emits a query to a resolver somebody else operates. Either way a
+/// made here once rather than in two identical blocks. `Some` resolves
+/// hostnames through the resolver given; `None` refuses them all. Either way a
 /// name that cannot be turned into addresses is reported rather than dropped.
 ///
 /// An empty list of expressions is an empty set of addresses through the
@@ -386,10 +384,13 @@ impl DiscoveryTargets {
 /// differently.
 ///
 /// `names` is the DNS policy, and it is the caller's because only they know it.
-/// `Some` resolves hostnames; `None` refuses them, which is what a scan running
-/// under [`ZondConfig::no_dns`] needs, since looking a target up emits a query
-/// to a resolver somebody else operates. A name given to a `None` is reported as
-/// an unusable expression rather than quietly dropped.
+/// `Some` resolves hostnames through the resolver given; `None` refuses them.
+/// A scan running under [`ZondConfig::no_dns`] passes
+/// [`Resolver::hosts_file_only`]: looking a target up in DNS emits a query to a
+/// resolver somebody else operates, and reading the hosts file emits nothing,
+/// so a name listed there is scanned and any other is reported as an unknown
+/// host. A name that cannot be resolved is reported rather than quietly
+/// dropped.
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {

@@ -1027,6 +1027,12 @@ pub struct ZondConfig {
     /// It governs what this engine sends and nothing else. Traffic the host's
     /// own stack generates for its own reasons is outside anything this crate
     /// can promise.
+    ///
+    /// The hosts file is not a query, and reading it sends nothing. A caller
+    /// resolving the targets of such a scan resolves them with
+    /// [`Resolver::hosts_file_only`](crate::Resolver::hosts_file_only), so a
+    /// lab box a VPN user listed there is still a target and no name leaves
+    /// the machine.
     pub no_dns: bool,
 
     /// Whether discovery may probe the whole segment rather than only the
