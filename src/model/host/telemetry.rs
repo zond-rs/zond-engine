@@ -62,6 +62,11 @@ const MIN_RTT_SAMPLES: usize = 1;
 /// weaker one is used only where there is nothing better: for the neighbour that
 /// answers the segment-wide probe and no other, an upper bound is the only
 /// latency there is, and it beats a blank.
+///
+/// A probe aimed at one address can be an upper bound too, where it waited on
+/// something before it left: the first probe to a neighbour, whose hardware
+/// address this host resolves first. Such a sample is kept and ranked as a
+/// segment-wide one is.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RttSource {
@@ -70,6 +75,12 @@ pub enum RttSource {
     /// A reply to a probe put to the whole segment. An upper bound on the round
     /// trip, inflated by however long the responder waited before answering.
     SegmentWide,
+    /// A reply to the first probe sent to a neighbour, whose hardware address
+    /// this host may not have held when it was sent. An upper bound on the
+    /// round trip, inflated by the address resolution the probe waited on,
+    /// which crosses the same path first: across a path of 1.9 s, a neighbour
+    /// whose address was not held answered its first connect in 3.8 s.
+    FirstToNeighbour,
 }
 
 /// One round-trip measurement: when it was taken, what it measured, and what
@@ -109,8 +120,8 @@ pub struct RttSample {
 /// afternoon.
 ///
 /// Every statistic is computed over the host's [`RttSource::Direct`] samples
-/// when it has any, and falls back to the segment-wide ones only when it has
-/// none. The ranking is applied at the point the numbers are read rather than
+/// when it has any, and falls back to the upper bounds, the segment-wide ones
+/// and a neighbour's first, only when it has none. The ranking is applied at the point the numbers are read rather than
 /// when they are recorded, so a host that answers a broadcast first and a
 /// direct probe afterwards is not left describing itself by the weaker sample.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,6 +270,18 @@ impl HostTelemetry {
     /// reply.
     pub fn add_rtt_from(&mut self, rtt: Duration, protocol: StatusProtocol) {
         self.add_rtt_at(Instant::now(), rtt, Some(protocol));
+    }
+
+    /// Adds a round trip timed from the first probe sent to a neighbour,
+    /// which may have waited on the neighbour's address resolution. See
+    /// [`RttSource::FirstToNeighbour`].
+    pub fn add_first_to_neighbour_rtt_from(&mut self, rtt: Duration, protocol: StatusProtocol) {
+        self.push(RttSample {
+            at: Instant::now(),
+            rtt,
+            source: RttSource::FirstToNeighbour,
+            protocol: Some(protocol),
+        });
     }
 
     /// [`add_rtt`](Self::add_rtt) for a reply that answers a probe the whole

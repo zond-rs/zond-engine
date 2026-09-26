@@ -840,11 +840,6 @@ impl Asking<'_> {
             Some(false) => ServiceDetection::Off,
             _ => identify,
         };
-        // What the scan has measured of the path so far, which the port's
-        // own handshake adds to before its identification is timed from it.
-        let measured = ctx
-            .read_host(target.ip(), |host| host.telemetry().round_trips())
-            .unwrap_or_default();
         port_prober(
             target,
             identify,
@@ -852,7 +847,6 @@ impl Asking<'_> {
             egress,
             endpoint,
             patience,
-            measured,
             ctx.clone(),
             crowd,
         )
@@ -1181,10 +1175,9 @@ fn note_handshake(ctx: &ScanContext, ip: IpAddr, rtt: Duration) {
 /// The handshake is given `patience` to be answered, which the scan sizes
 /// from the path to the host; see [`connect_patience`]. An open port is
 /// identified in its host's `crowd`, every wait on it allowing for the path
-/// as `measured`, the round trips the scan took to the host before, and the
-/// one its own handshake took show it; see [`PathAllowance::of_round_trips`].
-/// The handshake is filed with its host in `ctx` before the identification
-/// begins; see [`note_handshake`].
+/// as the host's round trips show it once its own handshake is among them:
+/// the handshake is filed with its host in `ctx` before the identification
+/// begins, see [`note_handshake`], and the path read back from the host.
 #[allow(clippy::too_many_arguments)]
 async fn port_prober(
     planned: PlannedTarget,
@@ -1193,7 +1186,6 @@ async fn port_prober(
     egress: Egress,
     socket_addr: SocketAddr,
     patience: Duration,
-    measured: Vec<Duration>,
     ctx: ScanContext,
     crowd: std::sync::Arc<crate::scanner::service::Crowd>,
 ) -> ProbedPort {
@@ -1292,8 +1284,11 @@ async fn port_prober(
                 note_handshake(&ctx, target.ip, rtt);
                 // The handshake is a round trip over the very path the
                 // conversation that follows takes, measured a moment ago,
-                // and the latest of those the scan has taken.
-                let path = PathAllowance::of_round_trips(measured.into_iter().chain([rtt]));
+                // and the latest of those the scan has taken. Read back from
+                // the host rather than added to what it held before, so an
+                // upper bound it held, a neighbour's first answer, gives way
+                // to the handshake as it does wherever else the path is read.
+                let path = measured_path(&ctx, target.ip);
                 // Raced against the stop, because the identification is the
                 // one wait here no loop reads it between: on a port that
                 // accepts and says nothing it runs the better part of half a
@@ -1980,7 +1975,7 @@ async fn sweep(
             shaping,
             egress,
             patience,
-            path_finding_wait(&segments, ip),
+            is_neighbour(&segments, ip),
         ))
         .await;
     }
@@ -2102,9 +2097,15 @@ fn absorb_host(
     }
 }
 
-/// How long the first connect to `ip` waits, the one that finds the path to
-/// it: [`NEIGHBOUR_PATH_FINDING_TIMEOUT`] for an address on one of this host's
-/// `segments`, or a link-local one, which is on a segment wherever it is, and
+/// Whether `ip` is a neighbour: an address on one of this host's `segments`,
+/// or a link-local one, which is on a segment wherever it is.
+fn is_neighbour(segments: &OnLinkTable, ip: IpAddr) -> bool {
+    let link_local = matches!(ip, IpAddr::V6(v6) if v6.is_unicast_link_local());
+    link_local || segments.source_for(ip).is_some()
+}
+
+/// How long the first connect to an address waits, the one that finds the
+/// path to it: [`NEIGHBOUR_PATH_FINDING_TIMEOUT`] for a `neighbour`, and
 /// [`PATH_FINDING_TIMEOUT`] for any other.
 ///
 /// A neighbour is resolved before the first SYN to it leaves, across the path
@@ -2112,9 +2113,8 @@ fn absorb_host(
 /// up on a slow neighbour whose hardware address the kernel did not yet hold.
 /// An address anywhere else has its next hop resolved already, or resolved
 /// once for every address behind it.
-fn path_finding_wait(segments: &OnLinkTable, ip: IpAddr) -> Duration {
-    let link_local = matches!(ip, IpAddr::V6(v6) if v6.is_unicast_link_local());
-    if link_local || segments.source_for(ip).is_some() {
+fn path_finding_wait(neighbour: bool) -> Duration {
+    if neighbour {
         NEIGHBOUR_PATH_FINDING_TIMEOUT
     } else {
         PATH_FINDING_TIMEOUT
@@ -2147,8 +2147,12 @@ fn path_finding_wait(segments: &OnLinkTable, ip: IpAddr) -> Duration {
 /// and waits at most `patience` for one the process has none of.
 ///
 /// The first connect to leave is how the path to the address is found, and
-/// waits `finding` for its answer; see [`path_finding_wait`]. Every one after
-/// it waits as on an ordinary path.
+/// waits for the longest path a connect looks for, and for the address
+/// resolution too where the address is a `neighbour`; see
+/// [`path_finding_wait`]. Every one after it waits as on an ordinary path. An
+/// answer to the first connect to a neighbour times the path and the
+/// resolution together, and is kept as the upper bound it is; see
+/// [`RttSource::FirstToNeighbour`](crate::model::host::telemetry::RttSource::FirstToNeighbour).
 async fn prober(
     ip: IpAddr,
     ports: Arc<[u16]>,
@@ -2156,11 +2160,14 @@ async fn prober(
     shaping: Shaping,
     egress: Egress,
     patience: Duration,
-    finding: Duration,
+    neighbour: bool,
 ) -> ProbedHost {
     let mut asked = false;
     let mut refused = None;
-    let mut waiting = finding;
+    let mut waiting = path_finding_wait(neighbour);
+    // Whether a connect has left yet: only the first to a neighbour may have
+    // waited on its resolution.
+    let mut left = false;
     let cut_short = |asked| ProbedHost {
         ip,
         fate: if asked {
@@ -2197,13 +2204,14 @@ async fn prober(
                     };
                     let sent = Handshake::sent(finished);
                     waiting = CONNECT_PROBE_TIMEOUT;
-                    (sent, began, Some(descriptor))
+                    let resolving = neighbour && !std::mem::replace(&mut left, true);
+                    (sent, (began, resolving), Some(descriptor))
                 }
                 Dialled::Ran {
                     result: Err(e),
                     began,
                     ..
-                } => (Handshake::unsent(e), began, None),
+                } => (Handshake::unsent(e), (began, false), None),
                 Dialled::Stopped => return cut_short(asked),
                 Dialled::Starved => {
                     return ProbedHost {
@@ -2222,7 +2230,7 @@ async fn prober(
         }
 
         match knock {
-            Some((Knock::Answered, start)) => return answered(ip, start),
+            Some((Knock::Answered, (start, resolving))) => return answered(ip, start, resolving),
             Some((Knock::Asked, _)) => asked = true,
             Some((Knock::Refused(refusal @ (Refusal::NoRoute | Refusal::Forbidden)), _)) => {
                 return ProbedHost {
@@ -2293,10 +2301,16 @@ impl Knock {
 
 /// The record an address earns by answering, timed from `start`, when the
 /// connect that was answered began: after any wait for a socket and any port
-/// asked before it, so the round trip is that connect's alone.
-fn answered(ip: IpAddr, start: Instant) -> ProbedHost {
+/// asked before it, so the round trip is that connect's alone, and an upper
+/// bound on it where the connect was `resolving` its neighbour first.
+fn answered(ip: IpAddr, start: Instant, resolving: bool) -> ProbedHost {
     let mut host = Host::new(ip);
-    host.add_rtt_from(start.elapsed(), StatusProtocol::TcpConnect);
+    let rtt = start.elapsed();
+    if resolving {
+        host.add_first_to_neighbour_rtt_from(rtt, StatusProtocol::TcpConnect);
+    } else {
+        host.add_rtt_from(rtt, StatusProtocol::TcpConnect);
+    }
     // Every outcome that reaches here required a segment from the target: a
     // completed handshake, or a reset the kernel surfaced as a connection error.
     // `Host::merge` keeps the stronger status, so this survives being folded
@@ -2496,7 +2510,6 @@ mod tests {
             Egress::KERNEL,
             SocketAddr::new(ip, port),
             CONNECT_PROBE_TIMEOUT,
-            Vec::new(),
             ctx.clone(),
             Default::default(),
         )
@@ -2540,7 +2553,6 @@ mod tests {
             Egress::KERNEL,
             SocketAddr::new(ip, port),
             CONNECT_PROBE_TIMEOUT,
-            Vec::new(),
             ctx.clone(),
             Default::default(),
         )
@@ -2556,7 +2568,7 @@ mod tests {
             .get(ip)
             .expect("the refusal proves the host");
 
-        let Fate::Answered(swept) = answered(ip, Instant::now()).fate else {
+        let Fate::Answered(swept) = answered(ip, Instant::now(), false).fate else {
             panic!("an answered address is answered");
         };
 
@@ -2639,7 +2651,8 @@ mod tests {
                 64,
             ),
         ])]);
-        let wait = |ip: &str| path_finding_wait(&segments, ip.parse().expect("an address"));
+        let wait =
+            |ip: &str| path_finding_wait(is_neighbour(&segments, ip.parse().expect("an address")));
 
         for neighbour in ["192.0.2.9", "2001:db8::9", "fe80::9"] {
             assert_eq!(
@@ -2651,6 +2664,40 @@ mod tests {
         for routed in ["203.0.113.9", "2001:db8:9::1"] {
             assert_eq!(wait(routed), PATH_FINDING_TIMEOUT, "{routed}");
         }
+    }
+
+    /// The answer to the first connect a sweep made to a neighbour is kept as
+    /// an upper bound on the path, since the connect may have waited on the
+    /// neighbour's resolution first, and a handshake timed after it is what
+    /// the host's waits are sized from.
+    ///
+    /// Across a path of 1.9 s, a neighbour whose hardware address was not
+    /// held answered that connect in 3.8 s, and kept as a round trip beside
+    /// the true ones it made every wait of the port's identification three
+    /// times what the path needs: the scan of one silent port took 59 s.
+    #[test]
+    fn a_neighbour_s_first_answer_is_a_bound_a_later_handshake_retires() {
+        use crate::model::host::telemetry::RttSource;
+
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9));
+        let resolving = Instant::now()
+            .checked_sub(Duration::from_millis(3_800))
+            .expect("a clock that has run");
+        let Fate::Answered(mut swept) = answered(ip, resolving, true).fate else {
+            panic!("an answered address is answered");
+        };
+        assert_eq!(
+            swept
+                .telemetry()
+                .history()
+                .back()
+                .map(|sample| sample.source),
+            Some(RttSource::FirstToNeighbour)
+        );
+
+        let path = Duration::from_millis(1_900);
+        swept.add_rtt_from(path, StatusProtocol::TcpConnect);
+        assert_eq!(swept.telemetry().round_trips(), [path]);
     }
 
     fn tcp_target(ip: IpAddr, port: u16) -> PlannedTarget {
@@ -2697,7 +2744,6 @@ mod tests {
                 Egress::KERNEL,
                 SocketAddr::new(ip, port),
                 CONNECT_PROBE_TIMEOUT,
-                Vec::new(),
                 crate::scanner::session::ScanSession::new().1,
                 Default::default(),
             )
@@ -2776,7 +2822,6 @@ mod tests {
             Egress::KERNEL,
             SocketAddr::new(ip, port),
             CONNECT_PROBE_TIMEOUT,
-            Vec::new(),
             ctx,
             Default::default(),
         )
@@ -2872,7 +2917,6 @@ mod tests {
                 Egress::KERNEL,
                 SocketAddr::new(ip, port),
                 patience,
-                Vec::new(),
                 ctx,
                 Default::default(),
             ),
@@ -2973,7 +3017,6 @@ mod tests {
             Egress::KERNEL,
             SocketAddr::new(ip, port),
             CONNECT_PROBE_TIMEOUT,
-            Vec::new(),
             ctx.clone(),
             Default::default(),
         ));

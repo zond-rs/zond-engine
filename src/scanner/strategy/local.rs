@@ -1860,6 +1860,9 @@ impl LocalScanner {
                     Some((rtt, RttSource::SegmentWide)) => {
                         host.add_segment_wide_rtt_from(rtt, protocol.clone());
                     }
+                    Some((rtt, RttSource::FirstToNeighbour)) => {
+                        host.add_first_to_neighbour_rtt_from(rtt, protocol.clone());
+                    }
                     None => {}
                 }
 
@@ -1900,6 +1903,7 @@ impl LocalScanner {
             let asked = match source {
                 RttSource::Direct => "",
                 RttSource::SegmentWide => " to the all-nodes echo",
+                RttSource::FirstToNeighbour => " before it was resolved",
             };
             info!(
                 incoming,

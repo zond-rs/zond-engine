@@ -8698,6 +8698,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::status::
 pub mod zond_engine::model::host::telemetry
 #[non_exhaustive] pub enum zond_engine::model::host::telemetry::RttSource
 pub zond_engine::model::host::telemetry::RttSource::Direct
+pub zond_engine::model::host::telemetry::RttSource::FirstToNeighbour
 pub zond_engine::model::host::telemetry::RttSource::SegmentWide
 impl core::clone::Clone for zond_engine::model::host::telemetry::RttSource
 pub fn zond_engine::model::host::telemetry::RttSource::clone(&self) -> zond_engine::model::host::telemetry::RttSource
@@ -8717,6 +8718,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::telem
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::telemetry::RttSource
 pub struct zond_engine::model::host::telemetry::HostTelemetry
 impl zond_engine::model::host::telemetry::HostTelemetry
+pub fn zond_engine::model::host::telemetry::HostTelemetry::add_first_to_neighbour_rtt_from(&mut self, core::time::Duration, zond_engine::model::host::status::StatusProtocol)
 pub fn zond_engine::model::host::telemetry::HostTelemetry::add_rtt(&mut self, core::time::Duration)
 pub fn zond_engine::model::host::telemetry::HostTelemetry::add_rtt_from(&mut self, core::time::Duration, zond_engine::model::host::status::StatusProtocol)
 pub fn zond_engine::model::host::telemetry::HostTelemetry::add_segment_wide_rtt(&mut self, core::time::Duration)
@@ -9144,6 +9146,7 @@ pub struct zond_engine::model::host::Host
 impl zond_engine::model::host::Host
 pub fn zond_engine::model::host::Host::add_filtering(&mut self, zond_engine::model::host::Filtering) -> bool
 pub fn zond_engine::model::host::Host::add_finding(&mut self, zond_engine::model::finding::Finding) -> bool
+pub fn zond_engine::model::host::Host::add_first_to_neighbour_rtt_from(&mut self, core::time::Duration, zond_engine::model::host::status::StatusProtocol)
 pub fn zond_engine::model::host::Host::add_ip(&mut self, core::net::ip_addr::IpAddr) -> bool
 pub fn zond_engine::model::host::Host::add_network_role(&mut self, zond_engine::model::host::NetworkRole) -> bool
 pub fn zond_engine::model::host::Host::add_port(&mut self, zond_engine::model::port::Port) -> bool
@@ -9254,6 +9257,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::name:
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::name::HostName
 pub struct zond_engine::model::host::HostTelemetry
 impl zond_engine::model::host::telemetry::HostTelemetry
+pub fn zond_engine::model::host::telemetry::HostTelemetry::add_first_to_neighbour_rtt_from(&mut self, core::time::Duration, zond_engine::model::host::status::StatusProtocol)
 pub fn zond_engine::model::host::telemetry::HostTelemetry::add_rtt(&mut self, core::time::Duration)
 pub fn zond_engine::model::host::telemetry::HostTelemetry::add_rtt_from(&mut self, core::time::Duration, zond_engine::model::host::status::StatusProtocol)
 pub fn zond_engine::model::host::telemetry::HostTelemetry::add_segment_wide_rtt(&mut self, core::time::Duration)
@@ -17590,6 +17594,7 @@ pub struct zond_engine::Host
 impl zond_engine::model::host::Host
 pub fn zond_engine::model::host::Host::add_filtering(&mut self, zond_engine::model::host::Filtering) -> bool
 pub fn zond_engine::model::host::Host::add_finding(&mut self, zond_engine::model::finding::Finding) -> bool
+pub fn zond_engine::model::host::Host::add_first_to_neighbour_rtt_from(&mut self, core::time::Duration, zond_engine::model::host::status::StatusProtocol)
 pub fn zond_engine::model::host::Host::add_ip(&mut self, core::net::ip_addr::IpAddr) -> bool
 pub fn zond_engine::model::host::Host::add_network_role(&mut self, zond_engine::model::host::NetworkRole) -> bool
 pub fn zond_engine::model::host::Host::add_port(&mut self, zond_engine::model::port::Port) -> bool

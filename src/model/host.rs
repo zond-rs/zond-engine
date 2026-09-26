@@ -1325,6 +1325,21 @@ impl Host {
         self.last_seen = SystemTime::now();
     }
 
+    /// Adds a round trip timed from the first probe sent to a neighbour,
+    /// which this host will report only if it produced no better sample: the
+    /// probe may have waited on the neighbour's address resolution.
+    ///
+    /// See [`RttSource`](crate::model::host::telemetry::RttSource).
+    pub fn add_first_to_neighbour_rtt_from(
+        &mut self,
+        rtt: std::time::Duration,
+        protocol: StatusProtocol,
+    ) {
+        self.telemetry
+            .add_first_to_neighbour_rtt_from(rtt, protocol);
+        self.last_seen = SystemTime::now();
+    }
+
     /// Builder method to add a single RTT measurement and return Self.
     pub fn with_rtt(mut self, rtt: std::time::Duration) -> Self {
         self.add_rtt(rtt);
