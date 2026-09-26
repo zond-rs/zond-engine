@@ -3257,11 +3257,6 @@ mod tests {
         }
     }
 
-    /// The detection envelope has to come back as what the scan ran, not as the
-    /// default: a report replayed from a journal must gate a re-analysis the same
-    /// way the live scan did.
-    /// What a silence means depends on this, so a record that lost it would
-    /// leave every filtered port's `no reply` unreadable.
     /// A record that lost which probe measured its round trips would read them
     /// back as figures nobody can place.
     #[test]
@@ -3329,6 +3324,8 @@ mod tests {
         }
     }
 
+    /// What a silence means depends on this, so a record that lost it would
+    /// leave every filtered port's `no reply` unreadable.
     #[test]
     fn asking_for_icmp_evidence_survives_the_settings_round_trip() {
         use crate::config::ZondConfig;
@@ -3345,6 +3342,9 @@ mod tests {
         assert!(ScanSettings::from(&SettingsRecord::from(&settings)).icmp_evidence);
     }
 
+    /// The detection envelope has to come back as what the scan ran, not as the
+    /// default: a report replayed from a journal must gate a re-analysis the same
+    /// way the live scan did.
     #[test]
     fn the_detection_envelope_survives_the_settings_round_trip() {
         use crate::config::DetectionEnvelope;
