@@ -2932,13 +2932,13 @@ impl ScanReport {
         if open.is_empty() {
             return Vec::new();
         }
-        for host in self.hosts.values().filter(|host| host.is_alive()) {
-            for address in host.ips() {
-                decided.insert(*address);
-            }
-        }
-
         open.subtract(&decided);
+        open.canonicalize();
+
+        // Last, and only the live hosts' addresses still open, since those
+        // are the only ones that can change what is left.
+        let alive = listed_within(self.hosts.values().filter(|host| host.is_alive()), &open);
+        open.subtract(&alive);
         open.canonicalize();
         let v4 = open.v4().iter().copied().map(IpRange::V4);
         let v6 = open.v6().iter().copied().map(IpRange::V6);
@@ -2993,18 +2993,29 @@ impl ScanReport {
     /// A host every one of whose addresses a phase names as unroutable is left
     /// out, since a port there went unasked because nothing could be sent to
     /// it, which [`is_partial`](Self::is_partial) does not count.
+    ///
+    /// The ports are read first, and an address only of a host with a port
+    /// unasked: a report that left nothing unasked, which is nearly every
+    /// report, reads no address and gathers no unroutable one.
     pub(crate) fn left_ports_unasked(&self) -> bool {
+        let mut unasked = self
+            .hosts
+            .values()
+            .filter(|host| {
+                host.ports()
+                    .any(|port| port.state() == crate::model::port::PortState::Unasked)
+            })
+            .peekable();
+        if unasked.peek().is_none() {
+            return false;
+        }
+
         let unroutable: std::collections::BTreeSet<&IpAddr> = self
             .phases
             .iter()
             .flat_map(|phase| phase.unroutable.iter())
             .collect();
-        self.hosts.values().any(|host| {
-            host.ips().iter().any(|ip| !unroutable.contains(ip))
-                && host
-                    .ports()
-                    .any(|port| port.state() == crate::model::port::PortState::Unasked)
-        })
+        unasked.any(|host| host.ips().iter().any(|ip| !unroutable.contains(ip)))
     }
 
     /// Counts derived from the recorded hosts.
@@ -3253,6 +3264,26 @@ impl Unheard {
     pub(crate) fn drops(&self, host: &Host) -> bool {
         host.status() == HostStatus::Unknown && host.ips().iter().any(|ip| self.0.contains(ip))
     }
+}
+
+/// The addresses `hosts` are listed at that fall inside `within`.
+///
+/// Those are the only ones that can change what subtracting the hosts from
+/// `within` leaves, and a host list is as long as its report is large: a set
+/// of every address on it is a second copy of the largest thing in the report,
+/// held for a subtraction the addresses outside `within` take no part in.
+/// `within` is asked once per address, so a caller hands it merged.
+fn listed_within<'h>(hosts: impl Iterator<Item = &'h Host>, within: &IpSet) -> IpSet {
+    let mut listed = IpSet::new();
+    if within.is_empty() {
+        return listed;
+    }
+    for address in hosts.flat_map(Host::ips) {
+        if within.contains(address) {
+            listed.insert(*address);
+        }
+    }
+    listed
 }
 
 /// Adds every range of `from` to `into`, leaving the merge for later.
@@ -3693,6 +3724,66 @@ mod tests {
         let mut host = Host::new(ip(last));
         host.add_port(Port::new(443, Protocol::Tcp, PortState::Filtered));
         host
+    }
+
+    /// **What the report left undecided is closed by a live host inside it,
+    /// and only the hosts inside it are gathered to find out.** A host list
+    /// is as long as its report is large, and a copy of every address on it,
+    /// held to subtract from a handful the phases left open, is a second copy
+    /// of the report.
+    #[test]
+    fn only_a_live_host_inside_what_was_left_open_is_gathered_to_close_it() {
+        let mut sweep = phase(ScanKind::Discovery);
+        let (first, last) = (Ipv4Addr::new(203, 0, 113, 0), Ipv4Addr::new(203, 0, 113, 9));
+        sweep
+            .undecided
+            .push(IpRange::V4(Ipv4Range::new(first, last).expect("a range")));
+
+        let alive = |ip: IpAddr| {
+            let mut host = Host::new(ip);
+            host.set_status(HostStatus::Up);
+            host
+        };
+        let outside: Vec<Host> = (0..=255)
+            .map(|last| alive(IpAddr::V4(Ipv4Addr::new(198, 51, 100, last))))
+            .collect();
+        let inside = alive(ip(5));
+
+        let mut open = IpSet::new();
+        open.insert_range(sweep.undecided[0]);
+        open.canonicalize();
+        let hosts = [&inside].into_iter().chain(&outside);
+        assert_eq!(listed_within(hosts, &open).len(), 1);
+
+        let report = ScanReport::new(sweep, outside.into_iter().chain([inside]));
+        let v4 = |a, b| IpRange::V4(Ipv4Range::new(ip4(a), ip4(b)).expect("a range"));
+        assert_eq!(report.undecided(), [v4(0, 4), v4(6, 9)]);
+    }
+
+    fn ip4(last: u8) -> Ipv4Addr {
+        Ipv4Addr::new(203, 0, 113, last)
+    }
+
+    /// A report reads a host's addresses for ports left unasked only where the
+    /// host has one, and a host every address of which some phase could not
+    /// route to does not count.
+    #[test]
+    fn ports_left_unasked_count_only_on_a_host_the_scan_could_reach() {
+        let unasked = |last| {
+            let mut host = Host::new(ip(last));
+            host.set_status(HostStatus::Up);
+            host.add_port(Port::new(22, Protocol::Tcp, PortState::Unasked));
+            host
+        };
+        let mut sweep = phase(ScanKind::Discovery);
+        sweep.unroutable.push(ip(1));
+
+        assert!(!ScanReport::new(sweep.clone(), [unasked(1)]).left_ports_unasked());
+        assert!(ScanReport::new(sweep.clone(), [unasked(1), unasked(2)]).left_ports_unasked());
+
+        let mut asked = Host::new(ip(3));
+        asked.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
+        assert!(!ScanReport::new(sweep, [asked]).left_ports_unasked());
     }
 
     /// An address a port phase asked on every port and heard nothing from is
