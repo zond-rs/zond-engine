@@ -1922,10 +1922,14 @@ mod tests {
         let (session, ctx) = ScanSession::new();
         let (replies, rx) = tokio::sync::mpsc::channel(16);
         // Inside the first timeout, so the answer finds its probe out on one
-        // attempt and is timed at all.
+        // attempt and is timed at all. The timeout is stretched well past
+        // the backlog: on a loaded machine a sleeping thread and a busy
+        // runtime can deliver the answer later than the default's 200 ms,
+        // and the probe would have run out before it arrived.
         let backlog = Duration::from_millis(100);
         let retry = RETRY_POLICY.configured(RetryConfig {
             max_attempts: std::num::NonZeroU8::new(1),
+            timeout_scale: crate::config::TimeoutScale::new(10.0),
             ..RetryConfig::default()
         });
         let transport =
