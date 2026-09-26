@@ -464,6 +464,16 @@ pub enum SendError {
     /// able to next time either.
     #[error("this transport cannot send that probe: {0}")]
     Unsupported(&'static str),
+
+    /// This process, or the system, had no descriptor left to open what the
+    /// send needed: a socket, or a link's handle for frames.
+    ///
+    /// A fact about this machine, as a [`Refused`](Self::Refused) is, and
+    /// apart from it because it is the one whose words say the least: every
+    /// layer the open passed through adds its own, around the one fact a
+    /// reader can act on, which is the file limit.
+    #[error("file limit reached")]
+    OutOfDescriptors,
 }
 
 impl SendError {
@@ -493,7 +503,9 @@ impl SendError {
             .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
         };
 
-        if chain().any(host_is_down) {
+        if chain().any(crate::system::descriptors::exhausted) {
+            Self::OutOfDescriptors
+        } else if chain().any(host_is_down) {
             Self::Unresolved(error.to_string())
         } else if chain().any(|io| {
             matches!(
@@ -1309,6 +1321,7 @@ mod tests {
                 SendError::Refused(why) => SendError::Refused(why.clone()),
                 SendError::Unroutable(why) => SendError::Unroutable(why.clone()),
                 SendError::Unresolved(why) => SendError::Unresolved(why.clone()),
+                SendError::OutOfDescriptors => SendError::OutOfDescriptors,
             })
         }
     }
@@ -1592,6 +1605,26 @@ mod filter_conformance {
 
         let error = SendError::from_io(Error::from_raw_os_error(libc::ENOBUFS));
         assert!(!error.is_unroutable(), "a full buffer is this host's");
+    }
+
+    /// A send refused for want of a descriptor is named by the one fact a
+    /// reader can act on, whatever layers it was opened through, rather than
+    /// in the words each of them wrapped around it.
+    #[cfg(unix)]
+    #[test]
+    fn a_send_refused_for_want_of_a_descriptor_says_the_file_limit() {
+        use super::SendError;
+        use std::io::Error;
+
+        for code in [libc::EMFILE, libc::ENFILE] {
+            let error = SendError::from_io(Error::from_raw_os_error(code));
+            assert!(
+                matches!(error, SendError::OutOfDescriptors),
+                "{code}: {error:?}"
+            );
+            assert!(!error.is_unroutable(), "a fact about this machine");
+            assert_eq!(error.to_string(), "file limit reached");
+        }
     }
 
     // ─── TCP SYN ─────────────────────────────────────────────────────────────

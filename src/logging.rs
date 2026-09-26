@@ -110,6 +110,9 @@ pub(crate) fn counted(count: u128, one: &str, many: &str) -> String {
 #[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Logged {
+    /// The event's level. A front end shows an error whatever its verbosity,
+    /// so a line meant for a reader who asked for detail is not one.
+    pub(crate) level: tracing::Level,
     /// The `verbosity` field, 0 for a line a default run shows.
     pub(crate) verbosity: u64,
     /// The formatted message.
@@ -156,6 +159,7 @@ pub(crate) fn logged(run: impl FnOnce()) -> Vec<Logged> {
         fn record_follows_from(&self, _: &Id, _: &Id) {}
         fn event(&self, event: &tracing::Event<'_>) {
             let mut logged = Logged {
+                level: *event.metadata().level(),
                 verbosity: 0,
                 message: String::new(),
             };

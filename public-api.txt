@@ -17706,6 +17706,7 @@ impl core::marker::UnsafeUnpin for zond_engine::transport::probe::ProbeKind
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::transport::probe::ProbeKind
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::transport::probe::ProbeKind
 #[non_exhaustive] pub enum zond_engine::transport::probe::SendError
+pub zond_engine::transport::probe::SendError::OutOfDescriptors
 pub zond_engine::transport::probe::SendError::Refused(alloc::string::String)
 pub zond_engine::transport::probe::SendError::Unresolved(alloc::string::String)
 pub zond_engine::transport::probe::SendError::Unroutable(alloc::string::String)

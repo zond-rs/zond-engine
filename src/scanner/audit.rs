@@ -55,6 +55,10 @@ pub(crate) struct Pacing {
     pub(crate) window: WindowSummary,
     /// The verdict this scan gives a port that stayed silent.
     pub(crate) silence: PortState,
+    /// Ports this scan was handed and never put a probe on the wire for. Their
+    /// silence is this machine's, and they are left out of what is read as
+    /// possible loss.
+    pub(crate) unasked: u128,
 }
 
 /// Per-run counters for one raw scanner.
@@ -491,13 +495,23 @@ impl ProbeAudit {
         // FIN, a flagless segment or most datagrams with silence, so a scan
         // asking those counts its open ports among the unanswered, and a share
         // of them reported as possible loss is its findings reported as a fault.
-        if let Some(Pacing { window, silence }) = pacing
+        //
+        // And only of the ports asked. A probe this machine refused to send
+        // cuts the window as backpressure does, and its port was never put to
+        // the network: counted as unanswered, a scan whose sends all failed
+        // reports the network losing every probe it never saw.
+        if let Some(Pacing {
+            window,
+            silence,
+            unasked,
+        }) = pacing
             && silence == PortState::Filtered
             && window.at_floor
-            && targets > 0
+            && targets > unasked
         {
-            let unanswered = targets.saturating_sub(u128::from(self.hosts_found));
-            let share = unanswered as f64 / targets as f64;
+            let asked = targets - unasked;
+            let unanswered = asked.saturating_sub(u128::from(self.hosts_found));
+            let share = unanswered as f64 / asked as f64;
             if share >= UNANSWERED_SHARE_SUGGESTING_LOSS {
                 crate::warn!(
                     "{scanner}: {percent:.0}% unanswered at {} in flight (maybe loss)",
@@ -745,7 +759,11 @@ mod tests {
                     40,
                     StopReason::AttemptsSpent,
                     None,
-                    Some(Pacing { window, silence }),
+                    Some(Pacing {
+                        window,
+                        silence,
+                        unasked: 0,
+                    }),
                 );
             });
             let lines: Vec<&str> = said
@@ -754,6 +772,43 @@ mod tests {
                 .map(|line| line.message.as_str())
                 .collect();
             assert_eq!(!lines.is_empty(), warned, "{silence:?}: {said:?}");
+        }
+    }
+
+    /// A port this machine never sent a probe for is not a port the network
+    /// left unanswered. A refused send cuts the window as backpressure does,
+    /// so a scan whose probe was refused sits at its floor with its one port
+    /// silent, and told that as possible loss it blames the network for a
+    /// probe the network never saw.
+    #[test]
+    fn a_probe_never_sent_is_not_read_as_possible_loss() {
+        let audit = ProbeAudit::new();
+        let window = WindowSummary {
+            capacity: 16,
+            peak: 16,
+            reductions: 1,
+            adaptive: true,
+            at_floor: true,
+        };
+
+        for (unasked, warned) in [(0, true), (1, false)] {
+            let said = crate::logging::logged(|| {
+                audit.report(
+                    "tcp-port",
+                    1,
+                    StopReason::AttemptsSpent,
+                    None,
+                    Some(Pacing {
+                        window,
+                        silence: PortState::Filtered,
+                        unasked,
+                    }),
+                );
+            });
+            let told = said
+                .iter()
+                .any(|line| line.message.contains("unanswered at"));
+            assert_eq!(told, warned, "{unasked} unasked: {said:?}");
         }
     }
 

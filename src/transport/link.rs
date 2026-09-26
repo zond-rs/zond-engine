@@ -142,7 +142,11 @@ impl EthernetSender {
     ) -> Result<&'a mut capture::FrameSender, SendError> {
         if !channels.contains_key(interface) {
             let channel = capture::FrameSender::open(interface).map_err(|error| {
-                SendError::Refused(format!("no datalink channel on {interface}: {error}"))
+                if error.is_exhausted() {
+                    SendError::OutOfDescriptors
+                } else {
+                    SendError::Refused(format!("no datalink channel on {interface}: {error}"))
+                }
             })?;
             channels.insert(interface.to_string(), channel);
         }

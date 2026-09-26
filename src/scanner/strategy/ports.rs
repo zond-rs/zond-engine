@@ -103,7 +103,7 @@ use crate::system::interface::SourceResolver;
 use crate::transport::capture::CapturedSegment;
 use crate::transport::kernel_neighbors::NeighborState;
 use crate::transport::probe::{Emission, ProbeTransport, SendError};
-use crate::{info, logging::error};
+use crate::{info, warn};
 
 // ---------------------------------------------------------------------------
 // What a raw port scan is paced and timed by
@@ -791,11 +791,12 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
                 } else {
                     self.retries_refused += 1;
                 }
+                // A line per exchange, and not an error: the run's one failure
+                // line says what the refusals cost once it knows, and a front
+                // end shows an error whatever its reader asked for, so this
+                // would say the same fact a second time on every console.
                 if self.send_failure.is_none() {
-                    error!(
-                        verbosity = 2,
-                        "failed to send a probe to {host}:{port}: {error:#}"
-                    );
+                    warn!(verbosity = 2, "probe to {host}:{port} not sent ({error:#})");
                     self.send_failure = Some(format!("{error:#}"));
                 }
             }
@@ -1086,29 +1087,21 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// What the report says about the probes this host's own sender refused,
     /// or `None` when it refused none.
     ///
-    /// It says what those refusals cost and no more. A refused first attempt is
-    /// a port recorded unasked; a refused retry is a port asked fewer times than
-    /// the policy allows, whose verdict stands on the attempts that did leave.
+    /// It says what those refusals cost and no more, in one short line with
+    /// the first refusal's cause beside it. A refused first attempt is a port
+    /// recorded unasked; a refused retry is a port asked fewer times than the
+    /// policy allows, whose verdict stands on the attempts that did leave.
     /// Calling the second kind unasked would contradict the verdict the report
     /// holds for the port, which is the one a reader will act on.
-    fn refusals_failure(&self, silence_verdict: &str) -> Option<String> {
+    fn refusals_failure(&self) -> Option<String> {
         let cause = self.send_failure.as_deref().unwrap_or("cause unrecorded");
         let unasked = crate::logging::counted(u128::from(self.unasked_refused), "port", "ports");
         let retries = crate::logging::counted(u128::from(self.retries_refused), "retry", "retries");
         match (self.unasked_refused, self.retries_refused) {
             (0, 0) => None,
-            (_, 0) => Some(format!(
-                "{unasked} recorded unasked rather than {silence_verdict}: their probes \
-                 could not be sent: {cause}"
-            )),
-            (0, _) => Some(format!(
-                "{retries} could not be sent, so some ports were asked fewer times than \
-                 the retry policy allows: {cause}"
-            )),
-            (_, _) => Some(format!(
-                "{unasked} recorded unasked rather than {silence_verdict}, and {retries} \
-                 lost, because probes could not be sent: {cause}"
-            )),
+            (_, 0) => Some(format!("{unasked} unasked, probes not sent ({cause})")),
+            (0, _) => Some(format!("{retries} not sent, ports asked less ({cause})")),
+            (_, _) => Some(format!("{unasked} unasked, {retries} not sent ({cause})")),
         }
     }
 
@@ -1134,7 +1127,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         probes: u128,
         reason: StopReason,
     ) {
-        if let Some(failure) = self.refusals_failure(silence_verdict) {
+        if let Some(failure) = self.refusals_failure() {
             self.ctx.record_failure(kind, failure);
         }
 
@@ -1181,6 +1174,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             Some(Pacing {
                 window: self.window.summary(),
                 silence,
+                unasked: u128::from(self.unasked_refused) + u128::from(self.unasked_unsent),
             }),
         );
         self.ctx.record_probe_stats(self.audit.stats(
@@ -2400,6 +2394,30 @@ mod tests {
             );
             assert!(core.send_failure.is_some(), "and it is this host's fault");
         }
+    }
+
+    /// A refused send costs the default console one short line: the failure
+    /// the run files, the count and then the cause. The line that noticed the
+    /// first refusal is for a reader who asked for exchanges, since a front
+    /// end shows an error whatever its reader asked for, and the two would
+    /// say one fact twice, at length, on every console.
+    #[test]
+    fn a_refused_send_is_told_once_in_one_short_line() {
+        let (mut core, _session) = core();
+
+        let said = crate::logging::logged(|| {
+            core.record_send((TARGET, 80), Err(&SendError::OutOfDescriptors), true);
+        });
+
+        assert!(
+            said.iter()
+                .all(|line| line.level != tracing::Level::ERROR && line.verbosity >= 2),
+            "{said:?}"
+        );
+        assert_eq!(
+            core.refusals_failure().as_deref(),
+            Some("1 port unasked, probes not sent (file limit reached)")
+        );
     }
 
     /// A core whose transport reads `state` as the kernel's word on

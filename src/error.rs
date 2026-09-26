@@ -606,6 +606,7 @@ impl Coded for SendError {
             SendError::Unresolved(_) => "send.unresolved",
             SendError::Refused(_) => "send.refused",
             SendError::Unsupported(_) => "send.unsupported",
+            SendError::OutOfDescriptors => "send.out_of_descriptors",
         }
     }
 }
@@ -1002,6 +1003,7 @@ mod tests {
             "scoped_address.empty_zone",
             "scoped_address.not_an_address",
             "scoped_address.zone_on_unscoped",
+            "send.out_of_descriptors",
             "send.refused",
             "send.unresolved",
             "send.unroutable",
