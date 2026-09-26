@@ -1826,10 +1826,8 @@ mod tests {
     /// cannot show, so the phase records it as a failure.
     #[tokio::test]
     async fn a_port_that_refuses_a_connection_is_written_into_the_report() {
-        // Bound and dropped: nothing answers, but the stack refuses promptly.
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        // Nothing answers, but the stack refuses promptly.
+        let addr = crate::testing::loopback::refused_port(std::net::IpAddr::from([127, 0, 0, 1]));
 
         let (session, ctx) = ScanSession::new();
         let ip = addr.ip();
@@ -2152,9 +2150,8 @@ mod tests {
         ) {
             return;
         }
-        let refusing = std::net::TcpListener::bind("127.0.0.1:0")
-            .and_then(|listener| listener.local_addr())
-            .expect("a loopback port");
+        let refusing =
+            crate::testing::loopback::refused_port(std::net::IpAddr::from([127, 0, 0, 1]));
         let (_session, ctx) = ScanSession::new();
         let crowds = Crowds::default();
         let crowd = crowds.of(refusing.ip(), None);

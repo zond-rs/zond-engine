@@ -89,7 +89,7 @@ fn assert_valid_against(url: &str, document: &Value) {
 #[tokio::test]
 async fn a_real_port_scan_exports_a_document_the_schema_accepts() {
     let server = spawn_banner_server(b"SSH-2.0-OpenSSH_8.9p1\r\n").await;
-    let closed = closed_loopback_port().await;
+    let closed = closed_loopback_port();
     // A wide enough port list that the liveness pass earns its place and the
     // export carries both phases: a scan of a handful of ports costs no more
     // probed than asked and runs the ports alone.
@@ -428,7 +428,7 @@ fn csv_rows(text: &str) -> Vec<Vec<String>> {
 #[tokio::test]
 async fn a_real_scan_exports_a_rectangular_table() {
     let server = spawn_banner_server(b"SSH-2.0-OpenSSH_8.9p1\r\n").await;
-    let closed = closed_loopback_port().await;
+    let closed = closed_loopback_port();
     let ports = format!("{},{}", server.port, closed);
 
     let outcome = run_scan(target_map(LOOPBACK, &ports), &test_config()).await;
@@ -537,7 +537,7 @@ fn unbalanced_tag(page: &str) -> Option<String> {
 #[tokio::test]
 async fn a_real_scan_exports_a_page_that_closes_every_tag() {
     let server = spawn_banner_server(b"SSH-2.0-OpenSSH_8.9p1\r\n").await;
-    let closed = closed_loopback_port().await;
+    let closed = closed_loopback_port();
     let ports = format!("{},{}", server.port, closed);
 
     let outcome = run_scan(target_map(LOOPBACK, &ports), &test_config()).await;

@@ -2924,10 +2924,7 @@ mod tests {
             // And a port nothing listens on, which the scan decides about
             // before it finds it closed, and which is no open port left
             // unidentified.
-            let closed = std::net::TcpListener::bind("127.0.0.1:0")
-                .and_then(|listener| listener.local_addr())
-                .expect("binds loopback")
-                .port();
+            let closed = crate::testing::loopback::refused_port(addr.ip()).port();
             let (tx, rx) = mpsc::channel(2);
             for port in [addr.port(), closed] {
                 tx.send(tcp_target(addr.ip(), port)).await.expect("queued");

@@ -441,13 +441,10 @@ mod tests {
     #[test]
     fn an_exhausted_connection_budget_refuses_before_dialing() {
         // One connection permitted; the second is refused with a typed cause and
-        // never dials. The port is a closed one on loopback, bound and let go,
-        // so the one dial there is refused at once and nothing leaves the
-        // machine.
-        let addr: SocketAddr = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
+        // never dials. The port is a closed one on loopback, so the one dial
+        // there is refused at once and nothing leaves the machine.
+        let addr: SocketAddr =
+            crate::testing::loopback::refused_port(std::net::IpAddr::from([127, 0, 0, 1]));
         let mut caps = LiveCapabilities::new(
             addr,
             Protocol::Tcp,

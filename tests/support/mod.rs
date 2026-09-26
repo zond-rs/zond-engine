@@ -147,15 +147,16 @@ pub async fn spawn_banner_server(banner: &'static [u8]) -> Server {
     Server { port, _task: task }
 }
 
-/// Reserves and immediately frees a loopback port, yielding a number that is
-/// closed (connection-refused) for the remainder of the test.
-pub async fn closed_loopback_port() -> u16 {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .await
-        .expect("bind to reserve a port");
-    let port = listener.local_addr().expect("reserved addr").port();
-    drop(listener);
-    port
+/// A loopback port that refuses every connection for the remainder of the
+/// test; see [`loopback::refused_ports`].
+pub fn closed_loopback_port() -> u16 {
+    closed_loopback_ports(1)[0]
+}
+
+/// `count` loopback ports, each refusing every connection for the remainder
+/// of the test; see [`loopback::refused_ports`].
+pub fn closed_loopback_ports(count: usize) -> Vec<u16> {
+    loopback::refused_ports(Ipv4Addr::LOCALHOST.into(), count)
 }
 
 /// Serves a simple UDP response. On the first packet received, it writes `reply`

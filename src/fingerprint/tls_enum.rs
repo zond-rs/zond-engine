@@ -916,10 +916,7 @@ mod tests {
     /// hello that was never sent.
     #[tokio::test]
     async fn a_closed_port_leaves_every_version_unfinished() {
-        // Bound and dropped, so the port is closed and connections are refused.
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
-        let addr = listener.local_addr().expect("has an address");
-        drop(listener);
+        let addr = crate::testing::loopback::refused_port(std::net::IpAddr::from([127, 0, 0, 1]));
 
         let support = enumerate_tls(addr).await;
         assert!(support.versions().is_empty(), "nothing was accepted");

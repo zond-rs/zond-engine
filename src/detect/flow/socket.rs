@@ -678,11 +678,8 @@ mod tests {
     /// its own, before the budget had any say: that is silence, not a cut.
     #[test]
     fn a_port_that_refuses_the_connection_is_unanswered_rather_than_refused() {
-        // Bound and dropped, so the port is closed and the kernel resets.
-        let addr = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
+        // Closed, so the kernel resets.
+        let addr = crate::testing::loopback::refused_port(std::net::IpAddr::from([127, 0, 0, 1]));
         let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, 5_000, 8));
 
         assert!(probe.speak(b"anything").is_none());

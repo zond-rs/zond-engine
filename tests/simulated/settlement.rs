@@ -170,7 +170,7 @@ async fn the_connect_path_settles_what_it_probed() {
     use zond_engine::model::target::{PlannedTarget, Target};
 
     let listener = spawn_banner_server(b"hi\r\n").await;
-    let closed = closed_loopback_port().await;
+    let closed = closed_loopback_port();
 
     let (session, ctx) = ScanSession::new();
     let observer = ctx.clone();
@@ -240,10 +240,7 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
 
     // Four closed loopback ports: every probe earns a verdict, so a complete
     // sitting settles the whole plan.
-    let mut ports = Vec::new();
-    for _ in 0..4 {
-        ports.push(closed_loopback_port().await);
-    }
+    let ports = closed_loopback_ports(4);
     let spec = ports
         .iter()
         .map(u16::to_string)
@@ -404,7 +401,6 @@ async fn a_journalled_scan_lets_a_watcher_finish() {
     plan.add_unit(TargetSet::new(
         IpSet::from(LOOPBACK),
         closed_loopback_port()
-            .await
             .to_string()
             .parse::<PortSet>()
             .expect("ports"),
@@ -523,10 +519,10 @@ async fn closed_ports_at(
     use zond_engine::model::port::PortSet;
     use zond_engine::model::target::{TargetMap, TargetSet};
 
-    let mut ports = Vec::new();
-    for _ in 0..count {
-        ports.push(closed_loopback_port().await.to_string());
-    }
+    let ports: Vec<String> = closed_loopback_ports(count)
+        .iter()
+        .map(u16::to_string)
+        .collect();
 
     let mut plan = TargetMap::new();
     plan.add_unit(TargetSet::new(
@@ -745,10 +741,10 @@ async fn a_liveness_pass_stopped_before_it_asked_names_every_address_undecided()
     let mut plan = TargetMap::new();
     // Enough ports that the liveness pass runs, which is the pass this is
     // about: a scan of a few ports probes them directly instead.
-    let mut ports = Vec::new();
-    for _ in 0..10 {
-        ports.push(closed_loopback_port().await.to_string());
-    }
+    let ports: Vec<String> = closed_loopback_ports(10)
+        .iter()
+        .map(u16::to_string)
+        .collect();
     plan.add_unit(TargetSet::new(
         range.clone(),
         ports.join(",").parse::<PortSet>().expect("ports"),

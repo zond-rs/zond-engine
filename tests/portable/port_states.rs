@@ -54,7 +54,7 @@ async fn a_refused_port_is_reported_closed() {
         return;
     }
 
-    let port = closed_loopback_port().await;
+    let port = closed_loopback_port();
     let outcome = run_scan(target_map(LOOPBACK, &port.to_string()), &test_config()).await;
 
     assert_eq!(
@@ -78,8 +78,8 @@ async fn a_mixed_scan_reports_open_and_closed_alike() {
     }
 
     let open = spawn_banner_server(b"hi\r\n").await;
-    let closed_a = closed_loopback_port().await;
-    let closed_b = closed_loopback_port().await;
+    let closed = closed_loopback_ports(2);
+    let (closed_a, closed_b) = (closed[0], closed[1]);
 
     let spec = format!("{},{},{}", open.port, closed_a, closed_b);
     let outcome = run_scan(target_map(LOOPBACK, &spec), &test_config()).await;
@@ -149,8 +149,8 @@ async fn closed_ports_reach_the_summary() {
         return;
     }
 
-    let closed_a = closed_loopback_port().await;
-    let closed_b = closed_loopback_port().await;
+    let closed = closed_loopback_ports(2);
+    let (closed_a, closed_b) = (closed[0], closed[1]);
     let spec = format!("{closed_a},{closed_b}");
     let outcome = run_scan(target_map(LOOPBACK, &spec), &test_config()).await;
 

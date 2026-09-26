@@ -384,6 +384,46 @@ impl SilentPort {
 // ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
 // ╚════════════════════════════════════════════╝
 
+/// `count` TCP ports at `ip`, a loopback address, that refuse a connection now
+/// and go on refusing one for as long as the test runs, highest first.
+///
+/// A port found by binding one and letting it go is not closed for long: the
+/// system hands it straight back to the next socket that asks for any port,
+/// which in a test run is another test's service, and the scan counted on a
+/// refusal connects to that service instead and is answered or counted there.
+/// These are taken from below the range the system hands such a socket, where
+/// no test binds, counting down from the top of the ports the system keeps for
+/// its own services. Each is asked first and kept only if it refuses, since
+/// one may hold a service of the machine's.
+///
+/// # Panics
+///
+/// Where fewer than `count` of those ports refuse, which is a machine serving
+/// on nearly all of them.
+pub(crate) fn refused_ports(ip: std::net::IpAddr, count: usize) -> Vec<u16> {
+    // Long enough for a refusal from a stack that retries a reset handshake
+    // before giving up, and only ever spent on a port that holds a service.
+    const REFUSAL_PATIENCE: Duration = Duration::from_secs(3);
+
+    let refused: Vec<u16> = (1..1024u16)
+        .rev()
+        .filter(|&port| {
+            let asked =
+                std::net::TcpStream::connect_timeout(&SocketAddr::new(ip, port), REFUSAL_PATIENCE);
+            matches!(asked, Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused)
+        })
+        .take(count)
+        .collect();
+    assert_eq!(refused.len(), count, "too few ports refuse at {ip}");
+    refused
+}
+
+/// A TCP port at `ip`, a loopback address, that refuses a connection for as
+/// long as the test runs; see [`refused_ports`].
+pub(crate) fn refused_port(ip: std::net::IpAddr) -> SocketAddr {
+    SocketAddr::new(ip, refused_ports(ip, 1)[0])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,6 +444,36 @@ mod tests {
             !held_here(far),
             "an endpoint no socket of this process holds was taken for one"
         );
+    }
+
+    /// A refused port refuses, and is none a socket asking for any port is
+    /// handed, however many ask.
+    ///
+    /// Found by binding a port and letting it go, a closed port is the next
+    /// one handed out, and a test's scan connects to whichever service took it.
+    #[test]
+    fn a_refused_port_is_never_handed_to_a_socket_asking_for_any() {
+        let ip = std::net::IpAddr::from([127, 0, 0, 1]);
+        let refused = refused_ports(ip, 2);
+        assert_ne!(refused[0], refused[1], "two ports, not one twice");
+
+        // Held together, so each is handed a port none of the others holds;
+        // few enough for a run under a low descriptor limit.
+        let asking: Vec<std::net::TcpListener> = (0..32)
+            .map(|_| std::net::TcpListener::bind((ip, 0)).expect("binds loopback"))
+            .collect();
+        for listener in &asking {
+            let handed = listener.local_addr().expect("an address").port();
+            assert!(!refused.contains(&handed), "port {handed} was handed out");
+        }
+        for port in refused {
+            let asked = std::net::TcpStream::connect(SocketAddr::new(ip, port));
+            assert_eq!(
+                asked.map(|_| ()).map_err(|error| error.kind()),
+                Err(std::io::ErrorKind::ConnectionRefused),
+                "port {port}"
+            );
+        }
     }
 
     /// What was sent before the count is counted, all of it and nothing

@@ -44,7 +44,7 @@ async fn a_loopback_scan_on_the_link_layer_reads_both_answers_off_the_capture() 
     }
 
     let open = spawn_banner_server(b"hi\r\n").await;
-    let closed = closed_loopback_port().await;
+    let closed = closed_loopback_port();
     let mut cfg = test_config();
     cfg.send_mode = SendMode::Ethernet;
     let outcome = run_scan(

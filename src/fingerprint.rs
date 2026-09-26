@@ -3427,10 +3427,7 @@ mod tests {
             .await
             .expect("binds loopback");
         let open = listener.local_addr().expect("a local address");
-        let closed = {
-            let gone = std::net::TcpListener::bind("127.0.0.1:0").expect("binds loopback");
-            gone.local_addr().expect("a local address")
-        };
+        let closed = crate::testing::loopback::refused_port(std::net::IpAddr::from([127, 0, 0, 1]));
 
         // Dialled the way an analyzer dials, inside the identification's
         // scope and inside a clock of its own.
