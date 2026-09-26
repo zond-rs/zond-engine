@@ -559,6 +559,9 @@ pub enum ServiceDetection {
     /// What such a port most often turns out to be is a database moved off its
     /// number, which speaks only when spoken to in its own protocol. Each costs
     /// a connection and a read, and only on a port that said nothing else.
+    /// Across a path slower than a third of a second, where each would cost
+    /// more in crossing the path than in the asking, only the likeliest is
+    /// put.
     ///
     /// The default, because it is both the most informative level and, against
     /// an unrecognised port, the *fastest*. The alternative to asking is waiting

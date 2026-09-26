@@ -173,6 +173,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
     // flight, which keep what the port phase recorded and nothing more.
     ctx.stopping_before(Pass::Services);
     crowds.ask_again(ctx, ScannerKind::Service).await;
+    crowds.report_silence();
 
     quiet.report(ctx, asked);
     in_part.report_in_part(ctx);
@@ -746,6 +747,46 @@ impl Crowds {
     }
 }
 
+impl Crowds {
+    /// Says once which ports took the connection and answered nothing they
+    /// were asked, for a pass whose identifications, second askings
+    /// included, have all finished.
+    ///
+    /// Such a port keeps the name its number gives it, marked as inferred,
+    /// and without this nothing at the console says that the name is the
+    /// number's and not an answer's. A decision behind the result, so it is
+    /// said at the first verbosity, as one line however many ports it covers.
+    pub(crate) fn report_silence(&self) {
+        let silent: Vec<(ScopedIp, u16)> = {
+            let hosts = self.hosts.lock().unwrap_or_else(|held| held.into_inner());
+            hosts
+                .values()
+                .flat_map(|crowd| {
+                    std::mem::take(
+                        &mut *crowd.silent.lock().unwrap_or_else(|held| held.into_inner()),
+                    )
+                })
+                .collect()
+        };
+        if let Some(line) = silence_line(&silent) {
+            crate::info!(verbosity = 1, "{line}");
+        }
+    }
+}
+
+/// The console line for `silent`, named from the first of them, or none
+/// where there are none.
+fn silence_line(silent: &[(ScopedIp, u16)]) -> Option<String> {
+    let (ip, number) = silent
+        .iter()
+        .min_by_key(|(ip, number)| (ip.addr(), *number))?;
+    let ports = match silent.len() - 1 {
+        0 => ip.endpoint(*number),
+        rest => format!("{} and {rest} more", ip.endpoint(*number)),
+    };
+    Some(format!("{ports} said nothing when asked (unidentified)"))
+}
+
 /// The identifications of one host's ports in one pass, which the host
 /// answers side by side or in turn as it is built to.
 ///
@@ -791,6 +832,10 @@ pub(crate) struct Crowd {
     /// for by; see
     /// [`ZondConfig::target_names`](crate::config::ZondConfig::target_names).
     name: Option<Arc<str>>,
+    /// The ports that took the connection and answered nothing they were
+    /// asked, each waited on until its clock ran out; see
+    /// [`Crowds::report_silence`].
+    silent: Mutex<Vec<(ScopedIp, u16)>>,
 }
 
 /// A port a [`Crowd`] owes a second asking, and what that asking needs.
@@ -834,6 +879,12 @@ impl Crowd {
         .await;
         let alone = visit.leave();
         self.heard(&found);
+        if found.responses.is_empty() && found.ran_out_waiting && !found.starved {
+            self.silent
+                .lock()
+                .unwrap_or_else(|held| held.into_inner())
+                .push((key.clone(), port.number()));
+        }
         if let (Some(addr), false, true, true) = (
             addr,
             alone,
@@ -913,6 +964,11 @@ impl Crowd {
             .await;
             self.heard(&again);
             if !again.responses.is_empty() {
+                let number = again.port.number();
+                self.silent
+                    .lock()
+                    .unwrap_or_else(|held| held.into_inner())
+                    .retain(|(silent, port)| !(*silent == key && *port == number));
                 named.push((key, again));
             }
         }
@@ -966,6 +1022,76 @@ fn write_back(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A port that takes the connection and answers nothing it is asked is
+    /// said once at the console, and a port that answered is not.
+    ///
+    /// Such a port keeps the name its number gives it, and with nothing said
+    /// the report reads as though the name had been established: a listener
+    /// holding 2222 open in silence read `open ssh` like an SSH server.
+    #[tokio::test]
+    async fn a_port_that_answers_nothing_is_said_to_have_answered_nothing() {
+        use crate::testing::loopback::{SilentPort, accept_from_this_process};
+
+        let silent = SilentPort::open();
+        let greeting = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binds loopback");
+        let speaks = greeting.local_addr().expect("a local address");
+        tokio::spawn(async move {
+            while let Ok(mut sock) = accept_from_this_process(&greeting).await {
+                let _ = sock.write_all(b"SSH-2.0-OpenSSH_9.6\r\n").await;
+            }
+        });
+
+        let crowds = Crowds::default();
+        for addr in [silent.addr(), speaks] {
+            let key: ScopedIp = addr.ip().into();
+            let stream = TcpStream::connect(addr).await.expect("connects");
+            let port =
+                crate::fingerprint::baseline_port(addr.port(), Protocol::Tcp, PortState::Open);
+            crowds
+                .of(addr.ip(), None)
+                .identify(
+                    key,
+                    stream,
+                    port,
+                    ServiceDetection::Banner,
+                    Egress::KERNEL,
+                    PathAllowance::NONE,
+                )
+                .await;
+        }
+
+        let silent_ports: Vec<(ScopedIp, u16)> = crowds
+            .of(silent.addr().ip(), None)
+            .silent
+            .lock()
+            .expect("not poisoned")
+            .clone();
+        let key: ScopedIp = silent.addr().ip().into();
+        assert_eq!(silent_ports, vec![(key.clone(), silent.addr().port())]);
+        assert_eq!(
+            silence_line(&silent_ports).as_deref(),
+            Some(
+                format!(
+                    "{} said nothing when asked (unidentified)",
+                    key.endpoint(silent.addr().port())
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(
+            silence_line(&[(key.clone(), 2222), (key.clone(), 22)]).as_deref(),
+            Some(
+                format!(
+                    "{} and 1 more said nothing when asked (unidentified)",
+                    key.endpoint(22)
+                )
+                .as_str()
+            )
+        );
+    }
 
     /// Eighty-three ports reported one by one would be eighty-three report
     /// lines, and the count of strategies that did not run would go up by

@@ -725,6 +725,7 @@ pub async fn scan(
         ctx.stopping_before(Pass::Services);
     }
     crowds.ask_again(&ctx, ScannerKind::Connect).await;
+    crowds.report_silence();
     tarpits.report(&ctx, ScannerKind::Connect);
     shortfall.report(&ctx, ScannerKind::Connect, "port", "ports");
     finish(&ctx, audit, ScannerKind::Connect, probes, reason);

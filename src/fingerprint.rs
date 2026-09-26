@@ -1227,7 +1227,8 @@ impl Rung {
 /// service that answers an unknown command with an error rather than a closed
 /// socket would otherwise end the rung on the probe before its own.
 ///
-/// Which probes are asked is [`ServiceDetection::probe_intensity`].
+/// Which probes are asked is [`ServiceDetection::probe_intensity`], and how
+/// many of them the path decides; see [`guesses_worth_the_path`].
 async fn last_resort(
     first: TcpStream,
     peer: &Authority,
@@ -1235,8 +1236,9 @@ async fn last_resort(
     detection: ServiceDetection,
     egress: Egress,
 ) -> ResponseSet {
-    let probes =
+    let mut probes =
         SignatureDb::global().universal_tcp_probe_payloads(port, detection.probe_intensity());
+    probes.truncate(guesses_worth_the_path(probes.len(), detection));
 
     let mut replies = Vec::new();
     let mut opened = Some(first);
@@ -1257,6 +1259,29 @@ async fn last_resort(
     }
 
     ResponseSet::from_banners(replies)
+}
+
+/// How many of `guesses` other services' questions a port that has answered
+/// none of its own is asked, likeliest first, at `detection`.
+///
+/// All of them where the path costs less than a question's own wait, which is
+/// every path under a third of a second. Across a slower one, the default
+/// level asks the likeliest alone. Each guess is a connection and a read, and
+/// each allows for the path in full, since an answer to it has the path to
+/// cross; across a path of two seconds that is near nine seconds a guess, on a
+/// port that has already stayed silent through every wait its own questions
+/// allowed for the path. The likeliest guess is the one worth that price, a
+/// database moved off its number, and the rest would multiply the silent
+/// port's cost by their number for services rarer than it. The thorough level
+/// asks every guess whatever the path, which is what a caller choosing it has
+/// said the time is for.
+fn guesses_worth_the_path(guesses: usize, detection: ServiceDetection) -> usize {
+    let slow = on_path(PROBE_READ_TIMEOUT) > PROBE_READ_TIMEOUT * 2;
+    match detection {
+        ServiceDetection::Thorough => guesses,
+        _ if slow => guesses.min(1),
+        _ => guesses,
+    }
 }
 
 /// Everything a port will say in the clear.
@@ -2913,6 +2938,67 @@ mod tests {
             String::from_utf8_lossy(&expected),
             "the raw-print port was asked something else"
         );
+    }
+
+    /// How many of other services' questions a port that answered none of its
+    /// own is put, across a path measured at `round_trip`, at `detection`:
+    /// counted as the connections a port that closes each at once takes, one
+    /// per question.
+    async fn guesses_put(round_trip: Option<Duration>, detection: ServiceDetection) -> usize {
+        use crate::testing::loopback::accept_from_this_process;
+        use std::sync::atomic::AtomicUsize;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binds loopback");
+        let addr = listener.local_addr().expect("a local address");
+        let taken = Arc::new(AtomicUsize::new(0));
+        let counting = Arc::clone(&taken);
+        let server = tokio::spawn(async move {
+            while let Ok(sock) = accept_from_this_process(&listener).await {
+                counting.fetch_add(1, Ordering::Relaxed);
+                drop(sock);
+            }
+        });
+
+        let first = TcpStream::connect(addr).await.expect("connects");
+        let dialling = Dialling {
+            egress: Egress::KERNEL,
+            path: PathAllowance::of_median(round_trip),
+            tally: Arc::new(Tally::default()),
+        };
+        let peer = Authority::new(addr);
+        DIALLING
+            .scope(
+                dialling,
+                last_resort(first, &peer, 2222, detection, Egress::KERNEL),
+            )
+            .await;
+        server.abort();
+        taken.load(Ordering::Relaxed)
+    }
+
+    /// A port silent to its own questions, across a path slower than a
+    /// question's own wait, is put only the likeliest of other services'
+    /// questions at the default level, and every one of them where the path
+    /// is ordinary or the caller asked for the thorough level.
+    ///
+    /// Each question allows for the path in full, so across a path of two
+    /// seconds every guess adds nearly nine seconds to a port that has shown
+    /// it answers nothing: asked them all, a silent port behind such a path
+    /// took most of a minute to be named by its number.
+    #[tokio::test]
+    async fn a_silent_port_across_a_slow_path_is_put_only_the_likeliest_guess() {
+        let slow = Some(Duration::from_millis(1_900));
+        let all = guesses_put(None, ServiceDetection::Probe).await;
+        assert!(all >= 2, "the premise needs guesses to leave out: {all}");
+
+        assert_eq!(guesses_put(slow, ServiceDetection::Probe).await, 1);
+        assert_eq!(
+            guesses_put(Some(Duration::from_millis(40)), ServiceDetection::Probe).await,
+            all
+        );
+        assert!(guesses_put(slow, ServiceDetection::Thorough).await >= all);
     }
 
     /// An answer nothing recognised leaves the port the name its number gives
