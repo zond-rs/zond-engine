@@ -719,8 +719,9 @@ impl Crowds {
     ///
     /// A host's ports one after another, and hosts side by side, as many at
     /// once as the pass identifies ports. Each takes one socket's share of the
-    /// process's budget for its connection. A scan told to stop asks nothing
-    /// more, and the ports keep what their first identification drew.
+    /// process's budget for its connection. A scan told to stop, or that has
+    /// outlived its budget, asks nothing more and cuts short the asking in
+    /// flight, and the ports keep what their first identification drew.
     ///
     /// Returns each port whose second asking the file limit cut short, which
     /// the pass counts as identified in part as it counts a first asking cut
@@ -755,7 +756,10 @@ impl Crowds {
             if owed.is_empty() {
                 continue;
             }
-            pool.admit(crowd.ask_alone(owed, ctx.handle.clone())).await;
+            if ctx.handle.should_stop() {
+                break;
+            }
+            pool.admit(crowd.ask_alone(owed, ctx.clone())).await;
         }
         pool.drain().await;
         drop(pool);
@@ -838,6 +842,18 @@ fn silence_line(silent: &[(ScopedIp, u16)]) -> Option<String> {
 /// whose wait ran out included, and a second asking put while it still holds
 /// them waits behind them as the first did, and runs out of its wait the same
 /// way; see [`Backlog`].
+///
+/// A second asking tests whether the silence was the queue's, and the host's
+/// answers settle it. Its ports are asked one after another, each a whole
+/// identification, so one late answer on a host with hundreds of ports that
+/// wait to be spoken to would otherwise owe every one of them a second walk
+/// in a row: a pass running for as many minutes as the host has silent ports,
+/// one connection open at a time, which reads as a scan that hung. So a host
+/// goes on being asked again only while its second askings have drawn
+/// something at least as often as nothing. One that answers alone what it
+/// would not in company is asked on, and one that stays silent alone has
+/// refuted the queue. The host's silence costs at most one walk more than
+/// its answers repay; see [`Crowd::ask_alone`].
 ///
 /// Whether an identification had company is counted as the detection stage
 /// counts it, per host; see [`HostContention`].
@@ -965,20 +981,25 @@ impl Crowd {
     /// or draws nothing again, keeps what its first identification drew.
     ///
     /// Each dials the port afresh, given the connect budget and the path's
-    /// allowance.
-    async fn ask_alone(
-        self: Arc<Self>,
-        owed: Vec<Owed>,
-        handle: crate::scanner::handle::ScanHandle,
-    ) -> AskedAlone {
+    /// allowance, once the host's [`Backlog`] is waited out. The asking ends
+    /// once the host has drawn nothing more often than it drew something, as
+    /// the [`Crowd`] explains; a port this machine had no socket for is no
+    /// silence of the host's and is not counted either way. It ends sooner
+    /// where the scan stops or outlives its budget, which is raced against the
+    /// backlog's wait and the identification in flight as every other wait on
+    /// a port is, and where the host outlives its own, which is asked before
+    /// each port.
+    async fn ask_alone(self: Arc<Self>, owed: Vec<Owed>, ctx: ScanContext) -> AskedAlone {
         let mut asked = AskedAlone::default();
+        let mut silent = 0usize;
         let through = self
             .backlog
             .lock()
             .unwrap_or_else(|held| held.into_inner())
             .through();
         if let Some(through) = through
-            && handle
+            && ctx
+                .handle
                 .or_stopped(tokio::time::sleep_until(through))
                 .await
                 .is_none()
@@ -995,7 +1016,8 @@ impl Crowd {
             in_part,
         } in owed
         {
-            if handle.should_stop() {
+            if silent > asked.named.len() || ctx.handle.should_stop() || ctx.host_expired(addr.ip())
+            {
                 break;
             }
             // One socket's share, for the connections the identification
@@ -1005,27 +1027,36 @@ impl Crowd {
                 .await
                 .expect("the descriptor gate is never closed");
             let number = port.number();
-            let stream = match egress
-                .connect_timed(addr, path.over(CONNECT_PROBE_TIMEOUT))
-                .await
-            {
-                Ok(stream) => stream,
-                Err(e) => {
-                    if descriptors::exhausted(&e) && !in_part {
+            let name = self.name.clone();
+            let identified = async {
+                let stream = egress
+                    .connect_timed(addr, path.over(CONNECT_PROBE_TIMEOUT))
+                    .await?;
+                Ok::<_, std::io::Error>(
+                    crate::fingerprint::fingerprint_tcp_via(
+                        stream, port, detection, egress, path, name,
+                    )
+                    .await,
+                )
+            };
+            let Some(identified) = ctx.handle.or_stopped(identified).await else {
+                break;
+            };
+            // A connection or a question this machine had no socket for is
+            // no silence of the host's, and neither refutes its queue.
+            let again = match identified {
+                Ok(again) => again,
+                Err(e) if descriptors::exhausted(&e) => {
+                    if !in_part {
                         asked.in_part.push((key, number));
                     }
                     continue;
                 }
+                Err(_) => {
+                    silent += 1;
+                    continue;
+                }
             };
-            let again = crate::fingerprint::fingerprint_tcp_via(
-                stream,
-                port,
-                detection,
-                egress,
-                path,
-                self.name.clone(),
-            )
-            .await;
             self.heard(&again);
             if again.starved && !in_part {
                 asked.in_part.push((key.clone(), number));
@@ -1036,6 +1067,8 @@ impl Crowd {
                     .unwrap_or_else(|held| held.into_inner())
                     .retain(|(silent, port)| !(*silent == key && *port == number));
                 asked.named.push((key, again));
+            } else if !again.starved {
+                silent += 1;
             }
         }
         asked
@@ -1927,6 +1960,110 @@ mod tests {
             "asked again {:?} after the first left, with {:?} of its waits run out",
             second.saturating_duration_since(left),
             found.waited_in_vain
+        );
+    }
+
+    /// Identifies each of `silent` at once in `crowd`, each in the others'
+    /// company, and hands back how many connections each took.
+    async fn identified_together(crowd: &Crowd, silent: &[SilentPort; 3]) -> [usize; 3] {
+        let one = |port: &SilentPort| {
+            let addr = port.addr();
+            async move {
+                let stream = TcpStream::connect(addr).await.unwrap();
+                let baseline =
+                    crate::fingerprint::baseline_port(addr.port(), Protocol::Tcp, PortState::Open);
+                crowd
+                    .identify(
+                        addr.ip().into(),
+                        stream,
+                        baseline,
+                        ServiceDetection::default(),
+                        Egress::KERNEL,
+                        PathAllowance::NONE,
+                    )
+                    .await
+            }
+        };
+        let found = tokio::join!(one(&silent[0]), one(&silent[1]), one(&silent[2]));
+        assert!(
+            [found.0, found.1, found.2]
+                .iter()
+                .all(|found| found.responses.is_empty() && found.ran_out_waiting),
+            "every port says nothing"
+        );
+        silent.each_ref().map(SilentPort::connections)
+    }
+
+    /// A host whose ports stay silent when asked again alone is asked again
+    /// once, not once per port.
+    ///
+    /// One late answer owes every port that said nothing in its company a
+    /// second asking, and the askings run one after another, each a whole
+    /// walk. A host with hundreds of ports that wait to be spoken to, one of
+    /// its services slow to greet, would hold the pass for as many walks in a
+    /// row, one connection open at a time, which is a scan that looks hung
+    /// for the better part of an hour. The first silence alone refutes the
+    /// queue the second asking is for.
+    #[tokio::test]
+    async fn a_host_silent_when_asked_again_alone_is_not_asked_again_port_by_port() {
+        let silent = [SilentPort::open(), SilentPort::open(), SilentPort::open()];
+        let (_session, ctx) = ScanSession::new();
+        let crowds = Crowds::default();
+        let crowd = crowds.of("127.0.0.1".parse().unwrap(), None);
+        crowd.answered_late.store(true, Ordering::Relaxed);
+
+        let first = identified_together(&crowd, &silent).await;
+        crowds.ask_again(&ctx, ScannerKind::Service).await;
+
+        assert!(first.iter().all(|&taken| taken > 0));
+        let again: Vec<usize> = silent
+            .iter()
+            .zip(first)
+            .map(|(port, first)| port.connections() - first)
+            .collect();
+        let asked_again = again.iter().filter(|&&taken| taken > 0).count();
+        assert_eq!(
+            asked_again, 1,
+            "the host stayed silent alone and was still asked again on \
+             {asked_again} ports: {again:?} connections more"
+        );
+    }
+
+    /// A scan stopped while a port is being asked again ends that asking
+    /// there, rather than once its walk has waited out every greeting and
+    /// probe on a port that says nothing.
+    #[tokio::test]
+    async fn a_stop_cuts_short_a_second_asking_in_flight() {
+        let silent = SilentPort::open();
+        let (_session, ctx) = ScanSession::new();
+        let crowds = Crowds::default();
+        let crowd = crowds.of(silent.addr().ip(), None);
+        crowd.answered_late.store(true, Ordering::Relaxed);
+
+        let company = crowd.contention.enter();
+        let first = identified_in(&crowd, &silent).await;
+        drop(company);
+        // Stopped a second into the second asking, once the host's backlog
+        // is waited out: a walk on a silent port waits out a greeting and
+        // then each of its probes' replies, several seconds of its own timers
+        // however fast the machine, so a second in is part way through it.
+        let through = crowd
+            .backlog
+            .lock()
+            .unwrap()
+            .through()
+            .unwrap_or_else(tokio::time::Instant::now);
+        let stop = async {
+            tokio::time::sleep_until(through + Duration::from_secs(1)).await;
+            ctx.handle.abort();
+        };
+        tokio::join!(crowds.ask_again(&ctx, ScannerKind::Service), stop);
+
+        let again = silent.heard() - first;
+        assert!(
+            again < first,
+            "the second asking sent {again} bytes after the stop, as many as \
+             a whole walk sends ({first})"
         );
     }
 }
