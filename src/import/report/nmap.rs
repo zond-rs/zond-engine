@@ -947,14 +947,18 @@ impl HostAcc {
             return;
         }
 
+        // An empty value is one the writer had to give and did not know, which
+        // is what this engine's own exporter writes for a vendor it did not
+        // establish: absent, not named "".
+        let value = |name: &[u8]| element.value(name).filter(|value| !value.is_empty());
         let mut os = os;
-        if let Some(family) = element.value(b"osfamily") {
+        if let Some(family) = value(b"osfamily") {
             os = os.with_family(family);
         }
-        if let Some(generation) = element.value(b"osgen") {
+        if let Some(generation) = value(b"osgen") {
             os = os.with_generation(generation);
         }
-        if let Some(vendor) = element.value(b"vendor") {
+        if let Some(vendor) = value(b"vendor") {
             os = os.with_vendor(vendor);
         }
         self.os = Some(os);

@@ -67,7 +67,10 @@
 //! and only one of them is escaping.
 //!
 //! The first is ordinary. `&`, `<`, `>`, `"` and `'` are escaped everywhere,
-//! unconditionally.
+//! unconditionally. So are tab, line feed and carriage return, which XML allows
+//! raw and every parser then normalises to a space inside an attribute value;
+//! nmap writes them as character references, and so does this, so a banner's
+//! lines survive the trip into somebody else's tool.
 //!
 //! The second has no escape. XML 1.0 forbids most C0 control characters from a
 //! document at all, and forbids a numeric character reference to one just as
@@ -170,7 +173,7 @@ impl Exporter for NmapXmlExporter {
             write_host(out, host, &self.options)?;
         }
 
-        let summary = report.summary();
+        let counts = HostCounts::of(report);
         // One reading used twice: two calls to the clock can straddle a second
         // and leave `time` and `timestr` naming different instants.
         let finished = SystemTime::now();
@@ -184,7 +187,7 @@ impl Exporter for NmapXmlExporter {
             elapsed,
             Attr(&format!(
                 "{ENGINE_NAME} done; {} IP addresses ({} hosts up) scanned in {elapsed:.2} seconds",
-                summary.hosts_total, summary.hosts_alive
+                counts.addresses, counts.up
             )),
             // A strategy that failed is the one shortfall nmap's own runs
             // call an error. A host its budget left early and a port left
@@ -201,14 +204,68 @@ impl Exporter for NmapXmlExporter {
         writeln!(
             out,
             r#"<hosts up="{}" down="{}" total="{}"/>"#,
-            summary.hosts_alive,
-            summary.hosts_total.saturating_sub(summary.hosts_alive),
-            summary.hosts_total,
+            counts.up,
+            counts.down,
+            counts.up + counts.down,
         )?;
         writeln!(out, "</runstats>")?;
         writeln!(out, "</nmaprun>")?;
 
         Ok(())
+    }
+}
+
+/// The run's host counts as nmap states them in `<runstats>`.
+///
+/// Nmap counts what it scanned, not what it listed: a sweep of a /24 with thirty
+/// hosts answering is 256 addresses, 30 up and 226 down, and the tools that
+/// read the document report coverage from these. A count of the recorded hosts
+/// alone says a sweep of 256 addresses scanned thirty, every one of them up.
+///
+/// The addresses scanned are every range a phase walked, after its exclusions,
+/// together with every address a recorded host holds, since a host found on a
+/// swept link or overheard on the segment was in no range anybody named. A host
+/// is up as its `<status>` says it is, and every scanned address no up host
+/// holds is down, which is how nmap, counting each address as a host, arrives
+/// at the same arithmetic. A host answering at two addresses is one host up, so
+/// `total` can fall short of the addresses scanned by the second address of
+/// each; the summary line names both numbers as what they are.
+struct HostCounts {
+    addresses: u128,
+    up: u128,
+    down: u128,
+}
+
+impl HostCounts {
+    fn of(report: &ScanReport) -> Self {
+        let mut scanned = IpSet::new();
+        for phase in report.phases() {
+            for range in phase.targets().ranges() {
+                scanned.insert_range(*range);
+            }
+        }
+        let mut held_up = IpSet::new();
+        let mut up = 0;
+        for host in report.hosts() {
+            // Exactly the hosts `host_state` writes `up`.
+            let is_up = host.is_alive();
+            up += u128::from(is_up);
+            for ip in host.ips() {
+                scanned.insert(*ip);
+                if is_up {
+                    held_up.insert(*ip);
+                }
+            }
+        }
+        scanned.canonicalize();
+        held_up.canonicalize();
+
+        let addresses = scanned.len();
+        Self {
+            addresses,
+            up,
+            down: addresses.saturating_sub(held_up.len()),
+        }
     }
 }
 
@@ -418,10 +475,12 @@ fn write_host(
         // line number.
         writeln!(
             out,
-            r#"<osmatch name="{}" accuracy="{}" line="0"/>"#,
+            r#"<osmatch name="{}" accuracy="{}" line="0">"#,
             Attr(os.name()),
             os.accuracy(),
         )?;
+        write_os_class(out, os)?;
+        writeln!(out, "</osmatch>")?;
         writeln!(out, "</os>")?;
     }
 
@@ -595,6 +654,66 @@ fn port_list(numbers: &[u16]) -> String {
         index += 1;
     }
     list
+}
+
+/// Writes the `<osclass>` beneath a match: the family, vendor, generation and
+/// device type, and the CPEs naming the system.
+///
+/// This is where the tools reading nmap's format take an operating system from:
+/// an importer files a host under its `osfamily`, and a vulnerability lookup
+/// keys on the CPE, which nmap's DTD holds only here. A match written with its
+/// name alone gives both nothing to read.
+///
+/// Written only once the family is known, which the DTD requires of every class,
+/// as it requires a vendor. A vendor this engine did not establish is written
+/// empty, which claims nothing, rather than leaving out the class and the CPEs
+/// with it.
+fn write_os_class(
+    out: &mut dyn Write,
+    os: &crate::model::host::OsFingerprint,
+) -> Result<(), ExportError> {
+    let Some(family) = os.family() else {
+        return Ok(());
+    };
+
+    write!(
+        out,
+        r#"<osclass vendor="{}" osfamily="{}""#,
+        Attr(os.vendor().unwrap_or_default()),
+        Attr(family),
+    )?;
+    if let Some(generation) = os.generation() {
+        write!(out, r#" osgen="{}""#, Attr(generation))?;
+    }
+    if let Some(device) = os.device() {
+        write!(out, r#" type="{}""#, Attr(device))?;
+    }
+    write!(
+        out,
+        r#" accuracy="{}""#,
+        os.detail_accuracy().unwrap_or(os.accuracy())
+    )?;
+
+    if os.cpes().is_empty() {
+        writeln!(out, "/>")?;
+        return Ok(());
+    }
+    writeln!(out, ">")?;
+    write_cpes(out, os.cpes())?;
+    writeln!(out, "</osclass>")?;
+    Ok(())
+}
+
+/// Writes one `<cpe>` element per CPE, the form nmap's DTD gives them beneath
+/// a service or an OS class.
+fn write_cpes(
+    out: &mut dyn Write,
+    cpes: &std::collections::BTreeSet<std::sync::Arc<str>>,
+) -> Result<(), ExportError> {
+    for cpe in cpes {
+        writeln!(out, "<cpe>{}</cpe>", Attr(cpe))?;
+    }
+    Ok(())
 }
 
 /// Writes the `<trace>` element, when a path was measured.
@@ -819,9 +938,9 @@ fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
         // port, `table` for one read out of a port-number list. Every classified
         // port is seeded with a port-number label, so writing those as `probed`
         // would claim a thousand closed ports had been interrogated.
-        writeln!(
+        write!(
             out,
-            r#" method="{}" conf="{}"/>"#,
+            r#" method="{}" conf="{}""#,
             if service.is_inferred() {
                 "table"
             } else {
@@ -829,6 +948,13 @@ fn write_port(out: &mut dyn Write, port: &Port) -> Result<(), ExportError> {
             },
             nmap_confidence(service.confidence()),
         )?;
+        if service.cpes().is_empty() {
+            writeln!(out, "/>")?;
+        } else {
+            writeln!(out, ">")?;
+            write_cpes(out, service.cpes())?;
+            writeln!(out, "</service>")?;
+        }
     }
 
     // `<script>` follows `<service>` in nmap's DTD for a `<port>`.
@@ -1143,6 +1269,12 @@ impl fmt::Display for Attr<'_> {
                 '>' => f.write_str("&gt;")?,
                 '"' => f.write_str("&quot;")?,
                 '\'' => f.write_str("&apos;")?,
+                // Legal, and lost unless referenced: a parser reading an
+                // attribute value turns each raw one into a space, so a
+                // two-line banner would read back as one line.
+                '\t' => f.write_str("&#x9;")?,
+                '\n' => f.write_str("&#xa;")?,
+                '\r' => f.write_str("&#xd;")?,
                 character if is_forbidden(character) => {}
                 character => f.write_char(character)?,
             }
@@ -1630,6 +1762,159 @@ mod tests {
         assert!(host.ports().all(|port| port.protocol() == Protocol::Sctp));
     }
 
+    /// The run statistics count the addresses the scan covered, not the hosts
+    /// it recorded.
+    ///
+    /// A sweep of a /24 with a handful answering covered 256 addresses, and a
+    /// consumer reporting coverage from `<runstats>` was told it covered the
+    /// handful, every one of them up.
+    #[test]
+    fn the_run_statistics_count_what_the_scan_covered() {
+        use crate::report::{ScanKind, TargetScope};
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+        let mut swept = IpSet::new();
+        swept.insert_range("192.0.2.0/24".parse().expect("a range"));
+        let scope = TargetScope::from_ip_set(&mut swept, &Exclusions::none());
+
+        let v4 = |last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last));
+        let mut answered = Host::new(v4(10));
+        answered.set_status(HostStatus::Up);
+        // One machine at two of the swept addresses is one host up.
+        let mut two_addresses = Host::new(v4(20));
+        two_addresses.add_ip(v4(21));
+        two_addresses.set_status(HostStatus::Up);
+        // Found on the link, at an address no range named.
+        let mut neighbour = Host::new(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 5)));
+        neighbour.set_status(HostStatus::Up);
+        let mut unreachable = Host::new(v4(30));
+        unreachable.set_status(HostStatus::Down);
+
+        let document = export_phases(
+            vec![phase(ScanKind::Discovery, scope, Vec::new())],
+            vec![answered, two_addresses, neighbour, unreachable],
+        );
+
+        assert!(
+            document.contains(r#"<hosts up="3" down="253" total="256"/>"#),
+            "{document}"
+        );
+        assert!(
+            document.contains("257 IP addresses (3 hosts up)"),
+            "{document}"
+        );
+    }
+
+    /// Line breaks in a value survive a standard XML parser.
+    ///
+    /// XML allows a raw line feed in an attribute value and a parser reading it
+    /// turns it into a space, so a banner's second line arrived in every tool
+    /// downstream joined to its first.
+    #[cfg(feature = "import-nmap")]
+    #[test]
+    fn a_line_break_in_a_value_is_written_as_a_reference_and_reads_back() {
+        use crate::import::report::ReportReader;
+        use crate::import::report::nmap::NmapXmlReportReader;
+        use crate::model::port::Service;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 70)));
+        host.set_status(HostStatus::Up);
+        host.add_port(
+            Port::new(25, Protocol::Tcp, PortState::Open)
+                .with_service(Service::new("smtp", 90).with_extrainfo("ESMTP\r\nready\t2")),
+        );
+
+        let document = export(&[host]);
+        assert!(
+            document.contains(r#"extrainfo="ESMTP&#xd;&#xa;ready&#x9;2""#),
+            "{document}"
+        );
+
+        let restored = NmapXmlReportReader::default()
+            .read(&mut std::io::Cursor::new(document.into_bytes()))
+            .expect("this crate's own document reads back");
+        let extrainfo = restored
+            .hosts()
+            .flat_map(Host::ports)
+            .find_map(|port| port.service()?.extrainfo().map(str::to_owned));
+        assert_eq!(extrainfo.as_deref(), Some("ESMTP\r\nready\t2"));
+    }
+
+    /// An operating system is written with its class and CPEs, and a service
+    /// with its CPEs, where nmap's readers look for them.
+    ///
+    /// An importer files a host under the class's family and a vulnerability
+    /// lookup keys on the CPE, and a match written with its name alone gave
+    /// both nothing.
+    #[cfg(feature = "import-nmap")]
+    #[test]
+    fn an_os_class_and_the_cpes_are_written_and_read_back() {
+        use crate::import::report::ReportReader;
+        use crate::import::report::nmap::NmapXmlReportReader;
+        use crate::model::host::OsFingerprint;
+        use crate::model::port::Service;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 80)));
+        host.set_status(HostStatus::Up);
+        let mut os = OsFingerprint::new("Linux 5.15", 95)
+            .with_family("Linux")
+            .with_generation("5.X")
+            .with_device("general purpose");
+        os.add_cpe("cpe:/o:linux:linux_kernel:5.15");
+        host.set_os(os);
+        host.add_port(
+            Port::new(22, Protocol::Tcp, PortState::Open).with_service(
+                Service::new("ssh", 100)
+                    .with_product("OpenSSH")
+                    .with_cpe("cpe:/a:openbsd:openssh:9.6"),
+            ),
+        );
+
+        let document = export(&[host]);
+        assert!(
+            document.contains(
+                r#"<osclass vendor="" osfamily="Linux" osgen="5.X" type="general purpose" accuracy="95">
+<cpe>cpe:/o:linux:linux_kernel:5.15</cpe>
+</osclass>"#
+            ),
+            "{document}"
+        );
+        assert!(
+            document.contains("<cpe>cpe:/a:openbsd:openssh:9.6</cpe>\n</service>"),
+            "{document}"
+        );
+
+        let restored = NmapXmlReportReader::default()
+            .read(&mut std::io::Cursor::new(document.into_bytes()))
+            .expect("this crate's own document reads back");
+        let host = restored.hosts().next().expect("the host survived");
+        let os = host.os().expect("the operating system survived");
+        assert_eq!(os.family(), Some("Linux"));
+        assert_eq!(os.generation(), Some("5.X"));
+        assert_eq!(
+            os.vendor(),
+            None,
+            "a vendor nobody established came back named"
+        );
+        assert!(
+            os.cpes()
+                .iter()
+                .any(|cpe| &**cpe == "cpe:/o:linux:linux_kernel:5.15")
+        );
+        let service = host
+            .ports()
+            .find_map(Port::service)
+            .expect("the service survived");
+        assert!(
+            service
+                .cpes()
+                .iter()
+                .any(|cpe| &**cpe == "cpe:/a:openbsd:openssh:9.6")
+        );
+    }
+
     /// Runs of port numbers are written as nmap writes them.
     #[test]
     fn a_port_list_is_written_in_runs() {
@@ -1903,8 +2188,10 @@ mod tests {
         assert!(!escaped.contains('&'), "no reference was invented for them");
 
         // The three C0 characters XML does allow survive, because they are
-        // ordinary whitespace and a banner may legitimately contain them.
-        assert_eq!(Attr("a\tb\nc\rd").to_string(), "a\tb\nc\rd");
+        // ordinary whitespace and a banner may legitimately contain them. They
+        // survive as references, since a parser turns each raw one inside an
+        // attribute value into a space.
+        assert_eq!(Attr("a\tb\nc\rd").to_string(), "a&#x9;b&#xa;c&#xd;d");
     }
 
     /// Every attribute nmap's DTD marks `#REQUIRED` has to be present on every
@@ -1937,7 +2224,17 @@ mod tests {
         // such database and says so with 0, rather than omitting an attribute
         // the DTD marks required.
         if document.contains("<osmatch ") {
-            assert!(document.contains(r#" line="0"/>"#));
+            assert!(document.contains(r#" line="0">"#));
+        }
+        // And an OS class names its vendor and family, both required, and its
+        // accuracy.
+        for class in document
+            .lines()
+            .filter(|line| line.starts_with("<osclass "))
+        {
+            for required in [" vendor=", " osfamily=", " accuracy="] {
+                assert!(class.contains(required), "{class} lacks {required}");
+            }
         }
     }
 
