@@ -226,6 +226,7 @@ impl Coded for PortSetParseError {
             PortSetParseError::MalformedSpec(_) => "ports.malformed_spec",
             PortSetParseError::SpacedRange(_) => "ports.spaced_range",
             PortSetParseError::ServiceName(_) => "ports.service_name",
+            PortSetParseError::NoPorts => "ports.no_ports",
         }
     }
 }

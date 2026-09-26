@@ -108,6 +108,17 @@ pub enum PortSetParseError {
     /// ask the signature corpus, which knows the services it identifies.
     #[error("'{0}' is a name, not a port number (write one, as 22)")]
     ServiceName(String),
+
+    /// A specification that is to name the ports a scan covers named none, as
+    /// `""` or `" , "` does.
+    ///
+    /// Never returned by [`PortSet::try_from`], for which the empty string is
+    /// the empty set, the rendering of one and what reads back from it. What
+    /// refuses it is every place a specification says what to scan: a target's
+    /// port half, a scan request's ports and a settings file's default. There
+    /// an empty set plans a scan of nothing, which finishes without a word.
+    #[error("names no ports (write 22 or 1-1024)")]
+    NoPorts,
 }
 
 /// The message for a token that is not a port number, by why it is not one.
@@ -604,6 +615,18 @@ impl TryFrom<&str> for PortSet {
     }
 }
 
+impl PortSet {
+    /// Parses a specification that says which ports a scan covers, refusing
+    /// one that names none with [`PortSetParseError::NoPorts`].
+    pub(crate) fn parse_scan(spec: &str) -> Result<Self, PortSetParseError> {
+        let set = Self::try_from(spec)?;
+        if set.is_empty() {
+            return Err(PortSetParseError::NoPorts);
+        }
+        Ok(set)
+    }
+}
+
 impl TryFrom<String> for PortSet {
     type Error = PortSetParseError;
     fn try_from(value: String) -> Result<Self, Self::Error> {
@@ -785,9 +808,10 @@ mod tests {
         ));
     }
 
-    /// Whitespace names no ports, which is a valid thing to say. A caller
-    /// supplying an empty default is not making a mistake, and the empty set is
-    /// what `Default` means.
+    /// Whitespace names no ports, which is a valid thing for a set to hold:
+    /// the empty set is what `Default` means and what an empty set renders
+    /// as, so it has to read back. Where a specification says what to scan,
+    /// naming nothing is refused instead.
     #[test]
     fn a_specification_naming_nothing_is_an_empty_set_not_an_error() {
         let empty = PortSet::try_from("   ");
@@ -795,6 +819,14 @@ mod tests {
         let set = empty.unwrap();
         assert!(set.tcp.is_empty());
         assert!(set.udp.is_empty());
+
+        for nothing in ["", "   ", " , ,"] {
+            assert_eq!(
+                PortSet::parse_scan(nothing),
+                Err(PortSetParseError::NoPorts)
+            );
+        }
+        assert!(PortSet::parse_scan("22").is_ok());
     }
 
     /// The ends of the 16-bit space, where the range arithmetic is one step

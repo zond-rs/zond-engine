@@ -248,13 +248,14 @@ impl ScanRequest {
     ///
     /// # Errors
     ///
-    /// [`RequestError::Ports`] if the specification is malformed. Separate from
+    /// [`RequestError::Ports`] if the specification is malformed or names no
+    /// ports, since an empty one would plan a scan of nothing. Separate from
     /// the field so that a request is worth reading even when one key in it is
     /// wrong.
     pub fn ports(&self) -> Option<Result<PortSet, RequestError>> {
         if let Some(spec) = self.ports.as_deref() {
             return Some(
-                PortSet::try_from(spec).map_err(|error| RequestError::Ports {
+                PortSet::parse_scan(spec).map_err(|error| RequestError::Ports {
                     spec: spec.to_string(),
                     reason: error.to_string(),
                 }),
@@ -675,6 +676,27 @@ mod tests {
             .expect_err("'nope' is not a port specification");
 
         assert!(matches!(&error, RequestError::Ports { spec, .. } if spec == "nope"));
+    }
+
+    /// A specification that names no ports would plan a scan of nothing and
+    /// finish it without a word, so both places a request can name its ports
+    /// refuse one.
+    #[test]
+    fn a_port_specification_naming_nothing_is_refused_rather_than_scanning_nothing() {
+        for document in [
+            "ports = \"\"\n",
+            "ports = \" , \"\n",
+            "[settings]\ndefault_ports = \"\"\n",
+        ] {
+            let error = request(document)
+                .ports()
+                .expect("the request named ports")
+                .expect_err("a specification naming nothing");
+            assert!(
+                error.to_string().contains("names no ports"),
+                "{document}: {error}"
+            );
+        }
     }
 
     #[tokio::test]

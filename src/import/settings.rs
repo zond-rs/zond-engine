@@ -480,10 +480,11 @@ impl Settings {
     ///
     /// Separate from the field: a malformed specification is the caller's to
     /// report, and a document is worth loading even when one key in
-    /// it is wrong.
+    /// it is wrong. One that names no ports is malformed here, since every
+    /// scan taking the default would otherwise be a scan of nothing.
     pub fn ports(&self) -> Option<Result<PortSet, SettingsError>> {
         self.default_ports.as_deref().map(|spec| {
-            PortSet::try_from(spec).map_err(|error| {
+            PortSet::parse_scan(spec).map_err(|error| {
                 SettingsError::Malformed(format!("default_ports = '{spec}': {error}"))
             })
         })
@@ -1539,6 +1540,26 @@ mod tests {
             "#,
         );
         assert!(bad.document.defaults.ports().expect("names ports").is_err());
+    }
+
+    /// An empty `default_ports` would make every scan that takes the default
+    /// a scan of nothing, finished without a word, so it is refused as the
+    /// malformed specification it is.
+    #[test]
+    fn a_default_port_specification_naming_nothing_is_refused() {
+        let empty = document(
+            r#"
+            [defaults]
+            default_ports = ""
+            "#,
+        );
+        let error = empty
+            .document
+            .defaults
+            .ports()
+            .expect("names ports")
+            .expect_err("an empty default");
+        assert!(error.to_string().contains("names no ports"), "{error}");
     }
 
     #[test]

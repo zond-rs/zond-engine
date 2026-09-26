@@ -546,7 +546,7 @@ impl TargetMapBuilder {
         let expr = TargetExpr::parse(token)?;
 
         let ports = match expr.ports {
-            Some(spec) => PortSet::try_from(spec).map_err(|source| TargetParseError::Ports {
+            Some(spec) => PortSet::parse_scan(spec).map_err(|source| TargetParseError::Ports {
                 expression: token.trim().to_string(),
                 source,
             })?,
@@ -1039,6 +1039,21 @@ mod tests {
             TargetExpr::parse(""),
             Err(TargetParseError::Empty)
         ));
+    }
+
+    /// A port half that names no ports is refused, as the empty one is:
+    /// `192.0.2.1:,` scanning nothing would finish without a word, and
+    /// scanning the defaults would be a scan nobody wrote.
+    #[test]
+    fn a_port_specification_naming_nothing_is_refused() {
+        let mut builder = TargetMapBuilder::new(ports("80"));
+        let ctx = TargetContext::new();
+
+        let error = builder
+            .push("192.0.2.1:,", &ctx)
+            .expect_err("a port half naming nothing");
+        assert!(error.to_string().contains("names no ports"), "{error}");
+        assert!(builder.is_empty(), "and nothing was added");
     }
 
     /// The property the builder exists for. One unit per port specification,
