@@ -53,9 +53,10 @@
 
 use crate::model::ip::range::IpRange::{self, V4, V6};
 use crate::model::ip::range::{Ipv4Range, Ipv6Range};
+use crate::model::ip::scoped::ScopedIp;
 use crate::model::ip::set::IpSet;
 use crate::system::interface::source::{
-    ProbeSockets, RouteAnswer, ask_route, plausible_source, viable_interfaces,
+    ProbeSockets, RouteAnswer, ask_route, plausible_source, refuses_neighbour, viable_interfaces,
 };
 use crate::system::interface::{Link, LinkAddress};
 use rayon::prelude::*;
@@ -412,6 +413,72 @@ fn map_ips_to_interfaces_asking(
         ambiguous,
         unenumerable,
     }
+}
+
+/// The addresses among `targets`, on `link`'s segment, that this host's
+/// routing table refuses.
+///
+/// A segment is reached by frames built for the neighbour, which never ask
+/// the table, so a route an administrator added over one address of a
+/// connected prefix, or a VPN's kill switch keeping the local network out,
+/// is heard only by asking. Every other program on the machine honours it,
+/// its ping and its connect alike, and a sweep that framed its questions to
+/// such a neighbour anyway would report it up and then have every port scan
+/// refuse it: the one account of the host that ignored the host's own
+/// policy, and one at odds with itself.
+///
+/// Asked address by address, which is a route lookup each and no packet.
+/// Three kinds of target are not asked. A link-local address is on its
+/// zone's segment by definition and the table has no route to consult for it
+/// without one. A range too large to walk is not walked, whether it is
+/// refused a sweep or answered by the solicitation, which is one packet to
+/// the whole segment. And the network and broadcast addresses of one of the
+/// link's own prefixes: a kernel refuses a connect to the broadcast address
+/// the way it refuses a policy's, and neither is a neighbour.
+pub(crate) fn refused_neighbours(link: &Link, targets: &IpSet) -> IpSet {
+    refused_neighbours_asking(link, targets, refuses_neighbour)
+}
+
+/// [`refused_neighbours`], asking the table through `refuses`, which a test
+/// hands in to have the table refuse as no host a test runs on does.
+fn refused_neighbours_asking(
+    link: &Link,
+    targets: &IpSet,
+    refuses: fn(IpAddr, &mut ProbeSockets) -> bool,
+) -> IpSet {
+    let edges: HashSet<IpAddr> = link
+        .addresses()
+        .iter()
+        .filter_map(|held| match held.network() {
+            IpRange::V4(range) => Some([range.start_addr(), range.end_addr()]),
+            IpRange::V6(_) => None,
+        })
+        .flatten()
+        .map(IpAddr::V4)
+        .collect();
+    let v4 = targets.v4().iter().flat_map(Ipv4Range::iter);
+    let v6 = targets
+        .v6()
+        .iter()
+        .filter(|range| range.zone().is_none() && is_enumerable(range))
+        .flat_map(Ipv6Range::iter);
+    let walked = v4.chain(v6);
+
+    let refused: Vec<IpAddr> = walked
+        .filter(|target| !edges.contains(target) && !ScopedIp::needs_zone(target))
+        .par_bridge()
+        .map_init(ProbeSockets::default, |sockets, target| {
+            refuses(target, sockets).then_some(target)
+        })
+        .flatten()
+        .collect();
+
+    let mut set = IpSet::new();
+    for address in refused {
+        set.insert(address);
+    }
+    set.canonicalize();
+    set
 }
 
 /// Which of the engine's two frame builders a question about reach is asked for.
@@ -871,6 +938,35 @@ mod tests {
             "{:?}",
             missing.routed
         );
+    }
+
+    /// A neighbour the routing table refuses is found among a segment's
+    /// targets, a walked range's as much as a named address's, and nothing
+    /// else is: not its neighbours, not the segment's network and broadcast
+    /// addresses, which a kernel refuses a connect to on other grounds, and
+    /// not a link-local address, which no table routes without its zone.
+    #[test]
+    fn a_neighbour_the_routing_table_refuses_is_told_apart_from_the_segment() {
+        let link = mock_interface(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24);
+        let mut targets = IpSet::new();
+        targets.insert_range(IpRange::V4(
+            Ipv4Range::new(Ipv4Addr::new(192, 0, 2, 0), Ipv4Addr::new(192, 0, 2, 255)).unwrap(),
+        ));
+        targets.insert(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 13)));
+        targets.insert(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 13)));
+
+        // Refuses every address whose last group is 13, and the segment's
+        // edges, as a kernel refuses a broadcast.
+        let refused = refused_neighbours_asking(&link, &targets, |target, _| match target {
+            IpAddr::V4(v4) => matches!(v4.octets()[3], 0 | 13 | 255),
+            IpAddr::V6(v6) => v6.segments()[7] == 13,
+        });
+
+        let mut expected = IpSet::new();
+        expected.insert(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 13)));
+        expected.insert(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 13)));
+        expected.canonicalize();
+        assert_eq!(refused, expected);
     }
 
     #[test]

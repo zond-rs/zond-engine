@@ -55,7 +55,7 @@ use crate::scanner::pacing::timer::ScanBudget;
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::sweep::HostSweep;
 use crate::scanner::strategy::{HostScanner, StrategyError};
-use crate::system::interface::Link;
+use crate::system::interface::{self, Link};
 use crate::transport::capture::CapturedFrame;
 use crate::transport::channel::{self, EthernetHandle};
 use crate::transport::frame::LinkType;
@@ -510,6 +510,9 @@ pub struct LocalScanner {
     /// mechanism keeps its own state rather than sharing this struct's, and the
     /// reasoning behind its timing lives with it.
     ipv6: Ipv6Discovery,
+    /// The sockets the routing table is asked through about an address the
+    /// sweep overheard, before it is asked about directly.
+    route_sockets: interface::ProbeSockets,
 }
 
 #[async_trait]
@@ -722,6 +725,7 @@ impl LocalScanner {
             scope,
             ipv6: Ipv6Discovery::new(target_count),
             send_failure: None,
+            route_sockets: interface::ProbeSockets::default(),
         })
     }
 
@@ -993,6 +997,16 @@ impl LocalScanner {
             info!(
                 verbosity = 2,
                 "{address} was overheard and is excluded, so it is not asked about"
+            );
+            return;
+        }
+        // Nor one this host's routing table refuses, which the sweep's own
+        // targets were withheld for before it started; see
+        // `interface::refused_neighbours`.
+        if interface::refuses_neighbour(address, &mut self.route_sockets) {
+            info!(
+                verbosity = 2,
+                "{address} was overheard and a route refuses it, so it is not asked about"
             );
             return;
         }

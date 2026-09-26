@@ -266,6 +266,24 @@ pub(crate) enum NoSource {
     Unasked(std::io::Error),
 }
 
+/// Whether the routing table refuses `target`, a destination on one of this
+/// host's own segments.
+///
+/// A segment this host holds is reached directly, so the table's answer for
+/// it is the connected route unless a more specific one overrides it, and
+/// every override that refuses is the host's policy: a `prohibit`,
+/// `unreachable` or `blackhole` route, or the rules a VPN's kill switch keeps
+/// the local network out with. A frame built for the neighbour never asks the
+/// table, so asking it here is the only way such a policy is heard. A table
+/// that could not be asked, for want of a socket to ask with, is not read as
+/// a refusal.
+pub(crate) fn refuses_neighbour(target: IpAddr, sockets: &mut ProbeSockets) -> bool {
+    matches!(
+        ask_route(target, sockets),
+        RouteAnswer::NoRoute | RouteAnswer::Forbidden
+    )
+}
+
 /// Resolves the source address for arbitrary destinations seen one at a time,
 /// memoizing each answer. Built for the streaming SYN port scanner, where the
 /// same host recurs across every port it probes: the first probe to a host

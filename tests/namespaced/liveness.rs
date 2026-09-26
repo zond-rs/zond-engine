@@ -312,3 +312,42 @@ async fn a_sweep_files_an_address_with_no_route_as_unroutable_whatever_refuses_i
         "the sweep covered what it could"
     );
 }
+
+/// A neighbour on this host's own segment that its routing table refuses is
+/// filed as an address the sweep cannot reach, not reported up.
+///
+/// The sweep asks a neighbour by a frame it builds itself, which never asks
+/// the table, so an address resolution reached the peer behind a `prohibit`
+/// route and the peer answered it: the sweep reported the host up, and the
+/// port scan that followed, which does ask, filed every port of it
+/// unroutable. Ping and connect honour the route, and the sweep has to
+/// agree with them and with the port scan.
+#[tokio::test]
+async fn a_neighbour_behind_a_refusing_route_is_unroutable_rather_than_up() {
+    use zond_engine::model::ip::set::IpSet;
+
+    if !available() {
+        return;
+    }
+
+    for kind in ["prohibit", "unreachable", "blackhole"] {
+        let segment = Segment::new();
+        segment.refuse_peer_by_route(kind);
+        let mut targets = IpSet::new();
+        targets.insert(segment.peer());
+
+        let outcome = run_discover(targets, &test_config()).await;
+
+        assert!(
+            outcome
+                .host(segment.peer())
+                .is_none_or(|host| !host.is_alive()),
+            "{kind}: the peer was reported up"
+        );
+        assert_eq!(
+            outcome.report.phases()[0].unroutable(),
+            [segment.peer()],
+            "{kind}: the peer is not filed as unreachable"
+        );
+    }
+}

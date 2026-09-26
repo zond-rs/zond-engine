@@ -612,7 +612,7 @@ impl DiscoveryPlan {
         let interface::RoutedTargets {
             mut local,
             routed,
-            unmapped,
+            mut unmapped,
             ours,
             ambiguous,
             unenumerable,
@@ -668,6 +668,26 @@ impl DiscoveryPlan {
                         refusals.push(RefusedStep::local_range_needs_a_sweep(&range))
                     }
                 }
+            }
+
+            // A neighbour this host's routing table refuses is not asked by
+            // frame, which would step around the table, and is left to the
+            // connect step, whose connect the kernel refuses as it refuses
+            // every other program's, and which files the address as one
+            // nothing reaches. The port scan refuses it the same way; see
+            // `SourceResolver::resolve`.
+            let refused = interface::refused_neighbours(&interface, &targets);
+            if !refused.is_empty() {
+                targets.subtract(&refused);
+                for address in refused.iter() {
+                    unmapped.insert(address);
+                }
+                info!(
+                    verbosity = 1,
+                    "{} on {} refused by a route, not asked by frame",
+                    counted(refused.len(), "address", "addresses"),
+                    interface.name()
+                );
             }
 
             // A sweep's link earns a step whether or not any address mapped to
