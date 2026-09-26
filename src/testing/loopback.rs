@@ -767,8 +767,17 @@ mod tests {
     /// Its thread held the socket until the test process exited, and a run
     /// under a descriptor limit of 256 that opened one per test would have run
     /// out.
+    ///
+    /// Free for a bind soon after the drop rather than the instant it returns.
+    /// A process a test beside this one spawns holds a copy of every descriptor
+    /// this process has until the spawn has put the new program in place, close
+    /// on exec or not, and the system hands the port out again only once the
+    /// last copy is closed. That is microseconds; a port still taken after
+    /// seconds was never let go.
     #[test]
     fn a_silent_udp_port_lets_go_of_its_port_when_dropped() {
+        const RELEASE_PATIENCE: Duration = Duration::from_secs(10);
+
         let silent = SilentUdpPort::open();
         let addr = silent.addr();
         assert!(
@@ -777,10 +786,14 @@ mod tests {
         );
 
         drop(silent);
-        assert!(
-            std::net::UdpSocket::bind(addr).is_ok(),
-            "the port was still held after the drop"
-        );
+        let dropped = std::time::Instant::now();
+        while std::net::UdpSocket::bind(addr).is_err() {
+            assert!(
+                dropped.elapsed() < RELEASE_PATIENCE,
+                "the port was still held {RELEASE_PATIENCE:?} after the drop"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// **A closed UDP port refuses a datagram for as long as it is held, and
