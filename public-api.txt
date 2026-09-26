@@ -16076,6 +16076,9 @@ pub zond_engine::scanner::strategy::StrategyError::Channel(zond_engine::transpor
 pub zond_engine::scanner::strategy::StrategyError::Interface
 pub zond_engine::scanner::strategy::StrategyError::Interface::interface: alloc::string::String
 pub zond_engine::scanner::strategy::StrategyError::Interface::reason: &'static str
+pub zond_engine::scanner::strategy::StrategyError::MismatchedTransport
+pub zond_engine::scanner::strategy::StrategyError::MismatchedTransport::kind: zond_engine::transport::probe::ProbeKind
+pub zond_engine::scanner::strategy::StrategyError::MismatchedTransport::protocol: zond_engine::model::port::Protocol
 pub zond_engine::scanner::strategy::StrategyError::Panicked
 pub zond_engine::scanner::strategy::StrategyError::Panicked::detail: alloc::string::String
 pub zond_engine::scanner::strategy::StrategyError::Panicked::scanner: zond_engine::report::ScannerKind
@@ -17454,6 +17457,9 @@ pub zond_engine::StrategyError::Channel(zond_engine::transport::channel::Channel
 pub zond_engine::StrategyError::Interface
 pub zond_engine::StrategyError::Interface::interface: alloc::string::String
 pub zond_engine::StrategyError::Interface::reason: &'static str
+pub zond_engine::StrategyError::MismatchedTransport
+pub zond_engine::StrategyError::MismatchedTransport::kind: zond_engine::transport::probe::ProbeKind
+pub zond_engine::StrategyError::MismatchedTransport::protocol: zond_engine::model::port::Protocol
 pub zond_engine::StrategyError::Panicked
 pub zond_engine::StrategyError::Panicked::detail: alloc::string::String
 pub zond_engine::StrategyError::Panicked::scanner: zond_engine::report::ScannerKind

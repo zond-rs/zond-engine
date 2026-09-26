@@ -1261,8 +1261,8 @@ mod tests {
     fn a_sweep_leaves_from_the_port_its_transport_hears_replies_on() {
         let (_session, ctx) = ScanSession::new();
         let (_reply_tx, rx) = tokio::sync::mpsc::channel(1);
-        let transport =
-            ProbeTransport::from_parts(Box::new(MockSender::default()), rx).replying_to(5_000);
+        let transport = ProbeTransport::from_parts(Box::new(MockSender::default()), rx)
+            .opened_for(ProbeKind::Sctp { reply_port: 5_000 });
         let sweep = RoutedScanner::with_transport_asking(
             Vec::new(),
             ctx,

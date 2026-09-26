@@ -186,6 +186,10 @@ impl TcpPortScanner {
     /// feature) this is the seam that lets probe and reply correlation be
     /// driven against a simulated network rather than a real one, with no
     /// privileges and no interface.
+    ///
+    /// A transport opened for a kind other than [`ProbeKind::TcpProbe`] or
+    /// [`ProbeKind::TcpSyn`] cannot hear this scan's answers, and the scan
+    /// refuses it when it runs, with [`StrategyError::MismatchedTransport`].
     pub fn with_transport(
         resolver: SourceResolver,
         ctx: ScanContext,
@@ -1035,8 +1039,7 @@ impl PortScanner for TcpPortScanner {
     /// what it discovers about each target's capacity; see
     /// `TCP_PORT_WINDOW`.
     async fn scan(&mut self, targets: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {
-        super::drive(self, targets).await;
-        Ok(())
+        super::drive(self, targets).await
     }
 
     /// Fingerprints every open port the scan found. The raw exchange that
@@ -1291,8 +1294,12 @@ mod tests {
         let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(8);
         let sender = MockSender::default();
         let sent = sender.sent.clone();
-        let transport =
-            ProbeTransport::from_parts(Box::new(sender), reply_rx).replying_to(HEARD_ON);
+        let transport = ProbeTransport::from_parts(Box::new(sender), reply_rx).opened_for(
+            ProbeKind::TcpProbe {
+                reply_port: HEARD_ON,
+                icmp_errors: false,
+            },
+        );
         let resolver = SourceResolver::from_links(&[on_link_interface()]);
         let mut scanner = TcpPortScanner::with_transport(
             resolver,
@@ -1311,6 +1318,66 @@ mod tests {
         let reply = segment_to(80, HEARD_ON, scanner.technique, token, SYN | ACK);
         scanner.handle_tcp_reply(&captured_with_ttl(reply, 64), Instant::now());
         assert_eq!(port_state(&session, 80), Some(PortState::Open));
+    }
+
+    /// A transport opened for another kind of probe is refused, not scanned
+    /// over.
+    ///
+    /// Its capture admits none of this scan's answers, so run anyway every port
+    /// would read filtered, a verdict indistinguishable from a real firewall.
+    /// Refused, the scan says why it did not run, sends nothing, and still
+    /// files every port it was handed, as one nobody asked about.
+    #[tokio::test]
+    async fn a_transport_opened_for_another_kind_is_refused_rather_than_read_as_silence() {
+        let (session, ctx) = ScanSession::new();
+        let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(8);
+        let sender = MockSender::default();
+        let sent = sender.sent.clone();
+        let transport = ProbeTransport::from_parts(Box::new(sender), reply_rx).opened_for(
+            ProbeKind::UdpProbe {
+                reply_port: SRC_PORT,
+            },
+        );
+        let resolver = SourceResolver::from_links(&[on_link_interface()]);
+        let mut scanner = TcpPortScanner::with_transport(
+            resolver,
+            ctx,
+            TcpScanTechnique::Syn,
+            transport,
+            8,
+            SRC_PORT,
+        );
+
+        let (targets, stream) = tokio::sync::mpsc::channel(8);
+        for port in [22, 80] {
+            targets
+                .send(PlannedTarget::new(
+                    u64::from(port),
+                    Target {
+                        ip: TARGET,
+                        port,
+                        protocol: Protocol::Tcp,
+                    },
+                ))
+                .await
+                .expect("the stream is open");
+        }
+        drop(targets);
+        let refused = scanner.scan(stream).await;
+
+        assert!(
+            matches!(
+                refused,
+                Err(StrategyError::MismatchedTransport {
+                    kind: ProbeKind::UdpProbe { .. },
+                    protocol: Protocol::Tcp,
+                })
+            ),
+            "{refused:?}"
+        );
+        assert!(sent.lock().unwrap().is_empty(), "a probe was sent");
+        assert_eq!(port_state(&session, 22), Some(PortState::Unasked));
+        assert_eq!(port_state(&session, 80), Some(PortState::Unasked));
     }
 
     /// A reset is recorded as the reset it was, not as the absence of a reply.

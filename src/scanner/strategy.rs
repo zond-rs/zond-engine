@@ -122,6 +122,20 @@ pub enum StrategyError {
         reason: &'static str,
     },
 
+    /// The transport a port scan was handed was opened for another kind of
+    /// probe, so its capture would admit none of the scan's answers.
+    ///
+    /// Refused rather than run, because a scan that hears nothing files every
+    /// port as the silence it reads, which looks exactly like a filtered
+    /// network. Every port it was handed is recorded as one nobody asked about.
+    #[error("a transport opened for {kind:?} cannot hear the answers to a {protocol:?} port scan")]
+    MismatchedTransport {
+        /// The kind the transport was opened for.
+        kind: crate::transport::probe::ProbeKind,
+        /// The protocol of the port scan it was handed to.
+        protocol: crate::model::port::Protocol,
+    },
+
     /// The strategy's probes could not be built. A bug or an impossible target
     /// rather than an environment problem, since a probe is built from values
     /// this engine chose.

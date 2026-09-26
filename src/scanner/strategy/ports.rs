@@ -103,8 +103,8 @@ use crate::scanner::pacing::retry::{
     Due, ProbeLedger, Resolution, RetryPolicy, SilentHostPolicy, saturating_mul,
 };
 use crate::scanner::session::ScanContext;
-use crate::scanner::strategy::PortScanner;
 use crate::scanner::strategy::raw::neighbors::{Admission, NEIGHBOR_RECHECK, NeighborGates};
+use crate::scanner::strategy::{PortScanner, StrategyError};
 use crate::system::interface::{NoSource, SourceResolver};
 use crate::transport::capture::CapturedSegment;
 use crate::transport::kernel_neighbors::NeighborState;
@@ -1825,7 +1825,18 @@ pub(crate) struct AuditLabels {
 pub(crate) async fn drive<S: RawPortScan>(
     scanner: &mut S,
     mut targets: mpsc::Receiver<PlannedTarget>,
-) {
+) -> Result<(), StrategyError> {
+    // A transport whose capture cannot hear this scan's answers would have
+    // every port read as silence. Every target is still taken and written down
+    // as unasked, so the report says which ports went without a question.
+    let protocol = scanner.protocol();
+    if let Some(kind) = scanner.core().transport.mismatched_for(protocol) {
+        while let Some(target) = targets.recv().await {
+            scanner.record_unasked(target);
+        }
+        return Err(StrategyError::MismatchedTransport { kind, protocol });
+    }
+
     // The rate backstop. What paces the scan is `RawProbeScan::window`, which
     // the batch loop below re-checks after every send; this bounds how fast a
     // window's worth of probes may be released, so a defect in the controller
@@ -1991,6 +2002,7 @@ pub(crate) async fn drive<S: RawPortScan>(
     scanner
         .core_mut()
         .finish(kind, labels.tag, labels.silence, silence, probes, reason);
+    Ok(())
 }
 
 // ╔════════════════════════════════════════════╗

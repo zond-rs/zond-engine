@@ -148,6 +148,10 @@ impl SctpPortScanner {
     /// since it is what makes a captured packet this scan's; see
     /// [`ProbeTransport::reply_port`]. `src_port` is the port for a transport
     /// that fixes none, which is one built from parts.
+    ///
+    /// A transport opened for anything but [`ProbeKind::Sctp`] cannot hear this
+    /// scan's answers, and the scan refuses it when it runs, with
+    /// [`StrategyError::MismatchedTransport`].
     pub fn with_transport(
         resolver: SourceResolver,
         ctx: ScanContext,
@@ -692,8 +696,7 @@ impl PortScanner for SctpPortScanner {
     /// or the scan's deadline expires. Anything still outstanding at the end
     /// takes the technique's reading of silence.
     async fn scan(&mut self, targets: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {
-        super::drive(self, targets).await;
-        Ok(())
+        super::drive(self, targets).await
     }
 }
 

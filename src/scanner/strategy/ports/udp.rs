@@ -275,6 +275,10 @@ impl UdpPortScanner {
     /// transport (`ProbeTransport::from_parts`, behind the `test-support`
     /// feature) this is the seam that lets classification be driven against a
     /// simulated network rather than a real one.
+    ///
+    /// A transport opened for anything but [`ProbeKind::UdpProbe`] cannot hear
+    /// this scan's answers, and the scan refuses it when it runs, with
+    /// [`StrategyError::MismatchedTransport`].
     pub fn with_transport(
         resolver: SourceResolver,
         ctx: ScanContext,
@@ -825,9 +829,9 @@ impl PortScanner for UdpPortScanner {
     /// only when asked again, while more of them stayed silent than answered. See
     /// [`ScanPhase::icmp_rate_limited`](crate::report::ScanPhase::icmp_rate_limited).
     async fn scan(&mut self, targets: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {
-        super::drive(self, targets).await;
+        let driven = super::drive(self, targets).await;
         self.report_rationed();
-        Ok(())
+        driven
     }
 
     /// Identifies the UDP services this scanner found open.

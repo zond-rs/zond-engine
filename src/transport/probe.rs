@@ -42,6 +42,7 @@ use crate::model::capture::CaptureCounts;
 use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;
 use crate::model::mac::MacAddr;
+use crate::model::port::Protocol;
 use crate::system::interface::{Link, RoutedTargets};
 use crate::transport::capture::{self, CaptureGuard, CaptureOptions, CaptureStream};
 use crate::transport::kernel_neighbors::KernelNeighbors;
@@ -275,6 +276,22 @@ impl ProbeKind {
             | ProbeKind::UdpResolve
             | ProbeKind::IcmpEcho { .. }
             | ProbeKind::IpProtocol { .. } => None,
+        }
+    }
+
+    /// Whether a transport opened for this kind hears the answers a port scan
+    /// of `protocol` reads.
+    ///
+    /// A port scan over a transport that does not reads every answer as
+    /// silence, and silence is a verdict, so the mismatch is refused where it
+    /// would otherwise pass for a filtered network. Either TCP kind carries a
+    /// TCP scan: both admit the resets and SYN+ACKs it reads. A UDP scan needs
+    /// its own kind, since the resolver's admits name-service replies alone.
+    pub(crate) const fn carries_port_scan(self, protocol: Protocol) -> bool {
+        match protocol {
+            Protocol::Tcp => matches!(self, ProbeKind::TcpSyn | ProbeKind::TcpProbe { .. }),
+            Protocol::Udp => matches!(self, ProbeKind::UdpProbe { .. }),
+            Protocol::Sctp => matches!(self, ProbeKind::Sctp { .. }),
         }
     }
 
@@ -903,9 +920,12 @@ pub struct ProbeTransport {
     /// Boxed so the watch's locks sit behind a pointer rather than inside the
     /// transport, whose auto traits are public and would otherwise carry them.
     neighbors: Option<Box<NeighborWatch>>,
-    /// The port the capture admits replies to, where the kind it was opened
-    /// for fixes one. See [`reply_port`](Self::reply_port).
-    reply_port: Option<u16>,
+    /// The kind this transport was opened for, which decides what its capture
+    /// admits and so what a scan over it can hear. `None` for one built from
+    /// parts, whose receive stream carries whatever is pushed onto it. See
+    /// [`reply_port`](Self::reply_port) and
+    /// [`mismatched_for`](Self::mismatched_for).
+    kind: Option<ProbeKind>,
 }
 
 /// Where the address resolution a transport's sends depend on stands, read by
@@ -955,14 +975,21 @@ impl ProbeTransport {
     /// read it. The port a transport was opened for is the one fact both halves
     /// act on, so it is kept here, where the capture that filters on it is.
     pub fn reply_port(&self) -> Option<u16> {
-        self.reply_port
+        self.kind.and_then(ProbeKind::reply_port)
     }
 
-    /// This transport, standing in for one whose capture admits replies to
-    /// `port` alone.
+    /// The kind this transport was opened for, where its capture filters on
+    /// one, if that kind cannot carry a port scan of `protocol`.
+    ///
+    /// A transport built from parts filters nothing, so it carries anything.
+    pub(crate) fn mismatched_for(&self, protocol: Protocol) -> Option<ProbeKind> {
+        self.kind.filter(|kind| !kind.carries_port_scan(protocol))
+    }
+
+    /// This transport, standing in for one opened for `kind`.
     #[cfg(test)]
-    pub(crate) fn replying_to(mut self, port: u16) -> Self {
-        self.reply_port = Some(port);
+    pub(crate) fn opened_for(mut self, kind: ProbeKind) -> Self {
+        self.kind = Some(kind);
         self
     }
 
@@ -1044,7 +1071,7 @@ impl ProbeTransport {
             capture,
             neighbors: KernelNeighbors::from_system()
                 .map(|table| Box::new(NeighborWatch::Kernel(table))),
-            reply_port: kind.reply_port(),
+            kind: Some(kind),
         })
     }
 
@@ -1078,7 +1105,7 @@ impl ProbeTransport {
             rx,
             capture,
             neighbors,
-            reply_port: kind.reply_port(),
+            kind: Some(kind),
         })
     }
 
@@ -1114,7 +1141,7 @@ impl ProbeTransport {
             rx,
             capture,
             neighbors,
-            reply_port: kind.reply_port(),
+            kind: Some(kind),
         })
     }
 
@@ -1144,7 +1171,7 @@ impl ProbeTransport {
             rx,
             capture,
             neighbors: None,
-            reply_port: kind.reply_port(),
+            kind: Some(kind),
         })
     }
 
@@ -1165,7 +1192,7 @@ impl ProbeTransport {
             rx,
             capture: CaptureGuard::noop(),
             neighbors: None,
-            reply_port: None,
+            kind: None,
         }
     }
 
@@ -1178,7 +1205,7 @@ impl ProbeTransport {
             rx,
             capture: CaptureGuard::stopped_early(),
             neighbors: None,
-            reply_port: None,
+            kind: None,
         }
     }
 }
@@ -1365,6 +1392,52 @@ mod tests {
             holding("utun4", 20, LinkKind::Virtual, "198.51.100.2"),
             holding("awdl0", 11, LinkKind::Wireless, "203.0.113.77"),
         ]
+    }
+
+    /// Each port scan is carried by the kinds whose capture admits its
+    /// answers and by no other, and a transport built from parts, which
+    /// filters nothing, carries every one.
+    ///
+    /// The UDP resolver's kind is the near miss: the same protocol, but a
+    /// capture that admits name-service replies alone, so a UDP port scan over
+    /// it would hear nothing.
+    #[test]
+    fn a_transport_carries_the_port_scans_its_capture_admits_answers_to() {
+        use Protocol::{Sctp, Tcp, Udp};
+        let tcp = ProbeKind::TcpProbe {
+            reply_port: 40_000,
+            icmp_errors: true,
+        };
+        let udp = ProbeKind::UdpProbe { reply_port: 40_000 };
+        let sctp = ProbeKind::Sctp { reply_port: 40_000 };
+        for (kind, carried) in [
+            (ProbeKind::TcpSyn, &[Tcp][..]),
+            (tcp, &[Tcp]),
+            (udp, &[Udp]),
+            (sctp, &[Sctp]),
+            (ProbeKind::UdpResolve, &[]),
+            (ProbeKind::IcmpEcho { identifier: 7 }, &[]),
+            (ProbeKind::IpProtocol { number: 47 }, &[]),
+        ] {
+            for protocol in [Tcp, Udp, Sctp] {
+                assert_eq!(
+                    kind.carries_port_scan(protocol),
+                    carried.contains(&protocol),
+                    "{kind:?} for {protocol:?}"
+                );
+            }
+        }
+
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        let parts = ProbeTransport::from_parts(Box::new(MockSender::default()), rx);
+        assert!(
+            [Tcp, Udp, Sctp]
+                .iter()
+                .all(|p| parts.mismatched_for(*p).is_none())
+        );
+        let opened = parts.opened_for(udp);
+        assert_eq!(opened.reply_port(), Some(40_000));
+        assert!(opened.mismatched_for(Tcp).is_some());
     }
 
     fn names(zones: Option<Vec<Zone>>) -> Option<Vec<String>> {

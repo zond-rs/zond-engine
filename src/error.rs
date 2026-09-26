@@ -646,6 +646,7 @@ impl Coded for StrategyError {
             StrategyError::Channel(channel) => channel.code(),
             StrategyError::Capture(capture) => capture.code(),
             StrategyError::Interface { .. } => "strategy.interface",
+            StrategyError::MismatchedTransport { .. } => "strategy.mismatched_transport",
             StrategyError::Probe(_) => "strategy.probe",
             StrategyError::Panicked { .. } => "strategy.panicked",
         }
@@ -1030,6 +1031,7 @@ mod tests {
             "signature.unreadable_key",
             "signature.untrusted_key",
             "strategy.interface",
+            "strategy.mismatched_transport",
             "strategy.panicked",
             "strategy.probe",
             "target.blank",
