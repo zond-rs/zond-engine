@@ -159,6 +159,11 @@ impl ScanCapabilities {
     /// is what it will probe, asked by `sender`'s frames, since a run that
     /// sends frames alone asks what no frame reaches by connect, and where
     /// that is every target the connect is the route to announce.
+    ///
+    /// A run that sends no DNS says so here too, for a reader asking for
+    /// detail, and on every route alike: raw or connect, its hostnames come
+    /// from the hosts file alone, and a missing reverse name is that decision
+    /// rather than an answer nobody gave.
     pub(super) fn resolve(
         cfg: &ZondConfig,
         probing: Option<Probing>,
@@ -175,6 +180,12 @@ impl ScanCapabilities {
             frames_only,
             dns: !cfg.no_dns,
         };
+        if !caps.dns {
+            info!(
+                verbosity = 1,
+                "hostnames from the hosts file only (DNS off)"
+            );
+        }
         if let Some(probing) = probing {
             let beyond = caps.beyond_frames(targets, &cfg.send_source, sender);
             let unframed = beyond.targets.len() == targets.len() && !beyond.is_empty();
@@ -459,7 +470,6 @@ impl Enrichment {
             let (tx, rx) = mpsc::unbounded_channel();
             (Some(tx), Some(spawn_resolver(rx, ctx.clone()).await))
         } else {
-            info!("DNS queries skipped by user flag");
             (None, None)
         };
 
@@ -3458,6 +3468,35 @@ mod tests {
             let said = heard.0.lock().expect("an unpoisoned log").clone();
             assert_eq!(said, [expected], "{probing:?}");
         }
+    }
+
+    /// A run told to send no DNS says where its hostnames come from instead,
+    /// once and for a reader asking for detail, whichever privilege it holds.
+    /// The raw path and the connect path name hosts from the same hosts file,
+    /// and one of them keeping quiet about it leaves its reader to wonder why
+    /// no reverse name came back.
+    #[test]
+    fn a_run_without_dns_says_where_its_names_come_from_whatever_its_privilege() {
+        let said = |no_dns| {
+            let cfg = ZondConfig {
+                no_dns,
+                ..ZondConfig::default()
+            };
+            crate::logging::logged(|| {
+                ScanCapabilities::resolve(&cfg, None, &IpSet::new(), interface::FrameSender::Probe);
+            })
+            .into_iter()
+            .map(|line| (line.verbosity, line.message))
+            .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            said(true),
+            [(1, "hostnames from the hosts file only (DNS off)".to_owned())],
+            "under {:?}",
+            Privilege::current()
+        );
+        assert_eq!(said(false), [], "under {:?}", Privilege::current());
     }
 
     /// An idle scan's opening line names the zombie it probes through, not the
