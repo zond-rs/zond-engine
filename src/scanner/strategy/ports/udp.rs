@@ -637,11 +637,6 @@ impl RawPortScan for UdpPortScanner {
     /// One send, first attempt or retry. `position` is `Some` only for a probe
     /// that has never gone out, since the ledger keeps it thereafter.
     fn send(&mut self, ip: IpAddr, port: u16, position: Option<u64>, now: Instant) {
-        let Some(src_addr) = self.core.resolver.resolve(ip) else {
-            self.core.record_no_route(ip);
-            return;
-        };
-
         // Whether this send takes a slot in the congestion window. A retry does
         // not: the slot went back when the question it repeats ran out of
         // round-trip budget. The position says which this is, as it does for
@@ -649,6 +644,9 @@ impl RawPortScan for UdpPortScanner {
         // whose probe was settled while it waited finds nothing there and
         // would read as a first attempt.
         let first_attempt = position.is_some();
+        let Some(src_addr) = self.core.source_for((ip, port), first_attempt) else {
+            return;
+        };
 
         let sent = send_udp(
             self.core.transport.tx.as_ref(),

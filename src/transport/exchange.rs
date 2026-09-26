@@ -81,7 +81,7 @@ use std::time::{Duration, Instant};
 use crate::model::capture::CaptureCounts;
 use crate::protocols::craft::Packet;
 use crate::protocols::error::PacketError;
-use crate::system::interface::SourceResolver;
+use crate::system::interface::{NoSource, SourceResolver};
 use crate::transport::capture::CapturedSegment;
 use crate::transport::probe::{
     Emission, ProbeKind, ProbeTransport, SendError, SendMode, TransportError,
@@ -189,7 +189,8 @@ impl Exchange {
     /// [`ExchangeError::Build`] if the layers describe a packet that cannot be
     /// serialized, [`ExchangeError::NoSource`] if no address on this host
     /// reaches `to`, and [`ExchangeError::Send`] if the probe was refused on the
-    /// way out.
+    /// way out, or this process had no descriptor to ask the routing table
+    /// for its source with.
     pub async fn send(
         &mut self,
         segment: &Packet,
@@ -197,10 +198,10 @@ impl Exchange {
         wait: Duration,
     ) -> Result<Vec<CapturedSegment>, ExchangeError> {
         let bytes = segment.build()?;
-        let source = self
-            .sources
-            .resolve(to)
-            .ok_or(ExchangeError::NoSource(to))?;
+        let source = self.sources.source(to).map_err(|missing| match missing {
+            NoSource::Unreached => ExchangeError::NoSource(to),
+            NoSource::Unasked(error) => ExchangeError::Send(SendError::from_io(error)),
+        })?;
         let zone = self.sources.zone_of(to);
 
         self.transport

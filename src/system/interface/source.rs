@@ -30,6 +30,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, UdpSocket};
 
 use crate::model::ip::scoped::{ScopedIp, ZoneMap};
+use crate::system::descriptors;
 use crate::system::interface::{Link, LinkAddress};
 
 /// The links usable as a probe source: up, not loopback, and holding at least
@@ -175,13 +176,13 @@ pub(crate) fn plausible_source(links: &[Link], target: IpAddr) -> Option<IpAddr>
 pub fn probe_route_source(target: IpAddr, sockets: &mut ProbeSockets) -> Option<IpAddr> {
     match ask_route(target, sockets) {
         RouteAnswer::From(source) => Some(source),
-        RouteAnswer::NoRoute | RouteAnswer::Forbidden | RouteAnswer::Unasked => None,
+        RouteAnswer::NoRoute | RouteAnswer::Forbidden | RouteAnswer::Unasked(_) => None,
     }
 }
 
 /// What the kernel's routing table said about one destination.
 #[derive(Debug)]
-enum RouteAnswer {
+pub(crate) enum RouteAnswer {
     /// It routes there, from this address.
     From(IpAddr),
     /// It has no route there it can use: `ENETUNREACH` or `EHOSTUNREACH`, or
@@ -202,7 +203,7 @@ enum RouteAnswer {
     Forbidden,
     /// Nothing was asked: no socket to ask with, which says nothing about the
     /// destination.
-    Unasked,
+    Unasked(std::io::Error),
 }
 
 impl RouteAnswer {
@@ -236,7 +237,7 @@ pub(crate) fn ask_route(target: IpAddr, sockets: &mut ProbeSockets) -> RouteAnsw
             };
             match UdpSocket::bind(bind_addr) {
                 Ok(socket) => slot.insert(socket),
-                Err(_) => return RouteAnswer::Unasked,
+                Err(error) => return RouteAnswer::Unasked(error),
             }
         }
     };
@@ -245,8 +246,24 @@ pub(crate) fn ask_route(target: IpAddr, sockets: &mut ProbeSockets) -> RouteAnsw
     }
     match socket.local_addr() {
         Ok(local) => RouteAnswer::From(local.ip()),
-        Err(_) => RouteAnswer::Unasked,
+        Err(error) => RouteAnswer::Unasked(error),
     }
+}
+
+/// Why [`SourceResolver::source`] has no address to send from.
+#[derive(Debug)]
+pub(crate) enum NoSource {
+    /// No address on this host reaches the destination, or the routing table
+    /// refuses it; [`refused_by_route`](SourceResolver::refused_by_route)
+    /// says which. A fact about the destination, and the same answer the next
+    /// time it is asked.
+    Unreached,
+    /// This process had no descriptor for the socket the routing table is
+    /// asked through, so the table was never asked. A fact about this
+    /// machine, which a socket closing elsewhere undoes: said as the shortage
+    /// it is, and asked again next time rather than remembered as an address
+    /// nothing reaches.
+    Unasked(std::io::Error),
 }
 
 /// Resolves the source address for arbitrary destinations seen one at a time,
@@ -448,45 +465,87 @@ impl SourceResolver {
     /// of a `prohibit` route and the invalid argument of a `blackhole` one,
     /// where Linux has them.
     pub fn resolve(&mut self, target: IpAddr) -> Option<IpAddr> {
+        self.source(target).ok()
+    }
+
+    /// [`resolve`](Self::resolve), saying why there is no source.
+    ///
+    /// A lookup this process had no descriptor for is not remembered, and
+    /// the next asks the table afresh; see [`NoSource::Unasked`]. Everything
+    /// else is remembered for the life of the resolver.
+    pub(crate) fn source(&mut self, target: IpAddr) -> Result<IpAddr, NoSource> {
         if let Some(cached) = self.cache.get(&target) {
-            return *cached;
+            return cached.ok_or(NoSource::Unreached);
         }
 
         let source = self.find(target);
-        self.cache.insert(target, source);
+        match &source {
+            Ok(address) => {
+                self.cache.insert(target, Some(*address));
+            }
+            Err(NoSource::Unreached) => {
+                self.cache.insert(target, None);
+            }
+            Err(NoSource::Unasked(_)) => {}
+        }
         source
     }
 
-    /// [`resolve`](Self::resolve), asked afresh.
-    fn find(&mut self, target: IpAddr) -> Option<IpAddr> {
+    /// [`source`](Self::source), asked afresh.
+    ///
+    /// A table this process could not ask about a target on its own segment
+    /// is not read as one that allows it: the question is what keeps the
+    /// probes from a neighbour the host's policy refuses, and it is put again
+    /// once a descriptor is free rather than skipped.
+    fn find(&mut self, target: IpAddr) -> Result<IpAddr, NoSource> {
         if let Some(scoped) = self.scoped_source(target) {
-            return Some(scoped);
+            return Ok(scoped);
         }
         if let Some(on_link) = self.onlink.source_for(target) {
             if !self.asks_on_link {
-                return Some(on_link);
+                return Ok(on_link);
             }
             return match (self.route)(target, &mut self.sockets) {
                 RouteAnswer::NoRoute | RouteAnswer::Forbidden => {
                     self.refused.insert(target);
-                    None
+                    Err(NoSource::Unreached)
                 }
-                RouteAnswer::From(_) | RouteAnswer::Unasked => Some(on_link),
+                RouteAnswer::Unasked(error) if descriptors::exhausted(&error) => {
+                    Err(NoSource::Unasked(error))
+                }
+                RouteAnswer::From(_) | RouteAnswer::Unasked(_) => Ok(on_link),
             };
         }
 
         let route = (self.route)(target, &mut self.sockets);
-        if matches!(route, RouteAnswer::Forbidden) {
-            self.refused.insert(target);
-            return None;
+        match route {
+            RouteAnswer::Forbidden => {
+                self.refused.insert(target);
+                return Err(NoSource::Unreached);
+            }
+            RouteAnswer::Unasked(error) if descriptors::exhausted(&error) => {
+                return Err(NoSource::Unasked(error));
+            }
+            _ => {}
         }
         if let Some(forced) = self.forced_source(target) {
-            return Some(forced);
+            return Ok(forced);
         }
         match route {
-            RouteAnswer::From(source) => Some(source),
-            _ => plausible_source(&self.links, target),
+            RouteAnswer::From(source) => Ok(source),
+            _ => plausible_source(&self.links, target).ok_or(NoSource::Unreached),
         }
+    }
+
+    /// This resolver, asking the routing table through `route`, for a test
+    /// that needs the table to answer as no host a test runs on does.
+    #[cfg(all(test, unix))]
+    pub(crate) fn asking_with(
+        mut self,
+        route: fn(IpAddr, &mut ProbeSockets) -> RouteAnswer,
+    ) -> Self {
+        self.route = route;
+        self
     }
 }
 
@@ -692,6 +751,52 @@ mod tests {
         let target = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1));
         assert_eq!(resolver.resolve(target), None);
         assert!(resolver.refused_by_route(target));
+    }
+
+    /// A routing table this process had no descriptor to ask is a shortage
+    /// said as one, and asked again next time: remembered as a target with
+    /// no source, a moment's full table would file a live host unreachable
+    /// for the rest of the scan. A target on this host's own segment is not
+    /// given its segment's source unasked either, since the question is what
+    /// keeps its probes from a neighbour the host's policy refuses.
+    #[cfg(unix)]
+    #[test]
+    fn a_route_asked_without_a_descriptor_is_a_shortage_asked_again() {
+        let global = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xb1a0);
+        let short = |_: IpAddr, _: &mut ProbeSockets| {
+            RouteAnswer::Unasked(std::io::Error::from_raw_os_error(libc::EMFILE))
+        };
+        let routed = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 9, 0, 0, 0, 0, 1));
+        let mut resolver = SourceResolver::from_links(&[mock_interface(vec![v6net(global, 64)])])
+            .asking_with(short);
+
+        assert!(matches!(
+            resolver.source(routed),
+            Err(NoSource::Unasked(e)) if descriptors::exhausted(&e)
+        ));
+        assert!(!resolver.refused_by_route(routed));
+
+        resolver.route = |_, _| {
+            RouteAnswer::From(IpAddr::V6(Ipv6Addr::new(
+                0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xb1a0,
+            )))
+        };
+        assert_eq!(
+            resolver.resolve(routed),
+            Some(IpAddr::V6(global)),
+            "the next lookup asks again"
+        );
+
+        let neighbour = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 14));
+        let mut on_link = SourceResolver {
+            asks_on_link: true,
+            ..SourceResolver::from_links(&[mock_interface(vec![v4net(192, 0, 2, 10, 24)])])
+                .asking_with(short)
+        };
+        assert!(matches!(
+            on_link.source(neighbour),
+            Err(NoSource::Unasked(_))
+        ));
     }
 
     /// A policy route is told from a missing one by the words the kernel

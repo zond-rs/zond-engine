@@ -579,13 +579,11 @@ impl RawPortScan for SctpPortScanner {
     /// is the one thing that must never repeat between attempts: two probes
     /// carrying the same tag are indistinguishable in their answers.
     fn send(&mut self, ip: IpAddr, port: u16, position: Option<u64>, now: Instant) {
-        let Some(src_addr) = self.core.resolver.resolve(ip) else {
-            self.core.record_no_route(ip);
-            return;
-        };
-
         // A retry takes no slot in the window; see the TCP scanner's `send`.
         let first_attempt = position.is_some();
+        let Some(src_addr) = self.core.source_for((ip, port), first_attempt) else {
+            return;
+        };
 
         let sent = send_probe(
             self.core.transport.tx.as_ref(),

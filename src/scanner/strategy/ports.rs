@@ -105,7 +105,7 @@ use crate::scanner::pacing::retry::{
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::PortScanner;
 use crate::scanner::strategy::raw::neighbors::{Admission, NEIGHBOR_RECHECK, NeighborGates};
-use crate::system::interface::SourceResolver;
+use crate::system::interface::{NoSource, SourceResolver};
 use crate::transport::capture::CapturedSegment;
 use crate::transport::kernel_neighbors::NeighborState;
 use crate::transport::probe::{Emission, ProbeTransport, SendError};
@@ -805,6 +805,34 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
                     warn!(verbosity = 2, "probe to {host}:{port} not sent ({error:#})");
                     self.send_failure = Some(format!("{error:#}"));
                 }
+            }
+        }
+    }
+
+    /// The address a probe to `target` leaves from, or `None` with the reason
+    /// there is none filed where it belongs.
+    ///
+    /// No address that reaches the host is a fact about the host, filed by
+    /// [`record_no_route`](Self::record_no_route). A lookup this process had
+    /// no descriptor for is a fact about this machine, and is filed as the
+    /// send it cost, refused for the file limit, by
+    /// [`record_send`](Self::record_send): the probe is counted unasked and
+    /// the run says why, while the host, never asked about, is not filed
+    /// unreachable, and its next probe asks the routing table again.
+    pub(crate) fn source_for(
+        &mut self,
+        target: ProbeTarget,
+        first_attempt: bool,
+    ) -> Option<IpAddr> {
+        match self.resolver.source(target.0) {
+            Ok(source) => Some(source),
+            Err(NoSource::Unreached) => {
+                self.record_no_route(target.0);
+                None
+            }
+            Err(NoSource::Unasked(error)) => {
+                self.record_send(target, Err(&SendError::from_io(error)), first_attempt);
+                None
             }
         }
     }
@@ -2427,6 +2455,33 @@ mod tests {
             said.iter()
                 .all(|line| line.level != tracing::Level::ERROR && line.verbosity >= 2),
             "{said:?}"
+        );
+        assert_eq!(
+            core.refusals_failure().as_deref(),
+            Some("1 port unasked, probes not sent (file limit reached)")
+        );
+    }
+
+    /// A probe whose source could not be looked up, for want of a descriptor
+    /// to ask the routing table through, is a probe this machine could not
+    /// send, and the run says so. Its host was never asked about, so it is not
+    /// filed unreachable: filed so, a moment's full table read as a host with
+    /// no route, and every probe to it after was dropped unsent.
+    #[cfg(unix)]
+    #[test]
+    fn a_source_lookup_short_of_descriptors_is_a_shortage_not_an_unreachable_host() {
+        use crate::system::interface::{ProbeSockets, RouteAnswer};
+
+        let (mut core, _session) = core();
+        core.resolver =
+            SourceResolver::from_links(&[]).asking_with(|_: IpAddr, _: &mut ProbeSockets| {
+                RouteAnswer::Unasked(std::io::Error::from_raw_os_error(libc::EMFILE))
+            });
+
+        assert_eq!(core.source_for((TARGET, 80), true), None);
+        assert!(
+            !core.is_unreachable(&TARGET),
+            "the host was filed unreachable"
         );
         assert_eq!(
             core.refusals_failure().as_deref(),
