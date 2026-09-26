@@ -209,14 +209,15 @@ const MAX_CONTINUATION: Duration = Duration::from_secs(2);
 ///
 /// A backstop rather than a working budget. Every stage below already has its
 /// own bound, and the longest honest walk down the ladder in [`gather`] comes
-/// to thirty-two seconds. It is a port several services share and none names:
-/// the generic question refused with a `400`, each sharing service asked on a
-/// connection of its own and a redirect followed, then a handshake whose
-/// tunnel is asked again and its redirect followed. The longest at the
-/// thorough level, a failed handshake, a failed legacy handshake, a port in
-/// the clear and then the last-resort probes, comes to thirty, three and a
-/// half more for each probe authored for strangers. This sits above both, so
-/// it never fires on a port behaving normally;
+/// to thirty-five and a half seconds. It is a port several services share and
+/// none names: the generic question refused with a `400`, each sharing service
+/// asked on a connection of its own and a redirect followed, then a handshake,
+/// each service asked again through a tunnel of its own, and the redirect
+/// followed. The longest at the thorough level, a failed handshake, a failed
+/// legacy handshake, a port in the clear and then the last-resort probes,
+/// comes to thirty, three and a half more for each probe authored for
+/// strangers. This sits above both, so it never fires on a port behaving
+/// normally;
 /// `the_collection_budget_covers_every_path_through_gather` is what holds the
 /// two together.
 ///
@@ -239,8 +240,9 @@ const COLLECTION_BUDGET: Duration = Duration::from_secs(40);
 
 /// The most waits on the peer any walk down the ladder in [`gather`] makes in
 /// a row, each a connection or a read that allows for the path, with room for
-/// probes still to be authored. The longest walk makes eighteen at the
-/// thorough level, two more for each probe authored for strangers;
+/// probes still to be authored. The longest walk makes nineteen, the one the
+/// budget above describes, and eighteen at the thorough level, two more for
+/// each probe authored for strangers;
 /// `the_collection_budget_covers_every_path_through_gather` holds the two
 /// together.
 const COLLECTION_WAITS: u32 = 20;
@@ -1679,19 +1681,52 @@ async fn tunneled(
     // The generic question goes out without listening first, as it does in
     // the clear; see `ask_generically` for why that loses no greeting.
     let db = SignatureDb::global();
-    let (probes, listen) = match db.tcp_probe_payloads(port) {
-        [] => (db.generic_tcp_probe_payloads(), false),
-        own => (own, !db.asked_first(port)),
-    };
     let peer = peer.through_tls();
-    let banners = collect_responses(&mut tunnel, port, probes, Some(&peer), listen).await;
-    drop(tunnel);
+    let mut conversations = db.tcp_probe_conversations(port);
+    let mut banners = match conversations.next() {
+        Some(own) => {
+            let listen = !db.asked_first(port);
+            collect_responses(&mut tunnel, port, own, Some(&peer), listen).await
+        }
+        None => {
+            let generic = db.generic_tcp_probe_payloads();
+            collect_responses(&mut tunnel, port, generic, Some(&peer), false).await
+        }
+    };
+
+    // Every other service's questions, each through a handshake of its own,
+    // for the reason they are each asked on a connection of their own in the
+    // clear: a question in one protocol is very often the end of a
+    // conversation in another, and a web server closes its connection after
+    // one answer as readily through TLS as without it. A tunnel is torn down
+    // with its connection, so one shared by the services sharing the port
+    // would carry the first service's questions and nobody else's. See
+    // `Conversations`. What that costs is a handshake per service after the
+    // first, on the few ports several services share.
+    let mut held = Some(tunnel);
+    for probes in conversations {
+        drop(held.take());
+        held = retunneled(&peer, egress).await;
+        let Some(tunnel) = held.as_mut() else {
+            break;
+        };
+        banners.extend(ask_in_turn(tunnel, port, probes, Some(&peer)).await);
+    }
+    drop(held);
     let banners = with_redirect_followed(banners, Some(&peer), egress).await;
     let responses = ResponseSet {
         banners,
         tls: Some(info),
     };
     (responses, Some(Tunnel::Tls))
+}
+
+/// A fresh tunnel to a port whose handshake has already completed once, or
+/// `None` where it can no longer be dialled or no longer completes one.
+async fn retunneled(peer: &Authority, egress: Egress) -> Option<tls::TlsTunnel> {
+    let stream = redial(peer.socket(), egress).await?;
+    let (tunnel, _) = tls::handshake(stream, peer.server_name()).await?;
+    Some(tunnel)
 }
 
 /// Grabs a first-speak banner where `listen` says one may come, then sends
@@ -2787,6 +2822,9 @@ mod tests {
             .max(1) as u32;
         let redials = rung * (services - 1);
         let handshake = wait(tls::TLS_HANDSHAKE_TIMEOUT);
+        // Through TLS, each service after the first is asked through a
+        // handshake of its own, one dial and one handshake more per service.
+        let retunnels = (rung + handshake) * (services - 1);
         let legacy = wait(tls::LEGACY_PROBE_TIMEOUT);
         let speculative = wait(tls::SPECULATIVE_TLS_TIMEOUT);
 
@@ -2797,21 +2835,26 @@ mod tests {
         let followed_tls = rung + handshake + read_once;
 
         // Numbered for TLS: [Tls, LegacyTls, Plaintext].
-        let tls_then_redirect = handshake + spoke(probes) + followed_tls;
+        let tls_then_redirect = handshake + spoke(probes) + retunnels + followed_tls;
         let tls_all_three = handshake + rung + legacy + rung + spoke(probes) + redials + followed;
         let tls_then_silence = handshake + rung + legacy + rung + silent(probes) + redials;
 
         // Numbered for anything else: [Plaintext, SpeculativeTls]. Inside the
         // tunnel a claimed port asks its own probes again and an unclaimed one
         // asks the single generic question.
-        let claimed_then_tls =
-            silent(probes) + redials + rung + speculative + spoke(probes) + followed_tls;
+        let claimed_then_tls = silent(probes)
+            + redials
+            + rung
+            + speculative
+            + spoke(probes)
+            + retunnels
+            + followed_tls;
         let alert_then_tls = read_once + rung + speculative + spoke(1) + followed_tls;
         let unclaimed_then_redirect = read_once + rung + read_once;
         // A web server refusing the request in the clear, then asked for a
         // handshake, and for the legacy one where that is refused.
         let refused_then_tls =
-            spoke(probes) + redials + rung + speculative + spoke(probes) + followed_tls;
+            spoke(probes) + redials + rung + speculative + spoke(probes) + retunnels + followed_tls;
         let refused_then_legacy = spoke(probes) + redials + rung + speculative + rung + legacy;
 
         // A port services only share is asked the generic question first and
@@ -2843,9 +2886,9 @@ mod tests {
             refused_then_legacy,
             silent(probes) + redials + rung + speculative + last_resort,
             shared_spoke,
-            shared_spoke + rung + speculative + spoke(probes) + followed_tls,
+            shared_spoke + rung + speculative + spoke(probes) + retunnels + followed_tls,
             shared_spoke + rung + speculative + rung + legacy,
-            shared_silent + rung + speculative + spoke(probes) + followed_tls,
+            shared_silent + rung + speculative + spoke(probes) + retunnels + followed_tls,
             shared_silent + rung + speculative + last_resort,
         ];
         let longest = paths.iter().map(|walk| walk.0).max().expect("a path");
@@ -3536,6 +3579,38 @@ mod tests {
             "nothing inside the tunnel asked for `{}`: {asked:?}",
             host.trim()
         );
+    }
+
+    /// Each service sharing a TLS port is asked through a handshake of its
+    /// own. A web server closes its connection after one answer, and the
+    /// tunnel goes with it, so a second service's question sent down the same
+    /// tunnel meets a closed connection and goes unasked, as it would in the
+    /// clear. 8443 is the web alternate and shared with the Kubernetes API.
+    #[tokio::test]
+    async fn each_service_sharing_a_tls_port_is_asked_through_a_handshake_of_its_own() {
+        let (addr, heard) = https_by_name("box.example").await;
+
+        let stream = TcpStream::connect(addr).await.expect("connects");
+        let port = baseline_port(8443, Protocol::Tcp, PortState::Open);
+        let found = fingerprint_tcp_via(
+            stream,
+            port,
+            ServiceDetection::Probe,
+            Egress::KERNEL,
+            PathAllowance::NONE,
+            Some(Arc::from("box.example")),
+        )
+        .await;
+
+        assert!(found.port.security().is_some(), "the handshake completed");
+        let asked = heard.lock().expect("not poisoned").clone();
+        for question in ["GET / ", "GET /api "] {
+            assert!(
+                asked.iter().any(|request| request.starts_with(question)),
+                "`{}` went unasked: {asked:?}",
+                question.trim()
+            );
+        }
     }
 
     /// A stream that notes, in order, whether each operation on it was a read
