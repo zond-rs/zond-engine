@@ -293,8 +293,12 @@ impl ImportLimits {
 
     /// Limits that refuse nothing, for input the caller has already vetted.
     ///
-    /// `max_line_bytes` stays finite because it bounds a single allocation
-    /// rather than the scan, and no input needs it lifted.
+    /// Every one of them is lifted, `max_line_bytes` included. A line is read
+    /// as it arrives rather than into room reserved for the limit, so what it
+    /// costs is the line's own length, and the XML readers hold one element's
+    /// markup to the same bound, which a vetted nmap document can pass: nmap
+    /// writes the ports it scanned into a single attribute, and a sparse sweep
+    /// of the full range makes that several hundred kilobytes.
     pub fn none() -> Self {
         Self {
             max_line_bytes: usize::MAX,
@@ -1112,6 +1116,14 @@ mod tests {
     fn limits_can_be_lifted_and_tightened() {
         let permissive = options("80").with_limits(ImportLimits::none());
         assert!(read("::/0\n", &permissive).is_ok());
+
+        // Lifted means every limit, the line's among them.
+        let long = format!("# {}\n198.51.100.1\n", "x".repeat(128 * 1024));
+        assert!(matches!(
+            read(&long, &options("80")),
+            Err(ImportError::LineTooLong { .. })
+        ));
+        assert!(read(&long, &permissive).is_ok());
 
         let strict = options("80").with_limits(ImportLimits {
             max_addresses: 100,
