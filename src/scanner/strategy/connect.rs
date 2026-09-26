@@ -724,7 +724,8 @@ pub async fn scan(
     {
         ctx.stopping_before(Pass::Services);
     }
-    crowds.ask_again(&ctx, ScannerKind::Connect).await;
+    shortfall.identified_in_part +=
+        crowds.ask_again(&ctx, ScannerKind::Connect).await.len() as u128;
     crowds.report_silence();
     tarpits.report(&ctx, ScannerKind::Connect);
     shortfall.report(&ctx, ScannerKind::Connect, "port", "ports");

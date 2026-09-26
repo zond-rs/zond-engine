@@ -172,7 +172,9 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
     // A stop that came while ports were being identified ended the ones in
     // flight, which keep what the port phase recorded and nothing more.
     ctx.stopping_before(Pass::Services);
-    crowds.ask_again(ctx, ScannerKind::Service).await;
+    for (ip, port) in crowds.ask_again(ctx, ScannerKind::Service).await {
+        in_part.record(&ip, port, Unreached::Starved);
+    }
     crowds.report_silence();
 
     quiet.report(ctx, asked);
@@ -719,21 +721,33 @@ impl Crowds {
     /// once as the pass identifies ports. Each takes one socket's share of the
     /// process's budget for its connection. A scan told to stop asks nothing
     /// more, and the ports keep what their first identification drew.
-    pub(crate) async fn ask_again(&self, ctx: &ScanContext, kind: ScannerKind) {
+    ///
+    /// Returns each port whose second asking the file limit cut short, which
+    /// the pass counts as identified in part as it counts a first asking cut
+    /// short: what the port is filed with is a floor, the questions that went
+    /// unasked went unasked for this machine's limit. A port already counted
+    /// for its first asking is not returned again.
+    pub(crate) async fn ask_again(
+        &self,
+        ctx: &ScanContext,
+        kind: ScannerKind,
+    ) -> Vec<(ScopedIp, u16)> {
         let crowds: Vec<Arc<Crowd>> = {
             let hosts = self.hosts.lock().unwrap_or_else(|held| held.into_inner());
             hosts.values().cloned().collect()
         };
+        let mut in_part = Vec::new();
         let mut pool = ProbePool::new(
             CONNECT_CONCURRENCY,
             ctx.clone(),
             kind,
-            |named: Vec<(ScopedIp, Fingerprinted)>, _audit| {
-                for (key, found) in named {
+            |asked: AskedAlone, _audit| {
+                for (key, found) in asked.named {
                     let (number, protocol) = (found.port.number(), found.port.protocol());
                     ctx.record_responses(key.clone(), number, protocol, found.responses);
                     write_back(ctx, key, found.port, found.about_the_host);
                 }
+                in_part.extend(asked.in_part);
             },
         );
         for crowd in crowds {
@@ -744,6 +758,8 @@ impl Crowds {
             pool.admit(crowd.ask_alone(owed, ctx.handle.clone())).await;
         }
         pool.drain().await;
+        drop(pool);
+        in_part
     }
 }
 
@@ -850,6 +866,20 @@ struct Owed {
     detection: ServiceDetection,
     egress: Egress,
     path: PathAllowance,
+    /// Whether the first identification was cut short by the file limit, and
+    /// the port so counted as identified in part already.
+    in_part: bool,
+}
+
+/// What a [`Crowd`]'s second askings came to.
+#[derive(Debug, Default)]
+struct AskedAlone {
+    /// Each port that drew something, with what it drew, under the key it is
+    /// filed under.
+    named: Vec<(ScopedIp, Fingerprinted)>,
+    /// Each port the file limit cut the second asking of short, not counted
+    /// for its first; see [`Crowds::ask_again`].
+    in_part: Vec<(ScopedIp, u16)>,
 }
 
 impl Crowd {
@@ -901,6 +931,7 @@ impl Crowd {
                     detection,
                     egress,
                     path,
+                    in_part: found.starved,
                 });
         }
         found
@@ -917,9 +948,9 @@ impl Crowd {
     }
 
     /// Asks each of `owed` again in turn, with the host to itself, and hands
-    /// back what drew anything, under the key each is filed under. A port
-    /// that no longer takes the connection, or draws nothing again, keeps what
-    /// its first identification drew.
+    /// back what drew anything, under the key each is filed under, and which
+    /// the file limit cut short. A port that no longer takes the connection,
+    /// or draws nothing again, keeps what its first identification drew.
     ///
     /// Each dials the port afresh, given the connect budget and the path's
     /// allowance.
@@ -927,8 +958,8 @@ impl Crowd {
         self: Arc<Self>,
         owed: Vec<Owed>,
         handle: crate::scanner::handle::ScanHandle,
-    ) -> Vec<(ScopedIp, Fingerprinted)> {
-        let mut named = Vec::new();
+    ) -> AskedAlone {
+        let mut asked = AskedAlone::default();
         for Owed {
             key,
             addr,
@@ -936,6 +967,7 @@ impl Crowd {
             detection,
             egress,
             path,
+            in_part,
         } in owed
         {
             if handle.should_stop() {
@@ -947,11 +979,18 @@ impl Crowd {
                 .acquire()
                 .await
                 .expect("the descriptor gate is never closed");
-            let Ok(stream) = egress
+            let number = port.number();
+            let stream = match egress
                 .connect_timed(addr, path.over(CONNECT_PROBE_TIMEOUT))
                 .await
-            else {
-                continue;
+            {
+                Ok(stream) => stream,
+                Err(e) => {
+                    if descriptors::exhausted(&e) && !in_part {
+                        asked.in_part.push((key, number));
+                    }
+                    continue;
+                }
             };
             let again = crate::fingerprint::fingerprint_tcp_via(
                 stream,
@@ -963,16 +1002,18 @@ impl Crowd {
             )
             .await;
             self.heard(&again);
+            if again.starved && !in_part {
+                asked.in_part.push((key.clone(), number));
+            }
             if !again.responses.is_empty() {
-                let number = again.port.number();
                 self.silent
                     .lock()
                     .unwrap_or_else(|held| held.into_inner())
                     .retain(|(silent, port)| !(*silent == key && *port == number));
-                named.push((key, again));
+                asked.named.push((key, again));
             }
         }
-        named
+        asked
     }
 
     /// Notes how the host answered one of its identifications.
@@ -1721,5 +1762,41 @@ mod tests {
 
         assert!(first > 0);
         assert_eq!(silent.heard(), first * 2, "asked once again");
+    }
+
+    /// A second asking the file limit cuts short is counted as identified in
+    /// part, as a first asking cut short is: the port keeps what its first
+    /// identification drew, and the questions the second would have put went
+    /// unasked for this machine's limit, not for anything the port said.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_second_asking_the_file_limit_cuts_short_is_counted_identified_in_part() {
+        use crate::system::descriptors::testing::{exhaust, in_a_process_of_its_own};
+
+        if !in_a_process_of_its_own(
+            module_path!(),
+            "a_second_asking_the_file_limit_cuts_short_is_counted_identified_in_part",
+        ) {
+            return;
+        }
+        let silent = SilentPort::open();
+        let (_session, ctx) = ScanSession::new();
+        let crowds = Crowds::default();
+        let crowd = crowds.of(silent.addr().ip(), None);
+        crowd.answered_late.store(true, Ordering::Relaxed);
+
+        let company = crowd.contention.enter();
+        identified_in(&crowd, &silent).await;
+        drop(company);
+
+        let held = exhaust(64);
+        let in_part = crowds.ask_again(&ctx, ScannerKind::Service).await;
+        drop(held);
+
+        assert_eq!(
+            in_part,
+            vec![(silent.addr().ip().into(), silent.addr().port())],
+            "a second asking refused a socket was not counted"
+        );
     }
 }
