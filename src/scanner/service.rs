@@ -140,12 +140,22 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
         }
         let egress = ctx.egress_toward(address);
         let detection = ctx.service_detection_on(detection, target.number, target.protocol);
-        pool.admit(fingerprint_one(
+        let identifying = fingerprint_one(
             target,
             detection,
             egress,
             crowds.of(address, ctx.target_name(address)),
-        ))
+        );
+        // Ended with the scan rather than at its own ceiling, which on a port
+        // that accepts and says nothing is the better part of half a minute.
+        // One cut short keeps what the port phase recorded.
+        let handle = ctx.handle.clone();
+        pool.admit(async move {
+            handle
+                .or_stopped(identifying)
+                .await
+                .unwrap_or(Attempt::Quiet)
+        })
         .await;
     }
 

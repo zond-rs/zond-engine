@@ -30,6 +30,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use tokio::sync::Notify;
+
 use crate::report::StopReason;
 use crate::scanner::pacing::timer::later;
 
@@ -74,6 +76,9 @@ pub struct ScanHandle {
 #[derive(Debug)]
 struct Stop {
     aborted: AtomicBool,
+    /// Wakes whatever is waiting in [`ScanHandle::stopping`] when the scan is
+    /// aborted. The deadline needs no waking: a waiter sleeps until it.
+    woken: Notify,
     /// When this scan's own budget runs out, for one that was given a budget.
     ///
     /// An [`Instant`] rather than a [`Duration`] and a start, so a reader does
@@ -105,6 +110,7 @@ impl ScanHandle {
         Self {
             stop: Arc::new(Stop {
                 aborted: AtomicBool::new(false),
+                woken: Notify::new(),
                 deadline,
             }),
         }
@@ -121,6 +127,49 @@ impl ScanHandle {
     /// in the report could describe.
     pub fn abort(&self) {
         self.stop.aborted.store(true, Ordering::SeqCst);
+        self.stop.woken.notify_waiters();
+    }
+
+    /// Resolves once the scan is asked to stop or outlives its budget, and at
+    /// once for one that already has.
+    ///
+    /// For work the probing loops cannot interrupt between passes, because it
+    /// is one long wait on a peer: identifying a service can wait out a
+    /// greeting, a handshake and several probes on a port that accepts and
+    /// says nothing, which is the better part of half a minute. Raced against
+    /// this, such a wait ends when the scan does. See
+    /// [`or_stopped`](Self::or_stopped).
+    pub(crate) async fn stopping(&self) {
+        loop {
+            // Registered before the flag is read, so an abort landing between
+            // the two still wakes this one.
+            let woken = self.stop.woken.notified();
+            tokio::pin!(woken);
+            woken.as_mut().enable();
+            if self.should_stop() {
+                return;
+            }
+            match self.stop.deadline {
+                Some(deadline) => tokio::select! {
+                    () = woken => {}
+                    () = tokio::time::sleep_until(deadline.into()) => return,
+                },
+                None => woken.await,
+            }
+        }
+    }
+
+    /// Runs `work` to its end unless the scan stops first, and `None` where it
+    /// did.
+    ///
+    /// Work already finished when the stop arrives is kept: the race favours
+    /// the work, so an answer and a stop landing together keep the answer.
+    pub(crate) async fn or_stopped<T>(&self, work: impl Future<Output = T>) -> Option<T> {
+        tokio::select! {
+            biased;
+            done = work => Some(done),
+            () = self.stopping() => None,
+        }
     }
 
     /// Whether the scan has been asked to stop, or has outlived its budget.
@@ -225,6 +274,43 @@ mod tests {
         let handle = ScanHandle::bounded(Some(Duration::MAX));
         assert_eq!(handle.stopped(), None);
         assert!(handle.deadline().is_some());
+    }
+
+    /// A wait raced against the stop ends when the scan is aborted, whoever
+    /// is waiting. This is what lets an in-flight identification end with the
+    /// scan rather than after its own half-minute ceiling.
+    #[tokio::test]
+    async fn a_wait_raced_against_the_stop_ends_when_the_scan_is_aborted() {
+        let handle = ScanHandle::new();
+        let aborter = handle.clone();
+        let waiting =
+            tokio::spawn(async move { handle.or_stopped(std::future::pending::<()>()).await });
+        tokio::task::yield_now().await;
+        aborter.abort();
+
+        assert_eq!(waiting.await.expect("the wait ends"), None);
+    }
+
+    /// The budget ends the wait the same way, with nobody asking.
+    #[tokio::test]
+    async fn a_wait_raced_against_the_stop_ends_when_the_budget_runs_out() {
+        let handle = ScanHandle::bounded(Some(Duration::from_millis(10)));
+
+        let raced = handle.or_stopped(std::future::pending::<()>()).await;
+
+        assert_eq!(raced, None);
+        assert!(handle.should_stop());
+    }
+
+    /// Work that finishes is kept, and a scan already stopped keeps work that
+    /// was ready anyway: the race favours the answer.
+    #[tokio::test]
+    async fn work_that_finishes_is_kept() {
+        let handle = ScanHandle::new();
+        assert_eq!(handle.or_stopped(async { 7 }).await, Some(7));
+        handle.abort();
+        assert_eq!(handle.or_stopped(async { 7 }).await, Some(7));
+        assert_eq!(handle.or_stopped(std::future::pending::<u8>()).await, None);
     }
 
     /// An abort that arrives after the budget expired does not rename what

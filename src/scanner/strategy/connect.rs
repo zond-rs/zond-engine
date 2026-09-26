@@ -954,10 +954,33 @@ async fn port_prober(
                 // The handshake is a round trip over the very path the
                 // conversation that follows takes, measured a moment ago.
                 let path = PathAllowance::of_round_trip(rtt);
-                let identified = crowd
-                    .identify(target.ip.into(), stream, port, detection, egress, path)
+                // Raced against the stop, because the identification is the
+                // one wait here no loop reads it between: on a port that
+                // accepts and says nothing it runs the better part of half a
+                // minute, and a stopped scan would wait out every one in
+                // flight. One cut short keeps the verdict the handshake
+                // earned, an open port with its registered name, and draws
+                // nothing further.
+                let identified = handle
+                    .or_stopped(crowd.identify(
+                        target.ip.into(),
+                        stream,
+                        port,
+                        detection,
+                        egress,
+                        path,
+                    ))
                     .await;
                 drop(descriptor);
+                let Some(identified) = identified else {
+                    return verdict(
+                        PortState::Open,
+                        Some(ScanResponse::TcpSynAck),
+                        true,
+                        Some(rtt),
+                        Outcome::Answered { position },
+                    );
+                };
                 Some(Probed {
                     ip: target.ip,
                     port: Some(identified.port),
@@ -2146,6 +2169,76 @@ mod tests {
             );
             assert!(!probed.answered, "{ip}: nothing answered");
         }
+    }
+
+    /// **A stop ends an identification in flight.** On a port that accepts
+    /// and says nothing, a thorough identification asks every question it
+    /// has, a connection each, and an unprivileged scan stopped with some of
+    /// those in flight asked them all before it ended. The stop here arrives
+    /// once the port has taken the first connection, and the probe has to
+    /// make no other and keep the verdict the handshake earned.
+    #[tokio::test]
+    async fn a_stop_ends_an_identification_in_flight() {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("a free port");
+        let port = listener.local_addr().expect("its address").port();
+
+        let handle = ScanHandle::new();
+        let stopper = handle.clone();
+        let (returned, mut probe_done) = tokio::sync::oneshot::channel::<()>();
+        // Takes every connection and says nothing on any of them, and asks
+        // for the stop once the first is in.
+        let listening = tokio::spawn(async move {
+            let mut held = Vec::new();
+            let (first, _) = listener.accept().await.expect("the probe connects");
+            held.push(first);
+            stopper.abort();
+            // Held open until the probe returns, so nothing ends its
+            // identification but the stop.
+            loop {
+                tokio::select! {
+                    accepted = listener.accept() => {
+                        held.push(accepted.expect("a connection").0);
+                    }
+                    _ = &mut probe_done => break,
+                }
+            }
+            // Whatever else the probe made before it returned is already
+            // queued on the listener; this only has to take it.
+            while let Ok(Ok((more, _))) =
+                tokio::time::timeout(Duration::from_millis(500), listener.accept()).await
+            {
+                held.push(more);
+            }
+            held.len()
+        });
+
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let probed = port_prober(
+            tcp_target(ip, port),
+            ServiceDetection::Thorough,
+            Shaping::default(),
+            Egress::KERNEL,
+            SocketAddr::new(ip, port),
+            handle,
+            Default::default(),
+        )
+        .await
+        .expect("a TCP target is probed");
+        let _ = returned.send(());
+
+        assert_eq!(
+            listening.await.expect("the listener ends"),
+            1,
+            "the identification went on connecting after the stop"
+        );
+        assert_eq!(
+            probed.port.as_ref().map(Port::state),
+            Some(PortState::Open),
+            "the handshake's verdict is kept"
+        );
+        assert!(probed.answered);
     }
 
     /// Where an error surfaced decides what it means: the same code before
