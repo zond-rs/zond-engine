@@ -107,7 +107,7 @@
 //!
 //! [`TcpScanTechnique::Syn`]: crate::model::technique::TcpScanTechnique::Syn
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
@@ -270,6 +270,17 @@ impl SeriesTarget {
     }
 }
 
+/// The samples of one host a sweep held for its neighbour and did not send.
+#[derive(Debug, Clone)]
+struct Owed {
+    /// The host, with the ports a sweep asks it on.
+    target: SeriesTarget,
+    /// How many samples its open port is owed.
+    open: usize,
+    /// How many samples its closed port is owed.
+    closed: usize,
+}
+
 /// One probe, recorded when it reached the wire and not before. A probe the
 /// kernel refused is not a host that stayed silent.
 #[derive(Debug, Clone, Copy)]
@@ -349,6 +360,10 @@ pub struct OsSeriesScanner {
     neighbors: NeighborGates,
     /// The hosts of the current batch found unreachable, sent nothing more.
     unreached: HashSet<IpAddr>,
+    /// The samples of the current batch held for a neighbour and so not sent,
+    /// by host, which the batch's make-up sweeps send; see
+    /// [`make_up`](Self::make_up).
+    owed: BTreeMap<ScopedIp, Owed>,
     /// How many hosts this run managed to name, for the closing line.
     named: usize,
     /// The source port the next sweep sends from.
@@ -420,6 +435,7 @@ impl OsSeriesScanner {
             faults: SendFaults::default(),
             neighbors: NeighborGates::default(),
             unreached: HashSet::new(),
+            owed: BTreeMap::new(),
             named: 0,
             next_source_port: rand::random_range(SOURCE_PORTS),
         }
@@ -430,11 +446,12 @@ impl OsSeriesScanner {
     ///
     /// Each sample is admitted through the batch's neighbour gates, as every
     /// pass's probes are (see [`NeighborGates::admit`]), and one held while a
-    /// host's neighbour is asked for is dropped rather than sent late: the
-    /// spacing is the measurement, a sample at an unplanned moment costs the
-    /// reading, and a sample missing costs one sample, as a lost one does. Its
-    /// tick passes all the same, so every other host keeps its place in the
-    /// sweep. A host whose neighbour is given up on is sent nothing more.
+    /// host's neighbour is asked for is dropped from the sweep rather than
+    /// sent late: the spacing is the measurement, and a sample at an
+    /// unplanned moment costs the reading. It is owed instead, and a sweep
+    /// after the last sends it at the spacing; see [`make_up`](Self::make_up).
+    /// Its tick passes all the same, so every other host keeps its place in
+    /// the sweep. A host whose neighbour is given up on is sent nothing more.
     ///
     /// Returns once the last probe is away. Replies are filed *while* it sends
     /// rather than afterwards, which keeps the capture's queue drained. A
@@ -473,7 +490,7 @@ impl OsSeriesScanner {
                     .admit(watch, &mut self.resolver, address, Instant::now())
                 {
                     Admission::Send => self.send_one(source, address, source_port, port),
-                    Admission::Hold(_) => {}
+                    Admission::Hold(_) => self.owe(target, port),
                     Admission::Unreachable => {
                         let why = self.neighbors.refusal(address);
                         self.record_unreached(address, why);
@@ -483,6 +500,69 @@ impl OsSeriesScanner {
             }
         }
         self.file_queued();
+    }
+
+    /// Notes that the sample of `target` on `port` was held for its
+    /// neighbour and not sent, for a make-up sweep to send.
+    fn owe(&mut self, target: &SeriesTarget, port: u16) {
+        let owed = self
+            .owed
+            .entry(target.address.clone())
+            .or_insert_with(|| Owed {
+                target: target.clone(),
+                open: 0,
+                closed: 0,
+            });
+        if target.open == Some(port) {
+            owed.open += 1;
+        } else {
+            owed.closed += 1;
+        }
+    }
+
+    /// Sends the samples the batch's sweeps held for a neighbour, one sweep
+    /// at a time at the spacing, so each port the neighbour cost a sample
+    /// ends its series with as many as every other.
+    ///
+    /// Through the kernel, the first sample of a host whose neighbour it does
+    /// not hold is the write that asks for it, and a sample right behind it
+    /// in the same sweep is sent a tick later, before a neighbour on a real
+    /// link has answered: that one is held, and dropped from the sweep so the
+    /// spacing holds. The neighbour has answered long before the next sweep,
+    /// so what is missing is one sample at the start of that port's series,
+    /// and a sweep after the last makes it up at the same spacing. A
+    /// neighbour slower than a spacing costs a sample in each sweep until it
+    /// answers or is given up on, and is made up in as many; the make-up
+    /// sweeps are held to as many as the batch's own, so a table that never
+    /// settles cannot keep the batch running.
+    async fn make_up(&mut self) -> Option<StopReason> {
+        for _ in 0..self.samples {
+            let due: Vec<SeriesTarget> = self
+                .owed
+                .values_mut()
+                .map(|owed| {
+                    let target = SeriesTarget {
+                        address: owed.target.address.clone(),
+                        open: owed.target.open.filter(|_| owed.open > 0),
+                        closed: owed.target.closed.filter(|_| owed.closed > 0),
+                    };
+                    owed.open = owed.open.saturating_sub(1);
+                    owed.closed = owed.closed.saturating_sub(1);
+                    target
+                })
+                .filter(|target| target.open.is_some() || target.closed.is_some())
+                .collect();
+            if due.is_empty() {
+                break;
+            }
+            let began = Instant::now();
+            self.sweep(&due).await;
+            self.drain_until(began + SPACING, false).await;
+            if let Some(cause) = self.ctx.handle.stopped() {
+                return Some(cause.into());
+            }
+        }
+        None
     }
 
     /// Files every host of the batch whose neighbour was still unresolved when
@@ -785,6 +865,7 @@ impl OsSeriesScanner {
                 break;
             }
             let batch = self.resolve_neighbors(batch).await;
+            self.owed.clear();
 
             for _ in 0..self.samples {
                 let began = Instant::now();
@@ -797,6 +878,11 @@ impl OsSeriesScanner {
                     reason = cause.into();
                     break;
                 }
+            }
+            if self.ctx.handle.stopped().is_none()
+                && let Some(cause) = self.make_up().await
+            {
+                reason = cause;
             }
 
             self.drain_until(Instant::now() + LISTEN_AFTER_LAST, true)
@@ -1525,5 +1611,77 @@ mod tests {
             unreached, dead,
             "every dead neighbour is reported unreached"
         );
+    }
+
+    /// A neighbour the kernel takes longer to resolve than a sweep's tick,
+    /// as one on a real link does, costs the sample right behind the write
+    /// that asked for it, and a sweep after the last makes that sample up:
+    /// both ports end with every sample the run takes.
+    ///
+    /// Left unmade, the port whose first sample was held has one fewer in its
+    /// series than it was sent for, on every host the kernel had to ask for.
+    #[tokio::test]
+    async fn a_sample_held_behind_the_asking_write_is_made_up_after_the_last_sweep() {
+        use crate::system::interface::{Link, LinkAddress};
+        use crate::transport::kernel_neighbors::{KernelNeighbors, NeighborState, NeighborTable};
+        use crate::transport::probe::MockSender;
+
+        const SAMPLES: usize = 3;
+        /// How long the neighbour takes to answer once asked: longer than a
+        /// tick, well inside a spacing.
+        const RESOLVING: Duration = Duration::from_millis(5);
+        let slow = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 63));
+        let (_session, ctx) = ScanSession::new();
+        let (_tx, rx) = mpsc::channel(1024);
+        let sender = MockSender::default();
+        let sent = sender.sent.clone();
+        let written = sent.clone();
+        let asked = std::sync::Mutex::new(None::<Instant>);
+        let table = KernelNeighbors::with_reader(Box::new(move || {
+            let mut table = NeighborTable::new();
+            if written.lock().expect("the record").is_empty() {
+                return Ok(table);
+            }
+            let asked = *asked
+                .lock()
+                .expect("the stamp")
+                .get_or_insert_with(Instant::now);
+            let state = match asked.elapsed() < RESOLVING {
+                true => NeighborState::Resolving,
+                false => NeighborState::Resolved,
+            };
+            table.insert(slow, state);
+            Ok(table)
+        }));
+        let transport = ProbeTransport::from_parts(Box::new(sender), rx as CaptureStream)
+            .with_kernel_neighbors(table);
+        let mut scanner = OsSeriesScanner::with_transport(
+            ctx.clone(),
+            vec![SeriesTarget {
+                address: ScopedIp::unscoped(slow),
+                open: Some(OPEN),
+                closed: Some(CLOSED),
+            }],
+            SAMPLES,
+            transport,
+            Emission::routed(),
+        );
+        scanner.resolver =
+            SourceResolver::from_links(&[Link::new("test0", 1).with_addresses(vec![
+                LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24),
+            ])]);
+
+        scanner.probe().await.expect("the phase runs");
+
+        let sent = sent.lock().unwrap();
+        let to = |port: u16| {
+            sent.iter()
+                .filter(|(segment, _, _)| {
+                    tcp::parse(segment).is_ok_and(|probe| probe.destination_port() == port)
+                })
+                .count()
+        };
+        assert_eq!(to(OPEN), SAMPLES, "the open port's samples");
+        assert_eq!(to(CLOSED), SAMPLES, "the closed port's samples");
     }
 }
