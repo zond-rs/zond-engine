@@ -68,7 +68,7 @@
 use std::fs;
 use std::path::Path;
 
-use super::ownership::Place;
+use super::ownership::{Directory, Kind, Place};
 
 /// Creates a file in a journal: private, the invoking user's, and new.
 ///
@@ -307,6 +307,39 @@ pub(super) fn open_to_read(path: &Path) -> std::io::Result<fs::File> {
     open(path, Access::Read)
 }
 
+/// The names in the directory at `path`, reached as every opener here
+/// reaches a name; see [`Directory`].
+pub(super) fn names(path: &Path) -> std::io::Result<Vec<std::ffi::OsString>> {
+    Directory::of(path)?.names()
+}
+
+/// The names in the directory at `path`, each with what stands at it, a link
+/// being a link, looked at relative to the directory holding it; see
+/// [`Directory`]. A name gone by the time it is looked at is passed over.
+pub(super) fn kinds(path: &Path) -> std::io::Result<Vec<(std::ffi::OsString, Kind)>> {
+    let directory = Directory::of(path)?;
+    Ok(directory
+        .names()?
+        .into_iter()
+        .filter_map(|name| {
+            let kind = directory.entry(&name).and_then(|entry| entry.kind()).ok()?;
+            Some((name, kind))
+        })
+        .collect())
+}
+
+/// Whether anything stands at `path`, a link included, asked of the name
+/// itself and reached as every opener here reaches a name.
+///
+/// A directory above it that is not there is nothing at the name either.
+pub(super) fn exists(path: &Path) -> std::io::Result<bool> {
+    match Place::of(path) {
+        Ok(place) => place.exists(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// The five ways a journal file is opened.
 #[derive(Clone, Copy)]
 enum Access {
@@ -343,10 +376,10 @@ fn open_in(place: &Place, path: &Path, how: Access) -> std::io::Result<fs::File>
         Access::Read => libc::O_RDONLY,
     };
     place.open(flags, 0o600).map_err(|error| {
-        // Asked of the name without following it, to tell a link at it from
-        // a loop further up, which fails the same way.
+        // Asked of the name itself, where it was reached, to tell a link at
+        // it from a loop further up, which fails the same way.
         let linked = error.raw_os_error() == Some(libc::ELOOP)
-            && fs::symlink_metadata(path).is_ok_and(|held| held.file_type().is_symlink());
+            && place.kind().is_ok_and(|kind| kind == Kind::Link);
         if linked {
             std::io::Error::other(format!(
                 "{} is a link, not a journal file (not followed)",

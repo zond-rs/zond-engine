@@ -233,7 +233,7 @@ impl Place {
     pub(crate) fn of_as(user: Option<&InvokingUser>, path: &Path) -> io::Result<Self> {
         if let Some(user) = user.filter(|user| inside_home(user, path)) {
             let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
-                return Err(outside());
+                return Err(outside(path));
             };
             return Ok(Self {
                 directory: Some(walk_from_home(user, parent, true)?),
@@ -360,7 +360,35 @@ impl Place {
     /// Whether the name is a directory, asked of the name itself rather than
     /// of what a link at it points to.
     #[cfg(feature = "journal-format")]
-    fn is_directory(&self) -> io::Result<bool> {
+    pub(crate) fn is_directory(&self) -> io::Result<bool> {
+        Ok(self.kind()? == Kind::Directory)
+    }
+
+    /// What stands at the name, a link being a link rather than what it
+    /// points to.
+    #[cfg(feature = "journal-format")]
+    pub(crate) fn kind(&self) -> io::Result<Kind> {
+        Ok(match self.stat()?.st_mode & libc::S_IFMT {
+            libc::S_IFDIR => Kind::Directory,
+            libc::S_IFLNK => Kind::Link,
+            _ => Kind::Other,
+        })
+    }
+
+    /// Whether anything stands at the name, a link included, asked of the
+    /// name itself rather than of what a link at it points to.
+    #[cfg(feature = "journal-format")]
+    pub(crate) fn exists(&self) -> io::Result<bool> {
+        match self.stat() {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// What stands at the name, a link rather than what it points to.
+    #[cfg(feature = "journal-format")]
+    fn stat(&self) -> io::Result<libc::stat> {
         let mut held = std::mem::MaybeUninit::<libc::stat>::uninit();
         // SAFETY: as in `create_directory`, and `held` is written whole by a
         // call that succeeds.
@@ -373,8 +401,7 @@ impl Place {
             )
         })?;
         // SAFETY: the call succeeded, so the structure is initialised.
-        let held = unsafe { held.assume_init() };
-        Ok(held.st_mode & libc::S_IFMT == libc::S_IFDIR)
+        Ok(unsafe { held.assume_init() })
     }
 
     /// The directory to look the name up in, as the C calls take it.
@@ -383,6 +410,93 @@ impl Place {
         self.directory
             .as_ref()
             .map_or(libc::AT_FDCWD, |directory| directory.as_raw_fd())
+    }
+}
+
+/// What stands at a name, as [`Place::kind`] tells it.
+#[cfg(feature = "journal-format")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    /// A directory.
+    Directory,
+    /// A link, whatever it points to.
+    Link,
+    /// Anything else: a file, or something stranger.
+    Other,
+}
+
+/// A directory whose names are listed, and each looked at, reached as
+/// [`Place`] reaches the directory a name is in.
+///
+/// For the questions a listing asks of a journal's root and of a journal:
+/// which names there are, and what stands at each. Asked by path, each
+/// follows every link above the name and a link at it, so under `sudo` a
+/// link the invoking user placed would have root list, or say whether
+/// something is there, wherever it leads. Nothing would be read there, every
+/// open being refused, but what the listing does next, a record listed or
+/// passed over, a line saying there is none, would still tell what stands
+/// somewhere only root can look. Reached this way, the directory is the one
+/// the walk from the home arrives at, and every name in it is looked at
+/// relative to it, a link at a name being a link rather than what it
+/// points to.
+///
+/// Anywhere else, and in a run on nobody else's behalf, it is the path
+/// itself, as a [`Place`] is.
+#[cfg(all(unix, feature = "journal-format"))]
+pub(crate) struct Directory {
+    /// The directory, walked to from the home, or `None` where it is reached
+    /// by its path.
+    walked: Option<fs::File>,
+    path: PathBuf,
+}
+
+#[cfg(all(unix, feature = "journal-format"))]
+impl Directory {
+    /// The directory at `path`, for the run this process is.
+    pub(crate) fn of(path: &Path) -> io::Result<Self> {
+        Self::of_as(invoking(), path)
+    }
+
+    /// [`Directory::of`] on behalf of `user`, so a test can take an elevated
+    /// run's route without being one.
+    pub(crate) fn of_as(user: Option<&InvokingUser>, path: &Path) -> io::Result<Self> {
+        let walked = match user.filter(|user| inside_home(user, path)) {
+            Some(user) => Some(walk_from_home(user, path, false)?),
+            None => None,
+        };
+        Ok(Self {
+            walked,
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// The names it holds, less `.` and `..`.
+    pub(crate) fn names(&self) -> io::Result<Vec<std::ffi::OsString>> {
+        use std::os::unix::ffi::OsStringExt;
+
+        match &self.walked {
+            Some(directory) => Ok(entries(directory)?
+                .into_iter()
+                .map(|name| std::ffi::OsString::from_vec(name.into_bytes()))
+                .collect()),
+            None => fs::read_dir(&self.path)?
+                .map(|entry| entry.map(|entry| entry.file_name()))
+                .collect(),
+        }
+    }
+
+    /// The name `name` in it.
+    pub(crate) fn entry(&self, name: &std::ffi::OsStr) -> io::Result<Place> {
+        match &self.walked {
+            Some(directory) => Ok(Place {
+                directory: Some(directory.try_clone()?),
+                name: c_name(name)?,
+            }),
+            None => Ok(Place {
+                directory: None,
+                name: c_name(self.path.join(name).as_os_str())?,
+            }),
+        }
     }
 }
 
@@ -432,6 +546,58 @@ impl Place {
     /// Removes the directory at the name and everything in it.
     pub(crate) fn remove_tree(&self) -> io::Result<()> {
         fs::remove_dir_all(&self.path)
+    }
+
+    /// What stands at the name, a link being a link.
+    pub(crate) fn kind(&self) -> io::Result<Kind> {
+        let held = fs::symlink_metadata(&self.path)?.file_type();
+        Ok(if held.is_symlink() {
+            Kind::Link
+        } else if held.is_dir() {
+            Kind::Directory
+        } else {
+            Kind::Other
+        })
+    }
+
+    /// Whether anything stands at the name, a link included.
+    pub(crate) fn exists(&self) -> io::Result<bool> {
+        match fs::symlink_metadata(&self.path) {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// A directory whose names are listed where there is no `sudo`: the path
+/// itself.
+#[cfg(all(not(unix), feature = "journal-format"))]
+pub(crate) struct Directory {
+    path: PathBuf,
+}
+
+#[cfg(all(not(unix), feature = "journal-format"))]
+impl Directory {
+    /// The directory at `path`.
+    pub(crate) fn of(path: &Path) -> io::Result<Self> {
+        Ok(Self {
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// The names it holds.
+    pub(crate) fn names(&self) -> io::Result<Vec<std::ffi::OsString>> {
+        fs::read_dir(&self.path)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect()
+    }
+
+    /// The name `name` in it.
+    pub(crate) fn entry(&self, name: &std::ffi::OsStr) -> io::Result<Place> {
+        Ok(Place {
+            path: self.path.join(name),
+        })
     }
 }
 
@@ -561,7 +727,7 @@ fn open_in_home(user: &InvokingUser, path: &Path) -> io::Result<fs::File> {
 fn walk_from_home(user: &InvokingUser, path: &Path, home_itself: bool) -> io::Result<fs::File> {
     let spelled_inside = inside_home(user, path) || (home_itself && path == user.home);
     if !spelled_inside {
-        return Err(outside());
+        return Err(outside(path));
     }
     let home = fs::canonicalize(&user.home)?;
     let resolved = fs::canonicalize(path)?;
@@ -569,25 +735,26 @@ fn walk_from_home(user: &InvokingUser, path: &Path, home_itself: bool) -> io::Re
         .strip_prefix(&home)
         .ok()
         .filter(|below| home_itself || !below.as_os_str().is_empty())
-        .ok_or_else(outside)?;
+        .ok_or_else(|| outside(path))?;
 
     let mut current = fs::File::open(&home)?;
     for component in below.components() {
         let std::path::Component::Normal(name) = component else {
-            return Err(outside());
+            return Err(outside(path));
         };
         current = open_at(&current, &c_name(name)?, libc::O_RDONLY, 0)?;
     }
     Ok(current)
 }
 
-/// The refusal of a path that is not, or does not stay, inside the invoking
-/// user's home.
+/// The refusal of `path`, which is not, or does not stay, inside the invoking
+/// user's home. Named, since the link that leads out is somewhere on it and
+/// the reader is the one who has to find it.
 #[cfg(unix)]
-fn outside() -> io::Error {
+fn outside(path: &Path) -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
-        "leads out of the invoking user's home",
+        format!("{} leads out of the invoking user's home", path.display()),
     )
 }
 
@@ -608,11 +775,13 @@ fn done(returned: libc::c_int) -> io::Result<()> {
     }
 }
 
-/// The names in `directory`, less `.` and `..`.
+/// The names in `directory`, less `.` and `..`, from its first.
 ///
-/// A read that fails part way ends the list early rather than failing it:
-/// the one caller removes each name and then the directory, and a name left
-/// unlisted fails that last removal as a directory that is not empty.
+/// A read that fails part way ends the list early rather than failing it. A
+/// removal takes each name and then the directory, and a name left unlisted
+/// fails that last removal as a directory that is not empty; a listing
+/// passes over what it could not read, as it passes over a journal it
+/// cannot read.
 #[cfg(all(unix, feature = "journal-format"))]
 fn entries(directory: &fs::File) -> io::Result<Vec<std::ffi::CString>> {
     use std::os::unix::io::IntoRawFd;
@@ -629,6 +798,10 @@ fn entries(directory: &fs::File) -> io::Result<Vec<std::ffi::CString>> {
         unsafe { libc::close(descriptor) };
         return Err(error);
     }
+    // From the first name whatever the descriptor has read before: a
+    // duplicate shares its position with the original.
+    // SAFETY: `stream` is open until the `closedir` below.
+    unsafe { libc::rewinddir(stream) };
 
     let mut names = Vec::new();
     loop {
@@ -857,6 +1030,53 @@ mod tests {
     /// directories and files there, and keep them, since nothing outside the
     /// home is given. So a link on the way out of the home is refused, for a
     /// directory and for a file, and nothing appears behind it.
+    /// **A listing under `sudo` is not led out of the home by a link, and
+    /// says a link at a name is one.** Listed by path, a root of journals
+    /// that `~/.local` made a link to somewhere only root can look would have
+    /// root list what is there, and a link standing among the journals would
+    /// be looked at as whatever it points to. Nothing would be read, every
+    /// open being refused, but what the listing then says tells what it
+    /// found. So the directory is refused where the walk leaves the home,
+    /// and a name in it is what stands at the name.
+    #[cfg(all(unix, feature = "journal-format"))]
+    #[test]
+    fn a_listing_is_not_led_out_of_the_home_by_a_link() {
+        let scratch = scratch("lists");
+        let home = scratch.join("home");
+        let elsewhere = scratch.join("elsewhere");
+        fs::create_dir_all(elsewhere.join("state/zond/01ID")).expect("a journal outside");
+        fs::create_dir_all(home.join("kept/zond/02ID")).expect("a journal inside");
+        std::os::unix::fs::symlink(&elsewhere, home.join(".local")).expect("links out");
+        std::os::unix::fs::symlink(&elsewhere, home.join("kept/zond/03ID")).expect("links in");
+        let user = InvokingUser {
+            uid: 1000,
+            gid: 1000,
+            home: home.clone(),
+        };
+
+        let led_out = Directory::of_as(Some(&user), &home.join(".local/state/zond"))
+            .and_then(|directory| directory.names());
+        assert_eq!(
+            led_out.map_err(|e| e.kind()),
+            Err(io::ErrorKind::PermissionDenied),
+            "listed a directory behind a link out of the home"
+        );
+
+        let kept = Directory::of_as(Some(&user), &home.join("kept/zond")).expect("reached");
+        let mut names = kept.names().expect("lists");
+        names.sort();
+        assert_eq!(names, ["02ID", "03ID"]);
+        let journal = kept.entry("02ID".as_ref()).expect("an entry");
+        let link = kept.entry("03ID".as_ref()).expect("an entry");
+        assert!(journal.is_directory().expect("looks"));
+        assert!(link.exists().expect("looks"), "the link is there");
+        assert!(
+            !link.is_directory().expect("looks"),
+            "a link to a directory was looked at as the directory"
+        );
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
     #[cfg(all(unix, feature = "journal-format"))]
     #[test]
     fn nothing_is_created_through_a_link_out_of_the_home() {

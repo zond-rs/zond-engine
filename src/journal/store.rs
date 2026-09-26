@@ -65,12 +65,13 @@ use std::time::{Duration, SystemTime};
 use super::cursor::Checkpoint;
 use super::file::{
     append_existing, claim_directory_for_invoking_user, create_private as create_private_file,
-    create_private_directory, open_existing, open_to_read, remove as remove_file, remove_directory,
-    replace,
+    create_private_directory, exists, kinds, names, open_existing, open_to_read,
+    remove as remove_file, remove_directory, replace,
 };
 use super::format::JournalError;
 use super::lock::{Lock, LockRefused, LockState};
 use super::manifest::{JobOptions, JournalManifest, Plan, PlanChanged};
+use super::ownership::Kind;
 use super::settle::Settlements;
 use crate::detect::compute::{DetectionLine, DetectionRunRecord, PortRunsRecord};
 use crate::model::host::Host;
@@ -237,9 +238,7 @@ impl Journal {
             sitting,
         };
         journal.open_findings()?;
-        journal.length = fs::metadata(directory.join(HOSTS))
-            .map_err(JournalError::from)?
-            .len();
+        journal.length = findings_length(directory)?;
         Ok(journal)
     }
 
@@ -303,11 +302,7 @@ impl Journal {
         // is written by what changed in it rather than whole. Whatever the file
         // holds beyond what those fold to is records they superseded. A file an
         // earlier sitting left behind with nothing in it is no length at all.
-        let length = match fs::metadata(directory.join(HOSTS)) {
-            Ok(metadata) => metadata.len(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
-            Err(e) => return Err(JournalError::from(e).into()),
-        };
+        let length = findings_length(directory)?;
         let written = Written::holding(&restored, length)?;
 
         Ok((
@@ -812,8 +807,16 @@ impl Journal {
 
     /// Whether no sitting has run against this journal: no cursor written, no
     /// phase and no finding recorded.
+    ///
+    /// A cursor that cannot be looked for is taken to be there, which keeps
+    /// the journal: what this decides is whether to write the job's options
+    /// and whether to remove the journal, and a journal wrongly called touched
+    /// costs a record of its options, where one wrongly called untouched
+    /// could lose a sitting's work.
     fn is_untouched(&self) -> bool {
-        !self.directory.join(CURSOR).exists() && self.earlier.is_empty() && self.restored.is_empty()
+        self.earlier.is_empty()
+            && self.restored.is_empty()
+            && !exists(&self.directory.join(CURSOR)).unwrap_or(true)
     }
 
     /// What this journal is a journal of.
@@ -1242,34 +1245,62 @@ fn prepare_root_with(
 
 /// Every journal under `root`, newest first.
 ///
-/// A directory that cannot be read, or holds no readable manifest, is skipped
-/// rather than failing the listing: one unreadable journal must not hide the
-/// rest. `Ok(vec![])` for a root that does not exist yet.
+/// A journal that cannot be read is passed over rather than failing the
+/// listing, since one unreadable journal must not hide the rest, and said to
+/// be, with why: a listing short of a record with nothing to say so reads as
+/// a record that is not there, and the reason, a link planted where its
+/// manifest should be above all, is what its owner has to act on. A link
+/// standing in the root is passed over in the same words, being no journal:
+/// every journal is a directory this crate made. A directory holding no
+/// manifest at all is passed over in silence, as one a scan starting now has
+/// yet to write it into.
+///
+/// `Ok(vec![])` for a root that does not exist yet.
 pub fn list(root: &Path) -> Result<Vec<Entry>, JournalError> {
-    let entries = match fs::read_dir(root) {
-        Ok(entries) => entries,
+    let held = match kinds(root) {
+        Ok(held) => held,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e.into()),
     };
 
-    let mut found: Vec<Entry> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .filter_map(|directory| {
-            let manifest = read_manifest(&directory).ok()?;
-            Some(Entry {
-                // `Err` here is a cursor that exists and could not be read,
-                // which `Entry::checkpoint` records as `None` rather than as a
-                // scan that settled nothing. A journal that never checkpointed
-                // comes back as a fresh cursor from `read_checkpoint` itself.
-                checkpoint: read_checkpoint(&directory).ok(),
-                lock: super::lock::inspect(&directory.join(LOCK)),
-                manifest,
-                directory,
-            })
-        })
-        .collect();
+    let mut found = Vec::new();
+    for (name, kind) in held {
+        let directory = root.join(&name);
+        match kind {
+            Kind::Directory => {}
+            Kind::Link => {
+                crate::warn!(
+                    "{} not listed: a link, not a journal (not followed)",
+                    name.to_string_lossy()
+                );
+                continue;
+            }
+            Kind::Other => continue,
+        }
+        let manifest = match read_manifest(&directory) {
+            Ok(manifest) => manifest,
+            Err(JournalError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            // The system's words alone: the line already says whose they are.
+            Err(JournalError::Io(e)) => {
+                crate::warn!("{} not listed: {e}", name.to_string_lossy());
+                continue;
+            }
+            Err(e) => {
+                crate::warn!("{} not listed: {e}", name.to_string_lossy());
+                continue;
+            }
+        };
+        found.push(Entry {
+            // `Err` here is a cursor that exists and could not be read, which
+            // `Entry::checkpoint` records as `None` rather than as a scan that
+            // settled nothing. A journal that never checkpointed comes back as
+            // a fresh cursor from `read_checkpoint` itself.
+            checkpoint: read_checkpoint(&directory).ok(),
+            lock: super::lock::inspect(&directory.join(LOCK)),
+            manifest,
+            directory,
+        });
+    }
 
     found.sort_by_key(|entry| std::cmp::Reverse(entry.manifest.created_at));
     Ok(found)
@@ -1452,6 +1483,17 @@ fn merge_into(hosts: &mut [Option<Host>], slot: usize, host: Host, fold: fn(&mut
     }
 }
 
+/// How long the findings file in `directory` is, measured on the file it
+/// opens to read rather than asked of the name: nothing here asks a
+/// journal's names anything by path. A file not there yet is no length.
+fn findings_length(directory: &Path) -> Result<u64, JournalError> {
+    match open_to_read(&directory.join(HOSTS)) {
+        Ok(file) => Ok(file.metadata()?.len()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Reads back what a journal's earlier sittings did, oldest first.
 fn read_phases(directory: &Path) -> Result<Vec<ScanPhase>, JournalError> {
     let file = match open_to_read(&directory.join(PHASES)) {
@@ -1506,17 +1548,16 @@ fn sitting_file(directory: &Path, lock: &Lock) -> PathBuf {
 /// is not a torn write but something else at the name, a link among them, and
 /// is passed over rather than failing a journal whose own files read.
 fn standing_phases(directory: &Path) -> Vec<ScanPhase> {
-    let Ok(entries) = fs::read_dir(directory) else {
+    let Ok(held) = names(directory) else {
         return Vec::new();
     };
-    let mut files: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
+    let mut files: Vec<PathBuf> = held
+        .into_iter()
+        .filter(|name| {
+            name.to_str()
                 .is_some_and(|name| name.starts_with(SITTING) && name.ends_with(".jsonl"))
         })
+        .map(|name| directory.join(name))
         .collect();
     files.sort();
 
@@ -3663,6 +3704,29 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(as_recorded(&read), as_recorded(&hosts));
+    }
+
+    /// **A link standing in a root of journals is not listed as a journal.**
+    /// Every journal is a directory this crate made, so a link there is none,
+    /// as a link at a journal file's name is none. Looked at as what it
+    /// points to, it would list a record somewhere else as one of this
+    /// root's, and under `sudo` have root look wherever it leads.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_a_root_of_journals_is_not_listed() {
+        let root = scratch("listed-link");
+        let elsewhere = scratch("listed-link-elsewhere");
+        let journal = begin(&elsewhere, &plan("192.0.2.1", "80"));
+        let directory = journal.directory().to_path_buf();
+        journal.close().expect("closes");
+        std::os::unix::fs::symlink(&directory, root.join("06LINKED00000000")).expect("links");
+
+        let listed = list(&root).expect("lists").len();
+        let where_it_is = list(&elsewhere).expect("lists").len();
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&elsewhere).ok();
+        assert_eq!(listed, 0, "the link was listed as a journal");
+        assert_eq!(where_it_is, 1, "the journal itself lists");
     }
 
     /// Reading a journal refuses a link standing where one of its files
