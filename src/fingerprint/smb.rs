@@ -8,8 +8,8 @@
 
 //! # SMB analyzer
 //!
-//! An **active** analyzer for port 445, and the second half of a conversation
-//! the corpus opens.
+//! An **active** analyzer for whichever port answered the corpus's SMB probe
+//! in SMB, and the second half of the conversation that probe opens.
 //!
 //! ## Why a conversation, and why here
 //!
@@ -66,10 +66,6 @@ use super::model::{Evidence, SourceId};
 use super::response::{Collected, ResponseSet};
 use crate::model::confidence::Confidence;
 
-/// The one port this analyzer dials. SMB over 139 sits behind a NetBIOS
-/// session request, and its own rung reads that.
-const SMB_PORT: u16 = 445;
-
 /// Whole-exchange budget: connect, write, read both replies. A reachable
 /// server answers well under a second on a path that costs nothing; a scan
 /// allows for the path it measured on top (see [`on_path`](super::on_path)).
@@ -106,24 +102,37 @@ impl Analyzer for SmbAnalyzer {
         SourceId::BannerRegex
     }
 
+    /// Any TCP port with a socket to dial and no tunnel, whatever its number:
+    /// what gates the exchange is the reply, read in
+    /// [`collect`](Analyzer::collect).
+    ///
+    /// The reply rather than the port, because a port is SMB when it answers
+    /// like SMB, and one moved off 445 names its machine as readily. Gating on
+    /// the reply costs nothing where no SMB answer was seen: nothing is dialed.
+    /// Where the corpus probe was not put at all, as at a level that sends
+    /// nothing, there is no reply to follow, and asking 445 regardless would
+    /// send a session setup to a port that has never been heard to speak SMB,
+    /// so there is no fallback to the number.
     fn interested(&self, ctx: &PortContext) -> bool {
         ctx.protocol == crate::model::port::Protocol::Tcp
             && ctx.tunnel.is_none()
             && ctx.addr.is_some()
-            && ctx.port == SMB_PORT
     }
 
     /// I/O phase. Reads which protocol the corpus probe drew and continues in
-    /// it; returns what each exchange read, one frame per exchange.
+    /// it; returns what each exchange read, one frame per exchange. Dials
+    /// nothing where no response is an SMB message.
     async fn collect(&self, ctx: &PortContext, responses: &ResponseSet) -> Collected {
         let Some(addr) = ctx.addr else {
             return Collected::default();
         };
-        // The corpus probe's answer, as the transport read it: the protocol id
-        // behind the NetBIOS header, 0xFE for SMB2 and 0xFF for SMB1, each its
-        // own code point since neither byte is ever UTF-8.
-        let answered = |id: &str| responses.banners.iter().any(|text| text.contains(id));
-        let (smb2, smb1) = (answered("\u{fe}SMB"), answered("\u{ff}SMB"));
+        let answered = |id: &[u8; 4]| {
+            responses
+                .banners
+                .iter()
+                .any(|text| smb_protocol_id(text) == Some(*id))
+        };
+        let (smb2, smb1) = (answered(b"\xfeSMB"), answered(b"\xffSMB"));
 
         let mut frames = Vec::new();
         let mut named_a_build = false;
@@ -178,6 +187,23 @@ impl Analyzer for SmbAnalyzer {
         }
         evidence
     }
+}
+
+/// The protocol id of the SMB message `text` opens with, as the transport
+/// read it: behind a NetBIOS session message header, `\xfeSMB` for SMB2 or
+/// `\xffSMB` for SMB1, and [`None`] for anything else.
+///
+/// Anchored where the corpus's own rule for the service is, at the start of
+/// the reply, because every port with a socket asks this and a match costs a
+/// connection: a page that merely contains `þSMB` is not an SMB server. Read
+/// through [`reply_bytes`](super::extract::reply_bytes) on the first eight
+/// characters alone, since neither id byte is ever UTF-8 and the header before
+/// it is four bytes of which the first is zero.
+fn smb_protocol_id(text: &str) -> Option<[u8; 4]> {
+    let end = text.char_indices().nth(8).map_or(text.len(), |(at, _)| at);
+    let head = super::extract::reply_bytes(&text[..end]);
+    let id: [u8; 4] = head.get(4..8)?.try_into().ok()?;
+    (head[0] == 0 && matches!(&id, b"\xfeSMB" | b"\xffSMB")).then_some(id)
 }
 
 /// Writes `request` to `addr` on a connection of its own and reads until
@@ -856,6 +882,78 @@ mod tests {
             .iter()
             .find_map(|os| os.product.as_deref());
         assert_eq!(os, Some("Windows XP"));
+    }
+
+    /// The SMB analyzer alone, run the way a scan runs every analyzer, on a
+    /// port that answered the corpus probe with `banners`.
+    async fn analyze_smb_on(
+        addr: std::net::SocketAddr,
+        banners: Vec<String>,
+    ) -> Option<crate::fingerprint::ServiceVerdict> {
+        use crate::model::port::Protocol;
+
+        static ONLY_SMB: [&dyn Analyzer; 1] = [&SmbAnalyzer];
+        let ctx = PortContext::new(addr.port(), Protocol::Tcp).with_addr(Some(addr));
+        crate::fingerprint::analyze_with(ctx, ResponseSet::from_banners(banners), &ONLY_SMB).await
+    }
+
+    /// The corpus probe's answer as the transport hands it on: bytes as text.
+    fn as_banner(reply: &[u8]) -> String {
+        reply.iter().copied().map(char::from).collect()
+    }
+
+    /// **An SMB server off 445 is asked for its names, since what makes a
+    /// port SMB is its answer.** The server here listens on whatever port the
+    /// system gave it, which is never 445, and answered the corpus probe in
+    /// SMB1; the session setup the analyzer then asks names its domain.
+    ///
+    /// A server moved off its number names its machine as readily, and a
+    /// gate on the number would leave those names unread wherever the corpus
+    /// probe found SMB elsewhere.
+    #[tokio::test]
+    async fn an_smb_server_off_445_is_asked_for_its_names() {
+        let negotiated = smb1(0x72, true, &[0, 0], &[]);
+        let session = session_naming(&["Windows 5.1", "Windows 2000 LAN Manager", "CORPDOM"]);
+        let addr = smb_server(negotiated.clone(), [negotiated.clone(), session].concat()).await;
+        assert_ne!(addr.port(), 445);
+
+        let verdict = analyze_smb_on(addr, vec![as_banner(&negotiated)])
+            .await
+            .expect("the exchange drew an answer");
+        let names: Vec<_> = verdict
+            .evidence
+            .iter()
+            .flat_map(|evidence| evidence.names.iter().map(HostName::name))
+            .collect();
+        assert_eq!(names, ["CORPDOM"]);
+    }
+
+    /// **A port that did not answer in SMB is not dialed**, even where its
+    /// reply spells an SMB protocol id somewhere past the start. Every TCP
+    /// port with a socket asks this analyzer, so a reply read loosely would
+    /// cost a connection, and a session setup, on ports that are not SMB.
+    #[tokio::test]
+    async fn a_port_that_did_not_answer_in_smb_is_not_dialed() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a socket");
+        listener.set_nonblocking(true).expect("non-blocking");
+        let addr = listener.local_addr().expect("its address");
+
+        let page = "HTTP/1.1 200 OK\r\n\r\n\u{0}\u{0}\u{0}\u{2f}\u{ff}SMB, \u{fe}SMB";
+        let smb_in_the_body = [as_banner(page.as_bytes()), page.to_string()];
+        assert!(
+            analyze_smb_on(addr, smb_in_the_body.to_vec())
+                .await
+                .is_none(),
+            "a reply that is not SMB was read as SMB"
+        );
+
+        // The analyzer awaits its connection before it returns, so one made
+        // would be waiting here.
+        assert_eq!(
+            listener.accept().map_err(|error| error.kind()).err(),
+            Some(std::io::ErrorKind::WouldBlock),
+            "the analyzer dialed a port that never answered in SMB"
+        );
     }
 
     /// **The domain an SMB1 server names reaches its host as a name, masked
