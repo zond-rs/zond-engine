@@ -928,6 +928,86 @@ mod tests {
         assert_eq!(names, ["CORPDOM"]);
     }
 
+    /// **An SMB server on a port that registers nothing is put the negotiate
+    /// at the thorough level, and only there.** A current server answers no
+    /// question but one in SMB and drops a connection opened with anything
+    /// else, so on a port other than its own only the corpus's negotiate can
+    /// reach it. The default level asks a silent port only what such a port
+    /// most often turns out to be, and SMB off 445 is not that.
+    #[tokio::test]
+    async fn an_smb_server_off_445_is_asked_at_the_thorough_level_alone() {
+        use crate::config::ServiceDetection;
+        use crate::model::port::{PortState, Protocol};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let moved = 18445;
+        assert!(
+            crate::fingerprint::SignatureDb::global()
+                .tcp_probe_payloads(moved)
+                .is_empty(),
+            "test assumes port {moved} is unclaimed"
+        );
+
+        let mut named = Vec::new();
+        for level in [ServiceDetection::Thorough, ServiceDetection::Probe] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("binds loopback");
+            let addr = listener.local_addr().expect("a local address");
+            let negotiated = Arc::new(AtomicBool::new(false));
+            let heard = Arc::clone(&negotiated);
+            let server = tokio::spawn(async move {
+                while let Ok(mut sock) = accept_from_this_process(&listener).await {
+                    let heard = Arc::clone(&heard);
+                    tokio::spawn(async move {
+                        let mut request = [0u8; 1024];
+                        let read = sock.read(&mut request).await.unwrap_or(0);
+                        let request = &request[..read];
+                        // The corpus probe, in SMB1 offering `SMB 2.???`, is
+                        // answered in SMB2; the analyzer's own requests, in
+                        // SMB2, with its negotiate; anything else is dropped.
+                        let answer = if request.windows(9).any(|w| w == b"SMB 2.???") {
+                            heard.store(true, Ordering::SeqCst);
+                            negotiate_response(0x0001, 0x02ff)
+                        } else if request.get(4..8) == Some(b"\xfeSMB") {
+                            negotiate_response(0x0001, 0x0311)
+                        } else {
+                            return;
+                        };
+                        let _ = sock.write_all(&answer).await;
+                        let _ = sock.read(&mut [0u8; 1024]).await;
+                    });
+                }
+            });
+
+            let stream = tokio::net::TcpStream::connect(addr)
+                .await
+                .expect("connects");
+            let port = crate::fingerprint::baseline_port(moved, Protocol::Tcp, PortState::Open);
+            let found = crate::fingerprint::fingerprint_tcp_detailed(stream, port, level).await;
+            server.abort();
+            named.push((
+                found
+                    .port
+                    .service()
+                    .map(|service| service.name().to_owned()),
+                negotiated.load(Ordering::SeqCst),
+            ));
+        }
+
+        assert_eq!(
+            named[0],
+            (Some("smb".to_owned()), true),
+            "a thorough identification did not name the server (service, asked)"
+        );
+        assert_eq!(
+            named[1],
+            (None, false),
+            "the default level put a rare question to a stranger (service, asked)"
+        );
+    }
+
     /// **A port that did not answer in SMB is not dialed**, even where its
     /// reply spells an SMB protocol id somewhere past the start. Every TCP
     /// port with a socket asks this analyzer, so a reply read loosely would

@@ -22,10 +22,17 @@ description = "Microsoft-DS / SMB"
 # the conversation is the SMB analyzer's, on connections of its own: the
 # dialect, the signing policy and the Windows build over SMB2, and the
 # operating system and LAN manager over SMB1 where SMB2 named no build.
+#
+# Put to strangers too, since a server answers nothing but SMB and drops a
+# connection opened with anything else, so on a port its number does not name
+# no other question reaches it. At 4, the band nmap-style corpora give their
+# SMB negotiate: rarer than what a silent port most often turns out to be, so
+# the default level leaves it out and the level that asks everything puts it.
 [[probe]]
 name = "smb_multi_protocol_negotiate"
 payload = '\x00\x00\x00\x45\xffSMBr\x00\x00\x00\x00\x18\x01\xc8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xfe\x00\x00\x01\x00\x00\x22\x00\x02NT LM 0.12\x00\x02SMB 2.002\x00\x02SMB 2.???\x00'
 protocol = "tcp"
+rarity = 4
 
 [[match]]
 name = "smb_header_match"
