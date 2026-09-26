@@ -1638,11 +1638,7 @@ mod tests {
     fn a_captured_version_keeps_no_surrounding_whitespace() {
         let db = SignatureDb::global();
         for (port, banner, expected) in [
-            (
-                25,
-                "220 mail.example ESMTP Postfix (Ubuntu)\r\n",
-                "Postfix (Ubuntu)",
-            ),
+            (25, "220 mail.example ESMTP MailSrv 2.1\r\n", "MailSrv 2.1"),
             (
                 21,
                 "220 ProFTPD 1.3.5e Server (Debian) [192.0.2.1]\r\n",
@@ -1659,7 +1655,8 @@ mod tests {
     /// ProFTPD's greeting names the daemon and its release in one phrase, and
     /// the release is what the catalogue joins on: a version of `ProFTPD 1.3.5e
     /// Server` under product `ftp` compares against no entry at all. A server
-    /// that hides its release is still named, with no version made up for it.
+    /// that hides its release is still named, with no version made up for it
+    /// and the product's identifier at no particular release.
     #[test]
     fn a_proftpd_greeting_names_the_product_and_its_release() {
         let db = SignatureDb::global();
@@ -1669,7 +1666,11 @@ mod tests {
                 Some("1.3.5e"),
                 Some("cpe:/a:proftpd:proftpd:1.3.5e"),
             ),
-            ("220 ProFTPD Server (Debian) [192.0.2.1]\r\n", None, None),
+            (
+                "220 ProFTPD Server (Debian) [192.0.2.1]\r\n",
+                None,
+                Some("cpe:/a:proftpd:proftpd:-"),
+            ),
         ] {
             let found = db
                 .identify(21, Protocol::Tcp, banner)
@@ -1677,6 +1678,83 @@ mod tests {
             assert_eq!(found.product.as_deref(), Some("ProFTPD"), "for {banner:?}");
             assert_eq!(found.version.as_deref(), version, "for {banner:?}");
             assert_eq!(found.cpe.as_deref(), cpe, "for {banner:?}");
+        }
+    }
+
+    /// **A file-transfer or mail greeting names its daemon, and its release
+    /// apart from it, for every common daemon.** A daemon's phrase taken whole
+    /// as the version, `vsFTPd 3.0.5` under product `ftp`, compares against no
+    /// catalogue entry, and a greeting that names a daemon and no release names
+    /// no product at all. The corpus's rules for these greetings read the text
+    /// after the reply code, as the server writes it, and this is every one of
+    /// them reached from the greeting as it arrives.
+    #[test]
+    fn a_file_transfer_or_mail_greeting_names_its_daemon_and_its_release() {
+        let db = SignatureDb::global();
+        for (port, banner, product, version, cpe) in [
+            (
+                21,
+                "220 (vsFTPd 3.0.5)\r\n",
+                "vsFTPd",
+                Some("3.0.5"),
+                Some("cpe:/a:vsftpd_project:vsftpd:3.0.5"),
+            ),
+            (
+                21,
+                "220---------- Welcome to Pure-FTPd [privsep] [TLS] ----------\r\n\
+                 220-You are user number 1 of 50 allowed.\r\n\
+                 220 This is a private system - No anonymous login\r\n",
+                "Pure-FTPd",
+                None,
+                Some("cpe:/a:pureftpd:pure-ftpd:-"),
+            ),
+            (
+                21,
+                "220-FileZilla Server 1.8.0\r\n\
+                 220 Please visit https://filezilla-project.org/\r\n",
+                "FileZilla Server",
+                Some("1.8.0"),
+                Some("cpe:/a:filezilla-project:filezilla_server:1.8.0"),
+            ),
+            (
+                21,
+                "220 Microsoft FTP Service\r\n",
+                "IIS",
+                None,
+                Some("cpe:/a:microsoft:internet_information_services:-"),
+            ),
+            (
+                25,
+                "220 mail.example.com ESMTP Postfix (Ubuntu)\r\n",
+                "Postfix",
+                None,
+                Some("cpe:/a:postfix:postfix:-"),
+            ),
+            (
+                25,
+                "220 mail.example.com ESMTP Exim 4.96 Mon, 01 Jan 2024 00:00:00 +0000\r\n",
+                "exim",
+                Some("4.96"),
+                Some("cpe:/a:exim:exim:4.96"),
+            ),
+            (
+                25,
+                "220 mail.example.com ESMTP Sendmail 8.15.2/8.15.2; \
+                 Mon, 1 Jan 2024 00:00:00 +0000\r\n",
+                "Sendmail",
+                Some("8.15.2"),
+                Some("cpe:/a:sendmail:sendmail:8.15.2"),
+            ),
+        ] {
+            let found = db
+                .identify(port, Protocol::Tcp, banner)
+                .expect("the corpus names it");
+            let named = (
+                found.product.as_deref(),
+                found.version.as_deref(),
+                found.cpe.as_deref(),
+            );
+            assert_eq!(named, (Some(product), version, cpe), "for {banner:?}");
         }
     }
 

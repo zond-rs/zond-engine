@@ -145,7 +145,7 @@ pub const CONTEXTS: &[Context] = &[
     Context {
         name: "ftp.banner",
         reach: Reach::Produced,
-        note: "the greeting, whole, through `extract::texts`",
+        note: "each line of the greeting without its reply code, split out by `extract::greeting_lines` and offered beside the whole greeting by `extract::texts`",
     },
     Context {
         name: "html_title",
@@ -230,7 +230,7 @@ pub const CONTEXTS: &[Context] = &[
     Context {
         name: "nntp.banner",
         reach: Reach::Produced,
-        note: "the greeting, whole, through `extract::texts`",
+        note: "each line of the greeting without its reply code, split out by `extract::greeting_lines` and offered beside the whole greeting by `extract::texts`",
     },
     Context {
         name: "ntlm.os_version",
@@ -300,7 +300,7 @@ pub const CONTEXTS: &[Context] = &[
     Context {
         name: "smtp.banner",
         reach: Reach::Produced,
-        note: "the greeting, whole, through `extract::texts`",
+        note: "each line of the greeting without its reply code, split out by `extract::greeting_lines` and offered beside the whole greeting by `extract::texts`",
     },
     Context {
         name: "snmp.sys_description",

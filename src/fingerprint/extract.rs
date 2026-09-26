@@ -118,6 +118,7 @@ pub(crate) fn reply_bytes(text: &str) -> Vec<u8> {
 pub(crate) fn texts(banner: &str) -> Vec<Cow<'_, str>> {
     let mut texts = vec![Cow::Borrowed(banner)];
     texts.extend(super::ssh::software_version(banner).map(Cow::Borrowed));
+    texts.extend(greeting_lines(banner).into_iter().map(Cow::Borrowed));
     texts.extend(super::http::corpus_fields(banner));
     texts.extend(
         super::sip::corpus_fields(banner)
@@ -125,6 +126,49 @@ pub(crate) fn texts(banner: &str) -> Vec<Cow<'_, str>> {
             .map(Cow::Borrowed),
     );
     texts
+}
+
+/// The text of each line of a greeting in the reply format FTP, SMTP and NNTP
+/// share, with its reply code taken off: `(vsFTPd 3.0.5)` out of
+/// `220 (vsFTPd 3.0.5)`.
+///
+/// The corpus's rules for these greetings are written against that text, the
+/// words the daemon chose, and anchored at both ends, so the greeting as it
+/// arrives, code and line ending included, reaches none of them. Each line of
+/// a greeting that runs over several is offered on its own, since a daemon
+/// names itself on whichever line it likes: Pure-FTPd on its first, FileZilla
+/// Server on the one before its last.
+///
+/// The greeting is the reply the banner opens with: every line carrying its
+/// code, to the one where a space follows the code, which closes it. What a
+/// later probe drew after it is another reply, and is left out. Empty for a
+/// banner that does not open on three digits and a space or a hyphen.
+fn greeting_lines(banner: &str) -> Vec<&str> {
+    let opens = banner.as_bytes().get(..4).is_some_and(|head| {
+        head[..3].iter().all(u8::is_ascii_digit) && matches!(head[3], b' ' | b'-')
+    });
+    if !opens {
+        return Vec::new();
+    }
+    let code = &banner[..3];
+    let mut lines = Vec::new();
+    for line in banner.lines() {
+        let Some(rest) = line.strip_prefix(code) else {
+            continue;
+        };
+        let (text, closes) = match rest.as_bytes().first() {
+            Some(b' ') => (&rest[1..], true),
+            Some(b'-') => (&rest[1..], false),
+            _ => continue,
+        };
+        if !text.is_empty() {
+            lines.push(text);
+        }
+        if closes {
+            break;
+        }
+    }
+    lines
 }
 
 /// The texts a UDP reply carries, where this engine knows how to read one.
@@ -439,10 +483,27 @@ mod tests {
     /// text that would only cost the matcher a pass.
     #[test]
     fn an_ordinary_banner_offers_only_itself() {
+        assert_eq!(texts("+OK POP3 ready"), ["+OK POP3 ready"]);
+    }
+
+    /// A greeting in the reply format FTP and SMTP share offers the text of
+    /// each of its lines without the code, which is what the corpus's rules
+    /// for those greetings are written against, and stops where the greeting
+    /// does: a later probe's answer is another reply.
+    #[test]
+    fn a_greeting_offers_each_of_its_lines_without_the_code() {
+        let greeting = "220-FileZilla Server 1.8.0\r\n\
+                        220 Please visit https://filezilla-project.org/\r\n\
+                        500 Syntax error\r\n";
         assert_eq!(
-            texts("220 mail.example ESMTP Postfix"),
-            ["220 mail.example ESMTP Postfix"]
+            texts(greeting)[1..],
+            [
+                "FileZilla Server 1.8.0",
+                "Please visit https://filezilla-project.org/"
+            ]
         );
+        assert_eq!(texts("220 (vsFTPd 3.0.5)\r\n")[1..], ["(vsFTPd 3.0.5)"]);
+        assert_eq!(texts("2201 is a number")[1..], [] as [&str; 0]);
     }
 
     /// A byte that is not part of any UTF-8 sequence reaches the matcher as
@@ -606,7 +667,7 @@ mod http_fields {
     /// Every other banner pays one prefix comparison and nothing else.
     #[test]
     fn a_banner_that_is_not_http_yields_no_fields() {
-        assert!(super::texts("220 ProFTPD 1.3.5 Server ready").len() == 1);
+        assert!(super::texts("+OK POP3 ready").len() == 1);
     }
 }
 

@@ -4,8 +4,14 @@ default_ports = [25, 465, 587]
 description = "Simple Mail Transfer Protocol"
 
 # SMTP servers typically send a banner immediately upon connection.
+#
+# What follows the ESMTP keyword is taken as a version only when it holds a
+# digit. `Postfix (Ubuntu)` names a daemon and no release, and a version made
+# of it would also outrank, as a captured version, the versionless reading of
+# a rule that knows the daemon by name.
 [[match]]
 name = "smtp_generic_banner"
-pattern = '^220 (.+) (?:ESMTP|SMTP)(?: (.+))?'
+pattern = '^220 (.+?) (?:ESMTP|SMTP)(?: ([^\r\n]*\d[^\r\n]*))?'
 version_group = 2
 product = "smtp"
+example = "220 mail.example.com ESMTP ready\r\n"
