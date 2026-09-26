@@ -32,10 +32,13 @@ path = "src/lib.rs"
 # handing a packet builder a `&[u8]` would spend the whole run on a hand-rolled
 # decoder rather than on the builder.
 libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
-# Used by `export_report`, to say that what the JSON writers emit is JSON, and by
+# Used by `export_report`, to say that what the JSON writers emit is JSON; by
 # `protocols_craft`, as the format its round-trip oracle carries a packet
-# through. The library's own parser would be the wrong instrument for the first:
-# it reads the schema, and the question there is the one below that.
+# through; and by `journal_manifest` and `record_host`, to read the fuzzer's
+# bytes as the manifest and the host record they are on disk, the second also
+# carrying its record back through that format. The library's own parser would
+# be the wrong instrument for the first: it reads the schema, and the question
+# there is the one below that.
 serde_json = "1"
 
 # Every reader and every writer, because a target per surface needs the surface
