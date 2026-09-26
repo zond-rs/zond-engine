@@ -162,7 +162,12 @@ jobs:
       # same checkout while it runs sees a manifest with no dev-dependencies and
       # fails in confusing ways. Harmless on a CI runner, which does nothing
       # else; run it alone on a workstation.
+      #
+      # Warnings fail it: an item only a feature's code reaches is dead code in
+      # every build without that feature, and a warning is the only sign of it.
       - name: Every feature on its own
+        env:
+          RUSTFLAGS: -D warnings
         run: cargo hack check --each-feature --no-dev-deps
 
   # Every pair of features, which is where the interesting failures live and
@@ -200,6 +205,8 @@ jobs:
         uses: taiki-e/install-action@cargo-hack
 
       - name: Every pair of features
+        env:
+          RUSTFLAGS: -D warnings
         run: cargo hack check --feature-powerset --depth 2 --no-dev-deps
 
   # `Cargo.toml` names `rust-version = "1.93"` and `clippy.toml` sets the same

@@ -76,6 +76,7 @@ pub struct DetectionRunRecord {
 ///
 /// An engine that writes a run to a line reads this as a line it cannot parse,
 /// and refuses the file rather than replaying a passive run on no input.
+#[cfg(feature = "journal-format")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PortRunsRecord {
     host: String,
@@ -89,12 +90,14 @@ pub(crate) struct PortRunsRecord {
 
 /// One run of a [`PortRunsRecord`]: what ran, and what it read from its
 /// capabilities.
+#[cfg(feature = "journal-format")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct PortRunRecord {
     detection: DetectionIdRecord,
     tape: CapTapeRecord,
 }
 
+#[cfg(feature = "journal-format")]
 impl PortRunsRecord {
     /// `runs` as the lines a journal writes them in: one for each port and
     /// set of responses, in the order each first appears, holding its runs in
@@ -142,6 +145,7 @@ impl PortRunsRecord {
 ///
 /// Untagged: a port's line is told apart by its runs, and a line naming a
 /// single run is read as one.
+#[cfg(feature = "journal-format")]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum DetectionLine {
@@ -151,6 +155,7 @@ pub(crate) enum DetectionLine {
     Run(DetectionRunRecord),
 }
 
+#[cfg(feature = "journal-format")]
 impl DetectionLine {
     /// The runs this line holds, each with the responses it read.
     pub(crate) fn into_runs(self) -> Vec<DetectionRunRecord> {

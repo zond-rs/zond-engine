@@ -1549,6 +1549,7 @@ impl Host {
     /// rest. Not the host: its ports are a selection, and it is only ever
     /// written down, where a record's ports fold into what the file already
     /// holds of the host.
+    #[cfg(feature = "journal-format")]
     pub(crate) fn with_only_ports(&self, keys: &BTreeSet<(u16, Protocol)>) -> Self {
         // Destructured so a field added to the struct is a compile error here
         // rather than one this copy quietly leaves at a default.

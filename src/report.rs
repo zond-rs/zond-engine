@@ -3229,6 +3229,7 @@ impl Unheard {
     /// the ports asked of it stay on the host an answer proves, and are
     /// counted where the address proves silent. What the phase named silent
     /// it had decided, and is left out here too.
+    #[cfg(feature = "journal-format")]
     pub(crate) fn decided<'a>(phases: impl IntoIterator<Item = &'a ScanPhase>) -> Self {
         Self::reading(phases, false)
     }

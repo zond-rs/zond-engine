@@ -1525,6 +1525,7 @@ impl ScanProgress {
     }
 
     /// The key of every host found so far.
+    #[cfg(feature = "journal-format")]
     pub(crate) fn host_keys(&self) -> Vec<ScopedIp> {
         self.store.iter().map(|entry| entry.key().clone()).collect()
     }
@@ -3360,6 +3361,7 @@ impl SessionBuilder {
     /// The hosts an earlier sitting of this job finished every pass over,
     /// named as the journal writes them, and the addresses this sitting still
     /// has something to ask; see [`ScanContext::owes_passes`].
+    #[cfg(feature = "journal-format")]
     pub(crate) fn finished(mut self, hosts: HashSet<String>, asked: IpSet) -> Self {
         self.finished = Finished { hosts, asked };
         self
@@ -3528,6 +3530,7 @@ impl SessionBuilder {
 
     /// The ports a sitting continuing a job sends nothing to beyond those the
     /// job's plan is numbered without; see [`ScanContext::may_ask`].
+    #[cfg(feature = "journal-format")]
     pub(crate) fn withholding_ports(mut self, ports: crate::model::port::PortSet) -> Self {
         self.withheld_ports = ports;
         self

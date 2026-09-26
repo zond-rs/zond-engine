@@ -71,6 +71,7 @@ pub use live::LiveCapabilities;
 pub use record::{
     CapErrorRecord, CapTapeRecord, DetectionRunRecord, ResolveExchangeRecord, SpeakExchangeRecord,
 };
+#[cfg(feature = "journal-format")]
 pub(crate) use record::{DetectionLine, PortRunsRecord};
 pub use replay::{
     CapTape, RecordedCapabilities, RecordingCapabilities, ResolveExchange, SpeakExchange,
