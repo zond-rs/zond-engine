@@ -3,35 +3,73 @@ name = "smb"
 default_ports = [445]
 description = "Microsoft-DS / SMB"
 
-# A protocol negotiate and a session setup, in one write.
+# An SMB1 negotiate that offers the SMB2 dialects beside NT LM 0.12, the
+# question every SMB server answers. MS-SMB2 has a server that speaks SMB2
+# answer it in SMB2, which Windows and Samba still do with SMB1 turned
+# off; a server from before SMB2 answers in SMB1, choosing NT LM 0.12.
 #
-# The negotiate alone was what this file used to send, and its response carries
-# nothing a signature reads: no operating system, no dialect, no domain. Those
-# three arrive only in answer to a *session setup*, which is a second message,
-# and eighty-five imported rules were written against them and had never read
-# one.
+#   00 00 00 45           NetBIOS length
+#   ff 53 4d 42 72 ...    SMB_COM_NEGOTIATE, extended security, Unicode
+#   00 22 00              no words, 34 bytes of dialects:
+#   02 "NT LM 0.12" 00
+#   02 "SMB 2.002" 00
+#   02 "SMB 2.???" 00
 #
-# Both messages go in a single write because a server processes them in order
-# and answers each on the same connection, so one exchange draws both replies.
-# That keeps this a probe rather than a conversation.
-#
-#   00 00 00 2f  NetBIOS length, then SMB_COM_NEGOTIATE offering NT LM 0.12
-#   00 00 00 71  NetBIOS length, then SESSION_SETUP_ANDX with no credentials
-#
-# The session setup asks for nothing: no password, no extended security, an
-# empty account. A server configured to allow it answers as the guest or
-# anonymous user and names itself; one that is not refuses, and the refusal is
-# read as no answer rather than as a service.
-#
-# Nothing current answers this. Windows has shipped with SMB1 off since 2017 and
-# Samba since 4.11, so the hosts that reply are the old ones, which is exactly
-# the population these rules were harvested from.
+# A negotiate in SMB1 alone is dropped by everything current, and one in SMB2
+# alone by everything older, so this is the one question that is answered by
+# both. What to ask next depends on which protocol the answer is in, and a
+# connection that has negotiated one will not carry the other, so the rest of
+# the conversation is the SMB analyzer's, on connections of its own: the
+# dialect, the signing policy and the Windows build over SMB2, and the
+# operating system and LAN manager over SMB1 where SMB2 named no build.
 [[probe]]
-name = "smb_negotiate_and_session_setup"
-payload = '\x00\x00\x00\x2f\xffSMBr\x00\x00\x00\x00\x18\x01\xc8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xfe\x00\x00\x01\x00\x00\x0c\x00\x02NT LM 0.12\x00\x00\x00\x00\x71\xffSMBs\x00\x00\x00\x00\x18\x01\xc8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xfe\x00\x00\x01\x00\x0d\xff\x00\x00\x04\x11\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x5c\x00\x00\x00\x35\x00\x00z\x00o\x00n\x00d\x00\x00\x00Z\x00O\x00N\x00D\x00L\x00A\x00B\x00\x00\x00Z\x00o\x00n\x00d\x00 \x00S\x00c\x00a\x00n\x00n\x00e\x00r\x00\x00\x00'
+name = "smb_multi_protocol_negotiate"
+payload = '\x00\x00\x00\x45\xffSMBr\x00\x00\x00\x00\x18\x01\xc8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xfe\x00\x00\x01\x00\x00\x22\x00\x02NT LM 0.12\x00\x02SMB 2.002\x00\x02SMB 2.???\x00'
 protocol = "tcp"
 
 [[match]]
 name = "smb_header_match"
+# A NetBIOS session message whose body is SMB1 (0xFF) or SMB2 (0xFE).
 pattern = '(?s)^\x00\x00\x00..SMB'
 product = "smb"
+example = "\u0000\u0000\u0000AþSMB@\u0000"
+
+# ── What an SMB2 server says before anything is authenticated ────────────────
+
+[[match]]
+name = "smb2_negotiated"
+# The dialect chosen from the ones offered, and whether the server requires
+# every session to be signed. One that does not is one whose sessions can be
+# relayed to it from a captured authentication.
+pattern = '^dialect ([23]\.\d+(?:\.\d+)?); signing (required|not required)$'
+context = "smb2.negotiate"
+example = "dialect 3.1.1; signing not required"
+metadata = { "service.extrainfo" = "SMB {capture:1}, signing {capture:2}" }
+
+# The version an NTLM challenge carries is the Windows kernel's own: major,
+# minor and build. Most builds are shared by a client and a server release,
+# 14393 by Windows 10 1607 and Server 2016, 17763 by 1809 and Server 2019,
+# 26100 by Windows 11 24H2 and Server 2025, so a build names the family and the
+# kernel and a release only where it belongs to one.
+[[match]]
+name = "ntlm_windows_build"
+pattern = '^Windows (\d+\.\d+) Build (\d+)$'
+context = "ntlm.os_version"
+example = "Windows 10.0 Build 17763"
+metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.kernel" = "{capture:1}.{capture:2}" }
+
+[[match]]
+name = "ntlm_windows_server_2022"
+pattern = '^Windows 10\.0 Build (20348)$'
+context = "ntlm.os_version"
+example = "Windows 10.0 Build 20348"
+metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows Server 2022", "os.kernel" = "10.0.{capture:1}", "os.cpe23" = "cpe:/o:microsoft:windows_server_2022:-" }
+
+# 22000 is 21H2, 22621 is 22H2 and 22631 is 23H2, none of which shipped as a
+# server.
+[[match]]
+name = "ntlm_windows_11"
+pattern = '^Windows 10\.0 Build (22000|22621|22631)$'
+context = "ntlm.os_version"
+example = "Windows 10.0 Build 22631"
+metadata = { "os.vendor" = "Microsoft", "os.family" = "Windows", "os.product" = "Windows 11", "os.kernel" = "10.0.{capture:1}", "os.cpe23" = "cpe:/o:microsoft:windows_11:-" }

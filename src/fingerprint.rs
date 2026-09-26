@@ -57,6 +57,7 @@ mod prefilter;
 mod response;
 mod signature;
 mod sip;
+mod smb;
 mod snmp;
 mod ssh;
 mod tls;
@@ -1688,6 +1689,7 @@ static ANALYZERS: &[&dyn Analyzer] = &[
     &FaviconAnalyzer,
     &HttpHeadersAnalyzer,
     &JarmAnalyzer,
+    &smb::SmbAnalyzer,
     &SshAnalyzer,
     &TlsCertAnalyzer,
 ];

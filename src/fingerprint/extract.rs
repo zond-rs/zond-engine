@@ -254,18 +254,14 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
 /// straight to the matcher, so this is empty for nearly all of them and the
 /// [`reply_text`] beside it does the work.
 ///
-/// It exists for the ones that do not. An SMB session setup carries the
-/// operating system and the LAN manager dialect as UTF-16 inside a binary
-/// frame, which no reading of the whole as text can anchor a rule on. Reading
-/// them wants the bytes.
+/// It exists for the ones that do not. An RPC reply over TCP hides the record
+/// a datagram would carry behind marks of its own, and an RTSP response is
+/// declined by the HTTP reader, so each wants reading as what it is.
 ///
 /// Offered *beside* the whole reply rather than instead of it, so nothing that
 /// already matched stops matching.
 pub(crate) fn from_stream(port: u16, bytes: &[u8]) -> Vec<String> {
     match port {
-        // The three strings a session setup answers with, each on its own,
-        // because the corpus rules are anchored at both ends of one field.
-        445 | 139 => super::framed::smb_session_setup(bytes),
         // An RTSP status line is not an HTTP one, so the HTTP reader declines
         // the response and the `Server` value would go unread.
         554 | 8554 => super::framed::rtsp_server(bytes).into_iter().collect(),
@@ -1490,11 +1486,11 @@ mod framed_replies {
         );
     }
 
-    /// What Samba 4.17.12 on Debian 12 answered the corpus probe with, captured
-    /// off the wire: a negotiate response and a session setup, back to back.
+    /// What Samba 4.17.12 on Debian 12 answered the SMB1 session the SMB
+    /// analyzer asks for, captured off the wire: a negotiate response and a
+    /// session setup, back to back.
     ///
-    /// Eighty-five imported rules were written against these two fields and none
-    /// had ever read one, because the probe stopped at the negotiate and a
+    /// Eighty-five imported rules were written against these two fields, and a
     /// negotiate response carries neither.
     #[test]
     fn a_session_setup_yields_the_fields_eighty_five_rules_were_written_against() {
@@ -1506,7 +1502,7 @@ mod framed_replies {
         }
         const SAMBA: &str = "0000009fff534d4272000000008801c80000000000000000000000000000fffe000001001100000332000100044100000000010088220000fdf3808039dcb70b9d3fdd0188ff005a007a6f6e64736d62000000000000000000604806062b0601050502a03e303ca00e300c060a2b06010401823702020aa32a3028a0261b246e6f745f646566696e65645f696e5f5246433431373840706c656173655f69676e6f72650000007cff534d4273000000008803880000000000000000000000000000fffe85e4010003ff0000000000530000570069006e0064006f0077007300200036002e0031000000530061006d0062006100200034002e00310037002e00310032002d00440065006200690061006e0000005a004f004e0044004c00410042000000";
 
-        let texts = super::from_stream(445, &hex(SAMBA));
+        let texts = crate::fingerprint::framed::smb_session_setup(&hex(SAMBA));
         assert_eq!(
             texts,
             vec!["Windows 6.1", "Samba 4.17.12-Debian", "ZONDLAB"],

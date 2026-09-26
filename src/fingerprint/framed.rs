@@ -961,6 +961,123 @@ pub(super) fn smb_session_setup(stream: &[u8]) -> Vec<String> {
     Vec::new()
 }
 
+/// What an SMB2 server says in answer to a negotiate and a session setup that
+/// offers NTLM.
+///
+/// Two texts, each for its own rules:
+///
+/// ```text
+/// dialect 3.1.1; signing not required
+/// Windows 10.0 Build 20348
+/// ```
+///
+/// The first is the negotiate response (MS-SMB2 2.2.4): the dialect the server
+/// chose from the ones offered, and whether it insists on signing. A server
+/// that does not is one whose sessions can be relayed to it.
+///
+/// The second is the `Version` of the NTLM challenge the session setup draws
+/// (MS-NLMP 2.2.1.2), which Windows fills with its own major and minor version
+/// and build before anything is authenticated. It is left out where the build
+/// is zero, which is what Samba sends beside a version it does not run, so
+/// that a Samba server is not read as a Windows release.
+///
+/// The challenge also names the machine and its domain, and those are not
+/// returned. They are the host's names, which a report masks where it is asked
+/// to, and a service's description is not where it looks for them.
+///
+/// Empty for a stream that holds no SMB2 message.
+#[must_use]
+pub(super) fn smb2_exchange(stream: &[u8]) -> Vec<String> {
+    const NBSS_HEADER_BYTES: usize = 4;
+    const HEADER_BYTES: usize = 64;
+    const NEGOTIATE: u16 = 0;
+    const SESSION_SETUP: u16 = 1;
+    /// The dialect a server answers an SMB1 negotiate with when it wants the
+    /// client to negotiate again in SMB2, which names no dialect it speaks.
+    const WILDCARD: u16 = 0x02FF;
+    const SIGNING_REQUIRED: u16 = 0x0002;
+
+    let mut texts = Vec::new();
+    let mut at = 0;
+    while at + NBSS_HEADER_BYTES <= stream.len() {
+        let length =
+            u32::from_be_bytes([0, stream[at + 1], stream[at + 2], stream[at + 3]]) as usize;
+        let Some(message) = stream.get(at + NBSS_HEADER_BYTES..at + NBSS_HEADER_BYTES + length)
+        else {
+            break;
+        };
+        at += NBSS_HEADER_BYTES + length;
+
+        if !message.starts_with(b"\xfeSMB") || message.len() < HEADER_BYTES + 8 {
+            continue;
+        }
+        let word = |at: usize| u16::from_le_bytes([message[at], message[at + 1]]);
+        let status = u32::from_le_bytes([message[8], message[9], message[10], message[11]]);
+        let body = HEADER_BYTES;
+
+        match word(12) {
+            NEGOTIATE if status == 0 => {
+                let dialect = word(body + 4);
+                if dialect == WILDCARD {
+                    continue;
+                }
+                let signing = match word(body + 2) & SIGNING_REQUIRED {
+                    0 => "not required",
+                    _ => "required",
+                };
+                texts.push(format!(
+                    "dialect {}.{}{}; signing {signing}",
+                    dialect >> 8,
+                    (dialect >> 4) & 0xF,
+                    match dialect & 0xF {
+                        0 => String::new(),
+                        revision => format!(".{revision}"),
+                    }
+                ));
+            }
+            // The challenge comes back under a status saying more is needed,
+            // which is the answer and not a refusal.
+            SESSION_SETUP => {
+                let offset = word(body + 4) as usize;
+                let length = word(body + 6) as usize;
+                if let Some(version) = message
+                    .get(offset..offset + length)
+                    .and_then(ntlm_challenge_version)
+                {
+                    texts.push(version);
+                }
+            }
+            _ => {}
+        }
+    }
+    texts
+}
+
+/// The Windows version an NTLM challenge inside `token` states, as
+/// `Windows 10.0 Build 20348`.
+///
+/// The challenge is found by its signature rather than by unwrapping the
+/// SPNEGO around it, which a server may or may not send. [`None`] where there
+/// is none, where it carries no version, or where the build is zero.
+fn ntlm_challenge_version(token: &[u8]) -> Option<String> {
+    const CHALLENGE: &[u8] = b"NTLMSSP\0\x02\0\0\0";
+    /// The flag saying the `Version` field is filled in.
+    const NEGOTIATE_VERSION: u32 = 0x0200_0000;
+    const VERSION_AT: usize = 48;
+
+    let start = token
+        .windows(CHALLENGE.len())
+        .position(|window| window == CHALLENGE)?;
+    let message = &token[start..];
+    let flags = u32::from_le_bytes(message.get(20..24)?.try_into().ok()?);
+    if flags & NEGOTIATE_VERSION == 0 {
+        return None;
+    }
+    let version = message.get(VERSION_AT..VERSION_AT + 4)?;
+    let build = u16::from_le_bytes([version[2], version[3]]);
+    (build != 0).then(|| format!("Windows {}.{} Build {build}", version[0], version[1]))
+}
+
 /// The NUL-terminated UTF-16 strings in `field`, in order.
 ///
 /// A server may pad to an even offset before the first, so a leading odd byte is

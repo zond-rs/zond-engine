@@ -232,6 +232,11 @@ pub const CONTEXTS: &[Context] = &[
         note: "the greeting, whole, through `extract::texts`",
     },
     Context {
+        name: "ntlm.os_version",
+        reach: Reach::Produced,
+        note: "the Windows version and build an NTLM challenge states, rendered `Windows 10.0 Build 20348` by `framed::smb2_exchange` from the session setup `smb::SmbAnalyzer` sends over SMB2",
+    },
+    Context {
         name: "ntp.readvar",
         reach: Reach::Produced,
         note: "the system variables a mode 6 control message draws, read by `framed::ntp_control_variables`. The corpus probe for this port was an ordinary client request, which draws timestamps; the control probe beside it asks the question these rules were written for",
@@ -279,12 +284,17 @@ pub const CONTEXTS: &[Context] = &[
     Context {
         name: "smb.native_lm",
         reach: Reach::Produced,
-        note: "the LAN manager string of a session setup, read by `framed::smb_session_setup`. The corpus probe now sends a session setup behind its negotiate, in the same write",
+        note: "the LAN manager string of an SMB1 session setup, read by `framed::smb_session_setup` from the exchange `smb::SmbAnalyzer` holds where a server answers in SMB1 or names no Windows build over SMB2",
     },
     Context {
         name: "smb.native_os",
         reach: Reach::Produced,
         note: "the native OS string of the same session setup, and the larger half of the pair",
+    },
+    Context {
+        name: "smb2.negotiate",
+        reach: Reach::Produced,
+        note: "the dialect and signing policy of an SMB2 negotiate response, rendered by `framed::smb2_exchange` from the exchange `smb::SmbAnalyzer` holds",
     },
     Context {
         name: "smtp.banner",
