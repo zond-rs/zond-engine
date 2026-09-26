@@ -434,8 +434,9 @@ pub fn baseline_service(port: u16) -> Option<Service> {
     lookup_service_name(port).map(|name| Service::new(name, 0))
 }
 
-/// Builds the shipped signature corpus, where nothing has yet, on the blocking
-/// pool, for a scan to call before its first probe leaves.
+/// Waits for the shipped signature corpus to be built, building it on the
+/// blocking pool where nothing has started to, for a scan to call before its
+/// first probe leaves.
 ///
 /// The corpus is built the first time anything asks for it, and the first to
 /// ask in a scan is a probe filing its verdict: every verdict carries the
@@ -448,13 +449,30 @@ pub fn baseline_service(port: u16) -> Option<Service> {
 /// each would be filed as a 40 ms path, and a host with more ports than its
 /// round-trip window holds would report nothing else. Built here, before
 /// anything is timed and off the workers, it holds up no probe.
+///
+/// A scan starts the build as it opens, with [`start_loading_corpus`], so what
+/// is waited for here is whatever of it the passes before the port scan have
+/// not already covered.
 pub(crate) async fn load_corpus() {
     // A panic building it is the embedded corpus failing to decode, which
     // the next caller meets and reports the same way; nothing is lost here.
+    // A build already under way is waited for on the blocking thread too.
     let _ = tokio::task::spawn_blocking(|| {
         SignatureDb::global();
     })
     .await;
+}
+
+/// Starts building the shipped signature corpus on the blocking pool, where
+/// nothing has yet, and returns at once, for a scan to call as it opens.
+///
+/// Its passes before the port scan, liveness above all, never ask for the
+/// corpus, so the build runs beside them rather than ahead of the port scan's
+/// first probe, which [`load_corpus`] would otherwise hold up for all of it.
+pub(crate) fn start_loading_corpus() {
+    drop(tokio::task::spawn_blocking(|| {
+        SignatureDb::global();
+    }));
 }
 
 /// A [`Port`] in the given `state` carrying only the [`baseline_service`] label.

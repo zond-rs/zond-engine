@@ -1915,6 +1915,7 @@ fn spawn_scan(
     tokio::spawn(async move {
         // Held for as long as the scan runs; see `descriptors::hold_back`.
         let _held_back = held_back;
+        crate::fingerprint::start_loading_corpus();
         // Numbered before either phase runs, so an address either one files
         // as unreachable settles every target at it. The phases' scopes are
         // taken over what was asked, so they can say what the policy
