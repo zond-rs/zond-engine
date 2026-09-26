@@ -1167,3 +1167,52 @@ fn only_a_reply_to_the_api_versions_request_is_named_kafka() {
         );
     }
 }
+
+/// The NRPE probe is a version 2 query the daemon answers: the whole 1036-byte
+/// packet NRPE's common.h lays out, typed a query, with a CRC-32 that checks.
+///
+/// The daemon reads a full packet before it replies and drops one whose CRC
+/// fails, so a probe short of either is a connection held open until the
+/// daemon's own timeout and an NRPE port that answers nothing.
+#[test]
+fn the_nrpe_probe_is_a_query_the_daemon_answers() {
+    // CRC-32 as NRPE computes it: reflected, polynomial 0xEDB88320, starting
+    // from and finished with all ones.
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = u32::MAX;
+        for &byte in bytes {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xEDB8_8320 & 0u32.wrapping_sub(crc & 1));
+            }
+        }
+        !crc
+    }
+    assert_eq!(
+        crc32(b"123456789"),
+        0xCBF4_3926,
+        "the published check value"
+    );
+
+    let db = SignatureDb::global();
+    let query = db
+        .tcp_probe_payloads(5666)
+        .iter()
+        .find(|payload| payload.starts_with(b"\x00\x02"))
+        .expect("port 5666 has an NRPE probe");
+
+    assert_eq!(query.len(), 1036, "the whole packet");
+    assert_eq!(&query[2..4], b"\x00\x01", "a query");
+    assert!(
+        query[10..].starts_with(b"_NRPE_CHECK\0"),
+        "the version check"
+    );
+
+    let mut zeroed = query.clone();
+    zeroed[4..8].fill(0);
+    assert_eq!(
+        u32::from_be_bytes(query[4..8].try_into().expect("four bytes")),
+        crc32(&zeroed),
+        "the CRC-32 over the packet with its own field zeroed"
+    );
+}
