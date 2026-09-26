@@ -1026,14 +1026,37 @@ pub(crate) async fn resolve(ctx: &ScanContext, unheard: Unheard) {
     resolve_with(ctx, unheard, REVERSE_LOOKUPS_IN_FLIGHT, move |ip| {
         let resolver = resolver.clone();
         async move {
-            let lookup = resolver.reverse_lookup(ip).await.ok()?;
-            lookup.answers().iter().find_map(|r| match &r.data {
-                RData::PTR(ptr) => Some(ptr.to_string()),
-                _ => None,
-            })
+            let lookup = match resolver.reverse_lookup(ip).await {
+                Ok(lookup) => lookup,
+                // An answer that there is nothing, or any other the resolver
+                // gave, is the resolver answering. A timeout or a transport
+                // failure is not.
+                Err(hickory_resolver::net::NetError::Dns(_)) => return Reverse::Unnamed,
+                Err(_) => return Reverse::Unanswered,
+            };
+            lookup
+                .answers()
+                .iter()
+                .find_map(|r| match &r.data {
+                    RData::PTR(ptr) => Some(ptr.to_string()),
+                    _ => None,
+                })
+                .map_or(Reverse::Unnamed, Reverse::Named)
         }
     })
     .await;
+}
+
+/// What one reverse lookup came back with.
+#[derive(Debug)]
+enum Reverse {
+    /// The address's name.
+    Named(String),
+    /// An answer, and no name in it.
+    Unnamed,
+    /// No answer at all: the resolver let the question time out, or could not
+    /// be reached.
+    Unanswered,
 }
 
 /// [`resolve`], asking `lookup` for each address's name, at most `in_flight`
@@ -1041,16 +1064,34 @@ pub(crate) async fn resolve(ctx: &ScanContext, unheard: Unheard) {
 ///
 /// Every lookup's answer is read, whatever order they finish in and whichever
 /// of them found nothing: an address with no name says nothing about the next.
+///
+/// Two things end it before every address is asked. A stop, which it reads
+/// while it waits rather than between answers, so a scan stopped in its tail
+/// ends then and keeps the names already in; the lookups in flight are
+/// dropped. And a resolver that has let a whole window, `in_flight`, go
+/// unanswered without answering one, on the rule
+/// [`QueryTarget::is_asked`] applies on the other path, so that until it
+/// first answers it is asked no more than that window: each costs its full
+/// retries, so asking on would cost one window of those for every
+/// `in_flight` hosts found, and for a wide scan that is hours spent on a
+/// resolver that is not there. One that answers slowly has answered, and is
+/// asked on.
 async fn resolve_with<F, Fut>(ctx: &ScanContext, unheard: Unheard, in_flight: usize, lookup: F)
 where
     F: Fn(IpAddr) -> Fut,
-    Fut: Future<Output = Option<String>> + Send + 'static,
+    Fut: Future<Output = Reverse> + Send + 'static,
 {
+    let in_flight = in_flight.max(1);
     let mut pending = to_resolve(ctx, unheard).into_iter();
     let mut set = tokio::task::JoinSet::new();
+    let (mut answered, mut unanswered) = (false, 0usize);
 
     loop {
-        while set.len() < in_flight.max(1)
+        // Until the resolver has answered once, the lookups it let lie
+        // count against the window as well as those in flight, so the
+        // first window is all a silent one is asked.
+        while set.len() < in_flight
+            && (answered || unanswered + set.len() < in_flight)
             && let Some(key) = pending.next()
         {
             // The query takes the address; the key comes back with the answer,
@@ -1058,12 +1099,24 @@ where
             let asked = lookup(key.addr());
             set.spawn(async move { (key, asked.await) });
         }
-        let Some(joined) = set.join_next().await else {
+        let Some(Some(joined)) = ctx.handle.or_stopped(set.join_next()).await else {
             break;
         };
-        let Ok((key, Some(name))) = joined else {
+        let Ok((key, reverse)) = joined else {
             continue;
         };
+        let name = match reverse {
+            Reverse::Named(name) => name,
+            Reverse::Unnamed => {
+                answered = true;
+                continue;
+            }
+            Reverse::Unanswered => {
+                unanswered += 1;
+                continue;
+            }
+        };
+        answered = true;
 
         let name = name.trim_end_matches('.').to_string();
         if restates(&name, key.addr()) {
@@ -1079,6 +1132,15 @@ where
             host.set_hostname(Some(name));
             true
         });
+    }
+
+    let unasked = pending.count();
+    if !answered && unasked > 0 && !ctx.handle.should_stop() {
+        info!(
+            verbosity = 1,
+            "{} not looked up (resolver not answering)",
+            counted(unasked as u128, "name", "names")
+        );
     }
 }
 
@@ -1221,13 +1283,18 @@ mod tests {
             async move {
                 let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
                 most.fetch_max(now, Ordering::SeqCst);
-                let IpAddr::V4(v4) = ip else { return None };
+                let IpAddr::V4(v4) = ip else {
+                    return Reverse::Unnamed;
+                };
                 let last = v4.octets()[3];
                 // The unnamed answer first, so an early one ends nothing.
                 let wait = if last % 2 == 0 { 1 } else { 5 };
                 tokio::time::sleep(Duration::from_millis(wait)).await;
                 in_flight.fetch_sub(1, Ordering::SeqCst);
-                (last % 2 == 1).then(|| format!("host{last}.example."))
+                match last % 2 {
+                    1 => Reverse::Named(format!("host{last}.example.")),
+                    _ => Reverse::Unnamed,
+                }
             }
         })
         .await;
@@ -1246,6 +1313,74 @@ mod tests {
             })
             .count();
         assert_eq!(named, 20, "every host with a name was named");
+    }
+
+    /// **A stopped scan stops looking names up.** The lookups are the tail of
+    /// every scan that resolves names, and one stopped there would otherwise
+    /// wait out every lookup still to ask, each up to its full retries. The
+    /// lookups here never answer, so the only way the call returns is the
+    /// stop.
+    #[tokio::test]
+    async fn a_stopped_scan_stops_looking_names_up() {
+        let (session, ctx) = ScanSession::new();
+        for last in 1..=4 {
+            ctx.update_host(IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)), |host| {
+                host.set_status(HostStatus::Up)
+            });
+        }
+        let handle = session.handle().clone();
+        let stopper = tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            handle.abort();
+        });
+
+        // Generous, and only so a failure reads as one rather than as a hang.
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            resolve_with(&ctx, Unheard::Skipped, 2, |_| {
+                std::future::pending::<Reverse>()
+            }),
+        )
+        .await
+        .expect("the stop ended the lookups");
+        stopper.await.expect("the stop was asked for");
+    }
+
+    /// **A resolver that answers nothing is asked one window and no more.**
+    /// Every lookup it lets lie costs its full retries, so asking it about
+    /// every host a wide scan found would spend a window of those per
+    /// window of hosts. One that has answered anything is asked on.
+    #[tokio::test]
+    async fn a_resolver_that_answers_nothing_is_asked_one_window() {
+        use std::sync::atomic::AtomicUsize;
+
+        const BOUND: usize = 4;
+        let asked = |first_answers: bool| {
+            let asked = Arc::new(AtomicUsize::new(0));
+            let counted = Arc::clone(&asked);
+            let (_session, ctx) = ScanSession::new();
+            for last in 1..=40 {
+                ctx.update_host(IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)), |host| {
+                    host.set_status(HostStatus::Up)
+                });
+            }
+            async move {
+                resolve_with(&ctx, Unheard::Skipped, BOUND, move |_| {
+                    let n = counted.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        match (first_answers, n) {
+                            (true, 0) => Reverse::Unnamed,
+                            _ => Reverse::Unanswered,
+                        }
+                    }
+                })
+                .await;
+                asked.load(Ordering::SeqCst)
+            }
+        };
+
+        assert_eq!(asked(false).await, BOUND, "a silent resolver was asked on");
+        assert_eq!(asked(true).await, 40, "one that answered was given up on");
     }
 
     // -----------------------------------------------------------------------
