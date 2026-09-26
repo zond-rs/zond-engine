@@ -42,7 +42,8 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+
+use crate::source::{display, production, sources};
 
 /// The file every connection to a target is opened in.
 const DIALLER: &str = "src/transport/dial.rs";
@@ -161,8 +162,8 @@ fn every_pass_that_dials_a_target_asks_whether_it_may_send_there() {
     let mut unasked = Vec::new();
     for path in sources() {
         let text = fs::read_to_string(&path).expect("a source file is readable");
-        let code = without_comments(&without_tests(&text));
-        let path = path.to_string_lossy().replace('\\', "/");
+        let code = production(&text);
+        let path = display(&path);
         if !code.contains(TAKES_EGRESS) {
             continue;
         }
@@ -220,9 +221,9 @@ fn every_socket_outside_the_dialler_has_said_why_it_is_not_a_connection_to_a_tar
     let mut found = BTreeSet::new();
     for path in sources() {
         let text = fs::read_to_string(&path).expect("a source file is readable");
-        let production = without_comments(&without_tests(&text));
-        if OPENS.iter().any(|opens| production.contains(opens)) {
-            found.insert(path.to_string_lossy().replace('\\', "/"));
+        let code = production(&text);
+        if OPENS.iter().any(|opens| code.contains(opens)) {
+            found.insert(display(&path));
         }
     }
 
@@ -265,15 +266,15 @@ fn every_socket_outside_the_dialler_has_said_why_it_is_not_a_connection_to_a_tar
 #[test]
 fn every_connection_that_leaves_by_the_routing_table_has_said_why() {
     let mut found = BTreeSet::new();
-    let mut production = Vec::new();
+    let mut codes = Vec::new();
     for path in sources() {
         let text = fs::read_to_string(&path).expect("a source file is readable");
-        let code = without_comments(&without_tests(&text));
-        let path = path.to_string_lossy().replace('\\', "/");
+        let code = production(&text);
+        let path = display(&path);
         if path != DIALLER && code.contains(KERNEL) {
             found.insert(path.clone());
         }
-        production.push((path, code));
+        codes.push((path, code));
     }
 
     let listed: BTreeSet<String> = KERNEL_EGRESS
@@ -304,7 +305,7 @@ fn every_connection_that_leaves_by_the_routing_table_has_said_why() {
 
     for (owner, entries, _) in KERNEL_EGRESS {
         for entry in *entries {
-            let callers: Vec<&str> = production
+            let callers: Vec<&str> = codes
                 .iter()
                 .filter(|(path, code)| path != owner && calls(code, entry))
                 .map(|(path, _)| path.as_str())
@@ -358,14 +359,11 @@ fn the_census_reads_code_and_not_prose_or_tests() {
         mod tests { fn t() { TcpStream::connect(addr); } }\n\
         #[cfg(all(test, unix))]\n\
         mod unix { fn t() { UdpSocket::bind(addr); } }\n";
-    let production = without_comments(&without_tests(text));
-    assert!(
-        OPENS.iter().all(|opens| !production.contains(opens)),
-        "{production:?}"
-    );
+    let code = production(text);
+    assert!(OPENS.iter().all(|opens| !code.contains(opens)), "{code:?}");
 
     let text = "fn engine() { let s = UdpSocket::bind(addr); }\n";
-    assert!(without_comments(&without_tests(text)).contains("UdpSocket::bind"));
+    assert!(production(text).contains("UdpSocket::bind"));
 
     // A call by name is a call; a longer name ending the same way is another
     // function.
@@ -375,123 +373,4 @@ fn the_census_reads_code_and_not_prose_or_tests() {
     ));
     assert!(!calls("x = probe_udp_raw_via(a, b, e)", "probe_udp_raw("));
     assert!(!calls("x = my_probe_udp_raw(a, b)", "probe_udp_raw("));
-}
-
-/// The files whose contents describe how the engine behaves, which is every
-/// source that is not compiled only for a test.
-fn sources() -> Vec<PathBuf> {
-    let test_only = test_only_modules();
-    every_source()
-        .into_iter()
-        .filter(|path| !test_only.iter().any(|module| path.starts_with(module)))
-        .collect()
-}
-
-fn every_source() -> Vec<PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let mut entries: Vec<_> = fs::read_dir(dir)
-            .expect("src is readable")
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .collect();
-        entries.sort();
-        for path in entries {
-            if path.is_dir() {
-                walk(&path, out);
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                out.push(path);
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(Path::new("src"), &mut out);
-    out
-}
-
-/// The files and directories belonging to a module some parent declared
-/// `#[cfg(test)]`, which [`without_tests`] cannot see from inside the file.
-/// A directory stands for every module under it, which the gate on their
-/// ancestor compiles out as surely as it does the ancestor.
-fn test_only_modules() -> BTreeSet<PathBuf> {
-    let mut out = BTreeSet::new();
-    for path in every_source() {
-        let text = fs::read_to_string(&path).expect("a source file is readable");
-        let lines: Vec<&str> = text.lines().collect();
-        for pair in lines.windows(2) {
-            if pair[0].trim() != "#[cfg(test)]" {
-                continue;
-            }
-            let next = pair[1].trim().trim_end_matches(';');
-            let Some(name) = next.split_whitespace().last() else {
-                continue;
-            };
-            if !next.contains("mod ") || !next.ends_with(name) || next.contains('{') {
-                continue;
-            }
-            let dir = match path.file_stem().and_then(|s| s.to_str()) {
-                Some("lib") | Some("mod") => path.parent().expect("a parent").to_path_buf(),
-                Some(stem) => path.parent().expect("a parent").join(stem),
-                None => continue,
-            };
-            out.insert(dir.join(format!("{name}.rs")));
-            out.insert(dir.join(name));
-        }
-    }
-    out
-}
-
-/// `text` with every `#[cfg(test)]` or `#[cfg(all(test, …))]` item removed, by
-/// matching the braces of the item the attribute is on. A test opening a
-/// socket to a listener it bound says nothing about how the engine reaches a
-/// target.
-fn without_tests(text: &str) -> String {
-    const GATES: [&str; 2] = ["#[cfg(test)]", "#[cfg(all(test"];
-
-    let mut kept = String::with_capacity(text.len());
-    let mut rest = text;
-
-    while let Some(at) = GATES.iter().filter_map(|gate| rest.find(gate)).min() {
-        kept.push_str(&rest[..at]);
-        // Past the attribute by its own brackets, so `#[cfg(all(test, unix))]`
-        // ends where it ends rather than at the first `]`.
-        let attribute = balanced(&rest[at..], b'[', b']').unwrap_or(rest.len() - at);
-        let item = &rest[at + attribute..];
-        // Then the item: a declaration up to its `;`, or a body in braces.
-        let ends = match item.find(['{', ';']) {
-            Some(i) if item.as_bytes()[i] == b';' => i + 1,
-            Some(i) => i + balanced(&item[i..], b'{', b'}').unwrap_or(item.len() - i),
-            None => item.len(),
-        };
-        rest = &item[ends..];
-    }
-    kept.push_str(rest);
-    kept
-}
-
-/// How far into `text` the group its first `open` begins is closed.
-fn balanced(text: &str, open: u8, close: u8) -> Option<usize> {
-    let mut depth = 0usize;
-    for (i, byte) in text.bytes().enumerate() {
-        if byte == open {
-            depth += 1;
-        } else if byte == close {
-            depth = depth.checked_sub(1)?;
-            if depth == 0 {
-                return Some(i + 1);
-            }
-        }
-    }
-    None
-}
-
-/// `text` with every `//` comment blanked, doc comments included, since a doc
-/// link naming a constructor opens nothing.
-fn without_comments(text: &str) -> String {
-    text.lines()
-        .map(|line| match line.find("//") {
-            Some(at) => &line[..at],
-            None => line,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }

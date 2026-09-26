@@ -23,6 +23,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::source::production;
+
 /// Every top-level module, lowest first. A module may import from those before
 /// it and never from those after.
 ///
@@ -74,55 +76,6 @@ fn owner(path: &Path) -> String {
         .into_owned()
 }
 
-/// The file's production source: every `#[cfg(test)]` item removed, and every
-/// line comment blanked.
-///
-/// **Truncating at the first `#[cfg(test)]` was not the same thing**, and the
-/// difference was most of the crate. Whole-file test modules are gated at the
-/// declaration site, which is what that was written for; but a `#[cfg(test)] mod
-/// corpus;` or a gated helper near the top of a file threw away everything below
-/// it, and `src/protocols/tcp.rs` was checked to line 78 of 928. Across `src/`
-/// it read 65% of the lines and reported nothing, while four real violations
-/// stood — one of them a plain `use crate::config::…` sixty lines further down
-/// than the cut.
-///
-/// Comments go because this file's own prose, and every intra-doc link like
-/// `[`Redaction`](crate::export::Redaction)`, names modules without depending on
-/// them.
-fn production_source(text: &str) -> String {
-    strip_comments(&strip_test_items(text))
-}
-
-/// Removes each `#[cfg(test)]` or `#[cfg(all(test, …))]` item whole, by matching
-/// the braces of the item it is attached to.
-fn strip_test_items(text: &str) -> String {
-    const GATES: [&str; 2] = ["#[cfg(test)]", "#[cfg(all(test"];
-
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-
-    loop {
-        let Some(at) = GATES.iter().filter_map(|gate| rest.find(gate)).min() else {
-            out.push_str(rest);
-            return out;
-        };
-        out.push_str(&rest[..at]);
-
-        // Past the attribute, by its own brackets, so `#[cfg(all(test, unix))]`
-        // ends where it ends rather than at the first `]`.
-        let after_attribute = balanced(&rest[at..], '[', ']').unwrap_or(rest.len() - at);
-        let item = &rest[at + after_attribute..];
-
-        // Then the item: a declaration up to its `;`, or a body in braces.
-        let ends = match item.find(['{', ';']) {
-            Some(i) if item.as_bytes()[i] == b';' => i + 1,
-            Some(i) => i + balanced(&item[i..], '{', '}').unwrap_or(item.len() - i),
-            None => item.len(),
-        };
-        rest = &item[ends..];
-    }
-}
-
 /// How far into `text` the group opened by its first `open` is closed, or `None`
 /// where it never is.
 fn balanced(text: &str, open: char, close: char) -> Option<usize> {
@@ -138,17 +91,6 @@ fn balanced(text: &str, open: char, close: char) -> Option<usize> {
         }
     }
     None
-}
-
-/// Blanks `//` comments, keeping the lines so nothing else shifts.
-fn strip_comments(text: &str) -> String {
-    text.lines()
-        .map(|line| match line.find("//") {
-            Some(at) => &line[..at],
-            None => line,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -175,7 +117,7 @@ fn edges() -> BTreeMap<String, BTreeSet<String>> {
             continue;
         }
         let text = fs::read_to_string(&file).expect("a readable source file");
-        let source = production_source(&text);
+        let source = production(&text);
 
         // **Every `crate::`, not only the ones a `use` line opens with.** A
         // `pub use crate::…` is a dependency, a second name inside one set of
@@ -261,7 +203,7 @@ fn the_interface_table_is_read_only_through_the_interface_module() {
         .iter()
         .filter(|path| {
             let text = fs::read_to_string(path).expect("a source file is readable");
-            let source = production_source(&text);
+            let source = production(&text);
             ASKS.iter().any(|ask| source.contains(ask))
         })
         .map(|path| path.to_string_lossy().replace('\\', "/"))

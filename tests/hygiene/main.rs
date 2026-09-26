@@ -29,6 +29,10 @@
 //! the ICMP censuses find a file is tried against the spellings it has to see
 //! through and the prose it has to ignore.
 //!
+//! The censuses and the module graph all read a file the same way, through
+//! `source`: comments and literals blanked and test-only code taken out, so
+//! none of them can be the one that counts a quoted brace as code.
+//!
 //! One more holds the public API to a promise its documentation makes: every
 //! error the crate hands out carries a stable code.
 //!
@@ -43,4 +47,5 @@ mod coded;
 mod dialling;
 mod documentation;
 mod exclusions;
+mod source;
 mod surface;

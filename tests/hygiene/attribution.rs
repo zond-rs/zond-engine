@@ -84,7 +84,9 @@
 //!   asking.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+use crate::source::{self, display, is_ident, sources};
 
 /// The module the two readers live in, `parse` and `parse_expired`.
 const READER_MODULE: &str = "icmp_error";
@@ -201,177 +203,6 @@ const ADMITS_ICMP_WHEN_ASKED: (&str, &str) = ("TcpProbe", "icmp_errors");
 /// listening under any of them.
 const KIND_MODULE: &str = "src/transport/probe.rs";
 
-/// Rust files under `src/`, in a stable order.
-fn sources() -> Vec<PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let mut entries: Vec<_> = fs::read_dir(dir)
-            .expect("src is readable")
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .collect();
-        entries.sort();
-        for path in entries {
-            if path.is_dir() {
-                walk(&path, out);
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                out.push(path);
-            }
-        }
-    }
-
-    let mut out = Vec::new();
-    walk(Path::new("src"), &mut out);
-    out
-}
-
-/// A path as the lists above write it, whichever platform read it.
-fn display(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
-fn is_ident(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
-/// `text` with every comment and every string and character literal blanked,
-/// so what is left is code a name can be looked for in.
-///
-/// Blanked rather than removed: each character becomes a space and a newline
-/// stays one, so nothing that was apart runs together. A doc comment naming a
-/// reader is not a reader and a string mentioning one is not either, and a
-/// brace inside `'{'` or `"{}"` is no longer there for [`without_tests`] to
-/// miscount.
-fn code_of(text: &str) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let mut out = String::with_capacity(text.len());
-    let blank = |out: &mut String, from: &[char]| {
-        out.extend(from.iter().map(|&c| if c == '\n' { '\n' } else { ' ' }));
-    };
-
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        let next = chars.get(i + 1).copied();
-        let starts_word = i == 0 || !is_ident(chars[i - 1]);
-
-        let end = if c == '/' && next == Some('/') {
-            // A line comment, doc comments included.
-            chars[i..]
-                .iter()
-                .position(|&c| c == '\n')
-                .map_or(chars.len(), |at| i + at)
-        } else if c == '/' && next == Some('*') {
-            // A block comment, which nests.
-            let mut depth = 0usize;
-            let mut j = i;
-            while j < chars.len() {
-                match (chars[j], chars.get(j + 1)) {
-                    ('/', Some('*')) => {
-                        depth += 1;
-                        j += 2;
-                    }
-                    ('*', Some('/')) => {
-                        depth -= 1;
-                        j += 2;
-                        if depth == 0 {
-                            break;
-                        }
-                    }
-                    _ => j += 1,
-                }
-            }
-            j
-        } else if starts_word && (c == 'r' || (c == 'b' && next == Some('r'))) {
-            // A raw string, if a quote follows the hashes. A raw identifier
-            // like `r#type` has none and is left alone.
-            let mut j = i + if c == 'b' { 2 } else { 1 };
-            let hashes = chars[j..].iter().take_while(|&&c| c == '#').count();
-            j += hashes;
-            if chars.get(j) != Some(&'"') {
-                out.push(c);
-                i += 1;
-                continue;
-            }
-            let closing: Vec<char> = std::iter::once('"')
-                .chain(std::iter::repeat_n('#', hashes))
-                .collect();
-            (j + 1..=chars.len() - closing.len().min(chars.len()))
-                .find(|&k| chars[k..].starts_with(&closing))
-                .map_or(chars.len(), |k| k + closing.len())
-        } else if c == '"' {
-            // A string, stepping over each escape whole.
-            let mut j = i + 1;
-            while j < chars.len() && chars[j] != '"' {
-                j += if chars[j] == '\\' { 2 } else { 1 };
-            }
-            (j + 1).min(chars.len())
-        } else if c == '\'' && next == Some('\\') {
-            // An escaped character literal, whatever it escapes.
-            chars
-                .get(i + 3..)
-                .and_then(|rest| rest.iter().position(|&c| c == '\''))
-                .map_or(chars.len(), |at| i + 3 + at + 1)
-        } else if c == '\'' && chars.get(i + 2) == Some(&'\'') {
-            // A character literal. A lifetime has no closing quote two along.
-            i + 3
-        } else {
-            out.push(c);
-            i += 1;
-            continue;
-        };
-
-        blank(&mut out, &chars[i..end.min(chars.len())]);
-        i = end.max(i + 1);
-    }
-    out
-}
-
-/// `code` with `#[cfg(test)]` and `#[cfg(all(test, …))]` items removed, so a
-/// fixture calling a reader does not read as a scanner doing it.
-///
-/// Brace-counted rather than parsed, which is sound once [`code_of`] has
-/// blanked every brace a literal or a comment held. An item ending in `;`, a
-/// test-only `mod` or `use`, ends there. One whose braces never close is kept
-/// whole: counted as production it can only add a finding, where dropped it
-/// would take every line after it out of sight.
-fn without_tests(code: &str) -> String {
-    const GATES: [&str; 2] = ["#[cfg(test)]", "#[cfg(all(test"];
-
-    let mut kept = String::with_capacity(code.len());
-    let mut rest = code;
-    while let Some(at) = GATES.iter().filter_map(|gate| rest.find(gate)).min() {
-        kept.push_str(&rest[..at]);
-        let item = &rest[at..];
-        let end = match item.find(['{', ';']) {
-            Some(open) if item.as_bytes()[open] == b';' => Some(open + 1),
-            Some(open) => {
-                let mut depth = 0usize;
-                item[open..].char_indices().find_map(|(offset, c)| {
-                    match c {
-                        '{' => depth += 1,
-                        '}' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                return Some(open + offset + 1);
-                            }
-                        }
-                        _ => {}
-                    }
-                    None
-                })
-            }
-            None => None,
-        };
-        let Some(end) = end else {
-            rest = item;
-            break;
-        };
-        rest = &item[end..];
-    }
-    kept.push_str(rest);
-    kept
-}
-
 /// The names and punctuation of `code`, in order: an identifier is one token
 /// and every other character that is not whitespace is one of its own.
 fn tokens(code: &str) -> Vec<&str> {
@@ -396,9 +227,9 @@ fn tokens(code: &str) -> Vec<&str> {
     out
 }
 
-/// The tokens of the production code in `source`.
-fn production(source: &str) -> Vec<String> {
-    tokens(&without_tests(&code_of(source)))
+/// The tokens of the production code in `text`.
+fn production(text: &str) -> Vec<String> {
+    tokens(&source::production(text))
         .into_iter()
         .map(str::to_owned)
         .collect()
