@@ -417,8 +417,9 @@ pub fn baseline_port(port: u16, protocol: Protocol, state: PortState) -> Port {
 /// matching is handed to `analyze`, which runs on the blocking pool so a large
 /// match set can never stall the scheduler.
 ///
-/// If nothing identifies, a trimmed printable banner is attached as a
-/// last-resort label rather than leaving the port unannotated.
+/// If nothing identifies, a trimmed printable banner is kept rather than lost:
+/// as the detail beside the name the port's number gives it, or as a
+/// last-resort label on a port whose number names nothing.
 pub async fn fingerprint_tcp(stream: TcpStream, port: Port, detection: ServiceDetection) -> Port {
     fingerprint_tcp_detailed(stream, port, detection).await.port
 }
@@ -615,9 +616,30 @@ async fn identify_tcp(
                 port.set_service(service);
             }
         }
+        // What an unrecognised reply is filed as depends on whether the number
+        // names anything. A port the number names keeps that name, still
+        // marked as the guess it is, and carries what it said as the detail
+        // beside it; only a port it names nothing on is labelled by its
+        // banner. The number's guess and a banner nothing recognised are both
+        // short of an identification, and of the two the name is the one
+        // every scan of the port records. A scan that finds ports without a
+        // connection records the name first and folds the identification into
+        // it, where a label no more certain than the name cannot displace it;
+        // one that finds them by connecting records what this returns. Were
+        // the label to replace the name here, the same port would read one
+        // way or the other by which kind of scan found it.
         _ => {
             if let Some(banner) = fallback {
-                port.set_service(Service::new(format!("banner: {banner}"), 0));
+                let fallen_back = match port.service() {
+                    Some(named) if named.extrainfo().is_none() => {
+                        Some(named.clone().with_extrainfo(banner))
+                    }
+                    Some(_) => None,
+                    None => Some(Service::new(format!("banner: {banner}"), 0)),
+                };
+                if let Some(service) = fallen_back {
+                    port.set_service(service);
+                }
             }
         }
     }
@@ -2871,6 +2893,57 @@ mod tests {
             String::from_utf8_lossy(&expected),
             "the raw-print port was asked something else"
         );
+    }
+
+    /// An answer nothing recognised leaves the port the name its number gives
+    /// it, whether the identification is recorded as it stands or folded into
+    /// a port already recorded under that name.
+    ///
+    /// The two are how the two kinds of scan file it: one that connects to
+    /// find a port records what identifying it returned, and one that finds
+    /// it without a connection records the name first and folds the
+    /// identification in after. What the port said is kept either way, as the
+    /// detail beside the name.
+    #[tokio::test]
+    async fn an_unrecognised_answer_reads_the_same_however_the_port_was_found() {
+        use crate::scanner::loopback::accept_from_this_process;
+
+        let greeting = "WIDGET/4.2 ready";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binds loopback");
+        let addr = listener.local_addr().expect("a local address");
+        let server = tokio::spawn(async move {
+            while let Ok(mut sock) = accept_from_this_process(&listener).await {
+                tokio::spawn(async move {
+                    let _ = sock.write_all(format!("{greeting}\r\n").as_bytes()).await;
+                    let mut buffer = [0u8; 1024];
+                    while sock.read(&mut buffer).await.is_ok_and(|read| read > 0) {}
+                });
+            }
+        });
+
+        let stream = TcpStream::connect(addr).await.expect("connects");
+        let seeded = baseline_port(6379, Protocol::Tcp, PortState::Open);
+        let found = fingerprint_tcp(stream, seeded.clone(), ServiceDetection::Probe).await;
+        server.abort();
+
+        let mut folded = seeded;
+        folded.merge(found.clone());
+        let read = |port: &Port| {
+            port.service().map(|service| {
+                (
+                    service.name().to_owned(),
+                    service.extrainfo().map(str::to_owned),
+                )
+            })
+        };
+        assert_eq!(
+            read(&found),
+            Some(("redis".to_owned(), Some(greeting.to_owned()))),
+            "recorded as identified"
+        );
+        assert_eq!(read(&folded), read(&found), "folded into the recorded port");
     }
 
     /// A port two services share has each asked on a connection of its own,
