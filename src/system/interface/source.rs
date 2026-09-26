@@ -98,6 +98,18 @@ impl OnLinkTable {
     pub fn is_empty(&self) -> bool {
         self.held.is_empty()
     }
+
+    /// The table of this host's segments: the prefixes of its links that
+    /// carry frames, where a destination is a neighbour whose hardware address
+    /// the kernel resolves before anything is sent to it. A tunnel's prefix
+    /// is left out, since nothing on it is resolved.
+    pub(crate) fn of_segments() -> Self {
+        let framed: Vec<Link> = viable_interfaces()
+            .into_iter()
+            .filter(Link::carries_frames)
+            .collect();
+        Self::from_links(&framed)
+    }
 }
 
 /// Lazily-created UDP sockets used to ask the kernel for a route's source

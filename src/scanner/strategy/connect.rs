@@ -44,7 +44,8 @@
 
 use crate::config::ServiceDetection;
 use crate::config::limits::{
-    CONNECT_PROBE_TIMEOUT, DISCOVERY_CONCURRENCY, HOST_SYN_RETRANSMIT, PATH_FINDING_TIMEOUT,
+    CONNECT_PROBE_TIMEOUT, DISCOVERY_CONCURRENCY, HOST_SYN_RETRANSMIT,
+    NEIGHBOUR_PATH_FINDING_TIMEOUT, PATH_FINDING_TIMEOUT,
 };
 use crate::counted;
 use crate::evasion::EvasionProfile;
@@ -67,6 +68,7 @@ use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::routed::SynPorts;
 use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError, record_unasked};
 use crate::system::descriptors::{self, Descriptor};
+use crate::system::interface::OnLinkTable;
 use crate::transport::dial::PathAllowance;
 use crate::transport::dial::{Connecting, Egress, Holder, Shaping, SourcePortHeld};
 use async_trait::async_trait;
@@ -1850,13 +1852,15 @@ pub async fn discover(
 /// One task per address, not per port. Its ports are tried in turn, in the
 /// order the set holds them, and the first TCP-layer answer ends the address,
 /// so a host that answers on SSH costs one connect whatever the set's size. A
-/// silent address costs a connect per port, the first waiting three seconds
-/// and each after it the [`CONNECT_PROBE_TIMEOUT`], so a silent range takes up
-/// to nine timeouts an address where the common five alone take six. The
-/// first waits longer because nothing has measured the path to the address
-/// yet, and a host across a path slower than the ordinary timeout covers is
-/// heard by that connect or by none. The socket budget is the
-/// same either way: one descriptor per address in flight, held one connect at
+/// silent address costs a connect per port, the first waiting three seconds,
+/// six for a neighbour, and each after it the [`CONNECT_PROBE_TIMEOUT`], so a
+/// silent range takes up to nine timeouts an address where the common five
+/// alone take six. The first waits longer because nothing has measured the
+/// path to the address yet, and a host across a path slower than the ordinary
+/// timeout covers is heard by that connect or by none; a neighbour's first
+/// connect waits on its resolution too, since the kernel resolves a
+/// neighbour's hardware address before the first SYN to it leaves. The socket
+/// budget is the same either way: one descriptor per address in flight, held one connect at
 /// a time, so a larger set lengthens a silent sweep and never widens it. A task
 /// per port would spend the same descriptor-seconds on fewer addresses at a
 /// time and answer no sooner.
@@ -1901,6 +1905,16 @@ async fn sweep(
     let folder = ctx.clone();
     let mut starved = 0u128;
     let mut shortfall = Shortfall::default();
+    // Read only where the table has room for a scan to start. On macOS the
+    // interface table is read through the system's own frameworks, which
+    // dereference a null pointer in a process with no descriptor free, and a
+    // sweep started in such a table waits for a socket rather than ending the
+    // process; without the table, every first connect waits as for an address
+    // off this host's segments.
+    let segments = match descriptors::too_few(0) {
+        None => OnLinkTable::of_segments(),
+        Some(_) => OnLinkTable::from_links(&[]),
+    };
     // No more probes than the process has sockets for: past the budget a
     // probe would only queue at the gate, holding a task and nothing else.
     let mut pool = ProbePool::new(
@@ -1931,6 +1945,7 @@ async fn sweep(
             shaping,
             egress,
             patience,
+            path_finding_wait(&segments, ip),
         ))
         .await;
     }
@@ -2052,6 +2067,25 @@ fn absorb_host(
     }
 }
 
+/// How long the first connect to `ip` waits, the one that finds the path to
+/// it: [`NEIGHBOUR_PATH_FINDING_TIMEOUT`] for an address on one of this host's
+/// `segments`, or a link-local one, which is on a segment wherever it is, and
+/// [`PATH_FINDING_TIMEOUT`] for any other.
+///
+/// A neighbour is resolved before the first SYN to it leaves, across the path
+/// the handshake then crosses, and a wait sized for the handshake alone gives
+/// up on a slow neighbour whose hardware address the kernel did not yet hold.
+/// An address anywhere else has its next hop resolved already, or resolved
+/// once for every address behind it.
+fn path_finding_wait(segments: &OnLinkTable, ip: IpAddr) -> Duration {
+    let link_local = matches!(ip, IpAddr::V6(v6) if v6.is_unicast_link_local());
+    if link_local || segments.source_for(ip).is_some() {
+        NEIGHBOUR_PATH_FINDING_TIMEOUT
+    } else {
+        PATH_FINDING_TIMEOUT
+    }
+}
+
 /// Probes one address for presence, over each of `ports` in turn.
 ///
 /// Returns as soon as one of them answers at the TCP layer: a completed
@@ -2076,6 +2110,10 @@ fn absorb_host(
 ///
 /// Every connect leaves by `egress`, on a socket from the process's budget,
 /// and waits at most `patience` for one the process has none of.
+///
+/// The first connect to leave is how the path to the address is found, and
+/// waits `finding` for its answer; see [`path_finding_wait`]. Every one after
+/// it waits as on an ordinary path.
 async fn prober(
     ip: IpAddr,
     ports: Arc<[u16]>,
@@ -2083,13 +2121,11 @@ async fn prober(
     shaping: Shaping,
     egress: Egress,
     patience: Duration,
+    finding: Duration,
 ) -> ProbedHost {
     let mut asked = false;
     let mut refused = None;
-    // The first connect to leave is how the path to the address is found, and
-    // waits for the longest path a connect looks for; every one after it waits
-    // as on an ordinary path. See `PATH_FINDING_TIMEOUT`.
-    let mut waiting = PATH_FINDING_TIMEOUT;
+    let mut waiting = finding;
     let cut_short = |asked| ProbedHost {
         ip,
         fate: if asked {
@@ -2539,6 +2575,35 @@ mod tests {
                 PortState::Open,
                 "a live {ip} listener must read as open"
             );
+        }
+    }
+
+    /// The connect that finds the path to a neighbour waits for the
+    /// neighbour's resolution as well as its handshake, and one to any other
+    /// address waits for the handshake alone. A link-local address is a
+    /// neighbour on whichever segment its zone names.
+    #[test]
+    fn a_neighbour_s_first_connect_waits_for_its_resolution_too() {
+        use crate::system::interface::{Link, LinkAddress};
+
+        let segments = OnLinkTable::from_links(&[Link::new("test0", 1).with_addresses(vec![
+            LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24),
+            LinkAddress::new(
+                IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
+                64,
+            ),
+        ])]);
+        let wait = |ip: &str| path_finding_wait(&segments, ip.parse().expect("an address"));
+
+        for neighbour in ["192.0.2.9", "2001:db8::9", "fe80::9"] {
+            assert_eq!(
+                wait(neighbour),
+                NEIGHBOUR_PATH_FINDING_TIMEOUT,
+                "{neighbour}"
+            );
+        }
+        for routed in ["203.0.113.9", "2001:db8:9::1"] {
+            assert_eq!(wait(routed), PATH_FINDING_TIMEOUT, "{routed}");
         }
     }
 

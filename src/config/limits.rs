@@ -78,6 +78,27 @@ pub(crate) const HOST_SYN_RETRANSMIT: Duration = Duration::from_secs(1);
 /// segment failed.
 pub(crate) const PATH_FINDING_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// How long the connect that finds the path waits where the address is on one
+/// of this host's own segments: [`PATH_FINDING_TIMEOUT`] twice over.
+///
+/// A connect to a neighbour whose hardware address the kernel does not hold
+/// waits on its resolution before the SYN leaves, and the resolution is a
+/// round trip across the same path the handshake takes after it. Across a
+/// path of 1.9 s a cold neighbour's first answer arrives at 3.8 s, past the
+/// path-finding wait, and a live host reads silent every time. Twice that
+/// wait hears the resolution and the handshake each across the longest path
+/// a connect looks for.
+///
+/// What it costs is up to three seconds more per address on a segment that
+/// does not answer, paid once for all of them, since a sweep asks its
+/// addresses together. Linux gives a lone neighbour's resolution up after
+/// three seconds of asking and fails the connect then, and a sweep of one
+/// such address was measured at 7.8 s against 6.2; with a segment's worth
+/// asked at once not every connect is failed, and a `/24` holding two hosts
+/// took 12.1 s against 9.1. A live neighbour whose every port is filtered
+/// pays the three seconds in full.
+pub(crate) const NEIGHBOUR_PATH_FINDING_TIMEOUT: Duration = Duration::from_secs(6);
+
 /// How many targets the connect port scan and the passes after it (service
 /// detection, detections, TLS enumeration) work on at once.
 ///
@@ -156,5 +177,17 @@ mod tests {
             CONNECT_PROBE_TIMEOUT < HOST_SYN_RETRANSMIT * 3,
             "a budget of {CONNECT_PROBE_TIMEOUT:?} waits for a second retransmission"
         );
+    }
+
+    /// A neighbour's path is found across a resolution and a handshake, each a
+    /// round trip across it, and the wait covers both across the longest path
+    /// the path-finding wait covers one of. Measured: across a path of 1.9 s
+    /// with the neighbour's hardware address not yet held, the first answer
+    /// arrived at 3.8 s, and a three-second wait read a live host silent in
+    /// three runs of three.
+    #[test]
+    fn a_neighbour_s_path_finding_covers_its_resolution_too() {
+        assert!(NEIGHBOUR_PATH_FINDING_TIMEOUT >= PATH_FINDING_TIMEOUT * 2);
+        assert!(NEIGHBOUR_PATH_FINDING_TIMEOUT > Duration::from_millis(3800));
     }
 }

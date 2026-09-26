@@ -59,8 +59,13 @@ pub(crate) use routing::map_ips_to_interfaces_forced;
 // Not published: which targets a self-built frame cannot reach. The question
 // exists because the probe sender has no neighbour discovery, which is a gap in
 // this engine rather than a fact a consumer should build on.
-pub(crate) use routing::{BeyondFrames, FrameSender, beyond_frames, refused_neighbours};
+pub(crate) use routing::{BeyondFrames, FrameSender, beyond_frames};
+// Not published: which neighbours the routing table refuses, which the
+// discovery plan holds back from the segment sweep.
+pub(crate) use routing::refused_neighbours;
 #[cfg(all(test, unix))]
 pub(crate) use source::RouteAnswer;
 pub use source::SourceResolver;
-pub(crate) use source::{NoSource, ProbeSockets, probe_route_source, refuses_neighbour};
+pub(crate) use source::{
+    NoSource, OnLinkTable, ProbeSockets, probe_route_source, refuses_neighbour,
+};
