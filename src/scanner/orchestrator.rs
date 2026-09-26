@@ -201,8 +201,9 @@ impl ScanCapabilities {
     /// code that later acts on them.
     ///
     /// `probing` is what the run sends beyond its liveness probes, which is
-    /// what the announcement names.
-    pub(super) fn resolve(cfg: &ZondConfig, probing: Probing) -> Self {
+    /// what the announcement names; `None` for a sitting an earlier one left
+    /// nothing to ask, which sends no probe and so announces none.
+    pub(super) fn resolve(cfg: &ZondConfig, probing: Option<Probing>) -> Self {
         let privilege = Privilege::current();
         let mode = cfg.evasion.effective_send_mode(cfg.send_mode);
         let frames_only =
@@ -213,7 +214,9 @@ impl ScanCapabilities {
             frames_only,
             dns: !cfg.no_dns,
         };
-        caps.announce(probing, by_raw_socket(mode, privilege::can_send_raw()));
+        if let Some(probing) = probing {
+            caps.announce(probing, by_raw_socket(mode, privilege::can_send_raw()));
+        }
         caps
     }
 

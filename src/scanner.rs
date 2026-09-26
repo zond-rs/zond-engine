@@ -1115,7 +1115,11 @@ fn spawn_discovery(
     cfg: &ZondConfig,
     ctx: ScanContext,
 ) -> JoinHandle<ScanReport> {
-    let caps = ScanCapabilities::resolve(cfg, orchestrator::Probing::sweep());
+    // A sitting an earlier one left no address to ask sends nothing, unless it
+    // sweeps a segment, which it may with no address of its own; see
+    // `sitting_probes`.
+    let sends = !targets.is_empty() || cfg.segment_sweep;
+    let caps = ScanCapabilities::resolve(cfg, sends.then(orchestrator::Probing::sweep));
 
     // Narrows `targets` as it records them, so nothing below can probe an
     // excluded address. Addresses a sweep finds for itself never pass through
@@ -1771,6 +1775,24 @@ pub async fn scan_with_journal(
     ))
 }
 
+/// What a port scan's sitting probes with, or `None` for one an earlier
+/// sitting left nothing to ask.
+///
+/// `numbered` is `target_map` less what the exclusions withhold, which is what
+/// `settled` counts. A sitting with no target left asks no address whether it
+/// is up and probes no port, so a line naming the probes it would send, or
+/// the privilege it would send them with, describes a scan that is not
+/// happening.
+fn sitting_probes(
+    cfg: &ZondConfig,
+    target_map: &TargetMap,
+    numbered: &TargetMap,
+    settled: &Checkpoint,
+) -> Option<orchestrator::Probing> {
+    (!orchestrator::unsettled_ips(numbered, settled).is_empty())
+        .then(|| orchestrator::Probing::ports(cfg, target_map))
+}
+
 /// Runs both phases of a port scan against an existing context.
 ///
 /// The body of [`scan`], taking a context rather than making one so that a
@@ -1788,7 +1810,12 @@ fn spawn_scan(
     settled: Checkpoint,
     runs_liveness: bool,
 ) -> JoinHandle<ScanReport> {
-    let caps = ScanCapabilities::resolve(cfg, orchestrator::Probing::ports(cfg, &target_map));
+    // The plan the port phase walks, numbered in what the exclusions leave of
+    // it, and known before anything is announced.
+    let mut numbered = target_map.clone();
+    cfg.exclusions.withhold_targets(&mut numbered);
+    let caps =
+        ScanCapabilities::resolve(cfg, sitting_probes(cfg, &target_map, &numbered, &settled));
     // What the caller set, kept so the passes an idle scan turns off can be
     // named as declined rather than dropped, and the config the scan actually
     // runs under, which an idle scan holds to what sends the target nothing.
@@ -1799,13 +1826,10 @@ fn spawn_scan(
     tokio::spawn(async move {
         // Held for as long as the scan runs; see `descriptors::hold_back`.
         let _held_back = held_back;
-        // The plan the port phase walks, numbered in what the exclusions
-        // leave of it, and known before either phase runs, so an address
-        // either one files as unreachable settles every target at it. The
-        // phases' scopes are taken over what was asked, so they can say what
-        // the policy withheld.
-        let mut numbered = target_map.clone();
-        cfg.exclusions.withhold_targets(&mut numbered);
+        // Numbered before either phase runs, so an address either one files
+        // as unreachable settles every target at it. The phases' scopes are
+        // taken over what was asked, so they can say what the policy
+        // withheld.
         ctx.number_targets(TargetIndex::of(&numbered));
 
         // Phase one: which of these addresses has anything at it.
@@ -1954,6 +1978,29 @@ fn spawn_scan(
 mod tests {
     use super::*;
     use crate::testing::loopback::accept_from_this_process;
+
+    /// A sitting an earlier one left nothing to ask names no probes, and one
+    /// with a target left names them.
+    ///
+    /// A resume of a finished job sends nothing. Told it probes with ARP,
+    /// ICMPv6 and SYN, or that it lacks the privilege to, a reader takes it
+    /// for a scan that is about to put packets on the network.
+    #[test]
+    fn a_sitting_with_nothing_left_to_ask_names_no_probes() {
+        let mut map = TargetMap::new();
+        map.add_unit(crate::model::target::TargetSet::new(
+            "192.0.2.1".parse().expect("an address"),
+            "80".parse().expect("a port"),
+        ));
+        let cfg = ZondConfig::default();
+
+        let everything = Checkpoint::new(1, []);
+        assert_eq!(sitting_probes(&cfg, &map, &map, &everything), None);
+        assert!(
+            sitting_probes(&cfg, &map, &map, &Checkpoint::default()).is_some(),
+            "a sitting with its target left to ask probes it"
+        );
+    }
 
     /// A scratch journal root, removed and made again for each test that
     /// names it.
