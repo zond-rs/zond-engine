@@ -84,7 +84,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
     }
 
     // Snapshot the targets up front so no DashMap guard is held across an await.
-    let targets = fingerprintable_ports(ctx, over);
+    let targets = fingerprintable_ports(ctx, over, detection);
     if targets.is_empty() {
         return;
     }
@@ -298,8 +298,20 @@ impl QuietPorts {
 /// teaches nothing the scan has not already recorded, and sending one would be
 /// traffic spent to learn a fact already in hand.
 ///
+/// And only at a level that sends. A UDP port has no greeting to listen for,
+/// so the one thing identifying it can do is send it a datagram, which is what
+/// a caller who asked only to listen has ruled out.
+///
 /// [`reads_replies`]: crate::fingerprint::reads_replies
-fn fingerprintable_ports(ctx: &ScanContext, over: Protocol) -> Vec<Target> {
+fn fingerprintable_ports(
+    ctx: &ScanContext,
+    over: Protocol,
+    detection: ServiceDetection,
+) -> Vec<Target> {
+    if over == Protocol::Udp && !detection.sends() {
+        return Vec::new();
+    }
+
     let mut targets = Vec::new();
     for host in ctx.store.iter() {
         if !ctx.owes_passes(host.value()) {
@@ -1018,6 +1030,42 @@ mod tests {
             "the same port off the list was asked nothing, so the first half \
              proves nothing"
         );
+    }
+
+    /// A level that only listens sends a UDP port nothing, where the default
+    /// asks the same port its question.
+    ///
+    /// UDP has no greeting, so identifying a UDP port is a datagram and
+    /// nothing else. A caller who asked only to listen, on a network where
+    /// what the scan sends may knock something over, has ruled that out, and
+    /// an SNMP request is exactly the unexpected packet such a network is
+    /// being protected from. Read off the targets the pass takes, because the
+    /// datagram it would have sent leaves no trace a test could hear without
+    /// owning the port it is addressed to.
+    #[test]
+    fn a_level_that_only_listens_takes_no_udp_port() {
+        let (session, ctx) = ScanSession::new();
+        let ip: IpAddr = "192.0.2.1".parse().expect("a documentation address");
+        ctx.update_host(ip, |host| {
+            host.add_port(Port::new(161, Protocol::Udp, PortState::Open));
+        });
+        assert!(
+            crate::fingerprint::reads_replies(161, Protocol::Udp),
+            "SNMP is a UDP port the pass would otherwise ask"
+        );
+
+        let taken = |level| fingerprintable_ports(&ctx, Protocol::Udp, level).len();
+        assert_eq!(
+            taken(ServiceDetection::Banner),
+            0,
+            "a listening level sent a datagram"
+        );
+        assert_eq!(
+            taken(ServiceDetection::Probe),
+            1,
+            "the default took no UDP port either, so the first half proves nothing"
+        );
+        drop(session);
     }
 
     /// An open port that refuses a connection is a shortfall the port itself
