@@ -273,7 +273,7 @@ metadata = { "hw.vendor" = "Polycom", "hw.family" = "RMX", "hw.device" = "Video 
 name = "Polycom Video Conferencing - VSX Family"
 pattern = "^(?:\\r|\\n)*Hi, my name is :\\s+[\\w.\\s-]+(?:\\r|\\n)+Here is what I know about myself:(?:\\r|\\n)+Model:\\s+VSX (\\w+)(?:\\r|\\n)+Serial Number:\\s+(\\w+)(?:\\r|\\n)+Software Version:\\s+Release ([\\d.-]+)\\s"
 context = "unknown"
-example = "Hi, my name is :     Something Pity\r\nHere is what I know about myself:\r\nModel:               VSX 6000A\r\nSerial Number:       00070906FC34F6\r\nSoftware Version:    Release 9.0.6.2-103 - 04Sep2011 21:27\r\nBuild Information:   ecomman\n"
+example = "Hi, my name is :     Something Pity\r\nHere is what I know about myself:\r\nModel:               VSX 6000A\r\nSerial Number:       00000000000001\r\nSoftware Version:    Release 9.0.6.2-103 - 04Sep2011 21:27\r\nBuild Information:   ecomman\n"
 metadata = { "hw.vendor" = "Polycom", "hw.family" = "VSX", "hw.device" = "Video Conferencing", "hw.product" = "{capture:1}", "hw.serial_number" = "{capture:2}", "os.version" = "{capture:3}" }
 
 [[match]]
@@ -487,7 +487,7 @@ metadata = { "hw.vendor" = "Moxa", "hw.family" = "NE", "hw.device" = "Device Ser
 name = "Moxa MiiNePort Series Embedded device server"
 pattern = "^Model name\\s+: (MiiNePort [\\w-]+)(?:\\r|\\n|\\x00)+Serial No.\\s+: (\\d+)(?:\\r|\\n|\\x00)+Device name\\s+: [\\w:\\&-]+(?:\\r|\\n|\\x00)+Firmware version\\s+: ([\\d.]+) Build (\\d+)(?:\\r|\\n|\\x00)+Ethernet MAC address: ([\\w:]+)(?:\\r|\\n|\\x00)+"
 context = "unknown"
-example = "Model name          : MiiNePort E2\r\nSerial No.          : 9999\r\nDevice name         : MiiNePort_E2_4064\r\nFirmware version    : 1.3.36 Build 15031615\r\nEthernet MAC address: 00:90:E8:5A:92:FF\r\n\r\nPlease keyin your password:\n"
+example = "Model name          : MiiNePort E2\r\nSerial No.          : 9999\r\nDevice name         : MiiNePort_E2_4064\r\nFirmware version    : 1.3.36 Build 15031615\r\nEthernet MAC address: 00:90:E8:00:00:01\r\n\r\nPlease keyin your password:\n"
 metadata = { "hw.vendor" = "Moxa", "hw.family" = "MiiNePort", "hw.device" = "Device Server", "hw.product" = "{capture:1}", "hw.serial_number" = "{capture:2}", "os.vendor" = "Moxa", "os.version" = "{capture:3}", "os.version.version" = "{capture:4}", "host.mac" = "{capture:5}" }
 
 [[match]]
@@ -550,7 +550,7 @@ metadata = { "os.vendor" = "SUSE", "os.family" = "Linux", "os.product" = "Linux"
 name = "Turbolinux ApplianceServer"
 pattern = "^Turbolinux ApplianceServer (\\d+\\.\\d+)"
 context = "unknown"
-example = "Turbolinux ApplianceServer 4.0 (Atlas2) Linux 2.6.32-431.23.3.el6.x86_64 on a x86_64 (senyo191x89.digitalink.ne.jp) TTY: 12:15 on Tuesday, 02 October 2018 login: "
+example = "Turbolinux ApplianceServer 4.0 (Atlas2) Linux 2.6.32-431.23.3.el6.x86_64 on a x86_64 (host.example.jp) TTY: 12:15 on Tuesday, 02 October 2018 login: "
 metadata = { "os.vendor" = "Turbolinux", "os.family" = "Linux", "os.product" = "Linux", "os.version" = "{capture:1}" }
 
 [[match]]
@@ -1025,7 +1025,7 @@ metadata = { "hw.vendor" = "Lantronix", "hw.device" = "Device Server", "hw.produ
 name = "Lantronix device server - w/ Serial"
 pattern = "(?m)\\*\\*\\* Lantronix Universal Device Server \\*\\*\\*(?:\\r|\\n)+Serial Number (\\d+)\\s+MAC address ([a-fA-F0-9:]{17})(?:\\r|\\n)+Software version (\\S+)"
 context = "unknown"
-example = "*** Lantronix Universal Device Server ***\nSerial Number 6451000  MAC address 00:20:4A:64:00:00\n\nSoftware version 04.5 (011025)\n\nPress Enter to go into Setup Mode\n"
+example = "*** Lantronix Universal Device Server ***\nSerial Number 1234567  MAC address 00:20:4A:00:00:01\n\nSoftware version 04.5 (011025)\n\nPress Enter to go into Setup Mode\n"
 metadata = { "hw.vendor" = "Lantronix", "hw.device" = "Device Server", "hw.product" = "UDS", "lantronix.serial_number" = "{capture:1}", "hw.serial_number" = "{capture:1}", "host.mac" = "{capture:2}", "hw.version" = "{capture:3}" }
 
 [[match]]

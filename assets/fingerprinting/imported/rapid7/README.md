@@ -40,7 +40,11 @@ without the upstream XML.
 Two decoded telnet examples carried addresses, a private one in the ACT Video
 security banner and a public host's in the DrayTek one. Both are replaced by
 documentation addresses (`192.0.2.1`, `203.0.113.86`); neither pattern reads
-the address.
+the address. Four more carried identifiers of one real machine each, and are
+neutral values of the same shape: a hostname in the Turbolinux banner
+(`host.example.jp`), a serial in the Polycom VSX one (`00000000000001`), and a
+MAC and serial in the Moxa MiiNePort and Lantronix ones (the vendor's own
+prefix kept, `00:90:E8:00:00:01`, `00:20:4A:00:00:01`, serial `1234567`).
 
 ### CPEs naming products the vulnerability data does not have (2026-09-09, 29 rules)
 
