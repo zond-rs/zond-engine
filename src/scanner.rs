@@ -3197,8 +3197,16 @@ mod tests {
         let report = task.join().await.expect("the sitting ends");
         std::fs::remove_dir_all(&root).ok();
 
-        assert_eq!(excluded.connections(), 0, "the excluded port was asked");
-        assert_eq!(settled.connections(), 0, "a settled target was asked again");
+        assert_eq!(
+            crate::transport::dial::dialled::to(excluded.addr()),
+            0,
+            "the excluded port was asked"
+        );
+        assert_eq!(
+            crate::transport::dial::dialled::to(settled.addr()),
+            0,
+            "a settled target was asked again"
+        );
         assert!(
             report
                 .hosts()
@@ -3261,7 +3269,11 @@ mod tests {
         let listed = crate::journal::store::list(&root).expect("lists");
         std::fs::remove_dir_all(&root).ok();
 
-        assert_eq!(excluded.connections(), 0, "the excluded port was asked");
+        assert_eq!(
+            crate::transport::dial::dialled::to(excluded.addr()),
+            0,
+            "the excluded port was asked"
+        );
         let [entry] = listed.as_slice() else {
             panic!("one job on record: {listed:?}");
         };

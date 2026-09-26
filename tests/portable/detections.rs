@@ -658,8 +658,12 @@ fn a_passive_detection_that_asks_to_speak_is_handed_no_socket_at_all() {
         Err(outcome) => panic!("expected an ungranted-capability fault, got {outcome:?}"),
     }
 
+    // Counted by the connections the port can tell for this process's, which
+    // another scanner sweeping loopback cannot move. A socket served to the
+    // module would be held while it waited on the answer to what it spoke, so
+    // a connection it opened is one the port tells.
     assert_eq!(
-        silent.connections(),
+        silent.connections_told(),
         0,
         "a passive detection opened a connection to the scanned port"
     );

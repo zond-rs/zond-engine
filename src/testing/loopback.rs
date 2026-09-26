@@ -414,29 +414,18 @@ impl SilentPort {
             .collect()
     }
 
-    /// How many connections this process has opened to it, once each opened
-    /// before the call has been read to its close, whether or not it sent
-    /// anything.
-    ///
-    /// A connection that sends nothing is still one a pass promised not to
-    /// make, so a promise to connect to nothing is checked here rather than
-    /// by [`heard`](Self::heard). Like it, it misses a connection closed
-    /// before the port took it.
-    pub(crate) fn connections(&self) -> usize {
-        self.settled().len()
-    }
-
     /// How many connections this process has opened to it that were still
     /// open when the port took them, once each opened before the call has been
-    /// read to its close.
+    /// read to its close, whether or not they sent anything.
     ///
-    /// [`connections`](Self::connections) also keeps a connection whose far
-    /// end had hung up before the port took it, which no process can be told
-    /// for, so another process's connect scan of loopback moves that count,
-    /// the more often the busier the machine keeps the port from taking
-    /// connections. Only this process moves this one, and a pass whose
-    /// connections stay open while it asks, as an identification's stay open
-    /// for its walk, is counted here in full.
+    /// Only this process moves this count, and a pass whose connections stay
+    /// open while it asks, as an identification's stay open for its walk, is
+    /// counted here in full. A connection whose far end had hung up before
+    /// the port took it is left out, since no process can be told for it, and
+    /// another scanner's connect sweep of loopback makes such connections at
+    /// any moment. A test that has to see a connection closed at once, a
+    /// connect scan's, counts where the crate begins its connections instead,
+    /// which is a count no other process reaches.
     pub(crate) fn connections_told(&self) -> usize {
         self.settled().iter().filter(|(_, told)| *told).count()
     }
@@ -982,7 +971,7 @@ mod tests {
         assert_eq!(silent.received(), b"GET / HTTP/1.0\r\n\r\n\r\n\r\n");
         assert_eq!(silent.heard(), 22, "the count's own connection counted");
         assert_eq!(
-            silent.connections(),
+            silent.connections_told(),
             2,
             "the counts' own connections counted"
         );

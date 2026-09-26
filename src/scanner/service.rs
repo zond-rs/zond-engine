@@ -1600,7 +1600,7 @@ mod tests {
         detect(&ctx, ServiceDetection::Off, Protocol::Tcp).await;
 
         assert_eq!(
-            silent.connections(),
+            crate::transport::dial::dialled::to(addr),
             0,
             "a level that connects to nothing connected to the port"
         );

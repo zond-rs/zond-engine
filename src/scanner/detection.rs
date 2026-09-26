@@ -1230,7 +1230,7 @@ mod tests {
         .await;
 
         assert_eq!(
-            silent.connections(),
+            crate::transport::dial::dialled::to(addr),
             0,
             "a detection turned off connected to the port"
         );

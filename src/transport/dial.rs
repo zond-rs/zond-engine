@@ -80,6 +80,36 @@ pub(crate) use allowance::PathAllowance;
 #[cfg(test)]
 pub(crate) use allowance::UNMEASURED_PATH_WAIT;
 
+/// How many TCP connections this process has begun to each destination, for
+/// a test that has to know a pass asked a port nothing.
+///
+/// Counted here, where every connection to a target is begun, rather than at
+/// the port, because this is the one count another process cannot move. A
+/// service on loopback tells a connection for this process's by its far end,
+/// the local end of a socket this process holds, and a connection closed
+/// before the service took it has no far end left to tell it by: a connect
+/// scan's closes at once, and so does another scanner's sweep of loopback. A
+/// connection is counted as it is begun, so one refused, or closed the moment
+/// it completed, counts all the same.
+#[cfg(test)]
+pub(crate) mod dialled {
+    use std::collections::HashMap;
+    use std::net::SocketAddr;
+    use std::sync::{LazyLock, Mutex};
+
+    static DIALLED: LazyLock<Mutex<HashMap<SocketAddr, usize>>> = LazyLock::new(Mutex::default);
+
+    /// Counts a connection begun to `addr`.
+    pub(super) fn note(addr: SocketAddr) {
+        *DIALLED.lock().unwrap().entry(addr).or_default() += 1;
+    }
+
+    /// How many connections this process has begun to `addr`.
+    pub(crate) fn to(addr: SocketAddr) -> usize {
+        DIALLED.lock().unwrap().get(&addr).copied().unwrap_or(0)
+    }
+}
+
 /// What a caller has chosen about a socket beyond where it is going: a source
 /// port to leave from and a hop limit to carry.
 ///
@@ -283,6 +313,8 @@ impl Egress {
         addr: SocketAddr,
         shaping: Shaping,
     ) -> io::Result<TcpStream> {
+        #[cfg(test)]
+        dialled::note(addr);
         if self.tcp_is_plain(shaping) {
             return TcpStream::connect(addr).await;
         }
@@ -319,6 +351,8 @@ impl Egress {
         addr: SocketAddr,
         shaping: Shaping,
     ) -> io::Result<Connecting> {
+        #[cfg(test)]
+        dialled::note(addr);
         let socket = self.socket(addr.ip(), Protocol::Tcp, shaping)?;
         socket.set_nonblocking(true)?;
         match socket.connect(&addr.into()) {
@@ -391,6 +425,8 @@ impl Egress {
         patience: Duration,
     ) -> io::Result<std::net::TcpStream> {
         descriptors::patiently_blocking(patience, || {
+            #[cfg(test)]
+            dialled::note(addr);
             if self.tcp_is_plain(Shaping::default()) {
                 return std::net::TcpStream::connect_timeout(&addr, timeout);
             }
@@ -712,6 +748,69 @@ fn wildcard(family: IpAddr, port: u16) -> SocketAddr {
 mod tests {
     use super::*;
     use crate::testing::loopback::{accept_from_this_process, from_this_process};
+
+    /// Where [`connect_once_and_close`] connects, in the process it runs in.
+    #[cfg(unix)]
+    const CONNECT_TO: &str = "ZOND_TEST_CONNECT_TO";
+
+    /// The count a test reads to know a pass asked a port nothing moves for
+    /// every connection this process begins to the port, however soon it
+    /// closes, and for none another process opens.
+    ///
+    /// Another scanner on the machine can sweep loopback at any moment, and
+    /// its connections close as soon as they complete, as a connect scan's
+    /// do. A port cannot tell whose such a connection was, so a count kept
+    /// at the port charges it to the test's pass; this one never sees it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_dial_count_moves_for_this_processs_connections_alone() {
+        let silent = crate::testing::loopback::SilentPort::open();
+        let addr = silent.addr();
+
+        let path = format!(
+            "{}::connect_once_and_close",
+            module_path!().split_once("::").expect("a crate path").1
+        );
+        let elsewhere = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([path.as_str(), "--exact", "--ignored", "--test-threads=1"])
+            .env(CONNECT_TO, addr.to_string())
+            .output()
+            .expect("another process runs");
+        let said = String::from_utf8_lossy(&elsewhere.stdout);
+        assert!(
+            elsewhere.status.success() && said.contains("1 passed"),
+            "the other process connected to nothing:\n{said}"
+        );
+        assert_eq!(
+            dialled::to(addr),
+            0,
+            "another process's connection was counted"
+        );
+
+        let connected = Egress::KERNEL
+            .connect_timed(addr, Duration::from_secs(30))
+            .await
+            .expect("connects to loopback");
+        drop(connected);
+        assert_eq!(
+            dialled::to(addr),
+            1,
+            "a connection this process closed at once was not counted"
+        );
+    }
+
+    /// Not a check of its own: the other process
+    /// [`the_dial_count_moves_for_this_processs_connections_alone`] needs,
+    /// connecting once where [`CONNECT_TO`] says and closing at once.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "the connector another test runs in a process of its own"]
+    fn connect_once_and_close() {
+        if let Ok(to) = std::env::var(CONNECT_TO) {
+            let to: SocketAddr = to.parse().expect("an address");
+            drop(std::net::TcpStream::connect(to).expect("connects to loopback"));
+        }
+    }
 
     #[test]
     fn a_socket_binds_the_family_of_its_target() {
