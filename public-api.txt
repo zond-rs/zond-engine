@@ -424,7 +424,7 @@ impl core::marker::Unpin for zond_engine::config::ZondConfig
 impl core::marker::UnsafeUnpin for zond_engine::config::ZondConfig
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::ZondConfig
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::ZondConfig
-pub const zond_engine::config::RAW_PRINT_PORTS: [u16; 8]
+pub const zond_engine::config::RAW_PRINT_PORTS: &[u16]
 pub mod zond_engine::cve
 #[non_exhaustive] pub enum zond_engine::cve::CatalogueError
 pub zond_engine::cve::CatalogueError::Io(core::io::error::Error)
@@ -5864,7 +5864,7 @@ pub fn zond_engine::fingerprint::tls_security(&zond_engine::fingerprint::TlsInfo
 pub mod zond_engine::format
 pub mod zond_engine::format::csv
 pub const zond_engine::format::csv::COLUMNS: &[&str]
-pub const zond_engine::format::csv::FORMULA_LEADERS: [char; 6]
+pub const zond_engine::format::csv::FORMULA_LEADERS: &[char]
 pub const zond_engine::format::csv::PORT_COLUMNS: usize
 pub mod zond_engine::format::time
 pub fn zond_engine::format::time::local(std::time::SystemTime) -> alloc::string::String
@@ -10606,10 +10606,10 @@ pub fn zond_engine::model::parse::to_target_map(&[alloc::string::String], zond_e
 pub type zond_engine::model::parse::HostLookup<'a> = &'a (dyn core::ops::function::Fn(&str) -> core::option::Option<alloc::vec::Vec<core::net::ip_addr::IpAddr>> + core::marker::Sync)
 pub mod zond_engine::model::port
 pub mod zond_engine::model::port::catalog
-pub const zond_engine::model::port::catalog::SCTP_BY_PREVALENCE: [u16; 25]
-pub const zond_engine::model::port::catalog::TCP_BY_PREVALENCE: [u16; 1000]
-pub const zond_engine::model::port::catalog::TCP_TIER_BOUNDS: [usize; 4]
-pub const zond_engine::model::port::catalog::UDP_BY_PREVALENCE: [u16; 250]
+pub const zond_engine::model::port::catalog::SCTP_BY_PREVALENCE: &[u16]
+pub const zond_engine::model::port::catalog::TCP_BY_PREVALENCE: &[u16]
+pub const zond_engine::model::port::catalog::TCP_TIER_BOUNDS: &[usize]
+pub const zond_engine::model::port::catalog::UDP_BY_PREVALENCE: &[u16]
 pub fn zond_engine::model::port::catalog::top_sctp(usize) -> &'static [u16]
 pub fn zond_engine::model::port::catalog::top_tcp(usize) -> &'static [u16]
 pub fn zond_engine::model::port::catalog::top_udp(usize) -> &'static [u16]
@@ -11227,8 +11227,8 @@ impl core::marker::Unpin for zond_engine::model::port::service::Service
 impl core::marker::UnsafeUnpin for zond_engine::model::port::service::Service
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::service::Service
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::service::Service
-pub const zond_engine::model::port::TCP_BY_PREVALENCE: [u16; 1000]
-pub const zond_engine::model::port::UDP_BY_PREVALENCE: [u16; 250]
+pub const zond_engine::model::port::TCP_BY_PREVALENCE: &[u16]
+pub const zond_engine::model::port::UDP_BY_PREVALENCE: &[u16]
 pub mod zond_engine::model::target
 #[non_exhaustive] pub enum zond_engine::model::target::TargetError
 pub zond_engine::model::target::TargetError::CapacityOverflow
@@ -15028,7 +15028,7 @@ impl core::marker::UnsafeUnpin for zond_engine::report::WindowSummary
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::report::WindowSummary
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::report::WindowSummary
 pub const zond_engine::report::ATTEMPTS_COUNTED: usize
-pub const zond_engine::report::BUCKET_BOUNDS_MS: [u64; 9]
+pub const zond_engine::report::BUCKET_BOUNDS_MS: &[u64]
 pub const zond_engine::report::ENGINE_VERSION: &str
 pub mod zond_engine::resolve
 #[non_exhaustive] pub enum zond_engine::resolve::LinkError
@@ -15955,7 +15955,7 @@ impl core::marker::UnsafeUnpin for zond_engine::scanner::strategy::ports::udp::U
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::strategy::ports::udp::UdpPortScanner
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::strategy::ports::udp::UdpPortScanner
 pub mod zond_engine::scanner::strategy::protocols
-pub const zond_engine::scanner::strategy::protocols::DEFAULT_PROTOCOLS: [u8; 13]
+pub const zond_engine::scanner::strategy::protocols::DEFAULT_PROTOCOLS: &[u8]
 pub async fn zond_engine::scanner::strategy::protocols::probe(&zond_engine::scanner::session::ScanContext, &[core::net::ip_addr::IpAddr], &alloc::collections::btree::set::BTreeSet<u8>)
 pub mod zond_engine::scanner::strategy::routed
 #[non_exhaustive] pub enum zond_engine::scanner::strategy::routed::SweepProbe

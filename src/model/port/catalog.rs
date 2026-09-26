@@ -96,7 +96,7 @@
 ///
 /// A `const` like [`TCP_TIER_BOUNDS`] and [`COMMON_DISCOVERY_PORTS`](super::set::COMMON_DISCOVERY_PORTS)
 /// beside it, rather than a `static`, since nothing wants its address.
-pub const TCP_BY_PREVALENCE: [u16; 1000] = [
+pub const TCP_BY_PREVALENCE: &[u16] = &[
     // ── Tier 1 (ranks 1–100): hand-ranked against each other ────────────────
     443, 80, 22, 445, 3389, 8080, 139, 135, 21, 25, 8443, 53, 23, 110, 143, 993, 995, 3306, 5432,
     111, 8000, 587, 465, 631, 5900, 1433, 389, 636, 8888, 3000, 5000, 9000, 8081, 6379, 27017,
@@ -196,7 +196,7 @@ pub const TCP_BY_PREVALENCE: [u16; 1000] = [
 ///
 /// The first forty are hand-ranked; past that, see the module documentation on
 /// how much of the order to believe.
-pub const UDP_BY_PREVALENCE: [u16; 250] = [
+pub const UDP_BY_PREVALENCE: &[u16] = &[
     // ── Ranks 1–40: hand-ranked against each other ──────────────────────────
     53, 161, 137, 123, 5353, 500, 1900, 67, 68, 138, 69, 162, 111, 4500, 5060, 623, 520, 514, 631,
     1434, 177, 1701, 1812, 1813, 3702, 5355, 11211, 27015, 51820, 2049, 88, 389, 4789, 5683, 6081,
@@ -244,7 +244,7 @@ pub const UDP_BY_PREVALENCE: [u16; 250] = [
 ///
 /// Nothing reaches these ports unless a caller asked about SCTP. See
 /// [`PortSet::top_sctp`](super::PortSet::top_sctp).
-pub const SCTP_BY_PREVALENCE: [u16; 25] = [
+pub const SCTP_BY_PREVALENCE: &[u16] = &[
     // The mobile core.
     3868,  // diameter
     36412, // s1ap, the LTE control plane between eNodeB and MME
@@ -282,7 +282,7 @@ pub const SCTP_BY_PREVALENCE: [u16; 25] = [
 /// list was authored around rather than round numbers of its own: asking for the
 /// top 356 ports is asking for everything with a name, and asking for 400 is
 /// asking for that plus a slice of a band.
-pub const TCP_TIER_BOUNDS: [usize; 4] = [100, 375, 647, 1000];
+pub const TCP_TIER_BOUNDS: &[usize] = &[100, 375, 647, 1000];
 
 /// The first `count` TCP ports, most likely first. Clamped to what the
 /// catalogue holds, so asking for more than there is yields all of it rather
@@ -322,9 +322,9 @@ mod tests {
     #[test]
     fn no_port_is_listed_twice() {
         for (name, list) in [
-            ("tcp", TCP_BY_PREVALENCE.as_slice()),
-            ("udp", UDP_BY_PREVALENCE.as_slice()),
-            ("sctp", SCTP_BY_PREVALENCE.as_slice()),
+            ("tcp", TCP_BY_PREVALENCE),
+            ("udp", UDP_BY_PREVALENCE),
+            ("sctp", SCTP_BY_PREVALENCE),
         ] {
             let unique: HashSet<u16> = list.iter().copied().collect();
             assert_eq!(

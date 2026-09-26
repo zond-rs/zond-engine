@@ -3615,7 +3615,7 @@ impl SessionBuilder {
             )),
             listen_only: Arc::new(
                 self.listen_only
-                    .unwrap_or_else(|| crate::config::RAW_PRINT_PORTS.into_iter().collect()),
+                    .unwrap_or_else(|| crate::config::RAW_PRINT_PORTS.iter().copied().collect()),
             ),
             withheld_ports: Arc::new(self.withheld_ports),
             target_names: Arc::new(

@@ -511,7 +511,7 @@ impl FromStr for OsDetection {
 /// Raw printing, known as JetDirect or AppSocket, has no protocol to speak of:
 /// every byte a connection carries is part of the print job. The default for
 /// [`ZondConfig::listen_only_ports`], which says what a scan does about it.
-pub const RAW_PRINT_PORTS: [u16; 8] = [9100, 9101, 9102, 9103, 9104, 9105, 9106, 9107];
+pub const RAW_PRINT_PORTS: &[u16] = &[9100, 9101, 9102, 9103, 9104, 9105, 9106, 9107];
 
 /// How far a scan may go to identify what is listening behind an open port.
 ///
@@ -1653,7 +1653,7 @@ impl Default for ZondConfig {
             characterise: Default::default(),
             ip_protocols: Default::default(),
             tls_enumeration: Default::default(),
-            listen_only_ports: RAW_PRINT_PORTS.into_iter().collect(),
+            listen_only_ports: RAW_PRINT_PORTS.iter().copied().collect(),
             idle_scan: Default::default(),
             exclusions: Default::default(),
             excluded_ports: Default::default(),

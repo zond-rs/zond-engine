@@ -1023,7 +1023,7 @@ impl From<&ZondConfig> for ScanSettings {
 /// healthy internet round trip in the tens, and a host recovered by a late
 /// retry in the hundreds. A linear scale would put every interesting answer in
 /// one bucket.
-pub const BUCKET_BOUNDS_MS: [u64; 9] = [1, 2, 5, 10, 25, 50, 100, 250, 1_000];
+pub const BUCKET_BOUNDS_MS: &[u64] = &[1, 2, 5, 10, 25, 50, 100, 250, 1_000];
 
 /// How many attempts [`ProbeStats::answered_on`] counts separately before the
 /// rest are lumped together.

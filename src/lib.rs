@@ -246,7 +246,7 @@
 //!
 //! # What the public surface promises
 //!
-//! Every public item is a commitment, so the surface is held to four rules,
+//! Every public item is a commitment, so the surface is held to five rules,
 //! and `tests/hygiene/surface.rs` checks each of them against the published
 //! API listing.
 //!
@@ -267,6 +267,10 @@
 //! - **Enums can grow.** A vocabulary is `#[non_exhaustive]`, and its `ALL` is
 //!   a slice: an array's length is part of its type, and would make the next
 //!   variant a break after all.
+//! - **Lists can grow.** Every other public constant that lists something,
+//!   ports, protocols, bounds or characters, is a slice for the same reason.
+//!   The arrays left are values whose length is their definition, such as the
+//!   byte-order mark.
 //! - **Other crates' types stay out.** A public signature names this crate's
 //!   types, the standard library's, and two dependencies it cannot usefully
 //!   hide: `tokio`, whose runtime every scan runs on, and `serde`, whose

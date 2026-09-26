@@ -64,7 +64,7 @@ pub const COLUMNS: &[&str] = &[
 /// apostrophe because a cell beginning with one is a cell a spreadsheet
 /// mangles.
 #[cfg(any(feature = "export-csv", feature = "import-csv"))]
-pub const FORMULA_LEADERS: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
+pub const FORMULA_LEADERS: &[char] = &['=', '+', '-', '@', '\t', '\r'];
 
 /// How many of [`COLUMNS`] describe the port rather than the host.
 ///

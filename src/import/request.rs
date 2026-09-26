@@ -539,7 +539,7 @@ mod tests {
 
             for port in crate::config::RAW_PRINT_PORTS {
                 assert!(
-                    config.listen_only_ports.contains(&port),
+                    config.listen_only_ports.contains(port),
                     "{text:?} took {port} off the list"
                 );
             }

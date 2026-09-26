@@ -24,28 +24,97 @@ fn listing() -> String {
         .expect("public-api.txt is in the repository")
 }
 
-/// A vocabulary's `ALL` exists so a caller can walk an enum it cannot match
-/// exhaustively. As a fixed-size array its length would be part of its type,
-/// and the variant `#[non_exhaustive]` makes additive would break every caller
-/// that named that type: the same break, moved one line over.
+/// The public constants that are arrays on purpose, and why each one's length
+/// is part of what it is.
+///
+/// Everything else is a slice. A constant listing ports, protocols, bounds or
+/// characters is a list the crate may lengthen, and as an array its length
+/// would be part of its type: every caller that named the type, or bound the
+/// value to a variable of it, breaks when the list grows by one.
+const FIXED_LENGTH: &[(&str, &str)] = &[
+    (
+        "zond_engine::format::UTF8_BOM",
+        "the three bytes UTF-8 encodes U+FEFF as; another length would be another mark",
+    ),
+    (
+        "zond_engine::protocols::tls::HELLO_RETRY_RANDOM",
+        "the value RFC 8446 section 4.1.3 fixes for a 32-byte field, compared with \
+         that field whole",
+    ),
+];
+
+/// A public constant's path and type, for a line that declares one.
+fn constant(line: &str) -> Option<(&str, &str)> {
+    line.strip_prefix("pub const ")
+        .or_else(|| line.strip_prefix("pub static "))
+        .filter(|rest| !rest.starts_with("fn ") && !rest.starts_with("unsafe fn "))?
+        .split_once(": ")
+}
+
+/// Whether a type is a fixed-size array, or a reference to one.
+fn is_array(kind: &str) -> bool {
+    let kind = kind.trim_start_matches("&'static ").trim_start_matches('&');
+    let Some(inner) = kind.strip_prefix('[') else {
+        return false;
+    };
+    let mut depth = 0usize;
+    for c in inner.chars() {
+        match c {
+            '[' | '(' | '<' => depth += 1,
+            ']' | ')' | '>' if depth == 0 => return false,
+            ']' | ')' | '>' => depth -= 1,
+            ';' if depth == 0 => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// A list the crate may lengthen is a slice, a vocabulary's `ALL` among them:
+/// it exists so a caller can walk an enum it cannot match exhaustively, and
+/// as an array the variant `#[non_exhaustive]` makes additive would break
+/// every caller that named its type, the same break moved one line over.
 #[test]
-fn no_public_constant_is_an_array_of_the_crates_own_type() {
+fn no_public_constant_carries_its_length_in_its_type_unless_it_says_why() {
     let listing = listing();
     let arrays: Vec<&str> = listing
         .lines()
-        .filter(|line| {
-            line.starts_with("pub const ")
-                && (line.contains(": [zond_engine::") || line.contains(": [Self;"))
-        })
+        .filter_map(constant)
+        .filter(|(_, kind)| is_array(kind))
+        .map(|(path, _)| path)
+        .collect();
+
+    let unexplained: Vec<&str> = arrays
+        .iter()
+        .copied()
+        .filter(|path| !FIXED_LENGTH.iter().any(|(fixed, _)| fixed == path))
         .collect();
     assert!(
-        arrays.is_empty(),
-        "public constants whose length is part of their type: {arrays:#?}"
+        unexplained.is_empty(),
+        "public constants whose length is part of their type: {unexplained:#?}\n\n\
+         Make each a slice, or add it to FIXED_LENGTH in tests/hygiene/surface.rs \
+         saying why its length is what it is."
     );
+
+    let stale: Vec<&str> = FIXED_LENGTH
+        .iter()
+        .map(|(path, _)| *path)
+        .filter(|path| !arrays.contains(path))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "these are in FIXED_LENGTH but are no longer public arrays: {stale:?}"
+    );
+    for (path, why) in FIXED_LENGTH {
+        assert!(why.len() > 40, "{path}'s reason is too short: {why:?}");
+    }
+
     assert!(
         listing.contains("::port::Protocol::ALL: &'static [Self]"),
         "the listing still spells a slice constant the way this check reads it"
     );
+    assert!(is_array("[u16; 8]") && is_array("&'static [[u8; 2]; 3]"));
+    assert!(!is_array("&'static [u16]") && !is_array("&'static [[u8; 2]]"));
 }
 
 /// The modules a strategy is built from, which the crate keeps to itself.

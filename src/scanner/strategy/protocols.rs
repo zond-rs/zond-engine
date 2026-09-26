@@ -96,7 +96,7 @@ const REPLY_WINDOW: Duration = Duration::from_secs(2);
 /// default here, because each number costs a socket and two hundred of them
 /// would spend the pass's whole budget on assignments nothing has ever
 /// answered for. A caller who wants the sweep asks for it.
-pub const DEFAULT_PROTOCOLS: [u8; 13] = [1, 2, 4, 6, 17, 41, 47, 50, 51, 89, 103, 112, 132];
+pub const DEFAULT_PROTOCOLS: &[u8] = &[1, 2, 4, 6, 17, 41, 47, 50, 51, 89, 103, 112, 132];
 
 /// The source port every probe that has one leaves from, and so the port a
 /// direct answer would come back to.
@@ -830,7 +830,7 @@ mod tests {
     /// rather than a bare number.
     #[test]
     fn every_default_protocol_is_one_the_registry_names() {
-        for number in DEFAULT_PROTOCOLS {
+        for &number in DEFAULT_PROTOCOLS {
             assert!(
                 crate::model::host::ip_protocol_name(number).is_some(),
                 "protocol {number} is in the default set and has no name to print"
