@@ -231,10 +231,15 @@ impl Plan {
     /// [`TargetMap::withhold_unprobeable`]. Those are refused rather than
     /// asked, in every sitting alike, so a total counting them would be
     /// reached by none.
-    pub(crate) fn numbered_targets(&self) -> u128 {
+    ///
+    /// `excluded_ports` are the ports the job excludes, which a port scan's
+    /// every sitting numbers its plan without, for the same reason; see
+    /// [`JobOptions`].
+    pub(crate) fn numbered_targets(&self, excluded_ports: &PortSet) -> u128 {
         match &self.0 {
             Resolved::PortScan { targets, .. } => {
                 let mut numbered = targets.clone();
+                numbered.withhold_ports(excluded_ports);
                 numbered.withhold_unprobeable(&[], crate::system::interface::is_enumerable);
                 numbered.gross_targets().unwrap_or_default()
             }
@@ -555,8 +560,9 @@ pub struct JournalManifest {
     pub privilege: Privilege,
     /// How many targets that plan numbers, so a caller can report progress
     /// without walking it: every one it holds but those a port scan refuses
-    /// before numbering, which no sitting asks or settles. See
-    /// [`Plan::total_targets`] for everything it holds.
+    /// before numbering and those on the ports the job excludes, which no
+    /// sitting asks or settles. See [`Plan::total_targets`] for everything it
+    /// holds.
     pub total_targets: u128,
     /// The key the order this journal's targets are asked in is a function of.
     ///
@@ -647,7 +653,10 @@ impl JournalManifest {
                 .map(|link| link.name().to_owned())
                 .collect(),
             privilege,
-            total_targets: plan.numbered_targets(),
+            // The job's excluded ports are not known until its first sitting
+            // records its options, which counts them out then; see
+            // `Journal::record_options`.
+            total_targets: plan.numbered_targets(&PortSet::new()),
             // Drawn here because a journal is created once and the order is a
             // property of the job rather than of a sitting. Every sitting after
             // the first reads it back, which is what it is written down for.
@@ -719,7 +728,7 @@ impl JournalManifest {
             expected: self.plan,
             found,
             expected_targets: self.total_targets,
-            found_targets: plan.numbered_targets(),
+            found_targets: plan.numbered_targets(&PortSet::new()),
         })
     }
 }

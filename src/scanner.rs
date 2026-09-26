@@ -3123,6 +3123,61 @@ mod tests {
         );
     }
 
+    /// A job that excludes a port is finished once one sitting has asked
+    /// everything else, and its record says so.
+    ///
+    /// The ports a job excludes are never numbered, so no sitting asks or
+    /// settles them. Counted in the job's total, they are a remainder nothing
+    /// ever reaches: the job lists as resumable with work left for good, is
+    /// kept as unfinished by a retention sweep, and a resume announces probes
+    /// to ports it will not send.
+    #[cfg(feature = "journal-format")]
+    #[tokio::test]
+    async fn a_job_excluding_a_port_is_complete_once_it_has_asked_the_rest() {
+        use crate::journal::Journal;
+        use crate::journal::manifest::Plan;
+        use crate::model::port::PortSet;
+        use crate::model::target::TargetSet;
+        use crate::testing::loopback::SilentPort;
+
+        let (excluded, asked) = (SilentPort::open(), SilentPort::open());
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "127.0.0.1".parse().expect("an address"),
+            format!("{},{}", excluded.addr().port(), asked.addr().port())
+                .parse()
+                .expect("ports"),
+        ));
+        let cfg = ZondConfig {
+            no_dns: true,
+            assume_up: true,
+            excluded_ports: PortSet::try_from(excluded.addr().port().to_string().as_str())
+                .expect("a port"),
+            ..ZondConfig::default()
+        };
+        let plan = Plan::port_scan(&map, &cfg.exclusions, cfg.tcp_technique);
+
+        let root = journal_root("excluded-complete");
+        let journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
+        let (_session, task) = scan_with_journal(map, &cfg, Detections::embedded(), journal)
+            .await
+            .expect("the sitting starts");
+        let _report = task.join().await.expect("the sitting ends");
+        let listed = crate::journal::store::list(&root).expect("lists");
+        std::fs::remove_dir_all(&root).ok();
+
+        assert_eq!(excluded.connections(), 0, "the excluded port was asked");
+        let [entry] = listed.as_slice() else {
+            panic!("one job on record: {listed:?}");
+        };
+        assert_eq!(
+            (entry.settled(), entry.manifest.total_targets),
+            (Some(1), 1),
+            "settled against the total"
+        );
+        assert!(entry.is_complete(), "the finished job reads as unfinished");
+    }
+
     /// A resumed sweep with nothing left to ask runs none of the passes that
     /// follow it over a host a sitting that ran to its end finished with.
     ///

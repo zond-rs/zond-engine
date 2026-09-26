@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! <root>/<id>/
-//!     manifest.json   the plan, written once
+//!     manifest.json   the plan, written as the job begins
 //!     cursor.json     how far the scan got, rewritten on a timer
 //!     hosts.jsonl     what it found, appended as it finds it
 //!     phases.jsonl    what each sitting did, appended as each one ends
@@ -778,6 +778,14 @@ impl Journal {
     /// Only then: a journal an earlier sitting ran against without recording
     /// them ran under options nobody wrote down, and recording this sitting's
     /// as the job's would claim the earlier one ran under them too.
+    ///
+    /// The ports they exclude are ones every sitting numbers the plan without,
+    /// so no sitting asks or settles them, and the manifest's total, written
+    /// before they were known, counts them out here. Counted in, they are a
+    /// remainder nothing reaches: a finished job would list as unfinished for
+    /// good, and a resume would announce probes it will not send. Only in a
+    /// manifest this handle wrote: rewriting one another build wrote would
+    /// drop whatever fields this one does not know.
     pub(crate) fn record_options(&mut self, options: JobOptions) -> Result<(), JournalError> {
         if self.options.is_some() || !self.is_untouched() {
             return Ok(());
@@ -787,7 +795,18 @@ impl Journal {
             &self.directory.join(OPTIONS),
             &serde_json::to_vec(&options).map_err(JournalError::json)?,
         )?;
+        let numbered = self
+            .manifest
+            .recorded()
+            .numbered_targets(&options.excluded_ports());
         self.options = Some(options);
+        if self.created && numbered != self.manifest.total_targets {
+            self.manifest.total_targets = numbered;
+            write_private(
+                &self.directory.join(MANIFEST),
+                &serde_json::to_vec(&self.manifest).map_err(JournalError::json)?,
+            )?;
+        }
         Ok(())
     }
 
