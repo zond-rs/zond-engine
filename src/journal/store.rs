@@ -2809,6 +2809,7 @@ mod tests {
         let detection = DetectionId::new("redis-unauth", Version::new(1, 0, 0), "abc").unwrap();
         let run = DetectionRunRecord {
             host: "192.0.2.1".to_string(),
+            host_name: None,
             port: 80,
             protocol: "tcp".to_string(),
             detection: DetectionIdRecord::from(&detection),
@@ -2853,6 +2854,7 @@ mod tests {
         let detection = DetectionId::new(id, Version::new(1, 0, 0), "abc").expect("an id");
         DetectionRunRecord {
             host: "192.0.2.1".to_string(),
+            host_name: None,
             port,
             protocol: "tcp".to_string(),
             detection: DetectionIdRecord::from(&detection),

@@ -45,6 +45,10 @@ use crate::record::DetectionIdRecord;
 pub struct DetectionRunRecord {
     /// The address the detection ran against.
     pub host: String,
+    /// The name a target reached that address by, where it named a host: what
+    /// a module read as `ctx.hostname`, kept so a replay reads it too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_name: Option<String>,
     /// The port it ran over.
     pub port: u16,
     /// The transport, by wire name.
@@ -75,6 +79,8 @@ pub struct DetectionRunRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PortRunsRecord {
     host: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_name: Option<String>,
     port: u16,
     protocol: String,
     responses: Vec<String>,
@@ -97,8 +103,19 @@ impl PortRunsRecord {
         let mut lines: Vec<Self> = Vec::new();
         for run in runs {
             let line = lines.iter_mut().find(|line| {
-                (line.port, &line.host, &line.protocol, &line.responses)
-                    == (run.port, &run.host, &run.protocol, &run.responses)
+                (
+                    line.port,
+                    &line.host,
+                    &line.host_name,
+                    &line.protocol,
+                    &line.responses,
+                ) == (
+                    run.port,
+                    &run.host,
+                    &run.host_name,
+                    &run.protocol,
+                    &run.responses,
+                )
             });
             let run_record = PortRunRecord {
                 detection: run.detection.clone(),
@@ -108,6 +125,7 @@ impl PortRunsRecord {
                 Some(line) => line.runs.push(run_record),
                 None => lines.push(Self {
                     host: run.host.clone(),
+                    host_name: run.host_name.clone(),
                     port: run.port,
                     protocol: run.protocol.clone(),
                     responses: run.responses.clone(),
@@ -143,6 +161,7 @@ impl DetectionLine {
                 .into_iter()
                 .map(|run| DetectionRunRecord {
                     host: line.host.clone(),
+                    host_name: line.host_name.clone(),
                     port: line.port,
                     protocol: line.protocol.clone(),
                     detection: run.detection,
@@ -480,6 +499,38 @@ mod tests {
             live, replayed,
             "the findings did not survive the journal round-trip"
         );
+    }
+
+    /// The name a run's module read as `ctx.hostname` survives the journal's
+    /// line, so a replay reads what the live run did, and a line written
+    /// without one reads as a run on an address named by itself.
+    #[test]
+    fn a_runs_host_name_survives_the_journal_line() {
+        let detection = DetectionId::new("d", Version::new(1, 0, 0), "h").expect("an id");
+        let run = |host_name: Option<&str>| DetectionRunRecord {
+            host: "192.0.2.1".to_string(),
+            host_name: host_name.map(str::to_string),
+            port: 443,
+            protocol: "tcp".to_string(),
+            detection: DetectionIdRecord::from(&detection),
+            responses: Vec::new(),
+            tape: CapTapeRecord::from(&CapTape::default()),
+        };
+        let runs = vec![run(Some("box.example")), run(None)];
+
+        let read: Vec<DetectionRunRecord> = PortRunsRecord::grouping(&runs)
+            .into_iter()
+            .map(|line| serde_json::to_string(&line).expect("serializes"))
+            .flat_map(|json| {
+                serde_json::from_str::<DetectionLine>(&json)
+                    .expect("deserializes")
+                    .into_runs()
+            })
+            .collect();
+        assert_eq!(read, runs);
+
+        let unnamed = serde_json::to_string(&run(None)).expect("serializes");
+        assert!(!unnamed.contains("host_name"), "{unnamed}");
     }
 
     #[test]

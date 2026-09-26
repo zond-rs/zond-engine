@@ -175,7 +175,7 @@ pub fn replay_run(run: &DetectionRunRecord) -> Result<Vec<Finding>, ReplayError>
         tunnel: None,
         speaks_http: false,
         detection: crate::config::ServiceDetection::default(),
-        host_name: None,
+        host_name: run.host_name.clone(),
     };
 
     let responses: Vec<Vec<u8>> = run
@@ -394,6 +394,7 @@ mod tests {
         // whole input; replaying it reproduces the finding with no network.
         let run = DetectionRunRecord {
             host: "127.0.0.1".to_string(),
+            host_name: None,
             port: 80,
             protocol: "tcp".to_string(),
             detection: DetectionIdRecord {

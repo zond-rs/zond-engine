@@ -491,6 +491,7 @@ async fn detect_one(
             |grant, tape| {
                 tapes.record(|| DetectionRunRecord {
                     host: addr.ip().to_string(),
+                    host_name: name.as_deref().map(str::to_string),
                     port: number,
                     protocol: wire::protocol_name(protocol).to_string(),
                     detection: DetectionIdRecord::from(&grant.detection),

@@ -623,6 +623,7 @@ mod tests {
         let progress = ctx.progress();
         let run = |detection: &str| DetectionRunRecord {
             host: "192.0.2.1".to_string(),
+            host_name: None,
             port: 80,
             protocol: "tcp".to_string(),
             detection: DetectionIdRecord {

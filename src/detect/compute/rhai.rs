@@ -698,7 +698,13 @@ fn names_capability(signature: &str) -> bool {
 // ── Marshalling between the model and Rhai values ────────────────────────────
 
 /// The port context, as the object map a module reads: `ctx.port`,
-/// `ctx.protocol`, `ctx.addr`.
+/// `ctx.protocol`, `ctx.addr`, and `ctx.hostname`, the name a target reached
+/// the address by, where it named a host.
+///
+/// Each is unit where the context holds none. The name is what a module
+/// writing a URL or a certificate check needs: the site a server holding
+/// several at one address was asked for, which the address alone does not
+/// say.
 fn build_context(ctx: &PortContext) -> Map {
     let mut map = Map::new();
     map.insert("port".into(), (i64::from(ctx.port)).into());
@@ -708,6 +714,11 @@ fn build_context(ctx: &PortContext) -> Map {
         None => Dynamic::UNIT,
     };
     map.insert("addr".into(), addr);
+    let hostname = match &ctx.host_name {
+        Some(name) => name.as_str().into(),
+        None => Dynamic::UNIT,
+    };
+    map.insert("hostname".into(), hostname);
     map
 }
 
@@ -958,6 +969,40 @@ mod tests {
             .instantiate(&module, &grant)
             .expect("the module instantiates");
         runtime.run(&mut instance, &ctx(6379), &[], caps)
+    }
+
+    /// A module reads the name a target reached the address by, and unit where
+    /// the address was named.
+    ///
+    /// A module writing a URL, or checking what a server says it is, needs the
+    /// site it was asked for; on an address shared by several sites the address
+    /// alone does not say which one answered.
+    #[test]
+    fn a_module_reads_the_host_name_a_target_named() {
+        let source = r#"
+            fn analyze(ctx, responses) {
+                let name = if ctx.hostname == () { "none" } else { ctx.hostname };
+                [ #{ severity: "info", summary: "asked for " + name } ]
+            }
+        "#;
+        let runtime = RhaiRuntime::new();
+        let module = runtime
+            .load(&ModuleBody::Rhai(source.to_string()))
+            .expect("the module compiles");
+        let summary = |ctx: &PortContext| {
+            let mut instance = runtime
+                .instantiate(&module, &grant(DetectionClass::Passive, false))
+                .expect("the module instantiates");
+            let findings = runtime
+                .run(&mut instance, ctx, &[], &mut RecordedCaps::new(Vec::new()))
+                .expect("a clean run");
+            findings[0].title().to_string()
+        };
+
+        let mut named = ctx(443);
+        named.host_name = Some("box.example".to_string());
+        assert_eq!(summary(&named), "asked for box.example");
+        assert_eq!(summary(&ctx(443)), "asked for none");
     }
 
     #[test]

@@ -927,6 +927,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::Deni
 #[non_exhaustive] pub struct zond_engine::detect::compute::DetectionRunRecord
 pub zond_engine::detect::compute::DetectionRunRecord::detection: zond_engine::record::DetectionIdRecord
 pub zond_engine::detect::compute::DetectionRunRecord::host: alloc::string::String
+pub zond_engine::detect::compute::DetectionRunRecord::host_name: core::option::Option<alloc::string::String>
 pub zond_engine::detect::compute::DetectionRunRecord::port: u16
 pub zond_engine::detect::compute::DetectionRunRecord::protocol: alloc::string::String
 pub zond_engine::detect::compute::DetectionRunRecord::responses: alloc::vec::Vec<alloc::string::String>
