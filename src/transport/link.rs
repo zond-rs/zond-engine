@@ -69,6 +69,9 @@ pub struct EthernetSender {
     /// one per address family. Fixed per sender because a transport carries one
     /// kind of probe; see [`EthernetSender::from_system`].
     protocols: IpProtocols,
+    /// The loopback interface, where this sender reaches it; see
+    /// [`loopback_link`].
+    loopback: Option<String>,
 }
 
 impl EthernetSender {
@@ -98,6 +101,7 @@ impl EthernetSender {
             resolutions: Arc::new(Resolutions::from_system()),
             channels: Mutex::new(HashMap::new()),
             protocols,
+            loopback: loopback_link(),
         })
     }
 
@@ -275,6 +279,12 @@ impl ProbeSender for EthernetSender {
         // a neighbour that never answered our ARP, an interface that went down
         // mid-scan - so they are all refusals carrying the cause, not claims
         // that the transport is incapable.
+        if dst.is_loopback()
+            && let Some(link) = &self.loopback
+        {
+            return self.send_on_loopback(link, segment, src, dst, emission);
+        }
+
         (|| -> Result<(), SendError> {
             let route = self
                 .resolver
@@ -325,6 +335,80 @@ impl ProbeSender for EthernetSender {
             Ok(())
         })()
     }
+}
+
+impl EthernetSender {
+    /// Puts a probe on the loopback interface `link` as the frames
+    /// [`frame::build_null_loop_frames`] makes. See [`loopback_link`].
+    ///
+    /// A spoofed hardware address is refused rather than dropped, since a
+    /// link with no hardware addresses has nowhere to carry one, and a scan
+    /// that reports it spoofed has to have done so.
+    fn send_on_loopback(
+        &self,
+        link: &str,
+        segment: &[u8],
+        src: IpAddr,
+        dst: IpAddr,
+        emission: Emission,
+    ) -> Result<(), SendError> {
+        if emission.source_mac.is_some() {
+            return Err(SendError::Unsupported(
+                "loopback carries no hardware address to spoof",
+            ));
+        }
+        let spec = frame::IpSpec {
+            src,
+            dst,
+            protocol: self.protocols.for_destination(dst),
+            hop_limit: emission.hop_limit,
+        };
+        let frames =
+            frame::build_null_loop_frames(&spec, segment, emission.fragment).map_err(|error| {
+                SendError::Refused(format!("the frame could not be built: {error}"))
+            })?;
+
+        let mut channels = self
+            .channels
+            .lock()
+            .map_err(|_| poisoned("datalink channel"))?;
+        let channel = self.channel_for(&mut channels, link)?;
+        for frame in &frames {
+            channel.send_frame(frame).map_err(|reason| {
+                SendError::Refused(format!("the frame could not be sent: {reason}"))
+            })?;
+        }
+        Ok(())
+    }
+}
+
+/// The loopback interface where a frame this sender writes reaches it, and
+/// `None` where none does.
+///
+/// macOS, whose loopback interface takes a frame written through BPF, the
+/// packet behind the four-byte family word a capture of it reads, and hands it
+/// to the stack as though it had arrived. So a scan that chose the link layer
+/// probes loopback as it probes anything else, and the capture reads the reply
+/// on that link as it reads any other, which is how a Mac exercises its own
+/// capture path without sending anything past itself. Elsewhere no run needs
+/// it: a raw socket carries loopback on Linux, and on Windows a frame reaches
+/// only what has Ethernet in front of it.
+///
+/// A run that did not choose the link layer still reaches loopback another
+/// way, by the raw socket where it holds one and by connect where it holds
+/// frames alone; see
+/// [`beyond_frames`](crate::system::interface::beyond_frames). Framing it
+/// there would open the probe transport's capture, a BPF device on every link
+/// the machine has, for a question a connect answers as well, and a Mac has
+/// 256 such devices: a few loopback scans at once take them all.
+fn loopback_link() -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    crate::system::interface::interfaces()
+        .into_iter()
+        .find(|link| link.is_loopback() && link.is_up())
+        .map(|link| link.name().to_string())
 }
 
 /// A poisoned lock, carried as a refusal rather than taken as a panic.

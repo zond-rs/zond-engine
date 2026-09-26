@@ -280,9 +280,9 @@ impl ScanCapabilities {
 /// unprivileged run gets, and a reader who expected to need sudo should see
 /// why they did not. A root run told to send its own frames, or one on
 /// Windows, where the frames are all a scan sends, holds raw sockets and puts
-/// none of its probes through one: it cannot reach loopback or a tunnel, and a
-/// neighbour that never answers ARP is one it could not frame to rather than
-/// one the kernel failed to route to.
+/// none of its probes through one: it cannot reach a tunnel, or loopback
+/// anywhere but macOS, and a neighbour that never answers ARP is one it could
+/// not frame to rather than one the kernel failed to route to.
 fn by_raw_socket(mode: SendMode, raw_sockets: bool) -> bool {
     raw_sockets && mode.reaches_past_frames()
 }

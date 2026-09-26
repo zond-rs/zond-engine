@@ -39,8 +39,10 @@
 //! Ethernet headers for a Layer-2 send, and [`build_fragmented_ethernet_frames`]
 //! does the same while splitting the IP packet across fragments when a scan
 //! asked to. The raw-IP send path (tunnel and loopback links) doesn't use these,
-//! because there the kernel writes the IP header, so they are only exercised on
-//! true Ethernet links.
+//! because there the kernel writes the IP header. The loopback interface on
+//! macOS, which takes a frame through BPF, is handed what
+//! `build_null_loop_frames` makes: the same packet behind the four-byte
+//! family word its captures carry.
 
 use std::net::IpAddr;
 
@@ -554,42 +556,164 @@ pub struct FrameSpec {
     pub hop_limit: u8,
 }
 
+/// Everything an IP packet needs except its payload, for a link with no
+/// hardware addresses to name.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IpSpec {
+    /// The source address written into the IP header. Must agree in family with
+    /// [`dst`](Self::dst).
+    pub(crate) src: IpAddr,
+    /// The destination address written into the IP header.
+    pub(crate) dst: IpAddr,
+    /// What the IP header says it carries.
+    pub(crate) protocol: IpNextHeaderProtocol,
+    /// IPv4's TTL or IPv6's hop limit; see [`FrameSpec::hop_limit`].
+    pub(crate) hop_limit: u8,
+}
+
+impl FrameSpec {
+    /// The IP half of this spec, which is the whole of a packet with no link
+    /// header in front of it.
+    fn ip(&self) -> IpSpec {
+        IpSpec {
+            src: self.src,
+            dst: self.dst,
+            protocol: self.protocol,
+            hop_limit: self.hop_limit,
+        }
+    }
+}
+
+/// The IP packets a probe becomes before any link header goes in front of
+/// them: the one datagram, or with `mtu` set, one per fragment no larger than
+/// `mtu` bytes. A datagram that already fits `mtu` comes back whole.
+///
+/// What [`build_ethernet_frame`], [`build_fragmented_ethernet_frames`] and
+/// [`build_null_loop_frames`] put a link header in front of, so the IP a
+/// probe carries is built one way whatever link carries it.
+///
+/// # Errors
+///
+/// Refuses a mismatched address pair, a payload longer than the length field
+/// holds, and, through the two fragmenters, an MTU too small to carry a
+/// fragment or a datagram larger than the family's offset field can address.
+pub(crate) fn build_ip_packets(
+    spec: &IpSpec,
+    segment: &[u8],
+    mtu: Option<u16>,
+) -> Result<Vec<Vec<u8>>, PacketError> {
+    let IpSpec {
+        src,
+        dst,
+        protocol,
+        hop_limit,
+    } = *spec;
+
+    if let Some(mtu) = mtu {
+        return match (src, dst) {
+            (IpAddr::V4(s), IpAddr::V4(d)) => {
+                let header = craft::Ipv4 {
+                    protocol: craft::Field::Exact(protocol),
+                    ..craft::Ipv4::new(s, d).with_ttl(hop_limit)
+                };
+                ip::fragment_ipv4(&header, segment, mtu)
+            }
+            (IpAddr::V6(s), IpAddr::V6(d)) => {
+                let header = craft::Ipv6 {
+                    next_header: craft::Field::Exact(protocol),
+                    ..craft::Ipv6::new(s, d).with_hop_limit(hop_limit)
+                };
+                ip::fragment_ipv6(&header, segment, mtu)
+            }
+            _ => Err(PacketError::FamilyMismatch { src, dst }),
+        };
+    }
+
+    // Counted before the family is known, so the header this will be added to
+    // has no size yet and the bound is the width of the field alone.
+    let payload_len = u16::try_from(segment.len())
+        .map_err(|_| PacketError::too_long("an IP payload length", 0, segment.len()))?;
+    let header = match (src, dst) {
+        (IpAddr::V4(s), IpAddr::V4(d)) => {
+            ip::build_ipv4_header(s, d, payload_len, protocol, hop_limit)?
+        }
+        (IpAddr::V6(s), IpAddr::V6(d)) => {
+            ip::build_ipv6_header(s, d, payload_len, protocol, hop_limit)
+        }
+        _ => return Err(PacketError::FamilyMismatch { src, dst }),
+    };
+    let mut packet = Vec::with_capacity(header.len() + segment.len());
+    packet.extend_from_slice(&header);
+    packet.extend_from_slice(segment);
+    Ok(vec![packet])
+}
+
+/// The frames a probe becomes on a macOS loopback interface: each IP packet
+/// [`build_ip_packets`] makes, behind the address-family word a `DLT_NULL` link
+/// carries, in this machine's byte order.
+///
+/// The word is macOS's own numbering, `AF_INET` 2 and `AF_INET6` 30, since that
+/// is the one platform whose loopback a frame is written to; see
+/// [`IP_ADDRESS_FAMILIES`] for the others a capture reads. It is written
+/// because the handle a frame leaves by marks its header complete, as it has to
+/// for an Ethernet frame to leave with the source address it was built with,
+/// and a loopback interface told the header is complete reads the family from
+/// the first four bytes. Without the word the kernel takes the IP header's
+/// first bytes as the family and drops the packet unread.
+pub(crate) fn build_null_loop_frames(
+    spec: &IpSpec,
+    segment: &[u8],
+    mtu: Option<u16>,
+) -> Result<Vec<Vec<u8>>, PacketError> {
+    const AF_INET: u32 = 2;
+    const AF_INET6_MACOS: u32 = 30;
+    let family = match spec.dst {
+        IpAddr::V4(_) => AF_INET,
+        IpAddr::V6(_) => AF_INET6_MACOS,
+    };
+    let packets = build_ip_packets(spec, segment, mtu)?;
+    Ok(packets
+        .into_iter()
+        .map(|packet| [&family.to_ne_bytes()[..], &packet].concat())
+        .collect())
+}
+
+/// Each of `packets` behind an Ethernet header from `src_mac` to `dst_mac`,
+/// labelled with the family of `dst`.
+fn behind_ethernet(
+    packets: Vec<Vec<u8>>,
+    src_mac: MacAddr,
+    dst_mac: MacAddr,
+    dst: IpAddr,
+) -> Vec<Vec<u8>> {
+    let ethertype = match dst {
+        IpAddr::V4(_) => EtherTypes::Ipv4,
+        IpAddr::V6(_) => EtherTypes::Ipv6,
+    };
+    let header = ethernet::build_header(src_mac, dst_mac, ethertype);
+    packets
+        .into_iter()
+        .map(|packet| {
+            let mut frame = Vec::with_capacity(ETH_HDR_LEN + packet.len());
+            frame.extend_from_slice(&header);
+            frame.extend_from_slice(&packet);
+            frame
+        })
+        .collect()
+}
+
 /// Wraps a finished Layer-4 `segment` in IP and Ethernet headers, producing a
 /// frame ready to hand to a Layer-2 send.
 ///
 /// The IP version comes from the spec's address pair, which must agree. A
 /// mismatch is an error rather than a silent wrong-family packet.
 pub fn build_ethernet_frame(spec: &FrameSpec, segment: &[u8]) -> Result<Vec<u8>, PacketError> {
-    let FrameSpec {
-        src_mac,
-        dst_mac,
-        src,
-        dst,
-        protocol,
-        hop_limit,
-    } = *spec;
-    // Counted before the family is known, so the header this will be added to
-    // has no size yet and the bound is the width of the field alone.
-    let payload_len = u16::try_from(segment.len())
-        .map_err(|_| PacketError::too_long("an IP payload length", 0, segment.len()))?;
-
-    let (ethertype, ip_header) = match (src, dst) {
-        (IpAddr::V4(s), IpAddr::V4(d)) => (
-            EtherTypes::Ipv4,
-            ip::build_ipv4_header(s, d, payload_len, protocol, hop_limit)?,
-        ),
-        (IpAddr::V6(s), IpAddr::V6(d)) => (
-            EtherTypes::Ipv6,
-            ip::build_ipv6_header(s, d, payload_len, protocol, hop_limit),
-        ),
-        _ => return Err(PacketError::FamilyMismatch { src, dst }),
-    };
-
-    let mut frame = Vec::with_capacity(ETH_HDR_LEN + ip_header.len() + segment.len());
-    frame.extend_from_slice(&ethernet::build_header(src_mac, dst_mac, ethertype));
-    frame.extend_from_slice(&ip_header);
-    frame.extend_from_slice(segment);
-    Ok(frame)
+    let packets = build_ip_packets(&spec.ip(), segment, None)?;
+    let frames = behind_ethernet(packets, spec.src_mac, spec.dst_mac, spec.dst);
+    Ok(frames
+        .into_iter()
+        .next()
+        .expect("an unfragmented packet is one"))
 }
 
 /// The Ethernet frames a probe becomes once its IP packet is split into
@@ -597,14 +721,12 @@ pub fn build_ethernet_frame(spec: &FrameSpec, segment: &[u8]) -> Result<Vec<u8>,
 /// each ready to put on the wire.
 ///
 /// The counterpart of [`build_ethernet_frame`] for a caller who chose to
-/// fragment. It builds the same IPv4 packet, splits it with
-/// [`ip::fragment_ipv4`], and wraps each fragment in an Ethernet header. A packet
-/// that already fits the MTU comes back as a single frame.
+/// fragment. It builds the same packet, splits it with [`ip::fragment_ipv4`]
+/// or [`ip::fragment_ipv6`], and wraps each fragment in an Ethernet header.
 ///
 /// Both families. IPv4 splits the header itself; IPv6 keeps its base header and
-/// carries the fragmentation in an extension header, which
-/// [`ip::fragment_ipv6`] builds. A datagram that already fits `mtu` comes back
-/// as a single frame either way.
+/// carries the fragmentation in an extension header. A datagram that already
+/// fits `mtu` comes back as a single frame either way.
 ///
 /// # Errors
 ///
@@ -616,43 +738,13 @@ pub fn build_fragmented_ethernet_frames(
     segment: &[u8],
     mtu: u16,
 ) -> Result<Vec<Vec<u8>>, PacketError> {
-    let FrameSpec {
-        src_mac,
-        dst_mac,
-        src,
-        dst,
-        protocol,
-        hop_limit,
-    } = *spec;
-
-    let (packets, ethertype) = match (src, dst) {
-        (IpAddr::V4(s), IpAddr::V4(d)) => {
-            let header = craft::Ipv4 {
-                protocol: craft::Field::Exact(protocol),
-                ..craft::Ipv4::new(s, d).with_ttl(hop_limit)
-            };
-            (ip::fragment_ipv4(&header, segment, mtu)?, EtherTypes::Ipv4)
-        }
-        (IpAddr::V6(s), IpAddr::V6(d)) => {
-            let header = craft::Ipv6 {
-                next_header: craft::Field::Exact(protocol),
-                ..craft::Ipv6::new(s, d).with_hop_limit(hop_limit)
-            };
-            (ip::fragment_ipv6(&header, segment, mtu)?, EtherTypes::Ipv6)
-        }
-        _ => return Err(PacketError::FamilyMismatch { src, dst }),
-    };
-
-    let frames = packets
-        .into_iter()
-        .map(|packet| {
-            let mut frame = Vec::with_capacity(ETH_HDR_LEN + packet.len());
-            frame.extend_from_slice(&ethernet::build_header(src_mac, dst_mac, ethertype));
-            frame.extend_from_slice(&packet);
-            frame
-        })
-        .collect();
-    Ok(frames)
+    let packets = build_ip_packets(&spec.ip(), segment, Some(mtu))?;
+    Ok(behind_ethernet(
+        packets,
+        spec.src_mac,
+        spec.dst_mac,
+        spec.dst,
+    ))
 }
 
 // ╔════════════════════════════════════════════╗
@@ -710,6 +802,49 @@ mod tests {
 
         // Too short to carry the word at all.
         assert_eq!(strip_to_ip(LinkType::NullLoop, &[0, 0, 0]), None);
+    }
+
+    /// A loopback frame is the family word a capture of that link reads back
+    /// as the packet it carries, whole or in fragments, for both families.
+    ///
+    /// A frame whose word the loopback interface does not read as IP is
+    /// dropped unread, which a scan sees as a port that never answered.
+    #[test]
+    fn a_loopback_frame_reads_back_as_the_packet_it_carries() {
+        let payload = [0xABu8; 128];
+        for (src, dst) in [
+            (
+                IpAddr::from(Ipv4Addr::LOCALHOST),
+                IpAddr::from(Ipv4Addr::LOCALHOST),
+            ),
+            (
+                IpAddr::from(Ipv6Addr::LOCALHOST),
+                IpAddr::from(Ipv6Addr::LOCALHOST),
+            ),
+        ] {
+            let spec = IpSpec {
+                src,
+                dst,
+                protocol: TCP,
+                hop_limit: 64,
+            };
+            for mtu in [None, Some(96)] {
+                let frames = build_null_loop_frames(&spec, &payload, mtu).expect("the frames");
+                assert_eq!(frames.len() > 1, mtu.is_some(), "{dst} at {mtu:?}");
+                for frame in &frames {
+                    let packet = strip_to_ip(LinkType::NullLoop, frame)
+                        .unwrap_or_else(|| panic!("{dst} at {mtu:?}: the word was not read"));
+                    assert_eq!(packet.len() + NULL_LOOP_HDR_LEN, frame.len());
+                    assert_eq!(packet[0] >> 4, if dst.is_ipv4() { 4 } else { 6 });
+                }
+                let whole = strip_to_ip(LinkType::NullLoop, &frames[0]).expect("a packet");
+                let segment = parse_ip_segment(whole).expect("an IP packet");
+                assert_eq!((segment.source, segment.destination), (src, dst));
+                if mtu.is_none() {
+                    assert_eq!(segment.payload, &payload[..]);
+                }
+            }
+        }
     }
 
     /// One walk of the link header answers both questions a receive path asks

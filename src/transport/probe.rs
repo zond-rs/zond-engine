@@ -86,7 +86,8 @@ pub enum SendMode {
     /// Force self-built Layer-2 Ethernet frames, bypassing the host IP stack
     /// (and the local firewall / connection tracking that a raw-socket send
     /// still traverses). Requires an Ethernet-capable interface and can't
-    /// reach loopback or tunnel-only destinations.
+    /// reach tunnel-only destinations, or loopback anywhere but macOS, whose
+    /// loopback interface takes a frame too.
     Ethernet,
 }
 impl SendMode {
@@ -774,8 +775,8 @@ impl ProbeSender for RawIpSender {
 }
 
 /// Builds its own Ethernet frames, and falls back to the raw socket for the
-/// destinations [`EthernetSender`] cannot frame: on-link IPv6 (no NDP),
-/// loopback, and tunnels.
+/// destinations [`EthernetSender`] cannot frame: on-link IPv6 (no NDP) and
+/// tunnels. Loopback it frames, to the loopback interface.
 ///
 /// The macOS default. There the raw socket accepts a quarter of a large scan's
 /// sends and drops them before the wire, where a self-built frame goes out.
@@ -798,8 +799,9 @@ struct LinkLayerFirst<L = EthernetSender, S = RawIpSender> {
     /// [`None`] when this process may inject frames but not open a raw socket,
     /// which is an unprivileged run on macOS with the BPF devices handed to a
     /// group. The fallback is what goes missing, not the scan: a destination
-    /// with Ethernet in front of it is reached by the frame either way, and
-    /// only loopback and tunnel-only addresses needed the socket.
+    /// with Ethernet in front of it is reached by the frame either way, as is
+    /// loopback, and only tunnel-only addresses and IPv6 neighbours needed the
+    /// socket.
     socket: Option<S>,
 }
 

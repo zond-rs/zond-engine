@@ -41,6 +41,7 @@ mod import;
 mod lifecycle;
 mod listen_only;
 mod liveness;
+mod loopback_frames;
 mod port_states;
 mod reporting;
 mod service_fingerprint;

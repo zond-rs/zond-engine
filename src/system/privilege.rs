@@ -134,7 +134,8 @@ pub fn can_send_raw() -> bool {
 /// path macOS takes by preference and Windows takes by necessity.
 ///
 /// What it cannot carry is a destination with no Ethernet in front of it, so
-/// loopback and tunnel-only addresses still want a raw socket.
+/// tunnel-only addresses still want a raw socket, and so does loopback
+/// everywhere but macOS, whose loopback interface takes a frame too.
 #[must_use]
 pub fn can_inject_frames() -> bool {
     imp::can_inject_frames()
