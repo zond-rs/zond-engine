@@ -1325,8 +1325,9 @@ mod tests {
     ///
     /// Its capture admits none of this scan's answers, so run anyway every port
     /// would read filtered, a verdict indistinguishable from a real firewall.
-    /// Refused, the scan says why it did not run, sends nothing, and still
-    /// files every port it was handed, as one nobody asked about.
+    /// Refused, the scan says why it did not run, in words a reader of the
+    /// report's failures can follow, sends nothing, and still files every port
+    /// it was handed, as one nobody asked about.
     #[tokio::test]
     async fn a_transport_opened_for_another_kind_is_refused_rather_than_read_as_silence() {
         let (session, ctx) = ScanSession::new();
@@ -1374,6 +1375,10 @@ mod tests {
                 })
             ),
             "{refused:?}"
+        );
+        assert_eq!(
+            refused.expect_err("refused").to_string(),
+            "a UDP probe transport cannot hear a TCP port scan's answers"
         );
         assert!(sent.lock().unwrap().is_empty(), "a probe was sent");
         assert_eq!(port_state(&session, 22), Some(PortState::Unasked));

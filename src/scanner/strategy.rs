@@ -128,7 +128,11 @@ pub enum StrategyError {
     /// Refused rather than run, because a scan that hears nothing files every
     /// port as the silence it reads, which looks exactly like a filtered
     /// network. Every port it was handed is recorded as one nobody asked about.
-    #[error("a transport opened for {kind:?} cannot hear the answers to a {protocol:?} port scan")]
+    #[error(
+        "{} transport cannot hear {} port scan's answers",
+        .kind.spoken(),
+        spoken_protocol(*.protocol)
+    )]
     MismatchedTransport {
         /// The kind the transport was opened for.
         kind: crate::transport::probe::ProbeKind,
@@ -154,6 +158,17 @@ pub enum StrategyError {
         /// What the runtime said about it.
         detail: String,
     },
+}
+
+/// A port scan's protocol in words, with its article, as
+/// [`StrategyError::MismatchedTransport`] names the scan it was handed.
+const fn spoken_protocol(protocol: crate::model::port::Protocol) -> &'static str {
+    use crate::model::port::Protocol;
+    match protocol {
+        Protocol::Tcp => "a TCP",
+        Protocol::Udp => "a UDP",
+        Protocol::Sctp => "an SCTP",
+    }
 }
 
 /// A strategy that finds which hosts, among the targets it was built with, are

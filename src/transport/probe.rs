@@ -265,6 +265,22 @@ pub enum ProbeKind {
 }
 
 impl ProbeKind {
+    /// The kind in words, with its article, as a message names the traffic a
+    /// transport was opened for: `a UDP probe`, `an ICMP echo`. The fields
+    /// are left out, being which port or identifier the traffic is told apart
+    /// by rather than what it is.
+    pub(crate) const fn spoken(self) -> &'static str {
+        match self {
+            ProbeKind::TcpSyn => "a TCP SYN",
+            ProbeKind::TcpProbe { .. } => "a TCP probe",
+            ProbeKind::UdpResolve => "a UDP resolver",
+            ProbeKind::IcmpEcho { .. } => "an ICMP echo",
+            ProbeKind::Sctp { .. } => "an SCTP probe",
+            ProbeKind::IpProtocol { .. } => "an IP protocol probe",
+            ProbeKind::UdpProbe { .. } => "a UDP probe",
+        }
+    }
+
     /// The port a transport for this kind admits replies to, where the kind
     /// fixes one.
     const fn reply_port(self) -> Option<u16> {
