@@ -39,7 +39,7 @@
 //! itself. Both are shared with the unprivileged port scan, which identifies
 //! each port over the connection that finds it open.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -47,6 +47,7 @@ use std::time::Duration;
 
 use tokio::net::TcpStream;
 
+use crate::model::host::{Host, NetworkRole};
 use crate::model::ip::scoped::ScopedIp;
 use crate::warn;
 
@@ -84,7 +85,9 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, over: Protoc
     }
 
     // Snapshot the targets up front so no DashMap guard is held across an await.
-    let targets = fingerprintable_ports(ctx, over, detection);
+    let tarpits = Tarpits::default();
+    let targets = fingerprintable_ports(ctx, over, detection, &tarpits);
+    tarpits.report(ctx, ScannerKind::Service);
     if targets.is_empty() {
         return;
     }
@@ -302,11 +305,18 @@ impl QuietPorts {
 /// so the one thing identifying it can do is send it a datagram, which is what
 /// a caller who asked only to listen has ruled out.
 ///
+/// # Which ports of a tarpit qualify
+///
+/// Only its likeliest: a host that answers on every port is asked what runs
+/// where a real service behind it would be, and no further. See [`Tarpits`],
+/// which counts the rest.
+///
 /// [`reads_replies`]: crate::fingerprint::reads_replies
 fn fingerprintable_ports(
     ctx: &ScanContext,
     over: Protocol,
     detection: ServiceDetection,
+    tarpits: &Tarpits,
 ) -> Vec<Target> {
     if over == Protocol::Udp && !detection.sends() {
         return Vec::new();
@@ -323,6 +333,7 @@ fn fingerprintable_ports(
             if port.protocol() == over
                 && port.state() == PortState::Open
                 && crate::fingerprint::reads_replies(port.number(), port.protocol())
+                && tarpits.identifies(host.value(), port.number(), port.protocol())
             {
                 targets.push(Target {
                     address: address.clone(),
@@ -334,6 +345,114 @@ fn fingerprintable_ports(
         }
     }
     targets
+}
+
+/// How many open ports of one host that answers on every port are
+/// identified, at most, per transport: the likeliest ones, by the catalog's
+/// ranking.
+///
+/// A host past [`TARPIT_OPEN_PORTS`] is answering everything rather than
+/// answering questions, and identifying every port it accepts costs a
+/// conversation each, most of them waited out to the end: across the whole
+/// port range, hours. What is worth asking of it is what a real service
+/// behind it would be on. A firewall that answers every SYN on a server's
+/// behalf still passes the server's own ports through, and those are on the
+/// ports a service is likeliest to be on. The first tier of the ranking is the
+/// ports that answer on a meaningful share of hosts of some kind, so that is
+/// where the line is drawn; see [`TCP_TIER_BOUNDS`].
+///
+/// [`TARPIT_OPEN_PORTS`]: crate::model::host::TARPIT_OPEN_PORTS
+/// [`TCP_TIER_BOUNDS`]: crate::model::port::catalog::TCP_TIER_BOUNDS
+pub(crate) const TARPIT_PORTS_IDENTIFIED: usize = crate::model::port::catalog::TCP_TIER_BOUNDS[0];
+
+/// The open ports a pass leaves unidentified on hosts that answer on every
+/// port, counted per host, for one line each once the pass has decided.
+///
+/// Such a host carries [`NetworkRole::Tarpit`], which says its ports are not
+/// to be acted on. Its likeliest ports are still identified, as
+/// [`TARPIT_PORTS_IDENTIFIED`] says, and the rest keep what the port scan
+/// recorded: open, and the name their number gives them. That is the scan
+/// covering less than it was asked to, so it is filed where a shortfall is,
+/// and said at the console once per host rather than once per port.
+///
+/// [`NetworkRole::Tarpit`]: crate::model::host::NetworkRole::Tarpit
+#[derive(Debug, Default)]
+pub(crate) struct Tarpits {
+    /// Per host, the ports passed over.
+    ///
+    /// Counted once the pass has settled them rather than as each is passed
+    /// over, and only those found open: a scan that identifies each port over
+    /// the connection that finds it open decides before it knows, and a port
+    /// that turned out closed was never one to identify.
+    passed_over: Mutex<std::collections::BTreeMap<ScopedIp, BTreeSet<(u16, Protocol)>>>,
+}
+
+impl Tarpits {
+    /// Whether `number` over `protocol` on `host` is to be identified, which
+    /// every port is except one of a tarpit's beyond its likeliest.
+    pub(crate) fn identifies(&self, host: &Host, number: u16, protocol: Protocol) -> bool {
+        use crate::model::port::catalog::{top_tcp, top_udp};
+
+        if !host.network_roles().contains(&NetworkRole::Tarpit) {
+            return true;
+        }
+        let likeliest = match protocol {
+            Protocol::Tcp => top_tcp(TARPIT_PORTS_IDENTIFIED),
+            Protocol::Udp => top_udp(TARPIT_PORTS_IDENTIFIED),
+            Protocol::Sctp => &[],
+        };
+        if likeliest.contains(&number) {
+            return true;
+        }
+        self.passed_over
+            .lock()
+            .unwrap_or_else(|held| held.into_inner())
+            .entry(host.scoped_ip())
+            .or_default()
+            .insert((number, protocol));
+        false
+    }
+
+    /// Says, for each host with open ports left unidentified, how many, once
+    /// at the console and once in the report, as a shortfall of the pass
+    /// `kind`.
+    pub(crate) fn report(&self, ctx: &ScanContext, kind: ScannerKind) {
+        let passed_over = std::mem::take(
+            &mut *self
+                .passed_over
+                .lock()
+                .unwrap_or_else(|held| held.into_inner()),
+        );
+        for (host, ports) in passed_over {
+            let counted = ctx.read_host(host.clone(), |recorded| {
+                let left = recorded
+                    .ports()
+                    .filter(|port| port.state() == PortState::Open)
+                    .filter(|port| ports.contains(&(port.number(), port.protocol())))
+                    .count();
+                (left, recorded.open_port_count())
+            });
+            let Some((count, open)) = counted.filter(|(count, _)| *count > 0) else {
+                continue;
+            };
+            warn!("{}", Self::line(&host, count));
+            ctx.file_cut_short(kind, Self::summary(&host, count, open));
+        }
+    }
+
+    /// The console line for `count` ports of `host`.
+    fn line(host: &ScopedIp, count: usize) -> String {
+        format!("{host}: {count} open ports not fingerprinted (tarpit)")
+    }
+
+    /// The report's entry for `count` ports of `host`, which had `open`.
+    fn summary(host: &ScopedIp, count: usize, open: usize) -> String {
+        format!(
+            "{host}: {count} open ports were not fingerprinted: a host open on {open} \
+             ports answers everything, and only the {TARPIT_PORTS_IDENTIFIED} \
+             likeliest were asked what they run"
+        )
+    }
 }
 
 /// One open port to identify, and the path to it.
@@ -825,7 +944,6 @@ fn write_back(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::host::Host;
 
     /// Eighty-three ports reported one by one would be eighty-three report
     /// lines, and the count of strategies that did not run would go up by
@@ -916,7 +1034,6 @@ mod tests {
 
     use crate::scanner::loopback::{SilentPort, accept_from_this_process, from_this_process};
     use crate::scanner::session::ScanSession;
-    use std::collections::BTreeSet;
     use std::net::IpAddr;
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1054,7 +1171,8 @@ mod tests {
             "SNMP is a UDP port the pass would otherwise ask"
         );
 
-        let taken = |level| fingerprintable_ports(&ctx, Protocol::Udp, level).len();
+        let taken =
+            |level| fingerprintable_ports(&ctx, Protocol::Udp, level, &Tarpits::default()).len();
         assert_eq!(
             taken(ServiceDetection::Banner),
             0,
@@ -1064,6 +1182,77 @@ mod tests {
             taken(ServiceDetection::Probe),
             1,
             "the default took no UDP port either, so the first half proves nothing"
+        );
+        drop(session);
+    }
+
+    /// A host that answers on every port has only its likeliest ports taken
+    /// for identification, where an ordinary host has every open port taken,
+    /// and the ports it leaves are one entry for the host.
+    ///
+    /// Each port taken is a conversation, and a host accepting every
+    /// connection and saying nothing makes each one wait to its end: across
+    /// the port range, hours of identification for a host whose ports mean
+    /// nothing. Its likeliest ports are what a real service behind it would
+    /// be on, so those are still asked.
+    #[test]
+    fn a_tarpit_has_only_its_likeliest_ports_taken() {
+        use crate::model::port::catalog::top_tcp;
+
+        let (session, ctx) = ScanSession::new();
+        let tarpit: IpAddr = "192.0.2.1".parse().expect("a documentation address");
+        let ordinary: IpAddr = "192.0.2.2".parse().expect("a documentation address");
+        let range = 1..=1_200u16;
+        ctx.update_host(tarpit, |host| {
+            for number in range.clone() {
+                host.add_port(Port::new(number, Protocol::Tcp, PortState::Open));
+            }
+        });
+        ctx.update_host(ordinary, |host| {
+            for number in [22, 51_000] {
+                host.add_port(Port::new(number, Protocol::Tcp, PortState::Open));
+            }
+        });
+
+        let tarpits = Tarpits::default();
+        let targets = fingerprintable_ports(&ctx, Protocol::Tcp, ServiceDetection::Probe, &tarpits);
+        let taken = |address: IpAddr| {
+            let mut numbers: Vec<u16> = targets
+                .iter()
+                .filter(|target| target.address.addr() == address)
+                .map(|target| target.number)
+                .collect();
+            numbers.sort_unstable();
+            numbers
+        };
+
+        let mut likeliest: Vec<u16> = top_tcp(TARPIT_PORTS_IDENTIFIED)
+            .iter()
+            .copied()
+            .filter(|number| range.contains(number))
+            .collect();
+        likeliest.sort_unstable();
+        assert!(
+            !likeliest.is_empty(),
+            "the range holds some of the likeliest"
+        );
+        assert_eq!(taken(tarpit), likeliest, "the tarpit's ports taken");
+        assert_eq!(
+            taken(ordinary),
+            [22, 51_000],
+            "the ordinary host's ports taken"
+        );
+
+        tarpits.report(&ctx, ScannerKind::Service);
+        let failures = ctx.take_failures();
+        let left = range.len() - likeliest.len();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].reason().starts_with(&format!(
+                "192.0.2.1: {left} open ports were not fingerprinted"
+            )),
+            "{}",
+            failures[0].reason()
         );
         drop(session);
     }

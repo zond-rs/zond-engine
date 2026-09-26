@@ -639,6 +639,7 @@ pub async fn scan(
     // ports side by side, so a host answering them in turn is seen for that;
     // see [`Crowd`](crate::scanner::service::Crowd).
     let crowds = crate::scanner::service::Crowds::default();
+    let tarpits = crate::scanner::service::Tarpits::default();
     let mut pool = ProbePool::new(
         concurrency_limit,
         ctx.clone(),
@@ -668,6 +669,14 @@ pub async fn scan(
         // Identified over the connection that finds the port open, so the
         // port's own cap applies here rather than in a pass of its own.
         let identify = ctx.service_detection_on(detection, target.port(), target.protocol());
+        // A host that answers on every port has only its likeliest identified;
+        // see `Tarpits`. It is known for one once it has answered on enough.
+        let identify = match ctx.read_host(target.ip(), |host| {
+            tarpits.identifies(host, target.port(), target.protocol())
+        }) {
+            Some(false) => ServiceDetection::Off,
+            _ => identify,
+        };
         let crowd = crowds.of(target.ip(), ctx.target_name(target.ip()));
         pool.admit(port_prober(
             target,
@@ -696,6 +705,7 @@ pub async fn scan(
     pool.drain().await;
     let audit = pool.into_audit();
     crowds.ask_again(&ctx, ScannerKind::Connect).await;
+    tarpits.report(&ctx, ScannerKind::Connect);
     shortfall.report(&ctx, ScannerKind::Connect, "port", "ports");
     finish(&ctx, audit, ScannerKind::Connect, probes, reason);
     Ok(())
@@ -2334,6 +2344,85 @@ mod tests {
             (stats.sends_attempted(), stats.sends_failed()),
             (1, 1),
             "a send this machine refused is a send that failed"
+        );
+    }
+
+    /// A port found open on a host that answers on every port is not asked
+    /// what it runs unless it is one of the likeliest, where the same port on
+    /// an ordinary host is, and the report says how many went unasked.
+    ///
+    /// Identified over the connection that finds it open, a port of such a
+    /// host would each cost a conversation waited out to its end, which across
+    /// the port range is hours spent on a host whose ports mean nothing. The
+    /// host is marked for it once it has answered on enough ports, so here it
+    /// is marked before the scan asks. A port it finds closed is no port
+    /// left unidentified, though the scan decided about it before it knew.
+    #[tokio::test]
+    async fn a_tarpits_unlikely_port_is_found_open_and_not_asked_what_it_runs() {
+        use crate::scanner::loopback::SilentPort;
+        use crate::scanner::service::TARPIT_PORTS_IDENTIFIED;
+
+        let mut heard = Vec::new();
+        for tarpit in [true, false] {
+            let silent = SilentPort::open();
+            let addr = silent.addr();
+            assert!(
+                !crate::model::port::catalog::top_tcp(TARPIT_PORTS_IDENTIFIED)
+                    .contains(&addr.port()),
+                "test assumes an ephemeral port is not among the likeliest"
+            );
+            let (session, ctx) = crate::scanner::session::ScanSession::new();
+            ctx.update_host(addr.ip(), |host| {
+                if tarpit {
+                    host.add_network_role(NetworkRole::Tarpit);
+                }
+            });
+            // And a port nothing listens on, which the scan decides about
+            // before it finds it closed, and which is no open port left
+            // unidentified.
+            let closed = std::net::TcpListener::bind("127.0.0.1:0")
+                .and_then(|listener| listener.local_addr())
+                .expect("binds loopback")
+                .port();
+            let (tx, rx) = mpsc::channel(2);
+            for port in [addr.port(), closed] {
+                tx.send(tcp_target(addr.ip(), port)).await.expect("queued");
+            }
+            drop(tx);
+
+            scan(
+                rx,
+                1,
+                ctx.clone(),
+                ServiceDetection::Probe,
+                &EvasionProfile::default(),
+                &ZoneMap::new(),
+            )
+            .await
+            .expect("the scan runs");
+
+            let open = session.hosts().read(addr.ip(), |host| {
+                host.ports()
+                    .filter(|port| port.state() == PortState::Open)
+                    .map(Port::number)
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(open, Some(vec![addr.port()]), "tarpit: {tarpit}");
+            let reported = ctx.failures_snapshot().iter().any(|failure| {
+                failure.reason().starts_with(&format!(
+                    "{}: 1 open ports were not fingerprinted",
+                    addr.ip()
+                ))
+            });
+            assert_eq!(reported, tarpit, "tarpit: {tarpit}");
+            heard.push(silent.heard());
+        }
+
+        assert_eq!(heard[0], 0, "the tarpit's port was asked what it runs");
+        assert!(
+            heard[1] > 0,
+            "the same port on an ordinary host was asked nothing, so the first \
+             half proves nothing"
         );
     }
 
