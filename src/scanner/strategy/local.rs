@@ -43,7 +43,7 @@ use crate::journal::settle::{Outcome, Settled};
 use crate::logging::error;
 use crate::model::host::telemetry::RttSource;
 use crate::model::host::{HostStatus, NetworkRole, StatusProtocol, StatusReason};
-use crate::model::ip::scoped::{ScopedIp, Zone};
+use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;
 use crate::protocols::{self as protocol, ethernet};
 use crate::report::ScannerKind;
@@ -333,7 +333,7 @@ struct SourceIdentity {
     /// link-local address it records is valid on this interface and no other.
     /// Recording that alongside the host is what makes those addresses usable
     /// by the phases that come after discovery; see
-    /// [`ScopedIp`].
+    /// [`ScopedIp`](crate::model::ip::scoped::ScopedIp).
     zone: Zone,
 }
 
@@ -510,6 +510,10 @@ pub struct LocalScanner {
     /// mechanism keeps its own state rather than sharing this struct's, and the
     /// reasoning behind its timing lives with it.
     ipv6: Ipv6Discovery,
+    /// The prefixes the link holds, which say whether an overheard address is
+    /// one the routing table's refusal can be read for; see
+    /// [`confirm`](Self::confirm).
+    prefixes: interface::OnLinkTable,
     /// How the routing table is asked whether it refuses an overheard
     /// address: [`interface::refuses_neighbour`], or, in a test, a table
     /// refusing as no host the test runs on does.
@@ -729,6 +733,7 @@ impl LocalScanner {
             scope,
             ipv6: Ipv6Discovery::new(target_count),
             send_failure: None,
+            prefixes: interface::OnLinkTable::from_links(std::slice::from_ref(&link)),
             refuses: interface::refuses_neighbour,
         })
     }
@@ -1006,15 +1011,21 @@ impl LocalScanner {
         }
         // Nor one this host's routing table refuses, which the sweep's own
         // targets were withheld for before it started; see
-        // `interface::refused_neighbours`. A link-local address is not put to
-        // the table, as the sweep's own are not: it is on this segment by
-        // definition, and without its zone the table has no route to consult.
-        // Linux refuses the lookup as an invalid argument, the answer a
-        // blackhole route gives, so asked, every link-local neighbour the
-        // sweep overheard there would go unasked, and one named only by its
-        // mDNS announcements, a phone that ignores the all-nodes echo among
-        // them, would not be found at all.
-        if !ScopedIp::needs_zone(&address) && (self.refuses)(address) {
+        // `interface::refused_neighbours`. Only an address inside a prefix the
+        // link holds is put to the table, as only such targets of the sweep's
+        // own are. For one of those the table's answer is the connected route
+        // unless a route of the host's policy overrides it, so a refusal is
+        // that policy. For any other the table answers about a path through a
+        // router, which the solicitation does not take: a host with no route
+        // there, a machine with no IPv6 beyond its links among them, would
+        // read every neighbour announcing an address from another prefix as
+        // refused, and a phone named only by its mDNS announcements would not
+        // be found. A link-local address is on no prefix the table can
+        // answer for either: it is on this segment by definition, and without
+        // its zone Linux refuses the lookup as an invalid argument, the
+        // answer a blackhole route gives.
+        let on_a_prefix = self.prefixes.source_for(address).is_some();
+        if on_a_prefix && (self.refuses)(address) {
             info!(
                 verbosity = 2,
                 "{address} was overheard and a route refuses it, so it is not asked about"
@@ -2225,7 +2236,7 @@ mod tests {
     /// A table refusing as Linux's does when asked about a link-local address
     /// with no zone, and allowing everything else.
     fn refuses_as_linux_does(address: IpAddr) -> bool {
-        ScopedIp::needs_zone(&address)
+        crate::model::ip::scoped::ScopedIp::needs_zone(&address)
     }
 
     /// A table refusing every address it is asked about.
@@ -2233,21 +2244,11 @@ mod tests {
         true
     }
 
-    /// **A link-local address the sweep overheard is asked about whatever the
-    /// routing table would say of it without its zone, and any other the
-    /// table refuses is not.**
-    ///
-    /// Linux answers a route lookup for a link-local address with no zone
-    /// as an invalid argument, the answer a blackhole route gives, so putting
-    /// one to the table there reads every link-local neighbour as refused by
-    /// policy. A phone that ignores the all-nodes echo and is named only by
-    /// its mDNS announcements is then never asked, and never found.
-    #[tokio::test(flavor = "current_thread")]
-    async fn an_overheard_link_local_address_is_asked_whatever_the_table_says_without_a_zone() {
+    /// A sweep over a simulated segment holding `192.0.2.1/24`, `fe80::1/64`
+    /// and `2001:db8::1/64`, for a test that hands it overheard addresses.
+    fn overhearing_scanner() -> LocalScanner {
         use crate::system::interface::LinkAddress;
 
-        let link_local: IpAddr = "fe80::2".parse().expect("an address");
-        let global: IpAddr = "2001:db8::2".parse().expect("an address");
         let (_session, ctx) = crate::scanner::session::ScanSession::new();
         let (_frames, rx) = tokio::sync::mpsc::channel(16);
         let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -2257,11 +2258,27 @@ mod tests {
             .with_addresses(vec![
                 LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24),
                 LinkAddress::new("fe80::1".parse().expect("an address"), 64),
+                LinkAddress::new("2001:db8::1".parse().expect("an address"), 64),
             ]);
         let targets: IpSet = "192.0.2.0/30".parse().expect("a prefix");
-        let mut scanner =
-            LocalScanner::build(link, targets, ctx, None, Scope::Sweep, handle, RETRY_POLICY)
-                .expect("a scanner over the simulated segment");
+        LocalScanner::build(link, targets, ctx, None, Scope::Sweep, handle, RETRY_POLICY)
+            .expect("a scanner over the simulated segment")
+    }
+
+    /// **A link-local address the sweep overheard is asked about whatever the
+    /// routing table would say of it without its zone, and one on a prefix
+    /// the link holds that the table refuses is not.**
+    ///
+    /// Linux answers a route lookup for a link-local address with no zone
+    /// as an invalid argument, the answer a blackhole route gives, so putting
+    /// one to the table there reads every link-local neighbour as refused by
+    /// policy. A phone that ignores the all-nodes echo and is named only by
+    /// its mDNS announcements is then never asked, and never found.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_overheard_link_local_address_is_asked_whatever_the_table_says_without_a_zone() {
+        let link_local: IpAddr = "fe80::2".parse().expect("an address");
+        let on_link: IpAddr = "2001:db8::2".parse().expect("an address");
+        let mut scanner = overhearing_scanner();
 
         scanner.refuses = refuses_as_linux_does;
         scanner.confirm(link_local);
@@ -2272,11 +2289,33 @@ mod tests {
         );
 
         scanner.refuses = refuses_everything;
-        scanner.confirm(global);
+        scanner.confirm(on_link);
         assert_eq!(
             scanner.ipv6.next_confirmation(),
             None,
             "an address the table refuses was asked about"
+        );
+    }
+
+    /// **An overheard address on no prefix the link holds is asked about
+    /// whatever the routing table says of it.**
+    ///
+    /// The table answers for such an address about a path through a router,
+    /// which a solicitation on the segment does not take. A host with no
+    /// route there, as a machine with no IPv6 beyond its links has none,
+    /// would otherwise read every neighbour announcing an address from a
+    /// prefix it does not hold as refused by policy, and never ask it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_overheard_address_off_the_links_prefixes_is_asked_whatever_the_table_says() {
+        let elsewhere: IpAddr = "2001:db8:1::2".parse().expect("an address");
+        let mut scanner = overhearing_scanner();
+
+        scanner.refuses = refuses_everything;
+        scanner.confirm(elsewhere);
+        assert_eq!(
+            scanner.ipv6.next_confirmation(),
+            Some(elsewhere),
+            "an address off the link's prefixes was read as refused by a route"
         );
     }
 

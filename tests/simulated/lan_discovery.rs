@@ -932,7 +932,11 @@ async fn a_directed_probe_outranks_the_segment_wide_one_for_latency() {
 /// a neighbour-table entry has, and it earns its report the same way.
 #[tokio::test]
 async fn an_address_only_mdns_knows_about_is_asked_about() {
-    let announced = std::net::Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 0x4b);
+    // On no prefix the scanner's link holds, as a neighbour's address from a
+    // prefix this machine was never given is, so what the routing table of
+    // the machine running the test says of it has no say in whether it is
+    // asked.
+    let announced = std::net::Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 0x4b);
     let announcer = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0xCC);
 
     // Declared as a host so it can answer, but named by *another* machine's
