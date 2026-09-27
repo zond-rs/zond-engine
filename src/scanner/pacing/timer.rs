@@ -63,6 +63,9 @@ pub(crate) fn later(from: Instant, by: Duration) -> Instant {
 /// [`AdaptiveDeadline`]: super::deadline::AdaptiveDeadline
 #[derive(Debug, Clone, Copy)]
 pub struct ScanTimer {
+    /// When the timer was built or last [started](Self::start), which the
+    /// other three are measured from.
+    started: Instant,
     /// When the scan stops whatever else is true.
     hard_deadline: Instant,
     /// Before this, silence is not allowed to end anything.
@@ -81,10 +84,28 @@ impl ScanTimer {
     pub fn new(max_total_duration: Duration, min_runtime_duration: Duration) -> Self {
         let now = Instant::now();
         Self {
+            started: now,
             hard_deadline: later(now, max_total_duration),
             min_runtime: later(now, min_runtime_duration),
             last_activity: now,
         }
+    }
+
+    /// Runs the timer from now, as though it had been built now, for a loop
+    /// that begins some time after its timer was.
+    ///
+    /// The time between the two is setup, spent neither waiting on the network
+    /// nor asking it anything, and a loop charged for it begins with its
+    /// minimum runtime and its silence already spent: whatever it reads first
+    /// arrives, as far as the timer can tell, after the scan has concluded
+    /// nothing more is coming.
+    pub(crate) fn start(&mut self) {
+        let now = Instant::now();
+        let setup = now.saturating_duration_since(self.started);
+        self.started = now;
+        self.hard_deadline = later(self.hard_deadline, setup);
+        self.min_runtime = later(self.min_runtime, setup);
+        self.last_activity = now;
     }
 
     /// Restarts the silence clock, for a loop that has just learned something.
@@ -270,6 +291,34 @@ impl ScanBudget {
 mod tests {
     use super::*;
     use std::thread::sleep;
+
+    /// A timer started some time after it was built runs its whole budget from
+    /// the start.
+    ///
+    /// A loop that begins after setup, loading a database or waiting for its
+    /// caller, would otherwise begin with its minimum runtime and its silence
+    /// spent, and stop on the first quiet moment. The budget left after
+    /// `start` is a second, far more than the two readings after it take.
+    #[test]
+    fn a_timer_started_after_it_was_built_runs_its_whole_budget_from_the_start() {
+        let budget = Duration::from_secs(1);
+        let mut timer = ScanTimer::new(budget, budget);
+        sleep(budget + Duration::from_millis(100));
+        assert!(
+            timer.hard_deadline_passed(),
+            "the timer ran from when it was built"
+        );
+
+        timer.start();
+        assert!(
+            !timer.hard_deadline_passed(),
+            "the setup before the start was charged to the deadline"
+        );
+        assert!(
+            !timer.has_expired(Duration::ZERO),
+            "the setup before the start was charged to the minimum runtime"
+        );
+    }
 
     /// A timer that has just started has neither run out of time nor waited
     /// long enough for silence to mean anything.

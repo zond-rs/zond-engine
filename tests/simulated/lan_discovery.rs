@@ -964,6 +964,55 @@ async fn an_address_only_mdns_knows_about_is_asked_about() {
     );
 }
 
+/// A sweep built some time before it runs still reads what the segment says
+/// first.
+///
+/// A caller orchestrating a scan builds its passes and runs them when it is
+/// ready, and a sweep loads the manufacturer database before its first frame,
+/// which on a loaded machine takes seconds. Timed from its construction, the
+/// sweep begins with its minimum runtime and its silence already spent, and
+/// the announcement the segment answers its first frame with arrives, as far
+/// as it can tell, after it has concluded nothing more is coming: the lead is
+/// dropped unasked. The wait here is longer than a one-address sweep's
+/// minimum runtime and silence together, so without the sweep's own clock the
+/// lead is lost on every run.
+#[tokio::test]
+async fn a_sweep_built_well_before_it_runs_still_reads_the_first_announcement() {
+    let announced = std::net::Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 0x4c);
+    let announcer = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0xCD);
+    let lan = FakeLan::new()
+        .host(IpAddr::V6(announced), LanHost::at(PEER_B))
+        .announcing_over_mdns("tv.local", announced, announcer);
+
+    let mut targets = IpSet::new();
+    targets.insert(v4(10));
+    let (_session, ctx) = ScanSession::new();
+    let mut scanner = LocalScanner::with_handle(
+        scanner_interface(),
+        targets,
+        ctx,
+        None,
+        Scope::Sweep,
+        lan.handle(),
+    )
+    .expect("scanner builds over the simulated segment");
+
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    scanner
+        .discover_hosts()
+        .await
+        .expect("sweep runs to completion");
+
+    assert!(
+        lan.probes().iter().any(|probe| matches!(
+            probe,
+            LanProbe::Solicit { target, .. } if *target == announced
+        )),
+        "the time before the sweep ran was charged to it, so the announcement \
+         its first frame drew was read as arriving after it had finished"
+    );
+}
+
 /// A lead the sweep takes off the wire is asked about only where the operator
 /// allowed it.
 ///

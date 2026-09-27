@@ -193,6 +193,12 @@ impl AdaptiveDeadline {
         }
     }
 
+    /// Runs the deadline from now, for a loop that begins some time after the
+    /// deadline was built; see [`ScanTimer::start`].
+    pub(crate) fn start(&mut self) {
+        self.timer.start();
+    }
+
     /// Restarts the silence clock, for a loop that has just learned something.
     ///
     /// Something *new*, rather than every packet: a second reply from a host

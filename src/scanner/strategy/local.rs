@@ -530,6 +530,13 @@ impl HostScanner for LocalScanner {
         // Every reply records its sender's hardware address, and the first
         // loads the manufacturer database; see the call.
         crate::model::mac::load_vendors().await;
+        // The sweep's time runs from here. Loading that database takes
+        // hundreds of milliseconds, seconds on a loaded machine, and a caller
+        // may build the scanner well before it runs it; charged to the sweep,
+        // either spends its minimum runtime and its silence before the first
+        // frame is read, and whatever the segment says first is read as
+        // arriving after the sweep concluded nothing more would.
+        self.deadline.start();
         let mut packet_iter = probes::eth_packet_iter(
             &self.identity.mac,
             &self.identity.ipv4,
