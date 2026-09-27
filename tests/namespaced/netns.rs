@@ -71,6 +71,10 @@ const MADE_BY: &str = "ZOND_TIER3_NAMESPACE_OF";
 /// skip, which reads better than a suite that aborts on a kernel that will not
 /// hand out user namespaces.
 ///
+/// The move is made only once [`rehearse`] has seen it succeed in a child, so
+/// a process whose namespace could not be set up stays in the machine's, where
+/// loopback is up and the tests that need no namespace of their own still run.
+///
 /// A process started from inside the namespace, as a test that runs this
 /// binary again for a second process of its own does, stays in the one it
 /// was started in. Moved into a namespace of its own it would find nothing
@@ -82,18 +86,77 @@ extern "C" fn enter() {
         return;
     }
 
-    // SAFETY: called on the only thread this process has, which is what
-    // `CLONE_NEWUSER` requires. `getuid` and `getgid` cannot fail.
+    let entered = match rehearse() {
+        0 => move_in(),
+        code => code,
+    };
+    if entered == 0 {
+        // SAFETY: nothing else reads or writes the environment while this runs
+        // before `main`, on the only thread there is.
+        unsafe { std::env::set_var(MADE_BY, std::process::id().to_string()) };
+    }
+    ENTERED.store(entered, Ordering::SeqCst);
+}
+
+/// Makes the move [`move_in`] makes in a child process, answering the `errno`
+/// that stopped it there, or zero.
+///
+/// A move cannot be taken back. Returning to the machine's network namespace
+/// takes `CAP_SYS_ADMIN` over it, which is exactly what an unprivileged
+/// process lacks, and a kernel may hand out the namespaces and then deny every
+/// capability inside them: Ubuntu's AppArmor restriction on unprivileged user
+/// namespaces does that. A process that moved there would sit in a network
+/// whose loopback is down and cannot be raised, where every test of the
+/// loopback services the tiers share fails as a network out of reach. The
+/// child takes that risk instead and exits with what it met, and its
+/// namespaces go with it.
+///
+/// A child that could not be started or did not exit on its own answers the
+/// `errno` of the failure, or `-1` when there is none.
+fn rehearse() -> i32 {
+    // SAFETY: this process has one thread, so the child is a whole copy of it
+    // and may do anything the parent could. It leaves through `_exit`, which
+    // runs no destructor or exit handler of the parent's.
+    match unsafe { libc::fork() } {
+        -1 => std::io::Error::last_os_error().raw_os_error().unwrap_or(-1),
+        0 => {
+            let code = move_in();
+            // SAFETY: as above.
+            unsafe { libc::_exit(if (0..=255).contains(&code) { code } else { 255 }) }
+        }
+        child => {
+            let mut status = 0;
+            // SAFETY: `status` is a live local `waitpid` writes one `c_int` to.
+            while unsafe { libc::waitpid(child, &mut status, 0) } == -1 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() != ErrorKind::Interrupted {
+                    return error.raw_os_error().unwrap_or(-1);
+                }
+            }
+            if libc::WIFEXITED(status) {
+                libc::WEXITSTATUS(status)
+            } else {
+                -1
+            }
+        }
+    }
+}
+
+/// Moves this process into a user, network and mount namespace of its own,
+/// with a `/sys` and a loopback that are the new network's, answering the
+/// `errno` that stopped it, or zero.
+///
+/// Must run on the only thread the process has, which is what `CLONE_NEWUSER`
+/// requires.
+fn move_in() -> i32 {
+    // SAFETY: `getuid` and `getgid` cannot fail.
     let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
 
     // SAFETY: the flags are valid for `unshare`, which touches no memory. The
-    // mount namespace comes along because `/sys` has to be replaced; see below.
+    // mount namespace comes along because `/sys` has to be replaced; see
+    // `mount_fresh_sysfs`.
     if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET | libc::CLONE_NEWNS) } != 0 {
-        ENTERED.store(
-            std::io::Error::last_os_error().raw_os_error().unwrap_or(-1),
-            Ordering::SeqCst,
-        );
-        return;
+        return std::io::Error::last_os_error().raw_os_error().unwrap_or(-1);
     }
 
     // `gid_map` is refused while the process can still call `setgroups`, and
@@ -105,20 +168,13 @@ extern "C" fn enter() {
         .and_then(|()| fs::write("/proc/self/gid_map", format!("0 {gid} 1")));
 
     if let Err(e) = mapped {
-        ENTERED.store(e.raw_os_error().unwrap_or(-1), Ordering::SeqCst);
-        return;
+        return e.raw_os_error().unwrap_or(-1);
     }
 
-    let entered = match mount_fresh_sysfs() {
+    match mount_fresh_sysfs() {
         0 => bring_loopback_up(),
         code => code,
-    };
-    if entered == 0 {
-        // SAFETY: nothing else reads or writes the environment while this runs
-        // before `main`, on the only thread there is.
-        unsafe { std::env::set_var(MADE_BY, std::process::id().to_string()) };
     }
-    ENTERED.store(entered, Ordering::SeqCst);
 }
 
 /// Whether this process was started from inside the namespace another run of
@@ -232,8 +288,8 @@ static ENTER_BEFORE_MAIN: extern "C" fn() = enter;
 ///
 /// A test calls this first and returns early when it answers `false`. The
 /// environments that answer `false` are the ones where unprivileged user
-/// namespaces are switched off, which is a machine's policy rather than a
-/// defect in anything here.
+/// namespaces are switched off, or handed out without the capabilities to set
+/// one up, which is a machine's policy rather than a defect in anything here.
 ///
 /// # Skipping is not allowed everywhere
 ///
@@ -253,8 +309,8 @@ pub fn available() -> bool {
                  and no user namespace is available: {why}"
             );
             eprintln!(
-                "SKIP: no user namespace available ({why}). \
-                 Unprivileged user namespaces are disabled on this machine."
+                "SKIP: no user namespace available ({why}). Unprivileged \
+                 user namespaces are disabled or restricted on this machine."
             );
             false
         }

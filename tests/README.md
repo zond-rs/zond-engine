@@ -479,8 +479,11 @@ cargo test --test containers -- --ignored --test-threads=1 --nocapture report
 ```
 
 Tiers 1 and 2 run on Linux and macOS. Tier 3 is Linux only and skips elsewhere,
-and skips on a Linux machine whose policy forbids unprivileged user namespaces.
-None of the three needs any setup, so `cargo test` is the whole story.
+and skips on a Linux machine whose policy forbids unprivileged user namespaces
+or hands them out without the capabilities to set one up, as the AppArmor
+restriction Ubuntu ships does. Such a run stays in the machine's own network,
+so the loopback services' tests it carries still pass. None of the three needs
+any setup, so `cargo test` is the whole story.
 
 ## What CI runs
 
