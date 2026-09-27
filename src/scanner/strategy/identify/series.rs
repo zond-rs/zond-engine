@@ -353,7 +353,12 @@ pub struct OsSeriesScanner {
     collected: HashMap<IpAddr, Collected>,
     audit: ProbeAudit,
     /// Why probes did not leave, split by whose fact it was: this host's send
-    /// path, or an address nothing reaches from here.
+    /// path, or an address nothing reaches from here; and the hosts held
+    /// through the kernel's hold-down on their neighbour, sent no sample
+    /// while it lasts (see [`SendFaults::hold`]). A held host's samples are
+    /// dropped, as those held for a neighbour's resolution are: the spacing
+    /// of the series is the measurement, and a sample sent a hold-down late
+    /// would read as one taken then.
     faults: SendFaults,
     /// How far the current batch has read the resolution of each host's
     /// neighbour, which every sample is admitted through. See
@@ -486,7 +491,9 @@ impl OsSeriesScanner {
             };
             for port in target.ports() {
                 tick.tick().await;
-                if self.unreached.contains(&address) {
+                if self.unreached.contains(&address)
+                    || self.faults.held_until(address, Instant::now()).is_some()
+                {
                     continue;
                 }
                 let watch = self.transport.neighbors();
@@ -670,6 +677,12 @@ impl OsSeriesScanner {
                 self.audit.record_send(true);
             }
             Err(e) => {
+                // The kernel's first hold-down on the host's neighbour is no
+                // fact about the address, and nothing was sent: the host's
+                // samples are dropped while it lasts. See `faults`.
+                if self.faults.hold(address, &e).is_some() {
+                    return;
+                }
                 // An address nothing reaches is the address's fact and is
                 // reported against it; only this host's own refusals are the
                 // pass failing. Each said once. See `SendFaults`.
@@ -1419,6 +1432,82 @@ mod tests {
             } else {
                 assert!(ctx.take_unroutable().is_empty());
                 assert_eq!(failures.len(), 1, "this host's refusal is a failure");
+            }
+        }
+    }
+
+    /// A sample the kernel refused for a hold-down on the host's neighbour,
+    /// `EHOSTDOWN` on macOS, is dropped and the host sampled again once the
+    /// hold-down is over, not filed unreached on it; refused for a second
+    /// hold-down after waiting one out, the host is.
+    ///
+    /// Filed on the first, a host whose neighbour slept through one
+    /// resolution, whoever asked for it, lost every sample of its series.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_sample_refused_for_a_hold_down_is_not_the_host_s_verdict() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// Refuses its first `refused` samples as macOS does inside a
+        /// hold-down, and counts the ones it takes.
+        struct HeldDown {
+            refused: usize,
+            asked: Arc<AtomicUsize>,
+            taken: Arc<AtomicUsize>,
+        }
+
+        impl ProbeSender for HeldDown {
+            fn send(
+                &self,
+                _s: &[u8],
+                _src: IpAddr,
+                _dst: IpAddr,
+                _zone: Option<u32>,
+                _emission: Emission,
+            ) -> Result<(), SendError> {
+                if self.asked.fetch_add(1, Ordering::SeqCst) < self.refused {
+                    return Err(SendError::from_io(std::io::Error::from_raw_os_error(
+                        libc::EHOSTDOWN,
+                    )));
+                }
+                self.taken.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        for (refused, unreached) in [(1, false), (2, true)] {
+            let (_session, ctx) = ScanSession::new();
+            let (_tx, rx) = mpsc::channel(1024);
+            let taken = Arc::new(AtomicUsize::new(0));
+            let sender = HeldDown {
+                refused,
+                asked: Arc::new(AtomicUsize::new(0)),
+                taken: Arc::clone(&taken),
+            };
+            let transport = ProbeTransport::from_parts(Box::new(sender), rx as CaptureStream);
+            let mut scanner = OsSeriesScanner::with_transport(
+                ctx.clone(),
+                vec![both_ports()],
+                3,
+                transport,
+                Emission::routed(),
+            );
+            // Over as soon as it is met, so the next sample asks again.
+            scanner.faults.held_down.hold_down_for = Duration::ZERO;
+
+            scanner.probe().await.expect("the phase runs");
+
+            let failures = ctx.failures_snapshot();
+            assert!(
+                failures.is_empty(),
+                "a hold-down failed the pass: {failures:?}"
+            );
+            if unreached {
+                assert_eq!(ctx.take_unroutable(), vec![TARGET], "held down twice");
+            } else {
+                assert!(ctx.take_unroutable().is_empty(), "filed on one hold-down");
+                assert!(taken.load(Ordering::SeqCst) > 0, "never sampled again");
             }
         }
     }

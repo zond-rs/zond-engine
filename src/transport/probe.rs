@@ -616,7 +616,7 @@ impl SendError {
 /// Whether `error` is the kernel's `EHOSTDOWN`: the next hop's address
 /// resolution failed lately, and the kernel is refusing sends to it rather
 /// than ask again yet. See [`SendError::HeldDown`].
-fn host_is_down(error: &std::io::Error) -> bool {
+pub(crate) fn host_is_down(error: &std::io::Error) -> bool {
     #[cfg(unix)]
     {
         error.raw_os_error() == Some(libc::EHOSTDOWN)

@@ -236,6 +236,10 @@ struct Probed {
     /// The connect that heard nothing, and how long it waited, for a port
     /// filed filtered because its connect ran out of time; see [`SlowPaths`].
     silence: Option<Silence>,
+    /// The port, where the kernel refused its connect for a hold-down on its
+    /// host's neighbour, and when the hold-down is over: nothing of this probe
+    /// is filed, and the port is asked again after it. See [`HeldPorts`].
+    held_down: Option<HeldPort>,
     /// Whether this probe's outcome settles its target. A second asking's
     /// does not: the first asking settled the target already, and the second
     /// only revises what it was filed as.
@@ -284,9 +288,10 @@ enum Refusal {
     /// wait, and those are what a reader acts on.
     PortHeld(u16, Holder),
     /// The neighbour a route leads through did not answer address
-    /// resolution, asked twice: the kernel held the connect's SYN and never
-    /// sent it. A fact about the address, reported against it as
-    /// [`NoRoute`](Self::NoRoute) is; see [`neighbours`].
+    /// resolution, asked twice: the kernel held the connect's SYN, or
+    /// refused it for a hold-down, and never sent it. A fact about the
+    /// address, reported against it as [`NoRoute`](Self::NoRoute) is; see
+    /// [`neighbours`].
     Unresolved,
     /// Anything else: no source to send from, no local port, a probe that met
     /// itself on every try. This machine's failure, in the operating system's
@@ -729,12 +734,38 @@ impl PortScanner for ConnectUdpPortScanner {
 /// [`ScanContext`] store - open, closed and filtered alike, so the list does not
 /// depend on whether the caller had root.
 pub async fn scan(
+    rx: mpsc::Receiver<PlannedTarget>,
+    concurrency_limit: usize,
+    ctx: ScanContext,
+    detection: ServiceDetection,
+    evasion: &EvasionProfile,
+    zones: &ZoneMap,
+) -> Result<(), StrategyError> {
+    let neighbours = Neighbours::of_system();
+    // On the heap: the walk's state holds every kind of asking it makes, more
+    // than a caller's stack should be asked to carry.
+    Box::pin(scan_among(
+        rx,
+        concurrency_limit,
+        ctx,
+        detection,
+        evasion,
+        zones,
+        neighbours,
+    ))
+    .await
+}
+
+/// [`scan`], knowing what `neighbours` knows of the neighbours its connects
+/// wait on.
+async fn scan_among(
     mut rx: mpsc::Receiver<PlannedTarget>,
     concurrency_limit: usize,
     ctx: ScanContext,
     detection: ServiceDetection,
     evasion: &EvasionProfile,
     zones: &ZoneMap,
+    neighbours: Neighbours,
 ) -> Result<(), StrategyError> {
     crate::fingerprint::load_corpus().await;
     let shaping = Shaping::from(evasion);
@@ -746,13 +777,18 @@ pub async fn scan(
     let crowds = crate::scanner::service::Crowds::default();
     let tarpits = crate::scanner::service::Tarpits::default();
     let slow = SlowPaths::default();
+    let held = HeldPorts::default();
     let finding = PathFinding::of(OnLinkTable::of_segments());
-    let neighbours = Arc::new(Neighbours::of_system());
+    let neighbours = Arc::new(neighbours);
     let mut pool = ProbePool::new(
         concurrency_limit,
         ctx.clone(),
         ScannerKind::Connect,
         |probed: ProbedPort, audit: &mut ProbeAudit| {
+            if let Some(port) = probed.as_ref().and_then(|probed| probed.held_down) {
+                held.note(port);
+                return;
+            }
             if let Some(silence) = probed.as_ref().and_then(|probed| probed.silence) {
                 slow.note(silence);
             }
@@ -800,9 +836,12 @@ pub async fn scan(
     }
 
     // Every target dispatched; wait out the probes still in flight, then the
-    // second askings they left owed.
+    // second askings they left owed: the ports a hold-down kept back, and
+    // then those a slow path did, among which the first may have left some.
     pool.drain().await;
+    held.ask_again(&asking, &mut pool).await;
     slow.ask_again(&asking, &mut pool).await;
+    held.ask_again(&asking, &mut pool).await;
     let audit = pool.into_audit();
     // Identification runs inside this walk rather than as a pass after it, so
     // a stop that came while it ran ended the identifications in flight and
@@ -954,6 +993,78 @@ impl Asking<'_> {
                     .filter(|port| port.state() != PortState::Unasked),
                 ..probed
             })
+        }
+    }
+}
+
+/// A port whose connect the kernel refused for a hold-down on its host's
+/// neighbour, and when the hold-down is over.
+#[derive(Debug, Clone, Copy)]
+struct HeldPort {
+    target: PlannedTarget,
+    until: Instant,
+}
+
+/// The ports a connect port scan was refused for the kernel's hold-down on
+/// their host's neighbour, each asked again once it is over.
+///
+/// macOS refuses a connect to a neighbour it gave up on lately with
+/// `EHOSTDOWN`, for twenty seconds by default, and sends nothing; the first
+/// such refusal is no verdict on the host (see
+/// [`HoldDowns`](crate::scanner::strategy::raw::neighbors::HoldDowns)), and
+/// no fault of this machine's. A port refused, and every port of the host
+/// that comes up while the hold-down lasts, gives up its place in the scan's
+/// pool at once rather than wait there, which would hold the places of ports
+/// of other hosts for the whole twenty seconds: it is noted here with the end
+/// of the hold-down, and asked again once the first askings are done and the
+/// hold-down has passed. The connect that asks again has the kernel resolve
+/// the neighbour afresh, and waits as a neighbour's first connect does. A
+/// host refused for a hold-down a second time is filed unreachable, every
+/// port of it unasked.
+#[derive(Debug, Default)]
+struct HeldPorts {
+    held: std::sync::Mutex<Vec<HeldPort>>,
+}
+
+impl HeldPorts {
+    /// Notes a port held for a hold-down.
+    fn note(&self, port: HeldPort) {
+        self.held
+            .lock()
+            .unwrap_or_else(|held| held.into_inner())
+            .push(port);
+    }
+
+    /// Asks again, through `pool`, every port noted held, once the latest
+    /// hold-down among them has passed, until none is noted. A scan told to
+    /// stop while it waits asks nothing more, and every port still held is
+    /// recorded unasked, as is one of a host past its own budget.
+    async fn ask_again<F>(&self, asking: &Asking<'_>, pool: &mut ProbePool<ProbedPort, F>)
+    where
+        F: FnMut(ProbedPort, &mut ProbeAudit),
+    {
+        let ctx = asking.ctx;
+        loop {
+            let held =
+                std::mem::take(&mut *self.held.lock().unwrap_or_else(|held| held.into_inner()));
+            let Some(until) = held.iter().map(|port| port.until).max() else {
+                return;
+            };
+            let waited = ctx
+                .handle
+                .or_stopped(tokio::time::sleep_until(until.into()))
+                .await;
+            for port in held {
+                let ip = port.target.ip();
+                if waited.is_none() || ctx.handle.should_stop() || ctx.host_expired(ip) {
+                    record_unasked(ctx, &port.target);
+                    continue;
+                }
+                let patience =
+                    NEIGHBOUR_PATH_FINDING_TIMEOUT.max(connect_patience(measured_path(ctx, ip)));
+                pool.admit(asking.port(port.target, patience)).await;
+            }
+            pool.drain().await;
         }
     }
 }
@@ -1366,6 +1477,7 @@ async fn port_prober(
             attempt: Attempt::Sent,
             role: None,
             silence: None,
+            held_down: None,
             settles: true,
         })
     };
@@ -1382,7 +1494,31 @@ async fn port_prober(
             attempt,
             role: None,
             silence: None,
+            held_down: None,
             settles: true,
+        })
+    };
+
+    // Refused for a hold-down, or come up during one: its place in the pool
+    // is given back, and the port asked again after it. See `HeldPorts`.
+    let held_down = |until| {
+        Some(Probed {
+            ip: target.ip,
+            port: None,
+            responses: Vec::new(),
+            about_the_host: crate::fingerprint::AboutTheHost::default(),
+            identified_in_part: false,
+            answered: false,
+            rtt: None,
+            outcome: Outcome::Unasked,
+            attempt: Attempt::Unmade,
+            role: None,
+            silence: None,
+            held_down: Some(HeldPort {
+                target: planned,
+                until,
+            }),
+            settles: false,
         })
     };
 
@@ -1392,6 +1528,9 @@ async fn port_prober(
     while meetings < SELF_MEETINGS {
         if neighbours.unreached(target.ip) {
             return unasked(Outcome::Unroutable, Attempt::Refused(Refusal::Unresolved));
+        }
+        if let Some(until) = neighbours.held_until(target.ip) {
+            return held_down(until);
         }
         let (handshake, rtt, descriptor) = match dial(handle, descriptors::PATIENCE, || {
             std::future::ready(egress.start_connect(socket_addr, shaping))
@@ -1509,6 +1648,7 @@ async fn port_prober(
                     // port's to name. No role is read from one.
                     role: None,
                     silence: None,
+                    held_down: None,
                     settles: true,
                 })
             }
@@ -1580,6 +1720,16 @@ async fn port_prober(
             // verdict either: filing `Filtered` would credit the target with a
             // silence it was never asked for in the one field a reader takes
             // for a finding.
+            //
+            // Refused for the kernel's hold-down on the host's neighbour, it
+            // is neither: the host is held through it, and given up on at the
+            // second. See `HeldPorts`.
+            Handshake::NotSent(e) if crate::transport::probe::host_is_down(&e) => {
+                match neighbours.hold_down(target.ip, &e) {
+                    Some(until) => held_down(until),
+                    None => unasked(Outcome::Unroutable, Attempt::Refused(Refusal::Unresolved)),
+                }
+            }
             Handshake::NotSent(e) => {
                 unasked(Outcome::Unroutable, Attempt::Refused(Refusal::of(&e)))
             }
@@ -1796,6 +1946,7 @@ async fn udp_port_prober(
             // Filled in by the one arm that has a reply to read it from.
             role: None,
             silence: None,
+            held_down: None,
             settles: true,
         })
     };
@@ -3495,6 +3646,90 @@ mod tests {
             (stats.sends_attempted(), stats.sends_failed()),
             (1, 1),
             "a send this machine refused is a send that failed"
+        );
+    }
+
+    /// Scans `target` alone through [`scan_among`], with the kernel's
+    /// hold-down on a neighbour lasting a third of a second.
+    #[cfg(unix)]
+    async fn scan_held_down(ctx: &ScanContext, target: PlannedTarget) {
+        let (tx, rx) = mpsc::channel(1);
+        tx.send(target).await.expect("queued");
+        drop(tx);
+        scan_among(
+            rx,
+            1,
+            ctx.clone(),
+            ServiceDetection::Off,
+            &EvasionProfile::default(),
+            &ZoneMap::new(),
+            Neighbours::default().holding_down_for(Duration::from_millis(300)),
+        )
+        .await
+        .expect("the scan runs");
+    }
+
+    /// A connect the kernel refused for a hold-down on its host's neighbour,
+    /// `EHOSTDOWN` on macOS, is asked again once the hold-down is over, and
+    /// is no fault of this machine's.
+    ///
+    /// Read as this machine refusing, it left the port unasked and the report
+    /// blaming the scan, though the kernel's memory of the neighbour failing
+    /// may be another process's, and a neighbour asleep through one
+    /// resolution is awake for the next.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_connect_refused_for_a_hold_down_is_asked_again_after_it() {
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let listener = std::net::TcpListener::bind((ip, 0)).expect("bind a listener");
+        let addr = listener.local_addr().expect("an inet address");
+        crate::transport::dial::dialled::refuse(addr, libc::EHOSTDOWN, 1);
+        let (session, ctx) = crate::scanner::session::ScanSession::new();
+
+        scan_held_down(&ctx, tcp_target(ip, addr.port())).await;
+
+        assert_eq!(
+            crate::transport::dial::dialled::to(addr),
+            2,
+            "the port was not asked again"
+        );
+        let state = session
+            .hosts()
+            .read(ip, |host| host.ports().map(Port::state).collect::<Vec<_>>());
+        assert_eq!(state, Some(vec![PortState::Open]));
+        assert!(
+            ctx.failures_snapshot().is_empty(),
+            "a hold-down was blamed on this machine: {:?}",
+            ctx.failures_snapshot()
+        );
+        assert!(!ctx.is_unroutable(ip));
+    }
+
+    /// A host the kernel holds down again once the first hold-down is over is
+    /// filed unreachable, its port unasked, and still not as this machine's
+    /// fault: the second refusal comes of a resolution begun after the first
+    /// hold-down, and is the kernel's verdict.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_connect_refused_for_a_second_hold_down_files_its_host_unreachable() {
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let listener = std::net::TcpListener::bind((ip, 0)).expect("bind a listener");
+        let addr = listener.local_addr().expect("an inet address");
+        crate::transport::dial::dialled::refuse(addr, libc::EHOSTDOWN, 2);
+        let (session, ctx) = crate::scanner::session::ScanSession::new();
+
+        scan_held_down(&ctx, tcp_target(ip, addr.port())).await;
+
+        assert_eq!(crate::transport::dial::dialled::to(addr), 2);
+        let state = session
+            .hosts()
+            .read(ip, |host| host.ports().map(Port::state).collect::<Vec<_>>());
+        assert_eq!(state, Some(vec![PortState::Unasked]));
+        assert!(ctx.is_unroutable(ip), "the host is unreached");
+        assert!(
+            ctx.failures_snapshot().is_empty(),
+            "a hold-down was blamed on this machine: {:?}",
+            ctx.failures_snapshot()
         );
     }
 

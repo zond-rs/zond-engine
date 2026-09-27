@@ -55,6 +55,7 @@ use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
 use crate::protocols::icmp;
 use crate::report::ScannerKind;
 use crate::report::StopReason;
+use crate::scanner::pacing::deadline::HeldAllowance;
 use crate::scanner::pacing::retry::{ProbeLedger, RetryPolicy};
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::StrategyError;
@@ -155,9 +156,24 @@ pub struct OsEchoScanner {
     /// between two probes at one host where that is longer, behind the
     /// longest its first attempt can be held while its neighbour is asked for.
     deadline: Instant,
+    /// How much of the time hold-downs keep requests back the deadline has
+    /// been given.
+    held_allowed: HeldAllowance,
     /// Why requests did not leave, split by whose fact it was: this host's
-    /// send path, or an address nothing reaches from here.
+    /// send path, or an address nothing reaches from here; and the targets
+    /// held through the kernel's hold-down on their neighbour.
     faults: SendFaults,
+}
+
+/// What became of one attempt's request.
+enum Attempt {
+    /// It left, under this sequence.
+    Sent(u16),
+    /// The kernel refused it for a hold-down on the target's neighbour, and
+    /// the target is held through it; see [`SendFaults::hold`].
+    Held,
+    /// It did not leave.
+    Unsent,
 }
 
 impl OsEchoScanner {
@@ -239,6 +255,7 @@ impl OsEchoScanner {
             sweep: HostSweep::new(ledger),
             by_sequence: HashMap::with_capacity(target_count),
             deadline: Instant::now() + held + probe_lifetime + send_duration + QUIET_FLOOR,
+            held_allowed: HeldAllowance::default(),
             faults: SendFaults::default(),
         }
     }
@@ -279,12 +296,17 @@ impl OsEchoScanner {
         // A retry restarts its probe's clock whatever became of it: from the
         // send, which re-arms it, or from now for one that did not leave, whose
         // attempt stays charged so an unroutable target exhausts on schedule
-        // rather than waiting outstanding forever.
+        // rather than waiting outstanding forever. One held for a hold-down
+        // goes back to its queue, a retry's clock still stopped, to be sent
+        // once the hold-down is over.
         match sent {
-            Some(sequence) if retry => self.sweep.ledger.rearm(target, target, sequence, now),
-            Some(sequence) => self.sweep.ledger.arm(target, target, sequence, (), now),
-            None if retry => self.sweep.ledger.resume(&target, now),
-            None => {}
+            Attempt::Sent(sequence) if retry => {
+                self.sweep.ledger.rearm(target, target, sequence, now);
+            }
+            Attempt::Sent(sequence) => self.sweep.ledger.arm(target, target, sequence, (), now),
+            Attempt::Held => self.queue(retry).push_back(target),
+            Attempt::Unsent if retry => self.sweep.ledger.resume(&target, now),
+            Attempt::Unsent => {}
         }
     }
 
@@ -292,9 +314,10 @@ impl OsEchoScanner {
     /// queue of targets not yet asked, whose host may be probed now, rotating
     /// past the ones that may not.
     ///
-    /// Two things may turn one away: the gap the scan keeps between probes at
-    /// one host, and a neighbour still being asked for (see
-    /// [`NeighborGates::admit`]). Either sends it to the back rather than out,
+    /// Three things may turn one away: the gap the scan keeps between probes
+    /// at one host, a neighbour still being asked for (see
+    /// [`NeighborGates::admit`]), and a kernel's hold-down on it (see
+    /// [`SendFaults::hold`]). Either sends it to the back rather than out,
     /// because a probe dropped on that answer is a host the pass silently
     /// stops asking about. A target whose neighbour never answered is taken
     /// out and filed unreached, with nothing sent it.
@@ -309,7 +332,9 @@ impl OsEchoScanner {
         let waiting = self.queue(retries).len();
         for _ in 0..waiting {
             let candidate = self.queue(retries).pop_front()?;
-            if self.ctx.host_ready_at(candidate, now).is_some() {
+            if self.ctx.host_ready_at(candidate, now).is_some()
+                || self.faults.held_until(candidate, now).is_some()
+            {
                 self.queue(retries).push_back(candidate);
                 continue;
             }
@@ -351,9 +376,11 @@ impl OsEchoScanner {
     }
 
     /// Sends the echo, and for an IPv4 target the timestamp, that make up one
-    /// attempt at `target`, returning the echo's sequence if it left.
-    fn send_pair(&mut self, target: IpAddr, now: Instant) -> Option<u16> {
-        let source = self.resolver.resolve(target)?;
+    /// attempt at `target`, and says what became of the echo.
+    fn send_pair(&mut self, target: IpAddr, now: Instant) -> Attempt {
+        let Some(source) = self.resolver.resolve(target) else {
+            return Attempt::Unsent;
+        };
 
         let sequence = self.next_sequence;
         let message = match icmp::build_echo_request_message(
@@ -368,7 +395,7 @@ impl OsEchoScanner {
             Err(e) => {
                 error!(verbosity = 2, "cannot build an echo for {target}: {e}");
                 self.sweep.audit.record_send(false);
-                return None;
+                return Attempt::Unsent;
             }
         };
 
@@ -382,6 +409,14 @@ impl OsEchoScanner {
                 true
             }
             Err(e) => {
+                // The kernel's first hold-down on the target's neighbour is
+                // no fact about the address: nothing was sent, and the target
+                // is asked again after it. The deadline is given the time,
+                // once for holds that overlap.
+                if let Some(until) = self.faults.hold(target, &e) {
+                    self.deadline += self.held_allowed.take(now, until);
+                    return Attempt::Held;
+                }
                 // An address nothing reaches is the address's fact and is
                 // reported against it; only this host's own refusals are the
                 // pass failing. Each said once. See `SendFaults`.
@@ -416,8 +451,10 @@ impl OsEchoScanner {
         // in.
         if sent {
             self.ctx.host_probed(target, now);
+            Attempt::Sent(sequence)
+        } else {
+            Attempt::Unsent
         }
-        sent.then_some(sequence)
     }
 
     /// Asks the same target what time it thinks it is, where the family has a
@@ -1040,6 +1077,83 @@ mod tests {
             } else {
                 assert!(ctx.take_unroutable().is_empty());
                 assert_eq!(failures.len(), 1, "this host's refusal is a failure");
+            }
+        }
+    }
+
+    /// A request the kernel refused for a hold-down on the target's
+    /// neighbour, `EHOSTDOWN` on macOS, is sent again once the hold-down is
+    /// over, and the target is not filed unreached on it; refused for a second
+    /// hold-down after waiting one out, the target is.
+    ///
+    /// Filed on the first, a host whose neighbour slept through one
+    /// resolution, whoever asked for it, was never asked what it runs.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_request_refused_for_a_hold_down_is_sent_after_it() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// Refuses its first `refused` echo requests as macOS does inside a
+        /// hold-down, and counts the ones it takes.
+        struct HeldDown {
+            refused: usize,
+            asked: Arc<AtomicUsize>,
+            taken: Arc<AtomicUsize>,
+        }
+
+        impl ProbeSender for HeldDown {
+            fn send(
+                &self,
+                segment: &[u8],
+                _src: IpAddr,
+                _dst: IpAddr,
+                _zone: Option<u32>,
+                _emission: Emission,
+            ) -> Result<(), SendError> {
+                // An echo request, not the timestamp beside it.
+                if segment.first() != Some(&8) {
+                    return Ok(());
+                }
+                if self.asked.fetch_add(1, Ordering::SeqCst) < self.refused {
+                    return Err(SendError::from_io(std::io::Error::from_raw_os_error(
+                        libc::EHOSTDOWN,
+                    )));
+                }
+                self.taken.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        for (refused, unreached) in [(1, false), (2, true)] {
+            let (_session, ctx) = ScanSession::new();
+            let (_tx, rx) = mpsc::channel(1024);
+            let taken = Arc::new(AtomicUsize::new(0));
+            let sender = HeldDown {
+                refused,
+                asked: Arc::new(AtomicUsize::new(0)),
+                taken: Arc::clone(&taken),
+            };
+            let transport = ProbeTransport::from_parts(Box::new(sender), rx);
+            let mut scanner = OsEchoScanner::with_transport(ctx.clone(), vec![TARGET], transport);
+            scanner.faults.held_down.hold_down_for = Duration::from_millis(200);
+
+            scanner.probe().await.expect("the phase runs");
+
+            let failures = ctx.failures_snapshot();
+            assert!(
+                failures.is_empty(),
+                "a hold-down failed the pass: {failures:?}"
+            );
+            if unreached {
+                assert_eq!(ctx.take_unroutable(), vec![TARGET], "held down twice");
+                assert_eq!(taken.load(Ordering::SeqCst), 0);
+            } else {
+                assert!(ctx.take_unroutable().is_empty(), "filed on one hold-down");
+                assert!(
+                    taken.load(Ordering::SeqCst) > 0,
+                    "not asked after the hold-down"
+                );
             }
         }
     }

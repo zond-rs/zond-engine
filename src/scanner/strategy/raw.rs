@@ -40,7 +40,7 @@ pub(super) mod neighbors;
 
 use std::net::IpAddr;
 use std::num::NonZeroU32;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::evasion::SegmentShaping;
 use crate::logging::error;
@@ -346,7 +346,9 @@ pub(super) fn send_init(
             Some(tag)
         }
         Err(e) => {
-            faults.record(dst_addr, &e);
+            if faults.hold(dst_addr, &e).is_none() {
+                faults.record(dst_addr, &e);
+            }
             None
         }
     }
@@ -442,6 +444,7 @@ pub(super) fn send_syn(
             success!(verbosity = 2, "sent SYN probe to {dst_addr}:{dst_port}");
             true
         }
+        Err(e) if faults.hold(dst_addr, &e).is_some() => false,
         Err(e) => {
             // Which of the two this was decides how it is reported; see
             // `SendFaults`. Either way it is said once per kind rather than once
@@ -568,6 +571,10 @@ pub(super) fn send_udp(
 ///
 /// Each keeps the first of its kind rather than all of them: sixteen identical
 /// "no route to host" lines say nothing the first does not.
+///
+/// A refusal for the kernel's hold-down on the address's neighbour is neither
+/// the first time: the address is held through it, and asked again after it;
+/// see [`hold`](Self::hold).
 #[derive(Debug, Default)]
 pub(super) struct SendFaults {
     /// The first failure that says this host's send path is the problem.
@@ -582,9 +589,42 @@ pub(super) struct SendFaults {
     /// number cannot tell somebody *which* of their targets went uncovered, and
     /// that is the only part they can act on.
     pub(super) addresses: std::collections::BTreeSet<IpAddr>,
+    /// The addresses held through the kernel's hold-down on their neighbour.
+    pub(super) held_down: neighbors::HoldDowns,
 }
 
 impl SendFaults {
+    /// Holds `target` through the kernel's hold-down on its neighbour, where
+    /// `error` refused a send to it for one and it is not yet the kernel's
+    /// verdict, and returns when the hold-down is over; `None` for any other
+    /// refusal, which the caller [`record`](Self::record)s.
+    ///
+    /// Said once per hold-down, at the level of a line about one target. The
+    /// caller sends the address nothing until then, and asks it again after:
+    /// see [`HoldDowns`](neighbors::HoldDowns).
+    pub(super) fn hold(&mut self, target: IpAddr, error: &SendError) -> Option<Instant> {
+        if !matches!(error, SendError::HeldDown(_)) {
+            return None;
+        }
+        let now = Instant::now();
+        let held = self.held_down.until(target, now).is_some();
+        let until = self.held_down.hold(target, now)?;
+        if !held {
+            info!(
+                verbosity = 2,
+                "{target} held down by the kernel, asked again in {}s ({error:#})",
+                self.held_down.hold_down_for.as_secs()
+            );
+        }
+        Some(until)
+    }
+
+    /// Until when `target` is held through a hold-down, if it still is at
+    /// `now`. See [`hold`](Self::hold).
+    pub(super) fn held_until(&self, target: IpAddr, now: Instant) -> Option<Instant> {
+        self.held_down.until(target, now)
+    }
+
     /// Files one failed send against the address it was aimed at.
     pub(super) fn record(&mut self, target: IpAddr, error: &SendError) {
         if error.is_unroutable() {

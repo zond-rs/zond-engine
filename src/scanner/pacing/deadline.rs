@@ -20,7 +20,7 @@
 //! crossing an ocean does, and no scanner has to wire the two together to get
 //! it.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::rtt_window::RttWindow;
 use super::timer::{ScanBudget, ScanTimer};
@@ -149,6 +149,33 @@ pub struct AdaptiveDeadline {
     silence_floor: Duration,
     silence_ceiling: Duration,
     jitter_multiplier: f64,
+}
+
+/// How much of the time a pass holds probes back its deadline has been
+/// given, so holds that overlap, any number of hosts held at once, are given
+/// it once.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HeldAllowance {
+    /// Until when the deadline has been given the time.
+    until: Instant,
+}
+
+impl Default for HeldAllowance {
+    fn default() -> Self {
+        Self {
+            until: Instant::now(),
+        }
+    }
+}
+
+impl HeldAllowance {
+    /// The part of a hold from `now` to `until` not yet given to the
+    /// deadline, noted as given.
+    pub(crate) fn take(&mut self, now: Instant, until: Instant) -> Duration {
+        let from = self.until.max(now);
+        self.until = from.max(until);
+        until.saturating_duration_since(from)
+    }
 }
 
 impl AdaptiveDeadline {

@@ -108,6 +108,28 @@ pub(crate) mod dialled {
     pub(crate) fn to(addr: SocketAddr) -> usize {
         DIALLED.lock().unwrap().get(&addr).copied().unwrap_or(0)
     }
+
+    /// The error each connection begun to an address is refused with, and
+    /// how many more are.
+    static REFUSED: LazyLock<Mutex<HashMap<SocketAddr, (i32, usize)>>> =
+        LazyLock::new(Mutex::default);
+
+    /// Has the next `times` connections begun to `addr` refused before
+    /// anything leaves, with the operating system's error `code`, as a kernel
+    /// refuses them for reasons a test cannot arrange: a hold-down on a
+    /// neighbour, say.
+    #[cfg(unix)]
+    pub(crate) fn refuse(addr: SocketAddr, code: i32, times: usize) {
+        REFUSED.lock().unwrap().insert(addr, (code, times));
+    }
+
+    /// The refusal the next connection to `addr` meets, if one is due.
+    pub(super) fn refusal(addr: SocketAddr) -> Option<std::io::Error> {
+        let mut refused = REFUSED.lock().unwrap();
+        let (code, times) = refused.get_mut(&addr).filter(|(_, times)| *times > 0)?;
+        *times -= 1;
+        Some(std::io::Error::from_raw_os_error(*code))
+    }
 }
 
 /// What a caller has chosen about a socket beyond where it is going: a source
@@ -352,7 +374,12 @@ impl Egress {
         shaping: Shaping,
     ) -> io::Result<Connecting> {
         #[cfg(test)]
-        dialled::note(addr);
+        {
+            dialled::note(addr);
+            if let Some(refused) = dialled::refusal(addr) {
+                return Err(refused);
+            }
+        }
         let socket = self.socket(addr.ip(), Protocol::Tcp, shaping)?;
         socket.set_nonblocking(true)?;
         match socket.connect(&addr.into()) {

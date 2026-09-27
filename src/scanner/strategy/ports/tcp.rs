@@ -1548,7 +1548,7 @@ mod tests {
             "a probe behind the refused one was put to the kernel"
         );
 
-        let after = before + scanner.core.hold_down_for + Duration::from_secs(1);
+        let after = before + scanner.core.held_down.hold_down_for + Duration::from_secs(1);
         while let Some(held) = scanner.core.take_ready(after) {
             scanner.send_held(held, after);
         }

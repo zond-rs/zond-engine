@@ -40,7 +40,7 @@ use crate::model::port::{PortSet, Protocol, TCP_BY_PREVALENCE};
 use crate::model::technique::{TcpReply, TcpScanTechnique};
 use crate::protocols as protocol;
 use crate::scanner::dispatcher::WalkOrder;
-use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
+use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig, HeldAllowance};
 use crate::scanner::pacing::retry::{ProbeLedger, Resolution, RetryPolicy};
 use crate::scanner::session::ScanContext;
 use crate::system::interface::RoutedTarget;
@@ -505,6 +505,12 @@ pub struct RoutedScanner {
     sweep: HostSweep<SweepToken>,
     /// Targets whose first probe has not left yet, released by the send ticker.
     pending: std::vec::IntoIter<IpAddr>,
+    /// Targets whose first probe the kernel refused for a hold-down on their
+    /// neighbour, sent once it is over; see [`SendFaults::hold`].
+    held: std::collections::VecDeque<IpAddr>,
+    /// How much of the time hold-downs keep probes back the deadline has been
+    /// given.
+    held_allowed: HeldAllowance,
     /// How often the send ticker fires, and how many probes it releases each
     /// time. Together they are the configured rate; see [`pacing_for`].
     send_tick: Duration,
@@ -871,6 +877,8 @@ impl RoutedScanner {
             dns_tx,
             sweep: HostSweep::new(ProbeLedger::new(retry, target_count)),
             pending: order.into_iter(),
+            held: std::collections::VecDeque::new(),
+            held_allowed: HeldAllowance::default(),
             send_tick,
             batch,
             faults: SendFaults::default(),
@@ -897,7 +905,7 @@ impl RoutedScanner {
         // still mid-schedule was cut off rather than spent, one still queued was
         // never sent, and one with no route was never asked.
         let interrupted = self.sweep.ledger.drain_unresolved();
-        let unasked: Vec<IpAddr> = self.pending.by_ref().collect();
+        let unasked: Vec<IpAddr> = self.held.drain(..).chain(self.pending.by_ref()).collect();
         self.ctx
             .record_address_outcomes(Outcome::Interrupted, interrupted.len() as u64);
         self.ctx
@@ -1090,7 +1098,7 @@ impl RoutedScanner {
 
     /// Whether every probe this sweep intends to send has left.
     fn nothing_left_to_send(&self) -> bool {
-        self.sweep.retries.is_empty() && self.pending.len() == 0
+        self.sweep.retries.is_empty() && self.held.is_empty() && self.pending.len() == 0
     }
 
     /// Releases one tick's worth of probes: retries first, then targets not yet
@@ -1108,6 +1116,8 @@ impl RoutedScanner {
             // about and there is no earlier probe for it to be too close to.
             if let Some(target) = self.next_ready_retry(now) {
                 self.reprobe(target, now);
+            } else if let Some(target) = self.next_unheld(now) {
+                self.probe(target, now);
             } else if let Some(target) = self.pending.next() {
                 self.probe(target, now);
             } else {
@@ -1130,7 +1140,9 @@ impl RoutedScanner {
             if !self.sweep.ledger.contains(&target) {
                 continue;
             }
-            if self.ctx.host_ready_at(target, now).is_some() {
+            if self.ctx.host_ready_at(target, now).is_some()
+                || self.faults.held_until(target, now).is_some()
+            {
                 self.sweep.retries.push_back(target);
                 continue;
             }
@@ -1139,14 +1151,41 @@ impl RoutedScanner {
         None
     }
 
+    /// The first target held for a hold-down whose hold-down is over, taken
+    /// off the queue, or `None` where none is.
+    fn next_unheld(&mut self, now: Instant) -> Option<IpAddr> {
+        let ready = self
+            .held
+            .iter()
+            .position(|target| self.faults.held_until(*target, now).is_none())?;
+        self.held.remove(ready)
+    }
+
+    /// Whether the kernel refused the attempt just made at `target` for a
+    /// hold-down on its neighbour, which it is held through: the deadline is
+    /// given the time, once for holds that overlap.
+    fn held_down(&mut self, target: IpAddr, now: Instant) -> bool {
+        let Some(until) = self.faults.held_until(target, now) else {
+            return false;
+        };
+        self.deadline
+            .allow_for_holding(self.held_allowed.take(now, until));
+        true
+    }
+
     /// Puts the first attempt at `target` on the wire and arms its probe.
     ///
     /// An attempt none of whose packets could be sent is not armed, so an
     /// address nobody asked never earns a verdict. One that reached the wire
     /// on any port is armed, since any of them can draw the answer.
+    ///
+    /// One the kernel refused for a hold-down on its neighbour is held, and
+    /// made once the hold-down is over.
     fn probe(&mut self, target: IpAddr, now: Instant) {
-        if let Some(token) = self.send_attempt(target, now) {
-            self.sweep.ledger.arm(target, target, token, (), now);
+        match self.send_attempt(target, now) {
+            Some(token) => self.sweep.ledger.arm(target, target, token, (), now),
+            None if self.held_down(target, now) => self.held.push_back(target),
+            None => {}
         }
     }
 
@@ -1154,9 +1193,14 @@ impl RoutedScanner {
     /// clock: from the send, or from now for a retry none of whose packets
     /// left, whose attempt stays charged so an unroutable target still runs
     /// out of attempts on schedule. See [`HostSweep::retries`].
+    ///
+    /// One the kernel refused for a hold-down on its neighbour goes back to
+    /// the queue with its clock still stopped, and is sent once the
+    /// hold-down is over.
     fn reprobe(&mut self, target: IpAddr, now: Instant) {
         match self.send_attempt(target, now) {
             Some(token) => self.sweep.ledger.rearm(target, target, token, now),
+            None if self.held_down(target, now) => self.sweep.retries.push_back(target),
             None => self.sweep.ledger.resume(&target, now),
         }
     }
@@ -1174,6 +1218,11 @@ impl RoutedScanner {
                 let token = SynToken::fresh(src_port);
                 let mut sent = false;
                 for &dst_port in dst_ports.as_slice() {
+                    // Every port of it is refused while the kernel holds its
+                    // neighbour down, and none is put to the kernel.
+                    if self.faults.held_until(target, now).is_some() {
+                        break;
+                    }
                     let left = send_syn(
                         self.transport.tx.as_ref(),
                         source,
@@ -1655,6 +1704,95 @@ mod tests {
             )]
         );
         assert_eq!(ctx.take_unroutable(), [IpAddr::from(first)]);
+    }
+
+    /// An attempt the kernel refused for a hold-down on the target's
+    /// neighbour, `EHOSTDOWN` on macOS, is made again once the hold-down is
+    /// over, and the address is not filed unreached on it; refused for a
+    /// second hold-down after waiting one out, it is.
+    ///
+    /// Filed on the first, an address whose neighbour slept through one
+    /// resolution, whoever asked for it, was never asked whether anything is
+    /// there.
+    #[cfg(unix)]
+    #[test]
+    fn an_attempt_refused_for_a_hold_down_is_made_after_it() {
+        use crate::transport::probe::{ProbeSender, SendError};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        /// Refuses every send while `holding`, as macOS does inside a
+        /// hold-down, and counts the ones it takes.
+        struct HeldDown {
+            holding: Arc<AtomicBool>,
+            taken: Arc<AtomicUsize>,
+        }
+
+        impl ProbeSender for HeldDown {
+            fn send(
+                &self,
+                _s: &[u8],
+                _src: IpAddr,
+                _dst: IpAddr,
+                _zone: Option<u32>,
+                _emission: Emission,
+            ) -> Result<(), SendError> {
+                if self.holding.load(Ordering::SeqCst) {
+                    return Err(SendError::from_io(std::io::Error::from_raw_os_error(
+                        libc::EHOSTDOWN,
+                    )));
+                }
+                self.taken.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        for held_again in [false, true] {
+            let (_session, ctx) = ScanSession::new();
+            let (_replies, rx) = tokio::sync::mpsc::channel(8);
+            let holding = Arc::new(AtomicBool::new(true));
+            let taken = Arc::new(AtomicUsize::new(0));
+            let sender = HeldDown {
+                holding: Arc::clone(&holding),
+                taken: Arc::clone(&taken),
+            };
+            let mut scanner = RoutedScanner::with_transport_asking(
+                vec![RoutedTarget {
+                    target: TARGET.into(),
+                    source: LOCAL.into(),
+                }],
+                ctx.clone(),
+                None,
+                ProbeTransport::from_parts(Box::new(sender), rx),
+                SweepProbe::syn(None),
+            );
+            let target = IpAddr::from(TARGET);
+
+            scanner.send_allowance(Instant::now());
+            holding.store(held_again, Ordering::SeqCst);
+            scanner.send_allowance(Instant::now());
+            assert!(
+                !scanner.sweep.ledger.contains(&target) && taken.load(Ordering::SeqCst) == 0,
+                "asked inside the hold-down"
+            );
+            scanner.faults.held_down.lift(target);
+            scanner.send_allowance(Instant::now());
+
+            if held_again {
+                assert!(!scanner.sweep.ledger.contains(&target));
+                assert_eq!(scanner.faults.addresses, [target].into(), "held down twice");
+            } else {
+                assert!(
+                    scanner.faults.addresses.is_empty(),
+                    "filed on one hold-down"
+                );
+                assert!(
+                    scanner.sweep.ledger.contains(&target),
+                    "not asked after the hold-down"
+                );
+            }
+            assert!(scanner.faults.broken.is_none(), "blamed on this machine");
+        }
     }
 
     /// A caller who stopped the scan knows why it ended, so the sweep files no

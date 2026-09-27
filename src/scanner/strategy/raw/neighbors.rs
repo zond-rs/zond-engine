@@ -119,6 +119,105 @@ pub(crate) const NEIGHBOR_BUDGET: Duration =
 /// concluded, and still bounds the wait by seconds.
 pub(crate) const RESOLUTION_WAIT_LIMIT: Duration = RESOLUTION_BUDGET.saturating_mul(2);
 
+/// How many of the kernel's hold-downs on one host's neighbour a pass meets,
+/// the last read as the kernel's verdict on the host.
+///
+/// Two, because the second is a different fact from the first. The first
+/// hold-down rests on a resolution the pass may never have seen, asked for by
+/// another process or an earlier pass at whatever moment the neighbour was
+/// asleep. It is waited out, and the host's next probe has the kernel ask
+/// afresh. A second comes only once a resolution begun after the first
+/// hold-down ended has gone unanswered as well: two resolutions a hold-down
+/// apart, and a third would cost another hold-down to learn what those two
+/// said. A resolution the kernel gives up on at one of this pass's own writes
+/// refuses that write with `EHOSTUNREACH`, not with a hold-down, and is read
+/// as no route at once.
+///
+/// What a live neighbour asleep through one resolution costs a pass is one
+/// hold-down: see
+/// [`kernel_neighbors::hold_down`](crate::transport::kernel_neighbors::hold_down).
+pub(crate) const HELD_DOWN_REFUSALS: u8 = 2;
+
+/// The kernel's hold-downs on the neighbours of the hosts one pass probes:
+/// which hosts are held, until when, and how often each has been.
+///
+/// A send the kernel refuses for a hold-down
+/// ([`SendError::HeldDown`](crate::transport::probe::SendError::HeldDown),
+/// `EHOSTDOWN` on macOS) sent nothing, and the first says nothing about the
+/// host; see [`HELD_DOWN_REFUSALS`]. Every pass that can meet one keeps
+/// these, so the same refusal is read the same way whichever pass met it:
+/// the host is held for the whole hold-down, sent nothing while it lasts,
+/// and asked again after it.
+#[derive(Debug)]
+pub(crate) struct HoldDowns {
+    /// Each host held down, by the host.
+    held: HashMap<IpAddr, HeldDown>,
+    /// How long the kernel holds a neighbour down; see
+    /// [`kernel_neighbors::hold_down`](crate::transport::kernel_neighbors::hold_down).
+    pub(crate) hold_down_for: Duration,
+}
+
+/// How far a pass has got with the kernel's hold-downs on one host's
+/// neighbour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HeldDown {
+    /// How many sends to the host the kernel has refused for one.
+    refusals: u8,
+    /// When the latest hold-down is over, and the host may be asked again.
+    until: Instant,
+}
+
+impl Default for HoldDowns {
+    fn default() -> Self {
+        Self {
+            held: HashMap::new(),
+            hold_down_for: crate::transport::kernel_neighbors::hold_down(),
+        }
+    }
+}
+
+impl HoldDowns {
+    /// Holds `host` through the hold-down a send to it was refused for at
+    /// `now`, and returns when it is over; `None` once the host has been held
+    /// down [`HELD_DOWN_REFUSALS`] times, when the refusal is the kernel's
+    /// verdict on it.
+    ///
+    /// A refusal while the host is held is the same hold-down, met by a send
+    /// made before the first refusal was heard, as a pass whose sends run side
+    /// by side makes them.
+    pub(crate) fn hold(&mut self, host: IpAddr, now: Instant) -> Option<Instant> {
+        let held = self.held.entry(host).or_insert(HeldDown {
+            refusals: 0,
+            until: now,
+        });
+        if held.until > now {
+            return Some(held.until);
+        }
+        held.refusals = held.refusals.saturating_add(1);
+        if held.refusals >= HELD_DOWN_REFUSALS {
+            return None;
+        }
+        held.until = crate::scanner::pacing::timer::later(now, self.hold_down_for);
+        Some(held.until)
+    }
+
+    /// Until when `host` is held, if it still is at `now`.
+    pub(crate) fn until(&self, host: IpAddr, now: Instant) -> Option<Instant> {
+        self.held
+            .get(&host)
+            .map(|held| held.until)
+            .filter(|until| *until > now)
+    }
+
+    /// Ends `host`'s hold-down now, as its passing would.
+    #[cfg(all(test, unix))]
+    pub(crate) fn lift(&mut self, host: IpAddr) {
+        if let Some(held) = self.held.get_mut(&host) {
+            held.until = Instant::now();
+        }
+    }
+}
+
 /// How far a pass has read the resolution of one neighbour. See
 /// [`NeighborGates::admit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

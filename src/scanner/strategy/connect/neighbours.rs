@@ -29,6 +29,13 @@
 //!
 //! Linux only, as the table is; see [`KernelNeighbors`]. Elsewhere nothing
 //! here reads anything, and every connect is read as it ended.
+//!
+//! macOS says it where Linux does not, for a neighbour it gave up on lately:
+//! it refuses every connect to it with `EHOSTDOWN` until a hold-down of its
+//! own has passed. That is no fault of this machine's and no verdict on the
+//! host the first time; the host's ports are held through it, their places
+//! in the scan given up rather than kept waiting, and asked again after it.
+//! See [`HoldDowns`].
 
 use std::collections::HashSet;
 use std::net::IpAddr;
@@ -37,7 +44,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::limits::NEIGHBOUR_PATH_FINDING_TIMEOUT;
 use crate::logging::info;
-use crate::scanner::strategy::raw::neighbors::{NEIGHBOR_ROUNDS, unreached};
+use crate::scanner::strategy::raw::neighbors::{HoldDowns, NEIGHBOR_ROUNDS, unreached};
 use crate::transport::kernel_neighbors::{KernelNeighbors, NeighborState};
 
 /// What a connect port scan knows of the neighbours its connects wait on.
@@ -48,6 +55,8 @@ pub(super) struct Neighbours {
     given_up: Mutex<HashSet<IpAddr>>,
     /// The hosts filed unreachable for one, each logged once.
     filed: Mutex<HashSet<IpAddr>>,
+    /// The kernel's hold-downs on the hosts' neighbours.
+    holds: Mutex<HoldDowns>,
 }
 
 impl Neighbours {
@@ -62,7 +71,17 @@ impl Neighbours {
             table,
             given_up: Mutex::default(),
             filed: Mutex::default(),
+            holds: Mutex::default(),
         }
+    }
+
+    /// These, holding a neighbour down for `hold_down_for` where the kernel
+    /// refuses a connect for a hold-down, rather than for as long as the
+    /// running kernel does.
+    #[cfg(all(test, unix))]
+    pub(super) fn holding_down_for(self, hold_down_for: Duration) -> Self {
+        lock(&self.holds).hold_down_for = hold_down_for;
+        self
     }
 
     /// Where the neighbour a connect to `host` waits on stands, read now,
@@ -80,12 +99,40 @@ impl Neighbours {
             .filter(|state| state.is_unresolved())
     }
 
+    /// Until when connects to `host` are held for the kernel's hold-down on
+    /// its neighbour, if they still are.
+    pub(super) fn held_until(&self, host: IpAddr) -> Option<Instant> {
+        lock(&self.holds).until(host, Instant::now())
+    }
+
+    /// Holds `host` through the kernel's hold-down on its neighbour, which a
+    /// connect to it was just refused for, in the kernel's words `why`, and
+    /// returns when it is over; or, where the refusal is the kernel's
+    /// verdict, gives the neighbour up and returns `None`. See
+    /// [`HoldDowns::hold`].
+    pub(super) fn hold_down(&self, host: IpAddr, why: &std::io::Error) -> Option<Instant> {
+        let now = Instant::now();
+        let (held, until, hold_down_for) = {
+            let mut holds = lock(&self.holds);
+            let held = holds.until(host, now).is_some();
+            (held, holds.hold(host, now), holds.hold_down_for)
+        };
+        match until {
+            Some(_) if !held => info!(
+                verbosity = 2,
+                "{host} held down by the kernel, asked again in {}s ({why})",
+                hold_down_for.as_secs()
+            ),
+            Some(_) => {}
+            None => self.give_up(host),
+        }
+        until
+    }
+
     /// Whether the neighbour `host`'s connects wait on has been given up on,
     /// so `host` is sent nothing more; filed unreachable, the first time.
     pub(super) fn unreached(&self, host: IpAddr) -> bool {
-        let Some(neighbour) = self.neighbour_of(host) else {
-            return false;
-        };
+        let neighbour = self.neighbour_of(host);
         let given_up = lock(&self.given_up).contains(&neighbour);
         if given_up {
             self.file(host, neighbour);
@@ -96,14 +143,19 @@ impl Neighbours {
     /// Gives up the neighbour `host`'s connects wait on, and files `host`
     /// unreachable.
     pub(super) fn give_up(&self, host: IpAddr) {
-        let neighbour = self.neighbour_of(host).unwrap_or(host);
+        let neighbour = self.neighbour_of(host);
         lock(&self.given_up).insert(neighbour);
         self.file(host, neighbour);
     }
 
-    /// The neighbour a connect to `host` waits on, where there is one to read.
-    fn neighbour_of(&self, host: IpAddr) -> Option<IpAddr> {
-        self.table.as_ref()?.next_hop(host)
+    /// The neighbour a connect to `host` waits on: the one the table's
+    /// routes name, and otherwise the host itself, which is all a refusal
+    /// without a table can be about.
+    fn neighbour_of(&self, host: IpAddr) -> IpAddr {
+        self.table
+            .as_ref()
+            .and_then(|table| table.next_hop(host))
+            .unwrap_or(host)
     }
 
     /// Logs `host` unreachable for `neighbour`, once.

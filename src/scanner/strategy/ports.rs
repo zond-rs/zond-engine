@@ -98,13 +98,14 @@ use crate::report::ScannerKind;
 use crate::report::StopReason;
 use crate::scanner::audit::{Pacing, ProbeAudit};
 use crate::scanner::pacing::congestion::{CongestionWindow, WindowLimits};
+use crate::scanner::pacing::deadline::HeldAllowance;
 use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig};
 use crate::scanner::pacing::retry::{
     Due, ProbeLedger, Resolution, RetryPolicy, SilentHostPolicy, saturating_mul,
 };
 use crate::scanner::session::ScanContext;
 use crate::scanner::strategy::raw::neighbors::{
-    Admission, NEIGHBOR_RECHECK, NeighborGates, RESOLUTION_BUDGET,
+    Admission, HoldDowns, NEIGHBOR_RECHECK, NeighborGates, RESOLUTION_BUDGET,
 };
 use crate::scanner::strategy::{PortScanner, StrategyError};
 use crate::system::interface::{NoSource, SourceResolver};
@@ -393,16 +394,13 @@ pub(crate) struct RawProbeScan<T> {
     /// [`is_unreachable`](Self::is_unreachable).
     pub unreachable: std::collections::BTreeSet<IpAddr>,
     /// The hosts the kernel refused a probe to for a neighbour it gave up on
-    /// lately, each with how often it has, and until when its probes are held
-    /// for it. See [`hold_down`](Self::hold_down).
-    pub(crate) held_down: std::collections::HashMap<IpAddr, HeldDown>,
-    /// How long the kernel holds a neighbour down; see
-    /// [`kernel_neighbors::hold_down`](crate::transport::kernel_neighbors::hold_down).
-    pub(crate) hold_down_for: Duration,
-    /// Until when the deadline has been given the time hold-downs and second
-    /// resolutions keep probes back, so holds that overlap are given it once.
-    /// See [`allow_until`](Self::allow_until).
-    held_allowed: Instant,
+    /// lately, and until when their probes are held for it. See
+    /// [`hold_down`](Self::hold_down).
+    pub(crate) held_down: HoldDowns,
+    /// How much of the time hold-downs and second resolutions keep probes
+    /// back the deadline has been given, so holds that overlap are given it
+    /// once. See [`allow_until`](Self::allow_until).
+    held_allowed: HeldAllowance,
     /// How far this scan has read the resolution of each host's neighbour,
     /// for a transport whose sends wait on one it can read. See
     /// [`admit`](Self::admit).
@@ -580,9 +578,8 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             retries_refused: 0,
             unasked_unsent: 0,
             unreachable: std::collections::BTreeSet::new(),
-            held_down: std::collections::HashMap::new(),
-            hold_down_for: crate::transport::kernel_neighbors::hold_down(),
-            held_allowed: Instant::now(),
+            held_down: HoldDowns::default(),
+            held_allowed: HeldAllowance::default(),
             neighbors: NeighborGates::default(),
             audit: ProbeAudit::new(),
             window: CongestionWindow::new(window),
@@ -803,7 +800,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
                 info!(
                     verbosity = 2,
                     "{host} held down by the kernel, asked again in {}s ({error:#})",
-                    self.hold_down_for.as_secs()
+                    self.held_down.hold_down_for.as_secs()
                 );
             }
             (Err(error), _) if error.is_unroutable() && !self.ledger.host_has_answered(&host) => {
@@ -841,57 +838,39 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
 
     /// Holds `host` out of the kernel's hold-down on its neighbour, which a
     /// probe to it was just refused for, and whether it did: `false` once the
-    /// host has been held down [`HELD_DOWN_REFUSALS`] times, when the refusal
-    /// is read as the kernel's verdict on the host.
+    /// refusal is the kernel's verdict on the host. See [`HoldDowns`].
     ///
-    /// The first refusal is not one. The failure the kernel remembers is from
-    /// whichever write asked last, another process's or an earlier pass's as
-    /// often as this scan's, and a neighbour asleep through one resolution is
-    /// awake for the next. So
-    /// the host's probes are put off for the whole hold-down, taken back
-    /// unsent, and the first of them after it is what has the kernel ask for
-    /// the neighbour again. A host that answered nothing is not filed
-    /// unreachable on it, nor is the refusal read as congestion or as this
-    /// host's fault: the kernel sent nothing, and not for want of room.
+    /// A host held is not filed unreachable, nor is the refusal read as
+    /// congestion or as this host's fault: the kernel sent nothing, and not
+    /// for want of room. Its probes are put off for the whole hold-down,
+    /// taken back unsent, and the first of them after it is what has the
+    /// kernel ask for the neighbour again.
     ///
     /// The deadline is given the time the host is held, counted once however
     /// many hosts are held at a time; see
     /// [`allow_until`](Self::allow_until).
     pub(crate) fn hold_down(&mut self, host: IpAddr) -> bool {
         let now = Instant::now();
-        let held = self.held_down.entry(host).or_insert(HeldDown {
-            refusals: 0,
-            until: now,
-        });
-        held.refusals = held.refusals.saturating_add(1);
-        if held.refusals >= HELD_DOWN_REFUSALS {
+        let Some(until) = self.held_down.hold(host, now) else {
             return false;
-        }
-        let until = crate::scanner::pacing::timer::later(now, self.hold_down_for);
-        held.until = until;
+        };
         self.allow_until(now, until);
         true
     }
 
     /// Gives the deadline the time from `now` to `until`, for which a host's
-    /// probes are kept back, less whatever of it an earlier hold was already
-    /// given, so any number of hosts held at once cost the deadline the hold
-    /// once. See
+    /// probes are kept back, counted once where holds overlap; see
+    /// [`HeldAllowance`] and
     /// [`allow_for_holding`](crate::scanner::pacing::deadline::AdaptiveDeadline::allow_for_holding).
     fn allow_until(&mut self, now: Instant, until: Instant) {
-        let allowed = self.held_allowed.max(now);
-        self.deadline
-            .allow_for_holding(until.saturating_duration_since(allowed));
-        self.held_allowed = allowed.max(until);
+        let held = self.held_allowed.take(now, until);
+        self.deadline.allow_for_holding(held);
     }
 
     /// Until when `host`'s probes are held for the kernel's hold-down on its
     /// neighbour, if they still are at `now`.
     fn held_down_until(&self, host: IpAddr, now: Instant) -> Option<Instant> {
-        self.held_down
-            .get(&host)
-            .map(|held| held.until)
-            .filter(|until| *until > now)
+        self.held_down.until(host, now)
     }
 
     /// The address a probe to `target` leaves from, or `None` with the reason
@@ -1351,35 +1330,6 @@ fn take_ready_from(
         }
     }
     None
-}
-
-/// How many of the kernel's hold-downs on one host's neighbour a port scan
-/// meets, the last read as the kernel's verdict on the host.
-///
-/// Two, because the second is a different fact from the first. The first
-/// hold-down rests on a resolution the scan may never have seen, asked for by
-/// another process or an earlier pass at whatever moment the neighbour was
-/// asleep. It is waited out, and the host's next probe has the kernel ask
-/// afresh. A second comes only once a resolution begun after the first
-/// hold-down ended has gone unanswered as well: two resolutions a hold-down
-/// apart, and a third would cost another hold-down to learn what those two
-/// said. A resolution the kernel gives up on at one of this scan's own writes
-/// refuses that write with `EHOSTUNREACH`, not with a hold-down, and is read
-/// as no route at once.
-///
-/// What a live neighbour asleep through one resolution costs the scan is one
-/// hold-down: see
-/// [`kernel_neighbors::hold_down`](crate::transport::kernel_neighbors::hold_down).
-pub(crate) const HELD_DOWN_REFUSALS: u8 = 2;
-
-/// How far a port scan has got with the kernel's hold-downs on one host's
-/// neighbour. See [`RawProbeScan::hold_down`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct HeldDown {
-    /// How many probes to the host the kernel has refused for one.
-    refusals: u8,
-    /// When the latest hold-down is over, and the host's probes may go.
-    until: Instant,
 }
 
 /// A probe held back because its host was asked too recently, because the
@@ -2207,9 +2157,8 @@ mod tests {
             retries_refused: 0,
             unasked_unsent: 0,
             unreachable: std::collections::BTreeSet::new(),
-            held_down: std::collections::HashMap::new(),
-            hold_down_for: crate::transport::kernel_neighbors::hold_down(),
-            held_allowed: Instant::now(),
+            held_down: HoldDowns::default(),
+            held_allowed: HeldAllowance::default(),
             neighbors: NeighborGates::default(),
             audit: ProbeAudit::new(),
             window: CongestionWindow::new(WindowLimits::fixed(4)),
@@ -2341,9 +2290,8 @@ mod tests {
             retries_refused: 0,
             unasked_unsent: 0,
             unreachable: std::collections::BTreeSet::new(),
-            held_down: std::collections::HashMap::new(),
-            hold_down_for: crate::transport::kernel_neighbors::hold_down(),
-            held_allowed: Instant::now(),
+            held_down: HoldDowns::default(),
+            held_allowed: HeldAllowance::default(),
             neighbors: NeighborGates::default(),
             audit: ProbeAudit::new(),
             window: CongestionWindow::new(WindowLimits::fixed(4)),
@@ -2701,7 +2649,7 @@ mod tests {
         );
         match core.admit(TARGET, Instant::now()) {
             Admission::Hold(ready) => assert!(
-                ready >= before + core.hold_down_for,
+                ready >= before + core.held_down.hold_down_for,
                 "held for less than the hold-down"
             ),
             other => panic!("the host's next probe was not held: {other:?}"),
@@ -2710,7 +2658,7 @@ mod tests {
         assert!(core.send_failure.is_none(), "read as this host's fault");
         assert_eq!(core.unasked_refused, 0);
 
-        let after = before + core.hold_down_for + Duration::from_secs(1);
+        let after = before + core.held_down.hold_down_for + Duration::from_secs(1);
         assert_eq!(
             core.admit(TARGET, after),
             Admission::Send,
@@ -2729,10 +2677,7 @@ mod tests {
         let refused = SendError::from_io(std::io::Error::from_raw_os_error(libc::EHOSTDOWN));
 
         core.record_send((TARGET, 80), Err(&refused), true);
-        core.held_down
-            .get_mut(&TARGET)
-            .expect("the host is held down")
-            .until = Instant::now();
+        core.held_down.lift(TARGET);
         core.record_send((TARGET, 80), Err(&refused), true);
 
         assert!(core.is_unreachable(&TARGET));
@@ -2754,7 +2699,7 @@ mod tests {
             AdaptiveDeadlineConfig::new(spent, spent, Duration::ZERO, Duration::ZERO, 4.0, 8),
             1,
         );
-        core.hold_down_for = Duration::from_secs(3600);
+        core.held_down.hold_down_for = Duration::from_secs(3600);
         let refused = SendError::from_io(std::io::Error::from_raw_os_error(libc::EHOSTDOWN));
 
         core.record_send((TARGET, 80), Err(&refused), true);
