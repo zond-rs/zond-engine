@@ -29,6 +29,8 @@ use std::sync::OnceLock;
 use crate::fingerprint::os::OsMetadata;
 use crate::fingerprint::signature::{MAX_COMPILED_REGEX_BYTES, MatchRule};
 use crate::model::host::OsSource;
+use crate::model::port::build::normalised_release;
+use crate::model::port::{Build, Distributor, Release, ReleaseBasis};
 use crate::warn;
 
 use super::model::{Evidence, SourceId};
@@ -98,6 +100,10 @@ pub struct Signature {
     /// `Debian-7+deb13u4` is the distribution's build of the service itself.
     /// Takes precedence over the component phrase where a rule states both.
     extrainfo: Option<String>,
+
+    /// Whose build of the service the rule says it matched. See
+    /// [`BuildTemplate`].
+    build: Option<BuildTemplate>,
 }
 
 /// The runtime a service runs on, as its rule names it.
@@ -144,6 +150,55 @@ impl Component {
             (Some(only), None) | (None, Some(only)) => Some(only),
             (None, None) => None,
         }
+    }
+}
+
+/// Whose build of the software a rule says it matched, as the rule writes it.
+///
+/// Three keys, each a literal or a `{capture:N}` template:
+/// `service.build.distributor` (required for the rest to mean anything),
+/// `service.build.revision` and `service.build.release`. A distributor that
+/// resolves to no name [`Distributor::from_name`] knows yields no build at
+/// all, which is how a rule capturing the word before a hyphen in an OpenSSH
+/// comment reads `Ubuntu-2ubuntu2.13` as a build and `hpn-13v11`, a patch set,
+/// as nothing.
+#[derive(Debug)]
+struct BuildTemplate {
+    distributor: String,
+    revision: Option<String>,
+    release: Option<String>,
+}
+
+impl BuildTemplate {
+    /// The template a rule states, or [`None`] where it names no distributor.
+    fn from_map(rule: &MatchRule) -> Option<Self> {
+        Some(Self {
+            distributor: metadata_value(rule, "service.build.distributor")?,
+            revision: metadata_value(rule, "service.build.revision"),
+            release: metadata_value(rule, "service.build.release"),
+        })
+    }
+
+    /// The build, templates resolved against what the pattern captured and
+    /// each captured part bounded as every other field lifted off a reply is.
+    fn resolve(&self, captures: &[String]) -> Option<Build> {
+        let distributor = super::os::fill(Some(&self.distributor), captures)?;
+        let distributor = Distributor::from_name(&distributor)?;
+        let mut build = Build::new(distributor);
+        if let Some(release) = super::os::fill(self.release.as_deref(), captures)
+            .as_deref()
+            .and_then(super::identity_field)
+            .and_then(|release| normalised_release(distributor, release))
+        {
+            build = build.with_release(Release::new(release, ReleaseBasis::Banner));
+        }
+        if let Some(revision) = super::os::fill(self.revision.as_deref(), captures)
+            .as_deref()
+            .and_then(super::identity_field)
+        {
+            build = build.with_revision(revision.to_owned());
+        }
+        Some(build)
     }
 }
 
@@ -210,6 +265,7 @@ impl Signature {
             service_version: metadata_value(rule, "service.version"),
             component: Component::from_map(rule),
             extrainfo: metadata_value(rule, "service.extrainfo"),
+            build: BuildTemplate::from_map(rule),
         }
     }
 
@@ -261,8 +317,10 @@ impl Signature {
         // Capture groups are collected only for a signature whose operating-system
         // metadata has templates to fill from them. Most have neither, and this
         // runs against every candidate signature for every banner.
-        let wants_captures =
-            self.os.is_some() || self.component.is_some() || self.extrainfo.is_some();
+        let wants_captures = self.os.is_some()
+            || self.component.is_some()
+            || self.extrainfo.is_some()
+            || self.build.is_some();
         let matched = self.compiled()?.identify_with_captures(
             response,
             self.version_group,
@@ -315,6 +373,10 @@ impl Signature {
                     .and_then(|component| component.resolve(captures))
             })
             .filter(|extra| super::identity_field(extra).is_some());
+        evidence.build = self
+            .build
+            .as_ref()
+            .and_then(|build| build.resolve(captures));
 
         Some(Match {
             evidence,

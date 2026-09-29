@@ -14,17 +14,22 @@ protocol = "tcp"
 #
 # RFC 4253 §4.2 puts an optional free-text comment after the software version,
 # separated by a space, and a distribution's build is what usually occupies it.
-# Group 3 is that comment, offered as extrainfo so the exact package build
-# survives into the report rather than only the release it implies.
+# Group 3 is that comment, offered as extrainfo so it survives into the report
+# as the banner wrote it. Groups 4 and 5 split it where it has the shape every
+# packager uses, `<Distributor>-<revision>` (`Debian-7+deb13u4`,
+# `Ubuntu-2ubuntu2.13`, `FreeBSD-20240104`): the build is what decides which
+# fixes this OpenSSH carries, since a distribution backports them without
+# moving the upstream version. A word before the hyphen that names no
+# distributor (an HPN patch tag) yields no build.
 [[match]]
 name = "openssh_match"
-pattern = '^SSH-([\d.]+)-OpenSSH[_]?([\w.-]+)(?:\s+(\S+))?'
+pattern = '^SSH-([\d.]+)-OpenSSH[_]?([\w.-]+)(?:\s+((?:([A-Za-z]+)-)?(\S+)))?'
 version_group = 2
 vendor = "OpenBSD"
 product = "OpenSSH"
 context = "ssh.banner"
 example = "SSH-2.0-OpenSSH_10.0p2 Debian-7+deb13u4"
-metadata = { "service.cpe23" = "cpe:/a:openbsd:openssh:{service.version}", "service.extrainfo" = "{capture:3}" }
+metadata = { "service.cpe23" = "cpe:/a:openbsd:openssh:{service.version}", "service.extrainfo" = "{capture:3}", "service.build.distributor" = "{capture:4}", "service.build.revision" = "{capture:5}" }
 
 [[match]]
 name = "dropbear_match"

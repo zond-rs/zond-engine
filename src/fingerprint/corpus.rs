@@ -1301,3 +1301,75 @@ fn tor_is_named_by_its_own_answer_and_not_by_a_socks5_greeting() {
         assert_eq!(verdict.product.as_deref(), Some("tor_socks"), "on {port}");
     }
 }
+
+/// An OpenSSH banner names whose build it is, and that build is what decides
+/// which fixes the daemon carries: Ubuntu and Debian backport fixes without
+/// moving the upstream version. The revision comes from the comment; the
+/// release from wherever the banner says it, the revision itself for Debian's
+/// stable updates and a rule mapping the whole banner for Ubuntu's.
+#[test]
+fn an_openssh_banner_names_its_distribution_build_and_release() {
+    use crate::model::port::{Distributor, ReleaseBasis};
+
+    let ubuntu = named(
+        22,
+        crate::model::port::Protocol::Tcp,
+        "SSH-2.0-OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13\r\n",
+    );
+    assert_eq!(
+        ubuntu.version.as_deref(),
+        Some("6.6.1p1"),
+        "the version stays upstream"
+    );
+    let build = ubuntu.build.expect("the comment names a build");
+    assert_eq!(build.distributor(), Distributor::Ubuntu);
+    assert_eq!(build.revision(), Some("2ubuntu2.13"));
+    let release = build.release().expect("the banner maps to one release");
+    assert_eq!(
+        (release.name(), release.basis()),
+        ("14.04", ReleaseBasis::Banner)
+    );
+
+    let debian = named(
+        22,
+        crate::model::port::Protocol::Tcp,
+        "SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u3\r\n",
+    );
+    let build = debian.build.clone().expect("the comment names a build");
+    assert_eq!(build.distributor(), Distributor::Debian);
+    assert_eq!(build.revision(), Some("2+deb12u3"));
+    let release = build.release().expect("the revision names its release");
+    assert_eq!(
+        (release.name(), release.basis()),
+        ("12", ReleaseBasis::Revision)
+    );
+
+    // And the service carries it into the report.
+    let service = debian.to_service().expect("a service");
+    assert_eq!(
+        service.build().and_then(|build| build.revision()),
+        Some("2+deb12u3")
+    );
+}
+
+/// An upstream build names no distributor, and a comment that is not a
+/// packager's (an HPN patch tag) is not read as one: a build on a service is
+/// the claim that somebody else's fix data applies, and it must not be made
+/// about software nobody repackaged.
+#[test]
+fn an_openssh_banner_without_a_packagers_comment_names_no_build() {
+    for banner in [
+        "SSH-2.0-OpenSSH_9.6\r\n",
+        "SSH-2.0-OpenSSH_6.1_hpn13v11 hpn-13v11\r\n",
+        "SSH-2.0-OpenSSH_9.8p1 PKIX[14.0]\r\n",
+    ] {
+        let verdict = named(22, crate::model::port::Protocol::Tcp, banner);
+        assert_eq!(verdict.product.as_deref(), Some("OpenSSH"), "{banner:?}");
+        assert!(
+            verdict.build.is_none(),
+            "{banner:?} named {:?}",
+            verdict.build
+        );
+    }
+}
+

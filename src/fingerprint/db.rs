@@ -988,9 +988,55 @@ fn best_match_within(
             best
         });
 
+    // Merged across the matches that describe the winner's product, as the
+    // hardware is: a generic rule reads the revision out of an OpenSSH comment
+    // and a release-specific rule knows which release shipped that banner, and
+    // the build is both. A match naming another product is describing other
+    // software.
+    let winner_product = service.evidence.product.as_deref();
+    let mut build = matched
+        .iter()
+        .filter(|m| {
+            m.evidence.product.as_deref().is_none()
+                || m.evidence
+                    .product
+                    .as_deref()
+                    .zip(winner_product)
+                    .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
+        })
+        .filter_map(|m| m.evidence.build.clone())
+        .reduce(|mut best, other| {
+            best.merge(other);
+            best
+        });
+
+    // A release the banner's own operating-system reading names completes a
+    // build that lacks one, where the reading is of the same distributor. The
+    // reading and the build are two inferences from one text, and a rule that
+    // maps `OpenSSH_6.6.1p1 Ubuntu-2` to Ubuntu 14.04 is saying which release
+    // shipped that package.
+    if let (Some(held), Some(os)) = (build.as_mut(), os.as_ref())
+        && held.release().is_none()
+        && let Some(release) = os
+            .vendor
+            .as_deref()
+            .and_then(crate::model::port::Distributor::from_name)
+            .filter(|&vendor| vendor == held.distributor())
+            .zip(os.version.as_deref())
+            .and_then(|(vendor, version)| {
+                crate::model::port::build::normalised_release(vendor, version)
+            })
+    {
+        *held = held.clone().with_release(crate::model::port::Release::new(
+            release,
+            crate::model::port::ReleaseBasis::Banner,
+        ));
+    }
+
     Some(Evidence {
         os,
         hardware,
+        build,
         service: service_name,
         ..service.evidence.clone()
     })

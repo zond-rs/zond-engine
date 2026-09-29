@@ -21,7 +21,7 @@
 //! adding a new kind of detector never changes them.
 
 use crate::model::confidence::Confidence;
-use crate::model::port::Service;
+use crate::model::port::{Build, Service};
 
 /// Which detector produced a piece of [`Evidence`].
 ///
@@ -133,6 +133,11 @@ pub struct Evidence {
     /// A CPE identifier, when known. Kept as a string rather than a typed CPE
     /// model, so parsing it into parts is left to whoever needs them.
     pub cpe: Option<String>,
+    /// Whose build of the product this observation read, where the response
+    /// said: an OpenSSH comment's `Ubuntu-2ubuntu2.13`, an Apache `Server`
+    /// header's `(Debian)`. About the product this observation names, so it
+    /// travels with that product into the verdict the way the CPE does.
+    pub build: Option<Build>,
     /// The transport this observation was read through, if any. Set when the
     /// data was decrypted from a tunnel (e.g. banner matched inside TLS).
     pub tunnel: Option<Tunnel>,
@@ -191,6 +196,7 @@ impl Evidence {
             vendor: None,
             extrainfo: None,
             cpe: None,
+            build: None,
             tunnel: None,
             port_confirmed: false,
             os: None,
@@ -230,6 +236,12 @@ impl Evidence {
     /// product.
     pub fn with_extrainfo(mut self, extrainfo: impl Into<String>) -> Self {
         self.extrainfo = Some(extrainfo.into());
+        self
+    }
+
+    /// Records whose build of the product this observation read.
+    pub fn with_build(mut self, build: Build) -> Self {
+        self.build = Some(build);
         self
     }
 
@@ -294,6 +306,9 @@ pub struct ServiceVerdict {
     /// resolved against the version found. This is what CVE correlation joins
     /// on.
     pub cpe: Option<String>,
+    /// Whose build of the product this is, from the observations that
+    /// describe the product the verdict names.
+    pub build: Option<Build>,
     /// The tunnel the winning `service` was observed through, if any. Drives the
     /// `ssl/…` label in [`ServiceVerdict::to_service`].
     pub tunnel: Option<Tunnel>,
@@ -468,6 +483,37 @@ impl ServiceVerdict {
             None => agreeing.iter().find_map(|ev| ev.cpe.clone()),
         };
 
+        // **The build describes the product, so only an observation of that
+        // product may supply it.** The one that named the product first; then
+        // any agreeing observation naming the same product or reading the same
+        // version, which is one product under another spelling: a `Server`
+        // header says `Apache 2.4.7 (Ubuntu)` while the corpus rule that won the
+        // product slot calls the same software `Apache HTTP Server 2.4.7`. An
+        // observation naming another product at another version is describing
+        // other software, and its packaging is not this product's.
+        //
+        // Accounts of one distributor's build complete each other, as a banner
+        // stating the revision and a rule naming the release do.
+        let describes_the_product = |ev: &&Evidence| {
+            let same_product = match (ev.product.as_deref(), verdict.product.as_deref()) {
+                (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+                (None, _) => true,
+                (Some(_), None) => false,
+            };
+            let same_version = ev.version.is_some() && ev.version == verdict.version;
+            same_product || same_version
+        };
+        let mut builds = named
+            .into_iter()
+            .chain(agreeing.iter().copied().filter(describes_the_product))
+            .filter_map(|ev| ev.build.clone());
+        if let Some(mut build) = builds.next() {
+            for other in builds {
+                build.merge(other);
+            }
+            verdict.build = Some(build);
+        }
+
         // An observation may state one name in both slots, so that it survives
         // losing the product tiebreak: an icon names the application, a `Server`
         // value names the listener in front of it, and on a reverse-proxied host
@@ -514,6 +560,9 @@ impl ServiceVerdict {
         }
         if let Some(cpe) = &self.cpe {
             service = service.with_cpe(cpe.clone());
+        }
+        if let Some(build) = &self.build {
+            service = service.with_build(build.clone());
         }
         Some(service)
     }

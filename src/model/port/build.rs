@@ -328,6 +328,35 @@ impl Build {
     }
 }
 
+/// A release as a banner rule states it, in the form this module keys
+/// releases by, or [`None`] where the text is not a release of `distributor`.
+///
+/// Rules state releases the way the distribution announced them, and Debian
+/// announced point releases: `7.8` is Debian 7, and fix data is published per
+/// major release. Ubuntu's are already the key (`14.04`). Any other
+/// distributor's release is taken as written, since no fix data reads it.
+pub(crate) fn normalised_release(distributor: Distributor, text: &str) -> Option<String> {
+    let text = text.trim();
+    match distributor {
+        Distributor::Debian | Distributor::Raspbian => {
+            let major: String = text.chars().take_while(char::is_ascii_digit).collect();
+            let rest = &text[major.len()..];
+            (!major.is_empty() && (rest.is_empty() || rest.starts_with('.')))
+                .then(|| major.trim_start_matches('0').to_owned())
+                .filter(|major| !major.is_empty())
+        }
+        Distributor::Ubuntu => {
+            let bytes = text.as_bytes();
+            let shaped = bytes.len() == 5
+                && bytes[..2].iter().all(u8::is_ascii_digit)
+                && bytes[2] == b'.'
+                && bytes[3..].iter().all(u8::is_ascii_digit);
+            shaped.then(|| text.to_owned())
+        }
+        _ => (!text.is_empty()).then(|| text.to_owned()),
+    }
+}
+
 /// The release a package revision names, where it names one.
 ///
 /// Two conventions are read, both of which put the release into the revision

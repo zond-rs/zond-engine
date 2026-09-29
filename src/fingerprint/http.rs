@@ -48,6 +48,7 @@ use super::response::{Collected, ResponseSet};
 use std::borrow::Cow;
 
 use crate::model::confidence::Confidence;
+use crate::model::port::{Build, Distributor};
 
 /// Identifies HTTP servers from the structured headers of a captured response.
 /// See the module docs for why it is passive and what evidence it emits.
@@ -118,6 +119,7 @@ impl Analyzer for HttpHeadersAnalyzer {
                     .with_service("http")
                     .with_product(product);
                 server.version = version;
+                server.build = server_build(header);
                 evidence.push(stamp(server, ctx));
             }
 
@@ -631,6 +633,29 @@ fn parse_server(value: &str) -> Option<(String, Option<String>)> {
     // No `/`: the token is a bare product name (possibly with a `(` comment).
     let product = token.split('(').next().unwrap_or(token);
     (!product.is_empty() && !is_placeholder(product)).then(|| (product.to_string(), None))
+}
+
+/// Whose build the server is, where the header's comment names a distributor.
+///
+/// The comment in parentheses after the product is where Apache and nginx as
+/// Debian, Ubuntu and the Red Hat family package them say whose package this
+/// is: `Apache/2.4.7 (Ubuntu)`, `Apache/2.4.6 (CentOS) OpenSSL/1.0.2k-fips`,
+/// `Apache/2.4.37 (Red Hat Enterprise Linux)`. It names no revision, so the
+/// build it yields says only who packaged the server. That is still the fact
+/// that matters most about it: the version beside it is the upstream release
+/// the package started from, and fixes the distributor backported since are
+/// invisible in it.
+///
+/// Only a comment that is a distributor's name counts. `(Unix)` and `(Win64)`
+/// say where the server was built to run, not who built it.
+fn server_build(value: &str) -> Option<Build> {
+    value
+        .split('(')
+        .skip(1)
+        .filter_map(|rest| rest.split_once(')').map(|(comment, _)| comment))
+        .flat_map(|comment| comment.split([';', ',']))
+        .find_map(Distributor::from_name)
+        .map(Build::new)
 }
 
 /// Whether a server token is a null-ish placeholder rather than a real product
@@ -1296,5 +1321,76 @@ mod os_from_headers {
     #[test]
     fn a_server_the_corpus_does_not_know_names_nothing() {
         assert!(corpus_reading("SomeServer/1.0").0.is_none());
+    }
+}
+
+#[cfg(test)]
+mod server_builds {
+    use super::*;
+    use crate::fingerprint::model::ServiceVerdict;
+    use crate::fingerprint::response::Collected;
+
+    fn verdict(banner: &str) -> ServiceVerdict {
+        let evidence = HttpHeadersAnalyzer.analyze(
+            &PortContext {
+                port: 80,
+                protocol: crate::model::port::Protocol::Tcp,
+                addr: None,
+                tunnel: None,
+                speaks_http: true,
+                detection: crate::config::ServiceDetection::default(),
+                host_name: None,
+            },
+            &ResponseSet::from_banners(vec![banner.to_string()]),
+            &Collected::default(),
+        );
+        ServiceVerdict::resolve(evidence)
+    }
+
+    /// The comment after the product is where a distribution's web server says
+    /// whose package it is, and the product slot can go to a corpus rule that
+    /// calls the same server by another name: the build has to reach the
+    /// verdict either way, since it is what says the version is not the whole
+    /// story about which fixes the server carries.
+    #[test]
+    fn a_server_header_naming_a_distributor_yields_its_build() {
+        for (header, distributor) in [
+            ("Apache/2.4.7 (Ubuntu)", Distributor::Ubuntu),
+            ("Apache/2.4.62 (Debian)", Distributor::Debian),
+            (
+                "Apache/2.4.6 (CentOS) OpenSSL/1.0.2k-fips PHP/5.4.16",
+                Distributor::CentOs,
+            ),
+            (
+                "Apache/2.4.37 (Red Hat Enterprise Linux) OpenSSL/1.1.1k",
+                Distributor::RedHat,
+            ),
+            ("nginx/1.18.0 (Ubuntu)", Distributor::Ubuntu),
+        ] {
+            let verdict = verdict(&format!("HTTP/1.1 200 OK\r\nServer: {header}\r\n\r\n"));
+            let build = verdict
+                .build
+                .as_ref()
+                .unwrap_or_else(|| panic!("{header}: no build"));
+            assert_eq!(build.distributor(), distributor, "{header}");
+            assert_eq!(
+                build.revision(),
+                None,
+                "{header}: a header states no revision"
+            );
+        }
+    }
+
+    /// Where a server was built to run is not who built it.
+    #[test]
+    fn a_server_header_naming_no_distributor_yields_no_build() {
+        for header in [
+            "Apache/2.4.58 (Unix)",
+            "Apache/2.4.41 (Win64)",
+            "nginx/1.25.3",
+        ] {
+            let verdict = verdict(&format!("HTTP/1.1 200 OK\r\nServer: {header}\r\n\r\n"));
+            assert!(verdict.build.is_none(), "{header}: {:?}", verdict.build);
+        }
     }
 }
