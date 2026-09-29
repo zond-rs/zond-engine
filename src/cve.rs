@@ -96,6 +96,8 @@ use crate::version::version_cmp;
 
 mod applicability;
 
+use applicability::Applies;
+
 /// The reserved identity the engine's built-in correlator stamps on every finding
 /// it produces, so a report can say exactly what concluded a vulnerability. A
 /// third-party detection may not claim the `zond:` namespace.
@@ -588,18 +590,35 @@ impl Catalogue {
 
         // Grouped before summarising, because the groups are different claims
         // and a summary may not average them. The map keeps the sorted order
-        // within each group.
+        // within each group. What cannot reach the listening service is
+        // withdrawn here and only counted.
         let mut groups: BTreeMap<Verdict, Vec<Vulnerability<'_>>> = BTreeMap::new();
+        let mut withdrawn = 0usize;
         for vulnerability in matched {
-            groups
-                .entry(Verdict::of(&vulnerability, judged))
-                .or_default()
-                .push(vulnerability);
+            match Verdict::of(&vulnerability, judged) {
+                Some(verdict) => groups.entry(verdict).or_default().push(vulnerability),
+                None => withdrawn += 1,
+            }
         }
 
+        // Said once, on the first finding, so a reader who counts the
+        // identifiers the catalogue holds for this release can reconcile them
+        // with what is reported.
+        let mut note = (withdrawn > 0).then(|| {
+            format!(
+                "{withdrawn} more known {} this release live in its client programs or need \
+                 an account on the host, and are not counted against the listening service",
+                match withdrawn {
+                    1 => "vulnerability of",
+                    _ => "vulnerabilities of",
+                }
+            )
+        });
         groups
             .into_iter()
-            .filter_map(|(verdict, entries)| self.finding(judged, verdict, &entries))
+            .filter_map(|(verdict, entries)| {
+                self.finding(judged, verdict, &entries, note.take().as_deref())
+            })
             .collect()
     }
 
@@ -616,11 +635,15 @@ impl Catalogue {
     /// carrying every one of them as references, worst first. A reader
     /// scanning a port table sees one row per kind of claim about the service;
     /// a reader with the report open has the identifiers.
+    ///
+    /// `note` is a sentence about the identification as a whole, appended to
+    /// the excerpt.
     fn finding(
         &self,
         judged: &Judged<'_>,
         verdict: Verdict,
         entries: &[Vulnerability<'_>],
+        note: Option<&str>,
     ) -> Option<Finding> {
         let worst = entries.first()?;
         let severity = wire::severity(worst.severity)?;
@@ -716,6 +739,43 @@ impl Catalogue {
                     ),
                 )
             }
+            Verdict::NeedsSetting => {
+                let mut settings: Vec<&str> = Vec::new();
+                for entry in entries {
+                    if let Some(requires) = entry.requires()
+                        && !settings.contains(&requires)
+                    {
+                        settings.push(requires);
+                    }
+                }
+                let shown = settings
+                    .iter()
+                    .take(MAX_NAMED_IN_EXCERPT)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                let more = settings.len().saturating_sub(MAX_NAMED_IN_EXCERPT);
+                let more = match more {
+                    0 => String::new(),
+                    n => format!(" and {n} more"),
+                };
+                let noun = match count {
+                    1 => "CVE needs",
+                    _ => "CVEs need",
+                };
+                (
+                    format!("{software}: {count} {noun} a non-default setting"),
+                    format!(
+                        "{cpe} matches {count} known vulnerabilities, {critical} critical and \
+                         {high} high, that reach the service only where it is set up in a way it \
+                         is not by default: {shown}{more}. The worst are {named}"
+                    ),
+                )
+            }
+        };
+        let excerpt = match note {
+            Some(note) => format!("{excerpt}. {note}"),
+            None => excerpt,
         };
 
         let mut finding = Finding::new(
@@ -842,6 +902,11 @@ enum Verdict {
     /// on a service that is the upstream release that version names. As sure
     /// as a version string makes anything: [`Confidence::Probable`].
     Affected,
+    /// A vulnerability that reaches the service only where it is configured
+    /// in a way it is not by default: an sshd option, an Apache module. The
+    /// scan cannot see the configuration, so the claim is as good as the
+    /// chance the setting is on: [`Confidence::Weak`].
+    NeedsSetting,
     /// The same range check, on a service that is a distribution's build.
     ///
     /// A distribution fixes vulnerabilities by patching the release it ships
@@ -859,13 +924,27 @@ enum Verdict {
 }
 
 impl Verdict {
-    /// The verdict `vulnerability` supports on `judged`.
-    fn of(vulnerability: &Vulnerability<'_>, judged: &Judged<'_>) -> Self {
-        match (vulnerability.constrains_the_version(), judged.build) {
-            (false, _) => Self::AnyVersion,
-            (true, None) => Self::Affected,
-            (true, Some(_)) => Self::BuildUnchecked,
+    /// The verdict `vulnerability` supports on `judged`, or [`None`] for one
+    /// that cannot reach the listening service at all.
+    ///
+    /// Where a vulnerability lives comes first. A flaw in the client programs
+    /// installed beside a daemon, or one that needs an account on the host,
+    /// is not something a scan of the listening service has found, however
+    /// the version compares; the overlay in
+    /// [`applicability`] says which those are.
+    fn of(vulnerability: &Vulnerability<'_>, judged: &Judged<'_>) -> Option<Self> {
+        match vulnerability.applies().map(|found| found.applies) {
+            Some(Applies::Client | Applies::Local) => return None,
+            Some(Applies::Configuration { .. }) => return Some(Self::NeedsSetting),
+            Some(Applies::Service) | None => {}
         }
+        Some(
+            match (vulnerability.constrains_the_version(), judged.build) {
+                (false, _) => Self::AnyVersion,
+                (true, None) => Self::Affected,
+                (true, Some(_)) => Self::BuildUnchecked,
+            },
+        )
     }
 
     /// The name a claim's subject carries for it, fixed because claims are
@@ -873,6 +952,7 @@ impl Verdict {
     const fn key(self) -> &'static str {
         match self {
             Self::Affected => "affected",
+            Self::NeedsSetting => "needs-setting",
             Self::BuildUnchecked => "build-unchecked",
             Self::AnyVersion => "any-version",
         }
@@ -882,7 +962,7 @@ impl Verdict {
     const fn confidence(self) -> Confidence {
         match self {
             Self::Affected => Confidence::Probable,
-            Self::BuildUnchecked | Self::AnyVersion => Confidence::Weak,
+            Self::NeedsSetting | Self::BuildUnchecked | Self::AnyVersion => Confidence::Weak,
         }
     }
 }
@@ -968,6 +1048,20 @@ impl Vulnerability<'_> {
     /// converts to.
     fn constrains_the_version(&self) -> bool {
         self.affected.trim() != "*"
+    }
+
+    /// What the applicability overlay says about this vulnerability of this
+    /// product, where it says anything.
+    fn applies(&self) -> Option<applicability::Applicability> {
+        applicability::applicability(self.cve, &format!("{}:{}", self.vendor, self.product))
+    }
+
+    /// The non-default setting this vulnerability needs, where it needs one.
+    fn requires(&self) -> Option<&'static str> {
+        match self.applies()?.applies {
+            Applies::Configuration { requires } => Some(requires),
+            _ => None,
+        }
     }
 }
 
@@ -1600,6 +1694,41 @@ affected = "*"
         );
     }
 
+    /// A flaw in the client programs installed beside a daemon is not
+    /// something a scan of the daemon found. ssh-agent's CVE-2023-38408 is
+    /// reached through an agent somebody forwarded to a hostile machine, and a
+    /// listening sshd charged with it is a false finding; it is counted in the
+    /// excerpt so the identifiers still reconcile. A flaw that needs a setting
+    /// the service does not ship with is its own, weaker claim.
+    #[test]
+    fn a_client_side_flaw_is_withdrawn_and_a_configuration_one_is_its_own_claim() {
+        let findings = Catalogue::embedded().findings_for("cpe:/a:openbsd:openssh:6.6.1p1");
+        let cited: Vec<&str> = findings
+            .iter()
+            .flat_map(|finding| finding.references())
+            .filter_map(|reference| match reference {
+                Reference::Cve(id) => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(!cited.contains(&"CVE-2023-38408"), "{cited:?}");
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.excerpt().as_str().contains("not counted")),
+            "the withdrawn ones are counted somewhere a reader can see"
+        );
+        let setting = findings
+            .iter()
+            .find(|finding| {
+                finding
+                    .subject()
+                    .is_some_and(|subject| subject.ends_with("/needs-setting"))
+            })
+            .expect("6.6.1p1 carries flaws that need a non-default setting");
+        assert_eq!(setting.confidence(), Confidence::Weak);
+    }
+
     #[test]
     fn the_embedded_seed_parses_and_is_non_empty() {
         assert!(!Catalogue::embedded().vulnerability.is_empty());
@@ -1852,12 +1981,13 @@ affected = "== 2.4.49"
 
         correlate(&mut host);
         let port = host.ports().find(|p| p.number() == 80).unwrap();
-        assert_eq!(port.findings().count(), 1, "the vulnerable service got one");
+        let first: Vec<Finding> = port.findings().cloned().collect();
+        assert!(!first.is_empty(), "the vulnerable service got findings");
 
-        // A second pass corroborates the same claim rather than adding a second.
+        // A second pass reaches the same claims rather than adding more.
         correlate(&mut host);
         let port = host.ports().find(|p| p.number() == 80).unwrap();
-        assert_eq!(port.findings().count(), 1);
+        assert_eq!(port.findings().cloned().collect::<Vec<_>>(), first);
     }
 
     /// A correlation says which identifier it matched, in a field and not only

@@ -1056,11 +1056,15 @@ mod tests {
     /// level, and add nothing.
     #[test]
     fn a_patch_level_in_the_update_field_is_part_of_the_version() {
+        // A flaw that reaches the listening daemon, so the correlator reports
+        // it wherever it matches: a client-side one would be withdrawn, and
+        // the assertions below would be about the overlay rather than the
+        // version.
         const ROAMING: &str = r#"{
           "timestamp": "2026-09-08T00:00:00+00:00",
           "cve_items": [{
-            "id": "CVE-2016-0777",
-            "descriptions": [{"lang": "en", "value": "The roaming code in the OpenSSH client leaks memory."}],
+            "id": "CVE-2015-5600",
+            "descriptions": [{"lang": "en", "value": "keyboard-interactive devices allow unlimited retries."}],
             "metrics": {"cvssMetricV31": [{"cvssData": {"baseSeverity": "MEDIUM"}}]},
             "configurations": [{"nodes": [{"cpeMatch": [
               {"vulnerable": true, "criteria": "cpe:2.3:a:openbsd:openssh:6.6:p1:*:*:*:*:*:*"},

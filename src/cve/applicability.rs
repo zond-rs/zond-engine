@@ -25,13 +25,6 @@
 //! the tests below are what refuse one; a scan reading it treats a document
 //! that does not parse as having no entries and correlates as it would without
 //! the overlay, rather than failing.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the correlator's verdicts are the reader this serves, and they do not consult it yet"
-    )
-)]
 
 use std::collections::HashMap;
 use std::sync::OnceLock;

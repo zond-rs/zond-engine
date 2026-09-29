@@ -4476,9 +4476,9 @@ mod tests {
             .ports()
             .find(|port| port.number() == 80)
             .expect("port 80");
-        assert_eq!(
-            port.findings().count(),
-            1,
+        assert!(
+            port.findings()
+                .any(|f| f.confidence() == crate::model::confidence::Confidence::Probable),
             "the vulnerable Apache build should have been correlated"
         );
         assert!(
