@@ -3298,6 +3298,23 @@ impl core::marker::Unpin for zond_engine::export::schema::AcceptedVersionDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::AcceptedVersionDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::AcceptedVersionDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::AcceptedVersionDto
+#[non_exhaustive] pub struct zond_engine::export::schema::AdvisedByDto<'a>
+pub zond_engine::export::schema::AdvisedByDto::content_hash: &'a str
+pub zond_engine::export::schema::AdvisedByDto::id: &'a str
+pub zond_engine::export::schema::AdvisedByDto::version: alloc::string::String
+impl<'a> core::clone::Clone for zond_engine::export::schema::AdvisedByDto<'a>
+pub fn zond_engine::export::schema::AdvisedByDto<'a>::clone(&self) -> zond_engine::export::schema::AdvisedByDto<'a>
+impl<'a> core::fmt::Debug for zond_engine::export::schema::AdvisedByDto<'a>
+pub fn zond_engine::export::schema::AdvisedByDto<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> serde_core::ser::Serialize for zond_engine::export::schema::AdvisedByDto<'a>
+pub fn zond_engine::export::schema::AdvisedByDto<'a>::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'a> core::marker::Freeze for zond_engine::export::schema::AdvisedByDto<'a>
+impl<'a> core::marker::Send for zond_engine::export::schema::AdvisedByDto<'a>
+impl<'a> core::marker::Sync for zond_engine::export::schema::AdvisedByDto<'a>
+impl<'a> core::marker::Unpin for zond_engine::export::schema::AdvisedByDto<'a>
+impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::AdvisedByDto<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::AdvisedByDto<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::AdvisedByDto<'a>
 #[non_exhaustive] pub struct zond_engine::export::schema::AttachmentDto<'a>
 pub zond_engine::export::schema::AttachmentDto::device_mac: core::option::Option<alloc::string::String>
 pub zond_engine::export::schema::AttachmentDto::device_name: core::option::Option<alloc::borrow::Cow<'a, str>>
@@ -3516,6 +3533,8 @@ impl core::marker::UnsafeUnpin for zond_engine::export::schema::FamilyCounts
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::FamilyCounts
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::FamilyCounts
 #[non_exhaustive] pub struct zond_engine::export::schema::FindingDto<'a>
+pub zond_engine::export::schema::FindingDto::advised_by: core::option::Option<zond_engine::export::schema::AdvisedByDto<'a>>
+pub zond_engine::export::schema::FindingDto::build: core::option::Option<zond_engine::export::schema::BuildDto<'a>>
 pub zond_engine::export::schema::FindingDto::class: &'static str
 pub zond_engine::export::schema::FindingDto::confidence: &'static str
 pub zond_engine::export::schema::FindingDto::content_hash: &'a str
@@ -3526,6 +3545,7 @@ pub zond_engine::export::schema::FindingDto::id: &'a str
 pub zond_engine::export::schema::FindingDto::references: alloc::vec::Vec<zond_engine::export::schema::ReferenceDto<'a>>
 pub zond_engine::export::schema::FindingDto::remediation: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::FindingDto::severity: &'static str
+pub zond_engine::export::schema::FindingDto::subject: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::FindingDto::title: alloc::borrow::Cow<'a, str>
 pub zond_engine::export::schema::FindingDto::version: alloc::string::String
 impl<'a> zond_engine::export::schema::FindingDto<'a>
@@ -4530,6 +4550,7 @@ impl core::marker::UnsafeUnpin for zond_engine::fingerprint::model::Tunnel
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::model::Tunnel
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::model::Tunnel
 #[non_exhaustive] pub struct zond_engine::fingerprint::model::Evidence
+pub zond_engine::fingerprint::model::Evidence::build: core::option::Option<zond_engine::model::port::build::Build>
 pub zond_engine::fingerprint::model::Evidence::confidence: zond_engine::model::confidence::Confidence
 pub zond_engine::fingerprint::model::Evidence::cpe: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::model::Evidence::extrainfo: core::option::Option<alloc::string::String>
@@ -4545,6 +4566,7 @@ pub zond_engine::fingerprint::model::Evidence::vendor: core::option::Option<allo
 pub zond_engine::fingerprint::model::Evidence::version: core::option::Option<alloc::string::String>
 impl zond_engine::fingerprint::model::Evidence
 pub fn zond_engine::fingerprint::model::Evidence::new(zond_engine::fingerprint::model::SourceId, zond_engine::model::confidence::Confidence) -> Self
+pub fn zond_engine::fingerprint::model::Evidence::with_build(self, zond_engine::model::port::build::Build) -> Self
 pub fn zond_engine::fingerprint::model::Evidence::with_cpe(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn zond_engine::fingerprint::model::Evidence::with_extrainfo(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn zond_engine::fingerprint::model::Evidence::with_names(self, alloc::vec::Vec<zond_engine::model::host::name::HostName>) -> Self
@@ -4569,6 +4591,7 @@ impl core::marker::UnsafeUnpin for zond_engine::fingerprint::model::Evidence
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::model::Evidence
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::model::Evidence
 #[non_exhaustive] pub struct zond_engine::fingerprint::model::ServiceVerdict
+pub zond_engine::fingerprint::model::ServiceVerdict::build: core::option::Option<zond_engine::model::port::build::Build>
 pub zond_engine::fingerprint::model::ServiceVerdict::confidence: zond_engine::model::confidence::Confidence
 pub zond_engine::fingerprint::model::ServiceVerdict::cpe: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::model::ServiceVerdict::evidence: alloc::vec::Vec<zond_engine::fingerprint::model::Evidence>
@@ -5497,6 +5520,7 @@ impl core::marker::UnsafeUnpin for zond_engine::fingerprint::Context
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::Context
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::Context
 #[non_exhaustive] pub struct zond_engine::fingerprint::Evidence
+pub zond_engine::fingerprint::Evidence::build: core::option::Option<zond_engine::model::port::build::Build>
 pub zond_engine::fingerprint::Evidence::confidence: zond_engine::model::confidence::Confidence
 pub zond_engine::fingerprint::Evidence::cpe: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::Evidence::extrainfo: core::option::Option<alloc::string::String>
@@ -5512,6 +5536,7 @@ pub zond_engine::fingerprint::Evidence::vendor: core::option::Option<alloc::stri
 pub zond_engine::fingerprint::Evidence::version: core::option::Option<alloc::string::String>
 impl zond_engine::fingerprint::model::Evidence
 pub fn zond_engine::fingerprint::model::Evidence::new(zond_engine::fingerprint::model::SourceId, zond_engine::model::confidence::Confidence) -> Self
+pub fn zond_engine::fingerprint::model::Evidence::with_build(self, zond_engine::model::port::build::Build) -> Self
 pub fn zond_engine::fingerprint::model::Evidence::with_cpe(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn zond_engine::fingerprint::model::Evidence::with_extrainfo(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn zond_engine::fingerprint::model::Evidence::with_names(self, alloc::vec::Vec<zond_engine::model::host::name::HostName>) -> Self
@@ -5759,6 +5784,7 @@ impl core::marker::UnsafeUnpin for zond_engine::fingerprint::ServiceSignature
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fingerprint::ServiceSignature
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fingerprint::ServiceSignature
 #[non_exhaustive] pub struct zond_engine::fingerprint::ServiceVerdict
+pub zond_engine::fingerprint::ServiceVerdict::build: core::option::Option<zond_engine::model::port::build::Build>
 pub zond_engine::fingerprint::ServiceVerdict::confidence: zond_engine::model::confidence::Confidence
 pub zond_engine::fingerprint::ServiceVerdict::cpe: core::option::Option<alloc::string::String>
 pub zond_engine::fingerprint::ServiceVerdict::evidence: alloc::vec::Vec<zond_engine::fingerprint::model::Evidence>
@@ -8258,6 +8284,8 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::finding::Ex
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::finding::Excerpt
 pub struct zond_engine::model::finding::Finding
 impl zond_engine::model::finding::Finding
+pub fn zond_engine::model::finding::Finding::advised_by(&self) -> core::option::Option<&zond_engine::model::finding::DetectionId>
+pub fn zond_engine::model::finding::Finding::build(&self) -> core::option::Option<&zond_engine::model::port::build::Build>
 pub fn zond_engine::model::finding::Finding::claim_id(&self) -> zond_engine::model::finding::ClaimId
 pub fn zond_engine::model::finding::Finding::class(&self) -> zond_engine::model::finding::DetectionClass
 pub fn zond_engine::model::finding::Finding::confidence(&self) -> zond_engine::model::confidence::Confidence
@@ -8269,11 +8297,15 @@ pub fn zond_engine::model::finding::Finding::new(zond_engine::model::finding::De
 pub fn zond_engine::model::finding::Finding::references(&self) -> impl core::iter::traits::iterator::Iterator<Item = &zond_engine::model::finding::Reference>
 pub fn zond_engine::model::finding::Finding::remediation(&self) -> core::option::Option<&str>
 pub fn zond_engine::model::finding::Finding::severity(&self) -> zond_engine::model::finding::Severity
+pub fn zond_engine::model::finding::Finding::subject(&self) -> core::option::Option<&str>
 pub fn zond_engine::model::finding::Finding::title(&self) -> &str
+pub fn zond_engine::model::finding::Finding::with_advised_by(self, zond_engine::model::finding::DetectionId) -> Self
+pub fn zond_engine::model::finding::Finding::with_build(self, zond_engine::model::port::build::Build) -> Self
 pub fn zond_engine::model::finding::Finding::with_cpe(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn zond_engine::model::finding::Finding::with_excerpt(self, zond_engine::model::finding::Excerpt) -> Self
 pub fn zond_engine::model::finding::Finding::with_reference(self, zond_engine::model::finding::Reference) -> Self
 pub fn zond_engine::model::finding::Finding::with_remediation(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn zond_engine::model::finding::Finding::with_subject(self, impl core::convert::Into<alloc::string::String>) -> Self
 impl core::clone::Clone for zond_engine::model::finding::Finding
 pub fn zond_engine::model::finding::Finding::clone(&self) -> zond_engine::model::finding::Finding
 impl core::cmp::Eq for zond_engine::model::finding::Finding
@@ -13831,6 +13863,8 @@ impl core::marker::UnsafeUnpin for zond_engine::record::FailureRecord
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::FailureRecord
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::FailureRecord
 pub struct zond_engine::record::FindingRecord
+pub zond_engine::record::FindingRecord::advised_by: core::option::Option<zond_engine::record::DetectionIdRecord>
+pub zond_engine::record::FindingRecord::build: core::option::Option<zond_engine::record::BuildRecord>
 pub zond_engine::record::FindingRecord::class: alloc::string::String
 pub zond_engine::record::FindingRecord::confidence: alloc::string::String
 pub zond_engine::record::FindingRecord::cpe: core::option::Option<alloc::string::String>
@@ -13840,6 +13874,7 @@ pub zond_engine::record::FindingRecord::excerpt: core::option::Option<alloc::str
 pub zond_engine::record::FindingRecord::references: alloc::vec::Vec<zond_engine::record::ReferenceRecord>
 pub zond_engine::record::FindingRecord::remediation: core::option::Option<alloc::string::String>
 pub zond_engine::record::FindingRecord::severity: alloc::string::String
+pub zond_engine::record::FindingRecord::subject: core::option::Option<alloc::string::String>
 pub zond_engine::record::FindingRecord::title: alloc::string::String
 impl zond_engine::record::FindingRecord
 pub fn zond_engine::record::FindingRecord::rebuild(&self) -> core::option::Option<zond_engine::model::finding::Finding>

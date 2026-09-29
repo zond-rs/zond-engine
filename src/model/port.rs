@@ -482,6 +482,65 @@ impl Port {
         }
     }
 
+    /// Replaces every correlation `detection` drew on this port with
+    /// `findings`, and reports whether anything changed.
+    ///
+    /// A correlation is computed from the service identification and the data
+    /// it was judged against, so a second computation is a replacement of the
+    /// first rather than a second opinion to fold into it. Folding would keep
+    /// a claim the new computation no longer makes, such as a summary of a
+    /// distribution build's upstream vulnerabilities that the distributor's own
+    /// fix data has since split into what still applies and what does not.
+    /// Findings of any other detection are left alone.
+    pub(crate) fn replace_correlations(&mut self, detection: &str, findings: Vec<Finding>) -> bool {
+        let drawn_by_it =
+            |finding: &Finding| finding.is_correlation() && finding.detection().id() == detection;
+        let before: Vec<Finding> = self
+            .findings
+            .values()
+            .filter(|finding| drawn_by_it(finding))
+            .cloned()
+            .collect();
+        self.findings.retain(|_, finding| !drawn_by_it(finding));
+        for finding in findings {
+            self.add_finding(finding);
+        }
+        let after: Vec<&Finding> = self
+            .findings
+            .values()
+            .filter(|finding| drawn_by_it(finding))
+            .collect();
+        before.len() != after.len() || before.iter().zip(after).any(|(a, b)| a != b)
+    }
+
+    /// Withdraws each correlation a newer version of the same detection also
+    /// judged this port for, and reports whether any went.
+    ///
+    /// For a record folded from several accounts: each account's correlations
+    /// are a whole computation, and one from an older catalogue or correlator
+    /// is superseded by a newer one's, not added to it. Its claims can be
+    /// keyed differently, since what a claim is keyed on is itself part of
+    /// what a newer correlator may do better, so matching claim by claim would
+    /// keep both.
+    pub(crate) fn retire_superseded_correlations(&mut self) -> bool {
+        let mut newest: BTreeMap<String, crate::model::finding::Version> = BTreeMap::new();
+        for finding in self.findings.values().filter(|f| f.is_correlation()) {
+            let version = finding.detection().version();
+            newest
+                .entry(finding.detection().id().to_owned())
+                .and_modify(|held| *held = (*held).max(version))
+                .or_insert(version);
+        }
+        let before = self.findings.len();
+        self.findings.retain(|_, finding| {
+            !finding.is_correlation()
+                || newest
+                    .get(finding.detection().id())
+                    .is_none_or(|&newest| finding.detection().version() >= newest)
+        });
+        self.findings.len() != before
+    }
+
     /// Folds another probe's account of this same endpoint into this one.
     ///
     /// The state rises to whichever of the two is the more definitive and never

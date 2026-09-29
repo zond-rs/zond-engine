@@ -717,6 +717,7 @@ fn hostile_finding() -> Finding {
     .with_reference(Reference::url(HOSTILE))
     .with_remediation(HOSTILE)
     .with_cpe(HOSTILE)
+    .with_subject(HOSTILE)
 }
 
 fn hostile_host() -> Host {
@@ -896,6 +897,14 @@ fn named_finding(id: &str, title: &str, excerpt: &str) -> Finding {
 fn named_correlation(title: &str, cpe: &str) -> Finding {
     named_finding("cve-correlation", title, &format!("identified as {cpe}"))
         .with_cpe(cpe)
+        .with_subject(format!(
+            "openbsd:openssh:{NAMED_HOST}@debian/build-unchecked"
+        ))
+        .with_build(
+            Build::new(Distributor::Debian)
+                .with_revision(format!("1+{NAMED_HOST}"))
+                .with_release(Release::new(NAMED_HOST, ReleaseBasis::Banner)),
+        )
         .with_reference(Reference::cve("CVE-2023-38408").expect("a CVE id"))
         .with_reference(Reference::url(format!(
             "https://advisories.example/{NAMED_HOST}"

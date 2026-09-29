@@ -1660,9 +1660,39 @@ pub(super) fn run_correlation(ctx: &ScanContext, detection: ServiceDetection) {
 
     let catalogue = crate::cve::Catalogue::embedded();
     for key in ctx.hosts_owed_passes() {
-        let matched = ctx.read_host(&key, |host| crate::cve::matches(host, catalogue));
-        record_port_findings(ctx, key, matched.unwrap_or_default());
+        let judged = ctx
+            .read_host(&key, |host| crate::cve::judgements(host, catalogue))
+            .unwrap_or_default();
+        record_correlations(ctx, key, catalogue.id(), judged);
     }
+}
+
+/// Records each port's correlations on the host at `key`, replacing what the
+/// same catalogue drew there before, and announcing the host only where
+/// something changed.
+///
+/// Replacing rather than adding, because a correlation is recomputed rather
+/// than observed again: a sitting that resumes a journalled scan correlates the
+/// hosts the last sitting already did, and anything the last computation drew
+/// that this one does not has been withdrawn, not left unmentioned.
+fn record_correlations(
+    ctx: &ScanContext,
+    key: crate::model::ip::scoped::ScopedIp,
+    catalogue: &str,
+    judged: Vec<crate::cve::PortJudgement>,
+) {
+    if judged.is_empty() {
+        return;
+    }
+    ctx.write_host(key, |host| {
+        let mut news = false;
+        for port in judged {
+            news |= host
+                .replace_port_correlations(port.number, port.protocol, catalogue, port.findings)
+                .unwrap_or(false);
+        }
+        news
+    });
 }
 
 /// [`run_correlation`] on the blocking pool, for a scan to await.

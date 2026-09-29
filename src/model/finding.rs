@@ -53,6 +53,7 @@ use std::str::FromStr;
 use thiserror::Error;
 
 use crate::model::confidence::Confidence;
+use crate::model::port::Build;
 
 /// The most justifying text a finding retains, in bytes.
 ///
@@ -534,6 +535,29 @@ pub struct Finding {
     /// its 2.3 form, and both draw the same vulnerability: the claim then rests
     /// on either, and is backed while any of them is.
     cpes: BTreeSet<String>,
+    /// What the claim is about, where the detection names it outright rather
+    /// than leaving it to be read off the references. See
+    /// [`claim_id`](Self::claim_id).
+    subject: Option<String>,
+    /// The distribution build a correlation judged, for one drawn from a
+    /// service that carried one.
+    ///
+    /// Beside [`cpes`](Self::cpes) and for the same reason: the claim rests on
+    /// it. A distribution publishes fixes as new package revisions of the same
+    /// upstream version, so an upgrade leaves the platform identifier where it
+    /// was and moves only this, and a [`merge`](crate::merge) asking whether a
+    /// newer scan still backs the claim has to be able to see it move.
+    build: Option<Build>,
+    /// The distributor's advisory data a correlation consulted, where it
+    /// consulted any.
+    ///
+    /// A second stamp beside [`detection`](Self::detection), because a verdict
+    /// on a distribution's build is reached by two datasets: the catalogue
+    /// says which vulnerabilities the upstream release has, and the
+    /// distributor's data says which of them its build still carries. A
+    /// finding withdrawn or confirmed by the second has to say which snapshot
+    /// of it did, for the reason the first is stamped at all.
+    advised_by: Option<DetectionId>,
 }
 
 impl Finding {
@@ -565,6 +589,9 @@ impl Finding {
             references: Vec::new(),
             remediation: None,
             cpes: BTreeSet::new(),
+            subject: None,
+            build: None,
+            advised_by: None,
         })
     }
 
@@ -601,6 +628,48 @@ impl Finding {
     pub fn with_cpe(mut self, cpe: impl Into<String>) -> Self {
         self.cpes.insert(cpe.into());
         self
+    }
+
+    /// Names what the claim is about, which [`claim_id`](Self::claim_id)
+    /// then keys on in place of the references.
+    ///
+    /// For a detection whose findings summarise a changing set of references,
+    /// as a correlation's do: the set changes whenever the data behind it
+    /// does, and a claim keyed on any one member of it would rename itself
+    /// with it.
+    #[must_use]
+    pub fn with_subject(mut self, subject: impl Into<String>) -> Self {
+        self.subject = Some(subject.into());
+        self
+    }
+
+    /// Records the distribution build a correlation judged.
+    #[must_use]
+    pub fn with_build(mut self, build: Build) -> Self {
+        self.build = Some(build);
+        self
+    }
+
+    /// Records the distributor's advisory data a correlation consulted.
+    #[must_use]
+    pub fn with_advised_by(mut self, advised_by: DetectionId) -> Self {
+        self.advised_by = Some(advised_by);
+        self
+    }
+
+    /// What the claim is about, where the detection named it. Untrusted.
+    pub fn subject(&self) -> Option<&str> {
+        self.subject.as_deref()
+    }
+
+    /// The distribution build a correlation judged, if it judged one.
+    pub fn build(&self) -> Option<&Build> {
+        self.build.as_ref()
+    }
+
+    /// The distributor's advisory data a correlation consulted, if any.
+    pub fn advised_by(&self) -> Option<&DetectionId> {
+        self.advised_by.as_ref()
     }
 
     /// The detection that produced this finding.
@@ -663,8 +732,9 @@ impl Finding {
     /// The key that decides whether this finding and another are the same claim.
     ///
     /// The producing detection's id, paired with the subject it discriminates on:
-    /// the lowest CVE identifier this finding references, or its title where it
-    /// references none.
+    /// the [`subject`](Self::subject) the detection named where it named one,
+    /// otherwise the lowest CVE identifier this finding references, or its
+    /// title where it references none.
     ///
     /// The lowest rather than the first, and that distinction is load-bearing
     /// because references keep the order a detection stated them in. A
@@ -673,15 +743,16 @@ impl Finding {
     /// after a data refresh, and a diff between two scans of an unchanged host
     /// would report a finding gone and another arrived.
     pub fn claim_id(&self) -> ClaimId {
-        let subject = self
-            .references
-            .iter()
-            .filter_map(|r| match r {
-                Reference::Cve(id) => Some(id.clone()),
-                _ => None,
-            })
-            .min()
-            .unwrap_or_else(|| self.title.clone());
+        let subject = self.subject.clone().unwrap_or_else(|| {
+            self.references
+                .iter()
+                .filter_map(|r| match r {
+                    Reference::Cve(id) => Some(id.clone()),
+                    _ => None,
+                })
+                .min()
+                .unwrap_or_else(|| self.title.clone())
+        });
         ClaimId {
             detection: self.detection.id.clone(),
             subject,
@@ -730,9 +801,29 @@ impl Finding {
     /// one would have a merge drop the claim once a newer scan backed the
     /// other and not that one.
     ///
+    /// **Except that a correlation's certainty and references are its
+    /// verdict**, and follow the version like the rest of it. A correlation is
+    /// not an observation a second account can corroborate: it is a
+    /// computation over a service identification and the datasets it was
+    /// judged against, and a later computation that cites fewer
+    /// vulnerabilities, or holds them less surely, has usually learned that
+    /// some of them do not apply to this build. Unioning the references and
+    /// keeping the higher certainty would carry every vulnerability any
+    /// earlier account ever cited into every later report, at the surest grade
+    /// any account ever gave it, which is the outcome a distribution's own fix
+    /// data is consulted to prevent. So an account of a correlation at the
+    /// same version or newer replaces the certainty, the references, the build
+    /// and the advisory stamp outright, and an older one supplies none of them.
+    ///
     /// The excerpt and the remediation travel with the verdict where there is
     /// one to take, and fill a gap where there is not.
     pub fn corroborate(&mut self, other: Finding) -> bool {
+        // Both accounts must be correlations for the verdict rule to apply: a
+        // claim one detection draws both ways is not one this crate produces,
+        // and a finding rebuilt from a file that lost its identifiers is read
+        // as the observation it then looks like.
+        let correlation = self.is_correlation() && other.is_correlation();
+
         // Destructured rather than reached through `other.…`, so a field added
         // to this struct is a compile error here and not a value that quietly
         // stops being folded.
@@ -746,19 +837,67 @@ impl Finding {
             references,
             remediation,
             cpes,
+            subject,
+            build,
+            advised_by,
         } = other;
 
         let mut changed = false;
+        let at_least_as_new = detection.version >= self.detection.version;
 
-        let stronger = self.confidence.max(confidence);
-        if stronger != self.confidence {
-            self.confidence = stronger;
+        if correlation {
+            // A correlation's verdict, given whole by an account at least as
+            // new and not at all by an older one. See the documentation above.
+            if at_least_as_new {
+                if confidence != self.confidence {
+                    self.confidence = confidence;
+                    changed = true;
+                }
+                if references != self.references {
+                    self.references = references;
+                    changed = true;
+                }
+                if build != self.build {
+                    self.build = build;
+                    changed = true;
+                }
+                if advised_by != self.advised_by {
+                    self.advised_by = advised_by;
+                    changed = true;
+                }
+            }
+        } else {
+            let stronger = self.confidence.max(confidence);
+            if stronger != self.confidence {
+                self.confidence = stronger;
+                changed = true;
+            }
+            for reference in references {
+                if !self.references.contains(&reference) {
+                    self.references.push(reference);
+                    changed = true;
+                }
+            }
+            if self.build.is_none() && build.is_some() {
+                self.build = build;
+                changed = true;
+            }
+            if self.advised_by.is_none() && advised_by.is_some() {
+                self.advised_by = advised_by;
+                changed = true;
+            }
+        }
+
+        // The subject is the claim's identity, which both accounts share by
+        // construction; one that named it fills one that did not.
+        if self.subject.is_none() && subject.is_some() {
+            self.subject = subject;
             changed = true;
         }
 
         // Same claim means the same detection id, so the version is what orders
         // the two accounts.
-        if detection.version >= self.detection.version {
+        if at_least_as_new {
             // Only a strictly newer detection replaces the stamp, and it brings
             // its own content hash with it. At the same version the hashes are
             // the same detection's, so the incumbent's stands.
@@ -800,12 +939,6 @@ impl Finding {
             }
         }
 
-        for reference in references {
-            if !self.references.contains(&reference) {
-                self.references.push(reference);
-                changed = true;
-            }
-        }
         for cpe in cpes {
             changed |= self.cpes.insert(cpe);
         }
@@ -866,6 +999,52 @@ mod tests {
             DetectionClass::ActiveBenign,
         )
         .unwrap()
+    }
+
+    /// A correlation is a computation, and a second one at the same version or
+    /// newer replaces the first's verdict, certainty and citations included.
+    /// Corroborated like an observation, a correlation that learned most of
+    /// its vulnerabilities do not apply to a build would keep every one of
+    /// them at the surest grade any account gave.
+    #[test]
+    fn a_correlations_later_account_replaces_its_certainty_and_citations() {
+        let correlation = |version: u16, confidence: Confidence, cves: &[&str]| {
+            let mut finding = Finding::new(
+                DetectionId::new("zond:cve-kev", Version::new(0, version, 0), "h").unwrap(),
+                "OpenSSH 6.6.1p1",
+                Severity::Critical,
+                confidence,
+                DetectionClass::Passive,
+            )
+            .unwrap()
+            .with_cpe("cpe:/a:openbsd:openssh:6.6.1p1")
+            .with_subject("openbsd:openssh:6.6.1p1@ubuntu-14.04/build-unchecked");
+            for cve in cves {
+                finding = finding.with_reference(Reference::cve(*cve).unwrap());
+            }
+            finding
+        };
+
+        let mut held = correlation(
+            3,
+            Confidence::Probable,
+            &["CVE-2016-1908", "CVE-2023-38408"],
+        );
+        assert!(held.corroborate(correlation(3, Confidence::Weak, &["CVE-2023-38408"])));
+        assert_eq!(held.confidence(), Confidence::Weak);
+        assert_eq!(held.references().count(), 1);
+
+        // An older correlator's account gives nothing of its verdict.
+        held.corroborate(correlation(2, Confidence::Certain, &["CVE-2016-1908"]));
+        assert_eq!(held.confidence(), Confidence::Weak);
+        assert_eq!(held.references().count(), 1);
+
+        // And an observation still ratchets, as it always has.
+        let mut observed = finding();
+        let mut weaker = finding();
+        weaker.confidence = Confidence::Weak;
+        observed.corroborate(weaker);
+        assert_eq!(observed.confidence(), Confidence::Certain);
     }
 
     #[test]

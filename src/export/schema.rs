@@ -2225,6 +2225,38 @@ pub struct FindingDto<'a> {
     /// as in the service's `cpes`. The order is the unmasked one.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub cpes: Vec<Cow<'a, str>>,
+    /// What the claim is about, where the detection named it rather than
+    /// leaving it to be read off the references: for a correlation, the
+    /// software, the distribution release and the kind of verdict, which stay
+    /// put while the list of vulnerabilities behind them moves with the data.
+    /// Two findings with the same `id` and `subject` on the same port are the
+    /// same claim. Absent where the detection named none. Untrusted, and
+    /// masked as `title` is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<Cow<'a, str>>,
+    /// The distribution build a correlation judged, for one drawn from a
+    /// service that carried one. The claim rests on it as on `cpes`: a
+    /// distribution publishes fixes as new builds of the same upstream
+    /// version. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build: Option<BuildDto<'a>>,
+    /// The distributor's advisory data a correlation consulted to judge
+    /// `build`, stamped as the detection itself is. Absent where none was
+    /// consulted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub advised_by: Option<AdvisedByDto<'a>>,
+}
+
+/// Which snapshot of a distributor's advisory data a correlation consulted.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize)]
+pub struct AdvisedByDto<'a> {
+    /// The dataset's identity, such as `ubuntu:security-notices`.
+    pub id: &'a str,
+    /// The dataset's version, `major.minor.patch`, read off its newest record.
+    pub version: String,
+    /// The content hash of the dataset, for reproducibility.
+    pub content_hash: &'a str,
 }
 
 impl<'a> FindingDto<'a> {
@@ -2247,6 +2279,13 @@ impl<'a> FindingDto<'a> {
             remediation: finding.remediation().map(|advice| masking.text(advice)),
             cpe: finding.cpes().next().map(|cpe| masking.text(cpe)),
             cpes: finding.cpes().map(|cpe| masking.text(cpe)).collect(),
+            subject: finding.subject().map(|subject| masking.text(subject)),
+            build: finding.build().map(|build| BuildDto::new(build, masking)),
+            advised_by: finding.advised_by().map(|advised| AdvisedByDto {
+                id: advised.id(),
+                version: advised.version().to_string(),
+                content_hash: advised.content_hash(),
+            }),
         }
     }
 }

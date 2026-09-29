@@ -1284,6 +1284,27 @@ impl Host {
         Some(port.add_finding(finding))
     }
 
+    /// Replaces every correlation `detection` drew on the port at `number` and
+    /// `protocol` with `findings`. See [`Port::replace_correlations`].
+    ///
+    /// `None` where this host has no such port, `Some(false)` where the port
+    /// already held exactly these.
+    pub(crate) fn replace_port_correlations(
+        &mut self,
+        number: u16,
+        protocol: Protocol,
+        detection: &str,
+        findings: Vec<Finding>,
+    ) -> Option<bool> {
+        let key = (number, protocol);
+        let port = self.ports.get_mut(&key)?;
+        let changed = port.replace_correlations(detection, findings);
+        if changed && let Some(touched) = &mut self.touched {
+            touched.insert(key);
+        }
+        Some(changed)
+    }
+
     /// Replaces this host's operating-system fingerprint outright, whatever was
     /// there before, and stamps the host as seen now.
     ///

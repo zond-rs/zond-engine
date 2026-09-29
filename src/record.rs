@@ -1053,6 +1053,19 @@ pub struct FindingRecord {
     /// and defaulted on the way in.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cpes: Vec<String>,
+    /// What the claim is about, where the detection named it.
+    ///
+    /// Omitted when absent, which is every finding whose detection leaves the
+    /// claim to be read off its references.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// The distribution build a correlation judged. Omitted when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<BuildRecord>,
+    /// The distributor's advisory data a correlation consulted. Omitted when
+    /// absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advised_by: Option<DetectionIdRecord>,
 }
 
 impl From<&Finding> for FindingRecord {
@@ -1068,6 +1081,9 @@ impl From<&Finding> for FindingRecord {
             remediation: finding.remediation().map(str::to_owned),
             cpe: finding.cpes().next().map(str::to_owned),
             cpes: finding.cpes().map(str::to_owned).collect(),
+            subject: finding.subject().map(str::to_owned),
+            build: finding.build().map(BuildRecord::from),
+            advised_by: finding.advised_by().map(DetectionIdRecord::from),
         }
     }
 }
@@ -1105,6 +1121,19 @@ impl FindingRecord {
         }
         for reference in self.references.iter().filter_map(ReferenceRecord::rebuild) {
             finding = finding.with_reference(reference);
+        }
+        if let Some(subject) = &self.subject {
+            finding = finding.with_subject(subject.clone());
+        }
+        if let Some(build) = self.build.as_ref().and_then(BuildRecord::rebuild) {
+            finding = finding.with_build(build);
+        }
+        if let Some(advised_by) = self
+            .advised_by
+            .as_ref()
+            .and_then(DetectionIdRecord::rebuild)
+        {
+            finding = finding.with_advised_by(advised_by);
         }
         Some(finding)
     }
@@ -2953,6 +2982,9 @@ mod tests {
             remediation: None,
             cpe: None,
             cpes: Vec::new(),
+            subject: None,
+            build: None,
+            advised_by: None,
         };
         let finding = softened
             .rebuild()

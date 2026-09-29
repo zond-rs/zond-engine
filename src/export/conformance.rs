@@ -558,10 +558,15 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         // A strategy that failed rather than one a limit cut short, which is
         // what every entry of a document predating the mark meant.
         ("failure", "cut_short"),
+        // Every finding but a correlation's leaves out the first three, and a
+        // correlation of an upstream build leaves out the build and the stamp.
+        ("finding", "advised_by"),
+        ("finding", "build"),
         ("finding", "cpe"),
         ("finding", "cpes"),
         ("finding", "excerpt"),
         ("finding", "remediation"),
+        ("finding", "subject"),
         // A rule names whichever parts of a box it knows, and most name one or
         // two: a vendor and a model, or a family and nothing else.
         ("hardware", "cpe23"),
@@ -1599,6 +1604,11 @@ fn redaction_masks_the_host_s_words_in_every_field_its_replies_fill() {
     /// algorithm, and an application protocol, which the handshake refuses
     /// unless it is one this crate offered.
     const UNFILLABLE: &[&str] = &[
+        // The advisory data a correlation consulted names itself; the engine
+        // or an operator chose the dataset, and no reply reaches its stamp.
+        "host.findings[].advised_by.content_hash",
+        "host.findings[].advised_by.id",
+        "host.findings[].advised_by.version",
         "host.findings[].content_hash",
         "host.findings[].id",
         "host.findings[].version",
@@ -1612,6 +1622,9 @@ fn redaction_masks_the_host_s_words_in_every_field_its_replies_fill() {
         "host.ports[].discovery.reason",
         "host.ports[].discovery.source_ip",
         "host.ports[].discovery.timestamp",
+        "host.ports[].findings[].advised_by.content_hash",
+        "host.ports[].findings[].advised_by.id",
+        "host.ports[].findings[].advised_by.version",
         "host.ports[].findings[].content_hash",
         "host.ports[].findings[].id",
         "host.ports[].findings[].version",

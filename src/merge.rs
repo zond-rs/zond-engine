@@ -701,6 +701,7 @@ fn fold_port(accounts: &[&Port]) -> Port {
             }
         }
     }
+    port.retire_superseded_correlations();
 
     port
 }
@@ -726,7 +727,17 @@ fn overturned(finding: &Finding, account: &Port, folded: &Port) -> bool {
             port.service()
                 .is_some_and(|service| finding.cpes().any(|cpe| service.cpes().contains(cpe)))
         };
-        return carries(account) && !carries(folded);
+        // The build too: a distribution publishes a fix as a new build of the
+        // same upstream version, so an upgrade leaves every identifier where it
+        // was and moves only this. A claim judged against the build the
+        // account's service carried is overturned by a folded record carrying
+        // another, and a claim judged with no build, as an upstream release, by
+        // a folded record that knows whose build it is.
+        let judged = |port: &Port| {
+            port.service().and_then(Service::build).map(same_build_key)
+                == finding.build().map(same_build_key)
+        };
+        return (carries(account) && !carries(folded)) || (judged(account) && !judged(folded));
     }
     match (folded.security(), account.security()) {
         (Some(folded), Some(basis)) => {
@@ -734,6 +745,20 @@ fn overturned(finding: &Finding, account: &Port, folded: &Port) -> bool {
         }
         _ => false,
     }
+}
+
+/// What identifies a build for deciding whether a correlation still describes
+/// it: who built it, which revision and which release. What said so is
+/// provenance, and two accounts reading one build by different routes are
+/// still reading one build.
+fn same_build_key(
+    build: &crate::model::port::Build,
+) -> (crate::model::port::Distributor, Option<&str>, Option<&str>) {
+    (
+        build.distributor(),
+        build.revision(),
+        build.release().map(crate::model::port::Release::name),
+    )
 }
 
 /// A finding one account of an endpoint carried, worded for the folded record
@@ -2469,7 +2494,7 @@ mod tests {
         assert!(
             claims_on_80([january.clone()])
                 .iter()
-                .any(|title| title.starts_with("http_server 2.4.49")),
+                .any(|title| title.starts_with("Apache httpd 2.4.49")),
             "test premise: the catalogue draws a finding from 2.4.49: {:?}",
             claims_on_80([january.clone()])
         );
@@ -2494,6 +2519,115 @@ mod tests {
             claims_on_80(merged.hosts().cloned()),
             claims_on_80([june]),
             "the merged port carries what 2.4.58 draws and nothing 2.4.49 did"
+        );
+    }
+
+    /// Port 22 of host 1 serving OpenSSH 6.6.1p1 as Ubuntu 14.04 built it at
+    /// `revision`, correlated as a scan's correlation step does.
+    fn serving_ubuntu_openssh(revision: &str) -> Host {
+        use crate::model::port::{Build, Distributor, Release, ReleaseBasis};
+        let service = Service::new("ssh", 100)
+            .with_product("OpenSSH")
+            .with_version("6.6.1p1")
+            .with_cpe("cpe:/a:openbsd:openssh:6.6.1p1")
+            .with_build(
+                Build::new(Distributor::Ubuntu)
+                    .with_revision(revision)
+                    .with_release(Release::new("14.04", ReleaseBasis::Banner)),
+            );
+        let mut host = with_port(
+            host(1),
+            Port::new(22, TCP, PortState::Open).with_service(service),
+        );
+        crate::cve::correlate(&mut host);
+        host
+    }
+
+    fn claims_on_22(report_or_host: impl IntoIterator<Item = Host>) -> Vec<String> {
+        let mut claims: Vec<String> = report_or_host
+            .into_iter()
+            .flat_map(|host| {
+                host.ports()
+                    .filter(|port| port.number() == 22)
+                    .flat_map(|port| port.findings().map(|f| f.claim_id().subject().to_owned()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        claims.sort();
+        claims
+    }
+
+    /// **A correlator's claims give way to a newer correlator's on the same
+    /// port.** An earlier build of this engine summarised a distribution build
+    /// as the upstream release, keyed the claim on its lowest identifier and
+    /// held it probable. Its claims are keyed differently from the newer
+    /// correlator's, so folding claim by claim would carry both, and the port
+    /// would say once more what the newer judgement exists to correct.
+    #[test]
+    fn an_earlier_correlators_claims_are_retired_by_a_later_ones() {
+        use crate::model::finding::{DetectionClass, DetectionId, Finding, Reference, Version};
+
+        let june = serving_ubuntu_openssh("2ubuntu2.13");
+        assert!(
+            !claims_on_22([june.clone()]).is_empty(),
+            "test premise: the catalogue draws a claim on the build"
+        );
+
+        let mut january = june.clone();
+        let earlier = Finding::new(
+            DetectionId::new("zond:cve-kev", Version::new(0, 2, 0), "earlier").expect("an id"),
+            "openssh 6.6.1p1 has 44 known vulnerabilities",
+            crate::model::finding::Severity::Critical,
+            crate::model::confidence::Confidence::Probable,
+            DetectionClass::Passive,
+        )
+        .expect("a finding")
+        .with_cpe("cpe:/a:openbsd:openssh:6.6.1p1")
+        .with_reference(Reference::cve("CVE-2016-1908").expect("an id"));
+        let mut port = january
+            .ports()
+            .find(|p| p.number() == 22)
+            .expect("the port")
+            .clone();
+        port.add_finding(earlier);
+        january.add_port(port);
+        assert!(
+            claims_on_22([january.clone()]).contains(&"CVE-2016-1908".to_string()),
+            "test premise: January carries the earlier correlator's claim"
+        );
+
+        let merged = merged(vec![
+            report("january", day(1), vec![january]),
+            report("june", day(150), vec![june.clone()]),
+        ]);
+        assert_eq!(claims_on_22(merged.hosts().cloned()), claims_on_22([june]));
+    }
+
+    /// **A distribution's fix moves the build and nothing else, and a claim
+    /// judged against the old build does not survive it.** January read
+    /// OpenSSH 6.6.1p1 as Ubuntu's `2ubuntu2.7`, June the same version at
+    /// `2ubuntu2.13`. The identifier is the same in both; only the build says
+    /// the package was upgraded, and a claim judged against January's build
+    /// describes a package the host no longer has.
+    #[test]
+    fn a_claim_judged_against_an_older_build_is_not_carried_past_an_upgrade() {
+        let january = serving_ubuntu_openssh("2ubuntu2.7");
+        // June's scan found nothing to claim, as it does once the
+        // distributor's data says the build carries every fix: the port holds
+        // the upgraded build and no correlation at all.
+        let mut june = serving_ubuntu_openssh("2ubuntu2.13");
+        june.replace_port_correlations(22, TCP, "zond:cve-kev", Vec::new());
+        assert!(claims_on_22([june.clone()]).is_empty(), "test premise");
+        assert!(!claims_on_22([january.clone()]).is_empty(), "test premise");
+
+        let merged = merged(vec![
+            report("january", day(1), vec![january]),
+            report("june", day(150), vec![june]),
+        ]);
+        assert_eq!(
+            claims_on_22(merged.hosts().cloned()),
+            Vec::<String>::new(),
+            "January's claim described the build June no longer runs"
         );
     }
 

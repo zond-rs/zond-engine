@@ -1774,14 +1774,7 @@ impl ServiceDto {
             version: self.version,
             extrainfo: self.extrainfo,
             cpes: self.cpes,
-            build: self.build.map(|build| BuildRecord {
-                distributor: build.distributor,
-                revision: build.revision,
-                release: build.release.map(|release| ReleaseRecord {
-                    name: release.name,
-                    basis: release.basis,
-                }),
-            }),
+            build: self.build.map(BuildDto::record),
         }
     }
 }
@@ -1805,6 +1798,31 @@ struct FindingDto {
     remediation: Option<String>,
     cpe: Option<String>,
     cpes: Vec<String>,
+    subject: Option<String>,
+    build: Option<BuildDto>,
+    advised_by: Option<AdvisedByDto>,
+}
+
+/// `finding.advised_by`, the advisory data a correlation consulted.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct AdvisedByDto {
+    id: String,
+    version: String,
+    content_hash: String,
+}
+
+impl BuildDto {
+    fn record(self) -> BuildRecord {
+        BuildRecord {
+            distributor: self.distributor,
+            revision: self.revision,
+            release: self.release.map(|release| ReleaseRecord {
+                name: release.name,
+                basis: release.basis,
+            }),
+        }
+    }
 }
 
 impl FindingDto {
@@ -1849,6 +1867,13 @@ impl FindingDto {
             remediation: self.remediation,
             cpe: self.cpe,
             cpes: self.cpes,
+            subject: self.subject,
+            build: self.build.map(BuildDto::record),
+            advised_by: self.advised_by.map(|advised| DetectionIdRecord {
+                id: advised.id,
+                version: advised.version,
+                content_hash: advised.content_hash,
+            }),
         })
     }
 }
@@ -2187,7 +2212,7 @@ mod tests {
                 "a severity",
             ),
             (
-                r#""confidence":"probable""#,
+                r#""confidence":"weak""#,
                 r#""confidence":"settled""#,
                 "a confidence",
             ),
