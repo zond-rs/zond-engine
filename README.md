@@ -78,8 +78,9 @@ version and suite offered in turn, each graded from its own parts.
 into a finding. Detections are TOML: a bounded sequence of probes and matches,
 or a sandboxed module that reaches the network only through the verbs its class
 grants. The operator sets the ceiling, so anything above `active-benign` ships
-inert. A finished report correlates against a vulnerability dataset the caller
-supplies.
+inert. Known vulnerabilities are matched to what was identified, and a
+distribution's build is judged by its distributor's own fix data rather than by
+its upstream version: the Ubuntu and Debian feeds, fetched when a caller asks.
 
 **Keeping the result.** Every scan is journalled as it runs, so one that stopped
 continues and one that finished replays without the network. Reports export as

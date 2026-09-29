@@ -14,68 +14,101 @@
 //! scan to answer, not "what is listening" but "what is listening that I need to
 //! fix", from data the engine already produces, with no probe of its own.
 //!
+//! ## Two datasets, because a version is two questions
+//!
+//! The [`Catalogue`] says which vulnerabilities an *upstream release* has: NVD's
+//! version ranges, CISA's KEV, an organisation's own feed. For a service that is
+//! the upstream release, that is the answer.
+//!
+//! Most services on a Linux server are not. A distribution fixes a
+//! vulnerability by patching the release it ships and publishing a new build of
+//! it, and the version string never moves: `OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13`
+//! is 6.6.1p1 carrying every fix Ubuntu made to it up to that build. The
+//! catalogue reports the upstream release's vulnerabilities against it, and
+//! most of them are fixed. Only the distributor can say which, and
+//! [`Advisories`] is what it says: per release and source package, which build
+//! fixed each vulnerability, which the release never carried, and which remain
+//! open. A service names its build in its [`Build`], and a [`Correlator`] given
+//! the distributor's advisories judges the build rather than the version:
+//! what the build fixed or never carried is withdrawn and only counted, what it
+//! still carries is reported with the build to install, and what the data does
+//! not settle stays at a confidence that says so. Without the data, a
+//! distribution's build is reported as unchecked, never as surely as an
+//! upstream release.
+//!
+//! ## Where a flaw lives
+//!
+//! A vulnerability database keys a flaw to the package it was fixed in, and a
+//! package is more than its daemon. ssh-agent's CVE-2023-38408 is filed against
+//! `openbsd:openssh` exactly as regreSSHion is, and a scan of a listening sshd
+//! has found the second and not the first. A hand-written overlay says, for the
+//! software a scan meets most, which vulnerabilities live in the client
+//! programs installed beside a service or need an account on the host (not
+//! reported against the service, and counted), and which need a setting the
+//! service does not ship with (reported as their own, weaker claim).
+//!
 //! ## The one number two ways
 //!
-//! No finding this pass records is certain, and the reason is the case the
-//! [two-axis finding](crate::model::finding) was built for: a distribution can
-//! backport a security fix without moving the version string, so a
-//! version-matched vulnerability is genuinely
+//! No finding this pass records is certain, and that is the case the
+//! [two-axis finding](crate::model::finding) was built for: a vulnerability
+//! matched on a version is genuinely
 //! [`Critical`](crate::model::finding::Severity::Critical) *and* genuinely
-//! unsure. The severity says how bad it is if true; the confidence says the match
-//! is a version string, not a confirmed exploit. A report that fused the two
-//! could not say both.
+//! unsure. The severity says how bad it is if true, and stays the catalogue's so
+//! one scale holds across every product and distribution; the confidence says
+//! how directly the claim follows from what was seen. An upstream release in a
+//! version range, or a build the distributor says predates the fix, is
+//! [`Confidence::Probable`]. A distribution's build nobody could check, a patch
+//! level the banner hides, a setting the scan cannot see, or an entry whose
+//! `affected` is `*` and names no version at all, is [`Confidence::Weak`]: a
+//! feed like CISA's KEV carries no version data, and reporting its entries as
+//! surely as a version match would give a patched server the same finding as a
+//! vulnerable one.
 //!
-//! How unsure depends on what the entry actually constrained, and the difference
-//! matters more than it looks. An entry naming a version range was checked
-//! against the version found, which is [`Confidence::Probable`]. An entry whose
-//! `affected` is `*` names a product and no version at all, so it matches a
-//! patched installation exactly as readily as a vulnerable one; that is
-//! [`Confidence::Weak`], and the excerpt says the version was never in question.
+//! ## One claim per kind, keyed on what it is about
 //!
-//! The distinction is not academic. A feed like CISA's KEV catalogue carries no
-//! version data whatsoever, so every entry converted from it is an unconstrained
-//! one. Reporting those at the same confidence as a version match would mean a
-//! fully patched server carrying the same finding as a vulnerable one, with
-//! nothing in the report to separate them.
+//! A version-matched service against a real feed draws dozens of
+//! vulnerabilities, so each kind of claim about one identification is one
+//! finding carrying every identifier as a reference, worst first. It is keyed on
+//! the software, whose build and release, and the kind of claim
+//! ([`Finding::subject`]), never on one of the identifiers, since those move
+//! whenever either dataset does. A correlation is a computation, so running it
+//! again replaces what the same catalogue drew on the port before rather than
+//! adding to it, and a [`merge`](crate::merge) retires a claim once a newer
+//! scan's identifier or build no longer backs it.
 //!
-//! ## The dataset is a parameter
+//! ## The datasets are parameters
 //!
 //! Every other corpus in this engine changes when its understanding of the world
-//! changes, and shipping it with the release is right. This one changes on
-//! somebody else's schedule: the KEV catalogue gains entries weekly, and a
-//! scanner whose vulnerability data can only move when the crate is rebuilt
-//! reports last release's vulnerabilities however long ago that was.
+//! changes, and shipping it with the release is right. These change on
+//! somebody else's schedule: fixes are published daily, and a scanner whose
+//! vulnerability data can only move when the crate is rebuilt reports last
+//! release's picture however long ago that was.
 //!
-//! So [`Catalogue`] is a value. [`Catalogue::embedded`] is the one this crate
-//! ships and what [`correlate`] uses, and [`Catalogue::read`] takes a caller's
-//! own, a refreshed KEV dump, or the internal advisory feed an enterprise
-//! already maintains, for [`correlate_with`].
+//! So both are values. [`Catalogue::embedded`] is the catalogue this crate
+//! ships and [`Catalogue::read`] takes a caller's own. No distributor's data is
+//! shipped: [`Advisories`] are converted from the distributors' feeds, which
+//! [`fetch`](crate::fetch) downloads when a caller asks, and handed to a scan on
+//! its [`Detections`](crate::detect::Detections) or to a [`Correlator`] over a
+//! finished report. A dataset carries its own identity and version, and every
+//! finding is stamped with the catalogue's and, where it consulted one, the
+//! distributor's ([`Finding::advised_by`]), so a report says which data
+//! concluded what. The `zond:` namespace is refused to a catalogue read from
+//! outside.
 //!
-//! A catalogue carries its own identity and version, and every finding it
-//! produces is stamped with them, so a report says which dataset concluded what
-//! and a reader can tell a finding from the shipped seed apart from one an
-//! operator's own feed drew. The `zond:` namespace is refused to a catalogue
-//! read from outside, which is the authoring path the reservation is for.
+//! ## The shipped catalogue
 //!
-//! ## The shipped one
-//!
-//! `assets/cve/seed.toml`: a hand-picked set of well-known, network-reachable
-//! vulnerabilities. A starting corpus and not a complete one. Each entry matches
-//! a service CPE whose vendor and product equal its own and whose version
-//! satisfies a small predicate grammar (`<`, `<=`, `>`, `>=`, `==`, joined by
-//! `,`, or `*` for any).
+//! `assets/cve/`: NVD's records for the software the fingerprint corpus can put
+//! a version to, beside a hand-picked seed. Each entry matches a service CPE
+//! whose vendor and product equal its own and whose version satisfies a small
+//! predicate grammar (`<`, `<=`, `>`, `>=`, `==`, joined by `,`, or `*` for
+//! any).
 //!
 //! ## How it runs
 //!
-//! [`correlate`] takes a finished [`Host`] and records findings on its ports. It
-//! is a caller's to run, the library performs no pass a caller did not ask for,
-//! and it is idempotent, because a finding deduplicates by claim, so a second run
-//! corroborates rather than doubles.
-//!
-//! Every finding records the CPEs it was drawn from, as
-//! [`Finding::cpes`]. The claim rests on those identifications, and a
-//! [`merge`](crate::merge) that folds in a newer scan identifying another
-//! version has to be able to tell which findings went with the old one.
+//! A scan correlates as its own step, after the service pass. [`correlate`] and
+//! [`Correlator`] do the same for a host or a report from anywhere, which
+//! includes one read from a file: an archived report correlates against today's
+//! data without rescanning anything.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
