@@ -1,0 +1,1728 @@
+# Which CVEs keyed to a server product can reach the service a scan found.
+#
+# Hand-written. NVD and the distributions key a vulnerability to the package, so
+# a flaw in OpenSSH's client, in its agent or in a tool only a logged-in user
+# runs is charged to every listening sshd. Each entry here says where the flaw
+# lives, for one CVE and one `vendor:product`:
+#
+#   service        the listening daemon, reachable over the network as shipped
+#   client         only the client programs: ssh, scp, sftp, ssh-agent,
+#                  ssh-add, ssh-keygen, ApacheBench
+#   local          only someone who already holds an account on the host, or
+#                  can write its configuration
+#   configuration  only a server set up in a way it is not by default, named
+#                  in `requires`: a directive, or for Apache HTTP Server the
+#                  module that must be loaded
+#
+# Conservative by rule, because an entry that is wrongly `client` hides a real
+# server vulnerability: `service` unless the record makes plain that the flaw
+# is somewhere else. A flaw specific to one operating system stays `service`,
+# since that is a condition on the platform and not on the daemon.
+#
+# "By default" means OpenSSH's own sshd_config, and for Apache HTTP Server the
+# modules its stock httpd.conf or Debian's packaging loads without being asked.
+# A generic mod_ssl flaw is `service`: a scan sees whether a port speaks TLS,
+# and one that does has mod_ssl loaded.
+#
+# Every OpenSSH CVE the shipped catalogue carries is classified, and every
+# critical or high one for Apache HTTP Server; the tests beside the loader
+# hold both lists to the catalogue, so regenerating it names what is new. The
+# reasons are this project's own summaries.
+
+[[cve]]
+id = "CVE-1999-1010"
+product = "openbsd:openssh"
+applies = "service"
+reason = "server accepts the none cipher against its policy"
+
+[[cve]]
+id = "CVE-2000-0143"
+product = "openbsd:openssh"
+applies = "local"
+reason = "forwarding through the daemon by accounts without a shell"
+
+[[cve]]
+id = "CVE-2000-0217"
+product = "openbsd:openssh"
+applies = "client"
+reason = "X forwarding exposes the connecting user's X session"
+
+[[cve]]
+id = "CVE-2000-0525"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "UseLogin yes"
+reason = "privileges not dropped when login(1) runs sessions"
+
+[[cve]]
+id = "CVE-2000-0992"
+product = "openbsd:openssh"
+applies = "client"
+reason = "scp client writes outside its target for a hostile server"
+
+[[cve]]
+id = "CVE-2000-0999"
+product = "openbsd:openssh"
+applies = "client"
+reason = "format strings in the ssh client program"
+
+[[cve]]
+id = "CVE-2000-1169"
+product = "openbsd:openssh"
+applies = "client"
+reason = "client fails to switch off X11 and agent forwarding"
+
+[[cve]]
+id = "CVE-2001-0144"
+product = "openbsd:openssh"
+applies = "service"
+reason = "SSH1 CRC-32 attack detector integer overflow"
+
+[[cve]]
+id = "CVE-2001-0361"
+product = "openbsd:openssh"
+applies = "service"
+reason = "SSH1 session keys open to a Bleichenbacher oracle"
+
+[[cve]]
+id = "CVE-2001-0529"
+product = "openbsd:openssh"
+applies = "local"
+reason = "local symlink race on the X11 forwarding cookie file"
+
+[[cve]]
+id = "CVE-2001-0572"
+product = "openbsd:openssh"
+applies = "service"
+reason = "traffic analysis reveals password lengths and more"
+
+[[cve]]
+id = "CVE-2001-0816"
+product = "openbsd:openssh"
+applies = "local"
+reason = "sftp by a key holder escapes its command= restriction"
+
+[[cve]]
+id = "CVE-2001-0872"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "UseLogin yes"
+reason = "environment not cleansed before login(1)"
+
+[[cve]]
+id = "CVE-2001-1029"
+product = "openbsd:openssh"
+applies = "local"
+reason = "FreeBSD login files read with the user's capabilities"
+
+[[cve]]
+id = "CVE-2001-1380"
+product = "openbsd:openssh"
+applies = "local"
+reason = "a key holder escapes its from= restriction"
+
+[[cve]]
+id = "CVE-2001-1382"
+product = "openbsd:openssh"
+applies = "service"
+reason = "echo-simulation packet shows the countermeasure"
+
+[[cve]]
+id = "CVE-2001-1459"
+product = "openbsd:openssh"
+applies = "local"
+reason = "sessions without a pty skip PAM resource limits"
+
+[[cve]]
+id = "CVE-2001-1507"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "KerberosAuthentication yes"
+reason = "Kerberos V login accepted unchallenged"
+
+[[cve]]
+id = "CVE-2001-1585"
+product = "openbsd:openssh"
+applies = "service"
+reason = "development snapshot skipped the public-key challenge"
+
+[[cve]]
+id = "CVE-2002-0083"
+product = "openbsd:openssh"
+applies = "local"
+reason = "channel off-by-one reached by a logged-in user"
+
+[[cve]]
+id = "CVE-2002-0575"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "KerberosTgtPassing or AFSTokenPassing yes"
+reason = "ticket and token passing buffer overflow"
+
+[[cve]]
+id = "CVE-2002-0639"
+product = "openbsd:openssh"
+applies = "service"
+reason = "challenge-response integer overflow with S/Key or BSD auth"
+
+[[cve]]
+id = "CVE-2002-0640"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "PAMAuthenticationViaKbdInt yes"
+reason = "PAM keyboard-interactive response overflow"
+
+[[cve]]
+id = "CVE-2002-0765"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "NIS netgroups in account lookup"
+reason = "YP netgroup lookups accept another user's password"
+
+[[cve]]
+id = "CVE-2003-0190"
+product = "openbsd:openssh"
+applies = "service"
+reason = "PAM timing reveals which accounts exist"
+
+[[cve]]
+id = "CVE-2003-0386"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "address-restricted AllowUsers or from= entries"
+reason = "reverse DNS names defeat numeric address restrictions"
+
+[[cve]]
+id = "CVE-2003-0682"
+product = "openbsd:openssh"
+applies = "service"
+reason = "memory errors in buffer handling"
+
+[[cve]]
+id = "CVE-2003-0693"
+product = "openbsd:openssh"
+applies = "service"
+reason = "heap corruption in buffer_append_space"
+
+[[cve]]
+id = "CVE-2003-0695"
+product = "openbsd:openssh"
+applies = "service"
+reason = "buffer management errors in the daemon"
+
+[[cve]]
+id = "CVE-2003-0786"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "UsePrivilegeSeparation no"
+reason = "SSH1 PAM challenge result never checked"
+
+[[cve]]
+id = "CVE-2003-0787"
+product = "openbsd:openssh"
+applies = "service"
+reason = "PAM conversation treats structures as pointers"
+
+[[cve]]
+id = "CVE-2003-1562"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "PermitRootLogin no"
+reason = "root password confirmed by timing under PAM"
+
+[[cve]]
+id = "CVE-2004-0175"
+product = "openbsd:openssh"
+applies = "client"
+reason = "scp client writes outside its target for a hostile server"
+
+[[cve]]
+id = "CVE-2004-1653"
+product = "openbsd:openssh"
+applies = "local"
+reason = "port bounce by accounts meant for anonymous access"
+
+[[cve]]
+id = "CVE-2004-2069"
+product = "openbsd:openssh"
+applies = "service"
+reason = "connections outlive LoginGraceTime under privilege separation"
+
+[[cve]]
+id = "CVE-2004-2760"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "PermitRootLogin no"
+reason = "root password confirmed by the connection closing"
+
+[[cve]]
+id = "CVE-2005-2666"
+product = "openbsd:openssh"
+applies = "client"
+reason = "known_hosts names hosts in plain text"
+
+[[cve]]
+id = "CVE-2005-2797"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh -D listens on every address"
+
+[[cve]]
+id = "CVE-2005-2798"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "GSSAPIAuthentication yes"
+reason = "GSSAPI credentials delegated to non-GSSAPI logins"
+
+[[cve]]
+id = "CVE-2006-0225"
+product = "openbsd:openssh"
+applies = "client"
+reason = "scp expands file names through the shell twice"
+
+[[cve]]
+id = "CVE-2006-0883"
+product = "openbsd:openssh"
+applies = "service"
+reason = "FreeBSD OpenPAM child exit blocks new logins"
+
+[[cve]]
+id = "CVE-2006-4924"
+product = "openbsd:openssh"
+applies = "service"
+reason = "SSH1 CRC attack detector CPU exhaustion"
+
+[[cve]]
+id = "CVE-2006-4925"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh client crash on out-of-order authentication success"
+
+[[cve]]
+id = "CVE-2006-5051"
+product = "openbsd:openssh"
+applies = "service"
+reason = "signal handler race before authentication"
+
+[[cve]]
+id = "CVE-2006-5052"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "GSSAPIAuthentication yes"
+reason = "GSSAPI abort reveals which accounts exist"
+
+[[cve]]
+id = "CVE-2006-5794"
+product = "openbsd:openssh"
+applies = "service"
+reason = "privilege separation monitor weakly checks authentication"
+
+[[cve]]
+id = "CVE-2007-2243"
+product = "openbsd:openssh"
+applies = "service"
+reason = "S/Key challenge reveals which accounts exist"
+
+[[cve]]
+id = "CVE-2007-4752"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh client falls back to a trusted X11 cookie"
+
+[[cve]]
+id = "CVE-2008-1483"
+product = "openbsd:openssh"
+applies = "local"
+reason = "local user hijacks a forwarded X11 display port"
+
+[[cve]]
+id = "CVE-2008-1657"
+product = "openbsd:openssh"
+applies = "local"
+reason = "logged-in user bypasses ForceCommand through ~/.ssh/rc"
+
+[[cve]]
+id = "CVE-2008-3259"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "X11UseLocalhost no"
+reason = "local user hijacks the X11 forwarding port"
+
+[[cve]]
+id = "CVE-2008-5161"
+product = "openbsd:openssh"
+applies = "service"
+reason = "CBC mode leaks plaintext to a network attacker"
+
+[[cve]]
+id = "CVE-2010-4478"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "J-PAKE authentication built in and enabled"
+reason = "J-PAKE parameters not validated"
+
+[[cve]]
+id = "CVE-2010-4755"
+product = "openbsd:openssh"
+applies = "local"
+reason = "sftp glob patterns exhaust the daemon for a logged-in user"
+
+[[cve]]
+id = "CVE-2010-5107"
+product = "openbsd:openssh"
+applies = "service"
+reason = "fixed login grace lets connections exhaust slots"
+
+[[cve]]
+id = "CVE-2011-0539"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh-keygen legacy certificates leak stack memory"
+
+[[cve]]
+id = "CVE-2011-4327"
+product = "openbsd:openssh"
+applies = "local"
+reason = "ssh-keysign leaks descriptors to a local user"
+
+[[cve]]
+id = "CVE-2011-5000"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "GSSAPIAuthentication yes"
+reason = "gssapi-with-mic length field exhausts memory"
+
+[[cve]]
+id = "CVE-2012-0814"
+product = "openbsd:openssh"
+applies = "local"
+reason = "debug output shows authorized_keys options to their user"
+
+[[cve]]
+id = "CVE-2013-4548"
+product = "openbsd:openssh"
+applies = "local"
+reason = "AES-GCM MAC context lets a logged-in user bypass ForceCommand"
+
+[[cve]]
+id = "CVE-2014-1692"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "J-PAKE authentication built in and enabled"
+reason = "uninitialised J-PAKE data structures"
+
+[[cve]]
+id = "CVE-2014-2532"
+product = "openbsd:openssh"
+applies = "service"
+reason = "AcceptEnv wildcards match more than intended"
+
+[[cve]]
+id = "CVE-2014-2653"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh client skips SSHFP checks for a certificate"
+
+[[cve]]
+id = "CVE-2015-5352"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh client X11 refusal deadline not enforced"
+
+[[cve]]
+id = "CVE-2015-5600"
+product = "openbsd:openssh"
+applies = "service"
+reason = "keyboard-interactive devices allow unlimited retries"
+
+[[cve]]
+id = "CVE-2015-6563"
+product = "openbsd:openssh"
+applies = "local"
+reason = "monitor accepts a username from a compromised child"
+
+[[cve]]
+id = "CVE-2015-6564"
+product = "openbsd:openssh"
+applies = "local"
+reason = "monitor use-after-free from a compromised child"
+
+[[cve]]
+id = "CVE-2015-6565"
+product = "openbsd:openssh"
+applies = "local"
+reason = "world-writable terminals for local users"
+
+[[cve]]
+id = "CVE-2015-8325"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "UseLogin yes"
+reason = "PAM environment file reaches login(1)"
+
+[[cve]]
+id = "CVE-2016-0777"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh client roaming leaks private keys to a server"
+
+[[cve]]
+id = "CVE-2016-0778"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh client roaming heap overflow from a server"
+
+[[cve]]
+id = "CVE-2016-1907"
+product = "openbsd:openssh"
+applies = "service"
+reason = "crafted packets read out of bounds"
+
+[[cve]]
+id = "CVE-2016-1908"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh client falls back to trusted X11 forwarding"
+
+[[cve]]
+id = "CVE-2016-3115"
+product = "openbsd:openssh"
+applies = "local"
+reason = "X11 request CRLF bypasses a user's command restriction"
+
+[[cve]]
+id = "CVE-2016-6210"
+product = "openbsd:openssh"
+applies = "service"
+reason = "password hashing timing reveals which accounts exist"
+
+[[cve]]
+id = "CVE-2016-6515"
+product = "openbsd:openssh"
+applies = "service"
+reason = "long passwords exhaust the CPU"
+
+[[cve]]
+id = "CVE-2016-8858"
+product = "openbsd:openssh"
+applies = "service"
+reason = "repeated KEXINIT exhausts memory"
+
+[[cve]]
+id = "CVE-2016-10009"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh-agent loads a PKCS#11 module over a forwarded agent"
+
+[[cve]]
+id = "CVE-2016-10010"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "UsePrivilegeSeparation no"
+reason = "forwarded Unix sockets created as root"
+
+[[cve]]
+id = "CVE-2016-10011"
+product = "openbsd:openssh"
+applies = "local"
+reason = "private key readable from a privilege-separated child"
+
+[[cve]]
+id = "CVE-2016-10012"
+product = "openbsd:openssh"
+applies = "local"
+reason = "compression bounds check reachable from the sandboxed child"
+
+[[cve]]
+id = "CVE-2016-10708"
+product = "openbsd:openssh"
+applies = "service"
+reason = "out-of-sequence NEWKEYS crashes the daemon"
+
+[[cve]]
+id = "CVE-2016-20012"
+product = "openbsd:openssh"
+applies = "service"
+reason = "public key probes reveal account and key pairs"
+
+[[cve]]
+id = "CVE-2017-15906"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "sftp-server read-only mode"
+reason = "read-only sftp still creates empty files"
+
+[[cve]]
+id = "CVE-2018-15473"
+product = "openbsd:openssh"
+applies = "service"
+reason = "authentication bail-out reveals which accounts exist"
+
+[[cve]]
+id = "CVE-2018-15919"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "GSSAPIAuthentication yes"
+reason = "GSSAPI responses reveal which accounts exist"
+
+[[cve]]
+id = "CVE-2018-20685"
+product = "openbsd:openssh"
+applies = "client"
+reason = "scp client lets a server change directory permissions"
+
+[[cve]]
+id = "CVE-2019-6109"
+product = "openbsd:openssh"
+applies = "client"
+reason = "scp client progress display takes control codes"
+
+[[cve]]
+id = "CVE-2019-6110"
+product = "openbsd:openssh"
+applies = "client"
+reason = "scp client prints a server's control codes"
+
+[[cve]]
+id = "CVE-2019-6111"
+product = "openbsd:openssh"
+applies = "client"
+reason = "scp client accepts file names a server chooses"
+
+[[cve]]
+id = "CVE-2019-16905"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "experimental XMSS keys built in"
+reason = "XMSS key parsing integer overflow"
+
+[[cve]]
+id = "CVE-2020-12062"
+product = "openbsd:openssh"
+applies = "client"
+reason = "scp client duplicate responses overwrite files"
+
+[[cve]]
+id = "CVE-2020-14145"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh client algorithm negotiation leaks host key state"
+
+[[cve]]
+id = "CVE-2020-15778"
+product = "openbsd:openssh"
+applies = "client"
+reason = "scp passes a destination to the remote shell"
+
+[[cve]]
+id = "CVE-2021-28041"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh-agent double free"
+
+[[cve]]
+id = "CVE-2021-36368"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh client with agent forwarding misled by none auth"
+
+[[cve]]
+id = "CVE-2021-41617"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "AuthorizedKeysCommand or AuthorizedPrincipalsCommand run as another user"
+reason = "helper commands keep the daemon's groups"
+
+[[cve]]
+id = "CVE-2023-25136"
+product = "openbsd:openssh"
+applies = "service"
+reason = "pre-authentication double free in KEX option handling"
+
+[[cve]]
+id = "CVE-2023-28531"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh-add drops destination constraints for smartcard keys"
+
+[[cve]]
+id = "CVE-2023-38408"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh-agent's PKCS#11 loading, reached through a forwarded agent"
+
+[[cve]]
+id = "CVE-2023-48795"
+product = "openbsd:openssh"
+applies = "service"
+reason = "Terrapin prefix truncation in the transport"
+
+[[cve]]
+id = "CVE-2023-51384"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh-agent applies constraints to one PKCS#11 key"
+
+[[cve]]
+id = "CVE-2023-51385"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh client expands shell metacharacters in names"
+
+[[cve]]
+id = "CVE-2024-6387"
+product = "openbsd:openssh"
+applies = "service"
+reason = "regreSSHion signal handler race before authentication"
+
+[[cve]]
+id = "CVE-2025-26465"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh client with VerifyHostKeyDNS open to impersonation"
+
+[[cve]]
+id = "CVE-2025-26466"
+product = "openbsd:openssh"
+applies = "service"
+reason = "pong replies queued without bound during key exchange"
+
+[[cve]]
+id = "CVE-2025-32728"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "DisableForwarding yes"
+reason = "DisableForwarding leaves X11 and agent forwarding on"
+
+[[cve]]
+id = "CVE-2026-35385"
+product = "openbsd:openssh"
+applies = "client"
+reason = "scp download as root keeps setuid bits"
+
+[[cve]]
+id = "CVE-2026-35386"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh client expands metacharacters in a username"
+
+[[cve]]
+id = "CVE-2026-35387"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "PubkeyAcceptedAlgorithms or HostbasedAcceptedAlgorithms naming an ECDSA algorithm"
+reason = "one ECDSA algorithm admits them all"
+
+[[cve]]
+id = "CVE-2026-35388"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh multiplexing skips confirmation in proxy mode"
+
+[[cve]]
+id = "CVE-2026-35414"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "principals= with a certificate authority in authorized_keys"
+reason = "principals list mishandled with commas"
+
+[[cve]]
+id = "CVE-2026-59995"
+product = "openbsd:openssh"
+applies = "client"
+reason = "sftp client writes where a server chooses"
+
+[[cve]]
+id = "CVE-2026-59996"
+product = "openbsd:openssh"
+applies = "client"
+reason = "scp between two remotes misplaces files"
+
+[[cve]]
+id = "CVE-2026-59997"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "Subsystem internal-sftp with more than nine arguments"
+reason = "internal-sftp ignores arguments after the ninth"
+
+[[cve]]
+id = "CVE-2026-59998"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "GSSAPIAuthentication yes"
+reason = "GSSAPIStrictAcceptorCheck ignored under Active Directory"
+
+[[cve]]
+id = "CVE-2026-59999"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "DisableForwarding yes with PermitTunnel yes"
+reason = "DisableForwarding does not override PermitTunnel"
+
+[[cve]]
+id = "CVE-2026-60000"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "GSSAPIAuthentication yes"
+reason = "MaxAuthTries not applied to GSSAPI attempts"
+
+[[cve]]
+id = "CVE-2026-60001"
+product = "openbsd:openssh"
+applies = "service"
+reason = "minimum authentication delay not always kept"
+
+[[cve]]
+id = "CVE-2026-60002"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh client use-after-free on a host key change"
+
+[[cve]]
+id = "CVE-2026-73281"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh-agent locking bypassed through session binding"
+
+[[cve]]
+id = "CVE-2026-73282"
+product = "openbsd:openssh"
+applies = "client"
+reason = "ssh client use-after-free between remote forwards"
+
+[[cve]]
+id = "CVE-2026-73283"
+product = "openbsd:openssh"
+applies = "configuration"
+requires = "PermitTunnel yes"
+reason = "restrict in authorized_keys leaves tunnels open"
+
+[[cve]]
+id = "CVE-1999-0045"
+product = "apache:http_server"
+applies = "configuration"
+requires = "the nph-test-cgi sample script"
+reason = "sample CGI script lists files"
+
+[[cve]]
+id = "CVE-1999-0067"
+product = "apache:http_server"
+applies = "configuration"
+requires = "the phf CGI script"
+reason = "phf CGI script runs shell commands"
+
+[[cve]]
+id = "CVE-1999-0071"
+product = "apache:http_server"
+applies = "service"
+reason = "cookie buffer overflow"
+
+[[cve]]
+id = "CVE-1999-0236"
+product = "apache:http_server"
+applies = "service"
+reason = "ScriptAlias exposes CGI source"
+
+[[cve]]
+id = "CVE-1999-0926"
+product = "apache:http_server"
+applies = "service"
+reason = "many MIME headers exhaust the server"
+
+[[cve]]
+id = "CVE-1999-1053"
+product = "apache:http_server"
+applies = "configuration"
+requires = "the guestbook.pl CGI script"
+reason = "guestbook script passes SSI commands through"
+
+[[cve]]
+id = "CVE-1999-1199"
+product = "apache:http_server"
+applies = "service"
+reason = "repeated MIME headers exhaust the server"
+
+[[cve]]
+id = "CVE-1999-1293"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy"
+reason = "malformed FTP commands crash mod_proxy"
+
+[[cve]]
+id = "CVE-2001-1449"
+product = "apache:http_server"
+applies = "service"
+reason = "default Mandrake install lists directories"
+
+[[cve]]
+id = "CVE-2002-0061"
+product = "apache:http_server"
+applies = "configuration"
+requires = "batch-file CGI scripts on Windows"
+reason = "batch-file CGI arguments reach cmd.exe"
+
+[[cve]]
+id = "CVE-2002-0257"
+product = "apache:http_server"
+applies = "configuration"
+requires = "the MakeBid Auction Deluxe CGI"
+reason = "cross-site scripting in a third-party CGI"
+
+[[cve]]
+id = "CVE-2002-0392"
+product = "apache:http_server"
+applies = "service"
+reason = "chunked request size miscalculated"
+
+[[cve]]
+id = "CVE-2002-0661"
+product = "apache:http_server"
+applies = "service"
+reason = "backslash path traversal on Windows, OS/2 and NetWare"
+
+[[cve]]
+id = "CVE-2002-0839"
+product = "apache:http_server"
+applies = "local"
+reason = "scoreboard lets the server's user signal as root"
+
+[[cve]]
+id = "CVE-2002-0843"
+product = "apache:http_server"
+applies = "client"
+reason = "ApacheBench overflows on a hostile server's response"
+
+[[cve]]
+id = "CVE-2002-1850"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_cgi"
+reason = "CGI stderr deadlock"
+
+[[cve]]
+id = "CVE-2002-2029"
+product = "apache:http_server"
+applies = "configuration"
+requires = "PHP as a CGI under ScriptAlias /php/"
+reason = "php.exe reachable with a file in the query"
+
+[[cve]]
+id = "CVE-2002-2272"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_jk"
+reason = "mod_jk desynchronised by invalid chunking"
+
+[[cve]]
+id = "CVE-2003-0016"
+product = "apache:http_server"
+applies = "service"
+reason = "MS-DOS device names on Windows 9x and Me"
+
+[[cve]]
+id = "CVE-2003-0542"
+product = "apache:http_server"
+applies = "local"
+reason = "regular expressions with many captures in written configuration"
+
+[[cve]]
+id = "CVE-2003-0789"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_cgid"
+reason = "CGI output sent to the wrong client"
+
+[[cve]]
+id = "CVE-2003-0987"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_digest"
+reason = "digest nonce not verified"
+
+[[cve]]
+id = "CVE-2003-0993"
+product = "apache:http_server"
+applies = "service"
+reason = "address rules misparsed on big-endian 64-bit"
+
+[[cve]]
+id = "CVE-2004-0174"
+product = "apache:http_server"
+applies = "service"
+reason = "a rarely used listener blocks new connections"
+
+[[cve]]
+id = "CVE-2004-0488"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_ssl client certificate verification"
+reason = "long client certificate subject overflows"
+
+[[cve]]
+id = "CVE-2004-0492"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy"
+reason = "negative Content-Length overflows mod_proxy"
+
+[[cve]]
+id = "CVE-2004-0747"
+product = "apache:http_server"
+applies = "local"
+reason = ".htaccess environment expansion overflow"
+
+[[cve]]
+id = "CVE-2004-0811"
+product = "apache:http_server"
+applies = "service"
+reason = "Satisfy directive not merged"
+
+[[cve]]
+id = "CVE-2004-0885"
+product = "apache:http_server"
+applies = "configuration"
+requires = "SSLCipherSuite in directory or location context"
+reason = "per-directory cipher restriction ignored"
+
+[[cve]]
+id = "CVE-2004-0940"
+product = "apache:http_server"
+applies = "local"
+reason = "SSI documents overflow mod_include"
+
+[[cve]]
+id = "CVE-2004-1082"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_digest_apple"
+reason = "digest nonce not verified on Mac OS X Server"
+
+[[cve]]
+id = "CVE-2004-2343"
+product = "apache:http_server"
+applies = "local"
+reason = ".htaccess ErrorDocument bypasses restrictions"
+
+[[cve]]
+id = "CVE-2005-1344"
+product = "apache:http_server"
+applies = "local"
+reason = "htdigest utility overflow"
+
+[[cve]]
+id = "CVE-2005-2700"
+product = "apache:http_server"
+applies = "configuration"
+requires = "SSLVerifyClient require in a location"
+reason = "per-location client certificate requirement ignored"
+
+[[cve]]
+id = "CVE-2006-3747"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_rewrite"
+reason = "ldap scheme off-by-one in rewrite rules"
+
+[[cve]]
+id = "CVE-2006-20001"
+product = "apache:http_server"
+applies = "service"
+reason = "crafted If: header writes past the header"
+
+[[cve]]
+id = "CVE-2009-1890"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy as a reverse proxy"
+reason = "streamed request body loops mod_proxy_http"
+
+[[cve]]
+id = "CVE-2009-1891"
+product = "apache:http_server"
+applies = "service"
+reason = "mod_deflate compresses after the client left"
+
+[[cve]]
+id = "CVE-2009-1955"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_dav"
+reason = "nested XML entities exhaust memory"
+
+[[cve]]
+id = "CVE-2009-2699"
+product = "apache:http_server"
+applies = "service"
+reason = "Solaris event port errors hang the server"
+
+[[cve]]
+id = "CVE-2009-3555"
+product = "apache:http_server"
+applies = "service"
+reason = "TLS renegotiation plaintext injection"
+
+[[cve]]
+id = "CVE-2011-3192"
+product = "apache:http_server"
+applies = "service"
+reason = "overlapping byte ranges exhaust the server"
+
+[[cve]]
+id = "CVE-2013-2249"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_session_dbd"
+reason = "session saved without a fresh ID"
+
+[[cve]]
+id = "CVE-2016-0736"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_session_crypto"
+reason = "session cookies open to a padding oracle"
+
+[[cve]]
+id = "CVE-2016-2161"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_auth_digest"
+reason = "digest input crashes the server"
+
+[[cve]]
+id = "CVE-2016-4979"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_http2"
+reason = "HTTP/2 ignores a client certificate requirement"
+
+[[cve]]
+id = "CVE-2016-5387"
+product = "apache:http_server"
+applies = "service"
+reason = "Proxy header reaches applications as HTTP_PROXY"
+
+[[cve]]
+id = "CVE-2016-8740"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_http2"
+reason = "HTTP/2 CONTINUATION frames exhaust memory"
+
+[[cve]]
+id = "CVE-2016-8743"
+product = "apache:http_server"
+applies = "service"
+reason = "lenient whitespace allows request smuggling"
+
+[[cve]]
+id = "CVE-2017-3167"
+product = "apache:http_server"
+applies = "configuration"
+requires = "a third-party module calling ap_get_basic_auth_pw"
+reason = "authentication bypass through third-party modules"
+
+[[cve]]
+id = "CVE-2017-3169"
+product = "apache:http_server"
+applies = "configuration"
+requires = "a third-party module hooking process_connection"
+reason = "mod_ssl NULL dereference through third-party modules"
+
+[[cve]]
+id = "CVE-2017-7659"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_http2"
+reason = "HTTP/2 request crashes the server"
+
+[[cve]]
+id = "CVE-2017-7668"
+product = "apache:http_server"
+applies = "service"
+reason = "token list parsing reads past the input"
+
+[[cve]]
+id = "CVE-2017-7679"
+product = "apache:http_server"
+applies = "service"
+reason = "mod_mime reads past a Content-Type"
+
+[[cve]]
+id = "CVE-2017-9788"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_auth_digest"
+reason = "digest headers leak stale memory"
+
+[[cve]]
+id = "CVE-2017-9789"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_http2"
+reason = "HTTP/2 use-after-free under load"
+
+[[cve]]
+id = "CVE-2017-9798"
+product = "apache:http_server"
+applies = "configuration"
+requires = "a Limit directive naming an unregistered method"
+reason = "Optionsbleed leaks memory in OPTIONS replies"
+
+[[cve]]
+id = "CVE-2017-15710"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_authnz_ldap with AuthLDAPCharsetConfig"
+reason = "short Accept-Language writes out of bounds"
+
+[[cve]]
+id = "CVE-2017-15715"
+product = "apache:http_server"
+applies = "service"
+reason = "FilesMatch $ matches a newline"
+
+[[cve]]
+id = "CVE-2018-1303"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_cache_socache"
+reason = "crafted header crashes the socache cache"
+
+[[cve]]
+id = "CVE-2018-1312"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_auth_digest"
+reason = "digest nonces replayable across a cluster"
+
+[[cve]]
+id = "CVE-2018-1333"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_http2"
+reason = "HTTP/2 workers held too long"
+
+[[cve]]
+id = "CVE-2018-8011"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_md"
+reason = "ACME challenge handler NULL dereference"
+
+[[cve]]
+id = "CVE-2018-17199"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_session_cookie"
+reason = "session expiry ignored"
+
+[[cve]]
+id = "CVE-2019-0211"
+product = "apache:http_server"
+applies = "local"
+reason = "code in a worker takes over the root parent"
+
+[[cve]]
+id = "CVE-2019-0215"
+product = "apache:http_server"
+applies = "configuration"
+requires = "SSLVerifyClient in a location with TLSv1.3"
+reason = "per-location client certificate check bypassed"
+
+[[cve]]
+id = "CVE-2019-0217"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_auth_digest"
+reason = "digest race logs in as another user"
+
+[[cve]]
+id = "CVE-2019-9517"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_http2"
+reason = "HTTP/2 internal buffering exhausts memory"
+
+[[cve]]
+id = "CVE-2019-10081"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_http2"
+reason = "early HTTP/2 pushes overwrite memory"
+
+[[cve]]
+id = "CVE-2019-10082"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_http2"
+reason = "HTTP/2 session use-after-free at shutdown"
+
+[[cve]]
+id = "CVE-2019-10097"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_remoteip with RemoteIPProxyProtocol"
+reason = "PROXY header overflows the stack"
+
+[[cve]]
+id = "CVE-2020-9490"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_http2"
+reason = "Cache-Digest header crashes HTTP/2 push"
+
+[[cve]]
+id = "CVE-2020-11984"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy_uwsgi"
+reason = "uwsgi proxy overflow"
+
+[[cve]]
+id = "CVE-2020-11993"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_http2 with trace logging"
+reason = "HTTP/2 logs on the wrong connection"
+
+[[cve]]
+id = "CVE-2020-13950"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy_http"
+reason = "conflicting length headers crash the proxy"
+
+[[cve]]
+id = "CVE-2020-35452"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_auth_digest"
+reason = "digest nonce overflows the stack by a byte"
+
+[[cve]]
+id = "CVE-2021-26690"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_session"
+reason = "session cookie NULL dereference"
+
+[[cve]]
+id = "CVE-2021-26691"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_session"
+reason = "SessionHeader from a backend overflows the heap"
+
+[[cve]]
+id = "CVE-2021-31618"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_http2"
+reason = "HTTP/2 rejection response NULL dereference"
+
+[[cve]]
+id = "CVE-2021-33193"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_http2 and mod_proxy"
+reason = "HTTP/2 method splits proxied requests"
+
+[[cve]]
+id = "CVE-2021-34798"
+product = "apache:http_server"
+applies = "service"
+reason = "malformed requests dereference NULL"
+
+[[cve]]
+id = "CVE-2021-36160"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy_uwsgi"
+reason = "uwsgi proxy reads past a path"
+
+[[cve]]
+id = "CVE-2021-39275"
+product = "apache:http_server"
+applies = "configuration"
+requires = "a third-party module passing request data to ap_escape_quotes"
+reason = "ap_escape_quotes writes past its buffer"
+
+[[cve]]
+id = "CVE-2021-40438"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy"
+reason = "crafted path picks the proxied origin"
+
+[[cve]]
+id = "CVE-2021-41524"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_http2"
+reason = "HTTP/2 request NULL dereference"
+
+[[cve]]
+id = "CVE-2021-41773"
+product = "apache:http_server"
+applies = "service"
+reason = "path traversal in 2.4.49 normalisation"
+
+[[cve]]
+id = "CVE-2021-42013"
+product = "apache:http_server"
+applies = "service"
+reason = "path traversal left by the 2.4.50 fix"
+
+[[cve]]
+id = "CVE-2021-44224"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy with ProxyRequests on"
+reason = "forward proxy crash or SSRF"
+
+[[cve]]
+id = "CVE-2021-44790"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_lua"
+reason = "Lua multipart parser overflow"
+
+[[cve]]
+id = "CVE-2022-22719"
+product = "apache:http_server"
+applies = "service"
+reason = "request body reads random memory"
+
+[[cve]]
+id = "CVE-2022-22720"
+product = "apache:http_server"
+applies = "service"
+reason = "connection kept open after a body error allows smuggling"
+
+[[cve]]
+id = "CVE-2022-22721"
+product = "apache:http_server"
+applies = "configuration"
+requires = "LimitXMLRequestBody above 350MB on a 32-bit build"
+reason = "XML body size integer overflow"
+
+[[cve]]
+id = "CVE-2022-23943"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_sed"
+reason = "mod_sed heap overwrite"
+
+[[cve]]
+id = "CVE-2022-26377"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy_ajp"
+reason = "AJP request smuggling"
+
+[[cve]]
+id = "CVE-2022-28615"
+product = "apache:http_server"
+applies = "configuration"
+requires = "a third-party module or Lua script calling ap_strcmp_match"
+reason = "ap_strcmp_match reads out of bounds"
+
+[[cve]]
+id = "CVE-2022-29404"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_lua"
+reason = "Lua r:parsebody reads without a limit"
+
+[[cve]]
+id = "CVE-2022-30522"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_sed"
+reason = "mod_sed allocation abort on large input"
+
+[[cve]]
+id = "CVE-2022-30556"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_lua"
+reason = "Lua r:wsread returns lengths past its buffer"
+
+[[cve]]
+id = "CVE-2022-31813"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy"
+reason = "hop-by-hop headers strip X-Forwarded-* from proxied requests"
+
+[[cve]]
+id = "CVE-2022-36760"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy_ajp"
+reason = "AJP request smuggling"
+
+[[cve]]
+id = "CVE-2023-25690"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy with RewriteRule or ProxyPassMatch"
+reason = "proxied request smuggling through rewritten targets"
+
+[[cve]]
+id = "CVE-2023-27522"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy_uwsgi"
+reason = "uwsgi response splitting"
+
+[[cve]]
+id = "CVE-2023-31122"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_macro"
+reason = "mod_macro reads out of bounds"
+
+[[cve]]
+id = "CVE-2023-38709"
+product = "apache:http_server"
+applies = "service"
+reason = "backend headers split responses"
+
+[[cve]]
+id = "CVE-2023-43622"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_http2"
+reason = "HTTP/2 zero window holds a worker"
+
+[[cve]]
+id = "CVE-2024-27316"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_http2"
+reason = "oversized HTTP/2 headers exhaust memory"
+
+[[cve]]
+id = "CVE-2024-38472"
+product = "apache:http_server"
+applies = "service"
+reason = "Windows UNC path SSRF leaks NTLM hashes"
+
+[[cve]]
+id = "CVE-2024-38473"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy"
+reason = "mis-encoded URLs reach backends"
+
+[[cve]]
+id = "CVE-2024-38474"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_rewrite"
+reason = "rewrite substitution reaches unexposed scripts"
+
+[[cve]]
+id = "CVE-2024-38475"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_rewrite"
+reason = "rewrite output maps URLs to unexposed files"
+
+[[cve]]
+id = "CVE-2024-38476"
+product = "apache:http_server"
+applies = "service"
+reason = "backend response headers cause disclosure or SSRF"
+
+[[cve]]
+id = "CVE-2024-38477"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy"
+reason = "crafted request crashes mod_proxy"
+
+[[cve]]
+id = "CVE-2024-39573"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_rewrite and mod_proxy"
+reason = "rewrite rules hand URLs to the proxy"
+
+[[cve]]
+id = "CVE-2024-42516"
+product = "apache:http_server"
+applies = "service"
+reason = "Content-Type splits responses"
+
+[[cve]]
+id = "CVE-2024-43204"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy with mod_headers setting Content-Type from the request"
+reason = "request-controlled Content-Type causes SSRF"
+
+[[cve]]
+id = "CVE-2024-47252"
+product = "apache:http_server"
+applies = "configuration"
+requires = "CustomLog recording mod_ssl variables"
+reason = "unescaped TLS values in logs"
+
+[[cve]]
+id = "CVE-2025-23048"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_ssl virtual hosts with different client CAs"
+reason = "TLS 1.3 resumption crosses virtual hosts"
+
+[[cve]]
+id = "CVE-2025-49630"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy_http2 with ProxyPreserveHost on"
+reason = "HTTP/2 backend proxy assertion"
+
+[[cve]]
+id = "CVE-2025-49812"
+product = "apache:http_server"
+applies = "configuration"
+requires = "SSLEngine optional"
+reason = "TLS upgrade lets a MITM hijack sessions"
+
+[[cve]]
+id = "CVE-2025-53020"
+product = "apache:http_server"
+applies = "service"
+reason = "memory released late under load"
+
+[[cve]]
+id = "CVE-2025-55753"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_md"
+reason = "ACME renewal backoff reaches zero"
+
+[[cve]]
+id = "CVE-2025-58098"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_include with mod_cgid"
+reason = "SSI exec receives the query string"
+
+[[cve]]
+id = "CVE-2025-59775"
+product = "apache:http_server"
+applies = "configuration"
+requires = "AllowEncodedSlashes On with MergeSlashes Off on Windows"
+reason = "encoded slashes leak NTLM hashes"
+
+[[cve]]
+id = "CVE-2026-23918"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_http2"
+reason = "HTTP/2 double free"
+
+[[cve]]
+id = "CVE-2026-24072"
+product = "apache:http_server"
+applies = "local"
+reason = ".htaccess authors read files as the server"
+
+[[cve]]
+id = "CVE-2026-28780"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy_ajp"
+reason = "hostile AJP backend overflows the heap"
+
+[[cve]]
+id = "CVE-2026-29167"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_ldap in per-directory configuration"
+reason = "mod_ldap use-after-free"
+
+[[cve]]
+id = "CVE-2026-29168"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_md"
+reason = "OCSP responses exhaust mod_md"
+
+[[cve]]
+id = "CVE-2026-29169"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_dav_lock"
+reason = "mod_dav_lock NULL dereference"
+
+[[cve]]
+id = "CVE-2026-34059"
+product = "apache:http_server"
+applies = "service"
+reason = "buffer over-read"
+
+[[cve]]
+id = "CVE-2026-34355"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy_html"
+reason = "hostile backend overflows mod_proxy_html"
+
+[[cve]]
+id = "CVE-2026-34356"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy with ProxyPassReverseCookieDomain or ProxyPassReverseCookiePath"
+reason = "hostile backend cookies overflow the heap"
+
+[[cve]]
+id = "CVE-2026-42535"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_dav_fs"
+reason = "WebDAV authors rewrite property databases"
+
+[[cve]]
+id = "CVE-2026-42536"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_xml2enc"
+reason = "untrusted content overflows the XML encoder"
+
+[[cve]]
+id = "CVE-2026-44185"
+product = "apache:http_server"
+applies = "configuration"
+requires = "OCSP checking or stapling in mod_ssl"
+reason = "hostile OCSP responder causes an over-read"
+
+[[cve]]
+id = "CVE-2026-44186"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_proxy_ftp"
+reason = "hostile FTP backend loops the proxy"
+
+[[cve]]
+id = "CVE-2026-44631"
+product = "apache:http_server"
+applies = "local"
+reason = "crafted regular expression in written configuration"
+
+[[cve]]
+id = "CVE-2026-48913"
+product = "apache:http_server"
+applies = "configuration"
+requires = "mod_http2"
+reason = "HTTP/2 use-after-free when descriptors run out"
+
+[[cve]]
+id = "CVE-2026-49975"
+product = "apache:http_server"
+applies = "service"
+reason = "HTTP requests force oversized allocations"

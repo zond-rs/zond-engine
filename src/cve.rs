@@ -94,6 +94,8 @@ use crate::record::wire;
 use crate::report::ScanReport;
 use crate::version::version_cmp;
 
+mod applicability;
+
 /// The reserved identity the engine's built-in correlator stamps on every finding
 /// it produces, so a report can say exactly what concluded a vulnerability. A
 /// third-party detection may not claim the `zond:` namespace.
