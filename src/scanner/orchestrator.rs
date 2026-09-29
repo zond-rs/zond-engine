@@ -4530,6 +4530,116 @@ mod tests {
         );
     }
 
+    /// **The scanme host end to end.** Its SSH and HTTP services as the banner
+    /// analyzers read them off the real banners, correlated by the scan's own
+    /// pass with Ubuntu's real data on the scan's detections: the OpenSSH
+    /// build's upstream vulnerabilities that Ubuntu fixed in it or that never
+    /// affected 14.04 are withdrawn, and the Apache build, whose banner hides
+    /// its patch level, is never reported as surely as an upstream release.
+    #[cfg(feature = "import-distro")]
+    #[test]
+    fn a_scan_judges_a_distribution_build_by_the_data_on_its_detections() {
+        use crate::fingerprint::{
+            Analyzer, BannerRegexAnalyzer, Collected, HttpHeadersAnalyzer, PortContext,
+            ResponseSet, ServiceVerdict,
+        };
+        use crate::model::confidence::Confidence;
+        use crate::model::ip::scoped::ScopedIp;
+        use crate::model::port::{Port, PortState, Protocol};
+
+        let identify = |port: u16, banner: &str| {
+            let context = PortContext {
+                port,
+                protocol: Protocol::Tcp,
+                addr: None,
+                tunnel: None,
+                speaks_http: port == 80,
+                detection: ServiceDetection::default(),
+                host_name: None,
+            };
+            let responses = ResponseSet::from_banners(vec![banner.to_string()]);
+            let mut evidence =
+                BannerRegexAnalyzer.analyze(&context, &responses, &Collected::default());
+            evidence.extend(HttpHeadersAnalyzer.analyze(
+                &context,
+                &responses,
+                &Collected::default(),
+            ));
+            ServiceVerdict::resolve(evidence)
+                .to_service()
+                .expect("the banner names a service")
+        };
+        let ssh = identify(22, "SSH-2.0-OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13\r\n");
+        let http = identify(
+            80,
+            "HTTP/1.1 200 OK\r\nServer: Apache/2.4.7 (Ubuntu)\r\nContent-Type: text/html\r\n\r\n",
+        );
+        assert_eq!(
+            ssh.build()
+                .and_then(|build| build.release())
+                .map(|release| release.name()),
+            Some("14.04"),
+            "test premise: the banner places the build"
+        );
+
+        let ubuntu = crate::import::ubuntu::read(
+            &mut &include_bytes!("../../tests/data/distro/ubuntu-osv.tar.xz")[..],
+            &mut &include_bytes!("../../tests/data/distro/ubuntu-vex.tar.xz")[..],
+        )
+        .expect("the fixture converts");
+        let (session, ctx) = crate::scanner::session::ScanSession::builder()
+            .detections(crate::detect::Detections::embedded().with_advisories([ubuntu]))
+            .build();
+        let ip: std::net::IpAddr = "203.0.113.1".parse().expect("literal");
+        ctx.write_host(ScopedIp::unscoped(ip), |host| {
+            host.add_port(Port::new(22, Protocol::Tcp, PortState::Open).with_service(ssh));
+            host.add_port(Port::new(80, Protocol::Tcp, PortState::Open).with_service(http));
+            true
+        });
+
+        run_correlation(&ctx, ServiceDetection::Probe);
+
+        let host = session.hosts().get(ip).expect("the scanned host");
+        let cited = |number: u16| -> Vec<String> {
+            host.ports()
+                .filter(|port| port.number() == number)
+                .flat_map(|port| port.findings())
+                .flat_map(|finding| finding.references())
+                .filter_map(|reference| match reference {
+                    crate::model::finding::Reference::Cve(id) => Some(id.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let ssh_cited = cited(22);
+        for withdrawn in [
+            "CVE-2015-5600",
+            "CVE-2016-10010",
+            "CVE-2020-14145",
+            "CVE-2023-38408",
+        ] {
+            assert!(
+                !ssh_cited.iter().any(|cve| cve == withdrawn),
+                "{withdrawn} was reported against a build that does not carry it"
+            );
+        }
+        assert!(
+            host.ports()
+                .filter(|port| port.number() == 22)
+                .flat_map(|port| port.findings())
+                .all(|finding| finding.advised_by().is_some()),
+            "every claim on the placed build names the data that judged it"
+        );
+        assert!(
+            host.ports()
+                .filter(|port| port.number() == 80)
+                .flat_map(|port| port.findings())
+                .filter(|finding| finding.subject().is_some_and(|s| !s.contains("/no-fix")))
+                .all(|finding| finding.confidence() < Confidence::Probable),
+            "a build hiding its patch level is only surely vulnerable where no fix exists"
+        );
+    }
+
     /// At [`ServiceDetection::Off`] nothing asked a port what it was, so there
     /// is nothing to join on, and the step does not run even where a CPE is
     /// somehow present.
