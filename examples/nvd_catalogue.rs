@@ -74,6 +74,10 @@ const HEADER: &str = "\
 # banner states, so a CVE keyed to one would fire on every host of that family
 # and could be neither confirmed nor denied.
 #
+# A vulnerability NVD states only for one platform, *running on* Windows, one
+# distribution or one appliance, is left out: an entry is judged against one
+# service's CPE and the condition has nowhere to go.
+#
 # A vulnerability with disjoint version ranges appears once per range, because
 # `affected` is a conjunction and cannot say \"or\".
 ";

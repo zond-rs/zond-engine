@@ -112,7 +112,8 @@ const RESERVED_PREFIX: &str = "zond:";
 /// marks the correlator that tells a distribution's build from the upstream
 /// release it started from and keys each claim on what it is about, over a
 /// converted feed whose entries carry a CPE's patch level as part of the
-/// release they name.
+/// release they name and leave out ranges NVD states only for one platform,
+/// beside the hand-picked entries in `seed.toml`.
 const SEED_VERSION: Version = Version::new(0, 3, 0);
 
 /// The catalogue compiled from `assets/cve/` by `build.rs`: a string pool and
@@ -1089,6 +1090,9 @@ mod tests {
             "treck:tcp%2fip",
             "import artifact in the identifier, and no reachable records",
         ),
+        // Every record NVD holds against these is stated for one platform
+        // only, which the conversion leaves out.
+        ("vandyke:vshell", "its one record holds only on Windows"),
     ];
 
     /// The distinct `vendor:product` the shipped catalogue holds rows for.

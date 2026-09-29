@@ -87,6 +87,26 @@
 //! from 8.5 to 9.8, which is two claims rather than one. Each range becomes its
 //! own entry under the same CVE id, and a record naming several products becomes
 //! one entry per product.
+//!
+//! ## Conditions on the platform are not converted
+//!
+//! NVD says *vulnerable only when running on X* as a configuration whose nodes
+//! are joined by `AND`: the vulnerable application in one, and the platform,
+//! marked not vulnerable, in another. Apache HTTP Server's Windows-only flaws
+//! are written this way, as are a distribution's own patches to OpenSSH and a
+//! vendor's appliance builds. A catalogue entry is judged against one service's
+//! CPE and nothing else, so the condition has nowhere to go: kept without it,
+//! the entry charges every host running the product with a flaw that exists on
+//! one platform.
+//!
+//! Such a configuration converts to nothing, and a range the same record also
+//! states without a condition is kept from that statement. Of the entries the
+//! shipped corpus admits, about one and a half percent come only from
+//! conditional configurations, and the platforms named are operating systems
+//! in three cases out of four, then hardware, then the odd application: a
+//! Windows or Red Hat build, an F5 or SonicWall appliance. A finding the
+//! platform's own advisories carry is the better source for those, and a false
+//! one on every other platform is the cost of keeping them here.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -475,8 +495,31 @@ struct Weakness {
 /// which products and versions the record applies to.
 #[derive(Deserialize)]
 struct Configuration {
+    /// How the nodes combine: `AND` where every one must hold, and absent or
+    /// `OR` where any one is enough.
+    #[serde(default)]
+    operator: Option<String>,
     #[serde(default)]
     nodes: Vec<Node>,
+}
+
+impl Configuration {
+    /// Whether this configuration makes its vulnerable matches conditional on a
+    /// platform: nodes joined by `AND`, one of which names nothing vulnerable.
+    ///
+    /// That node is the condition, *running on* an operating system, a device
+    /// or another application, and the vulnerable matches beside it hold only
+    /// where it does. See the module documentation for why such a
+    /// configuration converts to nothing.
+    fn is_platform_conditional(&self) -> bool {
+        self.operator
+            .as_deref()
+            .is_some_and(|operator| operator.eq_ignore_ascii_case("and"))
+            && self.nodes.iter().any(|node| {
+                !node.cpe_match.is_empty()
+                    && node.cpe_match.iter().all(|matched| !matched.vulnerable)
+            })
+    }
 }
 
 /// One node of a [`Configuration`] tree, holding the CPE matches that name the
@@ -552,6 +595,9 @@ fn entries_from(record: &Record, products: &BTreeSet<String>, out: &mut Vec<Entr
     // than not, and a catalogue holding the same claim twice reports it twice.
     let mut seen = BTreeSet::new();
     for configuration in &record.configurations {
+        if configuration.is_platform_conditional() {
+            continue;
+        }
         for node in &configuration.nodes {
             for matched in &node.cpe_match {
                 let Some((vendor, product, affected)) = affected_range(matched, products) else {
@@ -1055,6 +1101,87 @@ mod tests {
             !matched("cpe:/a:openbsd:openssh:6.6"),
             "a release without the patch level is not the one named"
         );
+    }
+
+    /// A configuration saying "vulnerable only when running on" a platform is
+    /// not converted, and the same range stated without the condition is.
+    ///
+    /// NVD writes the condition as two nodes joined by `AND`: the vulnerable
+    /// application, and the platform marked not vulnerable. Taking the
+    /// application alone would charge every Apache on Linux with a flaw that
+    /// exists only in the Windows build, which is what CVE-2024-40898 would do
+    /// here. CVE-2024-38476 states its range plainly, and survives beside it.
+    #[test]
+    fn a_range_that_holds_only_on_a_platform_is_dropped() {
+        const PLATFORM: &str = r#"{
+          "timestamp": "2026-09-08T00:00:00+00:00",
+          "cve_items": [
+            {"id": "CVE-2024-40898",
+             "descriptions": [{"lang": "en", "value": "SSRF in Apache HTTP Server on Windows."}],
+             "metrics": {"cvssMetricV31": [{"cvssData": {"baseSeverity": "HIGH"}}]},
+             "configurations": [{"operator": "AND", "nodes": [
+               {"operator": "OR", "negate": false, "cpeMatch": [
+                 {"vulnerable": true, "criteria": "cpe:2.3:a:apache:http_server:*:*:*:*:*:*:*:*",
+                  "versionStartIncluding": "2.4.0", "versionEndExcluding": "2.4.62"}]},
+               {"operator": "OR", "negate": false, "cpeMatch": [
+                 {"vulnerable": false, "criteria": "cpe:2.3:o:microsoft:windows:-:*:*:*:*:*:*:*"}]}
+             ]}]},
+            {"id": "CVE-2024-38476",
+             "descriptions": [{"lang": "en", "value": "Information disclosure in Apache HTTP Server."}],
+             "metrics": {"cvssMetricV31": [{"cvssData": {"baseSeverity": "CRITICAL"}}]},
+             "configurations": [{"nodes": [
+               {"operator": "OR", "negate": false, "cpeMatch": [
+                 {"vulnerable": true, "criteria": "cpe:2.3:a:apache:http_server:*:*:*:*:*:*:*:*",
+                  "versionEndExcluding": "2.4.60"}]}
+             ]}]}
+          ]
+        }"#;
+
+        let document =
+            to_document_for(&mut PLATFORM.as_bytes(), &products(&["apache:http_server"]))
+                .expect("converts");
+
+        assert!(!document.contains("CVE-2024-40898"), "{document}");
+        assert!(document.contains(r#"cve = "CVE-2024-38476""#), "{document}");
+        assert_eq!(
+            document.matches("[[vulnerability]]").count(),
+            1,
+            "{document}"
+        );
+    }
+
+    /// Where a record states a range both plainly and under a platform, the
+    /// plain statement is the claim and is kept.
+    ///
+    /// NVD often adds a platform-conditional configuration beside one that
+    /// needs no platform, and dropping the conditional one must not take the
+    /// unconditional range with it.
+    #[test]
+    fn a_range_stated_plainly_as_well_survives_its_platform_twin() {
+        const BOTH: &str = r#"{
+          "timestamp": "2026-09-08T00:00:00+00:00",
+          "cve_items": [{"id": "CVE-2024-0003",
+             "descriptions": [{"lang": "en", "value": "Something in Tomcat."}],
+             "metrics": {"cvssMetricV31": [{"cvssData": {"baseSeverity": "HIGH"}}]},
+             "configurations": [
+               {"operator": "AND", "nodes": [
+                 {"cpeMatch": [{"vulnerable": true,
+                   "criteria": "cpe:2.3:a:apache:tomcat:*:*:*:*:*:*:*:*", "versionEndExcluding": "9.0.2"}]},
+                 {"cpeMatch": [{"vulnerable": false,
+                   "criteria": "cpe:2.3:o:debian:debian_linux:10.0:*:*:*:*:*:*:*"}]}]},
+               {"nodes": [{"cpeMatch": [{"vulnerable": true,
+                 "criteria": "cpe:2.3:a:apache:tomcat:*:*:*:*:*:*:*:*", "versionEndExcluding": "9.0.2"}]}]}
+             ]}]
+        }"#;
+
+        let document =
+            to_document_for(&mut BOTH.as_bytes(), &products(&["apache:tomcat"])).expect("converts");
+        assert_eq!(
+            document.matches("[[vulnerability]]").count(),
+            1,
+            "{document}"
+        );
+        assert!(document.contains(r#"affected = "< 9.0.2""#), "{document}");
     }
 
     /// A feed that does not date itself still converts. `0.0.0` sorts below
