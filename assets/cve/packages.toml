@@ -1,0 +1,438 @@
+# Which distribution source package builds each product the fingerprint
+# corpus can put a version to.
+#
+# A distribution publishes its security verdicts per source package: Debian
+# and Ubuntu say whether `openssh` in 14.04 carries a fix, not whether
+# `openbsd:openssh` does. This table is the join between the two vocabularies,
+# the CPE `vendor:product` a service identification produces and the name the
+# distributor files its advisories under, so a banner that names a
+# distribution build can be judged against that distribution's own data.
+#
+# Hand-written and maintained with the fingerprint corpus: a test fails when
+# the corpus can version a product that is neither mapped here nor listed as
+# not packaged, and when an entry here or on that list names a product the
+# corpus cannot version. The names were chosen against the source packages the
+# distributors' own advisory feeds file records under, release by release.
+# This file is this crate's own work and holds no third-party data: no
+# advisory, verdict or version from any feed, only package names.
+#
+# ## The shape of an entry
+#
+# One table per product, one key per distributor (`ubuntu`, `debian`). A
+# distributor that is absent does not package the product.
+#
+# A plain string is the source package in every release:
+#
+#     [product."openbsd:openssh"]
+#     ubuntu = "openssh"
+#
+# Where a release ships several series of one product side by side, each under
+# its own source package (`php7.4`, `mysql-8.0`, `tomcat9` and `tomcat10` in
+# one release), the value is a list of rules, tried in order, the first that
+# holds naming the package:
+#
+#     ubuntu = [
+#       { series = "9", package = "tomcat9" },
+#       { series = "10", package = "tomcat10" },
+#     ]
+#
+# `series` holds when the upstream version starts with it and continues with
+# anything but a digit, so `9` holds for `9.0.58` and not for `90.1`, and `7.4`
+# for `7.4.3`. `release` holds for that release alone, written as the
+# distributor numbers it (`14.04`, `12`), never as a codename. A rule with
+# neither holds always and can only come last. A product whose rules all fail
+# for a version has no package there, which is the honest answer when the
+# series is one the distributor never shipped.
+
+[product."acme:mini_httpd"]
+ubuntu = "mini-httpd"
+debian = "mini-httpd"
+
+[product."acme:thttpd"]
+ubuntu = "thttpd"
+debian = "thttpd"
+
+[product."aiohttp:aiohttp"]
+ubuntu = "python-aiohttp"
+debian = "python-aiohttp"
+
+[product."apache:couchdb"]
+ubuntu = "couchdb"
+
+[product."apache:http_server"]
+ubuntu = "apache2"
+debian = "apache2"
+
+[product."apache:tomcat"]
+ubuntu = [
+  { series = "6", package = "tomcat6" },
+  { series = "7", package = "tomcat7" },
+  { series = "8", package = "tomcat8" },
+  { series = "9", package = "tomcat9" },
+  { series = "10", package = "tomcat10" },
+  { series = "11", package = "tomcat11" },
+]
+debian = [
+  { series = "6", package = "tomcat6" },
+  { series = "7", package = "tomcat7" },
+  { series = "8", package = "tomcat8" },
+  { series = "9", package = "tomcat9" },
+  { series = "10", package = "tomcat10" },
+  { series = "11", package = "tomcat11" },
+]
+
+[product."apple:cups"]
+ubuntu = "cups"
+debian = "cups"
+
+[product."axtls_project:axtls"]
+ubuntu = "axtls"
+
+[product."cesanta:mongoose"]
+debian = "mongoose"
+
+[product."cherokee-project:cherokee"]
+ubuntu = "cherokee"
+debian = "cherokee"
+
+[product."cherrypy:cherrypy"]
+ubuntu = "cherrypy3"
+debian = "cherrypy3"
+
+[product."cmu:cyrus_imap_server"]
+ubuntu = [
+  { series = "2.4", package = "cyrus-imapd-2.4" },
+  { package = "cyrus-imapd" },
+]
+debian = [
+  { series = "2.4", package = "cyrus-imapd-2.4" },
+  { package = "cyrus-imapd" },
+]
+
+[product."coturn_project:coturn"]
+ubuntu = "coturn"
+debian = "coturn"
+
+[product."darkhttpd_project:darkhttpd"]
+ubuntu = "darkhttpd"
+debian = "darkhttpd"
+
+[product."docker:docker"]
+ubuntu = "docker.io"
+debian = "docker.io"
+
+[product."dropbear_ssh_project:dropbear_ssh"]
+ubuntu = "dropbear"
+debian = "dropbear"
+
+# Jetty's series each have a package of their own, the oldest under the bare
+# name; the Mort Bay releases predate the move to Eclipse and are that one.
+[product."eclipse:jetty"]
+ubuntu = [
+  { series = "6", package = "jetty" },
+  { series = "8", package = "jetty8" },
+  { series = "9", package = "jetty9" },
+  { series = "12", package = "jetty12" },
+]
+debian = [
+  { series = "6", package = "jetty" },
+  { series = "8", package = "jetty8" },
+  { series = "9", package = "jetty9" },
+  { series = "12", package = "jetty12" },
+]
+
+[product."elastic:elasticsearch"]
+ubuntu = "elasticsearch"
+
+[product."etcd:etcd"]
+ubuntu = "etcd"
+debian = "etcd"
+
+[product."exim:exim"]
+ubuntu = "exim4"
+debian = "exim4"
+
+[product."f5:nginx"]
+ubuntu = "nginx"
+debian = "nginx"
+
+[product."fedoraproject:389_directory_server"]
+ubuntu = "389-ds-base"
+debian = "389-ds-base"
+
+[product."genivia:gsoap"]
+ubuntu = "gsoap"
+debian = "gsoap"
+
+[product."gunicorn:gunicorn"]
+ubuntu = "gunicorn"
+debian = "gunicorn"
+
+[product."influxdata:influxdb"]
+ubuntu = "influxdb"
+debian = "influxdb"
+
+[product."isc:bind"]
+ubuntu = "bind9"
+debian = "bind9"
+
+[product."kamailio:kamailio"]
+ubuntu = "kamailio"
+debian = "kamailio"
+
+[product."knot-dns:knot_dns"]
+ubuntu = "knot"
+debian = "knot"
+
+[product."libssh:libssh"]
+ubuntu = "libssh"
+debian = "libssh"
+
+# The portable UPnP SDK moved from `libupnp` to `pupnp` and kept its 1.8
+# series apart; 14.04 carried a 1.8 snapshot under a name of its own.
+[product."libupnp_project:libupnp"]
+ubuntu = [
+  { release = "14.04", series = "1.8", package = "libupnp4" },
+  { series = "1.6", package = "libupnp" },
+  { series = "1.8", package = "pupnp-1.8" },
+  { package = "pupnp" },
+]
+debian = [
+  { series = "1.6", package = "libupnp" },
+  { series = "1.8", package = "pupnp-1.8" },
+  { package = "pupnp" },
+]
+
+[product."lighttpd:lighttpd"]
+ubuntu = "lighttpd"
+debian = "lighttpd"
+
+# Ubuntu packaged each MariaDB series under its own name until the unversioned
+# one took over.
+[product."mariadb:mariadb"]
+ubuntu = [
+  { series = "5.5", package = "mariadb-5.5" },
+  { series = "10.0", package = "mariadb-10.0" },
+  { series = "10.1", package = "mariadb-10.1" },
+  { series = "10.3", package = "mariadb-10.3" },
+  { series = "10.6", package = "mariadb-10.6" },
+  { package = "mariadb" },
+]
+debian = [
+  { series = "10.0", package = "mariadb-10.0" },
+  { series = "10.1", package = "mariadb-10.1" },
+  { series = "10.3", package = "mariadb-10.3" },
+  { series = "10.5", package = "mariadb-10.5" },
+  { package = "mariadb" },
+]
+
+[product."memcached:memcached"]
+ubuntu = "memcached"
+debian = "memcached"
+
+[product."miniupnp_project:miniupnpd"]
+ubuntu = "miniupnpd"
+debian = "miniupnpd"
+
+[product."mitmproxy:mitmproxy"]
+ubuntu = "mitmproxy"
+debian = "mitmproxy"
+
+[product."mortbay:jetty"]
+ubuntu = [{ series = "6", package = "jetty" }]
+debian = [{ series = "6", package = "jetty" }]
+
+[product."netdata:netdata"]
+ubuntu = "netdata"
+debian = "netdata"
+
+[product."nlnetlabs:name_server_daemon"]
+ubuntu = "nsd"
+debian = "nsd"
+
+[product."nlnetlabs:unbound"]
+ubuntu = "unbound"
+debian = "unbound"
+
+[product."ntop:ntopng"]
+ubuntu = "ntopng"
+debian = "ntopng"
+
+[product."ntp:ntp"]
+ubuntu = "ntp"
+debian = "ntp"
+
+[product."ntpsec:ntpsec"]
+ubuntu = "ntpsec"
+debian = "ntpsec"
+
+[product."openbsd:openssh"]
+ubuntu = "openssh"
+debian = "openssh"
+
+[product."opensips:opensips"]
+ubuntu = "opensips"
+debian = "opensips"
+
+[product."oracle:glassfish_server"]
+ubuntu = "glassfish"
+
+[product."oracle:mysql"]
+ubuntu = [
+  { series = "5.5", package = "mysql-5.5" },
+  { series = "5.6", package = "mysql-5.6" },
+  { series = "5.7", package = "mysql-5.7" },
+  { series = "8.0", package = "mysql-8.0" },
+  { series = "8.4", package = "mysql-8.4" },
+]
+debian = [
+  { series = "5.5", package = "mysql-5.5" },
+  { series = "5.7", package = "mysql-5.7" },
+  { series = "8.0", package = "mysql-8.0" },
+  { series = "9.7", package = "mysql-9.7" },
+]
+
+[product."palletsprojects:werkzeug"]
+ubuntu = "python-werkzeug"
+debian = "python-werkzeug"
+
+[product."paramiko:paramiko"]
+ubuntu = "paramiko"
+debian = "paramiko"
+
+[product."percona:percona_server"]
+ubuntu = [{ series = "5.6", package = "percona-server-5.6" }]
+
+[product."perl:perl"]
+ubuntu = "perl"
+debian = "perl"
+
+[product."php:php"]
+ubuntu = [
+  { series = "5", package = "php5" },
+  { series = "7.0", package = "php7.0" },
+  { series = "7.2", package = "php7.2" },
+  { series = "7.4", package = "php7.4" },
+  { series = "8.1", package = "php8.1" },
+  { series = "8.3", package = "php8.3" },
+  { series = "8.4", package = "php8.4" },
+  { series = "8.5", package = "php8.5" },
+]
+debian = [
+  { series = "5", package = "php5" },
+  { series = "7.0", package = "php7.0" },
+  { series = "7.3", package = "php7.3" },
+  { series = "7.4", package = "php7.4" },
+  { series = "8.2", package = "php8.2" },
+  { series = "8.4", package = "php8.4" },
+]
+
+[product."phpmyadmin:phpmyadmin"]
+ubuntu = "phpmyadmin"
+debian = "phpmyadmin"
+
+[product."postfix:postfix"]
+ubuntu = "postfix"
+debian = "postfix"
+
+[product."powerdns:authoritative_server"]
+ubuntu = "pdns"
+debian = "pdns"
+
+[product."powerdns:recursor"]
+ubuntu = "pdns-recursor"
+debian = "pdns-recursor"
+
+[product."proftpd:proftpd"]
+ubuntu = "proftpd-dfsg"
+debian = "proftpd-dfsg"
+
+[product."pureftpd:pure-ftpd"]
+ubuntu = "pure-ftpd"
+debian = "pure-ftpd"
+
+[product."redis:redis"]
+ubuntu = "redis"
+debian = "redis"
+
+# WEBrick shipped inside the interpreter until Ruby 3.0 and as a package of
+# its own after, so which source builds it depends on the release.
+[product."ruby-lang:webrick"]
+ubuntu = [
+  { release = "14.04", package = "ruby1.9.1" },
+  { release = "16.04", package = "ruby2.3" },
+  { release = "18.04", package = "ruby2.5" },
+  { release = "20.04", package = "ruby2.7" },
+  { package = "ruby-webrick" },
+]
+debian = "ruby-webrick"
+
+[product."samba:rsync"]
+ubuntu = "rsync"
+debian = "rsync"
+
+[product."samba:samba"]
+ubuntu = "samba"
+debian = "samba"
+
+[product."sendmail:sendmail"]
+ubuntu = "sendmail"
+debian = "sendmail"
+
+[product."squid-cache:squid"]
+ubuntu = [
+  { series = "3", package = "squid3" },
+  { package = "squid" },
+]
+debian = [
+  { series = "3", package = "squid3" },
+  { package = "squid" },
+]
+
+[product."syncthing:syncthing"]
+ubuntu = "syncthing"
+debian = "syncthing"
+
+[product."talend:restlet"]
+ubuntu = "restlet"
+
+[product."thekelleys:dnsmasq"]
+ubuntu = "dnsmasq"
+debian = "dnsmasq"
+
+[product."tigervnc:tigervnc"]
+ubuntu = "tigervnc"
+debian = "tigervnc"
+
+[product."tildeslash:monit"]
+ubuntu = "monit"
+debian = "monit"
+
+[product."tinyproxy_project:tinyproxy"]
+ubuntu = "tinyproxy"
+debian = "tinyproxy"
+
+# 20.04 kept the 4.x series beside the current one under a name of its own;
+# in 18.04 the unversioned package is itself 4.x.
+[product."tornadoweb:tornado"]
+ubuntu = [
+  { release = "20.04", series = "4", package = "python-tornado4" },
+  { package = "python-tornado" },
+]
+debian = "python-tornado"
+
+[product."twistedmatrix:twistedweb"]
+ubuntu = "twisted"
+debian = "twisted"
+
+[product."vsftpd_project:vsftpd"]
+ubuntu = "vsftpd"
+debian = "vsftpd"
+
+[product."xiph:icecast"]
+ubuntu = "icecast2"
+debian = "icecast2"
+
+[product."zaphoyd:websocketpp"]
+ubuntu = "websocketpp"
+debian = "websocketpp"

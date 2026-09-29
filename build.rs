@@ -842,9 +842,16 @@ fn compile_cve_catalogue(out_dir: &Path) {
         .expect("assets/cve is readable")
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("toml"))
-        // Beside the catalogues and not one: it says where a CVE's flaw lives,
-        // and `cve::applicability` reads it from the source.
-        .filter(|path| path.file_name().and_then(|n| n.to_str()) != Some("applicability.toml"))
+        // Beside the catalogues and not among them: the applicability overlay
+        // says where a CVE's flaw lives and the source package map where a
+        // distributor files it. `cve::applicability` and `cve::packages` read
+        // them, and neither holds a vulnerability.
+        .filter(|path| {
+            !matches!(
+                path.file_name().and_then(|n| n.to_str()),
+                Some("applicability.toml" | "packages.toml")
+            )
+        })
         .collect();
     // Sorted for a reproducible artifact: two builds of the same tree must
     // produce the same bytes, and a directory listing is not ordered.

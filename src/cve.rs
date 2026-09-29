@@ -95,6 +95,7 @@ use crate::report::ScanReport;
 use crate::version::version_cmp;
 
 mod applicability;
+mod packages;
 
 use applicability::Applies;
 
