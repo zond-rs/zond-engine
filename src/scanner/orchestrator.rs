@@ -4535,7 +4535,8 @@ mod tests {
     /// pass with Ubuntu's real data on the scan's detections: the OpenSSH
     /// build's upstream vulnerabilities that Ubuntu fixed in it or that never
     /// affected 14.04 are withdrawn, and the Apache build, whose banner hides
-    /// its patch level, is never reported as surely as an upstream release.
+    /// its patch level, is placed by the release the SSH banner names and is
+    /// never reported as surely as an upstream release.
     #[cfg(feature = "import-distro")]
     #[test]
     fn a_scan_judges_a_distribution_build_by_the_data_on_its_detections() {
@@ -4638,6 +4639,32 @@ mod tests {
                 .all(|finding| finding.confidence() < Confidence::Probable),
             "a build hiding its patch level is only surely vulnerable where no fix exists"
         );
+        // And the Apache banner names no release, so its build is taken to be
+        // the release the SSH banner beside it names. The fixture carries no
+        // apache2 data, so the excerpt says which package in which release the
+        // data could not answer for.
+        let http: Vec<&crate::model::finding::Finding> = host
+            .ports()
+            .filter(|port| port.number() == 80)
+            .flat_map(|port| port.findings())
+            .filter(|finding| finding.subject().is_some_and(|s| s.starts_with("apache:")))
+            .collect();
+        assert!(!http.is_empty(), "the Apache build draws claims");
+        for finding in &http {
+            assert!(
+                finding
+                    .subject()
+                    .is_some_and(|s| s.contains("@ubuntu-14.04/")),
+                "{:?}",
+                finding.subject()
+            );
+        }
+        assert!(http.iter().any(|finding| {
+            finding
+                .excerpt()
+                .as_str()
+                .contains("does not cover apache2 in release 14.04")
+        }));
     }
 
     /// At [`ServiceDetection::Off`] nothing asked a port what it was, so there

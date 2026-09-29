@@ -51,13 +51,26 @@ pub(super) struct Placement<'a> {
     pub(super) advisories: &'a Advisories,
     /// The release, as the distributor numbers it.
     pub(super) release: String,
-    /// Whether the release came from the dataset rather than the banner.
-    pub(super) release_inferred: bool,
+    /// Where the release came from.
+    pub(super) release_from: ReleaseFrom,
     /// The source package the distributor files the software under.
     pub(super) package: &'static str,
     /// The full package version the host runs, where the banner's revision
     /// says which build it is.
     pub(super) installed: Option<String>,
+}
+
+/// Where a placed build's release came from, which the excerpt says where it
+/// was not the service's own banner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReleaseFrom {
+    /// The service's own banner named it.
+    Banner,
+    /// The one release whose package ever carried the banner's revision.
+    Revision,
+    /// Another service on the same host, a build by the same distributor
+    /// whose banner named its release.
+    Host,
 }
 
 /// Why a build could not be placed, for the excerpt of what is reported
@@ -71,9 +84,14 @@ pub(super) enum Unplaced {
     NotPackaged,
     /// Neither the banner nor the dataset settles which release this is.
     ReleaseUnknown,
-    /// The dataset holds nothing for the release: one past its support, or
-    /// one it does not cover.
-    ReleaseNotCovered(String),
+    /// The dataset holds nothing for the package in the release: a release
+    /// past the data's support, or a package it was not filtered to keep.
+    NotCovered {
+        /// The source package.
+        package: String,
+        /// The release.
+        release: String,
+    },
 }
 
 impl Unplaced {
@@ -87,9 +105,9 @@ impl Unplaced {
             Self::ReleaseUnknown => {
                 format!("the banner does not say which {distributor} release this is")
             }
-            Self::ReleaseNotCovered(release) => {
-                format!("{distributor}'s advisory data does not cover release {release}")
-            }
+            Self::NotCovered { package, release } => format!(
+                "{distributor}'s advisory data does not cover {package} in release {release}"
+            ),
         }
     }
 }
@@ -97,11 +115,21 @@ impl Unplaced {
 impl<'a> Placement<'a> {
     /// Places `build`, a build of `vendor_product` at upstream version
     /// `upstream`, among the datasets in `set`.
+    ///
+    /// `host_release` is the release the host's other services name for
+    /// builds by the same distributor, where they name exactly one: the last
+    /// resort for a banner that names neither a release nor a revision, as
+    /// `Server: Apache/2.4.7 (Ubuntu)` does. A machine installs its packages
+    /// from one release, so an SSH banner reading Ubuntu 14.04 says which
+    /// release the Apache beside it came from. A container behind one port
+    /// can break that, and so it is used only where the service itself says
+    /// nothing, and the excerpt says where the release came from.
     pub(super) fn of(
         build: &Build,
         vendor_product: &str,
         upstream: &str,
         set: &'a [Advisories],
+        host_release: Option<&str>,
     ) -> Result<Self, Unplaced> {
         // Raspberry Pi OS builds Debian's sources with Debian's revisions, and
         // publishes no fix data of its own.
@@ -121,8 +149,12 @@ impl<'a> Placement<'a> {
 
         // The release the banner named, or the one release whose package ever
         // carried the banner's revision.
-        let (release, release_inferred) = match build.release() {
-            Some(release) => (release.name().to_owned(), false),
+        let (release, release_from) = match build.release() {
+            Some(release) => (release.name().to_owned(), ReleaseFrom::Banner),
+            None if build.revision().is_none() => match host_release {
+                Some(release) => (release.to_owned(), ReleaseFrom::Host),
+                None => return Err(Unplaced::ReleaseUnknown),
+            },
             None => {
                 let revision = build.revision().ok_or(Unplaced::ReleaseUnknown)?;
                 let mut found: Vec<&str> = Vec::new();
@@ -137,16 +169,20 @@ impl<'a> Placement<'a> {
                     }
                 }
                 match found.as_slice() {
-                    [only] => ((*only).to_owned(), true),
+                    [only] => ((*only).to_owned(), ReleaseFrom::Revision),
                     _ => return Err(Unplaced::ReleaseUnknown),
                 }
             }
         };
 
         let package = package_in(&release).ok_or(Unplaced::NotPackaged)?;
-        let lineage = advisories
-            .lineage(&release, package)
-            .ok_or_else(|| Unplaced::ReleaseNotCovered(release.clone()))?;
+        let lineage =
+            advisories
+                .lineage(&release, package)
+                .ok_or_else(|| Unplaced::NotCovered {
+                    package: package.to_owned(),
+                    release: release.clone(),
+                })?;
 
         // The build the revision names, from the release's own lineage. Where
         // the lineage lacks it, which a banner from a build the data never
@@ -169,7 +205,7 @@ impl<'a> Placement<'a> {
         Ok(Self {
             advisories,
             release,
-            release_inferred,
+            release_from,
             package,
             installed,
         })

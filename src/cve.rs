@@ -111,7 +111,7 @@
 //! data without rescanning anything.
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::BufRead;
 use std::sync::OnceLock;
 
@@ -122,7 +122,7 @@ use crate::model::finding::{
     DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Version,
 };
 use crate::model::host::Host;
-use crate::model::port::{Build, Protocol, Service};
+use crate::model::port::{Build, Distributor, Protocol, Service};
 use crate::record::wire;
 use crate::report::ScanReport;
 use crate::version::version_cmp;
@@ -135,7 +135,7 @@ pub(crate) mod packages;
 use advisories::OpenKind;
 pub use advisories::{Advisories, AdvisoriesError};
 use applicability::Applies;
-use backport::{Placement, Ruling, Unplaced, Unsettled, Vulnerable, Withdrawal};
+use backport::{Placement, ReleaseFrom, Ruling, Unplaced, Unsettled, Vulnerable, Withdrawal};
 
 /// The reserved identity the engine's built-in correlator stamps on every finding
 /// it produces, so a report can say exactly what concluded a vulnerability. A
@@ -385,6 +385,18 @@ impl<'a> Correlator<'a> {
     /// something there before, since a correlation is replaced whole and one
     /// that now draws nothing withdraws what the last one drew.
     pub(crate) fn judgements(&self, host: &Host) -> Vec<PortJudgement> {
+        // The releases the host's own banners name, by distributor, for a
+        // build that names none. See `Placement::of`.
+        let mut releases: BTreeMap<Distributor, BTreeSet<String>> = BTreeMap::new();
+        for build in host.ports().filter_map(|port| port.service()?.build()) {
+            if let Some(release) = build.release() {
+                releases
+                    .entry(build.distributor())
+                    .or_default()
+                    .insert(release.name().to_owned());
+            }
+        }
+
         host.ports()
             .filter_map(|port| {
                 let service = port.service()?;
@@ -394,6 +406,7 @@ impl<'a> Correlator<'a> {
                     .cpes()
                     .iter()
                     .filter_map(|cpe| Judged::of(service, cpe))
+                    .map(|judged| judged.on_host(&releases))
                 {
                     let judgement = self.catalogue.judge(&judged, self.advisories);
                     findings.extend(judgement.findings);
@@ -711,6 +724,7 @@ impl Catalogue {
                 &judged.vendor_product(),
                 &judged.parsed.version,
                 advisories,
+                judged.host_release.as_deref(),
             )),
             _ => None,
         };
@@ -955,11 +969,9 @@ impl Catalogue {
                     cves("CVE", "CVEs")
                 ),
                 format!(
-                    "{distributor} has fixed {known}, {tally}, in builds of {} for release \
-                     {}, and the banner does not say which build this is: it may predate the \
-                     fixes or carry them. The worst are {named}",
-                    context.package(),
-                    context.release()
+                    "{placed}: the banner does not say which build, and {distributor} has \
+                     fixed {known}, {tally}, in builds of it, which this one may predate or \
+                     carry. The worst are {named}"
                 ),
             ),
             Verdict::Untriaged => (
@@ -1202,16 +1214,20 @@ impl Context<'_, '_> {
         let distributor = self.distributor_label();
         match self.placement {
             Some(placed) => {
-                let inferred = match placed.release_inferred {
-                    true => ", the only release that shipped this build",
-                    false => "",
+                let inferred = match placed.release_from {
+                    ReleaseFrom::Banner => "",
+                    ReleaseFrom::Revision => ", the only release that shipped this build",
+                    ReleaseFrom::Host => ", the release the host's other services name",
                 };
                 match &placed.installed {
                     Some(version) => format!(
                         "{} {version} on {distributor} {}{inferred}",
                         placed.package, placed.release
                     ),
-                    None => format!("{} on {distributor} {}", placed.package, placed.release),
+                    None => format!(
+                        "{} on {distributor} {}{inferred}",
+                        placed.package, placed.release
+                    ),
                 }
             }
             None => format!("This {distributor} build"),
@@ -1237,7 +1253,8 @@ impl Context<'_, '_> {
                 let release = self
                     .placement
                     .map(|placed| placed.release.as_str())
-                    .or_else(|| build.release().map(|release| release.name()));
+                    .or_else(|| build.release().map(|release| release.name()))
+                    .or(self.judged.host_release.as_deref());
                 match release {
                     Some(release) => format!("{distributor}-{release}"),
                     None => distributor.to_string(),
@@ -1380,6 +1397,9 @@ struct Judged<'a> {
     product: Option<&'a str>,
     /// Whose build the service is, where it said.
     build: Option<&'a Build>,
+    /// The release the host's other services name for builds by the same
+    /// distributor, where they name exactly one. See [`Placement::of`].
+    host_release: Option<String>,
 }
 
 impl<'a> Judged<'a> {
@@ -1390,7 +1410,19 @@ impl<'a> Judged<'a> {
             parsed: Cpe::parse(cpe)?,
             product: service.product(),
             build: service.build(),
+            host_release: None,
         })
+    }
+
+    /// Judged as a service on a host whose services' builds name `releases`,
+    /// each distributor's releases as their banners give them.
+    fn on_host(mut self, releases: &BTreeMap<Distributor, BTreeSet<String>>) -> Self {
+        self.host_release = self
+            .build
+            .and_then(|build| releases.get(&build.distributor()))
+            .filter(|named| named.len() == 1)
+            .and_then(|named| named.first().cloned());
+        self
     }
 
     /// A bare identifier, judged as the upstream release it names.
@@ -1401,6 +1433,7 @@ impl<'a> Judged<'a> {
             parsed: Cpe::parse(cpe)?,
             product: None,
             build: None,
+            host_release: None,
         })
     }
 
@@ -2898,6 +2931,43 @@ mod verdicts {
         )));
     }
 
+    /// A banner naming neither release nor revision, as `Apache/2.4.7
+    /// (Ubuntu)` does, is placed in the release the host's other banners
+    /// name, and says so; with no such release it stays unchecked.
+    #[test]
+    fn a_build_naming_no_release_is_placed_by_the_hosts_other_banners() {
+        let data = [ubuntu()];
+        let service = Service::new("ssh", 100)
+            .with_product("OpenSSH")
+            .with_version("6.6.1p1")
+            .with_cpe("cpe:/a:openbsd:openssh:6.6.1p1")
+            .with_build(ubuntu_build(None, None));
+        let mut judged = Judged::of(&service, "cpe:/a:openbsd:openssh:6.6.1p1").expect("a CPE");
+        let alone = catalogue().judge(&judged, &data);
+        assert!(
+            kinds(&alone)
+                .iter()
+                .all(|(kind, ..)| kind == "build-unchecked"),
+            "{:?}",
+            kinds(&alone)
+        );
+
+        judged.host_release = Some("14.04".to_owned());
+        let placed = catalogue().judge(&judged, &data);
+        assert!(
+            kinds(&placed)
+                .iter()
+                .any(|(kind, ..)| kind == "patch-level-hidden")
+        );
+        assert!(
+            placed.findings.iter().any(|finding| finding
+                .excerpt()
+                .as_str()
+                .contains("the release the host's other services name")),
+            "the excerpt says where the release came from"
+        );
+    }
+
     /// With no data for the build's distributor, or none at all, the build is
     /// judged as far as its upstream version goes, and the excerpt says why.
     #[test]
@@ -2917,7 +2987,7 @@ mod verdicts {
             elsewhere.findings[0]
                 .excerpt()
                 .as_str()
-                .contains("does not cover release 16.04"),
+                .contains("does not cover openssh in release 16.04"),
             "{}",
             elsewhere.findings[0].excerpt().as_str()
         );
