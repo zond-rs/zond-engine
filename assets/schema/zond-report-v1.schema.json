@@ -1237,6 +1237,7 @@
         "segments_seen",
         "segments_off_target",
         "replies_without_rtt",
+        "refusals_unattributed",
         "hosts_found",
         "answered_on",
         "answered_unattributed",
@@ -1300,6 +1301,10 @@
         },
         "replies_without_rtt": {
           "description": "In-set replies that answered no outstanding probe: they proved a host alive but yielded no round-trip sample.",
+          "$ref": "#/$defs/count"
+        },
+        "refusals_unattributed": {
+          "description": "ICMP refusals among replies_without_rtt that quoted too little of the probe to name its attempt, so they settled nothing: a refusal named by its ports alone is one anybody who knows the source port could send. The ports they quote keep the verdict their own retries reach, usually no_reply; this count says a refusal was heard for some of them all the same.",
           "$ref": "#/$defs/count"
         },
         "hosts_found": {

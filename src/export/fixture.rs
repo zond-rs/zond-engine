@@ -273,6 +273,7 @@ pub(crate) fn probe_stats() -> ProbeStats {
         segments_seen: 271,
         segments_off_target: 3,
         replies_without_rtt: 2,
+        refusals_unattributed: 1,
         hosts_found: 9,
         answered_on: [7, 2, 0, 0, 0, 0],
         answered_unattributed: 0,

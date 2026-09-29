@@ -517,7 +517,7 @@ impl TcpPortScanner {
             Unreachable::Port | Unreachable::Prohibited | Unreachable::Protocol
                 if token.is_none() =>
             {
-                self.core.audit.record_reply_without_rtt();
+                self.core.audit.record_unattributed_refusal();
             }
             Unreachable::Port | Unreachable::Prohibited | Unreachable::Protocol => {
                 self.resolve_probe(
@@ -3571,6 +3571,10 @@ mod tests {
                 scanner.core.ledger.contains(&(TARGET, 80)),
                 "{technique:?}: and the probe keeps its remaining attempts"
             );
+            assert_eq!(
+                scanner.core.audit.refusals_unattributed, 1,
+                "{technique:?}: but the refusal is counted as heard"
+            );
         }
     }
 
@@ -3601,6 +3605,7 @@ mod tests {
                 Some(PortState::Blocked),
                 "{technique:?}: the sequence number is inside the guaranteed eight"
             );
+            assert_eq!(scanner.core.audit.refusals_unattributed, 0);
         }
     }
 }

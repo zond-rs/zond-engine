@@ -2332,6 +2332,8 @@ pub struct ProbeStatsRecord {
     pub segments_off_target: u64,
     /// How many replies named no attempt.
     pub replies_without_rtt: u64,
+    /// How many of those were refusals that named no attempt.
+    pub refusals_unattributed: u64,
     /// How many hosts it found.
     pub hosts_found: u64,
     /// How many answers arrived on each attempt.
@@ -2367,6 +2369,7 @@ impl From<&ProbeStats> for ProbeStatsRecord {
             window: stats.window().map(WindowRecord::from),
             segments_off_target: stats.segments_off_target(),
             replies_without_rtt: stats.replies_without_rtt(),
+            refusals_unattributed: stats.refusals_unattributed(),
             hosts_found: stats.hosts_found(),
             answered_on: stats.answered_on().to_vec(),
             answered_unattributed: stats.answered_unattributed(),
@@ -2398,6 +2401,7 @@ impl From<&ProbeStatsRecord> for ProbeStats {
             window: record.window.as_ref().map(WindowSummary::from),
             segments_off_target: record.segments_off_target,
             replies_without_rtt: record.replies_without_rtt,
+            refusals_unattributed: record.refusals_unattributed,
             hosts_found: record.hosts_found,
             answered_on: record.answered_on.clone(),
             answered_unattributed: record.answered_unattributed,

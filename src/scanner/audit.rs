@@ -94,6 +94,11 @@ pub struct ProbeAudit {
     /// host alive but yielded no round-trip sample. Duplicates and
     /// retransmissions land here, and so does a correlation bug.
     pub(crate) replies_without_rtt: u64,
+    /// ICMP refusals among those that quoted too little of the probe to name
+    /// its attempt, so they settled nothing: a subset of
+    /// `replies_without_rtt`, kept apart so a reader knows a refusal was heard
+    /// for ports that still read no-reply.
+    pub(crate) refusals_unattributed: u64,
 
     /// Targets a reply resolved, counted once each: a host for a discovery
     /// sweep, an `(address, port)` probe for a port scan. The number the run is
@@ -170,6 +175,7 @@ impl ProbeAudit {
             segments_seen: 0,
             segments_off_target: 0,
             replies_without_rtt: 0,
+            refusals_unattributed: 0,
             hosts_found: 0,
             answered_on: [0; ATTEMPTS_COUNTED],
             answered_unattributed: 0,
@@ -215,6 +221,14 @@ impl ProbeAudit {
     /// Records an in-set reply that matched no outstanding probe.
     pub fn record_reply_without_rtt(&mut self) {
         self.replies_without_rtt += 1;
+    }
+
+    /// Records an ICMP refusal that quoted too little of its probe to name the
+    /// attempt, and so settled nothing. It is also a reply without a round
+    /// trip, and is counted as one.
+    pub fn record_unattributed_refusal(&mut self) {
+        self.refusals_unattributed += 1;
+        self.record_reply_without_rtt();
     }
 
     /// Records a target resolved by a reply, timestamped against the start of
@@ -294,6 +308,7 @@ impl ProbeAudit {
             segments_seen: self.segments_seen,
             segments_off_target: self.segments_off_target,
             replies_without_rtt: self.replies_without_rtt,
+            refusals_unattributed: self.refusals_unattributed,
             hosts_found: self.hosts_found,
             answered_on: self.answered_on,
             answered_unattributed: self.answered_unattributed,
@@ -331,7 +346,8 @@ impl ProbeAudit {
             verbosity = 3,
             "audit[{scanner}] {found}/{targets} hosts in {elapsed:.0?}, stopped: {reason:?} \
              | sent {sent} (failed {failed}, {rate:.0}/s) \
-             | captured {seen} (off-target {off}, no-rtt {no_rtt}){kernel} \
+             | captured {seen} (off-target {off}, no-rtt {no_rtt}, \
+             refusals-unattributed {refusals}){kernel} \
              | found on {attempts}{window} \
              | first {first}, last {last} \
              | found-at {histogram}",
@@ -343,6 +359,7 @@ impl ProbeAudit {
             seen = self.segments_seen,
             off = self.segments_off_target,
             no_rtt = self.replies_without_rtt,
+            refusals = self.refusals_unattributed,
             kernel = format_capture(capture),
             attempts = self.attempt_distribution(),
             window = format_window(window),
@@ -350,6 +367,21 @@ impl ProbeAudit {
             last = format_offset(self.last_reply),
             histogram = self.histogram(),
         );
+
+        // A decision behind the result, so `-v`: ports that read no-reply
+        // although a refusal was heard for them, uncredited because it could
+        // not name the probe it answered.
+        if self.refusals_unattributed > 0 {
+            crate::info!(
+                verbosity = 1,
+                "{scanner}: {} not credited (named no probe)",
+                crate::logging::counted(
+                    u128::from(self.refusals_unattributed),
+                    "refusal",
+                    "refusals"
+                ),
+            );
+        }
 
         self.warn_if_degraded(scanner, targets, capture, pacing);
     }

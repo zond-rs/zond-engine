@@ -359,7 +359,13 @@ impl SctpPortScanner {
         // stricter than the TCP and UDP ones, which file a host down on the key
         // alone when the quotation carries no nonce.
         let Some(nonce) = nonce else {
-            self.core.audit.record_reply_without_rtt();
+            // Counted apart when it was a refusal, so a report can say one was
+            // heard for a port that still reads no-reply.
+            if error.reason == Unreachable::Host {
+                self.core.audit.record_reply_without_rtt();
+            } else {
+                self.core.audit.record_unattributed_refusal();
+            }
             return;
         };
         let token = Some(SctpToken { tag: nonce });
@@ -1120,6 +1126,10 @@ mod tests {
                 port_state(&session, 4000),
                 None,
                 "a quotation of {keep} SCTP bytes named no attempt and must retire none"
+            );
+            assert_eq!(
+                scanner.core.audit.refusals_unattributed, 1,
+                "the refusal of {keep} bytes is counted as heard"
             );
         }
     }

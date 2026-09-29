@@ -670,6 +670,7 @@ mod tests {
             segments_seen: 250,
             segments_off_target: 1,
             replies_without_rtt: 2,
+            refusals_unattributed: 0,
             hosts_found: 9,
             answered_on: [7, 2, 0, 0, 0, 0],
             answered_unattributed: 0,

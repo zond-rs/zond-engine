@@ -1167,6 +1167,7 @@ struct ProbeStatsDto {
     segments_seen: u64,
     segments_off_target: u64,
     replies_without_rtt: u64,
+    refusals_unattributed: u64,
     hosts_found: u64,
     answered_on: Vec<AttemptCountDto>,
     answered_unattributed: u64,
@@ -1202,6 +1203,7 @@ impl ProbeStatsDto {
             window: self.window.map(WindowDto::record),
             segments_off_target: self.segments_off_target,
             replies_without_rtt: self.replies_without_rtt,
+            refusals_unattributed: self.refusals_unattributed,
             hosts_found: self.hosts_found,
             // Both histograms are written as one object per bucket, in the order
             // the counters hold them, so the counts alone rebuild the vector.

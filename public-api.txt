@@ -3831,6 +3831,7 @@ pub zond_engine::export::schema::ProbeStatsDto::first_reply_us: core::option::Op
 pub zond_engine::export::schema::ProbeStatsDto::found_at: alloc::vec::Vec<zond_engine::export::schema::BucketDto>
 pub zond_engine::export::schema::ProbeStatsDto::hosts_found: u64
 pub zond_engine::export::schema::ProbeStatsDto::last_reply_us: core::option::Option<u64>
+pub zond_engine::export::schema::ProbeStatsDto::refusals_unattributed: u64
 pub zond_engine::export::schema::ProbeStatsDto::replies_without_rtt: u64
 pub zond_engine::export::schema::ProbeStatsDto::scanner: &'static str
 pub zond_engine::export::schema::ProbeStatsDto::segments_off_target: u64
@@ -13960,6 +13961,7 @@ pub zond_engine::record::ProbeStatsRecord::first_reply: core::option::Option<cor
 pub zond_engine::record::ProbeStatsRecord::found_at: alloc::vec::Vec<u64>
 pub zond_engine::record::ProbeStatsRecord::hosts_found: u64
 pub zond_engine::record::ProbeStatsRecord::last_reply: core::option::Option<core::time::Duration>
+pub zond_engine::record::ProbeStatsRecord::refusals_unattributed: u64
 pub zond_engine::record::ProbeStatsRecord::replies_without_rtt: u64
 pub zond_engine::record::ProbeStatsRecord::scanner: alloc::string::String
 pub zond_engine::record::ProbeStatsRecord::segments_off_target: u64
@@ -14742,6 +14744,7 @@ pub fn zond_engine::report::ProbeStats::first_reply(&self) -> core::option::Opti
 pub fn zond_engine::report::ProbeStats::found_at(&self) -> &[u64]
 pub fn zond_engine::report::ProbeStats::hosts_found(&self) -> u64
 pub fn zond_engine::report::ProbeStats::last_reply(&self) -> core::option::Option<core::time::Duration>
+pub fn zond_engine::report::ProbeStats::refusals_unattributed(&self) -> u64
 pub fn zond_engine::report::ProbeStats::replies_without_rtt(&self) -> u64
 pub fn zond_engine::report::ProbeStats::scanner(&self) -> zond_engine::report::ScannerKind
 pub fn zond_engine::report::ProbeStats::segments_off_target(&self) -> u64
@@ -14782,6 +14785,7 @@ pub zond_engine::report::ProbeStatsParts::first_reply: core::option::Option<core
 pub zond_engine::report::ProbeStatsParts::found_at: alloc::vec::Vec<u64>
 pub zond_engine::report::ProbeStatsParts::hosts_found: u64
 pub zond_engine::report::ProbeStatsParts::last_reply: core::option::Option<core::time::Duration>
+pub zond_engine::report::ProbeStatsParts::refusals_unattributed: u64
 pub zond_engine::report::ProbeStatsParts::replies_without_rtt: u64
 pub zond_engine::report::ProbeStatsParts::scanner: zond_engine::report::ScannerKind
 pub zond_engine::report::ProbeStatsParts::segments_off_target: u64

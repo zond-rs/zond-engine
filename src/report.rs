@@ -1184,6 +1184,7 @@ pub struct ProbeStats {
     pub(crate) segments_seen: u64,
     pub(crate) segments_off_target: u64,
     pub(crate) replies_without_rtt: u64,
+    pub(crate) refusals_unattributed: u64,
     pub(crate) hosts_found: u64,
     pub(crate) answered_on: [u64; ATTEMPTS_COUNTED],
     pub(crate) answered_unattributed: u64,
@@ -1281,6 +1282,20 @@ impl ProbeStats {
     /// a correlation bug.
     pub fn replies_without_rtt(&self) -> u64 {
         self.replies_without_rtt
+    }
+
+    /// ICMP refusals among [`replies_without_rtt`](Self::replies_without_rtt)
+    /// that quoted too little of the probe to name its attempt.
+    ///
+    /// A refusal names a port by the ports alone, which anybody who knows this
+    /// scan's source port can supply, so one that cannot name the attempt as
+    /// well settles nothing: the port it quotes keeps whatever its own retries
+    /// conclude, usually no reply. This count is what says a refusal was
+    /// heard for some of those ports all the same. A sender quoting only the
+    /// eight bytes RFC 792 guarantees leaves an ACK, window or Maimon scan's
+    /// nonce out, and every INIT's.
+    pub fn refusals_unattributed(&self) -> u64 {
+        self.refusals_unattributed
     }
 
     /// Targets a reply resolved, counted once each.
@@ -1600,6 +1615,8 @@ pub struct ProbeStatsParts {
     pub segments_off_target: u64,
     /// How many replies could not be attributed to one attempt.
     pub replies_without_rtt: u64,
+    /// How many of those were ICMP refusals too short to name an attempt.
+    pub refusals_unattributed: u64,
     /// How many hosts it found.
     pub hosts_found: u64,
     /// How many answers arrived on each attempt, one slot per counted attempt,
@@ -1642,6 +1659,7 @@ impl ProbeStats {
             window: parts.window,
             segments_off_target: parts.segments_off_target,
             replies_without_rtt: parts.replies_without_rtt,
+            refusals_unattributed: parts.refusals_unattributed,
             hosts_found: parts.hosts_found,
             answered_on: fitted(&parts.answered_on),
             answered_unattributed: parts.answered_unattributed,
@@ -4350,6 +4368,7 @@ mod tests {
             window: None,
             segments_off_target: 0,
             replies_without_rtt: 0,
+            refusals_unattributed: 0,
             hosts_found: 0,
             answered_on,
             answered_unattributed: 0,

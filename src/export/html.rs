@@ -1711,6 +1711,12 @@ fn write_probe_stats(out: &mut dyn Write, stats: &ProbeStatsDto) -> Result<(), E
             stats.replies_without_rtt
         ));
     }
+    if stats.refusals_unattributed > 0 {
+        seen.push(format!(
+            "{} refusals naming no probe, not credited",
+            stats.refusals_unattributed
+        ));
+    }
     fact(out, "segments", &seen.join(" · "))?;
 
     let mut timing = Vec::new();

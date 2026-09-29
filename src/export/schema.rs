@@ -1396,6 +1396,11 @@ pub struct ProbeStatsDto {
     /// In-set replies that answered no outstanding probe. They proved a host
     /// alive but yielded no round-trip sample.
     pub replies_without_rtt: u64,
+    /// ICMP refusals among those that quoted too little of the probe to name
+    /// its attempt. Not credited, since a refusal that names no attempt is one
+    /// anybody who knows the source port could send, so the ports they quote
+    /// keep the verdict their own retries reach.
+    pub refusals_unattributed: u64,
     /// Targets credited as alive for the first time.
     pub hosts_found: u64,
     /// Found hosts by the attempt whose reply revealed them. This is what says
@@ -1486,6 +1491,7 @@ impl ProbeStatsDto {
             segments_seen: stats.segments_seen(),
             segments_off_target: stats.segments_off_target(),
             replies_without_rtt: stats.replies_without_rtt(),
+            refusals_unattributed: stats.refusals_unattributed(),
             hosts_found: stats.hosts_found(),
             answered_on,
             answered_unattributed: stats.answered_unattributed(),
