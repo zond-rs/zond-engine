@@ -104,13 +104,15 @@ const RESERVED_PREFIX: &str = "zond:";
 
 /// The shipped catalogue's version, carried on every finding it produces.
 ///
-/// It versions the verdicts as well as the data, since a finding is both:
-/// `0.3.0` marks the correlator that tells a distribution's build from the
-/// upstream release it started from, and keys each claim on what it is about
-/// rather than on one of the vulnerabilities behind it. A report drawn from an
-/// earlier one is distinguishable by it, which is the whole reason a dataset
-/// carries a version, and a [`merge`](crate::merge) retires the earlier
-/// correlator's claims wherever this one judged the same port.
+/// It versions the verdicts as well as the data, since a finding is both, and
+/// moves whenever either does: a report drawn from one is distinguishable from
+/// a report drawn from another by it, which is the whole reason a dataset
+/// carries a version, and a [`merge`](crate::merge) retires an earlier
+/// correlator's claims wherever a later one judged the same port. `0.3.0`
+/// marks the correlator that tells a distribution's build from the upstream
+/// release it started from and keys each claim on what it is about, over a
+/// converted feed whose entries carry a CPE's patch level as part of the
+/// release they name.
 const SEED_VERSION: Version = Version::new(0, 3, 0);
 
 /// The catalogue compiled from `assets/cve/` by `build.rs`: a string pool and

@@ -33,6 +33,10 @@
 //! same records come back from the 2.0 API a page at a time, and a caller who
 //! assembles those pages into that shape is read here unchanged.
 //!
+//! The catalogue this crate ships, `assets/cve/nvd.toml`, is this module's
+//! output over every year of that feed, and the `nvd_catalogue` example is what
+//! regenerates it.
+//!
 //! ## It filters, and [`kev`](super::kev) does not
 //!
 //! A converted KEV holds every entry CISA published, because there are about
@@ -594,6 +598,7 @@ fn affected_range(
     let vendor = parts.next()?;
     let product = parts.next()?;
     let version = parts.next()?;
+    let update = parts.next().unwrap_or_default();
 
     let key = format!("{vendor}:{product}");
     if !products.contains(&key) {
@@ -614,11 +619,28 @@ fn affected_range(
         // No range, so the CPE's own version field is the claim — unless it is
         // the wildcard, which says every release and is what a product-level
         // KEV entry already says better.
-        true if matches!(version, "*" | "-" | "") => return None,
-        true => format!("== {version}"),
+        true if is_unset(version) => return None,
+        // The 2.3 grammar puts a patch level in a field of its own, `6.6:p1`,
+        // where a banner and the URI form run it onto the version, `6.6p1`.
+        // Joined the way the correlator joins it when it reads a service's CPE,
+        // so the release named here is the release a scan names: `== 6.6`
+        // alone matches no OpenSSH ever shipped.
+        true if is_unset(update) => format!("== {version}"),
+        true => format!("== {version}{update}"),
+        // A range bounds the version and nothing else. An update field beside
+        // one, which NVD writes rarely and never consistently, is left out: the
+        // grammar has no clause for it, and dropping it makes the claim broader
+        // rather than letting a vulnerable release through.
         false => clauses.join(", "),
     };
     Some((vendor.to_string(), product.to_string(), affected))
+}
+
+/// Whether a CPE field states nothing: `*` is "any" and `-` is "not
+/// applicable" in the 2.3 grammar, and an absent field is neither a version nor
+/// a patch level.
+fn is_unset(field: &str) -> bool {
+    matches!(field, "*" | "-" | "")
 }
 
 /// The severity a record carries, preferring the newest scoring it has.
@@ -972,6 +994,66 @@ mod tests {
         assert!(
             !matched("4.92"),
             "4.92 is past the range and must not match"
+        );
+    }
+
+    /// A patch level NVD states in the CPE's `update` field is part of the
+    /// release the entry names.
+    ///
+    /// OpenSSH is the case that matters: NVD writes `6.6:p1` where every banner
+    /// says `6.6p1`, and an entry reading `== 6.6` would match no OpenSSH ever
+    /// released, so the vulnerability would go unreported on exactly the hosts
+    /// it affects. The correlator joins the two fields the same way when it
+    /// reads a service's CPE, and this holds the converter to agreeing with it:
+    /// a service identified in either spelling matches, and one at the release
+    /// without the patch level does not. `-` and `*` say there is no patch
+    /// level, and add nothing.
+    #[test]
+    fn a_patch_level_in_the_update_field_is_part_of_the_version() {
+        const ROAMING: &str = r#"{
+          "timestamp": "2026-09-08T00:00:00+00:00",
+          "cve_items": [{
+            "id": "CVE-2016-0777",
+            "descriptions": [{"lang": "en", "value": "The roaming code in the OpenSSH client leaks memory."}],
+            "metrics": {"cvssMetricV31": [{"cvssData": {"baseSeverity": "MEDIUM"}}]},
+            "configurations": [{"nodes": [{"cpeMatch": [
+              {"vulnerable": true, "criteria": "cpe:2.3:a:openbsd:openssh:6.6:p1:*:*:*:*:*:*"},
+              {"vulnerable": true, "criteria": "cpe:2.3:a:openbsd:openssh:7.0:-:*:*:*:*:*:*"},
+              {"vulnerable": true, "criteria": "cpe:2.3:a:openbsd:openssh:7.1:*:*:*:*:*:*:*"}
+            ]}]}]
+          }]
+        }"#;
+
+        let document = to_document_for(&mut ROAMING.as_bytes(), &products(&["openbsd:openssh"]))
+            .expect("converts");
+        assert!(document.contains(r#"affected = "== 6.6p1""#), "{document}");
+        assert!(document.contains(r#"affected = "== 7.0""#), "{document}");
+        assert!(document.contains(r#"affected = "== 7.1""#), "{document}");
+
+        let catalogue = Catalogue::read(&mut document.as_bytes()).expect("reads back");
+        let matched = |cpe: &str| {
+            use crate::model::host::Host;
+            use crate::model::port::{Port, PortState, Protocol, Service};
+
+            let mut host = Host::new("192.0.2.1".parse().expect("an address"));
+            let service = Service::new("ssh", 90).with_cpe(cpe);
+            host.add_port(Port::new(22, Protocol::Tcp, PortState::Open).with_service(service));
+            crate::cve::correlate_with(&mut host, &catalogue);
+            host.ports()
+                .find(|port| port.number() == 22)
+                .expect("the port")
+                .findings()
+                .any(|finding| finding.detection().id() == NVD_ID)
+        };
+
+        assert!(matched("cpe:/a:openbsd:openssh:6.6p1"), "the URI form");
+        assert!(
+            matched("cpe:2.3:a:openbsd:openssh:6.6:p1:*:*:*:*:*:*"),
+            "the 2.3 form"
+        );
+        assert!(
+            !matched("cpe:/a:openbsd:openssh:6.6"),
+            "a release without the patch level is not the one named"
         );
     }
 

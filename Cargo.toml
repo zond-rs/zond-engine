@@ -345,3 +345,10 @@ fancy-regex = "0.19.0"
 serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.10.9"
 toml = "1.1.2"
+
+# The tool that regenerates `assets/cve/nvd.toml` from the NVD year files. It
+# needs the converter, which is behind a feature, so a plain
+# `cargo check --all-targets` skips it and `--all-features` compiles it.
+[[example]]
+name = "nvd_catalogue"
+required-features = ["import-nvd"]
