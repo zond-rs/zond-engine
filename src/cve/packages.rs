@@ -151,7 +151,7 @@ pub(crate) fn source_package(
 /// Every source package name the map gives `distributor`, over all products,
 /// releases and series: the packages whose advisories a scan can ever ask
 /// about.
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "import-distro"), allow(dead_code))]
 pub(crate) fn source_packages(distributor: &str) -> impl Iterator<Item = &'static str> + '_ {
     document()
         .product

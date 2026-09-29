@@ -98,6 +98,9 @@ pub mod csv;
 #[cfg(feature = "import-json")]
 pub mod json;
 
+#[cfg(feature = "import-distro")]
+pub mod debian;
+
 #[cfg(feature = "import-kev")]
 pub mod kev;
 
@@ -106,6 +109,9 @@ pub mod nmap;
 
 #[cfg(feature = "import-nvd")]
 pub mod nvd;
+
+#[cfg(feature = "import-distro")]
+pub mod ubuntu;
 
 // The hardened XML pull parser both nmap readers share. Not public: it is this
 // module's own machinery, confined to what an nmap document needs.

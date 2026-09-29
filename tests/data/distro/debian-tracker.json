@@ -1,0 +1,242 @@
+{
+ "7zip": {
+  "CVE-2022-47111": {
+   "description": "7-Zip 22.01 does not report an error for certain invalid xz files, involving block flags and reserved bits. Some later versions are unaffected.",
+   "scope": "local",
+   "releases": {
+    "bookworm": {
+     "status": "open",
+     "repositories": {
+      "bookworm": "22.01+really26.01+dfsg-0+deb12u1",
+      "bookworm-security": "22.01+really26.02+dfsg-0+deb12u1"
+     },
+     "urgency": "unimportant"
+    },
+    "forky": {
+     "status": "open",
+     "repositories": {
+      "forky": "26.03+dfsg-3"
+     },
+     "urgency": "unimportant"
+    },
+    "sid": {
+     "status": "open",
+     "repositories": {
+      "sid": "26.03+dfsg-3"
+     },
+     "urgency": "unimportant"
+    },
+    "trixie": {
+     "status": "open",
+     "repositories": {
+      "trixie": "25.01+dfsg-1~deb13u2"
+     },
+     "urgency": "unimportant"
+    }
+   }
+  }
+ },
+ "apache2": {
+  "TEMP-0535886-8B62DC": {
+   "debianbug": 535886,
+   "releases": {
+    "bookworm": {
+     "status": "resolved",
+     "repositories": {
+      "bookworm": "2.4.68-1~deb12u1",
+      "bookworm-security": "2.4.67-1~deb12u3"
+     },
+     "fixed_version": "2.2.9-1",
+     "urgency": "low"
+    },
+    "forky": {
+     "status": "resolved",
+     "repositories": {
+      "forky": "2.4.68-2"
+     },
+     "fixed_version": "2.2.9-1",
+     "urgency": "low"
+    },
+    "sid": {
+     "status": "resolved",
+     "repositories": {
+      "sid": "2.4.68-2"
+     },
+     "fixed_version": "2.2.9-1",
+     "urgency": "low"
+    },
+    "trixie": {
+     "status": "resolved",
+     "repositories": {
+      "trixie": "2.4.68-1~deb13u1",
+      "trixie-security": "2.4.67-1~deb13u3"
+     },
+     "fixed_version": "2.2.9-1",
+     "urgency": "low"
+    }
+   }
+  }
+ },
+ "openssh": {
+  "CVE-2001-1585": {
+   "description": "SSH protocol 2 (aka SSH-2) public key authentication in the development snapshot of OpenSSH 2.3.1, available from 2001-01-18 through 2001-02-08, does not perform a challenge-response step to ensure that the client has the proper private key, which allows remote attackers to bypass authentication as other users by supplying a public key from that user's authorized_keys file.",
+   "scope": "local",
+   "releases": {
+    "bookworm": {
+     "status": "resolved",
+     "repositories": {
+      "bookworm": "1:9.2p1-2+deb12u10",
+      "bookworm-security": "1:9.2p1-2+deb12u9"
+     },
+     "fixed_version": "0",
+     "urgency": "unimportant"
+    },
+    "forky": {
+     "status": "resolved",
+     "repositories": {
+      "forky": "1:10.5p1-1"
+     },
+     "fixed_version": "0",
+     "urgency": "unimportant"
+    },
+    "sid": {
+     "status": "resolved",
+     "repositories": {
+      "sid": "1:10.5p1-1"
+     },
+     "fixed_version": "0",
+     "urgency": "unimportant"
+    },
+    "trixie": {
+     "status": "resolved",
+     "repositories": {
+      "trixie": "1:10.0p1-7+deb13u4",
+      "trixie-security": "1:10.0p1-7+deb13u2"
+     },
+     "fixed_version": "0",
+     "urgency": "unimportant"
+    }
+   }
+  },
+  "CVE-2007-2768": {
+   "description": "OpenSSH, when using OPIE (One-Time Passwords in Everything) for PAM, allows remote attackers to determine the existence of certain user accounts, which displays a different response if the user account exists and is configured to use one-time passwords (OTP), a similar issue to CVE-2007-2243.",
+   "debianbug": 436571,
+   "scope": "local",
+   "releases": {
+    "bookworm": {
+     "status": "open",
+     "repositories": {
+      "bookworm": "1:9.2p1-2+deb12u10",
+      "bookworm-security": "1:9.2p1-2+deb12u9"
+     },
+     "urgency": "unimportant"
+    },
+    "forky": {
+     "status": "open",
+     "repositories": {
+      "forky": "1:10.5p1-1"
+     },
+     "urgency": "unimportant"
+    },
+    "sid": {
+     "status": "open",
+     "repositories": {
+      "sid": "1:10.5p1-1"
+     },
+     "urgency": "unimportant"
+    },
+    "trixie": {
+     "status": "open",
+     "repositories": {
+      "trixie": "1:10.0p1-7+deb13u4",
+      "trixie-security": "1:10.0p1-7+deb13u2"
+     },
+     "urgency": "unimportant"
+    }
+   }
+  },
+  "CVE-2023-38408": {
+   "description": "The PKCS#11 feature in ssh-agent in OpenSSH before 9.3p2 has an insufficiently trustworthy search path, leading to remote code execution if an agent is forwarded to an attacker-controlled system. (Code in /usr/lib is not necessarily safe for loading into ssh-agent.) NOTE: this issue exists because of an incomplete fix for CVE-2016-10009.",
+   "debianbug": 1042460,
+   "scope": "local",
+   "releases": {
+    "bookworm": {
+     "status": "resolved",
+     "repositories": {
+      "bookworm": "1:9.2p1-2+deb12u10",
+      "bookworm-security": "1:9.2p1-2+deb12u9"
+     },
+     "fixed_version": "1:9.2p1-2+deb12u1",
+     "urgency": "not yet assigned"
+    },
+    "forky": {
+     "status": "resolved",
+     "repositories": {
+      "forky": "1:10.5p1-1"
+     },
+     "fixed_version": "1:9.3p2-1",
+     "urgency": "not yet assigned"
+    },
+    "sid": {
+     "status": "resolved",
+     "repositories": {
+      "sid": "1:10.5p1-1"
+     },
+     "fixed_version": "1:9.3p2-1",
+     "urgency": "not yet assigned"
+    },
+    "trixie": {
+     "status": "resolved",
+     "repositories": {
+      "trixie": "1:10.0p1-7+deb13u4",
+      "trixie-security": "1:10.0p1-7+deb13u2"
+     },
+     "fixed_version": "1:9.3p2-1",
+     "urgency": "not yet assigned"
+    }
+   }
+  },
+  "CVE-2026-55654": {
+   "description": "A flaw was found in OpenSSH. This vulnerability, a heap out-of-bounds read, occurs during the cleanup of GSSAPI (Generic Security Service Application Programming Interface) indicators when a trailing NULL termination is missing in the auth-indicators array. A remote attacker, under specific configurations involving GSSAPI authentication and a Kerberos environment, could exploit this to cause the SSH authentication path to crash or abort. This leads to a denial of service (DoS), impacting the availability of the SSH service.",
+   "scope": "local",
+   "releases": {
+    "bookworm": {
+     "status": "open",
+     "repositories": {
+      "bookworm": "1:9.2p1-2+deb12u10",
+      "bookworm-security": "1:9.2p1-2+deb12u9"
+     },
+     "urgency": "not yet assigned",
+     "nodsa": "Minor issue",
+     "nodsa_reason": "postponed"
+    },
+    "forky": {
+     "status": "resolved",
+     "repositories": {
+      "forky": "1:10.5p1-1"
+     },
+     "fixed_version": "1:10.4p1-5",
+     "urgency": "not yet assigned"
+    },
+    "sid": {
+     "status": "resolved",
+     "repositories": {
+      "sid": "1:10.5p1-1"
+     },
+     "fixed_version": "1:10.4p1-5",
+     "urgency": "not yet assigned"
+    },
+    "trixie": {
+     "status": "open",
+     "repositories": {
+      "trixie": "1:10.0p1-7+deb13u4",
+      "trixie-security": "1:10.0p1-7+deb13u2"
+     },
+     "urgency": "not yet assigned",
+     "nodsa": "Minor issue",
+     "nodsa_reason": ""
+    }
+   }
+  }
+ }
+}

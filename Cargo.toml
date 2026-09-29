@@ -21,9 +21,13 @@ categories = ["network-programming", "asynchronous"]
 # this repository's own CI and belongs to nobody who depends on the crate, and
 # `deny.toml` is what that CI holds the dependency tree to.
 #
+# `tests/data/distro/` holds excerpts of Debian's and Ubuntu's advisory feeds,
+# which the converter tests read. They are the distributors' data under their
+# own terms (Ubuntu's is CC BY-SA 4.0), and the crate carries none of it.
+#
 # `assets/` is deliberately *not* excluded: `build.rs` compiles the fingerprint
 # signatures out of it, so a package without it does not build at all.
-exclude = ["audit/", "docs/", ".github/", "deny.toml", "fuzz/"]
+exclude = ["audit/", "docs/", ".github/", "deny.toml", "fuzz/", "tests/data/distro/"]
 
 # What docs.rs is asked to build, which is not what it builds by default.
 #
@@ -82,6 +86,19 @@ import-kev = ["dep:serde_json"]
 # corpus, so it needs that corpus and the `serde_json` the other importers
 # already share, and nothing else.
 import-nvd = ["dep:serde_json"]
+
+# Debian's and Ubuntu's own verdicts on the builds they ship, converted into the
+# dataset the correlator judges a distribution build against: Debian's security
+# tracker and Ubuntu's published OSV and OpenVEX archives. What `import-nvd`
+# cannot give: a distribution backports fixes without moving the upstream
+# version, and only the distributor knows which of its builds carry which fix.
+# It pulls in `serde_json`, `tar` to walk Ubuntu's archives, and `liblzma` to
+# read them as the `.tar.xz` Ubuntu publishes: thirty-six gigabytes of JSON
+# behind a hundred megabytes, which a pure-Rust decoder takes eleven minutes
+# over and liblzma under one. It is built from its bundled source and linked
+# statically, so a binary never depends on a system library; that source is
+# under 0BSD.
+import-distro = ["dep:serde_json", "dep:tar", "dep:liblzma"]
 
 # The same data one record per line: streamable, and a file cut off part way
 # through is still readable. Shares `serde_json` and the DTOs with `export-json`,
@@ -305,6 +322,11 @@ rustls-platform-verifier = { version = "0.7.1", optional = true }
 # chosen here, and nothing in this crate uses it for a security decision. From
 # RustCrypto, which the build already depends on for `sha2`.
 md-5 = "0.10.6"
+# Walks Ubuntu's advisory archives and decompresses them, for `import-distro`.
+# `tar` without its default `xattr`: nothing here writes files, so extended
+# attributes are never read.
+tar = { version = "0.4.46", default-features = false, optional = true }
+liblzma = { version = "0.4.8", features = ["static"], optional = true }
 
 # Declared per-target rather than unconditionally, as the CLI already declares
 # its own `rustix`. It compiles to nothing off Windows either way, so this buys

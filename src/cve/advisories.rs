@@ -642,7 +642,7 @@ struct WireCve {
 ///   different feed of the same distributor has not caught up with;
 /// - of two fixes, the later version stands, so a build is only ever read as
 ///   fixed once every record agrees it is.
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "import-distro"), allow(dead_code))]
 pub(crate) struct Builder {
     distributor: Distributor,
     newest: Option<Version>,
@@ -658,7 +658,7 @@ struct Draft {
     verdicts: BTreeMap<String, Vec<Status>>,
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "import-distro"), allow(dead_code))]
 impl Builder {
     pub(crate) fn new(distributor: Distributor) -> Self {
         Self {

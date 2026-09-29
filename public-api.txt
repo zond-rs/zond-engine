@@ -6333,6 +6333,8 @@ impl core::marker::Unpin for zond_engine::import::csv::CsvImporter
 impl core::marker::UnsafeUnpin for zond_engine::import::csv::CsvImporter
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::csv::CsvImporter
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::csv::CsvImporter
+pub mod zond_engine::import::debian
+pub fn zond_engine::import::debian::read(&mut dyn alloc::io::read::Read) -> core::result::Result<zond_engine::cve::Advisories, zond_engine::import::ImportError>
 pub mod zond_engine::import::json
 pub struct zond_engine::import::json::JsonImporter
 impl zond_engine::import::json::JsonImporter
@@ -6845,6 +6847,8 @@ pub fn zond_engine::import::settings::provision_document(&std::path::Path, &str)
 pub fn zond_engine::import::settings::provision_user() -> core::result::Result<(std::path::PathBuf, zond_engine::import::settings::Provisioned), zond_engine::import::settings::SettingsError>
 pub fn zond_engine::import::settings::read(&mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<zond_engine::import::settings::Loaded, zond_engine::import::settings::SettingsError>
 pub fn zond_engine::import::settings::resolve(core::option::Option<&str>) -> core::result::Result<(zond_engine::import::settings::Settings, alloc::vec::Vec<zond_engine::import::settings::SettingsWarning>), zond_engine::import::settings::SettingsError>
+pub mod zond_engine::import::ubuntu
+pub fn zond_engine::import::ubuntu::read(&mut dyn alloc::io::read::Read, &mut dyn alloc::io::read::Read) -> core::result::Result<zond_engine::cve::Advisories, zond_engine::import::ImportError>
 #[non_exhaustive] pub enum zond_engine::import::CsvColumn
 pub zond_engine::import::CsvColumn::Index(usize)
 pub zond_engine::import::CsvColumn::Named(alloc::string::String)
