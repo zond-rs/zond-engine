@@ -2533,7 +2533,6 @@ impl From<&IpSet> for PlanRecord {
             units: vec![UnitRecord {
                 ranges: ranges_of(addresses),
                 spec: String::new(),
-                enumerated_ports: Vec::new(),
             }],
         }
     }
@@ -2568,29 +2567,13 @@ pub struct UnitRecord {
     /// its meaning across the round trip.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub spec: String,
-    /// The ports one at a time, as journal format 1 wrote them.
-    ///
-    /// Read and never written. A journal from that format cannot be continued,
-    /// which [`JOURNAL_VERSION`](crate::journal::JOURNAL_VERSION) covers, but it
-    /// still reads back as the report its scan produced, and a manifest that
-    /// would not deserialize takes that away too.
-    #[serde(default, rename = "ports", skip_serializing_if = "Vec::is_empty")]
-    pub enumerated_ports: Vec<(u16, String)>,
 }
 
 impl UnitRecord {
-    /// The ports this unit walks, from whichever form the record carries.
+    /// The ports this unit walks: none for a record whose specification is
+    /// absent or does not parse, as a host-discovery plan's is.
     fn port_set(&self) -> PortSet {
-        if !self.spec.is_empty()
-            && let Ok(ports) = PortSet::try_from(self.spec.as_str())
-        {
-            return ports;
-        }
-
-        self.enumerated_ports
-            .iter()
-            .filter_map(|(port, protocol)| wire::protocol(protocol).map(|p| (*port, p)))
-            .collect()
+        PortSet::try_from(self.spec.as_str()).unwrap_or_default()
     }
 }
 
@@ -2603,7 +2586,6 @@ impl From<&TargetMap> for PlanRecord {
                 .map(|unit| UnitRecord {
                     ranges: ranges_of(unit.ips()),
                     spec: unit.ports().to_string(),
-                    enumerated_ports: Vec::new(),
                 })
                 .collect(),
         }
@@ -3122,8 +3104,7 @@ mod tests {
     /// Rendered through the export path before and after, for the reason the
     /// host oracle gives: it is an independent view, so a field the record
     /// forgets shows up as a difference rather than as silence.
-    /// A plan's ports survive as a specification, and a manifest from format 1
-    /// still reads.
+    /// A plan's ports survive as a specification.
     ///
     /// The enumeration is what positions are counted through, so the two forms
     /// have to agree about it exactly. They do because a `PortSet` is canonical
@@ -3141,10 +3122,6 @@ mod tests {
         ));
 
         let record = PlanRecord::from(&plan);
-        assert!(
-            record.units[0].enumerated_ports.is_empty(),
-            "the enumerated form is read and never written"
-        );
         assert_eq!(
             TargetMap::from(&record).iter().collect::<Vec<_>>(),
             plan.iter().collect::<Vec<_>>(),
@@ -3153,23 +3130,6 @@ mod tests {
 
         // Six bytes and change, rather than one entry per port.
         assert!(record.units[0].spec.len() < 40, "{}", record.units[0].spec);
-
-        // And a manifest written before the specification existed still reads.
-        let legacy = PlanRecord {
-            units: vec![UnitRecord {
-                ranges: record.units[0].ranges.clone(),
-                spec: String::new(),
-                enumerated_ports: plan.units[0]
-                    .ports()
-                    .iter()
-                    .map(|(port, protocol)| (port, wire::protocol_name(protocol).to_owned()))
-                    .collect(),
-            }],
-        };
-        assert_eq!(
-            TargetMap::from(&legacy).iter().collect::<Vec<_>>(),
-            plan.iter().collect::<Vec<_>>()
-        );
     }
 
     #[test]

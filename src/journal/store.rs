@@ -118,25 +118,6 @@ pub enum OpenError {
         asked: &'static str,
     },
 
-    /// The journal was written under a format this build can read but cannot
-    /// continue.
-    ///
-    /// Only [`Journal::resume`] raises it. [`report`] and [`list`] read such a
-    /// journal as they read any other, since everything written down still means
-    /// what it said. What is gone is the ability to prove the plan has not moved,
-    /// and continuing a scan on an unprovable plan is the failure
-    /// [`manifest`](crate::journal::manifest) exists to prevent.
-    #[error(
-        "this journal was written in format {found} and this build continues \
-         format {understood}; its findings still read, but it cannot be resumed"
-    )]
-    VersionTooOld {
-        /// The format the journal was written in.
-        found: u32,
-        /// The format this build continues.
-        understood: u32,
-    },
-
     /// Somebody else holds it, or might.
     #[error("{0}")]
     Locked(LockRefused),
@@ -263,17 +244,6 @@ impl Journal {
         lock: fn(&Path) -> Result<Lock, LockRefused>,
     ) -> Result<(Self, Checkpoint), OpenError> {
         let manifest = read_manifest(directory)?;
-        // The format before anything about the plan, since it decides whether
-        // the fingerprint below is a value this build can recompute. A journal
-        // from an older derivation would otherwise fail `covers` and be reported
-        // as a plan that changed, which that message must never say when the
-        // plan did not.
-        if manifest.journal_version < super::JOURNAL_VERSION {
-            return Err(OpenError::VersionTooOld {
-                found: manifest.journal_version,
-                understood: super::JOURNAL_VERSION,
-            });
-        }
         // The phase before the fingerprint, so continuing a sweep as a port scan
         // is named for what it is rather than reported as a plan that moved.
         if manifest.kind() != plan.kind() {
@@ -3974,59 +3944,6 @@ mod tests {
         );
 
         journal.close().expect("closes");
-    }
-
-    /// A journal written under an older format reads, and is refused a resume by
-    /// name rather than reported as a plan that moved.
-    ///
-    /// The fingerprint derivation belongs to the format version, so a journal
-    /// from an earlier one carries a value this build cannot recompute. Saying
-    /// "the plan changed" about it would be false, and it is the one message
-    /// that must never be wrong: it is what tells somebody their targets were
-    /// edited between two sittings.
-    #[test]
-    fn a_journal_from_an_older_format_reads_but_does_not_resume() {
-        let root = scratch("older-format");
-        let map = plan("192.0.2.1-192.0.2.4", "80");
-
-        let directory = {
-            let mut journal = begin(&root, &map);
-            journal
-                .record_hosts(&[Host::new("192.0.2.1".parse().expect("an address"))])
-                .expect("records");
-            let directory = journal.directory().to_path_buf();
-            journal.close().expect("closes");
-            directory
-        };
-
-        // Aged by hand, since no build that wrote the old format is around to do
-        // it. Only the manifest's version moves; everything else it says stands.
-        let path = directory.join(MANIFEST);
-        let mut manifest: JournalManifest =
-            serde_json::from_str(&fs::read_to_string(&path).expect("reads")).expect("parses");
-        manifest.journal_version = super::super::JOURNAL_VERSION - 1;
-        fs::write(&path, serde_json::to_vec(&manifest).expect("encodes")).expect("writes");
-
-        assert_eq!(
-            report(&directory).expect("reads back").host_count(),
-            1,
-            "an older journal still reads as the report its scan produced"
-        );
-        assert_eq!(
-            list(&root).expect("lists").len(),
-            1,
-            "and still appears in a listing"
-        );
-
-        match Journal::resume(&directory, &ports(&map), Privilege::Raw) {
-            Err(OpenError::VersionTooOld { found, understood }) => {
-                assert_eq!(found, super::super::JOURNAL_VERSION - 1);
-                assert_eq!(understood, super::super::JOURNAL_VERSION);
-            }
-            other => panic!("expected a refusal naming the format, got {other:?}"),
-        }
-
-        std::fs::remove_dir_all(&root).ok();
     }
 
     /// A journal that could not take its lock leaves nothing behind, rather than

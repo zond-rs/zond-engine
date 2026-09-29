@@ -296,10 +296,9 @@ impl Plan {
 /// A fingerprint of the plan a cursor's positions are counted in.
 ///
 /// Compared, never interpreted. The value has no meaning beyond equality with
-/// another one, and its derivation is free to change when
-/// [`JOURNAL_VERSION`](super::format::JOURNAL_VERSION) does, which is what
-/// refuses a journal written under an older derivation rather than reporting it
-/// as a plan that moved.
+/// another one, and its derivation belongs to the format: it is free to change
+/// when [`JOURNAL_VERSION`](super::format::JOURNAL_VERSION) does, and only
+/// then.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PlanFingerprint(u64);
 
@@ -1085,8 +1084,7 @@ mod tests {
     /// A failure here means the derivation moved. That is allowed, and it is a
     /// [`JOURNAL_VERSION`](crate::journal::JOURNAL_VERSION) bump: every journal
     /// already written carries the old value and cannot be continued under the
-    /// new one. Bump the version, update the number here, and check that
-    /// `Journal::resume` still refuses the older format by name.
+    /// new one. Bump the version and update the number here.
     #[test]
     fn the_derivation_is_pinned_to_a_value() {
         assert_eq!(

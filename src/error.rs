@@ -189,7 +189,6 @@ impl Coded for OpenError {
             OpenError::Journal(journal) => journal.code(),
             OpenError::Locked(refused) => refused.code(),
             OpenError::PlanChanged(changed) => changed.code(),
-            OpenError::VersionTooOld { .. } => "journal.version_too_old",
             OpenError::WrongPhase { .. } => "journal.wrong_phase",
         }
     }
@@ -835,14 +834,6 @@ mod tests {
             "journal.version_too_new"
         );
         assert_eq!(
-            OpenError::VersionTooOld {
-                found: 0,
-                understood: 1
-            }
-            .code(),
-            "journal.version_too_old"
-        );
-        assert_eq!(
             OpenError::Journal(JournalError::NotAJournal).code(),
             "journal.not_a_journal",
             "an open that failed on the format reports the format's reason"
@@ -949,7 +940,6 @@ mod tests {
             "journal.option_changed",
             "journal.plan_changed",
             "journal.version_too_new",
-            "journal.version_too_old",
             "journal.wrong_phase",
             "kev.io",
             "kev.malformed",
