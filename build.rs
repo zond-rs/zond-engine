@@ -887,8 +887,14 @@ fn compile_cve_catalogue(out_dir: &Path) {
         }
     }
 
-    let encoded =
-        bincode::serialize(&(&pool, &entries)).expect("failed to serialize the CVE catalogue");
+    // Variable-width integers, because nearly every one written here is a pool
+    // index or a CWE number that fits a byte or two, and the fixed-width
+    // encoding spent four on each: most of the blob was zeros. The reader in
+    // `cve::Catalogue::embedded` has to use the same options.
+    use bincode::Options as _;
+    let encoded = bincode::options()
+        .serialize(&(&pool, &entries))
+        .expect("failed to serialize the CVE catalogue");
     fs::write(out_dir.join("cve_catalogue.bin"), encoded)
         .expect("failed to write the CVE catalogue");
 }

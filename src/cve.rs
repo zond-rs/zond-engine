@@ -432,7 +432,10 @@ impl Catalogue {
     pub fn embedded() -> &'static Self {
         static EMBEDDED: OnceLock<Catalogue> = OnceLock::new();
         EMBEDDED.get_or_init(|| {
-            let (pool, vulnerability) = bincode::deserialize(EMBEDDED_DB)
+            // With the options `build.rs` wrote it with: variable-width integers.
+            use bincode::Options as _;
+            let (pool, vulnerability) = bincode::options()
+                .deserialize(EMBEDDED_DB)
                 .expect("the embedded CVE catalogue is the shape build.rs writes");
 
             Catalogue {
