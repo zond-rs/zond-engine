@@ -1373,3 +1373,64 @@ fn an_openssh_banner_without_a_packagers_comment_names_no_build() {
     }
 }
 
+/// A MySQL greeting's version string carries the product, the version and the
+/// build, and each has to land in its own field.
+///
+/// MariaDB answers with `5.5.5-10.11.6-MariaDB-…` so that clients expecting
+/// MySQL's numbering accept it. Read as MySQL, that is MySQL 5.5.5, carrying
+/// the vulnerabilities of a MySQL release this server is not, which is the
+/// most expensive kind of wrong a scanner can be. A distribution's package
+/// revision after the version is its build, not part of the version the
+/// vulnerability data is written against.
+#[test]
+fn a_mysql_greeting_names_product_version_and_build_apart() {
+    use crate::model::port::Distributor;
+
+    let read = |version: &str| {
+        let banner = format!("J\u{0}\u{0}\u{0}\u{a}{version}\u{0}abcd");
+        named(3306, crate::model::port::Protocol::Tcp, &banner)
+    };
+    let cases = [
+        ("8.0.35", "MySQL", "cpe:/a:oracle:mysql:8.0.35", None),
+        (
+            "8.0.36-0ubuntu0.22.04.1",
+            "MySQL",
+            "cpe:/a:oracle:mysql:8.0.36",
+            Some((Distributor::Ubuntu, "0ubuntu0.22.04.1", "22.04")),
+        ),
+        (
+            "5.5.5-10.11.6-MariaDB-0+deb12u1",
+            "MariaDB",
+            "cpe:/a:mariadb:mariadb:10.11.6",
+            Some((Distributor::Debian, "0+deb12u1", "12")),
+        ),
+        (
+            "10.6.16-MariaDB-0ubuntu0.22.04.1-log",
+            "MariaDB",
+            "cpe:/a:mariadb:mariadb:10.6.16",
+            Some((Distributor::Ubuntu, "0ubuntu0.22.04.1", "22.04")),
+        ),
+        (
+            "5.5.5-10.11.6-MariaDB",
+            "MariaDB",
+            "cpe:/a:mariadb:mariadb:10.11.6",
+            None,
+        ),
+    ];
+    for (version, product, cpe, build) in cases {
+        let verdict = read(version);
+        assert_eq!(verdict.product.as_deref(), Some(product), "{version}");
+        assert_eq!(verdict.cpe.as_deref(), Some(cpe), "{version}");
+        let found = verdict.build.as_ref().map(|build| {
+            (
+                build.distributor(),
+                build.revision().unwrap_or_default(),
+                build
+                    .release()
+                    .map(|release| release.name())
+                    .unwrap_or_default(),
+            )
+        });
+        assert_eq!(found, build, "{version}");
+    }
+}

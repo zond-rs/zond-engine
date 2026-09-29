@@ -3,11 +3,63 @@ name = "mysql"
 default_ports = [3306]
 description = "MySQL Database"
 
-# MySQL sends a handshake on connect.
+# MySQL and MariaDB send a handshake on connect: three bytes of length, a
+# sequence number of zero, protocol version 10, then the server's version as a
+# NUL-terminated string.
+#
+# The version string carries more than the version. A distribution's build
+# appends its package revision (`8.0.36-0ubuntu0.22.04.1`), and MariaDB names
+# itself after the version (`10.11.6-MariaDB-0+deb12u1`), prefixed by `5.5.5-`
+# when it speaks to a client that expects MySQL's numbering. So the upstream
+# version is captured on its own, which is what a platform identifier and a
+# vulnerability range are written against, and the rest is read for what it
+# says: whose product this is, and whose build.
+
+# MariaDB, whatever it prefixes itself with. Read before the MySQL rules would
+# be, because every MariaDB greeting is also a well-formed MySQL one, and
+# `5.5.5-10.11.6-MariaDB` read as MySQL is MySQL 5.5.5, with a MySQL release's
+# vulnerabilities, which this server does not have.
+[[match]]
+name = "mariadb_handshake"
+pattern = '(?s)^.{3}\x00\x0a(?:5\.5\.5-)?(\d+\.\d+\.\d+)-MariaDB'
+version_group = 1
+vendor = "MariaDB"
+product = "MariaDB"
+metadata = { "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}" }
+
+# MariaDB as Debian packages it, `0+deb12u1` after the product's own name.
+[[match]]
+name = "mariadb_debian_handshake"
+pattern = '(?s)^.{3}\x00\x0a(?:5\.5\.5-)?(\d+\.\d+\.\d+)-MariaDB-(\d[\w.~+]*\+deb\d+u\d+[\w.~+]*?)(?:-log)?\x00'
+version_group = 1
+vendor = "MariaDB"
+product = "MariaDB"
+metadata = { "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "service.build.distributor" = "Debian", "service.build.revision" = "{capture:2}" }
+
+# MariaDB as Ubuntu packages it, `0ubuntu0.22.04.1`.
+[[match]]
+name = "mariadb_ubuntu_handshake"
+pattern = '(?s)^.{3}\x00\x0a(?:5\.5\.5-)?(\d+\.\d+\.\d+)-MariaDB-(\d*ubuntu[\w.~+]*?)(?:-log)?\x00'
+version_group = 1
+vendor = "MariaDB"
+product = "MariaDB"
+metadata = { "service.cpe23" = "cpe:/a:mariadb:mariadb:{service.version}", "service.build.distributor" = "Ubuntu", "service.build.revision" = "{capture:2}" }
+
+# MySQL as Ubuntu packages it, `0ubuntu0.22.04.1` after the version.
+[[match]]
+name = "mysql_ubuntu_handshake"
+pattern = '(?s)^.{3}\x00\x0a(\d+\.\d+\.\d+)-(\d*ubuntu[\w.~+]*?)(?:-log)?\x00'
+version_group = 1
+vendor = "Oracle"
+product = "MySQL"
+metadata = { "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}", "service.build.distributor" = "Ubuntu", "service.build.revision" = "{capture:2}" }
+
+# MySQL, the version and whatever suffix follows it (`-log`, a build's own
+# tag). A version string naming MariaDB anywhere is the MariaDB rules'.
 [[match]]
 name = "mysql_handshake"
-pattern = '(?s)^.{3}\x00\x0a([\w.\-+~]+)'
+pattern = '(?s)^.{3}\x00\x0a(?![^\x00]*MariaDB)(\d+\.\d+\.\d+)[^\x00]*\x00'
 version_group = 1
-product = "mysql"
+vendor = "Oracle"
+product = "MySQL"
 metadata = { "service.cpe23" = "cpe:/a:oracle:mysql:{service.version}" }
-
