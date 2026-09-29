@@ -4509,6 +4509,34 @@ impl zond_engine::export::Exporter for zond_engine::export::nmap::NmapXmlExporte
 pub fn zond_engine::export::nmap::NmapXmlExporter::export(&self, &zond_engine::report::ScanReport, &mut dyn core::io::write::Write) -> core::result::Result<(), zond_engine::export::ExportError>
 pub fn zond_engine::export::export_to(&std::path::Path, &zond_engine::report::ScanReport, &mut dyn core::io::write::Write, zond_engine::export::ExportOptions) -> core::option::Option<core::result::Result<(), zond_engine::export::ExportError>>
 pub mod zond_engine::fetch
+pub mod zond_engine::fetch::advisory
+#[non_exhaustive] pub enum zond_engine::fetch::advisory::Feed
+pub zond_engine::fetch::advisory::Feed::DebianTracker
+pub zond_engine::fetch::advisory::Feed::UbuntuOsv
+pub zond_engine::fetch::advisory::Feed::UbuntuVex
+impl zond_engine::fetch::advisory::Feed
+pub const zond_engine::fetch::advisory::Feed::ALL: &'static [zond_engine::fetch::advisory::Feed]
+pub fn zond_engine::fetch::advisory::Feed::resource(self) -> zond_engine::fetch::Resource
+impl zond_engine::fetch::advisory::Feed
+pub fn zond_engine::fetch::advisory::Feed::of(&zond_engine::fetch::Resource) -> core::option::Option<zond_engine::fetch::advisory::Feed>
+impl core::clone::Clone for zond_engine::fetch::advisory::Feed
+pub fn zond_engine::fetch::advisory::Feed::clone(&self) -> zond_engine::fetch::advisory::Feed
+impl core::cmp::Eq for zond_engine::fetch::advisory::Feed
+impl core::cmp::PartialEq for zond_engine::fetch::advisory::Feed
+pub fn zond_engine::fetch::advisory::Feed::eq(&self, &zond_engine::fetch::advisory::Feed) -> bool
+impl core::fmt::Debug for zond_engine::fetch::advisory::Feed
+pub fn zond_engine::fetch::advisory::Feed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::fetch::advisory::Feed
+pub fn zond_engine::fetch::advisory::Feed::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::fetch::advisory::Feed
+impl core::marker::StructuralPartialEq for zond_engine::fetch::advisory::Feed
+impl core::marker::Freeze for zond_engine::fetch::advisory::Feed
+impl core::marker::Send for zond_engine::fetch::advisory::Feed
+impl core::marker::Sync for zond_engine::fetch::advisory::Feed
+impl core::marker::Unpin for zond_engine::fetch::advisory::Feed
+impl core::marker::UnsafeUnpin for zond_engine::fetch::advisory::Feed
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::advisory::Feed
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::advisory::Feed
 #[non_exhaustive] pub enum zond_engine::fetch::FetchError
 pub zond_engine::fetch::FetchError::Insecure
 pub zond_engine::fetch::FetchError::Network
@@ -4754,6 +4782,7 @@ pub fn ()::advanced(&mut self, u64, core::option::Option<u64>)
 impl<F: core::ops::function::FnMut(u64, core::option::Option<u64>) + core::marker::Send> zond_engine::fetch::DownloadProgress for F
 pub fn F::advanced(&mut self, u64, core::option::Option<u64>)
 pub fn zond_engine::fetch::default_cache_dir() -> core::option::Option<std::path::PathBuf>
+pub fn zond_engine::fetch::registry() -> alloc::vec::Vec<zond_engine::fetch::Resource>
 pub mod zond_engine::fingerprint
 pub mod zond_engine::fingerprint::model
 #[non_exhaustive] pub enum zond_engine::fingerprint::model::SourceId

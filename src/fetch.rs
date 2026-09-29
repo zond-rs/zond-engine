@@ -17,7 +17,10 @@
 //!
 //! It is a small general layer rather than a downloader for one feed. A
 //! [`Resource`] says what to fetch, how large it may be and how it is checked;
-//! a [`Store`] says where it is kept; a [`Client`] does the fetching.
+//! a [`Store`] says where it is kept; a [`Client`] does the fetching. The
+//! feeds the engine knows today are declared in [`advisory`], and
+//! [`registry`] lists every resource there is, so a caller that means
+//! "update everything" does not need to know what that is.
 //!
 //! ## Nothing happens unless asked
 //!
@@ -54,6 +57,7 @@ use std::path::PathBuf;
 
 use crate::signature::Domain;
 
+pub mod advisory;
 mod client;
 mod store;
 
@@ -61,6 +65,17 @@ pub use client::{
     Client, DownloadProgress, FetchError, NetworkFailure, Outcome, VerificationFailure,
 };
 pub use store::{Metadata, Store, Stored};
+
+/// Every resource the engine knows how to fetch.
+///
+/// What a caller walks to bring every copy up to date. Today that is the
+/// distribution advisory feeds; see [`advisory::Feed`].
+pub fn registry() -> Vec<Resource> {
+    advisory::Feed::ALL
+        .iter()
+        .map(|feed| feed.resource())
+        .collect()
+}
 
 /// Where fetched data lives by convention, for whoever this run is on behalf
 /// of.
@@ -305,6 +320,18 @@ mod tests {
             Resource::new("a", "https://example.com/x", 1, unsigned).is_err(),
             "a signature URL is held to the same rule"
         );
+    }
+
+    /// Every resource the engine registers is one that can be described, and
+    /// no two share an id, since the second would overwrite the first's copy.
+    #[test]
+    fn the_registry_holds_distinct_ids() {
+        let resources = registry();
+        let mut ids: Vec<&str> = resources.iter().map(Resource::id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), resources.len(), "{ids:?}");
+        assert!(!resources.is_empty());
     }
 
     /// The conventional directory ends in the vendor directory, so it is one a
