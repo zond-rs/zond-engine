@@ -82,7 +82,7 @@ pub struct Service {
     /// started from, and the build says whose fixes were applied to it since.
     /// A known-vulnerability match on the first alone is right for an upstream
     /// build and routinely wrong for a distribution's. See
-    /// [`Build`](crate::model::port::Build).
+    /// [`Build`].
     build: Option<Build>,
 }
 
