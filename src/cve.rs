@@ -1077,10 +1077,15 @@ impl Cpe {
     /// (`cpe:/a:vendor:product:version`) or the 2.3 form
     /// (`cpe:2.3:a:vendor:product:version:…`). [`None`] for anything else.
     fn parse(cpe: &str) -> Option<Self> {
-        let body = cpe
-            .strip_prefix("cpe:/")
-            .or_else(|| cpe.strip_prefix("cpe:2.3:"))?;
-        let mut fields = body.split(':');
+        let fields: Vec<String> = match cpe.strip_prefix("cpe:2.3:") {
+            Some(body) => formatted_fields(body),
+            None => cpe
+                .strip_prefix("cpe:/")?
+                .split(':')
+                .map(str::to_owned)
+                .collect(),
+        };
+        let mut fields = fields.iter().map(String::as_str);
         let _part = fields.next()?; // a, o or h: application, os, hardware
         let vendor = fields.next()?;
         let product = fields.next()?;
@@ -1107,6 +1112,43 @@ impl Cpe {
             },
         })
     }
+}
+
+/// The fields of a CPE 2.3 formatted string after its `cpe:2.3:` prefix, split
+/// and unescaped.
+///
+/// The 2.3 grammar quotes punctuation inside a field with a backslash, so a
+/// release NVD writes as `7.03hp3\+ftf` is `7.03hp3+ftf` and a colon inside a
+/// field is `\:` rather than a separator. Read literally, the escaped form
+/// equals no version any banner states, and a field holding an escaped colon
+/// splits in two.
+pub(crate) fn formatted_fields(body: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut characters = body.chars();
+    while let Some(character) = characters.next() {
+        match character {
+            '\\' => field.extend(characters.next()),
+            ':' => fields.push(std::mem::take(&mut field)),
+            other => field.push(other),
+        }
+    }
+    fields.push(field);
+    fields
+}
+
+/// A value NVD wrote with the 2.3 grammar's escapes, unescaped. See
+/// [`formatted_fields`].
+pub(crate) fn unescaped(value: &str) -> String {
+    let mut plain = String::with_capacity(value.len());
+    let mut characters = value.chars();
+    while let Some(character) = characters.next() {
+        match character {
+            '\\' => plain.extend(characters.next()),
+            other => plain.push(other),
+        }
+    }
+    plain
 }
 
 /// Whether `version` satisfies `predicate`: a comma-joined list of
@@ -1309,6 +1351,20 @@ mod tests {
 
         assert_eq!(uri.version, two_three.version);
         assert_eq!(two_three.version, "9.6p1");
+    }
+
+    /// The 2.3 grammar quotes punctuation in a field with a backslash, and a
+    /// release NVD writes `7.03hp3\\+ftf` is the `7.03hp3+ftf` a banner
+    /// states. An escaped colon is part of its field, not a separator.
+    #[test]
+    fn an_escaped_character_in_a_2_3_cpe_is_read_as_itself() {
+        let cpe = Cpe::parse("cpe:2.3:a:acme:ftpd:7.03hp3\\+ftf:*:*:*:*:*:*:*").expect("parses");
+        assert_eq!(cpe.version, "7.03hp3+ftf");
+        assert_eq!(
+            formatted_fields("a:acme:ftp\\:d:1.0"),
+            ["a", "acme", "ftp:d", "1.0"]
+        );
+        assert_eq!(unescaped("0.3\\+4"), "0.3+4");
     }
 
     /// `*` is "any" and `-` is "not applicable" in that grammar, and neither is

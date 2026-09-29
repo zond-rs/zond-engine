@@ -636,9 +636,12 @@ fn affected_range(
     }
 
     // `cpe:2.3:a:vendor:product:version:...`, and only `a:`. See the module
-    // documentation for why an operating system's is not usable here.
-    let mut parts = matched.criteria.split(':');
-    if parts.next()? != "cpe" || parts.next()? != "2.3" || parts.next()? != "a" {
+    // documentation for why an operating system's is not usable here. Split
+    // and unescaped as the correlator reads a service's, so `7.03hp3\+ftf`
+    // names the release a banner states.
+    let fields = crate::cve::formatted_fields(matched.criteria.strip_prefix("cpe:2.3:")?);
+    let mut parts = fields.iter().map(String::as_str);
+    if parts.next()? != "a" {
         return None;
     }
     let vendor = parts.next()?;
@@ -658,7 +661,11 @@ fn affected_range(
         ("<", &matched.version_end_excluding),
     ]
     .iter()
-    .filter_map(|(op, bound)| bound.as_ref().map(|value| format!("{op} {value}")))
+    .filter_map(|(op, bound)| {
+        bound
+            .as_ref()
+            .map(|value| format!("{op} {}", crate::cve::unescaped(value)))
+    })
     .collect();
 
     let affected = match clauses.is_empty() {
@@ -1074,8 +1081,11 @@ mod tests {
           }]
         }"#;
 
-        let document = to_document_for(&mut KEYBOARD_INTERACTIVE.as_bytes(), &products(&["openbsd:openssh"]))
-            .expect("converts");
+        let document = to_document_for(
+            &mut KEYBOARD_INTERACTIVE.as_bytes(),
+            &products(&["openbsd:openssh"]),
+        )
+        .expect("converts");
         assert!(document.contains(r#"affected = "== 6.6p1""#), "{document}");
         assert!(document.contains(r#"affected = "== 7.0""#), "{document}");
         assert!(document.contains(r#"affected = "== 7.1""#), "{document}");
