@@ -467,7 +467,9 @@ async fn a_silent_address_of_a_skipped_liveness_pass_is_named_and_not_listed() {
     assert_eq!(phase.silent().len(), 1, "and the phase names it silent");
     assert!(phase.undecided().is_empty(), "its ports were asked");
 
-    let listed = zond_engine::journal::store::list(&root).expect("lists");
+    let listed = zond_engine::journal::store::list(&root)
+        .expect("lists")
+        .entries;
     assert_eq!(listed[0].settled(), Some(2), "both ports are settled");
     assert!(
         listed[0].is_complete(),

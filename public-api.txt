@@ -7599,6 +7599,28 @@ impl core::marker::Unpin for zond_engine::journal::store::OpenError
 impl core::marker::UnsafeUnpin for zond_engine::journal::store::OpenError
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::store::OpenError
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::journal::store::OpenError
+#[non_exhaustive] pub enum zond_engine::journal::store::Unlisted
+pub zond_engine::journal::store::Unlisted::Link
+pub zond_engine::journal::store::Unlisted::NewerFormat
+pub zond_engine::journal::store::Unlisted::NewerFormat::found: u32
+pub zond_engine::journal::store::Unlisted::Unreadable(alloc::string::String)
+impl core::clone::Clone for zond_engine::journal::store::Unlisted
+pub fn zond_engine::journal::store::Unlisted::clone(&self) -> zond_engine::journal::store::Unlisted
+impl core::cmp::Eq for zond_engine::journal::store::Unlisted
+impl core::cmp::PartialEq for zond_engine::journal::store::Unlisted
+pub fn zond_engine::journal::store::Unlisted::eq(&self, &zond_engine::journal::store::Unlisted) -> bool
+impl core::fmt::Debug for zond_engine::journal::store::Unlisted
+pub fn zond_engine::journal::store::Unlisted::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::journal::store::Unlisted
+pub fn zond_engine::journal::store::Unlisted::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::journal::store::Unlisted
+impl core::marker::Freeze for zond_engine::journal::store::Unlisted
+impl core::marker::Send for zond_engine::journal::store::Unlisted
+impl core::marker::Sync for zond_engine::journal::store::Unlisted
+impl core::marker::Unpin for zond_engine::journal::store::Unlisted
+impl core::marker::UnsafeUnpin for zond_engine::journal::store::Unlisted
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::store::Unlisted
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::store::Unlisted
 #[non_exhaustive] pub struct zond_engine::journal::store::Entry
 pub zond_engine::journal::store::Entry::checkpoint: core::option::Option<zond_engine::journal::cursor::Checkpoint>
 pub zond_engine::journal::store::Entry::directory: std::path::PathBuf
@@ -7669,6 +7691,43 @@ impl core::marker::Unpin for zond_engine::journal::store::Journal
 impl core::marker::UnsafeUnpin for zond_engine::journal::store::Journal
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::store::Journal
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::store::Journal
+#[non_exhaustive] pub struct zond_engine::journal::store::Listing
+pub zond_engine::journal::store::Listing::entries: alloc::vec::Vec<zond_engine::journal::store::Entry>
+pub zond_engine::journal::store::Listing::passed_over: alloc::vec::Vec<zond_engine::journal::store::PassedOver>
+impl core::clone::Clone for zond_engine::journal::store::Listing
+pub fn zond_engine::journal::store::Listing::clone(&self) -> zond_engine::journal::store::Listing
+impl core::default::Default for zond_engine::journal::store::Listing
+pub fn zond_engine::journal::store::Listing::default() -> zond_engine::journal::store::Listing
+impl core::fmt::Debug for zond_engine::journal::store::Listing
+pub fn zond_engine::journal::store::Listing::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::journal::store::Listing
+impl core::marker::Send for zond_engine::journal::store::Listing
+impl core::marker::Sync for zond_engine::journal::store::Listing
+impl core::marker::Unpin for zond_engine::journal::store::Listing
+impl core::marker::UnsafeUnpin for zond_engine::journal::store::Listing
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::store::Listing
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::store::Listing
+#[non_exhaustive] pub struct zond_engine::journal::store::PassedOver
+pub zond_engine::journal::store::PassedOver::directory: std::path::PathBuf
+pub zond_engine::journal::store::PassedOver::name: alloc::string::String
+pub zond_engine::journal::store::PassedOver::why: zond_engine::journal::store::Unlisted
+impl zond_engine::journal::store::PassedOver
+pub fn zond_engine::journal::store::PassedOver::new(impl core::convert::Into<alloc::string::String>, std::path::PathBuf, zond_engine::journal::store::Unlisted) -> Self
+impl core::clone::Clone for zond_engine::journal::store::PassedOver
+pub fn zond_engine::journal::store::PassedOver::clone(&self) -> zond_engine::journal::store::PassedOver
+impl core::cmp::Eq for zond_engine::journal::store::PassedOver
+impl core::cmp::PartialEq for zond_engine::journal::store::PassedOver
+pub fn zond_engine::journal::store::PassedOver::eq(&self, &zond_engine::journal::store::PassedOver) -> bool
+impl core::fmt::Debug for zond_engine::journal::store::PassedOver
+pub fn zond_engine::journal::store::PassedOver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::journal::store::PassedOver
+impl core::marker::Freeze for zond_engine::journal::store::PassedOver
+impl core::marker::Send for zond_engine::journal::store::PassedOver
+impl core::marker::Sync for zond_engine::journal::store::PassedOver
+impl core::marker::Unpin for zond_engine::journal::store::PassedOver
+impl core::marker::UnsafeUnpin for zond_engine::journal::store::PassedOver
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::store::PassedOver
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::store::PassedOver
 #[non_exhaustive] pub struct zond_engine::journal::store::Pruned
 pub zond_engine::journal::store::Pruned::held: alloc::vec::Vec<zond_engine::journal::store::Held>
 pub zond_engine::journal::store::Pruned::removed: alloc::vec::Vec<alloc::string::String>
@@ -7693,6 +7752,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::store::Prune
 pub zond_engine::journal::store::Retention::completed_for: core::option::Option<core::time::Duration>
 pub zond_engine::journal::store::Retention::incomplete_for: core::option::Option<core::time::Duration>
 pub zond_engine::journal::store::Retention::keep_at_most: core::option::Option<usize>
+pub zond_engine::journal::store::Retention::unreadable: bool
 impl zond_engine::journal::store::Retention
 pub fn zond_engine::journal::store::Retention::expired(&self, &[zond_engine::journal::store::Entry], std::time::SystemTime) -> alloc::vec::Vec<usize>
 pub fn zond_engine::journal::store::Retention::keep_everything() -> Self
@@ -7713,7 +7773,7 @@ impl core::marker::Unpin for zond_engine::journal::store::Retention
 impl core::marker::UnsafeUnpin for zond_engine::journal::store::Retention
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::store::Retention
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::store::Retention
-pub fn zond_engine::journal::store::list(&std::path::Path) -> core::result::Result<alloc::vec::Vec<zond_engine::journal::store::Entry>, zond_engine::journal::format::JournalError>
+pub fn zond_engine::journal::store::list(&std::path::Path) -> core::result::Result<zond_engine::journal::store::Listing, zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::store::prepare_root(&std::path::Path) -> core::io::error::Result<()>
 pub fn zond_engine::journal::store::prune(&std::path::Path, &zond_engine::journal::store::Retention) -> core::result::Result<zond_engine::journal::store::Pruned, zond_engine::journal::format::JournalError>
 pub fn zond_engine::journal::store::read_detections(&std::path::Path) -> core::result::Result<alloc::vec::Vec<zond_engine::detect::compute::DetectionRunRecord>, zond_engine::journal::format::JournalError>

@@ -1213,36 +1213,118 @@ fn prepare_root_with(
     Ok(())
 }
 
-/// Every journal under `root`, newest first.
+/// Every journal under a root, and everything standing there as one would
+/// that could not be listed.
+///
+/// What was passed over is data rather than a warning written as the root is
+/// read, because what to do about it is the caller's to say: a listing a
+/// person reads wants one line for ninety journals a newer build wrote, and a
+/// prune wants their directories. A listing short of a record with nothing to
+/// say so reads as a record that is not there.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default)]
+pub struct Listing {
+    /// The journals this build can read, newest first.
+    pub entries: Vec<Entry>,
+    /// What stands in the root as a journal would and could not be read as
+    /// one, by name.
+    pub passed_over: Vec<PassedOver>,
+}
+
+/// Something in a root of journals that [`list`] could not list, and why.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PassedOver {
+    /// Its name in the root, which for a journal is its id.
+    pub name: String,
+    /// Where it stands.
+    pub directory: PathBuf,
+    /// Why it could not be listed.
+    pub why: Unlisted,
+}
+
+impl PassedOver {
+    /// A passed-over entry from its parts, for a caller rendering one it did
+    /// not read off disk.
+    pub fn new(name: impl Into<String>, directory: PathBuf, why: Unlisted) -> Self {
+        Self {
+            name: name.into(),
+            directory,
+            why,
+        }
+    }
+}
+
+/// Why [`list`] passed something over.
+///
+/// A kind rather than a sentence, so a caller can say it once for a whole
+/// root: a machine that ran a newer build has every journal it wrote passed
+/// over for the same reason, and a line per journal buries the one fact.
+/// [`fmt::Display`](std::fmt::Display) gives the sentence for one.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unlisted {
+    /// A link rather than a directory.
+    ///
+    /// Every journal is a directory this crate made, so a link is none, and
+    /// [`prune`] never removes one: what it points to is somebody else's to
+    /// say, and under `sudo` a removal that followed it would be root's.
+    Link,
+    /// A journal whose manifest names a format newer than this build's, which
+    /// the build that wrote it still reads.
+    NewerFormat {
+        /// The format the manifest names.
+        found: u32,
+    },
+    /// A manifest that could not be read or did not parse, in the words of
+    /// the failure: a permission this process lacks, a file cut short.
+    Unreadable(String),
+}
+
+impl std::fmt::Display for Unlisted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Link => f.write_str("a link, not a journal (not followed)"),
+            Self::NewerFormat { found } => write!(
+                f,
+                "journal format {found} is newer than this build's ({})",
+                super::JOURNAL_VERSION
+            ),
+            Self::Unreadable(reason) => f.write_str(reason),
+        }
+    }
+}
+
+/// Every journal under `root`, newest first, and what was passed over.
 ///
 /// A journal that cannot be read is passed over rather than failing the
-/// listing, since one unreadable journal must not hide the rest, and said to
-/// be, with why: a listing short of a record with nothing to say so reads as
-/// a record that is not there, and the reason, a link planted where its
-/// manifest should be above all, is what its owner has to act on. A link
-/// standing in the root is passed over in the same words, being no journal:
-/// every journal is a directory this crate made. A directory holding no
-/// manifest at all is passed over in silence, as one a scan starting now has
-/// yet to write it into.
+/// listing, since one unreadable journal must not hide the rest, and is
+/// returned in [`Listing::passed_over`] with why: the reason, a manifest from a
+/// newer format or a link planted where a journal should be, is what its
+/// owner has to act on. A link standing in the root is passed over the same
+/// way, being no journal. A directory holding no manifest at all is passed
+/// over in silence, as one a scan starting now has yet to write it into.
 ///
-/// `Ok(vec![])` for a root that does not exist yet.
-pub fn list(root: &Path) -> Result<Vec<Entry>, JournalError> {
+/// An empty listing for a root that does not exist yet.
+pub fn list(root: &Path) -> Result<Listing, JournalError> {
     let held = match kinds(root) {
         Ok(held) => held,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Listing::default()),
         Err(e) => return Err(e.into()),
     };
 
-    let mut found = Vec::new();
+    let mut listing = Listing::default();
     for (name, kind) in held {
         let directory = root.join(&name);
+        let name = name.to_string_lossy().into_owned();
         match kind {
             Kind::Directory => {}
             Kind::Link => {
-                crate::warn!(
-                    "{} not listed: a link, not a journal (not followed)",
-                    name.to_string_lossy()
-                );
+                listing.passed_over.push(PassedOver {
+                    name,
+                    directory,
+                    why: Unlisted::Link,
+                });
                 continue;
             }
             Kind::Other => continue,
@@ -1250,17 +1332,23 @@ pub fn list(root: &Path) -> Result<Vec<Entry>, JournalError> {
         let manifest = match read_manifest(&directory) {
             Ok(manifest) => manifest,
             Err(JournalError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            // The system's words alone: the line already says whose they are.
-            Err(JournalError::Io(e)) => {
-                crate::warn!("{} not listed: {e}", name.to_string_lossy());
-                continue;
-            }
             Err(e) => {
-                crate::warn!("{} not listed: {e}", name.to_string_lossy());
+                let why = match e {
+                    JournalError::VersionTooNew { found, .. } => Unlisted::NewerFormat { found },
+                    // The system's words alone for an I/O error: whoever
+                    // renders this says whose they are.
+                    JournalError::Io(e) => Unlisted::Unreadable(e.to_string()),
+                    other => Unlisted::Unreadable(other.to_string()),
+                };
+                listing.passed_over.push(PassedOver {
+                    name,
+                    directory,
+                    why,
+                });
                 continue;
             }
         };
-        found.push(Entry {
+        listing.entries.push(Entry {
             // `Err` here is a cursor that exists and could not be read, which
             // `Entry::checkpoint` records as `None` rather than as a scan that
             // settled nothing. A journal that never checkpointed comes back as
@@ -1272,8 +1360,11 @@ pub fn list(root: &Path) -> Result<Vec<Entry>, JournalError> {
         });
     }
 
-    found.sort_by_key(|entry| std::cmp::Reverse(entry.manifest.created_at));
-    Ok(found)
+    listing
+        .entries
+        .sort_by_key(|entry| std::cmp::Reverse(entry.manifest.created_at));
+    listing.passed_over.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(listing)
 }
 
 /// The scan at `directory`, as the report it would have produced.
@@ -1886,6 +1977,13 @@ pub struct Retention {
     /// unfinished ones: a cap exists to bound a directory, and an unfinished
     /// journal is the one thing there somebody may still want.
     pub keep_at_most: Option<usize>,
+    /// Whether journals this build cannot read go too.
+    ///
+    /// Off unless asked for. A journal passed over is usually a newer build's,
+    /// and that build still reads it; removing it is a decision about somebody
+    /// else's record, so nothing takes it but a caller who says so. Links are
+    /// never removed either way; see [`Unlisted::Link`].
+    pub unreadable: bool,
 }
 
 impl Default for Retention {
@@ -1900,6 +1998,7 @@ impl Default for Retention {
             completed_for: Some(Duration::from_secs(30 * 24 * 60 * 60)),
             incomplete_for: None,
             keep_at_most: Some(200),
+            unreadable: false,
         }
     }
 }
@@ -1911,6 +2010,7 @@ impl Retention {
             completed_for: None,
             incomplete_for: None,
             keep_at_most: None,
+            unreadable: false,
         }
     }
 
@@ -2017,18 +2117,39 @@ impl Held {
 /// Journals a scan is writing are never removed, and are not reported as held
 /// either: they were never selected. What reaches [`Pruned::held`] is a journal
 /// the policy chose and the filesystem refused.
+///
+/// A journal this build cannot read is removed only under
+/// [`Retention::unreadable`], by its directory name, since it has no manifest
+/// to name it by. The lock is checked as for any other: a newer build may be
+/// writing it. A link is no journal and is never selected, so it is neither
+/// removed nor reported as held; [`list`] is what names it.
 pub fn prune(root: &Path, retention: &Retention) -> Result<Pruned, JournalError> {
-    let entries = list(root)?;
+    let listing = list(root)?;
     let mut pruned = Pruned::default();
 
-    for index in retention.expired(&entries, SystemTime::now()) {
-        let entry = &entries[index];
+    for index in retention.expired(&listing.entries, SystemTime::now()) {
+        let entry = &listing.entries[index];
         match remove(&entry.directory) {
             Ok(()) => pruned.removed.push(entry.manifest.id.clone()),
             Err(error) => pruned.held.push(Held {
                 id: entry.manifest.id.clone(),
                 reason: error.to_string(),
             }),
+        }
+    }
+
+    if retention.unreadable {
+        let journals = listing
+            .passed_over
+            .iter()
+            .filter(|passed| passed.why != Unlisted::Link);
+        for passed in journals {
+            match remove(&passed.directory) {
+                Ok(()) => pruned.removed.push(passed.name.clone()),
+                Err(error) => pruned
+                    .held
+                    .push(Held::new(passed.name.clone(), error.to_string())),
+            }
         }
     }
 
@@ -2608,7 +2729,7 @@ mod tests {
         }
         journal.checkpoint(&settlements).expect("checkpoints");
 
-        let listed = list(&root).expect("lists");
+        let listed = list(&root).expect("lists").entries;
         assert_eq!(listed.len(), 1);
 
         let entry = &listed[0];
@@ -2641,7 +2762,7 @@ mod tests {
         journal.checkpoint(&settlements).expect("checkpoints");
         journal.close().expect("closes");
 
-        let listed = list(&root).expect("lists");
+        let listed = list(&root).expect("lists").entries;
         assert!(listed[0].is_complete());
         assert_eq!(listed[0].settled(), Some(8));
     }
@@ -2703,7 +2824,7 @@ mod tests {
         fs::create_dir_all(&damaged).expect("directory");
         fs::write(damaged.join(MANIFEST), "{not json").expect("writes");
 
-        let listed = list(&root).expect("lists");
+        let listed = list(&root).expect("lists").entries;
         assert_eq!(listed.len(), 1, "the readable one is still there");
     }
 
@@ -2720,7 +2841,7 @@ mod tests {
 
         journal.close().expect("closes");
         remove(&directory).expect("removes a free journal");
-        assert!(list(&root).expect("lists").is_empty());
+        assert!(list(&root).expect("lists").entries.is_empty());
     }
 
     /// The ticker writes a final checkpoint and releases the lock, so a scan
@@ -3173,13 +3294,15 @@ mod tests {
 
         // Readable first, so the difference below is about the permission and
         // not about the file's contents.
-        let listed = list(&root).expect("lists");
+        let listed = list(&root).expect("lists").entries;
         assert_eq!(listed[0].settled(), Some(1));
 
         fs::set_permissions(directory.join(CURSOR), fs::Permissions::from_mode(0o000))
             .expect("removes every permission");
 
-        let listed = list(&root).expect("a journal it cannot read must not hide the rest");
+        let listed = list(&root)
+            .expect("a journal it cannot read must not hide the rest")
+            .entries;
         assert_eq!(listed.len(), 1, "the journal still lists");
         assert_eq!(
             listed[0].settled(),
@@ -3306,6 +3429,7 @@ mod tests {
             completed_for: Some(Duration::from_secs(50)),
             incomplete_for: None,
             keep_at_most: None,
+            unreadable: false,
         };
 
         assert_eq!(retention.expired(&entries, now()), vec![0]);
@@ -3324,6 +3448,7 @@ mod tests {
             completed_for: Some(Duration::from_secs(1)),
             incomplete_for: Some(Duration::from_secs(1)),
             keep_at_most: Some(0),
+            unreadable: false,
         };
 
         assert!(retention.expired(&entries, now()).is_empty());
@@ -3345,6 +3470,7 @@ mod tests {
             completed_for: None,
             incomplete_for: None,
             keep_at_most: Some(2),
+            unreadable: false,
         };
 
         let removed = retention.expired(&entries, now());
@@ -3410,7 +3536,7 @@ mod tests {
         // Nothing is old enough for the default yet.
         let untouched = prune(&root, &Retention::default()).expect("prunes");
         assert!(untouched.removed.is_empty());
-        assert_eq!(list(&root).expect("lists").len(), 1);
+        assert_eq!(list(&root).expect("lists").entries.len(), 1);
 
         // A policy that keeps nothing finished takes it, and names it.
         let swept = prune(
@@ -3424,7 +3550,7 @@ mod tests {
 
         assert_eq!(swept.removed, vec![id]);
         assert!(swept.held.is_empty());
-        assert!(list(&root).expect("lists").is_empty());
+        assert!(list(&root).expect("lists").entries.is_empty());
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -3676,6 +3802,94 @@ mod tests {
         assert_eq!(as_recorded(&read), as_recorded(&hosts));
     }
 
+    /// A journal from a newer format is passed over by name and with why, not
+    /// dropped: the listing still holds every journal it can read, and says
+    /// what it could not.
+    #[test]
+    fn a_journal_from_a_newer_format_is_passed_over_by_name() {
+        let root = scratch("passed-over");
+        let map = plan("192.0.2.1", "80");
+        let readable = begin(&root, &map);
+        readable.close().expect("closes");
+        let newer = begin(&root, &map);
+        let newer_dir = newer.directory().to_path_buf();
+        newer.close().expect("closes");
+        age_forward(&newer_dir);
+
+        let listing = list(&root).expect("lists");
+        std::fs::remove_dir_all(&root).ok();
+
+        assert_eq!(listing.entries.len(), 1, "the readable journal lists");
+        let [passed] = listing.passed_over.as_slice() else {
+            panic!("one passed over: {:?}", listing.passed_over);
+        };
+        assert_eq!(passed.directory, newer_dir);
+        assert_eq!(
+            Some(passed.name.as_str()),
+            newer_dir.file_name().and_then(|name| name.to_str())
+        );
+        assert_eq!(
+            passed.why,
+            Unlisted::NewerFormat {
+                found: super::super::JOURNAL_VERSION + 1
+            }
+        );
+    }
+
+    /// A prune takes a journal it cannot read only when asked to, and never a
+    /// link.
+    ///
+    /// Such a journal is usually a newer build's, which still reads it, so an
+    /// ordinary sweep leaves it; a caller who asks for them gets them removed
+    /// by directory name, the only name one has here. A link is no journal
+    /// and is not selected at all, so it is neither removed nor held.
+    #[cfg(unix)]
+    #[test]
+    fn a_prune_takes_unreadable_journals_only_when_asked_and_never_a_link() {
+        let root = scratch("prune-unreadable");
+        let elsewhere = scratch("prune-unreadable-elsewhere");
+        let map = plan("192.0.2.1", "80");
+        let newer = begin(&root, &map);
+        let newer_dir = newer.directory().to_path_buf();
+        newer.close().expect("closes");
+        age_forward(&newer_dir);
+        let target = begin(&elsewhere, &map);
+        let target_dir = target.directory().to_path_buf();
+        target.close().expect("closes");
+        std::os::unix::fs::symlink(&target_dir, root.join("06LINKED00000000")).expect("links");
+
+        let ordinary = prune(&root, &Retention::default()).expect("prunes");
+        assert!(ordinary.removed.is_empty() && ordinary.held.is_empty());
+        assert!(newer_dir.exists(), "an ordinary sweep leaves it");
+
+        let mut asked = Retention::keep_everything();
+        asked.unreadable = true;
+        let pruned = prune(&root, &asked).expect("prunes");
+        let newer_gone = !newer_dir.exists();
+        let target_kept = target_dir.exists();
+        let link_kept = root.join("06LINKED00000000").symlink_metadata().is_ok();
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&elsewhere).ok();
+
+        assert!(newer_gone, "asked for, it goes");
+        assert_eq!(pruned.removed.len(), 1, "{pruned:?}");
+        assert!(pruned.held.is_empty(), "a link is not selected: {pruned:?}");
+        assert!(
+            link_kept && target_kept,
+            "neither the link nor what it names goes"
+        );
+    }
+
+    /// Rewrites a journal's manifest to claim the next format, as a newer build
+    /// would leave it.
+    fn age_forward(directory: &Path) {
+        let path = directory.join(MANIFEST);
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("reads")).expect("parses");
+        manifest["journal_version"] = serde_json::json!(super::super::JOURNAL_VERSION + 1);
+        fs::write(&path, serde_json::to_vec(&manifest).expect("encodes")).expect("writes");
+    }
+
     /// **A link standing in a root of journals is not listed as a journal.**
     /// Every journal is a directory this crate made, so a link there is none,
     /// as a link at a journal file's name is none. Looked at as what it
@@ -3691,8 +3905,8 @@ mod tests {
         journal.close().expect("closes");
         std::os::unix::fs::symlink(&directory, root.join("06LINKED00000000")).expect("links");
 
-        let listed = list(&root).expect("lists").len();
-        let where_it_is = list(&elsewhere).expect("lists").len();
+        let listed = list(&root).expect("lists").entries.len();
+        let where_it_is = list(&elsewhere).expect("lists").entries.len();
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&elsewhere).ok();
         assert_eq!(listed, 0, "the link was listed as a journal");
@@ -3810,6 +4024,7 @@ mod tests {
 
         let entry = list(&root)
             .expect("lists")
+            .entries
             .into_iter()
             .next()
             .expect("one journal");
@@ -3955,7 +4170,7 @@ mod tests {
 
         // A file where the scan directory would go: the create cannot proceed,
         // and whatever it did get to must be undone.
-        let before = list(&root).expect("lists").len();
+        let before = list(&root).expect("lists").entries.len();
         assert_eq!(before, 0);
 
         let journal = begin(&root, &map);
@@ -4379,7 +4594,7 @@ mod tests {
             .expect("a journal is created");
         journal.close().expect("it closes");
 
-        let entries = list(&root).expect("the root lists");
+        let entries = list(&root).expect("the root lists").entries;
         let entry = entries.first().expect("the watch is there");
 
         assert_eq!(entry.kind(), ScanKind::Listen);

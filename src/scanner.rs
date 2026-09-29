@@ -3270,7 +3270,7 @@ mod tests {
             .await
             .expect("the sitting starts");
         let _report = task.join().await.expect("the sitting ends");
-        let listed = crate::journal::store::list(&root).expect("lists");
+        let listed = crate::journal::store::list(&root).expect("lists").entries;
         std::fs::remove_dir_all(&root).ok();
 
         assert_eq!(

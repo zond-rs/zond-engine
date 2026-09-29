@@ -278,7 +278,9 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
     let first_phases = first.phases().len();
 
     // The journal outlived it, and records what was settled.
-    let listed = zond_engine::journal::store::list(&root).expect("lists");
+    let listed = zond_engine::journal::store::list(&root)
+        .expect("lists")
+        .entries;
     assert_eq!(listed.len(), 1);
     assert_eq!(
         listed[0].settled(),
@@ -313,7 +315,9 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
     .expect("the second sitting starts");
     let second = task.join().await.expect("it finishes");
 
-    let listed = zond_engine::journal::store::list(&root).expect("lists");
+    let listed = zond_engine::journal::store::list(&root)
+        .expect("lists")
+        .entries;
     assert_eq!(
         listed[0].settled(),
         Some(4),
@@ -581,7 +585,9 @@ async fn a_host_the_liveness_pass_never_asked_about_is_asked_on_the_resume() {
     .expect("the scan starts");
     let _cut_short = task.join().await.expect("the scan winds down");
 
-    let listed = zond_engine::journal::store::list(&root).expect("lists");
+    let listed = zond_engine::journal::store::list(&root)
+        .expect("lists")
+        .entries;
     assert_eq!(
         listed[0].settled(),
         Some(0),
@@ -634,7 +640,9 @@ async fn a_host_the_liveness_pass_never_asked_about_is_asked_on_the_resume() {
         "a resume that finished what the first sitting left is not partial"
     );
 
-    let listed = zond_engine::journal::store::list(&root).expect("lists");
+    let listed = zond_engine::journal::store::list(&root)
+        .expect("lists")
+        .entries;
     assert!(
         listed[0].is_complete(),
         "the job is finished once both sittings ran"
@@ -706,7 +714,9 @@ async fn a_host_the_liveness_pass_heard_nothing_from_is_settled_as_down() {
         liveness.undecided().is_empty(),
         "an address asked and found silent has its verdict: {evidence}"
     );
-    let listed = zond_engine::journal::store::list(&root).expect("lists");
+    let listed = zond_engine::journal::store::list(&root)
+        .expect("lists")
+        .entries;
     assert_eq!(
         listed[0].settled(),
         Some(10),
