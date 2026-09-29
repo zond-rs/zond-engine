@@ -84,7 +84,7 @@ const WRITES: &[&str] = &["store.insert", "store.get_mut", "store.entry"];
 /// `write_host` does not hold to the policy: `Discovery::source_ip`, which
 /// names the reply's sender, the source address its IP header carried. A
 /// sender is often not the target, and a router or firewall answering for a
-/// filtered port can sit at an address the operator excluded. It is not held
+/// blocked port can sit at an address the operator excluded. It is not held
 /// at `write_host` because holding it would cost a walk of every port on every
 /// finding, on the path every port scan takes, for a field no scanner fills.
 /// What keeps the promise instead is that no scanner fills it, and this list

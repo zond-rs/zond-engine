@@ -122,8 +122,8 @@ fn answers_a_syn_probe(bytes: &[u8]) -> bool {
 ///   [`COMMON_DISCOVERY_PORTS`].
 /// - **Up to [`SCAN_PORTS`](Self::SCAN_PORTS) of the scan's own ports**, for
 ///   a port scan's liveness pass: those are the ports whose answers the scan
-///   exists to report, so a filtered host serving nothing else still has a
-///   port it answers on among the ones asked. The catalogue's order
+///   exists to report, so a host behind such a filter serving nothing else
+///   still has a port it answers on among the ones asked. The catalogue's order
 ///   picks among them, so a scan of a thousand ports adds the few the engine
 ///   thinks likeliest to be listening and a scan naming one port adds that
 ///   port.
@@ -139,7 +139,7 @@ fn answers_a_syn_probe(bytes: &[u8]) -> bool {
 /// and source port, so a reply on any of them names the attempt and retires
 /// the address.
 /// Spreading them across attempts instead would leave a lost SYN to the one
-/// port a filtered host serves with no retransmission behind it.
+/// port a host behind such a filter serves with no retransmission behind it.
 ///
 /// **What it costs** is a packet per port per unanswered attempt. A host that
 /// answers costs one attempt; an address with nothing on it costs the whole set

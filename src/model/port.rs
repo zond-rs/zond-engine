@@ -83,7 +83,7 @@ pub enum Protocol {
     Tcp,
     /// UDP. Answered by a service that recognises the payload sent to it, by an
     /// ICMP port unreachable, or most often by nothing at all. That last case is
-    /// why silence here means [`PortState::OpenFiltered`] rather than open.
+    /// why silence here means [`PortState::OpenOrNoReply`] rather than open.
     Udp,
     /// SCTP. Probed with an INIT chunk, which a listener answers by accepting
     /// the association and a stack with nothing there refuses outright, so both
@@ -151,13 +151,21 @@ impl Protocol {
 /// more.
 ///
 /// The ordering ranks evidence, not how alarming a state is. `Open` outranks
-/// `Closed` because a SYN+ACK settles the question where a RST from a filtered
-/// path does not, and the two ambiguous states sit below the states they are
-/// ambiguous between. `Unasked` is beneath all of them because it is the absence
-/// of evidence rather than a weak grade of it.
+/// `Closed` because a SYN+ACK settles the question where a RST does not always:
+/// a stack that resets every segment it did not expect answers a flag probe
+/// to an open port with one too.
+/// `Blocked` outranks `NoReply`, since a refusal that arrived is more than a
+/// question nobody answered. `Unasked` is beneath all of them because it is
+/// the absence of evidence rather than a weak grade of it.
+///
+/// The names follow one rule: a cause is named only where a packet showed it.
+/// [`Blocked`](Self::Blocked) is a refusal somebody sent. Silence is named as
+/// silence, [`NoReply`](Self::NoReply), and where silence is also what an open
+/// or a closed port would have said, the state names both readings rather than
+/// choosing one.
 ///
 /// Which reply produces which state depends on the probe that drew it, since a
-/// RST means a closed port to a SYN and an unfiltered path to an ACK. That
+/// RST means a closed port to a SYN and a reachable one to an ACK. That
 /// mapping lives in
 /// [`TcpScanTechnique`](crate::model::technique::TcpScanTechnique).
 #[non_exhaustive]
@@ -188,28 +196,44 @@ pub enum PortState {
     /// probe's verdict.
     Unasked,
 
-    /// Closed or filtered, and the probe cannot say which. What an idle scan
-    /// concludes when the target's IP ID did not advance.
-    ClosedFiltered,
+    /// Closed, or no reply, and the probe cannot say which. What an idle scan
+    /// concludes when the target's IP ID did not advance: a closed port and a
+    /// port whose probes never arrived both leave the zombie's counter alone.
+    ClosedOrNoReply,
 
-    /// Something dropped the probe. The lowest state a scan will record from
-    /// silence alone, and only for the techniques every live stack would have
-    /// answered. See
+    /// Asked on every attempt the retry schedule allows, and nothing came back.
+    ///
+    /// The lowest state a scan will record from silence alone, and only for the
+    /// techniques every live stack would have answered, so the likeliest
+    /// reading is a filter that dropped the probe. It is not the only one: a
+    /// probe or its answer lost on the way, or an answer still travelling when
+    /// the scan stopped listening, reads the same. The name says what was seen
+    /// and leaves the cause to the reader. See
     /// [`silence_means`](crate::model::technique::TcpScanTechnique::silence_means).
-    Filtered,
+    NoReply,
+
+    /// Something refused the probe in words: an ICMP unreachable that did not
+    /// mean a closed port, such as an administrative prohibition, from the host
+    /// or from somewhere on the path.
+    ///
+    /// A packet, where [`NoReply`](Self::NoReply) is its absence, which is why
+    /// it ranks above it. Whether the refusal came from the target or from a
+    /// device in front of it is on the port's [`Discovery`] and on the host's
+    /// evidence.
+    Blocked,
 
     /// The probe reached the host's stack and nothing dropped it on the way,
     /// but whether anything is listening was not asked. What an ACK scan
-    /// establishes.
-    Unfiltered,
+    /// establishes from the RST a live stack sends to any stray ACK.
+    Reachable,
 
     /// Nothing is listening. A RST answering a SYN says so outright.
     Closed,
 
-    /// Open, or silently dropped. The honest verdict for a probe whose positive
-    /// result *is* silence: a bare FIN that an open port is required to ignore,
-    /// or a UDP payload no service recognised.
-    OpenFiltered,
+    /// Open, or no reply. The honest verdict for a probe whose positive result
+    /// *is* silence: a bare FIN that an open port is required to ignore, or a
+    /// UDP payload no service recognised.
+    OpenOrNoReply,
 
     /// Something is listening and accepted the connection attempt. Only a SYN
     /// draws the SYN+ACK that establishes this.
@@ -241,11 +265,12 @@ impl PortState {
     /// enum's declaration order.
     pub const ALL: &'static [Self] = &[
         Self::Unasked,
-        Self::ClosedFiltered,
-        Self::Filtered,
-        Self::Unfiltered,
+        Self::ClosedOrNoReply,
+        Self::NoReply,
+        Self::Blocked,
+        Self::Reachable,
         Self::Closed,
-        Self::OpenFiltered,
+        Self::OpenOrNoReply,
         Self::Open,
     ];
 }
@@ -289,7 +314,7 @@ pub struct Port {
     /// Boxed, as [`security`](Self::security) is, because a record is kept for
     /// every port asked and only the few that answered have either. A
     /// full-range scan of one host holds 65,535 of these, nearly all closed or
-    /// filtered, and inline the two halves they leave empty would be most of
+    /// silent, and inline the two halves they leave empty would be most of
     /// what each of them occupies.
     service: Option<Box<Service>>,
 
@@ -537,23 +562,40 @@ mod tests {
 
     /// A second probe that learned more replaces the verdict; one that learned
     /// less does not. The ordering on [`PortState`] is what decides, so these
-    /// pin the three promotions a scan actually performs.
+    /// pin the promotions a scan actually performs.
     #[test]
     fn a_probe_that_learned_more_raises_the_verdict() {
-        // Filtered -> Open
-        let mut p1 = Port::new(80, Protocol::Tcp, PortState::Filtered);
+        // NoReply -> Open
+        let mut p1 = Port::new(80, Protocol::Tcp, PortState::NoReply);
         p1.merge(Port::new(80, Protocol::Tcp, PortState::Open));
         assert_eq!(p1.state(), PortState::Open);
 
-        // OpenFiltered -> Open
-        let mut p2 = Port::new(53, Protocol::Udp, PortState::OpenFiltered);
+        // OpenOrNoReply -> Open
+        let mut p2 = Port::new(53, Protocol::Udp, PortState::OpenOrNoReply);
         p2.merge(Port::new(53, Protocol::Udp, PortState::Open));
         assert_eq!(p2.state(), PortState::Open);
 
-        // Unfiltered -> Closed
-        let mut p3 = Port::new(443, Protocol::Tcp, PortState::Unfiltered);
+        // Reachable -> Closed
+        let mut p3 = Port::new(443, Protocol::Tcp, PortState::Reachable);
         p3.merge(Port::new(443, Protocol::Tcp, PortState::Closed));
         assert_eq!(p3.state(), PortState::Closed);
+    }
+
+    /// A refusal that arrived outranks a question nobody answered, whichever
+    /// probe finished first. A connect fallback that timed out on a port the
+    /// raw scan saw refused must not turn the refusal back into silence, and a
+    /// silence must not hide a refusal a later probe drew.
+    #[test]
+    fn a_refusal_outranks_a_silence_in_either_order() {
+        assert!(PortState::NoReply < PortState::Blocked);
+
+        let mut refused = Port::new(80, Protocol::Tcp, PortState::Blocked);
+        refused.merge(Port::new(80, Protocol::Tcp, PortState::NoReply));
+        assert_eq!(refused.state(), PortState::Blocked);
+
+        let mut silent = Port::new(80, Protocol::Tcp, PortState::NoReply);
+        silent.merge(Port::new(80, Protocol::Tcp, PortState::Blocked));
+        assert_eq!(silent.state(), PortState::Blocked);
     }
 
     /// Telemetry explains a verdict, so a probe that did not improve the
@@ -580,10 +622,10 @@ mod tests {
     #[test]
     fn a_port_with_no_telemetry_adopts_a_weaker_probes() {
         let mut open = Port::new(22, Protocol::Tcp, PortState::Open);
-        let filtered = Port::new(22, Protocol::Tcp, PortState::Filtered)
+        let silent = Port::new(22, Protocol::Tcp, PortState::NoReply)
             .with_discovery(Discovery::new(ScanResponse::NoResponse));
 
-        open.merge(filtered);
+        open.merge(silent);
 
         assert_eq!(open.state(), PortState::Open, "the weaker state loses");
         assert_eq!(
@@ -626,20 +668,20 @@ mod tests {
     /// something has since answered on.
     #[test]
     fn telemetry_follows_the_verdict_it_explains() {
-        let disc_filtered = Discovery::new(ScanResponse::NoResponse);
-        let mut p_filtered =
-            Port::new(22, Protocol::Tcp, PortState::Filtered).with_discovery(disc_filtered.clone());
+        let disc_silent = Discovery::new(ScanResponse::NoResponse);
+        let mut p_silent =
+            Port::new(22, Protocol::Tcp, PortState::NoReply).with_discovery(disc_silent.clone());
 
         let disc_open = Discovery::new(ScanResponse::TcpSynAck);
         let p_open =
             Port::new(22, Protocol::Tcp, PortState::Open).with_discovery(disc_open.clone());
 
         // Merging should upgrade the state AND the telemetry reason
-        p_filtered.merge(p_open);
+        p_silent.merge(p_open);
 
-        assert_eq!(p_filtered.state(), PortState::Open);
+        assert_eq!(p_silent.state(), PortState::Open);
         assert_eq!(
-            p_filtered.discovery().unwrap().reason(),
+            p_silent.discovery().unwrap().reason(),
             &ScanResponse::TcpSynAck
         );
     }

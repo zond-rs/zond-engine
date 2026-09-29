@@ -29,7 +29,7 @@
 //! [`HostStatus::Down`] refuses to be inferred from silence. So the `reason`
 //! attribute decides: `host-unreach` and its relatives give
 //! [`Down`](HostStatus::Down), `admin-prohibited` and its relatives give
-//! [`Filtered`](HostStatus::Filtered), and everything else, a bare `no-response`
+//! [`Blocked`](HostStatus::Blocked), and everything else, a bare `no-response`
 //! included, gives `Unknown`.
 //!
 //! A host nmap calls `up` for the reason `user-set` is `Unknown`. That is
@@ -348,7 +348,8 @@ impl State {
             Tag::ExtraPorts => self.bulk = attr(&parser.element, b"state"),
             Tag::ExtraReasons => {
                 if let (Some(host), Some(state)) = (self.host.as_mut(), self.bulk.as_deref()) {
-                    let state = PortAcc::state_named(state, parser)?;
+                    let reason = parser.element.value(b"reason");
+                    let state = PortAcc::state_named(state, reason, parser)?;
                     host.extend(state, &parser.element);
                 }
             }
@@ -1070,18 +1071,18 @@ fn status_of(state: Option<&str>, reason: Option<&str>) -> HostStatus {
         // Nothing was sent and nothing answered, so the word is an instruction
         // echoed back rather than a finding.
         Some("up") if reason == Some("user-set") => HostStatus::Unknown,
-        // This engine's own word for a host it found filtered, which nmap's
+        // This engine's own word for a host it found blocked, which nmap's
         // vocabulary has no state for and which its exporter writes `up`.
-        Some("up") if reason == Some("probes-filtered") => HostStatus::Filtered,
+        Some("up") if reason == Some("probes-blocked") => HostStatus::Blocked,
         Some("up") => HostStatus::Up,
         Some("down") => match reason {
-            Some(reason) if reason.ends_with("-prohibited") => HostStatus::Filtered,
+            Some(reason) if reason.ends_with("-prohibited") => HostStatus::Blocked,
             Some(reason) if reason.ends_with("-unreach") => HostStatus::Down,
             // Including `no-response`, which is silence, and silence is not
             // evidence of absence.
             _ => HostStatus::Unknown,
         },
-        Some("filtered") => HostStatus::Filtered,
+        Some("filtered") => HostStatus::Blocked,
         _ => HostStatus::Unknown,
     }
 }
@@ -1150,7 +1151,7 @@ impl PortAcc {
                 return Ok(Self {
                     number: u16::from(number),
                     protocol: Protocol::Tcp,
-                    state: PortState::Filtered,
+                    state: PortState::NoReply,
                     reason: None,
                     service: None,
                     ip_protocol: true,
@@ -1167,7 +1168,7 @@ impl PortAcc {
         Ok(Self {
             number,
             protocol,
-            state: PortState::Filtered,
+            state: PortState::NoReply,
             reason: None,
             service: None,
             ip_protocol: false,
@@ -1182,25 +1183,44 @@ impl PortAcc {
         let Some(state) = element.value(b"state") else {
             return Ok(None);
         };
+        let reason = attr(element, b"reason");
 
         Ok(Some((
-            Self::state_named(state, parser)?,
-            attr(element, b"reason"),
+            Self::state_named(state, reason.as_deref(), parser)?,
+            reason,
         )))
     }
 
-    /// One of nmap's six verdicts, in this engine's terms.
+    /// One of nmap's six verdicts, in this engine's terms, read beside the
+    /// reason nmap gave for it.
     ///
-    /// An unrecognised one is refused rather than guessed at, for the reason the
-    /// target reader gives: it is the value that decides what the record says.
-    fn state_named(state: &str, parser: &Parser<'_>) -> Result<PortState, ImportError> {
+    /// Nmap's `filtered` is two of this engine's states. It is
+    /// [`Blocked`](PortState::Blocked) where the reason names a refusal, an
+    /// ICMP prohibition or unreachable, and [`NoReply`](PortState::NoReply)
+    /// otherwise: silence is the claim that needs no packet behind it, so a
+    /// `filtered` with no reason, or one this engine does not recognise, is
+    /// not credited with a refusal nobody recorded.
+    ///
+    /// An unrecognised state is refused rather than guessed at, for the reason
+    /// the target reader gives: it is the value that decides what the record
+    /// says.
+    fn state_named(
+        state: &str,
+        reason: Option<&str>,
+        parser: &Parser<'_>,
+    ) -> Result<PortState, ImportError> {
         Ok(match state {
             "open" => PortState::Open,
             "closed" => PortState::Closed,
-            "filtered" => PortState::Filtered,
-            "unfiltered" => PortState::Unfiltered,
-            "open|filtered" => PortState::OpenFiltered,
-            "closed|filtered" => PortState::ClosedFiltered,
+            "filtered" => match reason.map(scan_response) {
+                Some(ScanResponse::IcmpProhibited | ScanResponse::IcmpUnreachable) => {
+                    PortState::Blocked
+                }
+                _ => PortState::NoReply,
+            },
+            "unfiltered" => PortState::Reachable,
+            "open|filtered" => PortState::OpenOrNoReply,
+            "closed|filtered" => PortState::ClosedOrNoReply,
             other => {
                 return Err(parser.malformed(format!(
                     "a port is in state '{other}', which this engine has no verdict for"
@@ -1270,21 +1290,26 @@ impl PortAcc {
     /// `protocol="ip"`.
     ///
     /// The state comes back through the port vocabulary it was written in, since
-    /// nmap has one set of words for both questions. `unfiltered` and
-    /// `closed|filtered` cannot be reached by a protocol scan and are read as the
-    /// nearest thing a protocol verdict can say rather than refused, because a
-    /// document is a foreign tool's and refusing a whole host over one word
-    /// nmap's own scan would not have written is the wrong trade.
+    /// nmap has one set of words for both questions. A protocol scan writes
+    /// `filtered` for a refusal and names it in the reason, so that reads as
+    /// [`Blocked`](IpProtocolState::Blocked); one whose reason names no refusal
+    /// is silence, as `open|filtered` is. `unfiltered` and `closed|filtered`
+    /// cannot be reached by a protocol scan and are read as the nearest thing a
+    /// protocol verdict can say rather than refused, because a document is a
+    /// foreign tool's and refusing a whole host over one word nmap's own scan
+    /// would not have written is the wrong trade.
     fn into_ip_protocol(self) -> (u8, IpProtocolState) {
         let state = match self.state {
             PortState::Open => IpProtocolState::Open,
             PortState::Closed => IpProtocolState::Closed,
-            PortState::Filtered => IpProtocolState::Filtered,
-            PortState::OpenFiltered => IpProtocolState::OpenFiltered,
-            // Neither is a conclusion a protocol scan draws. `unfiltered` says a
-            // probe arrived and nothing more, and `closed|filtered` says the two
+            PortState::Blocked => IpProtocolState::Blocked,
+            // Silence, whichever word it came in. `unfiltered` says a probe
+            // arrived and nothing more, and `closed|filtered` says the two
             // could not be told apart; both amount to the same silence here.
-            PortState::Unfiltered | PortState::ClosedFiltered => IpProtocolState::OpenFiltered,
+            PortState::NoReply
+            | PortState::OpenOrNoReply
+            | PortState::Reachable
+            | PortState::ClosedOrNoReply => IpProtocolState::OpenOrNoReply,
             PortState::Unasked => IpProtocolState::Unasked,
         };
 
@@ -1564,7 +1589,7 @@ mod tests {
     }
 
     #[test]
-    fn a_host_a_policy_rejected_is_filtered() {
+    fn a_host_a_policy_rejected_is_blocked() {
         let document = SWEEP.replace(
             r#"<status state="down" reason="no-response" reason_ttl="0"/>"#,
             r#"<status state="down" reason="admin-prohibited" reason_ttl="61"/>"#,
@@ -1573,7 +1598,7 @@ mod tests {
         let report = read(&document).expect("a readable document");
         assert_eq!(
             report.host(&ip(11)).expect("the host").status(),
-            HostStatus::Filtered
+            HostStatus::Blocked
         );
     }
 

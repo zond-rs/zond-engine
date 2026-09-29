@@ -15,7 +15,7 @@
 //! the last one is reset too. With the stack's default count that is around two
 //! seconds per closed port, past
 //! [`CONNECT_PROBE_TIMEOUT`](crate::config::limits::CONNECT_PROBE_TIMEOUT), so
-//! every closed port would be recorded as a silent, filtered one.
+//! every closed port would be recorded as a silent one, `NoReply`.
 //!
 //! Every other connection the engine makes waits on a budget of the same size
 //! and reads a refusal the same way. The service pass dials ports the scan
@@ -77,7 +77,7 @@ fn max_syn_retransmissions(count: u8) -> u8 {
 ///
 /// A stack that refuses the request leaves the socket as it was, and the
 /// connection goes ahead on the stack's own count: a connect that reports
-/// closed ports as filtered is still a better answer than none. That is said
+/// closed ports as silent is still a better answer than none. That is said
 /// once per process, as a decision behind the result, since every connection
 /// after the first would only repeat it.
 #[cfg(windows)]
@@ -124,7 +124,7 @@ pub(super) fn limit(socket: &socket2::Socket, target: IpAddr) {
         SAID.call_once(|| {
             crate::logging::warn!(
                 verbosity = 1,
-                "SYN retransmissions left at the system default ({error}), so closed ports may read as filtered"
+                "SYN retransmissions left at the system default ({error}), so closed ports may read as no reply"
             );
         });
     }
@@ -151,7 +151,7 @@ mod tests {
 
     /// Across a real link the first SYN can be lost, and the probe budget is
     /// set to wait for exactly one retransmission of it. Zero would report
-    /// every briefly slow host as filtered; more would only delay a refusal.
+    /// every briefly slow host as silent; more would only delay a refusal.
     #[test]
     fn a_remote_probe_keeps_one_retransmission() {
         for target in [

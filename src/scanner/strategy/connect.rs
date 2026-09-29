@@ -38,7 +38,7 @@
 //! firewall rejecting on a host's behalf sends by default: such a filter in
 //! front of an address with nothing behind it reads here as a host up with a
 //! closed port. And a UDP port is asked once, so a host rationing its ICMP
-//! errors, which leaves most of its closed ports reading open|filtered on
+//! errors, which leaves most of its closed ports reading `OpenOrNoReply` on
 //! either path, is never named as rationing here: only a retry answered late
 //! shows the ration, and this path makes none.
 
@@ -179,7 +179,7 @@ struct Probed {
     /// The port verdict, where the probe produced one.
     ///
     /// Separate from [`Probed::answered`] because the two say different things:
-    /// a timeout yields a `Filtered` port and proves nothing about the host,
+    /// a timeout yields a `NoReply` port and proves nothing about the host,
     /// while a refusal yields a `Closed` port *and* proves the host is up. Only
     /// a target that was never probed - UDP through a TCP prober - carries
     /// `None`.
@@ -234,7 +234,7 @@ struct Probed {
     /// is a name server. See [`payload::declared_role`].
     role: Option<NetworkRole>,
     /// The connect that heard nothing, and how long it waited, for a port
-    /// filed filtered because its connect ran out of time; see [`SlowPaths`].
+    /// filed `NoReply` because its connect ran out of time; see [`SlowPaths`].
     silence: Option<Silence>,
     /// The port, where the kernel refused its connect for a hold-down on its
     /// host's neighbour, and when the hold-down is over: nothing of this probe
@@ -731,8 +731,8 @@ impl PortScanner for ConnectUdpPortScanner {
 /// number of ports in flight at or below `concurrency_limit` and each
 /// connection within the process's descriptor budget, and records every port it
 /// probed into the shared
-/// [`ScanContext`] store - open, closed and filtered alike, so the list does not
-/// depend on whether the caller had root.
+/// [`ScanContext`] store - open, closed, blocked and silent alike, so the list
+/// does not depend on whether the caller had root.
 pub async fn scan(
     rx: mpsc::Receiver<PlannedTarget>,
     concurrency_limit: usize,
@@ -878,7 +878,7 @@ async fn scan_among(
 /// the host stack's SYN retransmission and then its answer across the path,
 /// with the headroom the host's measured round trips earn (see
 /// [`PathAllowance`]). A wait sized for a path that costs nothing gives up on
-/// every answer that crosses a slow one, and an open port reads filtered.
+/// every answer that crosses a slow one, and an open port reads `NoReply`.
 fn connect_patience(path: PathAllowance) -> Duration {
     path.over(HOST_SYN_RETRANSMIT).max(CONNECT_PROBE_TIMEOUT)
 }
@@ -1076,13 +1076,13 @@ struct Silence {
     waited: Duration,
 }
 
-/// The ports a connect port scan filed filtered on a wait the path to their
+/// The ports a connect port scan filed `NoReply` on a wait the path to their
 /// host needs more than, and the second asking each is owed.
 ///
 /// A connect's wait is sized from the path its host was measured on when the
 /// port was asked, and a port asked before anything was measured waits as on
 /// an ordinary path. Across a path slower than that the wait gives up on
-/// every answer, and the port is filed filtered for being far away. Two cases
+/// every answer, and the port is filed `NoReply` for being far away. Two cases
 /// reach here once the scan's first askings are all done.
 ///
 /// A host measured since, by a port of its that answered, has each port that
@@ -1091,7 +1091,7 @@ struct Silence {
 /// the measured path needs no more than the ordinary wait.
 ///
 /// A host that answered nothing has no measurement to go on, and may be a
-/// host whose every port is filtered or one whose every answer was given up
+/// host whose every port is silent or one whose every answer was given up
 /// on. So the first port the scan asks of a host nothing has measured is the
 /// one that finds the path: its connect waits as a liveness sweep's first
 /// connect to an address does, [`path_finding_wait`], and what it measures
@@ -1101,7 +1101,7 @@ struct Silence {
 /// the first askings were done owed one to every port: across a 1.9 s path,
 /// a scan of 200 ports at [`CONNECT_CONCURRENCY`] asks 98 of them twice
 /// rather than all 200, and took 15.7 to 18.3 s against 17.8 to 22.5. On a
-/// filtered host it costs what finding the path afterwards would: one connect
+/// silent host it costs what finding the path afterwards would: one connect
 /// of that wait, spent at the start rather than at the end.
 ///
 /// [`CONNECT_CONCURRENCY`]: crate::config::limits::CONNECT_CONCURRENCY
@@ -1109,7 +1109,7 @@ struct Silence {
 /// The ports that start while the path is being found wait as on an
 /// ordinary path rather than for the answer. Holding them would hold their
 /// places in the scan's pool idle for the length of the path-finding wait on
-/// every host whose first port is filtered, which is most hosts a wide scan
+/// every host whose first port is silent, which is most hosts a wide scan
 /// asks, to spare a second asking on the rare one that is far away.
 ///
 /// A host whose path-finding connect was cut short, by a stop or by this
@@ -1118,7 +1118,7 @@ struct Silence {
 /// askings are done. If it answers, the host is measured and the rest follow
 /// as above; if it stays silent, the host is as silent as the wait for the
 /// longest path a connect looks for can show. Nothing else is asked twice,
-/// so a filtered host costs one connect of that wait and a slow one the ports
+/// so a silent host costs one connect of that wait and a slow one the ports
 /// asked before its path was known.
 #[derive(Debug, Default)]
 struct SlowPaths {
@@ -1241,7 +1241,7 @@ impl SlowPaths {
             info!(
                 verbosity = 1,
                 "{} asked again, waiting for a slower path",
-                counted(asked, "filtered port", "filtered ports")
+                counted(asked, "silent port", "silent ports")
             );
         }
     }
@@ -1387,13 +1387,13 @@ fn settled_over(
 /// surfaced here, so where the raw scanner names a prohibition from the host
 /// itself apart from one from the path, this names both as unreachable.
 ///
-/// `None` for `OpenFiltered`, silence being the protocol's ordinary outcome
+/// `None` for `OpenOrNoReply`, silence being the protocol's ordinary outcome
 /// rather than a packet, as the raw scanner records it, and for a port no
 /// datagram was sent to.
 fn udp_evidence(state: PortState) -> Option<ScanResponse> {
     match state {
         PortState::Open => Some(ScanResponse::UdpResponse),
-        PortState::Closed | PortState::Filtered => Some(ScanResponse::IcmpUnreachable),
+        PortState::Closed | PortState::Blocked => Some(ScanResponse::IcmpUnreachable),
         _ => None,
     }
 }
@@ -1418,10 +1418,10 @@ fn note_handshake(ctx: &ScanContext, ip: IpAddr, rtt: Duration) {
 /// handle.
 ///
 /// An accepted connection is `Open` and gets fingerprinted over the live stream,
-/// a refusal is `Closed`, and an ICMP error or a timeout is `Filtered`. A
-/// connect this machine refused before anything left it is `Unasked`; see
-/// [`Handshake`] for how each is told from the others. Only TCP is supported,
-/// so UDP targets are skipped.
+/// a refusal is `Closed`, an ICMP error is `Blocked`, and a timeout is
+/// `NoReply`. A connect this machine refused before anything left it is
+/// `Unasked`; see [`Handshake`] for how each is told from the others. Only TCP
+/// is supported, so UDP targets are skipped.
 ///
 /// A connect that met itself asked nothing, and is made again from a fresh
 /// socket, up to [`SELF_MEETINGS`] times.
@@ -1596,7 +1596,7 @@ async fn port_prober(
                 // every other port of the host asked meanwhile sizes its
                 // wait from this, and across a path slower than an ordinary
                 // wait covers, a port that waits as on an ordinary path
-                // gives up on its answer and reads filtered.
+                // gives up on its answer and reads as no reply.
                 note_handshake(&ctx, target.ip, rtt);
                 // The handshake is a round trip over the very path the
                 // conversation that follows takes, measured a moment ago,
@@ -1658,7 +1658,7 @@ async fn port_prober(
             // ICMP port unreachable. Most are resets, a stack with nothing
             // listening, and the port is read closed. A filter rejecting with
             // a port unreachable reads closed here too, where the raw path,
-            // which sees the packet, reads it filtered; no error code on any
+            // which sees the packet, reads it blocked; no error code on any
             // platform separates the two, so the reason recorded says what
             // the verdict rests on rather than naming a reset nobody saw.
             //
@@ -1677,12 +1677,12 @@ async fn port_prober(
             ),
             // Something on the way refused the connection with an ICMP error:
             // a firewall's reject, a router with no way on. The raw path reads
-            // the same packet as filtered, and so does this one. Settled,
+            // the same packet as blocked, and so does this one. Settled,
             // because it is an answer; the host is not credited, because the
             // error's sender is not surfaced and is as often a router as the
             // target, and neither is its round trip.
             Handshake::Unreachable => verdict(
-                PortState::Filtered,
+                PortState::Blocked,
                 Some(ScanResponse::IcmpUnreachable),
                 false,
                 None,
@@ -1694,7 +1694,7 @@ async fn port_prober(
             // later in the scan may show to have been too short; see
             // `SlowPaths`.
             Handshake::Silent => verdict(
-                PortState::Filtered,
+                PortState::NoReply,
                 Some(ScanResponse::NoResponse),
                 false,
                 None,
@@ -1717,7 +1717,7 @@ async fn port_prober(
             // sitting may well get further.
             //
             // No evidence recorded, since there is no packet to name, and no
-            // verdict either: filing `Filtered` would credit the target with a
+            // verdict either: filing `NoReply` would credit the target with a
             // silence it was never asked for in the one field a reader takes
             // for a finding.
             //
@@ -1894,7 +1894,7 @@ async fn handshake(
 /// discards the same error with nowhere to deliver it.
 ///
 /// A reply is `Open`, a refusal is `Closed`, any other ICMP error the kernel
-/// surfaces is `Filtered`, and silence is `OpenFiltered` - the verdicts the
+/// surfaces is `Blocked`, and silence is `OpenOrNoReply` - the verdicts the
 /// raw scanner reaches, by a different route.
 /// Errors that say nothing about the target (no local socket, no route) are
 /// logged and yield no record rather than a guess.
@@ -2046,9 +2046,9 @@ async fn udp_port_prober(
         // Any other ICMP error the kernel surfaced: an administrative
         // prohibition, which Linux reports on a connected socket as a host it
         // cannot reach, or a protocol unreachable. The raw path reads the same
-        // packet as filtered, and so does this one.
+        // packet as blocked, and so does this one.
         Ok(Err(e)) if is_unreachable(&e) => record(
-            PortState::Filtered,
+            PortState::Blocked,
             false,
             Outcome::Answered { position },
             Attempt::Sent,
@@ -2062,16 +2062,16 @@ async fn udp_port_prober(
             // A local read failure, not a fact about the target, and after
             // the datagram left, so the send itself was made.
             record(
-                PortState::OpenFiltered,
+                PortState::OpenOrNoReply,
                 false,
                 Outcome::Unroutable,
                 Attempt::Sent,
             )
         }
-        // No error and no reply: open but silent, or filtered. UDP cannot tell.
+        // No error and no reply: open but silent, or dropped. UDP cannot tell.
         // Settled either way: this probe had one attempt and spent it.
         Err(_) => record(
-            PortState::OpenFiltered,
+            PortState::OpenOrNoReply,
             false,
             Outcome::Exhausted { position },
             Attempt::Sent,
@@ -2690,9 +2690,9 @@ mod tests {
     /// path nothing measured, and across a slow one long enough for the host
     /// stack's retransmitted SYN to be answered across it.
     ///
-    /// The ordinary wait is what every scan pays per filtered port, so a
+    /// The ordinary wait is what every scan pays per silent port, so a
     /// measured path that is merely not free leaves it alone; the slow path's
-    /// is what keeps an open port two seconds away from reading filtered.
+    /// is what keeps an open port two seconds away from reading `NoReply`.
     #[test]
     fn a_connect_waits_as_ever_on_an_ordinary_path_and_longer_on_a_slow_one() {
         assert_eq!(connect_patience(PathAllowance::NONE), CONNECT_PROBE_TIMEOUT);
@@ -3068,7 +3068,7 @@ mod tests {
     /// On Linux every connect to such a host waits out a resolution of its
     /// own, three seconds, to learn what two already said, and then reads as
     /// a filter's reject: a dead neighbour's ports cost the scan three
-    /// seconds a wave and read filtered, every one of them.
+    /// seconds a wave and read blocked, every one of them.
     #[tokio::test]
     async fn a_host_whose_neighbour_was_given_up_is_sent_nothing_more() {
         use crate::transport::kernel_neighbors::{KernelNeighbors, NeighborTable};
@@ -3366,8 +3366,8 @@ mod tests {
     /// A connect to a port that drops its SYN waits its whole patience, which
     /// across a slow path is many seconds, and a stopped scan would wait out
     /// every one in flight before it ended. The SYN left and nothing came
-    /// back yet, so the port has no verdict: filed filtered, a firewall would
-    /// be reported that the probe never waited long enough to see.
+    /// back yet, so the port has no verdict: filed `NoReply`, it would report
+    /// a silence the probe never waited long enough to hear.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_stop_ends_a_handshake_in_flight_and_leaves_its_port_unasked() {
@@ -3422,7 +3422,7 @@ mod tests {
 
     /// A second asking the stop cuts short keeps the first asking's verdict.
     ///
-    /// The first asking settled the port filtered, and the second is only a
+    /// The first asking settled the port `NoReply`, and the second is only a
     /// longer wait for the same answer. Cut short, it heard nothing yet, and
     /// filed unasked it would take back a verdict the scan earned.
     #[cfg(unix)]
@@ -3473,7 +3473,7 @@ mod tests {
     /// nothing runs for seconds. Filed only with the verdict, the round trip
     /// reached the host after its identification returned, and across a path
     /// slower than an ordinary wait covers every port asked in the meantime
-    /// waited as on an ordinary path and read filtered.
+    /// waited as on an ordinary path and read `NoReply`.
     #[tokio::test]
     async fn a_handshake_times_the_host_before_its_port_is_identified() {
         let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -3560,7 +3560,7 @@ mod tests {
     /// administrative prohibition on the far side, which Linux reports alike.
     /// Read as a local failure, a firewalled port is filed unasked and asked
     /// again on every resume; read as an answer, a port this machine could
-    /// not reach would be filed filtered, a finding about a target nothing
+    /// not reach would be filed blocked, a finding about a target nothing
     /// was sent to.
     #[test]
     fn an_unreachable_is_an_answer_after_the_syn_left_and_a_local_failure_before() {

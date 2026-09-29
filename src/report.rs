@@ -757,7 +757,7 @@ pub struct ScanSettings {
     /// Which chunk each SCTP port probe carried, and so what its answers mean.
     ///
     /// Recorded for the reason [`tcp_technique`](Self::tcp_technique) is. An
-    /// SCTP port reported `open_filtered` came from a COOKIE-ECHO scan, which
+    /// SCTP port reported `OpenOrNoReply` came from a COOKIE-ECHO scan, which
     /// cannot report one open at all; the same port under an INIT scan would
     /// have been settled either way.
     pub sctp_technique: SctpScanTechnique,
@@ -887,25 +887,27 @@ pub struct ScanSettings {
     pub excluded_ports: PortSet,
 
     /// What the scan changed about the packets it sent, or `None` if it changed
-    /// nothing. A filtered port found with a probe from a trusted source port is
-    /// a different fact than the same port found with an ordinary probe; see
+    /// nothing. A port that drew no reply to a probe from a trusted source port
+    /// is a different fact than the same port found with an ordinary probe; see
     /// [`EvasionRecord`].
     pub evasion: Option<EvasionRecord>,
 
     /// The zombie a TCP port scan read its verdicts through, or `None` for an
     /// ordinary scan. Its presence is what tells a reader the ports were inferred
     /// from a third party's counter rather than from the target's own replies,
-    /// which changes what an `open` or a `closed_filtered` means. See
+    /// which changes what an `open` or a `ClosedOrNoReply` means. See
     /// [`IdleScan`].
     pub idle_scan: Option<IdleScan>,
 
     /// Whether the capture kept ICMP errors for a technique that did not need
     /// them for its verdict.
     ///
-    /// Recorded because it decides what a silence means. A filtered port carries
-    /// [`ScanResponse::NoResponse`](crate::model::port::discovery::ScanResponse::NoResponse)
-    /// either way, and only this says whether that is a port nothing answered
-    /// for or a port whose refusal the scan was not listening for.
+    /// Recorded because it decides what a silence means. Without it a refusal
+    /// is never heard, so a
+    /// [`NoReply`](crate::model::port::PortState::NoReply) port may be one a
+    /// filter refused in words; with it, such a port would have read
+    /// [`Blocked`](crate::model::port::PortState::Blocked), and only this says
+    /// which reading a silent port allows.
     pub icmp_evidence: bool,
 }
 
@@ -1255,10 +1257,10 @@ impl ProbeStats {
 
     /// What this run's congestion window did, for a scanner paced by one.
     ///
-    /// The difference between "these ports are filtered" and "this scan was
+    /// The difference between "these ports drop probes" and "this scan was
     /// outrun and cannot tell". A run whose window bottomed out and still left
     /// most of its probes unanswered did not establish that anything is
-    /// filtered; it established that it could not ask. Nothing else in these
+    /// dropping them; it established that it could not ask. Nothing else in these
     /// counters distinguishes the two, and a consumer that renders one as the
     /// other is publishing a claim about somebody's firewall that is really a
     /// claim about a saturated link.
@@ -2032,7 +2034,7 @@ pub struct ScanPhase {
     /// is the phase saying what it did not finish covering, and nothing here
     /// went wrong. The distinction it carries is the one a reader cannot make
     /// otherwise, since a host left early is reported with the ports it never
-    /// reached taking the scan's silence verdict, and a page of filtered ports
+    /// reached taking the scan's silence verdict, and a page of silent ports
     /// looks the same whether the scan asked and heard nothing or ran out of
     /// time to ask.
     timed_out: Vec<IpAddr>,
@@ -2189,8 +2191,8 @@ impl ScanPhase {
     /// A closed UDP port is known only by the ICMP port unreachable its host
     /// sends, and hosts ration those: Linux answers a burst and then about
     /// one a second. Against a host here the scan had no answer for most of
-    /// the closed ports it asked, and they read `OpenFiltered`, silence being
-    /// all it heard, beside the few that read `Closed`. Its open|filtered
+    /// the closed ports it asked, and they read `OpenOrNoReply`, silence being
+    /// all it heard, beside the few that read `Closed`. Its open-or-no-reply
     /// ports are therefore mostly closed ones, which a page of them does not
     /// say without this list; a longer scan reads more of them, at about one
     /// a second.
@@ -2457,7 +2459,7 @@ impl ScanPhase {
 /// Both headline counts are paired with a full distribution. `hosts_alive` and
 /// `ports_open` are the numbers a person reads first, but collapsing the
 /// remaining states into a single "not found" bucket would throw away the
-/// distinction the scanner worked hardest to establish - a filtered port is
+/// distinction the scanner worked hardest to establish - a blocked port is
 /// evidence of a firewall, a closed one is evidence of a live host, and neither
 /// is silence.
 #[non_exhaustive]
@@ -2465,7 +2467,7 @@ impl ScanPhase {
 pub struct ScanSummary {
     /// Hosts recorded, whatever their status.
     pub hosts_total: usize,
-    /// Hosts confirmed to be on the network, either responding or filtered.
+    /// Hosts confirmed to be on the network, either responding or blocked.
     pub hosts_alive: usize,
     /// How many hosts fell into each status.
     pub hosts_by_status: BTreeMap<HostStatus, usize>,
@@ -2478,7 +2480,7 @@ pub struct ScanSummary {
     /// Ports whose service was identified by fingerprinting.
     ///
     /// A name read off the port number is not counted: every scan path seeds
-    /// a port, closed and filtered ones included, with the name its number is
+    /// a port, closed and silent ones included, with the name its number is
     /// registered under, and that label says nothing about what is listening
     /// (see [`Service::is_inferred`](crate::model::port::Service::is_inferred)).
     pub services_identified: usize,
@@ -3449,7 +3451,7 @@ pub enum ScannerKind {
     ///
     /// Named apart from [`SynPort`](Self::SynPort) though the forged probe is a
     /// SYN, because what it produces and what can go wrong are its own: a
-    /// verdict is `Open` or `ClosedFiltered` and nothing finer, and a run is
+    /// verdict is `Open` or `ClosedOrNoReply` and nothing finer, and a run is
     /// refused for want of a suitable zombie or an Ethernet path where a raw SYN
     /// scan would simply have proceeded.
     Idle,
@@ -3786,7 +3788,7 @@ mod tests {
     /// A host the scanners filed at an address, and nothing heard from it.
     fn unheard(last: u8) -> Host {
         let mut host = Host::new(ip(last));
-        host.add_port(Port::new(443, Protocol::Tcp, PortState::Filtered));
+        host.add_port(Port::new(443, Protocol::Tcp, PortState::NoReply));
         host
     }
 
@@ -4086,15 +4088,15 @@ mod tests {
             Port::new(22, Protocol::Tcp, PortState::Open).with_service(Service::new("ssh", 90)),
         );
         up.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
-        up.add_port(Port::new(81, Protocol::Tcp, PortState::Filtered));
+        up.add_port(Port::new(81, Protocol::Tcp, PortState::NoReply));
 
-        let mut filtered = Host::new(ip(2));
-        filtered.set_status(HostStatus::Filtered);
+        let mut blocked = Host::new(ip(2));
+        blocked.set_status(HostStatus::Blocked);
 
         let mut down = Host::new(ip(3));
         down.set_status(HostStatus::Down);
 
-        let report = ScanReport::new(phase(ScanKind::PortScan), [up, filtered, down]);
+        let report = ScanReport::new(phase(ScanKind::PortScan), [up, blocked, down]);
         let summary = report.summary();
 
         assert_eq!(summary.hosts_total, 3);
@@ -4103,12 +4105,12 @@ mod tests {
         assert_eq!(summary.hosts_by_status[&HostStatus::Down], 1);
         assert_eq!(summary.ports_total, 3);
         assert_eq!(summary.ports_open, 2);
-        assert_eq!(summary.ports_by_state[&PortState::Filtered], 1);
+        assert_eq!(summary.ports_by_state[&PortState::NoReply], 1);
         assert_eq!(summary.services_identified, 1);
     }
 
     /// Every scan path seeds a port with the name its number is registered
-    /// under, closed and filtered ones included, so counting ports that carry
+    /// under, closed and silent ones included, so counting ports that carry
     /// a service would report hundreds of identifications on a host with a
     /// handful of open ports. Only a name something answered for is one.
     #[test]
@@ -4137,17 +4139,17 @@ mod tests {
     fn only_hosts_that_answered_become_port_scan_targets() {
         let mut up = Host::new(ip(1));
         up.set_status(HostStatus::Up);
-        let mut filtered = Host::new(ip(2));
-        filtered.set_status(HostStatus::Filtered);
+        let mut blocked = Host::new(ip(2));
+        blocked.set_status(HostStatus::Blocked);
         let mut down = Host::new(ip(3));
         down.set_status(HostStatus::Down);
         let unknown = Host::new(ip(4));
 
-        let report = ScanReport::new(phase(ScanKind::Discovery), [up, filtered, down, unknown]);
+        let report = ScanReport::new(phase(ScanKind::Discovery), [up, blocked, down, unknown]);
 
         let targets = report.alive_targets(PortSet::from_iter([(80, Protocol::Tcp)]));
 
-        // Up and Filtered are both alive - something is there, whether or not it
+        // Up and Blocked are both alive - something is there, whether or not it
         // is answering for itself. Down and Unknown are not.
         assert_eq!(targets.gross_ips().expect("countable"), 2);
         assert_eq!(targets.gross_targets().expect("countable"), 2);

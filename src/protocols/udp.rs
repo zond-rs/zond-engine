@@ -32,7 +32,7 @@ use crate::protocols::error::Result;
 /// The checksum is optional on IPv4 but **mandatory on IPv6**: RFC 8200 §8.1
 /// requires a receiver to discard a zero-checksum UDP datagram, so a v6 probe
 /// built without one never reaches the port it is aimed at, and the scan reads
-/// the resulting silence as `OpenFiltered`.
+/// the resulting silence as `OpenOrNoReply`.
 ///
 /// # Errors
 ///

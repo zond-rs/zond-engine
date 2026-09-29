@@ -61,7 +61,7 @@ pub fn host_status_name(status: HostStatus) -> &'static str {
     match status {
         HostStatus::Unknown => "unknown",
         HostStatus::Down => "down",
-        HostStatus::Filtered => "filtered",
+        HostStatus::Blocked => "blocked",
         HostStatus::Up => "up",
     }
 }
@@ -71,7 +71,7 @@ pub fn host_status(name: &str) -> Option<HostStatus> {
     Some(match name {
         "unknown" => HostStatus::Unknown,
         "down" => HostStatus::Down,
-        "filtered" => HostStatus::Filtered,
+        "blocked" => HostStatus::Blocked,
         "up" => HostStatus::Up,
         _ => return None,
     })
@@ -81,11 +81,12 @@ pub fn host_status(name: &str) -> Option<HostStatus> {
 pub fn port_state_name(state: PortState) -> &'static str {
     match state {
         PortState::Unasked => "unasked",
-        PortState::ClosedFiltered => "closed_filtered",
-        PortState::Filtered => "filtered",
-        PortState::Unfiltered => "unfiltered",
+        PortState::ClosedOrNoReply => "closed_or_no_reply",
+        PortState::NoReply => "no_reply",
+        PortState::Blocked => "blocked",
+        PortState::Reachable => "reachable",
         PortState::Closed => "closed",
-        PortState::OpenFiltered => "open_filtered",
+        PortState::OpenOrNoReply => "open_or_no_reply",
         PortState::Open => "open",
     }
 }
@@ -94,11 +95,12 @@ pub fn port_state_name(state: PortState) -> &'static str {
 pub fn port_state(name: &str) -> Option<PortState> {
     Some(match name {
         "unasked" => PortState::Unasked,
-        "closed_filtered" => PortState::ClosedFiltered,
-        "filtered" => PortState::Filtered,
-        "unfiltered" => PortState::Unfiltered,
+        "closed_or_no_reply" => PortState::ClosedOrNoReply,
+        "no_reply" => PortState::NoReply,
+        "blocked" => PortState::Blocked,
+        "reachable" => PortState::Reachable,
         "closed" => PortState::Closed,
-        "open_filtered" => PortState::OpenFiltered,
+        "open_or_no_reply" => PortState::OpenOrNoReply,
         "open" => PortState::Open,
         _ => return None,
     })
@@ -108,8 +110,8 @@ pub fn port_state(name: &str) -> Option<PortState> {
 pub fn ip_protocol_state_name(state: IpProtocolState) -> &'static str {
     match state {
         IpProtocolState::Unasked => "unasked",
-        IpProtocolState::OpenFiltered => "open_filtered",
-        IpProtocolState::Filtered => "filtered",
+        IpProtocolState::OpenOrNoReply => "open_or_no_reply",
+        IpProtocolState::Blocked => "blocked",
         IpProtocolState::Closed => "closed",
         IpProtocolState::Open => "open",
     }
@@ -119,8 +121,8 @@ pub fn ip_protocol_state_name(state: IpProtocolState) -> &'static str {
 pub fn ip_protocol_state(name: &str) -> Option<IpProtocolState> {
     Some(match name {
         "unasked" => IpProtocolState::Unasked,
-        "open_filtered" => IpProtocolState::OpenFiltered,
-        "filtered" => IpProtocolState::Filtered,
+        "open_or_no_reply" => IpProtocolState::OpenOrNoReply,
+        "blocked" => IpProtocolState::Blocked,
         "closed" => IpProtocolState::Closed,
         "open" => IpProtocolState::Open,
         _ => return None,

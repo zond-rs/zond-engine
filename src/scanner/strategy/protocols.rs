@@ -26,10 +26,10 @@
 //!   the one message that proves acceptance without the protocol having to
 //!   answer for itself, and it is why asking about UDP is worth a real header.
 //! - **Any other unreachable** is the path refusing delivery, which is
-//!   [`Filtered`](IpProtocolState::Filtered) and says nothing about the host.
+//!   [`Blocked`](IpProtocolState::Blocked) and says nothing about the host.
 //! - **An echo reply**, for the two ICMP numbers, is the host answering in the
 //!   protocol asked about.
-//! - **Silence** is [`OpenFiltered`](IpProtocolState::OpenFiltered), and it is
+//! - **Silence** is [`OpenOrNoReply`](IpProtocolState::OpenOrNoReply), and it is
 //!   the ordinary answer.
 //!
 //! ## Why silence is the ordinary answer
@@ -381,7 +381,7 @@ fn send_probes(
             // protocol was asked about even where the answer never comes. The
             // reply loop only ever raises these.
             let state = match sent {
-                true => IpProtocolState::OpenFiltered,
+                true => IpProtocolState::OpenOrNoReply,
                 false => IpProtocolState::Unasked,
             };
             ctx.update_host(host, |host| {
@@ -503,7 +503,7 @@ fn matched(
             // else this pass can hear proves acceptance so cheaply.
             Unreachable::Port => IpProtocolState::Open,
             // The path refused delivery, which says nothing about the host.
-            Unreachable::Prohibited => IpProtocolState::Filtered,
+            Unreachable::Prohibited => IpProtocolState::Blocked,
             // Nobody could reach the address at all, so the message carries no
             // verdict on the protocol it happened to quote.
             Unreachable::Host => return None,
@@ -693,7 +693,7 @@ mod tests {
             // The path refusing delivery, which says nothing about the host.
             (
                 IcmpCodes::CommunicationAdministrativelyProhibited,
-                IpProtocolState::Filtered,
+                IpProtocolState::Blocked,
             ),
         ];
 
@@ -807,7 +807,7 @@ mod tests {
     /// and nothing more, so a quotation of either has no echo identifier to
     /// check. Demanding one anyway leaves every such refusal unread, and
     /// protocol 1 is in the default set: every IPv6 host would report it
-    /// open|filtered where its own stack said closed.
+    /// `OpenOrNoReply` where its own stack said closed.
     #[test]
     fn an_icmp_number_sent_bare_is_refused_like_any_bare_header() {
         assert_eq!(

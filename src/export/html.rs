@@ -105,7 +105,7 @@ const PORT_COLUMNS: usize = 7;
 fn host_tone(status: HostStatus) -> &'static str {
     match status {
         HostStatus::Up => TONE_FOUND,
-        HostStatus::Filtered => TONE_PARTIAL,
+        HostStatus::Blocked => TONE_PARTIAL,
         HostStatus::Down => TONE_INERT,
         HostStatus::Unknown => TONE_NONE,
     }
@@ -115,10 +115,11 @@ fn host_tone(status: HostStatus) -> &'static str {
 fn port_tone(state: PortState) -> &'static str {
     match state {
         PortState::Open => TONE_FOUND,
-        PortState::OpenFiltered
-        | PortState::Filtered
-        | PortState::Unfiltered
-        | PortState::ClosedFiltered => TONE_PARTIAL,
+        PortState::OpenOrNoReply
+        | PortState::NoReply
+        | PortState::Blocked
+        | PortState::Reachable
+        | PortState::ClosedOrNoReply => TONE_PARTIAL,
         PortState::Closed => TONE_INERT,
         // The tone a host of unknown status is drawn in, for the same reason:
         // nothing was learned here, and a shade that reads as a finding would
@@ -385,7 +386,7 @@ fn write_tiles(
         out,
         summary.hosts_alive,
         "alive",
-        &esc("up or filtered — confirmed present"),
+        &esc("up or blocked — confirmed present"),
     )?;
     write::tile(
         out,
@@ -423,7 +424,7 @@ fn ranges_note(phases: &[PhaseDto<'_>]) -> String {
 ///
 /// A stacked meter and a legend listing every category, including the ones
 /// nothing landed in, as the JSON summary does. A reader learns something from
-/// `filtered: 0` and nothing from a category that is missing.
+/// `blocked: 0` and nothing from a category that is missing.
 fn write_distributions(out: &mut dyn Write, summary: &SummaryDto) -> Result<(), ExportError> {
     let statuses = &summary.hosts_by_status;
     let states = &summary.ports_by_state;
@@ -436,7 +437,7 @@ fn write_distributions(out: &mut dyn Write, summary: &SummaryDto) -> Result<(), 
         summary.hosts_total,
         &[
             status_slice(HostStatus::Up, statuses.up),
-            status_slice(HostStatus::Filtered, statuses.filtered),
+            status_slice(HostStatus::Blocked, statuses.blocked),
             status_slice(HostStatus::Down, statuses.down),
             status_slice(HostStatus::Unknown, statuses.unknown),
         ],
@@ -448,11 +449,12 @@ fn write_distributions(out: &mut dyn Write, summary: &SummaryDto) -> Result<(), 
         summary.ports_total,
         &[
             state_slice(PortState::Open, states.open),
-            state_slice(PortState::OpenFiltered, states.open_filtered),
+            state_slice(PortState::OpenOrNoReply, states.open_or_no_reply),
             state_slice(PortState::Closed, states.closed),
-            state_slice(PortState::Unfiltered, states.unfiltered),
-            state_slice(PortState::Filtered, states.filtered),
-            state_slice(PortState::ClosedFiltered, states.closed_filtered),
+            state_slice(PortState::Reachable, states.reachable),
+            state_slice(PortState::Blocked, states.blocked),
+            state_slice(PortState::NoReply, states.no_reply),
+            state_slice(PortState::ClosedOrNoReply, states.closed_or_no_reply),
             state_slice(PortState::Unasked, states.unasked),
         ],
     )?;
@@ -641,7 +643,7 @@ fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), Export
 
     if !dto.ip_protocols.is_empty() {
         // The two verdicts a reader acts on. Listing the silent ones as well
-        // would put a dozen `open_filtered` rows on every host and bury the two
+        // would put a dozen `open_or_no_reply` rows on every host and bury the two
         // lines that mean something, and silence is what the count says.
         let named = |state: &str| -> Vec<String> {
             dto.ip_protocols
@@ -1345,7 +1347,7 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
     }
 
     // Addresses that rationed the ICMP errors a closed UDP port is known by.
-    // Their open|filtered ports are mostly closed ones the scan had no answer
+    // Their open-or-no-reply ports are mostly closed ones the scan had no answer
     // for, which the port list alone does not say.
     if !phase.icmp_rate_limited.is_empty() {
         let addresses: Vec<String> = phase.icmp_rate_limited.iter().map(|ip| esc(ip)).collect();
@@ -1355,7 +1357,7 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
             &format!(
                 "{}{}",
                 addresses.join(", "),
-                dim(&[esc("closed UDP ports may read open|filtered")])
+                dim(&[esc("closed UDP ports may read open|no-reply")])
             ),
         )?;
     }
@@ -2114,17 +2116,17 @@ mod tests {
     fn every_state_has_a_tone_the_stylesheet_defines() {
         let statuses = [
             HostStatus::Up,
-            HostStatus::Filtered,
+            HostStatus::Blocked,
             HostStatus::Down,
             HostStatus::Unknown,
         ];
         let states = [
             PortState::Open,
-            PortState::OpenFiltered,
+            PortState::OpenOrNoReply,
             PortState::Closed,
-            PortState::Unfiltered,
-            PortState::Filtered,
-            PortState::ClosedFiltered,
+            PortState::Reachable,
+            PortState::NoReply,
+            PortState::ClosedOrNoReply,
         ];
 
         for status in statuses {
@@ -2316,7 +2318,8 @@ mod tests {
 
         assert!(page.contains(">open<"));
         assert!(page.contains(">up<"));
-        assert!(page.contains(">filtered<"));
+        assert!(page.contains(">blocked<"));
+        assert!(page.contains(">no_reply<"));
         assert!(page.contains(">tcp_syn_ack<"));
     }
 

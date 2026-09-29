@@ -598,12 +598,12 @@
           "enum": [
             "unknown",
             "down",
-            "filtered",
+            "blocked",
             "up"
           ]
         },
         "alive": {
-          "description": "Whether the host is confirmed present. True for `up` and `filtered`; carried so a consumer need not know that a filtered host is still a host.",
+          "description": "Whether the host is confirmed present. True for `up` and `blocked`; carried so a consumer need not know that a blocked host is still a host.",
           "type": "boolean"
         },
         "reasons": {
@@ -673,11 +673,11 @@
                 ]
               },
               "state": {
-                "description": "`closed` is the host's own stack refusing the protocol, by an ICMP protocol unreachable. `open` is the host taking delivery of it. `filtered` is the path refusing delivery, which says nothing about the host. `open_filtered` is silence, which is the ordinary answer: most protocols answer an unsolicited bare header with nothing whether or not the stack implements them. `unasked` is a protocol the scan named and no probe reached.",
+                "description": "`closed` is the host's own stack refusing the protocol, by an ICMP protocol unreachable. `open` is the host taking delivery of it. `blocked` is the path refusing delivery, which says nothing about the host. `open_or_no_reply` is silence, which is the ordinary answer: most protocols answer an unsolicited bare header with nothing whether or not the stack implements them. `unasked` is a protocol the scan named and no probe reached.",
                 "enum": [
                   "unasked",
-                  "open_filtered",
-                  "filtered",
+                  "open_or_no_reply",
+                  "blocked",
                   "closed",
                   "open"
                 ]
@@ -926,7 +926,7 @@
           }
         },
         "timed_out": {
-          "description": "Addresses this phase stopped working on because their own wall-clock budget ran out, ascending. Absent where none did, which is every phase that set no per-host budget. An address here carries whatever the phase managed to ask about and nothing after that: the ports it never reached are present with the scan's silence verdict, so without this list a page of `filtered` reads as a quiet machine rather than as a scan that ran out of time. The record of this phase: what the report as a whole left early is the document's own `timed_out`.",
+          "description": "Addresses this phase stopped working on because their own wall-clock budget ran out, ascending. Absent where none did, which is every phase that set no per-host budget. An address here carries whatever the phase managed to ask about and nothing after that: the ports it never reached are present with the scan's silence verdict, so without this list a page of `no_reply` reads as a quiet machine rather than as a scan that ran out of time. The record of this phase: what the report as a whole left early is the document's own `timed_out`.",
           "type": "array",
           "items": {
             "type": "string",
@@ -934,7 +934,7 @@
           }
         },
         "icmp_rate_limited": {
-          "description": "Addresses whose ICMP errors this phase found rate-limited, ascending. Absent where there were none. A closed UDP port is known only by the ICMP port unreachable its host sends, and a host here rationed those, as Linux does at about one a second after a short burst: most of the closed ports asked of it read `open_filtered` beside the few that read `closed`, and a longer scan reads more of them, at about one a second. Read from the host's own answers: a port answered closed only when asked again while more of its ports stayed silent than answered.",
+          "description": "Addresses whose ICMP errors this phase found rate-limited, ascending. Absent where there were none. A closed UDP port is known only by the ICMP port unreachable its host sends, and a host here rationed those, as Linux does at about one a second after a short burst: most of the closed ports asked of it read `open_or_no_reply` beside the few that read `closed`, and a longer scan reads more of them, at about one a second. Read from the host's own answers: a port answered closed only when asked again while more of its ports stayed silent than answered.",
           "type": "array",
           "items": {
             "type": "string",
@@ -1041,11 +1041,12 @@
         "state": {
           "enum": [
             "unasked",
-            "closed_filtered",
-            "filtered",
-            "unfiltered",
+            "closed_or_no_reply",
+            "no_reply",
+            "blocked",
+            "reachable",
             "closed",
-            "open_filtered",
+            "open_or_no_reply",
             "open"
           ]
         },
@@ -1356,7 +1357,7 @@
           ]
         },
         "window": {
-          "description": "What this run's congestion window did, for a scanner paced by one. The field that says whether the silence in this phase is a finding: a run whose window was cut back to its floor and still left most of its probes unanswered did not establish that anything was filtered, it established that it could not ask. Null for a scanner paced some other way.",
+          "description": "What this run's congestion window did, for a scanner paced by one. The field that says whether the silence in this phase is a finding: a run whose window was cut back to its floor and still left most of its probes unanswered did not establish that anything dropped its probes, it established that it could not ask. Null for a scanner paced some other way.",
           "type": [
             "object",
             "null"
@@ -1901,7 +1902,7 @@
           ]
         },
         "sctp_technique": {
-          "description": "Which chunk each SCTP port probe carried. An `init` draws an answer from an open port and a closed one alike, so it names open ports and its silence is a filter. A `cookie-echo` carries a cookie no endpoint minted: a closed port answers with an abort and a listener authenticates it, fails, and discards it in silence, so the scan cannot report a port open at all and its silence is `open_filtered`. Absent on a document written before the technique was a choice, which was an init scan.",
+          "description": "Which chunk each SCTP port probe carried. An `init` draws an answer from an open port and a closed one alike, so it names open ports and its silence is `no_reply`. A `cookie-echo` carries a cookie no endpoint minted: a closed port answers with an abort and a listener authenticates it, fails, and discards it in silence, so the scan cannot report a port open at all and its silence is `open_or_no_reply`. Absent on a document written before the technique was a choice, which was an init scan.",
           "enum": [
             "init",
             "cookie-echo"
@@ -2030,7 +2031,7 @@
           "type": "string"
         },
         "evasion": {
-          "description": "What the scan changed about the packets it sent, present only when it changed something - so an ordinary scan omits this object entirely and reads exactly as one produced before the option existed. Each field is present only for a technique the scan actually used. A finding read against it means more than one read without: a filtered port under a probe from a trusted source port is a different fact about the network than the same port under an ordinary one.",
+          "description": "What the scan changed about the packets it sent, present only when it changed something - so an ordinary scan omits this object entirely and reads exactly as one produced before the option existed. Each field is present only for a technique the scan actually used. A finding read against it means more than one read without: a `no_reply` port under a probe from a trusted source port is a different fact about the network than the same port under an ordinary one.",
           "type": "object",
           "additionalProperties": false,
           "properties": {
@@ -2080,7 +2081,7 @@
           }
         },
         "idle_scan": {
-          "description": "The zombie a TCP port scan read its verdicts through, present only for an idle scan. Its presence is what says the port states were inferred from a third party's IP-ID counter rather than seen in the target's own replies - so an 'open' or a 'closed_filtered' here is a claim about what the zombie bounced back, and the scanner never addressed the target under its own address at all.",
+          "description": "The zombie a TCP port scan read its verdicts through, present only for an idle scan. Its presence is what says the port states were inferred from a third party's IP-ID counter rather than seen in the target's own replies - so an 'open' or a 'closed_or_no_reply' here is a claim about what the zombie bounced back, and the scanner never addressed the target under its own address at all.",
           "type": "object",
           "additionalProperties": false,
           "required": [
@@ -2100,7 +2101,7 @@
           }
         },
         "icmp_evidence": {
-          "description": "Whether the capture kept ICMP errors the technique did not need for its verdict. What decides how a filtered port's `no_response` reads: with this set the scan listened for a refusal and none came, and without it a refusal would not have been heard.",
+          "description": "Whether the capture kept ICMP errors the technique did not need for its verdict. What decides how a `no_reply` port reads: with this set the scan listened for a refusal, which would have made the port `blocked`, and none came; without it a refusal would not have been heard.",
           "type": "boolean"
         }
       }
@@ -2124,7 +2125,7 @@
           "$ref": "#/$defs/count"
         },
         "hosts_alive": {
-          "description": "Hosts confirmed present: up or filtered.",
+          "description": "Hosts confirmed present: up or blocked.",
           "$ref": "#/$defs/count"
         },
         "hosts_by_status": {
@@ -2132,7 +2133,7 @@
           "additionalProperties": false,
           "required": [
             "up",
-            "filtered",
+            "blocked",
             "down",
             "unknown"
           ],
@@ -2140,7 +2141,7 @@
             "up": {
               "$ref": "#/$defs/count"
             },
-            "filtered": {
+            "blocked": {
               "$ref": "#/$defs/count"
             },
             "down": {
@@ -2162,30 +2163,34 @@
           "additionalProperties": false,
           "required": [
             "open",
-            "open_filtered",
+            "open_or_no_reply",
             "closed",
-            "unfiltered",
-            "filtered",
-            "closed_filtered",
+            "reachable",
+            "blocked",
+            "no_reply",
+            "closed_or_no_reply",
             "unasked"
           ],
           "properties": {
             "open": {
               "$ref": "#/$defs/count"
             },
-            "open_filtered": {
+            "open_or_no_reply": {
               "$ref": "#/$defs/count"
             },
             "closed": {
               "$ref": "#/$defs/count"
             },
-            "unfiltered": {
+            "reachable": {
               "$ref": "#/$defs/count"
             },
-            "filtered": {
+            "blocked": {
               "$ref": "#/$defs/count"
             },
-            "closed_filtered": {
+            "no_reply": {
+              "$ref": "#/$defs/count"
+            },
+            "closed_or_no_reply": {
               "$ref": "#/$defs/count"
             },
             "unasked": {

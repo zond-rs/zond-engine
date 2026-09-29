@@ -16,7 +16,8 @@
 //! kernel addresses to itself, the very error a router's ICMP host
 //! unreachable raises for a host beyond it; given less than those three
 //! seconds, it runs out as a dropped SYN does. Read as either, every port of
-//! an address nothing holds is filtered, though no SYN left for any of them.
+//! an address nothing holds is blocked or silent, though no SYN left for any
+//! of them.
 //!
 //! The kernel's neighbour table tells them apart. Read as the connect ends,
 //! an entry for the neighbour it waited on that is not resolved says the SYN

@@ -16,17 +16,17 @@
 //! - **An inline middlebox**, from a reply to a bad-checksum probe to an *open*
 //!   port. A conformant host drops the corrupt segment unread, so a reply was
 //!   sent by something inline that answered without validating. One probe.
-//! - **A stateful filter**, from an ACK probe reaching a *filtered* port, a
-//!   reset, which is unfiltered, where the scan's plain SYN did not.
+//! - **A stateful filter**, from an ACK probe reaching a *silent or blocked*
+//!   port, a reset, which is reachable, where the scan's plain SYN did not.
 //! - **A port-trusting ACL**, from a SYN out of a trusted source port reaching a
-//!   *filtered* port where an ordinary SYN did not.
-//! - **A stateless filter**, from a *fragmented* SYN reaching a *filtered* port
-//!   where a whole one did not. A filter that reassembled would have judged the
-//!   same segment either way; one that lets the fragments through judged only
-//!   the first, where the ports are and the flags are not yet. The one probe a
-//!   raw socket cannot place, so it goes over the self-built Ethernet path, and
-//!   a host that path cannot route to goes without this conclusion rather than
-//!   against it.
+//!   *silent or blocked* port where an ordinary SYN did not.
+//! - **A stateless filter**, from a *fragmented* SYN reaching a *silent or
+//!   blocked* port where a whole one did not. A filter that reassembled would
+//!   have judged the same segment either way; one that lets the fragments
+//!   through judged only the first, where the ports are and the flags are not
+//!   yet. The one probe a raw socket cannot place, so it goes over the
+//!   self-built Ethernet path, and a host that path cannot route to goes
+//!   without this conclusion rather than against it.
 //!
 //! The comparative three read the plain SYN's fate off the port state the scan
 //! already recorded, so only the alternative shape is sent here. Every one is a
@@ -78,10 +78,11 @@ pub(crate) struct Subject {
     /// An open TCP port, for the bad-checksum middlebox probe. `None` skips it:
     /// a probe whose whole point is that a listener answers has nowhere to land.
     pub(crate) open_port: Option<u16>,
-    /// A port the scan found filtered, for the comparative probes: each tests
-    /// whether a differently-shaped probe reaches where a plain SYN did not.
-    /// `None` skips them: an unfiltered port shows no filter doing anything.
-    pub(crate) filtered_port: Option<u16>,
+    /// A TCP port the scan's plain SYN did not reach, `NoReply` or `Blocked`,
+    /// for the comparative probes: each tests whether a differently-shaped
+    /// probe reaches where a plain SYN did not. `None` skips them: a port that
+    /// answered a SYN shows no filter doing anything.
+    pub(crate) unreached_port: Option<u16>,
 }
 
 /// The probes still outstanding. Each nonce names the host its probe went to
@@ -175,11 +176,11 @@ async fn run(
 
     let unframed = match fragmenting {
         Some(fragmenting) => {
-            let filtered = subjects
+            let comparative = subjects
                 .iter()
-                .filter(|subject| subject.filtered_port.is_some())
+                .filter(|subject| subject.unreached_port.is_some())
                 .map(|subject| subject.host);
-            resolve_ahead(ctx, Some(&fragmenting.neighbors), resolver, filtered)
+            resolve_ahead(ctx, Some(&fragmenting.neighbors), resolver, comparative)
                 .await
                 .1
         }
@@ -254,7 +255,7 @@ impl Diagnostic {
 
 /// The probes every subject's ports allow on the transport, in the order they
 /// are sent: the middlebox probe to an open port, and the two comparative
-/// probes to a filtered one.
+/// probes to one a plain SYN did not reach.
 ///
 /// A host with no source address to send from is passed over: a probe that
 /// never left proves nothing about the filter in front of it.
@@ -280,7 +281,7 @@ fn plan_diagnostics(
         if let Some(port) = subject.open_port {
             planned.push(diagnostic(port, Filtering::InlineMiddlebox));
         }
-        if let Some(port) = subject.filtered_port {
+        if let Some(port) = subject.unreached_port {
             planned.push(diagnostic(port, Filtering::StatefulFilter));
             planned.push(diagnostic(port, Filtering::PortTrustingAcl));
         }
@@ -289,9 +290,9 @@ fn plan_diagnostics(
 }
 
 /// Sends the fragmented stateless-filter probe to every subject with a
-/// filtered port, on the frame sender that can place it, except where that
-/// sender's neighbour did not answer, `unframed`, whose hosts go without this
-/// one conclusion.
+/// port a plain SYN did not reach, on the frame sender that can place it,
+/// except where that sender's neighbour did not answer, `unframed`, whose
+/// hosts go without this one conclusion.
 fn send_fragmented(
     subjects: &[Subject],
     sender: &dyn ProbeSender,
@@ -300,7 +301,7 @@ fn send_fragmented(
     awaiting: &mut Awaiting,
 ) {
     for subject in subjects {
-        let Some(port) = subject.filtered_port else {
+        let Some(port) = subject.unreached_port else {
             continue;
         };
         if unframed.contains_key(&subject.host) {
@@ -346,9 +347,9 @@ fn probe_inline_middlebox(
     );
 }
 
-/// Sends an ACK to a port the scan's plain SYN found filtered. A reset back is
-/// a port that is unfiltered to an ACK and filtered to a SYN, which is a filter
-/// judging a segment by where it sits in a connection.
+/// Sends an ACK to a port the scan's plain SYN did not reach. A reset back is
+/// a port an ACK reaches and a SYN does not, which is a filter judging a
+/// segment by where it sits in a connection.
 fn probe_stateful_filter(
     sender: &dyn ProbeSender,
     awaiting: &mut Awaiting,
@@ -370,8 +371,8 @@ fn probe_stateful_filter(
     );
 }
 
-/// Sends a SYN out of the trusted source port to a port an ordinary SYN found
-/// filtered. A reply is a rule admitting the segment on the port it claims to
+/// Sends a SYN out of the trusted source port to a port an ordinary SYN did
+/// not reach. A reply is a rule admitting the segment on the port it claims to
 /// come from rather than on what it is.
 fn probe_port_trusting_acl(
     sender: &dyn ProbeSender,
@@ -619,7 +620,7 @@ mod tests {
             .map(|host| Subject {
                 host,
                 open_port: Some(80),
-                filtered_port: Some(81),
+                unreached_port: Some(81),
             })
             .collect();
         let mut resolver = SourceResolver::from_links(&[Link::new("test0", 0)
@@ -685,7 +686,7 @@ mod tests {
             .map(|host| Subject {
                 host,
                 open_port: Some(80),
-                filtered_port: Some(81),
+                unreached_port: Some(81),
             })
             .collect();
         let mut resolver =

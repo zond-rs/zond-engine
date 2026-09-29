@@ -163,8 +163,8 @@ import-all = ["import-csv", "import-json", "import-nmap", "import-request", "imp
 # carries it, `SourceResolver` says which address this host would send from, and
 # `ProbeKind` compiles the filter that decides what a reply may be. What this
 # adds is that they are assembled once here rather than at every call site, where
-# each of the six decisions got wrong produces the same silence a filtered port
-# does.
+# each of the six decisions got wrong produces the same silence a port behind a
+# dropping filter does.
 #
 # It also puts `protocols::craft` behind `serde`, so a packet is describable as a
 # document rather than only as a value. One story with the sending: a caller that

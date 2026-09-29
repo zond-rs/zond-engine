@@ -909,8 +909,8 @@ pub struct ProbeTuning {
     /// [what a profile shapes](crate::evasion#a-profile-shapes-the-probes).
     pub evasion: EvasionProfile,
 
-    /// Whether the capture admits ICMP errors for a technique that reaches its
-    /// verdict without them. See [`ZondConfig::icmp_evidence`].
+    /// Whether the capture admits ICMP errors for a technique that finds open
+    /// and closed ports without them. See [`ZondConfig::icmp_evidence`].
     pub icmp_evidence: bool,
 
     /// Source addresses to force, one per family. See
@@ -928,7 +928,7 @@ pub struct ProbeTuning {
 /// counter that advances by one for every packet the zombie sends. Read
 /// the counter, forge a probe, read it again: an open port drew an answer the
 /// zombie had to reset, advancing the counter an extra step, and a closed or
-/// filtered one did not.
+/// unreached one did not.
 ///
 /// It follows that the zombie has to be the right kind of host, one whose IP-ID
 /// is a single shared counter, and that the forged probe needs a self-built
@@ -1067,7 +1067,7 @@ pub struct ZondConfig {
     ///
     /// Off by default, so [`scan`](crate::scan) establishes that a target is
     /// there before spending a probe on each of its ports. An address nothing
-    /// answers for otherwise comes back with every port filtered, which is a
+    /// answers for otherwise comes back with every port as no reply, which is a
     /// thousand lines of the scan reporting its own silence, and on a wide port
     /// range it is most of the run's cost.
     ///
@@ -1115,7 +1115,7 @@ pub struct ZondConfig {
     /// that answered, sending deliberately-shaped diagnostic probes whose results
     /// it reads as [`Filtering`](crate::model::host::Filtering) conclusions. It
     /// does not touch the port verdicts. A bad-checksum probe, the one it sends
-    /// today, would report every port filtered if it were the setting a scan ran
+    /// today, would report every port as no reply if it were the setting a scan ran
     /// under, which is why it is a separate pass rather than a scan option.
     pub characterise: bool,
 
@@ -1544,7 +1544,7 @@ pub struct ZondConfig {
     /// Defaults to [`SctpScanTechnique::Init`], the only technique that names an
     /// open SCTP port. [`CookieEcho`](SctpScanTechnique::CookieEcho) trades that
     /// for passage: it draws an answer only from a port with nothing behind it,
-    /// so its best verdict is open-or-filtered, and it crosses filters written
+    /// so its best verdict is open or no reply, and it crosses filters written
     /// against the INIT chunk a scan is expected to send.
     ///
     /// Both need raw sockets, and neither has an unprivileged form. Affects the
@@ -1603,14 +1603,17 @@ pub struct ZondConfig {
     /// [what a profile shapes](crate::evasion#a-profile-shapes-the-probes).
     pub evasion: EvasionProfile,
 
-    /// Whether to capture ICMP errors for a technique whose verdict does not
-    /// depend on them, such as a SYN scan. On by default.
+    /// Whether to capture ICMP errors for a technique that finds open and
+    /// closed ports without them, such as a SYN scan. On by default.
     ///
-    /// An ICMP error is a firewall answering, and a scan too outrun to read
-    /// silence as a verdict can still report it, so the difference between a
-    /// refused port and an unreached one is worth the errors the capture copies
-    /// up. A caller on a link noisy with ICMP turns it off. The other TCP
-    /// techniques read ICMP for their verdicts regardless.
+    /// An ICMP error is a firewall answering, and it is what tells a
+    /// [`Blocked`](crate::model::port::PortState::Blocked) port from one that
+    /// drew [`NoReply`](crate::model::port::PortState::NoReply): without it a
+    /// refusal is never heard and reads as the silence it then is. A scan too
+    /// outrun to read silence as a verdict can still report a refusal, so the
+    /// difference is worth the errors the capture copies up. A caller on a link
+    /// noisy with ICMP turns it off. The other TCP techniques read ICMP for
+    /// their verdicts regardless.
     pub icmp_evidence: bool,
 
     /// Source addresses to send probes to routed targets from, overriding

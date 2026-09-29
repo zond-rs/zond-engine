@@ -11,8 +11,8 @@
 //! These assert the unprivileged connect path's real behaviour against
 //! loopback, which is limited to what a cooperative kernel will produce: open
 //! and closed. Both are recorded, so the port list a scan produces does not
-//! depend on whether the process had root. `Filtered` is a silent firewall drop and cannot be reproduced on
-//! loopback at all, so the privileged SYN path's full Open/Closed/Filtered
+//! depend on whether the process had root. `NoReply` is a silent drop and cannot be reproduced on
+//! loopback at all, so the privileged SYN path's full Open/Closed/NoReply
 //! logic belongs against the simulated network in `support::fake_net` instead
 //! (see `tests/README.md`).
 

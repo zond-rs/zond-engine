@@ -3605,8 +3605,8 @@ impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::HostDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::HostDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::HostDto<'a>
 #[non_exhaustive] pub struct zond_engine::export::schema::HostStatusCounts
+pub zond_engine::export::schema::HostStatusCounts::blocked: usize
 pub zond_engine::export::schema::HostStatusCounts::down: usize
-pub zond_engine::export::schema::HostStatusCounts::filtered: usize
 pub zond_engine::export::schema::HostStatusCounts::unknown: usize
 pub zond_engine::export::schema::HostStatusCounts::up: usize
 impl core::clone::Clone for zond_engine::export::schema::HostStatusCounts
@@ -3799,13 +3799,14 @@ impl core::marker::UnsafeUnpin for zond_engine::export::schema::PortScopeDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::PortScopeDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::PortScopeDto
 #[non_exhaustive] pub struct zond_engine::export::schema::PortStateCounts
+pub zond_engine::export::schema::PortStateCounts::blocked: usize
 pub zond_engine::export::schema::PortStateCounts::closed: usize
-pub zond_engine::export::schema::PortStateCounts::closed_filtered: usize
-pub zond_engine::export::schema::PortStateCounts::filtered: usize
+pub zond_engine::export::schema::PortStateCounts::closed_or_no_reply: usize
+pub zond_engine::export::schema::PortStateCounts::no_reply: usize
 pub zond_engine::export::schema::PortStateCounts::open: usize
-pub zond_engine::export::schema::PortStateCounts::open_filtered: usize
+pub zond_engine::export::schema::PortStateCounts::open_or_no_reply: usize
+pub zond_engine::export::schema::PortStateCounts::reachable: usize
 pub zond_engine::export::schema::PortStateCounts::unasked: usize
-pub zond_engine::export::schema::PortStateCounts::unfiltered: usize
 impl core::clone::Clone for zond_engine::export::schema::PortStateCounts
 pub fn zond_engine::export::schema::PortStateCounts::clone(&self) -> zond_engine::export::schema::PortStateCounts
 impl core::fmt::Debug for zond_engine::export::schema::PortStateCounts
@@ -8569,10 +8570,10 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::path:
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::path::NetworkPath
 pub mod zond_engine::model::host::protocol
 #[non_exhaustive] pub enum zond_engine::model::host::protocol::IpProtocolState
+pub zond_engine::model::host::protocol::IpProtocolState::Blocked
 pub zond_engine::model::host::protocol::IpProtocolState::Closed
-pub zond_engine::model::host::protocol::IpProtocolState::Filtered
 pub zond_engine::model::host::protocol::IpProtocolState::Open
-pub zond_engine::model::host::protocol::IpProtocolState::OpenFiltered
+pub zond_engine::model::host::protocol::IpProtocolState::OpenOrNoReply
 pub zond_engine::model::host::protocol::IpProtocolState::Unasked
 impl zond_engine::model::host::protocol::IpProtocolState
 pub const zond_engine::model::host::protocol::IpProtocolState::ALL: &'static [Self]
@@ -8628,8 +8629,8 @@ impl core::marker::UnsafeUnpin for zond_engine::model::host::status::EvidenceSou
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::status::EvidenceSource
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::status::EvidenceSource
 #[non_exhaustive] pub enum zond_engine::model::host::status::HostStatus
+pub zond_engine::model::host::status::HostStatus::Blocked
 pub zond_engine::model::host::status::HostStatus::Down
-pub zond_engine::model::host::status::HostStatus::Filtered
 pub zond_engine::model::host::status::HostStatus::Unknown
 pub zond_engine::model::host::status::HostStatus::Up
 impl zond_engine::model::host::status::HostStatus
@@ -8861,8 +8862,8 @@ impl core::marker::UnsafeUnpin for zond_engine::model::host::Filtering
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::Filtering
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::Filtering
 #[non_exhaustive] pub enum zond_engine::model::host::HostStatus
+pub zond_engine::model::host::HostStatus::Blocked
 pub zond_engine::model::host::HostStatus::Down
-pub zond_engine::model::host::HostStatus::Filtered
 pub zond_engine::model::host::HostStatus::Unknown
 pub zond_engine::model::host::HostStatus::Up
 impl zond_engine::model::host::status::HostStatus
@@ -8896,10 +8897,10 @@ impl core::marker::UnsafeUnpin for zond_engine::model::host::status::HostStatus
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::status::HostStatus
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::status::HostStatus
 #[non_exhaustive] pub enum zond_engine::model::host::IpProtocolState
+pub zond_engine::model::host::IpProtocolState::Blocked
 pub zond_engine::model::host::IpProtocolState::Closed
-pub zond_engine::model::host::IpProtocolState::Filtered
 pub zond_engine::model::host::IpProtocolState::Open
-pub zond_engine::model::host::IpProtocolState::OpenFiltered
+pub zond_engine::model::host::IpProtocolState::OpenOrNoReply
 pub zond_engine::model::host::IpProtocolState::Unasked
 impl zond_engine::model::host::protocol::IpProtocolState
 pub const zond_engine::model::host::protocol::IpProtocolState::ALL: &'static [Self]
@@ -10930,13 +10931,14 @@ impl core::marker::UnsafeUnpin for zond_engine::model::port::set::PortSetParseEr
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::set::PortSetParseError
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::set::PortSetParseError
 #[non_exhaustive] pub enum zond_engine::model::port::PortState
+pub zond_engine::model::port::PortState::Blocked
 pub zond_engine::model::port::PortState::Closed
-pub zond_engine::model::port::PortState::ClosedFiltered
-pub zond_engine::model::port::PortState::Filtered
+pub zond_engine::model::port::PortState::ClosedOrNoReply
+pub zond_engine::model::port::PortState::NoReply
 pub zond_engine::model::port::PortState::Open
-pub zond_engine::model::port::PortState::OpenFiltered
+pub zond_engine::model::port::PortState::OpenOrNoReply
+pub zond_engine::model::port::PortState::Reachable
 pub zond_engine::model::port::PortState::Unasked
-pub zond_engine::model::port::PortState::Unfiltered
 impl zond_engine::model::port::PortState
 pub const zond_engine::model::port::PortState::ALL: &'static [Self]
 impl core::clone::Clone for zond_engine::model::port::PortState
@@ -17202,8 +17204,8 @@ pub fn zond_engine::transport::probe::ProbeSender::send(&self, &[u8], core::net:
 impl zond_engine::transport::probe::ProbeSender for zond_engine::transport::probe::RawIpSender
 pub fn zond_engine::transport::probe::RawIpSender::send(&self, &[u8], core::net::ip_addr::IpAddr, core::net::ip_addr::IpAddr, core::option::Option<u32>, zond_engine::transport::probe::Emission) -> core::result::Result<(), zond_engine::transport::probe::SendError>
 #[non_exhaustive] pub enum zond_engine::HostStatus
+pub zond_engine::HostStatus::Blocked
 pub zond_engine::HostStatus::Down
-pub zond_engine::HostStatus::Filtered
 pub zond_engine::HostStatus::Unknown
 pub zond_engine::HostStatus::Up
 impl zond_engine::model::host::status::HostStatus
@@ -17237,13 +17239,14 @@ impl core::marker::UnsafeUnpin for zond_engine::model::host::status::HostStatus
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::host::status::HostStatus
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::host::status::HostStatus
 #[non_exhaustive] pub enum zond_engine::PortState
+pub zond_engine::PortState::Blocked
 pub zond_engine::PortState::Closed
-pub zond_engine::PortState::ClosedFiltered
-pub zond_engine::PortState::Filtered
+pub zond_engine::PortState::ClosedOrNoReply
+pub zond_engine::PortState::NoReply
 pub zond_engine::PortState::Open
-pub zond_engine::PortState::OpenFiltered
+pub zond_engine::PortState::OpenOrNoReply
+pub zond_engine::PortState::Reachable
 pub zond_engine::PortState::Unasked
-pub zond_engine::PortState::Unfiltered
 impl zond_engine::model::port::PortState
 pub const zond_engine::model::port::PortState::ALL: &'static [Self]
 impl core::clone::Clone for zond_engine::model::port::PortState

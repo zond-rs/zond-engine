@@ -50,7 +50,7 @@ async fn a_peer_is_scanned_over_ipv6() {
 /// Each one adds a link and a subnet to the same namespace, so the engine has
 /// to choose per target rather than taking whatever interface it finds first.
 /// A wrong choice sends the probes down a wire the target is not on, and the
-/// port comes back filtered rather than wrong, which is the kind of failure
+/// port comes back silent rather than wrong, which is the kind of failure
 /// that reads as a flake.
 #[tokio::test]
 async fn two_segments_at_once_are_not_confused_for_one_another() {

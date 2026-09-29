@@ -39,11 +39,10 @@
 /// promotes by an ordinary comparison and two probes that disagree resolve to
 /// whichever learned more.
 ///
-/// The order is not [`PortState`](crate::model::port::PortState)'s, and the
-/// difference is in what the words mean here.
-/// [`Filtered`](Self::Filtered) is a packet here, an intermediary refusing the
-/// protocol in its own words, where a port scan reaches the same word from
-/// silence. So it outranks the silent verdict here and sits below it there.
+/// It keeps [`PortState`](crate::model::port::PortState)'s rule that a packet
+/// outranks a silence: [`Blocked`](Self::Blocked), an intermediary refusing the
+/// protocol in its own words, sits above
+/// [`OpenOrNoReply`](Self::OpenOrNoReply), which is nothing coming back.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IpProtocolState {
@@ -62,7 +61,7 @@ pub enum IpProtocolState {
     /// even where the host speaks them, since there is no handshake to complete
     /// and nothing to refuse, so silence cannot tell a stack that accepted the
     /// datagram from a filter that dropped it.
-    OpenFiltered,
+    OpenOrNoReply,
 
     /// Something in the path refused the protocol, by an ICMP unreachable that
     /// was not a protocol unreachable: administratively prohibited, or a
@@ -70,7 +69,7 @@ pub enum IpProtocolState {
     ///
     /// A statement about the path rather than the host. The host may speak this
     /// protocol perfectly well and never hear a datagram of it.
-    Filtered,
+    Blocked,
 
     /// The host's own stack said it does not speak this protocol, by an ICMP
     /// protocol unreachable (RFC 792 type 3 code 2, RFC 4443 type 1 code 4).
@@ -96,8 +95,8 @@ impl IpProtocolState {
     /// the gate holding the exported schema to what this build can write.
     pub const ALL: &'static [Self] = &[
         Self::Unasked,
-        Self::OpenFiltered,
-        Self::Filtered,
+        Self::OpenOrNoReply,
+        Self::Blocked,
         Self::Closed,
         Self::Open,
     ];
@@ -165,9 +164,9 @@ mod tests {
     /// established, which is what the ordering is for.
     #[test]
     fn the_states_rank_by_how_much_they_establish() {
-        assert!(IpProtocolState::Unasked < IpProtocolState::OpenFiltered);
-        assert!(IpProtocolState::OpenFiltered < IpProtocolState::Filtered);
-        assert!(IpProtocolState::Filtered < IpProtocolState::Closed);
+        assert!(IpProtocolState::Unasked < IpProtocolState::OpenOrNoReply);
+        assert!(IpProtocolState::OpenOrNoReply < IpProtocolState::Blocked);
+        assert!(IpProtocolState::Blocked < IpProtocolState::Closed);
         assert!(IpProtocolState::Closed < IpProtocolState::Open);
     }
 
@@ -176,8 +175,8 @@ mod tests {
     /// nobody stopped.
     #[test]
     fn silence_is_not_acceptance() {
-        assert!(!IpProtocolState::OpenFiltered.is_accepted());
-        assert!(IpProtocolState::OpenFiltered.is_established());
+        assert!(!IpProtocolState::OpenOrNoReply.is_accepted());
+        assert!(IpProtocolState::OpenOrNoReply.is_established());
         assert!(IpProtocolState::Open.is_accepted());
     }
 

@@ -318,19 +318,19 @@ struct PortTarget {
 /// speaking one may run against it.
 ///
 /// A port confirmed open runs every detection gated onto it, passive readings
-/// of the gathered responses included. A UDP port left open|filtered runs only
+/// of the gathered responses included. A UDP port left `OpenOrNoReply` runs only
 /// a detection that speaks: over UDP that state is the ordinary lot of a
 /// service answering nothing but the request it recognises, so a detection
 /// whose own first datagram is that request establishes what is there where the
 /// service probe drew silence, while one that reads what the scan gathered has
 /// nothing to read, a UDP port reaching the service pass only once open. Any
-/// other state, and an open|filtered TCP port, carries no detection: a TCP port
+/// other state, and an `OpenOrNoReply` TCP port, carries no detection: a TCP port
 /// that only might be open is settled by the connection a detection would make
 /// rather than run against speculatively.
 fn detection_reach(state: PortState, protocol: Protocol) -> Option<bool> {
     match (state, protocol) {
         (PortState::Open, _) => Some(false),
-        (PortState::OpenFiltered, Protocol::Udp) => Some(true),
+        (PortState::OpenOrNoReply, Protocol::Udp) => Some(true),
         _ => None,
     }
 }
@@ -1160,7 +1160,7 @@ mod tests {
     }
 
     /// A UDP detection whose own first datagram is its probe runs against a
-    /// port left open|filtered, the state a UDP service that answers only the
+    /// port left `OpenOrNoReply`, the state a UDP service that answers only the
     /// request it knows is left in by a scan whose generic probe it ignored.
     ///
     /// The finding it draws is one nothing else could: the port never reached
@@ -1169,10 +1169,10 @@ mod tests {
     /// the detection's own. Skipping every port not confirmed open left this
     /// detection unrun on exactly the ports it exists for.
     #[tokio::test]
-    async fn a_speaking_udp_detection_runs_on_an_open_filtered_port() {
+    async fn a_speaking_udp_detection_runs_on_an_open_or_no_reply_port() {
         // A responder that answers only its own probe word, as an agent answers
         // a request it accepts and ignores one it does not: silence to the
-        // scan's generic probe is what left the port open|filtered.
+        // scan's generic probe is what left the port `OpenOrNoReply`.
         let agent = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let addr = agent.local_addr().unwrap();
         tokio::spawn(async move {
@@ -1218,12 +1218,12 @@ mod tests {
         let (session, ctx) = ScanSession::builder().detections(detections).build();
         let ip = addr.ip();
         let mut host = Host::new(ip);
-        // Open|filtered, not Open: the UDP port scan heard nothing back, which
-        // over UDP settles neither open nor filtered.
+        // OpenOrNoReply, not Open: the UDP port scan heard nothing back, which
+        // over UDP settles neither open nor dropped.
         host.add_port(Port::new(
             addr.port(),
             Protocol::Udp,
-            PortState::OpenFiltered,
+            PortState::OpenOrNoReply,
         ));
         session.hosts().insert(ip, host);
 
@@ -1246,7 +1246,7 @@ mod tests {
         assert_eq!(
             ids,
             vec!["udp-speak-first"],
-            "the speaking detection did not run on the open|filtered port"
+            "the speaking detection did not run on the open|no-reply port"
         );
     }
 

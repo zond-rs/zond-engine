@@ -222,8 +222,8 @@ fn hand_built_report() -> ScanReport {
     edge.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
 
     let mut quiet = Host::new("198.51.100.7".parse::<IpAddr>().expect("an address"));
-    quiet.set_status(HostStatus::Filtered);
-    quiet.add_port(Port::new(25, Protocol::Tcp, PortState::Filtered));
+    quiet.set_status(HostStatus::Blocked);
+    quiet.add_port(Port::new(25, Protocol::Tcp, PortState::NoReply));
 
     ScanReport::recorded("zond-test 1.2.3", Vec::new(), vec![gateway, edge, quiet])
 }

@@ -128,7 +128,7 @@ struct Target {
     /// TCP has the generic HTTP probe behind it, so a web application on a
     /// random port is still asked something it can answer; UDP has no such
     /// fallback, and a datagram service on a port the corpus registers no probe
-    /// for is sent nothing at all and reports as `open|filtered`. So a UDP
+    /// for is sent nothing at all and reports as `OpenOrNoReply`. So a UDP
     /// target is published on its own number, and a collision there is a runtime
     /// error the run prints rather than a silent identification failure.
     host_port: Option<u16>,

@@ -39,7 +39,7 @@
 //! one goes out carrying sequence number A, attempt two carries B, and then a
 //! `SYN+ACK` acknowledging A arrives. It is a genuine answer from an open port,
 //! but a scanner holding only B has no way to recognize it and reports the port
-//! filtered. Retransmission would make the scan *less* accurate on exactly the
+//! silent. Retransmission would make the scan *less* accurate on exactly the
 //! lossy paths it exists for.
 //!
 //! Keeping every live token also buys something TCP itself cannot have. Karn's
@@ -156,7 +156,7 @@ pub struct RetryPolicy {
     /// or under what the host's round trips have shown an answer needs, and a
     /// probe timed there gives up on answers still on their way: with one
     /// attempt behind a 20 ms path, a 30% spread down from a 25 ms floor read
-    /// about one open port in five as filtered.
+    /// about one open port in five as silent.
     pub jitter: f64,
     /// How the budget is cut for hosts that never answer, if at all.
     pub silent_host: Option<SilentHostPolicy>,
@@ -447,7 +447,7 @@ impl RttEstimator {
     /// leaving a timeout that is the round trip itself, which every reply a
     /// little slower than usual misses: with one reply in twenty ten percent
     /// slow, a steady 100 ms path read a fifth to two fifths of those as
-    /// filtered on one attempt. TCP answers the same decay with a floor of one clock tick
+    /// silent on one attempt. TCP answers the same decay with a floor of one clock tick
     /// (RFC 6298's G), which says nothing here, where the clock is finer than
     /// any path; what a steady path does stray by is a share of its own round
     /// trip, as queues along it fill and drain, so the floor is a share too. A
@@ -708,7 +708,7 @@ pub enum Due<K, P = ()> {
         attempt: u8,
     },
     /// The budget is spent and the probe is no longer outstanding. This is the
-    /// moment a verdict of "filtered" is earned rather than assumed.
+    /// moment a verdict of "no reply" is earned rather than assumed.
     Exhausted {
         /// The probe being retired.
         key: K,
@@ -1152,7 +1152,7 @@ where
     /// A port scan reaches a host that a liveness phase has already timed, and
     /// starting from [`initial_rto`](RetryPolicy::initial_rto) throws that away:
     /// the first wave of probes to a host answering in five milliseconds waits
-    /// two hundred before repeating, and every genuinely filtered port pays that
+    /// two hundred before repeating, and every genuinely silent port pays that
     /// wait three times over. Seeded, the same tail is settled in a fraction of
     /// the time.
     ///
@@ -1434,7 +1434,7 @@ mod tests {
 
     /// A port scan meets hosts a liveness phase already timed, and starting
     /// from the unmeasured guess throws that away: the cost lands entirely on
-    /// the ports that turn out to be filtered, each of which then waits the full
+    /// the ports that turn out to be silent, each of which then waits the full
     /// guess three times before silence is allowed to mean anything.
     #[test]
     fn a_seeded_host_is_timed_from_the_measurement_rather_than_the_guess() {
@@ -2102,7 +2102,7 @@ mod tests {
     /// The failure this design exists to prevent. Attempt one goes out
     /// carrying token 7, attempt two carries 8, and the answer to the *first*
     /// arrives afterwards. A ledger holding only the newest token would discard
-    /// a genuine reply and report the target filtered.
+    /// a genuine reply and report the target silent.
     #[test]
     fn a_late_reply_to_an_earlier_attempt_still_resolves_the_probe() {
         let t0 = Instant::now();
@@ -2231,7 +2231,7 @@ mod tests {
     /// replies mostly agree it decays towards nothing between the stragglers,
     /// leaving a timeout that is the smoothed round trip itself. Every
     /// straggler then lands after it, and with one attempt that is an open
-    /// port read filtered. Here one reply in twenty is ten percent slow.
+    /// port read silent. Here one reply in twenty is ten percent slow.
     #[test]
     fn a_steady_path_keeps_headroom_for_a_reply_a_little_slower_than_most() {
         let usual = Duration::from_millis(100);
@@ -2369,7 +2369,7 @@ mod tests {
     ///
     /// Both are the shortest wait at which silence means anything. A probe
     /// timed below either gives up on answers that are on their way, and with
-    /// one attempt that is an open port read filtered: behind a 20 ms path,
+    /// one attempt that is an open port read silent: behind a 20 ms path,
     /// spread both ways from the 25 ms floor, 56 of 300 were.
     #[test]
     fn jitter_never_times_a_probe_below_the_floor_or_what_was_measured() {

@@ -22,7 +22,7 @@ use zond_engine::model::port::PortState;
 /// Every port in a scan over a lossy link still leaves with a verdict.
 ///
 /// Losing an answer is not supposed to lose a port. The verdict may soften from
-/// Closed to Filtered, since a reset that never arrives is indistinguishable
+/// Closed to `NoReply`, since a reset that never arrives is indistinguishable
 /// from a firewall, but a port that was asked about must come back having been
 /// asked.
 #[tokio::test]
@@ -48,7 +48,7 @@ async fn a_lossy_link_still_accounts_for_every_port() {
         .filter(|&port| {
             !matches!(
                 outcome.port_state(segment.peer(), port),
-                Some(PortState::Closed) | Some(PortState::Filtered)
+                Some(PortState::Closed) | Some(PortState::NoReply)
             )
         })
         .collect();
@@ -130,7 +130,7 @@ async fn a_connect_sweep_finds_a_host_two_seconds_away() {
 ///
 /// A scan told the host is up runs no liveness pass, so its first connect is
 /// the first thing to cross the path, and waited as on an ordinary one it
-/// gives up on the answer and files the port filtered. The host answering
+/// gives up on the answer and files the port `NoReply`. The host answering
 /// nothing is what sends one of its ports a connect that waits long enough
 /// to find the path.
 #[tokio::test]

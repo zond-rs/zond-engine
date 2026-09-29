@@ -2124,7 +2124,7 @@ mod tests {
         use crate::model::port::{Port, PortState, Protocol};
 
         let mut host = Host::new(address.parse().expect("an address"));
-        host.add_port(Port::new(80, Protocol::Tcp, PortState::Filtered));
+        host.add_port(Port::new(80, Protocol::Tcp, PortState::NoReply));
         host
     }
 
@@ -2270,7 +2270,7 @@ mod tests {
         });
         ctx.write_host(address("192.0.2.6"), |host| {
             *host = unheard("192.0.2.6");
-            host.add_port(Port::new(443, Protocol::Tcp, PortState::Filtered));
+            host.add_port(Port::new(443, Protocol::Tcp, PortState::NoReply));
             true
         });
         for port in [80, 443] {

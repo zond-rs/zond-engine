@@ -717,7 +717,7 @@ impl Segment {
     /// Refuses this TCP port with an ICMP administrative prohibition.
     ///
     /// The near miss worth guarding: an ICMP error that is not a port
-    /// unreachable means a filter said no, which is `Filtered` rather than the
+    /// unreachable means a filter said no, which is `Blocked` rather than the
     /// `Closed` a reset would mean.
     pub fn prohibit_tcp(&self, port: u16) {
         self.rule(&[
@@ -1016,8 +1016,8 @@ impl Segment {
     /// Binds a UDP socket in the peer's namespace that answers what it is sent.
     ///
     /// A UDP port is only positively open when something replies, so a listener
-    /// that stayed silent would be indistinguishable from a filtered one and the
-    /// test would pass for the wrong reason.
+    /// that stayed silent would be indistinguishable from one whose datagrams
+    /// are dropped, and the test would pass for the wrong reason.
     pub fn echo_udp(&mut self) -> u16 {
         let address = peer_v4(self.index);
         self.serve(move |stop, tx| {

@@ -807,7 +807,7 @@ pub fn is_on_link(link: &Link, ips: &IpSet) -> bool {
 /// reports it for every tun, WireGuard and ppp device, which is to say for the
 /// link every VPN a CTF player connects through arrives on: read as down, the
 /// tunnel was left out of source selection and of the capture list, and a SYN
-/// scan through it read every port filtered while the replies arrived unheard.
+/// scan through it read every port silent while the replies arrived unheard.
 /// The running flag is what such a driver does set, once something is attached
 /// to the device, so a tunnel nobody has opened stays out.
 fn carries_traffic(

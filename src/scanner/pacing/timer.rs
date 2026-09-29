@@ -249,7 +249,7 @@ impl ScanBudget {
     ///
     /// Measured, against one host: a 65 535-port scan whose pacing had settled
     /// at its floor needed 104 seconds and was allowed 60. Thirteen thousand
-    /// ports were never reached and thirty-two thousand were reported filtered
+    /// ports were never reached and thirty-two thousand were reported silent
     /// without having been asked the whole question. The budget had computed the
     /// right number and the ceiling threw it away.
     ///

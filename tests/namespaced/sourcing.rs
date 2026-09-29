@@ -26,7 +26,7 @@ use zond_engine::model::port::PortState;
 /// target sits behind the peer, where the routing table sends the probe from
 /// the primary. Forced to the secondary, the scan's SYN has to leave from the
 /// secondary, or the peer drops it for a checksum computed over an address
-/// the header does not carry, and an open port reads filtered.
+/// the header does not carry, and an open port reads `NoReply`.
 #[tokio::test]
 async fn a_forced_source_is_the_source_a_probe_carries() {
     if !available() {

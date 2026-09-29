@@ -877,15 +877,15 @@ mod tests {
             &ctx,
             2,
             &[
-                (22, PortState::Filtered),
-                (80, PortState::Filtered),
-                (443, PortState::Filtered),
+                (22, PortState::NoReply),
+                (80, PortState::NoReply),
+                (443, PortState::NoReply),
             ],
         );
         file(
             &ctx,
             3,
-            &[(22, PortState::Filtered), (80, PortState::Unasked)],
+            &[(22, PortState::NoReply), (80, PortState::Unasked)],
         );
         ctx.forget_silent(vec![ScopedIp::from(ip(2))]);
         ctx.forget_undecided(vec![ScopedIp::from(ip(3))]);
@@ -895,7 +895,7 @@ mod tests {
         let (_session, ctx) = ScanSession::new();
         let recorder = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, scope(), &cfg)
             .skipping_liveness(LivenessSkip::AssumeUp);
-        file(&ctx, 2, &[(22, PortState::Filtered)]);
+        file(&ctx, 2, &[(22, PortState::NoReply)]);
         ctx.forget_silent(vec![ScopedIp::from(ip(2))]);
         assert_eq!(
             recorder.finish(&ctx).phases()[0].unheard_probes(),
@@ -919,7 +919,7 @@ mod tests {
         let recorder = PhaseRecorder::start(ScanKind::PortScan, Privilege::Connect, scope(), &cfg)
             .skipping_liveness(LivenessSkip::PortsNoDearer);
         ctx.update_host(ip(3), |host| {
-            host.add_port(Port::new(22, Protocol::Tcp, PortState::Filtered));
+            host.add_port(Port::new(22, Protocol::Tcp, PortState::NoReply));
             host.add_port(Port::new(80, Protocol::Tcp, PortState::Unasked));
             host.add_port(Port::new(443, Protocol::Tcp, PortState::Unasked));
         });

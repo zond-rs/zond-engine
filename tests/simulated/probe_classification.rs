@@ -17,7 +17,7 @@
 //!
 //! These guard behaviour the engine has, and the most valuable ones are the
 //! near-misses: an administratively prohibited port that must read
-//! `Filtered` rather than `Closed`, and an ICMPv6 code that means something
+//! `Blocked` rather than `Closed`, and an ICMPv6 code that means something
 //! different from the identically numbered ICMPv4 one. Both are the kind of
 //! mistake that produces a confident, wrong answer.
 
@@ -162,7 +162,7 @@ async fn sctp_scan_with(
 /// The three outcomes a SYN probe can reach, in one scan, so a fix for one
 /// cannot quietly break the others.
 #[tokio::test]
-async fn syn_classifies_open_closed_and_filtered() {
+async fn syn_classifies_open_closed_and_no_reply() {
     let (session, _net) = syn_scan(&[
         (80, Policy::open()),
         (81, Policy::closed()),
@@ -174,14 +174,14 @@ async fn syn_classifies_open_closed_and_filtered() {
     assert_eq!(port_state(&session, TARGET, 81), Some(PortState::Closed));
     assert_eq!(
         port_state(&session, TARGET, 82),
-        Some(PortState::Filtered),
+        Some(PortState::NoReply),
         "silence until the deadline is what a firewall drop looks like"
     );
 }
 
 /// A reply that arrives well after the probe must still be matched to it. The
 /// adaptive deadline is what keeps the scan open long enough, so this is really
-/// a check that a slow host is not written off as filtered.
+/// a check that a slow host is not written off as silent.
 #[tokio::test]
 async fn a_slow_reply_is_still_matched_to_its_probe() {
     let (session, _net) = syn_scan(&[(80, Policy::open().delay(Duration::from_millis(50)))]).await;
@@ -266,7 +266,7 @@ async fn established_traffic_is_not_an_answer_to_a_probe() {
 
     assert_eq!(
         port_state(&session, TARGET, 80),
-        Some(PortState::Filtered),
+        Some(PortState::NoReply),
         "a bare ACK answers no probe, so the probe went unanswered"
     );
 }
@@ -324,19 +324,19 @@ async fn a_syn_scan_over_ipv6_tells_open_from_closed() {
     );
 }
 
-/// Silence over IPv6 is filtered, not closed.
+/// Silence over IPv6 is `NoReply`, not closed.
 ///
 /// The distinction the whole scanner rests on, asserted for the family where
 /// the capture admits more traffic: with the filter unable to narrow TCP flags
 /// over IPv6, a scanner that treated any admitted segment as an answer would
 /// turn silence into a verdict.
 #[tokio::test]
-async fn silence_over_ipv6_is_filtered() {
+async fn silence_over_ipv6_is_no_reply() {
     let (session, _net) = syn_scan_on(TARGET_V6, &[(443, Policy::silent())]).await;
 
     assert_eq!(
         port_state(&session, TARGET_V6, 443),
-        Some(PortState::Filtered)
+        Some(PortState::NoReply)
     );
 }
 
@@ -354,14 +354,14 @@ async fn established_traffic_over_ipv6_is_not_an_answer_to_a_probe() {
 
     assert_eq!(
         port_state(&session, TARGET_V6, 443),
-        Some(PortState::Filtered),
+        Some(PortState::NoReply),
         "somebody else's session must not classify a port on the one family \
          whose traffic reaches us"
     );
 }
 
 /// A reply too short to parse must be discarded, not guessed at. The probe stays
-/// outstanding and times out as filtered, which is the honest answer: nothing
+/// outstanding and times out as `NoReply`, which is the honest answer: nothing
 /// interpretable ever came back.
 #[tokio::test]
 async fn an_unparseable_reply_is_ignored_rather_than_classified() {
@@ -369,7 +369,7 @@ async fn an_unparseable_reply_is_ignored_rather_than_classified() {
 
     assert_eq!(
         port_state(&session, TARGET, 80),
-        Some(PortState::Filtered),
+        Some(PortState::NoReply),
         "a reply that could not be read is not evidence of an open port"
     );
 }
@@ -380,7 +380,7 @@ async fn an_unparseable_reply_is_ignored_rather_than_classified() {
 /// useful: a reset is the *negative* result here, and silence is as close to a
 /// positive one as the technique gets.
 #[tokio::test]
-async fn a_fin_scan_reads_a_reset_as_closed_and_silence_as_open_filtered() {
+async fn a_fin_scan_reads_a_reset_as_closed_and_silence_as_open_or_no_reply() {
     let (session, _net) = tcp_scan(
         TcpScanTechnique::Fin,
         &[
@@ -393,13 +393,13 @@ async fn a_fin_scan_reads_a_reset_as_closed_and_silence_as_open_filtered() {
 
     assert_eq!(
         port_state(&session, TARGET, 80),
-        Some(PortState::OpenFiltered),
+        Some(PortState::OpenOrNoReply),
         "an open port is required to ignore a FIN, so silence is all we get"
     );
     assert_eq!(port_state(&session, TARGET, 81), Some(PortState::Closed));
     assert_eq!(
         port_state(&session, TARGET, 82),
-        Some(PortState::OpenFiltered),
+        Some(PortState::OpenOrNoReply),
         "a dropped probe is indistinguishable from an ignored one"
     );
 }
@@ -408,7 +408,7 @@ async fn a_fin_scan_reads_a_reset_as_closed_and_silence_as_open_filtered() {
 /// reach the same verdicts. This is where an off-by-one in the correlation
 /// shows up: a flagless probe occupies no sequence space and a FIN occupies
 /// one, so reading either with the other's offset rejects every reset and
-/// reports the whole host open-filtered.
+/// reports the whole host `OpenOrNoReply`.
 #[tokio::test]
 async fn the_three_flag_probes_agree_on_a_conformant_stack() {
     for technique in [
@@ -421,7 +421,7 @@ async fn the_three_flag_probes_agree_on_a_conformant_stack() {
 
         assert_eq!(
             port_state(&session, TARGET, 80),
-            Some(PortState::OpenFiltered),
+            Some(PortState::OpenOrNoReply),
             "{technique} on an open port"
         );
         assert_eq!(
@@ -447,16 +447,13 @@ async fn an_ack_scan_maps_the_path_rather_than_the_ports() {
     )
     .await;
 
-    assert_eq!(
-        port_state(&session, TARGET, 80),
-        Some(PortState::Unfiltered)
-    );
+    assert_eq!(port_state(&session, TARGET, 80), Some(PortState::Reachable));
     assert_eq!(
         port_state(&session, TARGET, 81),
-        Some(PortState::Unfiltered),
+        Some(PortState::Reachable),
         "an ACK scan cannot tell a listener from an empty port, and must not claim to"
     );
-    assert_eq!(port_state(&session, TARGET, 82), Some(PortState::Filtered));
+    assert_eq!(port_state(&session, TARGET, 82), Some(PortState::NoReply));
 }
 
 /// The honest limit of the Maimon technique: RFC 793 has a stack reset any
@@ -487,7 +484,7 @@ async fn a_maimon_scan_separates_open_from_closed_on_a_bsd_stack() {
 
     assert_eq!(
         port_state(&session, TARGET, 80),
-        Some(PortState::OpenFiltered)
+        Some(PortState::OpenOrNoReply)
     );
     assert_eq!(port_state(&session, TARGET, 81), Some(PortState::Closed));
 }
@@ -518,37 +515,37 @@ async fn a_stack_that_resets_everything_makes_a_flag_probe_confidently_wrong() {
 }
 
 /// What ICMP buys the flag probes, and the reason they ask their capture for
-/// it: an explicit refusal turns a verdict that would have read `OpenFiltered`
-/// into the `Filtered` it actually is.
+/// it: an explicit refusal turns a verdict that would have read `OpenOrNoReply`
+/// into the `Blocked` it actually is.
 #[tokio::test]
-async fn an_explicit_refusal_is_filtered_rather_than_open_filtered() {
+async fn an_explicit_refusal_is_blocked_rather_than_open_or_no_reply() {
     let (session, _net) = tcp_scan(
         TcpScanTechnique::Fin,
         &[(80, Policy::admin_prohibited()), (81, Policy::silent())],
     )
     .await;
 
-    assert_eq!(port_state(&session, TARGET, 80), Some(PortState::Filtered));
+    assert_eq!(port_state(&session, TARGET, 80), Some(PortState::Blocked));
     assert_eq!(
         port_state(&session, TARGET, 81),
-        Some(PortState::OpenFiltered),
+        Some(PortState::OpenOrNoReply),
         "the contrast is the point: only the refusal is evidence of a filter"
     );
 }
 
 /// An ICMP *port* unreachable answering a TCP probe cannot mean what it means
 /// for UDP - no TCP stack emits one - so it is a middlebox speaking for the
-/// address, which is filtered and not closed. The identical message in a UDP
+/// address, which is blocked and not closed. The identical message in a UDP
 /// scan is asserted to be `Closed` a few tests below.
 #[tokio::test]
-async fn a_port_unreachable_about_a_tcp_probe_is_filtered() {
+async fn a_port_unreachable_about_a_tcp_probe_is_blocked() {
     let (session, _net) = tcp_scan(
         TcpScanTechnique::Fin,
         &[(80, Policy::unreachable(Unreachable::Port))],
     )
     .await;
 
-    assert_eq!(port_state(&session, TARGET, 80), Some(PortState::Filtered));
+    assert_eq!(port_state(&session, TARGET, 80), Some(PortState::Blocked));
 }
 
 /// A reset says nothing good about the port and everything about the host: it
@@ -561,10 +558,10 @@ async fn a_reset_to_a_flag_probe_proves_the_host_is_up() {
 }
 
 /// And silence says nothing at all. A host whose every port reads
-/// `OpenFiltered` has never sent a packet, and must not be reported alive on
+/// `OpenOrNoReply` has never sent a packet, and must not be reported alive on
 /// the strength of a verdict that only means "we cannot tell".
 #[tokio::test]
-async fn an_open_filtered_port_does_not_make_its_host_alive() {
+async fn an_open_or_no_reply_port_does_not_make_its_host_alive() {
     let (session, _net) = tcp_scan(TcpScanTechnique::Xmas, &[(80, Policy::silent())]).await;
 
     assert_ne!(host_status(&session, TARGET), Some(HostStatus::Up));
@@ -572,9 +569,9 @@ async fn an_open_filtered_port_does_not_make_its_host_alive() {
 
 // ── UDP ────────────────────────────────────────────────────────────────────
 
-/// The UDP outcomes. Silence is `OpenFiltered` rather than `Filtered`, because
-/// an open UDP port that simply had nothing to say is indistinguishable from a
-/// blocked one, and claiming otherwise would be a guess.
+/// The UDP outcomes. Silence is `OpenOrNoReply` rather than `NoReply`, because
+/// an open UDP port that simply had nothing to say is indistinguishable from
+/// one whose probe was dropped, and claiming otherwise would be a guess.
 #[tokio::test]
 async fn udp_classifies_open_closed_and_silence() {
     let (session, _net) = udp_scan(
@@ -595,8 +592,8 @@ async fn udp_classifies_open_closed_and_silence() {
     );
     assert_eq!(
         port_state(&session, TARGET, 123),
-        Some(PortState::OpenFiltered),
-        "silence cannot distinguish an open port from a blocked one"
+        Some(PortState::OpenOrNoReply),
+        "silence cannot distinguish an open port from a dropped probe"
     );
 }
 
@@ -614,7 +611,7 @@ async fn a_closed_port_still_proves_its_host_is_up() {
 }
 
 /// The complement, and the invariant the whole design rests on: a port that
-/// answers nothing leaves the host exactly as unknown as it was. `Filtered` here
+/// answers nothing leaves the host exactly as unknown as it was. `NoReply` here
 /// is reached by exhausting the retry budget, and a status inferred from silence
 /// would make `is_alive()` true for a host that never sent a packet - the
 /// original defect in a new place.
@@ -622,7 +619,7 @@ async fn a_closed_port_still_proves_its_host_is_up() {
 async fn a_silent_port_leaves_its_host_unknown() {
     let (session, _net) = syn_scan(&[(80, Policy::silent())]).await;
 
-    assert_eq!(port_state(&session, TARGET, 80), Some(PortState::Filtered));
+    assert_eq!(port_state(&session, TARGET, 80), Some(PortState::NoReply));
     assert_eq!(host_status(&session, TARGET), Some(HostStatus::Unknown));
     assert!(
         status_protocols(&session, TARGET).is_empty(),
@@ -635,12 +632,12 @@ async fn a_silent_port_leaves_its_host_unknown() {
 /// observed. Reading it as `Closed` reports a firewalled port as definitively
 /// shut.
 #[tokio::test]
-async fn an_administratively_prohibited_port_is_filtered_not_closed() {
+async fn an_administratively_prohibited_port_is_blocked_not_closed() {
     let (session, _net) = udp_scan(TARGET, &[(123, Policy::admin_prohibited())]).await;
 
     assert_eq!(
         port_state(&session, TARGET, 123),
-        Some(PortState::Filtered),
+        Some(PortState::Blocked),
         "a filter refusing the probe says nothing about the port behind it"
     );
 }
@@ -657,7 +654,7 @@ async fn a_host_unreachable_error_is_a_verdict_on_the_host() {
     assert_eq!(host_status(&session, TARGET), Some(HostStatus::Down));
     assert_eq!(
         port_state(&session, TARGET, 123),
-        Some(PortState::OpenFiltered),
+        Some(PortState::OpenOrNoReply),
         "the port was never reported on, so it ends where silence leaves it"
     );
 }
@@ -680,7 +677,7 @@ async fn icmpv6_errors_are_classified_by_their_own_code_numbers() {
     );
     assert_eq!(
         port_state(&session, TARGET_V6, 123),
-        Some(PortState::Filtered)
+        Some(PortState::Blocked)
     );
 }
 
@@ -701,7 +698,7 @@ async fn an_unparseable_udp_reply_is_ignored() {
 
     assert_eq!(
         port_state(&session, TARGET, 53),
-        Some(PortState::OpenFiltered)
+        Some(PortState::OpenOrNoReply)
     );
 }
 
@@ -866,8 +863,8 @@ async fn a_scan_names_no_operating_system_from_a_closed_port_alone() {
 ///    rather than answering it (RFC 793 §3.9, RFC 5961 §4).
 ///
 /// Every retransmission after the first draws a challenge. Discard those as
-/// noise and the port resolves `Filtered` once the budget runs out — an open
-/// port reported firewalled on a lossy path, which is precisely the case
+/// noise and the port resolves `NoReply` once the budget runs out — an open
+/// port reported silent on a lossy path, which is precisely the case
 /// retransmission exists to rescue.
 ///
 /// It is invisible on the ordinary path, which never reaches step 2: when the
@@ -929,7 +926,7 @@ async fn a_bare_ack_from_another_conversation_still_resolves_nothing() {
 
     assert_eq!(
         port_state(&session, TARGET, 80),
-        Some(PortState::Filtered),
+        Some(PortState::NoReply),
         "an ACK that answers none of this scan's probes is not evidence about the port"
     );
 }
@@ -942,7 +939,7 @@ async fn a_bare_ack_from_another_conversation_still_resolves_nothing() {
 /// listening answers an ABORT of its own, so `closed` is a verdict this scan
 /// reaches from a packet rather than from a timeout.
 #[tokio::test]
-async fn an_init_scan_classifies_open_closed_and_filtered() {
+async fn an_init_scan_classifies_open_closed_and_no_reply() {
     let (session, _net) = sctp_scan(&[
         (2905, Policy::open()),
         (3868, Policy::closed()),
@@ -954,7 +951,7 @@ async fn an_init_scan_classifies_open_closed_and_filtered() {
     assert_eq!(port_state(&session, TARGET, 3868), Some(PortState::Closed));
     assert_eq!(
         port_state(&session, TARGET, 36412),
-        Some(PortState::Filtered),
+        Some(PortState::NoReply),
         "silence is a filter here: a live endpoint answers an init either way"
     );
 }
@@ -966,7 +963,7 @@ async fn an_init_scan_classifies_open_closed_and_filtered() {
 /// packet without a word (RFC 4960 §5.1.5), so the open port and the silent one
 /// come back identical. That is the trade the technique makes for a chunk a
 /// filter written against INIT may pass, and the report has to be honest about
-/// it: `open_filtered` on both.
+/// it: `open_or_no_reply` on both.
 #[tokio::test]
 async fn a_cookie_echo_scan_finds_closed_ports_and_leaves_the_rest_ambiguous() {
     let (session, _net) = sctp_scan_with(
@@ -986,12 +983,12 @@ async fn a_cookie_echo_scan_finds_closed_ports_and_leaves_the_rest_ambiguous() {
     );
     assert_eq!(
         port_state(&session, TARGET, 2905),
-        Some(PortState::OpenFiltered),
+        Some(PortState::OpenOrNoReply),
         "a listener says nothing, so an open port cannot be named"
     );
     assert_eq!(
         port_state(&session, TARGET, 36412),
-        Some(PortState::OpenFiltered),
+        Some(PortState::OpenOrNoReply),
         "and neither can it be told from a filter"
     );
 }
@@ -1028,21 +1025,15 @@ async fn a_cookie_echo_scan_sends_the_other_chunk() {
 /// port sends an abort of its own, so an error means something stopped the probe
 /// instead of a stack looking for a listener and finding none.
 #[tokio::test]
-async fn an_icmp_refusal_leaves_an_sctp_port_filtered() {
+async fn an_icmp_refusal_leaves_an_sctp_port_blocked() {
     let (session, _net) = sctp_scan(&[
         (2905, Policy::unreachable(Unreachable::Port)),
         (3868, Policy::admin_prohibited()),
     ])
     .await;
 
-    assert_eq!(
-        port_state(&session, TARGET, 2905),
-        Some(PortState::Filtered)
-    );
-    assert_eq!(
-        port_state(&session, TARGET, 3868),
-        Some(PortState::Filtered)
-    );
+    assert_eq!(port_state(&session, TARGET, 2905), Some(PortState::Blocked));
+    assert_eq!(port_state(&session, TARGET, 3868), Some(PortState::Blocked));
 }
 
 /// Every probe leaves from the one port the capture filter narrows on, and each

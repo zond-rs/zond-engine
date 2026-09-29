@@ -89,7 +89,7 @@ async fn an_answering_port_settles_as_answered() {
 }
 
 /// Silence that spent the whole retry budget is *earned*, and is the one silence
-/// a resume may skip — the moment the ledger calls "a verdict of 'filtered'
+/// a resume may skip — the moment the ledger calls "a verdict of 'no reply'
 /// earned rather than assumed".
 #[tokio::test]
 async fn a_port_that_spent_its_budget_settles_as_exhausted() {

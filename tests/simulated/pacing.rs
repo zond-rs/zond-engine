@@ -106,7 +106,7 @@ async fn a_scan_wider_than_its_window_still_classifies_every_port() {
 ///
 /// This is the case the pacing exists for. Measured against a consumer router
 /// asked faster than it would answer, the same six hundred ports came back
-/// `Filtered` — with no more hesitation than the three that really were.
+/// `NoReply` — with no more hesitation than the three that really were.
 #[tokio::test]
 async fn a_host_that_answers_only_on_the_retry_is_paced_down_rather_than_written_off() {
     let states = wide_syn_scan(Policy::open().drop_first(1)).await;
@@ -123,12 +123,12 @@ async fn a_host_that_answers_only_on_the_retry_is_paced_down_rather_than_written
 /// that are hardest to finish — and this scan, where nothing answers at all,
 /// would be the worst case of it.
 #[tokio::test]
-async fn a_host_that_answers_nothing_is_still_finished_and_still_filtered() {
+async fn a_host_that_answers_nothing_is_still_finished_and_reads_no_reply() {
     let states = wide_syn_scan(Policy::silent()).await;
 
     assert_eq!(states.len(), WIDE as usize);
     assert!(
-        states.iter().all(|&state| state == PortState::Filtered),
+        states.iter().all(|&state| state == PortState::NoReply),
         "a SYN any live stack would have answered, unanswered, is a filter"
     );
 }
@@ -139,7 +139,7 @@ async fn a_host_that_answers_nothing_is_still_finished_and_still_filtered() {
 /// too.
 ///
 /// Measured against a Raspberry Pi, a scan that does not recognise it produces
-/// two hundred and forty `filtered` verdicts per run on a host with no firewall
+/// two hundred and forty `NoReply` verdicts per run on a host with no firewall
 /// at all, a different two hundred and forty each time. What the scanner can
 /// see is that the host is plainly talking to it and plainly dropping things,
 /// and that combination is the only warning it gets.
@@ -268,7 +268,7 @@ async fn open_ports_leave_the_window_alone(per_hundred: u64) {
 
     let open = states
         .iter()
-        .filter(|&&state| state == PortState::OpenFiltered)
+        .filter(|&&state| state == PortState::OpenOrNoReply)
         .count();
     let expected = (0..WIDE as usize)
         .filter(|&index| scattered_open(index, per_hundred))
@@ -317,7 +317,7 @@ async fn a_host_with_a_tenth_of_its_ports_open_is_not_read_as_losing_probes() {
 /// A quarter of the probes lost with their retries is the shape measured
 /// against a Raspberry Pi, where a controller that waited for a retry to be
 /// answered never cut once. In a FIN scan those ports come back
-/// open-or-filtered, which the technique cannot help; the window being cut is
+/// `OpenOrNoReply`, which the technique cannot help; the window being cut is
 /// what makes a rerun at the narrower pace come back different.
 #[tokio::test]
 async fn silence_past_any_plausible_share_of_open_ports_still_narrows_the_window() {
@@ -390,7 +390,7 @@ fn one_port_through(index: usize) -> Policy {
 }
 
 /// A host that refuses every port but three, which its firewall drops.
-fn three_filtered(index: usize) -> Policy {
+fn three_dropped(index: usize) -> Policy {
     if index % 300 == 150 {
         Policy::silent()
     } else {
@@ -421,10 +421,10 @@ async fn a_firewall_that_lets_one_port_through_does_not_hold_the_window_down() {
 /// Asked beside it, a router refusing all but three ports finished the scan
 /// with the window at its floor, which with the firewalled host's silence
 /// counted in is what reads the whole scan as outrun, and the router's three
-/// filtered ports were reported as unanswered.
+/// dropped ports were reported as unanswered.
 #[tokio::test]
 async fn a_firewalled_host_beside_an_answering_one_leaves_the_scan_readable() {
-    let window = syn_scan_of(&[(TARGET, one_port_through), (NEIGHBOUR, three_filtered)]).await;
+    let window = syn_scan_of(&[(TARGET, one_port_through), (NEIGHBOUR, three_dropped)]).await;
 
     assert!(
         !window.at_floor,
@@ -516,7 +516,7 @@ async fn a_scan_spaced_at_one_host_still_answers_every_port_and_takes_the_time()
 /// it is not a wrong verdict but a *missing* one, the port simply absent from
 /// the host, which is the shortfall a reader cannot see.
 ///
-/// `Unasked` and not `Filtered` is the whole point. Both would leave the port
+/// `Unasked` and not `NoReply` is the whole point. Both would leave the port
 /// with no service behind it, and only one of them is true.
 #[tokio::test]
 async fn probes_still_held_when_a_scan_stops_are_recorded_as_never_asked() {
@@ -684,7 +684,7 @@ async fn a_spaced_scan_whose_answers_come_late_settles_every_port() {
 ///
 /// Its answer may be in transit at that moment: an open port whose SYN+ACK had
 /// not yet arrived is exactly the port the scan exists to find, and filing it
-/// filtered reports a firewall that is not there. Nothing here filters
+/// `NoReply` reports a silence that did not happen. Nothing here filters
 /// anything, so every port that is not open is a verdict the scan did not
 /// earn.
 #[tokio::test]

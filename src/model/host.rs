@@ -201,7 +201,7 @@ pub enum NetworkRole {
     /// another segment the two differ, and neither machine has been shown to
     /// serve DHCP on this one.
     ///
-    /// It cannot be concluded from port state. UDP/67 is `open|filtered` on
+    /// It cannot be concluded from port state. UDP/67 is `OpenOrNoReply` on
     /// silence like every other UDP port, and a DHCP server is found by
     /// broadcasting at the segment rather than by connecting to a listener.
     DhcpServer,
@@ -393,7 +393,7 @@ pub enum Filtering {
     /// A stateful filter: it passes a bare ACK but drops a SYN.
     ///
     /// Proven by an ACK probe reaching the stack, meaning a RST and so
-    /// [`PortState::Unfiltered`], for a port the scan found filtered to a SYN. A
+    /// [`PortState::Reachable`], for a port a SYN did not reach. A
     /// filter that lets an ACK through
     /// and refuses a SYN is keeping connection state and opening no new
     /// connections. Comparative: the SYN's fate is the port state the scan
@@ -403,7 +403,7 @@ pub enum Filtering {
     /// A filter that trusts a source port.
     ///
     /// Proven by a SYN from a port such as 53, 20 or 88 reaching a port the scan
-    /// found filtered to a SYN from an ephemeral one. The filter is honouring an
+    /// a SYN from an ephemeral one did not reach. The filter is honouring an
     /// ACL written to let returning traffic back in, which is a door a chosen
     /// source port holds open. Comparative in the same way as
     /// [`StatefulFilter`](Self::StatefulFilter), and against the same recorded
@@ -413,7 +413,7 @@ pub enum Filtering {
     /// A stateless filter: it matches on the first fragment and passes the rest.
     ///
     /// Proven by a *fragmented* SYN drawing an answer from a port the scan found
-    /// filtered to a whole one. A filter that reassembled would have seen the
+    /// a whole one did not reach. A filter that reassembled would have seen the
     /// same forbidden SYN either way; one that lets the fragments through has
     /// judged only the first, where the ports are but the flags are not yet, and
     /// so is matching without keeping the state reassembly needs. Comparative
@@ -1532,7 +1532,7 @@ impl Host {
     }
 
     /// Returns `true` if this host is confirmed to be on the network
-    /// (either fully responding or filtered).
+    /// (either responding for itself or blocked on its behalf).
     pub fn is_alive(&self) -> bool {
         self.status.is_alive()
     }
@@ -1983,7 +1983,7 @@ mod tests {
 
         assert!(host.record_ip_protocol(47, IpProtocolState::Closed));
         assert!(
-            !host.record_ip_protocol(47, IpProtocolState::OpenFiltered),
+            !host.record_ip_protocol(47, IpProtocolState::OpenOrNoReply),
             "a weaker verdict is not news"
         );
         assert_eq!(host.ip_protocols().get(&47), Some(&IpProtocolState::Closed));
@@ -2007,7 +2007,7 @@ mod tests {
         let mut cut_short = Host::new(ip);
         cut_short.record_ip_protocol(47, IpProtocolState::Unasked);
         cut_short.record_ip_protocol(89, IpProtocolState::Closed);
-        cut_short.record_ip_protocol(50, IpProtocolState::OpenFiltered);
+        cut_short.record_ip_protocol(50, IpProtocolState::OpenOrNoReply);
 
         let mut folded = reached.clone();
         folded.merge(cut_short.clone());
@@ -2019,7 +2019,7 @@ mod tests {
             assert_eq!(host.ip_protocols().get(&89), Some(&IpProtocolState::Closed));
             assert_eq!(
                 host.ip_protocols().get(&50),
-                Some(&IpProtocolState::OpenFiltered),
+                Some(&IpProtocolState::OpenOrNoReply),
                 "a protocol only one side asked about survives the fold"
             );
         }
@@ -2350,14 +2350,14 @@ mod tests {
         assert_eq!(host.open_port_count(), TARPIT_OPEN_PORTS);
     }
 
-    /// The count follows promotions, not insertions. A port first seen filtered
+    /// The count follows promotions, not insertions. A port first met with silence
     /// and later answered is one more open port, and a second reply about a port
     /// already open is not.
     #[test]
     fn the_open_count_follows_what_the_ports_became() {
         let mut host = Host::new(IP_ADDR);
 
-        host.add_port(Port::new(22, Protocol::Tcp, PortState::Filtered));
+        host.add_port(Port::new(22, Protocol::Tcp, PortState::NoReply));
         assert_eq!(host.open_port_count(), 0);
 
         host.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
@@ -2402,10 +2402,10 @@ mod tests {
         h1.set_status(HostStatus::Down);
 
         let mut h2 = Host::new(IP_ADDR);
-        h2.set_status(HostStatus::Filtered);
+        h2.set_status(HostStatus::Blocked);
 
         h1.merge(h2);
-        assert_eq!(h1.status(), HostStatus::Filtered);
+        assert_eq!(h1.status(), HostStatus::Blocked);
     }
 
     /// Two records of one host are two probes' accounts of it, and which of

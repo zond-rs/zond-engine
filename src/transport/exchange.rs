@@ -16,7 +16,7 @@
 //!
 //! Every one of those is a decision this crate already knows how to make, and
 //! every one of them, got wrong, produces the same symptom: no reply, which
-//! reads as a filtered port rather than as a mistake.
+//! reads as a silent port rather than as a mistake.
 //!
 //! ```no_run
 //! use std::time::Duration;

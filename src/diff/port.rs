@@ -20,7 +20,7 @@
 //! settled the state, when it arrived, how long it took and who sent it; none
 //! of that is the verdict, and a diff carrying it would report a change every
 //! time a reply took a millisecond longer or a different router on the path
-//! answered for a filtered port. The same
+//! answered for a blocked port. The same
 //! reasoning excludes a service's confidence score, which measures how sure the
 //! fingerprinter is rather than what is running.
 
@@ -132,7 +132,7 @@ impl PortDelta {
 pub enum PortChange {
     /// The verdict moved. What each state means is
     /// [`PortState`]'s own documentation, and the two are not ordered by how
-    /// alarming they are: `Filtered` to `Closed` is a firewall that stopped
+    /// alarming they are: `NoReply` to `Closed` is a firewall that stopped
     /// dropping probes, not a port that shut.
     State(Change<PortState>),
     /// What is listening changed, or was identified where it was not.

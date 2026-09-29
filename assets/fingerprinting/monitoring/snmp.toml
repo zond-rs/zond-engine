@@ -8,13 +8,13 @@ description = "Simple Network Management Protocol"
 # length that disagrees with the bytes after it is discarded by the agent
 # without a word. The build validates every length here rather than trusting
 # them (see `build.rs`), because that failure is indistinguishable on the wire
-# from a filtered port.
+# from a port that never answers.
 #
 # An agent that accepts `public` answers with the description; one configured
 # with a different community commonly stays silent, and only some return an
 # error PDU. So the reply names the box when it comes, but its absence is no
 # proof the port is dead: an agent guarding its community is why a scan leaves
-# 161 open|filtered, and the community-guessing detection asks each default in
+# 161 open|no-reply, and the community-guessing detection asks each default in
 # its own datagram from there.
 #
 # Two questions in one datagram, which costs no extra packet: the description

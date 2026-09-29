@@ -38,7 +38,7 @@
 //!
 //! A report built here through the public API, which is smaller than the
 //! fixture the crate's own export tests use. It carries hosts that are up and
-//! filtered, TCP and UDP, open and closed ports, and identified services, which
+//! blocked, TCP and UDP, open and closed ports, and identified services, which
 //! is the part of the DTD an exported document exercises. A field only the
 //! internal fixture reaches is a field this check does not validate.
 
@@ -73,8 +73,8 @@ fn report() -> ScanReport {
     gateway.add_port(Port::new(8080, Protocol::Tcp, PortState::Closed));
 
     let mut quiet = Host::new("203.0.113.7".parse::<IpAddr>().expect("an address"));
-    quiet.set_status(HostStatus::Filtered);
-    quiet.add_port(Port::new(25, Protocol::Tcp, PortState::Filtered));
+    quiet.set_status(HostStatus::Blocked);
+    quiet.add_port(Port::new(25, Protocol::Tcp, PortState::NoReply));
 
     ScanReport::recorded("zond-example 1.0.0", Vec::new(), vec![gateway, quiet])
 }

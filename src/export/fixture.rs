@@ -137,8 +137,8 @@ fn router() -> Host {
     // reach.
     host.record_ip_protocol(1, IpProtocolState::Open);
     host.record_ip_protocol(47, IpProtocolState::Closed);
-    host.record_ip_protocol(50, IpProtocolState::Filtered);
-    host.record_ip_protocol(89, IpProtocolState::OpenFiltered);
+    host.record_ip_protocol(50, IpProtocolState::Blocked);
+    host.record_ip_protocol(89, IpProtocolState::OpenOrNoReply);
     host.record_ip_protocol(103, IpProtocolState::Unasked);
 
     host
@@ -230,11 +230,11 @@ fn accepted() -> TlsSupport {
 }
 
 /// A host that answered nothing but is known to be there.
-fn filtered_host() -> Host {
+fn blocked_host() -> Host {
     let mut host = Host::new(ip(2));
-    host.set_status(HostStatus::Filtered);
+    host.set_status(HostStatus::Blocked);
     host.add_reason(StatusReason::basic(StatusProtocol::TcpSyn));
-    host.add_port(Port::new(445, Protocol::Tcp, PortState::Filtered));
+    host.add_port(Port::new(445, Protocol::Tcp, PortState::NoReply));
     host
 }
 
@@ -399,7 +399,7 @@ pub(crate) fn report() -> ScanReport {
     connected.insert_range("198.51.100.0/30".parse().expect("a valid range"));
     ctx.record_reached_by_connect(&connected);
 
-    for host in [router(), filtered_host(), bare_host()] {
+    for host in [router(), blocked_host(), bare_host()] {
         ctx.store.insert(host.scoped_ip(), host);
     }
 

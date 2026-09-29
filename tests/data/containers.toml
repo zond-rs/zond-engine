@@ -20,11 +20,11 @@
 #     the generic HTTP probe behind it, so a web application on a random port is
 #     still asked something it can answer. UDP has no such fallback: the corpus
 #     keys a probe on the destination port, and a service on any other number is
-#     sent nothing and reports as `open|filtered`.
+#     sent nothing and reports as `open|no-reply`.
 #   * Readiness is that it answers the corpus probe, not that a connection
 #     succeeds. There is no connection: a container whose socket is not bound
-#     yet discards a datagram in silence, which is the same silence a filtered
-#     port returns, so the only usable signal is a reply.
+#     yet discards a datagram in silence, which is the same silence a port
+#     behind a dropping filter returns, so the only usable signal is a reply.
 #
 # An entry whose port the corpus has no UDP probe for is refused rather than
 # waited on: the scan would send it nothing either.

@@ -32,7 +32,7 @@
 //! to the caller: a port unreachable answering a UDP probe is the port's own
 //! stack reporting no listener, and the identical message answering a TCP probe
 //! cannot be - no TCP stack emits one - so it is a middlebox speaking for an
-//! address, which is filtered rather than closed. One enum value, two opposite
+//! address, which is blocked rather than closed. One enum value, two opposite
 //! verdicts, and nothing in the message itself distinguishes them.
 //!
 //! ## Which probe an error is about
@@ -579,7 +579,7 @@ mod tests {
     /// The near-miss this module exists to prevent: code 3 is a port unreachable
     /// over IPv4 and an *address* unreachable over IPv6, and code 4 is the port
     /// unreachable there. Reading one table for both families reports a
-    /// filtered host as a closed port.
+    /// host nothing could reach as a closed port.
     #[test]
     fn the_same_code_number_means_different_things_per_family() {
         let (as_v4, as_v6) = (error_v4(IcmpCode(3)), error_v6(Icmpv6Code(3)));

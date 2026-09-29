@@ -925,7 +925,7 @@ fn asks_liveness(cfg: &ZondConfig) -> bool {
 /// - **A target on this host's own segment.** There the pass reaches it by ARP
 ///   or neighbour discovery, one packet, answered by a live stack whatever it
 ///   filters above the link, which finds a host that a direct port scan of a
-///   few filtered ports would miss and costs less than one such probe. Whether
+///   few silent ports would miss and costs less than one such probe. Whether
 ///   any target is on-link is read from the discovery plan, which classifies
 ///   the targets against this host's interfaces and sends nothing.
 ///

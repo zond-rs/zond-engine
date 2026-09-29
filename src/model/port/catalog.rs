@@ -191,7 +191,7 @@ pub const TCP_BY_PREVALENCE: &[u16] = &[
 /// that recognises the payload sent to it or by an ICMP port unreachable the
 /// host is rate-limited to emitting roughly once a second, so a UDP port costs
 /// far more to classify and far more of them come back
-/// [`OpenFiltered`](super::PortState::OpenFiltered) whatever is done. Asking
+/// [`OpenOrNoReply`](super::PortState::OpenOrNoReply) whatever is done. Asking
 /// about a thousand of them buys a slower scan and almost no extra certainty.
 ///
 /// The first forty are hand-ranked; past that, see the module documentation on

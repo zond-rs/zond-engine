@@ -279,7 +279,7 @@ async fn a_refused_retry_is_not_reported_as_an_unasked_port() {
     for port in 1..=4 {
         assert_eq!(
             port_state(&session, TARGET, port),
-            Some(PortState::Filtered),
+            Some(PortState::NoReply),
             "asked once and unanswered is silence, not unasked"
         );
     }

@@ -167,7 +167,7 @@ impl HostChange {
     pub fn significance(&self) -> Significance {
         match self {
             // Present and answering, or not: that is what moved. A host that went
-            // from filtered to up gained no ground, it answered for itself where
+            // from blocked to up gained no ground, it answered for itself where
             // something else had been answering, and `Filtering` is where that is
             // reported.
             HostChange::Status(status) => match answers(status.before) == answers(status.after) {
@@ -310,10 +310,10 @@ impl ScanDiff {
 
 /// Whether a status means the host is there.
 ///
-/// [`Filtered`](HostStatus::Filtered) counts: something is enforcing a perimeter
+/// [`Blocked`](HostStatus::Blocked) counts: something is enforcing a perimeter
 /// around the address, which is a thing being there.
 const fn answers(status: HostStatus) -> bool {
-    matches!(status, HostStatus::Up | HostStatus::Filtered)
+    matches!(status, HostStatus::Up | HostStatus::Blocked)
 }
 
 /// What a port's verdict moving amounts to.
@@ -439,8 +439,8 @@ mod tests {
     /// news but not an emergency.
     #[test]
     fn a_port_that_opened_outranks_one_that_closed() {
-        let opened = PortChange::State(Change::new(PortState::Filtered, PortState::Open));
-        let closed = PortChange::State(Change::new(PortState::Open, PortState::Filtered));
+        let opened = PortChange::State(Change::new(PortState::NoReply, PortState::Open));
+        let closed = PortChange::State(Change::new(PortState::Open, PortState::NoReply));
 
         assert_eq!(opened.significance(), Significance::Urgent);
         assert_eq!(closed.significance(), Significance::Notable);
@@ -453,9 +453,9 @@ mod tests {
     #[test]
     fn a_verdict_moving_between_two_closed_states_is_routine() {
         for (before, after) in [
-            (PortState::Filtered, PortState::Closed),
-            (PortState::Closed, PortState::Unfiltered),
-            (PortState::ClosedFiltered, PortState::Filtered),
+            (PortState::NoReply, PortState::Closed),
+            (PortState::Closed, PortState::Reachable),
+            (PortState::ClosedOrNoReply, PortState::NoReply),
         ] {
             assert_eq!(
                 PortChange::State(Change::new(before, after)).significance(),
@@ -556,12 +556,12 @@ mod tests {
     fn a_status_change_is_graded_by_whether_the_host_is_there() {
         let arrived = HostChange::Status(Change::new(HostStatus::Unknown, HostStatus::Up));
         let went = HostChange::Status(Change::new(HostStatus::Up, HostStatus::Unknown));
-        let filtered = HostChange::Status(Change::new(HostStatus::Up, HostStatus::Filtered));
+        let blocked = HostChange::Status(Change::new(HostStatus::Up, HostStatus::Blocked));
         let quiet = HostChange::Status(Change::new(HostStatus::Unknown, HostStatus::Down));
 
         assert_eq!(arrived.significance(), Significance::Notable);
         assert_eq!(went.significance(), Significance::Notable);
-        assert_eq!(filtered.significance(), Significance::Routine);
+        assert_eq!(blocked.significance(), Significance::Routine);
         assert_eq!(quiet.significance(), Significance::Routine);
     }
 }

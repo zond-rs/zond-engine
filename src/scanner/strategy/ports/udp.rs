@@ -15,12 +15,12 @@
 //! UDP scanning is harder than the SYN scan next door because UDP carries no
 //! handshake to correlate against. A closed port answers with an ICMP Port
 //! Unreachable, an open one answers with a UDP datagram *if* it understands
-//! what was sent, and a filtered one says nothing at all - which is also what
-//! an open port that ignored the probe does. So:
+//! what was sent, and one behind a filter that drops it says nothing at all -
+//! which is also what an open port that ignored the probe does. So:
 //!
 //! - a direct UDP reply is [`PortState::Open`],
 //! - an ICMP Port Unreachable is [`PortState::Closed`],
-//! - silence until the deadline is [`PortState::OpenFiltered`], because it
+//! - silence until the deadline is [`PortState::OpenOrNoReply`], because it
 //!   genuinely cannot distinguish the two.
 //!
 //! ## Tying a reply to its probe
@@ -91,7 +91,7 @@ use crate::scanner::strategy::icmp_error::{self, Unreachable};
 /// answers immediately and *meaningless* against a host allowed to speak once
 /// per second: the scan would stop while its answers were still queued and
 /// legally on their way, then report the ports it never heard about as
-/// filtered. A floor above the rate-limit interval is what makes silence
+/// `OpenOrNoReply`. A floor above the rate-limit interval is what makes silence
 /// evidence of anything at all.
 const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
     // Hard ceiling: a UDP scan is inherently slow, but it still has to finish.
@@ -148,7 +148,7 @@ const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 /// Two jobs: it bounds the memory a scan of a large address space can occupy,
 /// and it keeps the send loop from emptying the dispatcher into the network as
 /// fast as the socket accepts writes - a burst that outruns any rate-limited
-/// host's ability to answer manufactures open-filtered verdicts.
+/// host's ability to answer manufactures `OpenOrNoReply` verdicts.
 ///
 /// Fixed, where the TCP scanner's equivalent adapts. A congestion window
 /// needs evidence, and a UDP scan is given none: silence is its ordinary
@@ -422,7 +422,7 @@ impl UdpPortScanner {
 /// that, the error included, from the new port. Port 69 only ever *receives*.
 ///
 /// So a TFTP error is credited to a transient port nobody asked about, and 69
-/// is reported `open|filtered` on a host that answered. Measured against
+/// is reported `OpenOrNoReply` on a host that answered. Measured against
 /// `tftpd-hpa`, which replied from 54154, 43519 and 34965 on three consecutive
 /// probes; no request form draws a reply from 69 at all.
 ///
@@ -478,8 +478,8 @@ fn verdict_of(reason: Unreachable) -> Verdict {
         // A prohibition is the path refusing delivery. A protocol unreachable is
         // the host saying it has no UDP stack, which is a stranger thing and
         // still not a closed port: no listener was ever looked for. Both leave
-        // the port unprobed in effect, which is what filtered says.
-        Unreachable::Prohibited | Unreachable::Protocol => Verdict::Port(PortState::Filtered),
+        // the port unprobed in effect, which is what blocked says.
+        Unreachable::Prohibited | Unreachable::Protocol => Verdict::Port(PortState::Blocked),
         Unreachable::Host => Verdict::Host,
     }
 }
@@ -519,17 +519,17 @@ impl RawPortScan for UdpPortScanner {
         Protocol::Udp
     }
 
-    /// Always open-filtered. UDP carries no handshake, so an open port that did
+    /// Always `OpenOrNoReply`. UDP carries no handshake, so an open port that did
     /// not recognise the payload says exactly as little as a firewall does, and
     /// no amount of waiting separates the two.
     fn silence_means(&self) -> PortState {
-        PortState::OpenFiltered
+        PortState::OpenOrNoReply
     }
 
     fn audit_labels(&self) -> AuditLabels {
         AuditLabels {
             tag: "udp-port",
-            silence: "open-filtered",
+            silence: "open|no-reply",
         }
     }
 
@@ -626,7 +626,7 @@ impl RawPortScan for UdpPortScanner {
     ///   emitted by the host's own IP stack, and an administrative rejection
     ///   from the host itself is a host that exists and is policing its traffic.
     /// - **A middlebox rejected the probe by policy.** Something is enforcing a
-    ///   perimeter around this address, which is [`HostStatus::Filtered`] - the
+    ///   perimeter around this address, which is [`HostStatus::Blocked`] - the
     ///   variant's documented meaning, and materially different from an address
     ///   nothing answers for.
     /// - **A middlebox reported the port closed.** The port verdict stands,
@@ -634,10 +634,10 @@ impl RawPortScan for UdpPortScanner {
     ///   the address that answered is not the address that was asked, and a NAT
     ///   answering on another host's behalf must not be read as that host being
     ///   up.
-    /// - **Nothing answered.** `OpenFiltered` from exhaustion records nothing.
+    /// - **Nothing answered.** `OpenOrNoReply` from exhaustion records nothing.
     ///   Silence is not evidence about a host.
     fn record_port(&mut self, ip: IpAddr, port_num: u16, state: PortState, sender: Option<IpAddr>) {
-        if state == PortState::OpenFiltered && sender.is_none() {
+        if state == PortState::OpenOrNoReply && sender.is_none() {
             self.icmp.entry(ip).or_default().silent += 1;
         }
         // Nothing answered, so there is no header to read and no round trip to
@@ -686,7 +686,7 @@ impl RawPortScan for UdpPortScanner {
 
 impl UdpPortScanner {
     /// Names every host whose answers showed its ICMP errors rationed, so a
-    /// reader knows its closed ports may read open|filtered and why.
+    /// reader knows its closed ports may read `OpenOrNoReply` and why.
     fn report_rationed(&mut self) {
         for (ip, tally) in self.icmp.drain() {
             if tally.rate_limited() {
@@ -723,7 +723,7 @@ impl UdpPortScanner {
         // The packet that settled it, written down beside the host evidence
         // drawn from the same two facts. Without it a UDP port carried a verdict
         // and no account of it, which for this protocol is the worst case of
-        // all: almost every silence here is `open|filtered`, and a reader has no
+        // all: almost every silence here is `OpenOrNoReply`, and a reader has no
         // way to tell a refusal that arrived from one that never came.
         let port = match port_evidence(state, sender, ip) {
             Some(reason) => {
@@ -750,15 +750,15 @@ impl UdpPortScanner {
                     "port unreachable from the host",
                 ),
             )),
-            (PortState::Filtered, Some(sender)) if sender == ip => Some((
+            (PortState::Blocked, Some(sender)) if sender == ip => Some((
                 HostStatus::Up,
                 StatusReason::new(
                     StatusProtocol::IcmpUnreachable,
                     "administratively prohibited by the host",
                 ),
             )),
-            (PortState::Filtered, Some(sender)) => Some((
-                HostStatus::Filtered,
+            (PortState::Blocked, Some(sender)) => Some((
+                HostStatus::Blocked,
                 StatusReason::new(
                     StatusProtocol::IcmpUnreachable,
                     "administratively prohibited in path",
@@ -784,7 +784,7 @@ impl UdpPortScanner {
 /// says so, nothing else refuses a datagram, so the two verdicts a reply can
 /// produce here are both ICMP, and which one turns on who sent it.
 ///
-/// `None` where nothing arrived. `OpenFiltered` from exhaustion is the ordinary
+/// `None` where nothing arrived. `OpenOrNoReply` from exhaustion is the ordinary
 /// outcome of a UDP scan and has no packet to name: recording `no reply` for it
 /// would dress the protocol's normal silence as a finding.
 fn port_evidence(state: PortState, sender: Option<IpAddr>, target: IpAddr) -> Option<ScanResponse> {
@@ -794,7 +794,7 @@ fn port_evidence(state: PortState, sender: Option<IpAddr>, target: IpAddr) -> Op
         (PortState::Closed, _) => Some(ScanResponse::IcmpUnreachable),
         // A prohibition from the host is its own policy; from anywhere else it
         // is somebody in the path refusing on its behalf.
-        (PortState::Filtered, Some(from)) => Some(match from == target {
+        (PortState::Blocked, Some(from)) => Some(match from == target {
             true => ScanResponse::IcmpProhibited,
             false => ScanResponse::IcmpUnreachable,
         }),
@@ -815,7 +815,7 @@ impl PortScanner for UdpPortScanner {
     /// Consumes `targets`, sending a UDP probe for each UDP target and classifying
     /// every reply (or ICMP error), until each probe has been resolved or the
     /// scan's deadline expires. Anything still outstanding when the loop ends is
-    /// reported as OpenFiltered.
+    /// reported as `OpenOrNoReply`.
     ///
     /// New targets are admitted only while fewer than `MAX_IN_FLIGHT` probes
     /// are outstanding, and released no faster than
@@ -960,7 +960,7 @@ mod tests {
     /// the reply arrived under.
     ///
     /// This protocol needs the account more than TCP does: almost every silence
-    /// here is `open|filtered`, so a reader with only the verdict cannot tell a
+    /// here is `OpenOrNoReply`, so a reader with only the verdict cannot tell a
     /// refusal that arrived from one that never came.
     #[test]
     fn an_answered_udp_port_records_the_datagram_that_settled_it() {
@@ -994,7 +994,7 @@ mod tests {
 
     /// The protocol's ordinary outcome is silence, and silence gets no packet.
     ///
-    /// `OpenFiltered` from exhaustion is what most of a UDP scan comes back as.
+    /// `OpenOrNoReply` from exhaustion is what most of a UDP scan comes back as.
     /// Recording `no reply` against every one of them would dress the normal
     /// case as a finding.
     #[test]
@@ -1002,11 +1002,11 @@ mod tests {
         let (mut scanner, session) = scanner_with_mock();
         probe(&mut scanner, TARGET, 53);
 
-        scanner.record_port(TARGET, 53, PortState::OpenFiltered, None);
+        scanner.record_port(TARGET, 53, PortState::OpenOrNoReply, None);
 
         assert_eq!(
             port_state(&session, TARGET, 53),
-            Some(PortState::OpenFiltered)
+            Some(PortState::OpenOrNoReply)
         );
         assert!(
             session
@@ -1395,9 +1395,9 @@ mod tests {
 
     /// A policy rejection from a middlebox proves a perimeter, not a host - but
     /// a perimeter is still more than nothing, which is what separates
-    /// `Filtered` from `Unknown`.
+    /// `Blocked` from `Unknown`.
     #[test]
-    fn an_in_path_policy_rejection_is_filtered_rather_than_up() {
+    fn an_in_path_policy_rejection_is_blocked_rather_than_up() {
         let (mut scanner, session) = scanner_with_mock();
         probe(&mut scanner, TARGET, 53);
 
@@ -1412,11 +1412,11 @@ mod tests {
             Instant::now(),
         );
 
-        assert_eq!(host_status(&session, TARGET), Some(HostStatus::Filtered));
+        assert_eq!(host_status(&session, TARGET), Some(HostStatus::Blocked));
     }
 
     /// Silence is the one thing that must never move a host's status, however
-    /// many probes it swallows. `OpenFiltered` is a port verdict reached by
+    /// many probes it swallows. `OpenOrNoReply` is a port verdict reached by
     /// exhaustion, and a host that has sent nothing has proved nothing.
     #[test]
     fn exhausting_every_attempt_leaves_the_host_unknown() {
@@ -1431,7 +1431,7 @@ mod tests {
 
         assert_eq!(
             port_state(&session, TARGET, 53),
-            Some(PortState::OpenFiltered)
+            Some(PortState::OpenOrNoReply)
         );
         assert_eq!(host_status(&session, TARGET), Some(HostStatus::Unknown));
         assert!(
@@ -1468,10 +1468,10 @@ mod tests {
     }
 
     /// Only code 3 says a port answered. The codes that describe a blocked
-    /// path prove the probe did not arrive, which is `Filtered` - a strictly
-    /// better answer than letting the probe time out into `OpenFiltered`.
+    /// path prove the probe did not arrive, which is `Blocked` - a strictly
+    /// better answer than letting the probe time out into `OpenOrNoReply`.
     #[test]
-    fn administratively_prohibited_icmp_is_filtered() {
+    fn administratively_prohibited_icmp_is_blocked() {
         for code in [
             IcmpCodes::DestinationProtocolUnreachable,
             IcmpCodes::NetworkAdministrativelyProhibited,
@@ -1488,14 +1488,14 @@ mod tests {
 
             assert_eq!(
                 port_state(&session, TARGET, 53),
-                Some(PortState::Filtered),
-                "ICMP code {code:?} should read as filtered"
+                Some(PortState::Blocked),
+                "ICMP code {code:?} should read as blocked"
             );
         }
     }
 
     /// A code that reports on neither the port nor the path leaves the probe
-    /// outstanding, to time out into `OpenFiltered` like any other silence.
+    /// outstanding, to time out into `OpenOrNoReply` like any other silence.
     #[test]
     fn uninformative_icmp_codes_leave_the_probe_outstanding() {
         for code in [
@@ -1517,7 +1517,7 @@ mod tests {
     }
 
     #[test]
-    fn icmpv6_policy_refusals_are_filtered() {
+    fn icmpv6_policy_refusals_are_blocked() {
         for code in [
             ICMPV6_ADMIN_PROHIBITED,
             ICMPV6_INGRESS_EGRESS_POLICY,
@@ -1533,8 +1533,8 @@ mod tests {
 
             assert_eq!(
                 port_state(&session, TARGET_V6, 53),
-                Some(PortState::Filtered),
-                "ICMPv6 code {code:?} should read as filtered"
+                Some(PortState::Blocked),
+                "ICMPv6 code {code:?} should read as blocked"
             );
         }
     }
@@ -1637,10 +1637,10 @@ mod tests {
     /// then one a second going to whichever probe arrives next, which by then
     /// is a retry. The second is a filter dropping most ports in front of a
     /// few closed ones, whose silence no retry changes. Naming the second as
-    /// the first would tell a reader its filtered ports are closed ones.
+    /// the first would tell a reader its silent ports are closed ones.
     #[test]
-    fn a_host_rationing_its_icmp_errors_is_named_and_a_filtered_one_is_not() {
-        const FILTERED: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 201));
+    fn a_host_rationing_its_icmp_errors_is_named_and_a_dropping_one_is_not() {
+        const DROPPING: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 201));
         let (mut scanner, _session) = scanner_with_mock();
         let unreachable = |host: IpAddr, port: u16| {
             icmpv4_error(
@@ -1653,17 +1653,17 @@ mod tests {
         };
         for port in 1..=20 {
             probe(&mut scanner, TARGET, port);
-            probe(&mut scanner, FILTERED, port);
+            probe(&mut scanner, DROPPING, port);
         }
 
         // The burst: six answered at once from the rationing host, and eight
-        // from the filtered one, which answers every closed port it has.
+        // from the dropping one, which answers every closed port it has.
         let mut now = Instant::now();
         for port in 1..=6 {
             scanner.handle_reply(&unreachable(TARGET, port), now);
         }
         for port in 1..=8 {
-            scanner.handle_reply(&unreachable(FILTERED, port), now);
+            scanner.handle_reply(&unreachable(DROPPING, port), now);
         }
 
         // The ration's next allowances fall to retries.
@@ -1689,7 +1689,7 @@ mod tests {
     /// it answers anything late, and a lossy link in front of a filter can
     /// lose the first answer of the one closed port there is, leaving a late
     /// answer and a page of silence that read as a ration. Named rationing,
-    /// the host's filtered ports would be read as closed ones.
+    /// the host's silent ports would be read as closed ones.
     #[test]
     fn a_single_closed_port_answered_late_behind_a_filter_is_not_a_ration() {
         let lossy_filter = IcmpTally {
@@ -1725,7 +1725,7 @@ mod tests {
 
         assert_eq!(
             port_state(&session, TARGET, 53),
-            Some(PortState::OpenFiltered)
+            Some(PortState::OpenOrNoReply)
         );
         assert!(scanner.core.ledger.is_empty());
     }
@@ -1793,7 +1793,7 @@ mod tests {
     }
 
     #[test]
-    fn unanswered_probes_resolve_as_filtered() {
+    fn unanswered_probes_resolve_as_open_or_no_reply() {
         let (mut scanner, session) = scanner_with_mock();
         probe(&mut scanner, TARGET, 161);
 
@@ -1801,7 +1801,7 @@ mod tests {
 
         assert_eq!(
             port_state(&session, TARGET, 161),
-            Some(PortState::OpenFiltered)
+            Some(PortState::OpenOrNoReply)
         );
         assert!(scanner.core.ledger.is_empty());
     }

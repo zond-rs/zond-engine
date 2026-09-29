@@ -411,14 +411,14 @@ pub struct EngineDto {
 ///
 /// The per-status and per-state breakdowns are structs rather than maps, so every
 /// category is present in severity order whether or not anything landed in it. A
-/// consumer reading `filtered: 0` learns something; one deciding what a missing
+/// consumer reading `blocked: 0` learns something; one deciding what a missing
 /// key means does not.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct SummaryDto {
     /// Hosts recorded, whatever their status.
     pub hosts_total: usize,
-    /// Hosts confirmed present on the network: `up` or `filtered`.
+    /// Hosts confirmed present on the network: `up` or `blocked`.
     pub hosts_alive: usize,
     /// The full status distribution.
     pub hosts_by_status: HostStatusCounts,
@@ -474,7 +474,7 @@ impl SummaryDto {
             hosts_alive: summary.hosts_alive,
             hosts_by_status: HostStatusCounts {
                 up: status(HostStatus::Up),
-                filtered: status(HostStatus::Filtered),
+                blocked: status(HostStatus::Blocked),
                 down: status(HostStatus::Down),
                 unknown: status(HostStatus::Unknown),
             },
@@ -482,11 +482,12 @@ impl SummaryDto {
             ports_open: summary.ports_open,
             ports_by_state: PortStateCounts {
                 open: state(PortState::Open),
-                open_filtered: state(PortState::OpenFiltered),
+                open_or_no_reply: state(PortState::OpenOrNoReply),
                 closed: state(PortState::Closed),
-                unfiltered: state(PortState::Unfiltered),
-                filtered: state(PortState::Filtered),
-                closed_filtered: state(PortState::ClosedFiltered),
+                reachable: state(PortState::Reachable),
+                blocked: state(PortState::Blocked),
+                no_reply: state(PortState::NoReply),
+                closed_or_no_reply: state(PortState::ClosedOrNoReply),
                 unasked: state(PortState::Unasked),
             },
             services_identified: summary.services_identified,
@@ -505,8 +506,9 @@ impl SummaryDto {
 pub struct HostStatusCounts {
     /// Online and responding.
     pub up: usize,
-    /// Present, but probes are being dropped.
-    pub filtered: usize,
+    /// Not answering for itself, but refused by policy on its behalf, so
+    /// something is there enforcing a perimeter.
+    pub blocked: usize,
     /// Explicitly confirmed unreachable.
     pub down: usize,
     /// Never determined.
@@ -519,16 +521,19 @@ pub struct HostStatusCounts {
 pub struct PortStateCounts {
     /// Accepting connections.
     pub open: usize,
-    /// Either open or silently dropped; the usual UDP outcome.
-    pub open_filtered: usize,
+    /// Open, or no reply: silence where an open port is silent too; the
+    /// usual UDP outcome.
+    pub open_or_no_reply: usize,
     /// Actively refusing connections.
     pub closed: usize,
     /// Reachable, but open or closed could not be told apart.
-    pub unfiltered: usize,
-    /// Probes dropped with no answer.
-    pub filtered: usize,
-    /// Either closed or dropped.
-    pub closed_filtered: usize,
+    pub reachable: usize,
+    /// Refused by an ICMP error from the host or the path.
+    pub blocked: usize,
+    /// Asked on every attempt, and nothing came back.
+    pub no_reply: usize,
+    /// Closed, or no reply.
+    pub closed_or_no_reply: usize,
     /// Named by the scan and never probed, so nothing was established. A
     /// non-zero count here is the visible half of a run that fell short; the
     /// phase's `timed_out` and `stop_reason` say why.
@@ -598,7 +603,7 @@ pub struct PhaseDto<'a> {
     /// Left out when empty, which is every phase that set no per-host budget.
     /// An address here carries whatever the phase managed to ask about and
     /// nothing after that: the ports it never reached are present with the
-    /// scan's silence verdict, so without this list a page of `filtered` reads
+    /// scan's silence verdict, so without this list a page of `no_reply` reads
     /// as a quiet machine rather than as a scan that ran out of time.
     ///
     /// The record of this phase. What the report as a whole left early, read
@@ -609,7 +614,7 @@ pub struct PhaseDto<'a> {
     ///
     /// Left out when empty. A closed UDP port is known only by the ICMP port
     /// unreachable its host sends, and a host here rationed those, so most of
-    /// its closed ports read `open_filtered` beside the few that read
+    /// its closed ports read `open_or_no_reply` beside the few that read
     /// `closed`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub icmp_rate_limited: Vec<String>,
@@ -1039,7 +1044,7 @@ pub struct SettingsDto {
     pub tcp_technique: &'static str,
     /// Which chunk each SCTP port probe carried: `init` or `cookie-echo`.
     ///
-    /// An SCTP port reported `open_filtered` came from a `cookie-echo` scan,
+    /// An SCTP port reported `open_or_no_reply` came from a `cookie-echo` scan,
     /// which draws an answer only from a closed port and so cannot report one
     /// open at all. Under `init` the same port would have been settled either
     /// way.
@@ -1148,9 +1153,9 @@ pub struct SettingsDto {
     /// Whether the capture kept ICMP errors the technique did not need for its
     /// verdict.
     ///
-    /// What decides how a filtered port's `no_response` reads. With this set the
-    /// scan listened for a refusal and none came; without it, a refusal would
-    /// not have been heard.
+    /// What decides how a `no_reply` port reads. With this set the scan
+    /// listened for a refusal, which would have made the port `blocked`, and
+    /// none came; without it, a refusal would not have been heard.
     pub icmp_evidence: bool,
 }
 
@@ -1418,8 +1423,8 @@ pub struct ProbeStatsDto {
     ///
     /// The field that says whether the silence in this phase is a finding. A run
     /// whose window was cut back to its floor and still left most of its probes
-    /// unanswered established that it could not ask, not that anything was
-    /// filtered. `null` for a scanner paced some other way.
+    /// unanswered established that it could not ask, not that anything dropped
+    /// its probes. `null` for a scanner paced some other way.
     pub window: Option<WindowDto>,
 }
 
@@ -1594,10 +1599,10 @@ pub struct HostDto<'a> {
     /// domain's. Never a copy of `hostname`, which is what name resolution
     /// answered for the address.
     pub names: Vec<NameDto<'a>>,
-    /// The reachability status: `up`, `filtered`, `down` or `unknown`.
+    /// The reachability status: `up`, `blocked`, `down` or `unknown`.
     pub status: &'static str,
     /// Whether the host is confirmed present on the network. True for `up` and
-    /// `filtered`; carried so a consumer does not have to know that a filtered
+    /// `blocked`; carried so a consumer does not have to know that a blocked
     /// host is still a host.
     pub alive: bool,
     /// The evidence behind the status, sorted.
@@ -1953,7 +1958,7 @@ pub struct IpProtocolDto {
     pub protocol: u8,
     /// Its registry keyword, where it has one worth printing.
     pub name: Option<&'static str>,
-    /// `open`, `closed`, `filtered`, `open_filtered` or `unasked`. What each
+    /// `open`, `closed`, `blocked`, `open_or_no_reply` or `unasked`. What each
     /// means here is
     /// [`IpProtocolState`](crate::model::host::IpProtocolState)'s own
     /// documentation, and the words are not a port's: `open` is the host taking
@@ -2590,8 +2595,12 @@ mod tests {
     fn wire_names_are_pinned() {
         assert_eq!(scan_kind_name(ScanKind::PortScan), "port_scan");
         assert_eq!(scanner_kind_name(ScannerKind::SynPort), "syn_port");
-        assert_eq!(host_status_name(HostStatus::Filtered), "filtered");
-        assert_eq!(port_state_name(PortState::OpenFiltered), "open_filtered");
+        assert_eq!(host_status_name(HostStatus::Blocked), "blocked");
+        assert_eq!(
+            port_state_name(PortState::OpenOrNoReply),
+            "open_or_no_reply"
+        );
+        assert_eq!(port_state_name(PortState::NoReply), "no_reply");
         assert_eq!(protocol_name(Protocol::Udp), "udp");
         // Spelled out in full, unlike the enums above: this is the whole role
         // vocabulary a consumer switches on, and it is the one that grows.
@@ -2638,7 +2647,7 @@ mod tests {
         assert_eq!(summary.hosts_by_status.up, 0);
         assert_eq!(summary.hosts_by_status.unknown, 0);
         assert_eq!(summary.ports_by_state.open, 0);
-        assert_eq!(summary.ports_by_state.closed_filtered, 0);
+        assert_eq!(summary.ports_by_state.closed_or_no_reply, 0);
     }
 
     /// The counts that can exceed what a JSON number holds exactly are the ones

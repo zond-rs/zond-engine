@@ -152,7 +152,7 @@
 #   null    |  answered negatively, by the RST only a closed port must send.
 #   xmas    |  a filter that blocks connections often passes these.
 #   maimon  |
-#   ack     tells filtered from unfiltered, never says which is open.
+#   ack     tells reachable from blocked or silent, never says which is open.
 #
 # Only `syn` works without raw sockets. Against a stack that answers every flag
 # probe with a RST — Windows, many Cisco devices — fin, null, xmas and maimon
@@ -167,11 +167,11 @@
 #                abort, so silence is a filter.
 #   cookie-echo  a cookie no endpoint minted. Only a closed port answers, with
 #                an abort; a listener fails to authenticate it and says nothing,
-#                so open and filtered are indistinguishable here.
+#                so an open port and a dropped probe look alike here.
 #
 # Both need raw sockets. Reach for cookie-echo when an init scan came back
-# entirely filtered and the question is whether the filter is aimed at SCTP or
-# only at the chunk a scan is expected to send.
+# entirely silent or blocked and the question is whether the filter is aimed at
+# SCTP or only at the chunk a scan is expected to send.
 #
 # sctp_technique = "init"
 

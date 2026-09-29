@@ -168,12 +168,12 @@ pub enum Reply {
     Closed,
     /// No answer, ever. This is what a firewall configured to `DROP` rather
     /// than `REJECT` looks like from outside, and the only way to reach the
-    /// `Filtered` classification: the scanner has to conclude it from silence
+    /// `NoReply` classification: the scanner has to conclude it from silence
     /// and its own deadline, since nothing on the wire tells it.
     Silent,
     /// A specific ICMP Destination Unreachable reason, for the distinctions the
     /// blanket [`Closed`](Self::Closed) hides - an administratively prohibited
-    /// message means filtered, not closed.
+    /// message means blocked, not closed.
     ///
     /// A TCP probe draws one of these only where the scanner asked its capture
     /// for ICMP, which the SYN technique does not: for it, this is silence, as
@@ -216,16 +216,17 @@ pub enum Unreachable {
     /// Nothing is bound to the port. The one unambiguous "closed" signal a UDP
     /// scan gets.
     Port,
-    /// A filtering device refused to forward the probe. Means filtered, and
+    /// A filtering device refused to forward the probe. Means blocked, and
     /// misreading it as closed is the classic UDP-scan error.
     AdminProhibited,
     /// The host itself could not be reached, which says nothing about the port.
     ///
     /// The two families genuinely disagree on what this means for a scan, and
     /// the harness does not paper over it: v4's host-unreachable is an explicit
-    /// delivery failure and reads as filtered, while v6's address-unreachable
-    /// is deliberately left unclassified and leaves the probe to time out. A
-    /// test using this variant should expect the family's own behaviour.
+    /// delivery failure and reads as the host down, while v6's
+    /// address-unreachable is deliberately left unclassified and leaves the
+    /// probe to time out. A test using this variant should expect the family's
+    /// own behaviour.
     Host,
 }
 
@@ -257,7 +258,7 @@ pub enum Loss {
     /// Swallow the first `n` probes to a target, deliver the rest.
     ///
     /// This is the shape of the retransmission test: a scanner that gives up
-    /// after one unanswered probe reports the target as filtered, while one
+    /// after one unanswered probe reports the target as silent, while one
     /// that retries discovers its true state. Because the cutoff is a count and
     /// not a coin flip, the expected outcome is exact - the test asserts a
     /// classification, not a success rate.

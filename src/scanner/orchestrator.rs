@@ -1789,30 +1789,35 @@ pub(super) async fn run_characterise(
         if ctx.host_expired(key.addr()) {
             continue;
         }
-        // One open port to send the middlebox probe at, and one the scan found
-        // filtered to aim the comparative probes at: a filter is doing
-        // something at a filtered port, and nothing at an unfiltered one.
+        // One open port to send the middlebox probe at, and one a SYN did not
+        // reach to aim the comparative probes at: silent or refused, a filter
+        // is doing something there, and nothing at a port that answered.
         let ports = ctx.read_host(&key, |host| {
             host.status().is_up().then(|| {
-                let tcp = |state| {
+                let tcp = |wanted: &[PortState]| {
                     host.ports()
-                        .find(|port| port.protocol() == Protocol::Tcp && port.state() == state)
+                        .find(|port| {
+                            port.protocol() == Protocol::Tcp && wanted.contains(&port.state())
+                        })
                         .map(|port| port.number())
                 };
-                (tcp(PortState::Open), tcp(PortState::Filtered))
+                (
+                    tcp(&[PortState::Open]),
+                    tcp(&[PortState::NoReply, PortState::Blocked]),
+                )
             })
         });
-        let Some(Some((open_port, filtered_port))) = ports else {
+        let Some(Some((open_port, unreached_port))) = ports else {
             continue;
         };
-        if open_port.is_none() && filtered_port.is_none() {
+        if open_port.is_none() && unreached_port.is_none() {
             continue;
         }
         if let Some(host) = routable(key) {
             subjects.push(strategy::topology::characterise::Subject {
                 host,
                 open_port,
-                filtered_port,
+                unreached_port,
             });
         }
     }
@@ -4309,10 +4314,10 @@ mod tests {
         };
         let (session, ctx) = store_holding(vec![
             host_at("192.0.2.1", HostStatus::Up),
-            unheard("192.0.2.2", PortState::Filtered),
+            unheard("192.0.2.2", PortState::NoReply),
             unheard("192.0.2.3", PortState::Unasked),
-            unheard("192.0.2.4", PortState::Filtered),
-            unheard("192.0.2.9", PortState::Filtered),
+            unheard("192.0.2.4", PortState::NoReply),
+            unheard("192.0.2.9", PortState::NoReply),
         ]);
         ctx.record_unroutable("192.0.2.4".parse().expect("an address"));
 
@@ -4347,7 +4352,7 @@ mod tests {
             .build();
         let address: IpAddr = "192.0.2.2".parse().expect("an address");
         ctx.update_host(address, |host| {
-            host.add_port(Port::new(443, Protocol::Tcp, PortState::Filtered));
+            host.add_port(Port::new(443, Protocol::Tcp, PortState::NoReply));
         });
         assert!(
             ctx.host_expired(address),

@@ -15,7 +15,7 @@
 //! classifier that has drifted from the protocol fails here and passes there.
 //!
 //! The three techniques that read silence as an open port are the reason this
-//! matters most. `Fin`, `Null` and `Xmas` conclude `OpenFiltered` from an
+//! matters most. `Fin`, `Null` and `Xmas` conclude `OpenOrNoReply` from an
 //! absence, and an absence is what a broken send path also produces.
 
 use crate::netns::{Segment, available};
@@ -56,8 +56,8 @@ async fn a_syn_scan_separates_open_from_closed() {
     );
 }
 
-/// The three flag probes read an open port as `OpenFiltered` and a closed one as
-/// closed.
+/// The three flag probes read an open port as `OpenOrNoReply` and a closed one
+/// as closed.
 ///
 /// RFC 793 says a segment carrying neither SYN, RST nor ACK is dropped without
 /// reply by a listening port and answered with a reset by one that is not
@@ -78,7 +78,7 @@ async fn the_flag_probes_read_silence_as_open_and_a_reset_as_closed() {
         let mut segment = Segment::new();
         assert_eq!(
             verdicts(&mut segment, technique).await,
-            (Some(PortState::OpenFiltered), Some(PortState::Closed)),
+            (Some(PortState::OpenOrNoReply), Some(PortState::Closed)),
             "{technique:?} against a real kernel"
         );
     }
@@ -89,7 +89,7 @@ async fn the_flag_probes_read_silence_as_open_and_a_reset_as_closed() {
 /// The technique rests on the BSD-derived behaviour of dropping a FIN/ACK to an
 /// open port where the RFC calls for a reset. Linux resets both, so the
 /// technique cannot separate them here and says so rather than guessing. Worth
-/// pinning because a classifier that reported `OpenFiltered` for the open port
+/// pinning because a classifier that reported `OpenOrNoReply` for the open port
 /// would look more useful and be wrong.
 #[tokio::test]
 async fn a_maimon_scan_cannot_separate_the_two_on_linux() {
@@ -103,7 +103,7 @@ async fn a_maimon_scan_cannot_separate_the_two_on_linux() {
     );
 }
 
-/// An ACK scan reports both ports unfiltered, having asked about the filter.
+/// An ACK scan reports both ports reachable, having asked about the filter.
 ///
 /// It is not a port-state technique: a reset comes back either way, and what it
 /// establishes is that nothing dropped the segment on the way. Reporting
@@ -117,7 +117,7 @@ async fn an_ack_scan_reports_the_filter_rather_than_the_port() {
     let mut segment = Segment::new();
     assert_eq!(
         verdicts(&mut segment, TcpScanTechnique::Ack).await,
-        (Some(PortState::Unfiltered), Some(PortState::Unfiltered))
+        (Some(PortState::Reachable), Some(PortState::Reachable))
     );
 }
 
@@ -159,7 +159,7 @@ async fn an_unanswered_flag_probe_is_retried_on_the_wire() {
 
     assert_eq!(
         outcome.port_state(segment.peer(), open),
-        Some(PortState::OpenFiltered)
+        Some(PortState::OpenOrNoReply)
     );
     let arrived = segment.count_of(open);
     assert!(

@@ -1170,9 +1170,9 @@ mod tests {
         let mut nothing = Host::new(TARGET);
         assert!(SeriesTarget::for_host(ScopedIp::unscoped(TARGET), &nothing).is_none());
 
-        // A filtered port is silence with a name on it, not an answer: nothing
+        // A `NoReply` port is silence with a name on it, not an answer: nothing
         // came back, so there is no reply to ask for a second one of.
-        nothing.add_port(Port::new(80, Protocol::Tcp, PortState::Filtered));
+        nothing.add_port(Port::new(80, Protocol::Tcp, PortState::NoReply));
         assert!(SeriesTarget::for_host(ScopedIp::unscoped(TARGET), &nothing).is_none());
 
         // Nor does a UDP finding help: this scanner sends TCP.

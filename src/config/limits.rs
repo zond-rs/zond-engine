@@ -37,13 +37,13 @@ use std::time::Duration;
 /// second therefore expires while that retransmission is still in flight, and
 /// every host that ignores a first SYN - a rate limiter, a busy embedded stack,
 /// any of the SYN-flood mitigations common in consumer routers - is reported
-/// `Filtered` when it is merely slow to answer the first time. That failure is
+/// `NoReply` when it is merely slow to answer the first time. That failure is
 /// silent, total, and looks exactly like a firewall.
 ///
 /// So it sits above one second by enough to cover a round trip on top, and well
 /// below three, where the *second* retransmission would arrive: one extra
 /// attempt is worth waiting for, a third is a scan that has stopped being a
-/// scan. What it costs is half a second per genuinely filtered port, paid only
+/// scan. What it costs is half a second per port that genuinely drops probes, paid only
 /// on the unprivileged path, which is the right way round - the raw scanners
 /// retransmit for themselves and size their own patience from measured round
 /// trips.
@@ -66,7 +66,7 @@ pub(crate) const HOST_SYN_RETRANSMIT: Duration = Duration::from_secs(1);
 /// [`CONNECT_PROBE_TIMEOUT`] hears a host across a path of up to half a
 /// second, which is every ordinary path, and on a longer one it hears
 /// nothing: each connect gives up while the answer to its SYN is on the way,
-/// so a live host reads silent and its open ports filtered. A connect cannot
+/// so a live host reads silent and its open ports as no reply. A connect cannot
 /// time the path it has not yet crossed, so one connect per host waits this
 /// long instead, and what it measures sizes the waits that follow it.
 ///
@@ -95,7 +95,7 @@ pub(crate) const PATH_FINDING_TIMEOUT: Duration = Duration::from_secs(3);
 /// three seconds of asking and fails the connect then, and a sweep of one
 /// such address was measured at 7.8 s against 6.2; with a segment's worth
 /// asked at once not every connect is failed, and a `/24` holding two hosts
-/// took 12.1 s against 9.1. A live neighbour whose every port is filtered
+/// took 12.1 s against 9.1. A live neighbour whose every port drops probes
 /// pays the three seconds in full.
 pub(crate) const NEIGHBOUR_PATH_FINDING_TIMEOUT: Duration = Duration::from_secs(6);
 
@@ -160,7 +160,7 @@ mod tests {
     /// A connect probe sends one SYN; the host stack's retransmission is the
     /// only second attempt it gets. Set at or below that boundary, the budget
     /// expires while the answer is in flight and reports a live, refusing host
-    /// as filtered - measured against a router that ignores a first SYN and
+    /// as no reply - measured against a router that ignores a first SYN and
     /// answers the retransmission, where the refusal lands at 1.01 s to 1.04 s
     /// and a one-second budget missed every one of them.
     ///
@@ -171,7 +171,7 @@ mod tests {
         assert!(
             CONNECT_PROBE_TIMEOUT > HOST_SYN_RETRANSMIT,
             "a budget of {CONNECT_PROBE_TIMEOUT:?} expires while the host stack's \
-             retransmission is still in flight, and reports refusing hosts as filtered"
+             retransmission is still in flight, and reports refusing hosts as no reply"
         );
         assert!(
             CONNECT_PROBE_TIMEOUT < HOST_SYN_RETRANSMIT * 3,

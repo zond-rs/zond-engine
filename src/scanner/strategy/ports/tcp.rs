@@ -21,7 +21,7 @@
 //! deadline, source selection, and the rule that silence is only a verdict once
 //! a probe has spent its whole budget on it. That last one is what separates
 //! observing a firewall from assuming one, and it is the same discipline
-//! whether the technique reads silence as filtered or as open-filtered.
+//! whether the technique reads silence as `NoReply` or as `OpenOrNoReply`.
 //!
 //! ## Tying a reply to its probe
 //!
@@ -155,7 +155,7 @@ impl TcpPortScanner {
             ProbeKind::TcpProbe {
                 reply_port: src_port,
                 // An arbitrary flag combination reads its verdict off ICMP the
-                // way a flag-probe technique does, silence upgrades to filtered
+                // way a flag-probe technique does, silence upgrades to blocked
                 // when an error names the filter, so it asks for errors too.
                 icmp_errors: technique.reads_icmp_errors()
                     || flags_override.is_some()
@@ -335,7 +335,7 @@ impl TcpPortScanner {
         // say, is somebody else's traffic on this scan's port and resolves
         // nothing.
         let state = if self.arbitrary_flags() {
-            PortState::Unfiltered
+            PortState::Reachable
         } else {
             match self.technique.verdict(reply) {
                 Some(state) => state,
@@ -504,10 +504,11 @@ impl TcpPortScanner {
             //
             // Resolving on that would be resolving on the ports alone, which
             // anybody who knows this scan's source port can supply. For an ACK
-            // or window scan it would reach the verdict silence reaches, costing
-            // only a suppressed retry and an invented `IcmpProhibited`. For a
-            // Maimon scan it would cost the verdict: `OpenFiltered` would become
-            // `Filtered`, and an open port would be dismissed.
+            // or window scan it would turn the `NoReply` silence reaches into
+            // `Blocked`, a refusal nobody need have sent, along with a
+            // suppressed retry and an invented `IcmpProhibited`. For a
+            // Maimon scan it would cost the verdict: `OpenOrNoReply` would
+            // become `Blocked`, and an open port would be dismissed.
             //
             // So an unattributable refusal retires nothing, and the port takes
             // whatever its own retry schedule concludes. See the SCTP scanner,
@@ -522,7 +523,7 @@ impl TcpPortScanner {
                 self.resolve_probe(
                     key,
                     token,
-                    PortState::Filtered,
+                    PortState::Blocked,
                     Answer {
                         drawn_by: None,
                         sender: Some(reply.source),
@@ -593,7 +594,7 @@ impl TcpPortScanner {
     }
 
     /// Whether this scan sends an arbitrary flag combination, so a reply says
-    /// only that the port is reachable and silence means open-filtered: the
+    /// only that the port is reachable and silence means `OpenOrNoReply`: the
     /// softer reading an arbitrary combination licenses, in place of the
     /// technique's defined open/closed verdict.
     const fn arbitrary_flags(&self) -> bool {
@@ -622,9 +623,9 @@ impl RawPortScan for TcpPortScanner {
     fn silence_means(&self) -> PortState {
         if self.arbitrary_flags() {
             // Silence to an arbitrary combination is either a drop or an open
-            // port that ignored it, the open-filtered of the flag-probe family:
-            // never the plain filtered a SYN's silence would earn.
-            PortState::OpenFiltered
+            // port that ignored it, the open-or-no-reply of the flag-probe
+            // family: never the plain no reply a SYN's silence would earn.
+            PortState::OpenOrNoReply
         } else {
             self.technique.silence_means()
         }
@@ -674,7 +675,7 @@ impl RawPortScan for TcpPortScanner {
     ///   forgotten because the port verdict reads negative while the host
     ///   verdict does not.
     /// - **A middlebox rejected the probe by policy.** Something is enforcing a
-    ///   perimeter around this address, which is [`HostStatus::Filtered`] -
+    ///   perimeter around this address, which is [`HostStatus::Blocked`] -
     ///   materially different from an address nothing answers for.
     /// - **Nothing answered.** A verdict reached from silence records nothing.
     ///   Silence is not evidence about a host, and promoting it would make
@@ -759,8 +760,8 @@ impl TcpPortScanner {
         // The packet that settled it, written down rather than merely acted on.
         // The classification below already knows which reply arrived, it is
         // what decides the verdict, and without this record a reader would have
-        // the word `filtered` and no way to learn whether a firewall said so or
-        // nothing came back. The two are different findings.
+        // the word `blocked` and no way to learn whether the target refused or
+        // something on its path did. The two are different findings.
         let port = match port_evidence(state, drawn_by, sender, ip) {
             Some(reason) => {
                 let mut discovery = PortDiscovery::new(reason);
@@ -796,21 +797,21 @@ impl TcpPortScanner {
                 },
             )),
             // Both verdicts a RST can produce: closed for the techniques that
-            // read it as an absent listener, unfiltered for the ACK scan, which
+            // read it as an absent listener, reachable for the ACK scan, which
             // reads it as a probe that arrived.
-            (PortState::Closed | PortState::Unfiltered, _) => Some((
+            (PortState::Closed | PortState::Reachable, _) => Some((
                 HostStatus::Up,
                 StatusReason::new(self.status_protocol(), rst_evidence(self.technique)),
             )),
-            (PortState::Filtered, Some(sender)) if sender == ip => Some((
+            (PortState::Blocked, Some(sender)) if sender == ip => Some((
                 HostStatus::Up,
                 StatusReason::new(
                     StatusProtocol::IcmpUnreachable,
                     "unreachable for a probed port, from the host",
                 ),
             )),
-            (PortState::Filtered, Some(sender)) => Some((
-                HostStatus::Filtered,
+            (PortState::Blocked, Some(sender)) => Some((
+                HostStatus::Blocked,
                 StatusReason::new(
                     StatusProtocol::IcmpUnreachable,
                     "unreachable for a probed port, from the path",
@@ -870,12 +871,14 @@ struct Answer {
 /// they answer different questions, that one says why the *host* is believed
 /// alive, this says why the *port* is in the state it is.
 ///
-/// A [`PortState::Filtered`] port whose attempts ran out records
-/// [`ScanResponse::NoResponse`], because that word alone does not say whether a
-/// filter answered or nothing did. [`PortState::OpenFiltered`] says silence on
-/// its own face and is left as it is: the flag-probe techniques come back full
-/// of it, and a packet recorded against every one would be the verdict written
-/// twice.
+/// A [`PortState::Blocked`] port records which refusal it was, a prohibition
+/// from the target or an unreachable from the path, which the state alone does
+/// not say. A [`PortState::NoReply`] port whose attempts ran out records
+/// [`ScanResponse::NoResponse`], so every port a technique answers for from its
+/// own probes carries an account of itself.
+/// [`PortState::OpenOrNoReply`] is left as it is: the flag-probe techniques
+/// come back full of it, and a packet recorded against every one would be the
+/// verdict written twice.
 ///
 /// `None` where the verdict and the reply that produced it name no packet
 /// between them.
@@ -893,15 +896,15 @@ fn port_evidence(
         // only a listener can be. Same segment family as a handshake, and the
         // report records both as the SYN/ACK path they are.
         (PortState::Open, _, _) => Some(ScanResponse::TcpSynAck),
-        (PortState::Closed | PortState::Unfiltered, _, _) => Some(ScanResponse::TcpRst),
+        (PortState::Closed | PortState::Reachable, _, _) => Some(ScanResponse::TcpRst),
         // An unreachable from the target is the target's own policy; one from
         // the path is somebody else's. Both are prohibitions, and which address
         // sent it is kept on the host's evidence rather than restated here.
-        (PortState::Filtered, _, Some(from)) => Some(match from == target {
+        (PortState::Blocked, _, Some(from)) => Some(match from == target {
             true => ScanResponse::IcmpProhibited,
             false => ScanResponse::IcmpUnreachable,
         }),
-        (PortState::Filtered, None, None) => Some(ScanResponse::NoResponse),
+        (PortState::NoReply, None, None) => Some(ScanResponse::NoResponse),
         _ => None,
     }
 }
@@ -1263,8 +1266,8 @@ mod tests {
     ///
     /// The scanner knows which reply arrived, it is what decides the verdict,
     /// and one that acted on it and threw it away would leave a reader the word
-    /// `open` and no account of it, and no way at all to tell a `filtered` a
-    /// firewall produced from a `filtered` nothing answered.
+    /// `open` and no account of it, and no way at all to tell a `blocked` the
+    /// target's own policy produced from a `blocked` its path produced.
     #[test]
     fn an_answered_port_records_the_packet_that_settled_it() {
         let (mut scanner, session, sent) = scanner_with_mock();
@@ -1325,7 +1328,8 @@ mod tests {
     /// over.
     ///
     /// Its capture admits none of this scan's answers, so run anyway every port
-    /// would read filtered, a verdict indistinguishable from a real firewall.
+    /// would read `NoReply`, a verdict indistinguishable from a port that
+    /// truly drops its probes.
     /// Refused, the scan says why it did not run, in words a reader of the
     /// report's failures can follow, sends nothing, and still files every port
     /// it was handed, as one nobody asked about.
@@ -1424,7 +1428,7 @@ mod tests {
     /// nothing was established, rather than leaving it off.
     ///
     /// A link that stops accepting sends refuses every probe behind the one that
-    /// noticed, so ports left off would go nowhere at all: not filtered, not
+    /// noticed, so ports left off would go nowhere at all: not silent, not
     /// unknown, absent, while the audit counted thousands of failed sends beside
     /// a host that looked cleanly scanned. That is the shortfall a reader cannot
     /// see, and it is the same one `resolve_unasked` closes for the targets
@@ -1571,9 +1575,9 @@ mod tests {
         let (mut scanner, session, sent) = scanner_with_mock();
         probe(&mut scanner, &sent, 80);
 
-        scanner.record_port(TARGET, 80, PortState::Filtered, None);
+        scanner.record_port(TARGET, 80, PortState::NoReply, None);
 
-        assert_eq!(port_state(&session, 80), Some(PortState::Filtered));
+        assert_eq!(port_state(&session, 80), Some(PortState::NoReply));
 
         let discovery = port_discovery(&session, 80).expect("the silence is evidence too");
         assert_eq!(discovery.reason(), &ScanResponse::NoResponse);
@@ -1588,7 +1592,7 @@ mod tests {
         let (mut scanner, session, sent) = scanner_with_mock();
         probe(&mut scanner, &sent, 81);
 
-        scanner.record_port(TARGET, 81, PortState::Filtered, Some(TARGET));
+        scanner.record_port(TARGET, 81, PortState::Blocked, Some(TARGET));
 
         let discovery = port_discovery(&session, 81).expect("the refusal is evidence");
         assert_eq!(discovery.reason(), &ScanResponse::IcmpProhibited);
@@ -1786,7 +1790,7 @@ mod tests {
     /// SYN+PSH is span-one like a SYN, so the harness's own echo rule still
     /// applies and the answer resolves. A version that read the override's reply
     /// through the technique's verdict would call this reset closed, and one that
-    /// left silence to the technique would call it plain filtered: both untrue
+    /// left silence to the technique would call it plain `NoReply`: both untrue
     /// of a combination that carries no open/closed meaning.
     #[test]
     fn an_arbitrary_flag_combination_reads_reachable_not_open_or_closed() {
@@ -1802,13 +1806,13 @@ mod tests {
 
         assert_eq!(
             port_state(&session, 80),
-            Some(PortState::Unfiltered),
+            Some(PortState::Reachable),
             "a reply to an arbitrary combination proves only reachability"
         );
         assert_eq!(
             scanner.silence_means(),
-            PortState::OpenFiltered,
-            "and its silence is open-filtered, not a SYN's plain filtered"
+            PortState::OpenOrNoReply,
+            "and its silence is open or no reply, not a SYN's plain no reply"
         );
     }
 
@@ -1869,13 +1873,13 @@ mod tests {
     }
 
     #[test]
-    fn unanswered_probes_resolve_as_filtered() {
+    fn unanswered_probes_resolve_as_no_reply() {
         let (mut scanner, session, sent) = scanner_with_mock();
         probe(&mut scanner, &sent, 443);
 
         super::super::run_out(&mut scanner);
 
-        assert_eq!(port_state(&session, 443), Some(PortState::Filtered));
+        assert_eq!(port_state(&session, 443), Some(PortState::NoReply));
         assert!(scanner.core.ledger.is_empty());
     }
 
@@ -1891,7 +1895,7 @@ mod tests {
             (TcpScanTechnique::Null, PortState::Closed),
             (TcpScanTechnique::Xmas, PortState::Closed),
             (TcpScanTechnique::Maimon, PortState::Closed),
-            (TcpScanTechnique::Ack, PortState::Unfiltered),
+            (TcpScanTechnique::Ack, PortState::Reachable),
             // The helper builds a reset with no window set, which is what a
             // stack with nothing behind the port announces.
             (TcpScanTechnique::Window, PortState::Closed),
@@ -1983,15 +1987,15 @@ mod tests {
     /// families: a SYN or an ACK any live stack would have answered, a flag
     /// probe an open port is required to ignore.
     #[test]
-    fn silence_is_filtered_or_open_filtered_by_technique() {
+    fn silence_is_no_reply_or_open_or_no_reply_by_technique() {
         for (technique, expected) in [
-            (TcpScanTechnique::Syn, PortState::Filtered),
-            (TcpScanTechnique::Ack, PortState::Filtered),
-            (TcpScanTechnique::Window, PortState::Filtered),
-            (TcpScanTechnique::Fin, PortState::OpenFiltered),
-            (TcpScanTechnique::Null, PortState::OpenFiltered),
-            (TcpScanTechnique::Xmas, PortState::OpenFiltered),
-            (TcpScanTechnique::Maimon, PortState::OpenFiltered),
+            (TcpScanTechnique::Syn, PortState::NoReply),
+            (TcpScanTechnique::Ack, PortState::NoReply),
+            (TcpScanTechnique::Window, PortState::NoReply),
+            (TcpScanTechnique::Fin, PortState::OpenOrNoReply),
+            (TcpScanTechnique::Null, PortState::OpenOrNoReply),
+            (TcpScanTechnique::Xmas, PortState::OpenOrNoReply),
+            (TcpScanTechnique::Maimon, PortState::OpenOrNoReply),
         ] {
             let (mut scanner, session, sent) = scanner_for(technique);
             probe(&mut scanner, &sent, 443);
@@ -2070,9 +2074,9 @@ mod tests {
     /// The near-miss that separates the two scanners: an ICMP *port* unreachable
     /// means a closed port when it answers a UDP probe, and cannot mean that
     /// here - no TCP stack emits one - so something in the path rejected the
-    /// probe, which is filtered.
+    /// probe, which is blocked.
     #[test]
-    fn a_port_unreachable_about_a_tcp_probe_is_filtered_not_closed() {
+    fn a_port_unreachable_about_a_tcp_probe_is_blocked_not_closed() {
         let (mut scanner, session, sent) = scanner_for(TcpScanTechnique::Fin);
         probe(&mut scanner, &sent, 80);
 
@@ -2083,13 +2087,13 @@ mod tests {
         );
         scanner.handle_reply(&error, Instant::now());
 
-        assert_eq!(port_state(&session, 80), Some(PortState::Filtered));
+        assert_eq!(port_state(&session, 80), Some(PortState::Blocked));
         assert!(scanner.core.ledger.is_empty());
     }
 
     /// The verdict a flag probe cannot reach from silence, and the whole reason
-    /// these techniques ask for ICMP at all: `Filtered` where an unanswered
-    /// probe would have said open-filtered.
+    /// these techniques ask for ICMP at all: `Blocked` where an unanswered
+    /// probe would have said open or no reply.
     #[test]
     fn an_administrative_rejection_beats_the_silence_verdict() {
         let (mut scanner, session, sent) = scanner_for(TcpScanTechnique::Xmas);
@@ -2102,12 +2106,12 @@ mod tests {
         );
         scanner.handle_reply(&error, Instant::now());
 
-        assert_eq!(port_state(&session, 80), Some(PortState::Filtered));
-        assert_ne!(port_state(&session, 80), Some(PortState::OpenFiltered));
+        assert_eq!(port_state(&session, 80), Some(PortState::Blocked));
+        assert_ne!(port_state(&session, 80), Some(PortState::OpenOrNoReply));
     }
 
     /// A middlebox refusing on a host's behalf is not the host answering. The
-    /// address is enforcing a perimeter, which is `Filtered`, and reading it as
+    /// address is enforcing a perimeter, which is `Blocked`, and reading it as
     /// `Up` would credit a NAT's reply to the machine behind it.
     #[test]
     fn a_rejection_from_the_path_does_not_prove_the_host_is_up() {
@@ -2122,7 +2126,7 @@ mod tests {
         scanner.handle_reply(&error, Instant::now());
 
         let host = session.hosts().get(TARGET).expect("host recorded");
-        assert_eq!(host.status(), HostStatus::Filtered);
+        assert_eq!(host.status(), HostStatus::Blocked);
     }
 
     /// The same message from the target itself is a host policing its own
@@ -2151,7 +2155,7 @@ mod tests {
     /// Through the whole loop, because what is at stake is what reaches the
     /// sender: on Linux every write to a neighbour still being resolved is
     /// accepted and queued against the socket, so twenty ports written freely
-    /// are twenty probes that never leave, read as twenty filtered ports, and
+    /// are twenty probes that never leave, read as twenty silent ports, and
     /// their retries are what fills the send buffer for every other host.
     #[tokio::test]
     async fn a_neighbour_the_kernel_never_resolves_is_asked_twice_and_reported_unreached() {
@@ -2735,10 +2739,10 @@ mod tests {
         assert_eq!(port_state(&session, 80), None, "no verdict has been earned");
     }
 
-    /// A port whose probes were never seen leaving is unasked, not filtered:
+    /// A port whose probes were never seen leaving is unasked, not `NoReply`:
     /// silence from a question nobody heard is evidence of nothing.
     #[test]
-    fn a_port_whose_probes_were_never_seen_leaving_is_unasked_not_filtered() {
+    fn a_port_whose_probes_were_never_seen_leaving_is_unasked_not_no_reply() {
         let (mut scanner, session, sent) = scanner_with_mock();
 
         // One port witnessed leaving so the run can see its egress; another not.
@@ -2759,12 +2763,12 @@ mod tests {
         );
         assert_eq!(
             port_state(&session, 80),
-            Some(PortState::Filtered),
+            Some(PortState::NoReply),
             "and a probe that was watched leaving still earns one"
         );
     }
 
-    /// A scan that witnesses no egress reads silence as filtered, as before.
+    /// A scan that witnesses no egress reads silence as `NoReply`, as before.
     #[test]
     fn a_scan_that_witnesses_nothing_reads_silence_as_it_always_did() {
         let (mut scanner, session, sent) = scanner_with_mock();
@@ -2777,13 +2781,13 @@ mod tests {
             super::super::retry_due(&mut scanner, now);
         }
 
-        assert_eq!(port_state(&session, 443), Some(PortState::Filtered));
+        assert_eq!(port_state(&session, 443), Some(PortState::NoReply));
     }
 
-    /// Filtered is what exhausting the budget means, and it takes the whole
+    /// `NoReply` is what exhausting the budget means, and it takes the whole
     /// budget to get there.
     #[test]
-    fn a_port_is_filtered_only_once_every_attempt_is_spent() {
+    fn a_port_reads_no_reply_only_once_every_attempt_is_spent() {
         let (mut scanner, session, sent) = scanner_with_mock();
         probe(&mut scanner, &sent, 80);
 
@@ -2793,7 +2797,7 @@ mod tests {
             super::super::retry_due(&mut scanner, now);
         }
 
-        assert_eq!(port_state(&session, 80), Some(PortState::Filtered));
+        assert_eq!(port_state(&session, 80), Some(PortState::NoReply));
         assert_eq!(
             sent.lock().unwrap().len(),
             usize::from(PORT_RETRY_POLICY.max_attempts),
@@ -2893,7 +2897,7 @@ mod tests {
 
     /// Each attempt carries its own nonce, so a reply to the first arriving
     /// after the second has gone out is still a reply. Matching only the newest
-    /// attempt would discard it and report an open port filtered.
+    /// attempt would discard it and report an open port silent.
     #[test]
     fn a_reply_to_a_superseded_attempt_still_resolves_the_port() {
         let (mut scanner, session, sent) = scanner_with_mock();
@@ -3073,7 +3077,7 @@ mod tests {
     /// A loop held up for longer than a timeout, by a slow send or a starved
     /// runtime, wakes to find both the answer and the expired timer. Serviced
     /// timer first, the probe is written off before its answer is read, and
-    /// with one attempt that is an open port filed filtered on the strength
+    /// with one attempt that is an open port filed `NoReply` on the strength
     /// of a silence that never happened. The answer here arrived within
     /// microseconds of the probe, so nothing but the order can make it late.
     #[tokio::test]
@@ -3210,7 +3214,7 @@ mod tests {
     ///
     /// What is asserted is that every port was asked, not what each answered:
     /// with one attempt and the path running in real time, a runner that
-    /// stalls longer than a probe's timeout can read one open port filtered,
+    /// stalls longer than a probe's timeout can read one open port `NoReply`,
     /// which is a verdict about that stall and not about the deadline. A
     /// deadline cut short leaves ports unasked, and that is what fails here.
     #[tokio::test]
@@ -3288,7 +3292,7 @@ mod tests {
             let expected = if live.contains(ip) {
                 PortState::Open
             } else {
-                PortState::Filtered
+                PortState::NoReply
             };
             for port in host.ports() {
                 assert_eq!(port.state(), expected, "{ip}:{}", port.number());
@@ -3387,7 +3391,7 @@ mod tests {
             "{busiest} probes left in one second under a ceiling of {RATE}"
         );
         let host = session.hosts().get(TARGET).expect("the ports are recorded");
-        assert!(host.ports().all(|port| port.state() == PortState::Filtered));
+        assert!(host.ports().all(|port| port.state() == PortState::NoReply));
     }
 
     /// An ICMP error built by hand rather than from a probe this scan sent:
@@ -3594,7 +3598,7 @@ mod tests {
 
             assert_eq!(
                 port_state(&session, 80),
-                Some(PortState::Filtered),
+                Some(PortState::Blocked),
                 "{technique:?}: the sequence number is inside the guaranteed eight"
             );
         }

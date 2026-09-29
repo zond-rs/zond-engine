@@ -420,7 +420,7 @@ async fn a_resumed_assume_up_scan_records_no_discovery_phase() {
 /// Two ports cost less probed than asked, so the port probes stand in for the
 /// liveness pass, and an address that answered none of them is what that pass
 /// would have found silent: it is not listed as a host, a comparison or a
-/// front end would otherwise read one "unknown, filtered" host per silent
+/// front end would otherwise read one "unknown, no reply" host per silent
 /// address. The port phase names it silent instead, its ports were asked so
 /// the journal holds them settled and a resume asks nothing, and the report
 /// read back from the journal keeps the same answer.

@@ -146,17 +146,17 @@ fn a_framed_scan_asks_for_every_dead_neighbour_at_once() {
 }
 
 /// A connect scan of an on-link address nothing holds leaves every port of it
-/// unasked, and the address unreached, rather than reading them filtered;
-/// the live host beside it reads as it would alone.
+/// unasked, and the address unreached, rather than reading them blocked or
+/// silent; the live host beside it reads as it would alone.
 ///
 /// Linux holds a connect to a neighbour it is asking for, and when the asking
 /// fails ends it with a host unreachable addressed to itself, the error a
 /// router's reject raises; a connect given less than the asking runs out as
-/// a dropped SYN does. Either, read as it ended, files a port filtered that no
-/// SYN ever reached. The live host's closed ports are what a scan that gave
-/// up on the wrong neighbour, or read the table wrong, would lose.
+/// a dropped SYN does. Either, read as it ended, files a port blocked or silent
+/// that no SYN ever reached. The live host's closed ports are what a scan that
+/// gave up on the wrong neighbour, or read the table wrong, would lose.
 #[tokio::test]
-async fn a_connect_scan_leaves_a_dead_neighbour_unasked_rather_than_filtered() {
+async fn a_connect_scan_leaves_a_dead_neighbour_unasked_rather_than_blocked_or_silent() {
     use zond_engine::config::ServiceDetection;
     use zond_engine::model::port::Protocol;
     use zond_engine::model::target::{PlannedTarget, Target};

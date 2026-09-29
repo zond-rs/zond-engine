@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 /// The high-level reachability state of a network host.
 ///
-/// Ordered by how strong the evidence is: `Unknown < Down < Filtered < Up`.
+/// Ordered by how strong the evidence is: `Unknown < Down < Blocked < Up`.
 ///
 /// [`Host::merge`](crate::model::host::Host::merge) and
 /// [`Host::record_evidence`](crate::model::host::Host::record_evidence) both
@@ -43,7 +43,7 @@ use std::sync::Arc;
 /// producer of a status obeys: **silence never moves the status.** Each variant
 /// other than `Unknown` is backed by a packet the engine received, so ranking by
 /// aliveness also ranks by strength of evidence. Were a timeout allowed to
-/// produce `Filtered`, a host nobody ever heard from would outrank an explicit
+/// produce `Blocked`, a host nobody ever heard from would outrank an explicit
 /// unreachable, and this ordering would invert the evidence it claims to rank.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -62,7 +62,7 @@ pub enum HostStatus {
     /// something is enforcing a perimeter around it even though the host itself
     /// has not answered. Distinct from an address nothing answers for, which is
     /// [`HostStatus::Unknown`].
-    Filtered,
+    Blocked,
     /// The host answered for itself. Any packet sourced by the host proves this,
     /// including ones that are negative about the port they report on: a TCP RST
     /// and an ICMP port unreachable each require a live stack to produce.
@@ -77,7 +77,7 @@ impl HostStatus {
     /// gives: the enum is `#[non_exhaustive]`, so a status added without a name
     /// on the wire or a place in the exported schema would be a finding that
     /// survives a scan and cannot be written down.
-    pub const ALL: &'static [Self] = &[Self::Unknown, Self::Down, Self::Filtered, Self::Up];
+    pub const ALL: &'static [Self] = &[Self::Unknown, Self::Down, Self::Blocked, Self::Up];
 }
 
 /// Known protocols or events that provide evidence of host reachability.
@@ -347,7 +347,7 @@ impl HostStatus {
     /// even if communication is restricted by a firewall.
     #[inline]
     pub fn is_alive(&self) -> bool {
-        matches!(self, HostStatus::Up | HostStatus::Filtered)
+        matches!(self, HostStatus::Up | HostStatus::Blocked)
     }
 }
 
@@ -356,7 +356,7 @@ impl std::fmt::Display for HostStatus {
         match self {
             HostStatus::Unknown => write!(f, "Unknown"),
             HostStatus::Down => write!(f, "Down"),
-            HostStatus::Filtered => write!(f, "Filtered"),
+            HostStatus::Blocked => write!(f, "Blocked"),
             HostStatus::Up => write!(f, "Up"),
         }
     }
@@ -382,18 +382,18 @@ mod tests {
     #[test]
     fn the_variant_order_ranks_evidence_from_weakest_to_strongest() {
         assert!(HostStatus::Unknown < HostStatus::Down);
-        assert!(HostStatus::Down < HostStatus::Filtered);
-        assert!(HostStatus::Filtered < HostStatus::Up);
+        assert!(HostStatus::Down < HostStatus::Blocked);
+        assert!(HostStatus::Blocked < HostStatus::Up);
     }
 
     /// "Alive" means something is there, which a perimeter enforcing policy
     /// around an address proves as surely as the host answering. It is what
-    /// decides whether a host is carried into a port scan, so a `Filtered` host
+    /// decides whether a host is carried into a port scan, so a `Blocked` host
     /// wrongly excluded is a host never scanned.
     #[test]
-    fn a_filtered_host_counts_as_alive_and_an_unanswered_one_does_not() {
+    fn a_blocked_host_counts_as_alive_and_an_unanswered_one_does_not() {
         assert!(HostStatus::Up.is_alive());
-        assert!(HostStatus::Filtered.is_alive());
+        assert!(HostStatus::Blocked.is_alive());
         assert!(!HostStatus::Down.is_alive());
         assert!(!HostStatus::Unknown.is_alive());
     }
@@ -406,14 +406,14 @@ mod tests {
         let rendered: Vec<String> = [
             HostStatus::Unknown,
             HostStatus::Down,
-            HostStatus::Filtered,
+            HostStatus::Blocked,
             HostStatus::Up,
         ]
         .iter()
         .map(ToString::to_string)
         .collect();
 
-        assert_eq!(rendered, ["Unknown", "Down", "Filtered", "Up"]);
+        assert_eq!(rendered, ["Unknown", "Down", "Blocked", "Up"]);
     }
 
     /// A reason carries the protocol that produced it and, when the evidence

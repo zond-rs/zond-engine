@@ -192,7 +192,7 @@ impl NeighborResolver {
     /// Ethernet interface, so the off-link arm would answer it with the default
     /// gateway, and a SYN aimed at `127.0.0.1` would go out a physical
     /// interface for the gateway to drop. Nothing would reply, which a port
-    /// scan reads as filtered: a wrong answer rather than a missing one, and
+    /// scan reads as no reply: a wrong answer rather than a missing one, and
     /// the reason it is worth refusing here rather than further out.
     pub fn resolve_from(&self, src: IpAddr, dst: IpAddr) -> Option<LinkRoute> {
         if dst.is_loopback() {
@@ -541,7 +541,7 @@ mod tests {
     /// The off-link arm would otherwise answer for loopback with the default
     /// gateway, and a probe framed to that gateway with `127.0.0.1` in its IP
     /// header is one nothing ever replies to. A port scan reads that silence as
-    /// filtered, so the wrong answer here reaches the user as a wrong verdict.
+    /// `NoReply`, so the wrong answer here reaches the user as a wrong verdict.
     #[test]
     fn loopback_has_no_ethernet_route() {
         let resolver = resolver(vec![ethernet_iface()]);

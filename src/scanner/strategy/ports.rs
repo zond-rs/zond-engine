@@ -229,7 +229,7 @@ const TCP_PORT_RATE_CEILING: NonZeroU32 = NonZeroU32::new(20_000).expect("a non-
 /// UDP verdicts come from an ICMP port unreachable, and a Linux host emits those
 /// under a token bucket that refills at roughly one per second; a burst that
 /// outruns it does not merely go unanswered, it manufactures
-/// [`OpenFiltered`](crate::model::port::PortState::OpenFiltered) verdicts on
+/// [`OpenOrNoReply`](crate::model::port::PortState::OpenOrNoReply) verdicts on
 /// ports that are closed. Spread across the hosts of a shuffled scan this is
 /// survivable; aimed at one host it is the whole result.
 ///
@@ -415,7 +415,7 @@ pub(crate) struct RawProbeScan<T> {
     /// This is what paces a raw port scan, and it is the answer to a
     /// question a fixed rate cannot answer. Measured, against a consumer router:
     /// asked as fast as the socket would take it, of a thousand ports it
-    /// answered roughly four hundred and the rest were reported *filtered*:
+    /// answered roughly four hundred and the rest were reported *silent*:
     /// including one running a service. The host was not filtering anything. It
     /// was answering as fast as it could and being asked ten times faster.
     ///
@@ -1047,7 +1047,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         self.window.release();
         if !self.ledger.host_is_answering(&host) {
             self.window.record_progress();
-        } else if silence == PortState::Filtered {
+        } else if silence == PortState::NoReply {
             self.window.record_loss();
         } else {
             self.window.record_ambiguous_silence();
@@ -1113,7 +1113,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// establishes that an address is there before spending a probe on each of
     /// its ports, and that liveness pass timed every host that answered. Without
     /// this the port scanner starts from first principles anyway, and the cost
-    /// falls entirely on the ports that turn out to be filtered: each one waits
+    /// falls entirely on the ports that turn out to be silent: each one waits
     /// the unmeasured starting timeout three times before silence is allowed to
     /// mean anything.
     ///
@@ -1420,10 +1420,10 @@ pub(crate) trait RawPortScan: PortScanner {
 
     /// The verdict a probe takes once every attempt has gone unanswered.
     ///
-    /// For UDP always [`PortState::OpenFiltered`], since an open port that did
+    /// For UDP always [`PortState::OpenOrNoReply`], since an open port that did
     /// not recognise the payload is silent exactly as a firewall is. For TCP it
-    /// depends on the technique: silence means a filter where any live stack
-    /// would have answered, and open-or-filtered where an open port is required
+    /// depends on the technique: silence means `NoReply` where any live stack
+    /// would have answered, and `OpenOrNoReply` where an open port is required
     /// to ignore the probe.
     fn silence_means(&self) -> PortState;
 
@@ -1432,7 +1432,7 @@ pub(crate) trait RawPortScan: PortScanner {
     ///
     /// The second half exists so a scan whose probes never reached the wire
     /// reads as what it is. Reporting "3000 ports unanswered" and "3000 ports
-    /// open-filtered" describe the same silence, and only one of them is the
+    /// open|no-reply" describe the same silence, and only one of them is the
     /// word that scan's protocol would have used.
     fn audit_labels(&self) -> AuditLabels;
 
@@ -1718,7 +1718,7 @@ pub(crate) trait RawPortScan: PortScanner {
     /// has had its full wait, and these have not, so they do not take the
     /// verdict this scan reads silence as. The answer to one may be in transit
     /// at the stop, and an open port whose answer had not yet arrived, filed
-    /// filtered, is a firewall reported where there is none.
+    /// `NoReply`, is a silence reported where an answer was on its way.
     ///
     /// Settled as interrupted rather than unasked, since each was asked, and
     /// either way carries no position, so a resume asks it again.
@@ -1739,7 +1739,7 @@ pub(crate) trait RawPortScan: PortScanner {
     /// Records every target still queued when the scan stopped.
     ///
     /// A scan that hits its deadline with targets still queued would otherwise
-    /// leave them with no record whatsoever: not a filtered port, not an unknown
+    /// leave them with no record whatsoever: not a silent port, not an unknown
     /// one, simply absent from the host as though nobody had ever named it. That
     /// is the worst of the three ways a scan can fall short, because it is the
     /// only one a reader cannot see: a truncated port list and a complete one
@@ -1851,7 +1851,7 @@ fn send_timed<S: RawPortScan + ?Sized>(
 /// send that blocked, a runtime starved of its thread, a machine under load.
 /// Serviced timer first, a probe with no attempts left is retired as silent
 /// and the answer waiting behind it finds nothing to resolve, which with one
-/// attempt files an open port filtered. Resolving is where a reply is timed
+/// attempt files an open port `NoReply`. Resolving is where a reply is timed
 /// from its own arrival, so reading it late costs nothing else.
 ///
 /// Reading them first is enough, and comparing an answer's arrival with its
@@ -1880,7 +1880,7 @@ pub(crate) struct AuditLabels {
     /// The tag the audit line is filed under, such as `"tcp-port"`.
     pub tag: &'static str,
     /// How a port that nothing answered for is described, such as
-    /// `"open-filtered"`.
+    /// `"open|no-reply"`.
     pub silence: &'static str,
 }
 
@@ -2177,8 +2177,8 @@ mod tests {
         core.finish(
             ScannerKind::SynPort,
             "syn-port",
-            "filtered",
-            PortState::Filtered,
+            "no reply",
+            PortState::NoReply,
             2,
             StopReason::AllResponded,
         );
@@ -2989,7 +2989,7 @@ mod tests {
         core.window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 512));
 
         core.window.record_send();
-        core.judge_timeout(TARGET, PortState::Filtered);
+        core.judge_timeout(TARGET, PortState::NoReply);
 
         assert!(
             core.window.capacity() >= 64,
@@ -3017,7 +3017,7 @@ mod tests {
         core.ledger.resolve(&(TARGET, 22), None, now);
 
         core.window.record_send();
-        core.judge_timeout(TARGET, PortState::Filtered);
+        core.judge_timeout(TARGET, PortState::NoReply);
 
         assert!(
             core.window.capacity() < 64,
@@ -3048,7 +3048,7 @@ mod tests {
             .drain_due(now + Duration::from_secs(10), &mut due);
         for _ in &due {
             core.window.record_send();
-            core.judge_timeout(TARGET, PortState::Filtered);
+            core.judge_timeout(TARGET, PortState::NoReply);
         }
 
         assert_eq!(due.len(), 9, "every probe's first timeout was read");

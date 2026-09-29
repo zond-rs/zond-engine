@@ -13,7 +13,7 @@
 //! has to be set on it before it connects: the forced source and interface of
 //! a scan pinned to one, and on Windows a limit on the SYN retransmissions of
 //! every TCP socket, without which a refused port waits out the connect
-//! budget and reads as filtered.
+//! budget and reads as no reply.
 //!
 //! The rule is kept by the callers, and a caller that breaks it does so without
 //! anything noticing: its connection behaves exactly as before on an ordinary
@@ -247,7 +247,7 @@ fn every_socket_outside_the_dialler_has_said_why_it_is_not_a_connection_to_a_tar
          A connection to a scanned host has to be opened through `crate::transport::dial`, \
          which is where each socket gets what the platform needs set before it connects: \
          on Windows, the SYN retransmission limit without which a refused port reads as \
-         filtered. A socket opened anywhere else behaves the same on Linux and macOS and \
+         no reply. A socket opened anywhere else behaves the same on Linux and macOS and \
          differently on Windows, where nobody is looking.\n\n\
          Open it through `dial`, or, if it is not a connection to a target, add the file \
          to OTHER_SOCKETS in tests/hygiene/dialling.rs saying why."

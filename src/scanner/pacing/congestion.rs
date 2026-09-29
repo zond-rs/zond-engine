@@ -13,9 +13,9 @@
 //! probes in flight; the right answer for the consumer router next to it is a
 //! few dozen, and asking that router at the server's pace does not merely
 //! annoy it: it manufactures findings. Probed faster than it will answer, a
-//! router reports six hundred ports `filtered` with no more hesitation than it
+//! router reports six hundred ports `NoReply` with no more hesitation than it
 //! reports the three that really are, and every one of those verdicts is a
-//! claim about somebody's firewall that is actually a claim about our send rate.
+//! claim about the router that is actually a claim about our send rate.
 //!
 //! [`CongestionWindow`] makes the decision from evidence instead: it bounds how
 //! many probes a scan may have outstanding, grows that bound while answers keep
@@ -84,9 +84,9 @@
 //!
 //! - eleven ports were open across the three runs; **each run found exactly
 //!   seven**, and only one port was found by all three;
-//! - roughly two hundred and forty ports came back `filtered` each time, and the
-//!   set was reshuffled every run: port 53 filtered once and open twice, port 22
-//!   open twice and filtered once.
+//! - roughly two hundred and forty ports came back `NoReply` each time, and the
+//!   set was reshuffled every run: port 53 silent once and open twice, port 22
+//!   open twice and silent once.
 //!
 //! Nothing on that host was filtered. Every one of those verdicts was the
 //! scanner's own send rate, reported as somebody's firewall, which is precisely
@@ -152,7 +152,7 @@
 //! working scanner and an unusable one. Hold the slot until the probe is
 //! finally resolved and a firewalled port occupies the window for its whole
 //! retry lifetime: most of two seconds, against a round trip of one
-//! millisecond. A thousand filtered ports through a window of thirty-two is then
+//! millisecond. A thousand silent ports through a window of thirty-two is then
 //! a minute of waiting for silence the scan had already heard, and the target
 //! that is hardest to finish throttles the scan exactly as a congested one does.
 //! Which is the confusion this whole module exists not to make.
@@ -931,7 +931,7 @@ mod tests {
 
     /// A dropped probe heard after the last question went out is weighed as
     /// the balance above is not: a cut from there slows nothing, and the
-    /// probes still in flight are mostly the silent ones, so one filtered
+    /// probes still in flight are mostly the silent ones, so one silent
     /// port asked late would leave the window reported at its floor and the
     /// scan read as outrun.
     #[test]

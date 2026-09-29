@@ -535,9 +535,10 @@ fn a_page_for_a_person(_report: &ScanReport) {
 /// format can do better: the DTD declares an enumeration with one member in it.
 ///
 /// Where the two vocabularies disagree the document says less rather than
-/// something false. Port states map exactly, both naming the same six. Host
-/// status is flattened onto nmap's three, so a host this engine calls `filtered`
-/// is exported `up` with the distinction carried in the `reason`.
+/// something false. Port states map one to one but for nmap's `filtered`, which
+/// covers both blocked and no reply, told apart in the `reason`. Host status is
+/// flattened onto nmap's three, so a host this engine calls `blocked` is
+/// exported `up` with the distinction carried in the `reason`.
 ///
 /// `examples/nmap_dump.rs` writes one of these to standard output, for holding
 /// against a real DTD with `xmllint`.
@@ -556,7 +557,7 @@ fn somebody_elses_pipeline(report: &ScanReport) {
     }
 
     println!();
-    println!("203.0.113.7 is `filtered` in the report and `up` here, with the");
+    println!("203.0.113.7 is `blocked` in the report and `up` here, with the");
     println!("distinction kept in the reason.");
 }
 
@@ -748,8 +749,8 @@ fn what_changed(_baseline: &ScanReport) {
 /// Three hosts, chosen for what they make the formats say.
 ///
 /// A gateway described as fully as the schema allows, a host a discovery sweep
-/// saw and nothing port-scanned, and a host that answered nothing but a filtered
-/// probe. A real report comes out of [`scanner::scan`](zond_engine::scanner);
+/// saw and nothing port-scanned, and a host whose path refused a probe on its
+/// behalf. A real report comes out of [`scanner::scan`](zond_engine::scanner);
 /// this one is assembled through the same public API a consumer has, so nothing
 /// here needs a network.
 fn report() -> ScanReport {
@@ -868,8 +869,8 @@ fn swept() -> Host {
 /// A host that answered nothing conclusive.
 fn quiet() -> Host {
     let mut host = Host::new(ip(7));
-    host.set_status(HostStatus::Filtered);
-    host.add_port(Port::new(25, Protocol::Tcp, PortState::Filtered));
+    host.set_status(HostStatus::Blocked);
+    host.add_port(Port::new(25, Protocol::Tcp, PortState::NoReply));
     host
 }
 

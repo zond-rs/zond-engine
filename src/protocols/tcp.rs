@@ -147,7 +147,7 @@ const fn nonce_field(flags: u8) -> NonceField {
     // "counting SYN and FIN"), and a stack replying to a segment carrying
     // neither acknowledges the sequence number it was sent unchanged. Getting
     // this wrong is silent: a NULL scan reading a FIN scan's offset rejects
-    // every RST it receives and reports the whole range open-filtered.
+    // every RST it receives and reports the whole range `OpenOrNoReply`.
     let mut span = 0;
     if flags & flags::SYN != 0 {
         span += 1;
@@ -330,7 +330,7 @@ fn syn_options(mss: u16) -> Vec<u8> {
 /// padding included, while a SYN+ACK from an open port acknowledges only the
 /// SYN; so the padding is subtracted from a reset's acknowledgement and left in
 /// place for a SYN+ACK. Without this a padded scan reads every closed port as
-/// filtered, because its reset never matches the nonce that was sent.
+/// silent, because its reset never matches the nonce that was sent.
 pub fn echoed_nonce(technique: TcpScanTechnique, reply: &Segment<'_>, padding: u16) -> u32 {
     echoed_nonce_with_flags(probe_flags(technique), reply, padding)
 }
@@ -793,7 +793,7 @@ mod tests {
     /// so the nonce comes back only if that padding is subtracted; an open
     /// port's SYN+ACK acknowledges the SYN alone and never the data on it, so
     /// the same padding must *not* be subtracted there. A rule that ignored the
-    /// padding would report every padded closed port as filtered; one that
+    /// padding would report every padded closed port as silent; one that
     /// subtracted it from a SYN+ACK would drop every padded open port.
     #[test]
     fn a_padded_probe_reads_its_nonce_back_from_either_answer() {

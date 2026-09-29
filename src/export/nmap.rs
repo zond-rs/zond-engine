@@ -52,8 +52,9 @@
 //!
 //! Nmap's vocabulary is not this engine's, and where the two disagree the
 //! document says less rather than saying something false. Port states map
-//! exactly, both naming the same six. Host status is flattened: nmap knows `up`,
-//! `down` and `unknown`, so a host this engine calls `filtered` is exported `up`,
+//! one to one but for nmap's `filtered`, which covers both blocked and no
+//! reply, told apart in the `reason`. Host status is flattened: nmap knows `up`,
+//! `down` and `unknown`, so a host this engine calls blocked is exported `up`,
 //! with the distinction carried in the `reason`.
 //!
 //! Everything the format has no place for, the phases and the probe
@@ -629,18 +630,23 @@ fn write_ports(
 
     // The summarisable ports of each state, then kept only for the states
     // with more of them than are listed.
-    let mut summarised: BTreeMap<PortState, Vec<&Port>> = BTreeMap::new();
+    // Keyed by the word written rather than by the state, so the two states
+    // nmap calls `filtered` share one summary, as nmap's own do.
+    let mut summarised: BTreeMap<&str, Vec<&Port>> = BTreeMap::new();
     for port in probed.iter().copied().filter(|port| is_summarisable(port)) {
-        summarised.entry(port.state()).or_default().push(port);
+        if let Some(name) = port_state(port.state()) {
+            summarised.entry(name).or_default().push(port);
+        }
     }
     summarised.retain(|_, ports| ports.len() > LISTED_PER_STATE);
 
     writeln!(out, "<ports>")?;
-    for (state, ports) in &summarised {
-        write_extra_ports(out, *state, ports)?;
+    for (name, ports) in &summarised {
+        write_extra_ports(out, name, ports)?;
     }
     for port in probed {
-        let listed = !is_summarisable(port) || !summarised.contains_key(&port.state());
+        let listed = !is_summarisable(port)
+            || port_state(port.state()).is_none_or(|name| !summarised.contains_key(name));
         if listed {
             write_port(out, port, masking)?;
         }
@@ -671,15 +677,7 @@ fn is_summarisable(port: &Port) -> bool {
 
 /// Writes one `<extraports>`: a state, how many ports are in it, and which,
 /// grouped by the reason each was decided on and its transport.
-fn write_extra_ports(
-    out: &mut dyn Write,
-    state: PortState,
-    ports: &[&Port],
-) -> Result<(), ExportError> {
-    let Some(name) = port_state(state) else {
-        return Ok(());
-    };
-
+fn write_extra_ports(out: &mut dyn Write, name: &str, ports: &[&Port]) -> Result<(), ExportError> {
     let mut reasons: BTreeMap<(&str, Protocol), Vec<u16>> = BTreeMap::new();
     for port in ports {
         if let Some(reason) = port_reason(port) {
@@ -716,7 +714,7 @@ fn write_extra_ports(
 ///
 /// A summary whose ports run in long stretches is a few bytes, but one whose
 /// ports alternate with another state's is not: a full range where a host
-/// rate-limits its resets scatters filtered ports through closed ones, and
+/// rate-limits its resets scatters silent ports through closed ones, and
 /// thirty thousand isolated numbers are two hundred kilobytes in one attribute.
 /// A reader bounding what one element may hold, this engine's own among them,
 /// refuses a document with such an element rather than reading the rest of it.
@@ -977,8 +975,8 @@ fn ip_protocol_state(state: IpProtocolState) -> &'static str {
     match state {
         IpProtocolState::Open => "open",
         IpProtocolState::Closed => "closed",
-        IpProtocolState::Filtered => "filtered",
-        IpProtocolState::OpenFiltered => "open|filtered",
+        IpProtocolState::Blocked => "filtered",
+        IpProtocolState::OpenOrNoReply => "open|filtered",
         // Filtered out by `write_ip_protocols`, which writes only what was
         // established. Reported as the format's nearest word rather than left to
         // a wildcard, so a state added later is a compile error here.
@@ -991,7 +989,7 @@ fn ip_protocol_state(state: IpProtocolState) -> &'static str {
 /// Three of the four name the message that produced them and are exactly true: a
 /// protocol unreachable is the only thing that closes a protocol here, an
 /// administrative prohibition the only thing that filters one, and silence the
-/// only thing that leaves it open-filtered.
+/// only thing that leaves it open or no reply.
 ///
 /// `open` is the one that cannot be named. It is reached two ways, by an echo
 /// reply and by a port unreachable proving the stack took delivery, and this
@@ -1004,9 +1002,9 @@ fn ip_protocol_state(state: IpProtocolState) -> &'static str {
 fn ip_protocol_reason(state: IpProtocolState) -> &'static str {
     match state {
         IpProtocolState::Closed => "proto-unreach",
-        IpProtocolState::Filtered => "admin-prohibited",
+        IpProtocolState::Blocked => "admin-prohibited",
         IpProtocolState::Open => "response",
-        IpProtocolState::OpenFiltered | IpProtocolState::Unasked => "no-response",
+        IpProtocolState::OpenOrNoReply | IpProtocolState::Unasked => "no-response",
     }
 }
 
@@ -1092,9 +1090,11 @@ fn write_port(
 /// has none.
 ///
 /// An exhaustive match, so a new state cannot be added without somebody deciding
-/// what this format calls it. Six of the seven correspond exactly: they are the
-/// six verdicts a probe can distinguish, which is the same six nmap's own probes
-/// reach.
+/// what this format calls it. Nmap has six words and this engine eight states.
+/// [`Blocked`](PortState::Blocked) and [`NoReply`](PortState::NoReply) are both
+/// nmap's `filtered`, which nmap reaches from a refusal and from silence alike
+/// and tells apart only in the reason beside it, where [`port_reason`] writes
+/// the difference. The rest correspond exactly.
 ///
 /// [`PortState::Unasked`] is the one that does not, and it is not an oversight in
 /// nmap: a port nmap did not scan is a port nmap does not write, so the format
@@ -1105,10 +1105,10 @@ fn port_state(state: PortState) -> Option<&'static str> {
     Some(match state {
         PortState::Open => "open",
         PortState::Closed => "closed",
-        PortState::Filtered => "filtered",
-        PortState::Unfiltered => "unfiltered",
-        PortState::OpenFiltered => "open|filtered",
-        PortState::ClosedFiltered => "closed|filtered",
+        PortState::Blocked | PortState::NoReply => "filtered",
+        PortState::Reachable => "unfiltered",
+        PortState::OpenOrNoReply => "open|filtered",
+        PortState::ClosedOrNoReply => "closed|filtered",
         PortState::Unasked => return None,
     })
 }
@@ -1125,10 +1125,12 @@ fn port_state(state: PortState) -> Option<&'static str> {
 /// A port with no record of its packet falls back to the one packet its state
 /// and transport admit, where there is exactly one: only a SYN/ACK opens a TCP
 /// port, only a datagram a UDP one and only an INIT-ACK an SCTP one, only a
-/// reset closes a TCP port or leaves it unfiltered, only a port unreachable
-/// closes a UDP one and only an ABORT an SCTP one. The states silence decides
-/// fall back to `no-response`, which a UDP scan reaching `open|filtered` records
-/// no packet for because none arrived.
+/// reset closes a TCP port or leaves it reachable, only a port unreachable
+/// closes a UDP one and only an ABORT an SCTP one. A blocked port falls back
+/// to `dest-unreach`, the word for a refusal whose code nobody recorded, since
+/// the state says a refusal arrived and `no-response` would say one did not.
+/// The states silence decides fall back to `no-response`, which a UDP scan
+/// reaching `OpenOrNoReply` records no packet for because none arrived.
 ///
 /// A port no probe was sent to did not fail to respond, so it answers [`None`]
 /// here for the reason [`port_state`] does.
@@ -1143,9 +1145,10 @@ fn port_reason(port: &Port) -> Option<&str> {
         (PortState::Open, Protocol::Tcp) => "syn-ack",
         (PortState::Open, Protocol::Udp) => "udp-response",
         (PortState::Open, Protocol::Sctp) => "init-ack",
-        (PortState::Closed | PortState::Unfiltered, Protocol::Tcp) => "reset",
+        (PortState::Closed | PortState::Reachable, Protocol::Tcp) => "reset",
         (PortState::Closed, Protocol::Udp) => "port-unreach",
         (PortState::Closed, Protocol::Sctp) => "abort",
+        (PortState::Blocked, _) => "dest-unreach",
         _ => "no-response",
     })
 }
@@ -1195,12 +1198,12 @@ fn reason_ttl(port: &Port) -> u8 {
 
 /// This engine's host statuses in nmap's spelling.
 ///
-/// Nmap has three where this engine has four. `filtered` means the host is there
-/// and its probes are being dropped, which nmap has no separate word for and
-/// which is unambiguously `up`. The distinction survives in the reason.
+/// Nmap has three where this engine has four. A blocked host is one a device
+/// refused probes to by policy, so something is there: nmap has no word for
+/// that, and it is unambiguously `up`. The distinction survives in the reason.
 fn host_state(status: HostStatus) -> &'static str {
     match status {
-        HostStatus::Up | HostStatus::Filtered => "up",
+        HostStatus::Up | HostStatus::Blocked => "up",
         HostStatus::Down => "down",
         HostStatus::Unknown => "unknown",
     }
@@ -1220,10 +1223,10 @@ fn host_state(status: HostStatus) -> &'static str {
 /// answered for, which is what an unknown host is.
 fn status_reason(host: &Host) -> &str {
     let status = host.status();
-    if status == HostStatus::Filtered {
+    if status == HostStatus::Blocked {
         // Nmap has no reason string for this because it has no such state. The
         // word is this engine's and says what happened.
-        return "probes-filtered";
+        return "probes-blocked";
     }
 
     let evidence = host
@@ -1241,7 +1244,7 @@ fn status_reason(host: &Host) -> &str {
     match status {
         HostStatus::Up => "response",
         HostStatus::Down => "dest-unreach",
-        HostStatus::Filtered | HostStatus::Unknown => "no-response",
+        HostStatus::Blocked | HostStatus::Unknown => "no-response",
     }
 }
 
@@ -1271,7 +1274,7 @@ fn host_reason_rank(reason: &StatusReason, status: HostStatus) -> Option<u8> {
         // An unreachable is the only evidence that puts a host down, and
         // whoever sent it is somebody in the path by definition.
         HostStatus::Down => (reason.protocol == StatusProtocol::IcmpUnreachable).then_some(0),
-        HostStatus::Up | HostStatus::Filtered | HostStatus::Unknown => None,
+        HostStatus::Up | HostStatus::Blocked | HostStatus::Unknown => None,
     }
 }
 
@@ -1640,7 +1643,7 @@ mod tests {
                 .with_discovery(Discovery::new(ScanResponse::IcmpUnreachable))
         };
         assert!(state_line(&unreachable(PortState::Closed)).contains(r#"reason="port-unreach""#));
-        assert!(state_line(&unreachable(PortState::Filtered)).contains(r#"reason="dest-unreach""#));
+        assert!(state_line(&unreachable(PortState::NoReply)).contains(r#"reason="dest-unreach""#));
     }
 
     /// A port with no record of its packet is given the one packet its state
@@ -1654,7 +1657,7 @@ mod tests {
         assert!(line(69, Protocol::Udp, PortState::Closed).contains(r#"reason="port-unreach""#));
         assert!(line(2905, Protocol::Sctp, PortState::Closed).contains(r#"reason="abort""#));
         assert!(
-            line(123, Protocol::Udp, PortState::OpenFiltered).contains(r#"reason="no-response""#)
+            line(123, Protocol::Udp, PortState::OpenOrNoReply).contains(r#"reason="no-response""#)
         );
     }
 
@@ -1718,7 +1721,7 @@ mod tests {
     }
 
     /// The reasons this module writes read back as the evidence they came from,
-    /// and a filtered host as filtered.
+    /// and a blocked host as blocked.
     #[cfg(feature = "import-nmap")]
     #[test]
     fn reasons_survive_the_round_trip() {
@@ -1735,7 +1738,7 @@ mod tests {
         );
         let mut walled = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 21)));
         walled.record_evidence(
-            HostStatus::Filtered,
+            HostStatus::Blocked,
             StatusReason::basic(StatusProtocol::IcmpUnreachable),
         );
 
@@ -1761,8 +1764,8 @@ mod tests {
             Some(&ScanResponse::UdpResponse)
         );
 
-        let walled = hosts.next().expect("the filtered host survived");
-        assert_eq!(walled.status(), HostStatus::Filtered);
+        let walled = hosts.next().expect("the blocked host survived");
+        assert_eq!(walled.status(), HostStatus::Blocked);
     }
 
     /// A service read through TLS is written as nmap writes one, the protocol
@@ -1844,11 +1847,11 @@ mod tests {
             host.add_port(port);
         }
         for number in 1000..1040 {
-            host.add_port(Port::new(number, Protocol::Udp, PortState::OpenFiltered));
+            host.add_port(Port::new(number, Protocol::Udp, PortState::OpenOrNoReply));
         }
         // Too few to summarise, as nmap would list them.
         for number in 5000..5003 {
-            host.add_port(Port::new(number, Protocol::Tcp, PortState::Filtered));
+            host.add_port(Port::new(number, Protocol::Tcp, PortState::NoReply));
         }
         let before: Vec<(u16, Protocol, PortState)> = host
             .ports()
@@ -1861,7 +1864,7 @@ mod tests {
             document.matches("<port ").count(),
             5,
             "only the open port, the identified closed one and the three \
-             filtered ones are listed: {document}"
+             silent ones are listed: {document}"
         );
         assert!(
             document.contains(
@@ -2120,7 +2123,7 @@ mod tests {
         for number in 1..=u16::MAX {
             let state = match number % 2 {
                 0 => PortState::Closed,
-                _ => PortState::Filtered,
+                _ => PortState::NoReply,
             };
             host.add_port(Port::new(number, Protocol::Tcp, state));
         }
@@ -2144,7 +2147,7 @@ mod tests {
         assert_eq!(host.port_count(), usize::from(u16::MAX));
         assert!(host.ports().all(|port| match port.number() % 2 {
             0 => port.state() == PortState::Closed,
-            _ => port.state() == PortState::Filtered,
+            _ => port.state() == PortState::NoReply,
         }));
     }
 
@@ -2382,12 +2385,12 @@ mod tests {
         assert!(host.ips().contains(&lower), "and kept the other one");
     }
 
-    /// Nmap has three host states where this engine has four, and a filtered
+    /// Nmap has three host states where this engine has four, and a blocked
     /// host is unambiguously up. Exporting it `down` would be a false negative
     /// in somebody else's tracker.
     #[test]
-    fn a_filtered_host_is_exported_as_up_because_that_is_what_it_is() {
-        assert_eq!(host_state(HostStatus::Filtered), "up");
+    fn a_blocked_host_is_exported_as_up_because_that_is_what_it_is() {
+        assert_eq!(host_state(HostStatus::Blocked), "up");
         assert_eq!(host_state(HostStatus::Up), "up");
         assert_eq!(host_state(HostStatus::Down), "down");
         assert_eq!(host_state(HostStatus::Unknown), "unknown");

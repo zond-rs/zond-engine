@@ -18,7 +18,7 @@
 //! so the protocol is built on broadcast, and the server is discovered rather
 //! than connected to. Probing UDP/67 on each address in turn asks the wrong
 //! question: a server that answers a broadcast may ignore a unicast to the same
-//! port, and a port with nothing listening is `open|filtered` like every
+//! port, and a port with nothing listening is `OpenOrNoReply` like every
 //! other silent UDP port. One broadcast to the segment finds every server on
 //! it; sixty thousand unicasts find none.
 //!

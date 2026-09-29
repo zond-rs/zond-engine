@@ -27,13 +27,13 @@
 //!
 //! A COOKIE-ECHO scan is the other shape. Only the closed port answers, with an
 //! ABORT; the listener authenticates a cookie nobody minted, fails, and says
-//! nothing. Silence there is open-or-filtered and stays that way however long
+//! nothing. Silence there is `OpenOrNoReply` and stays that way however long
 //! the scan waits, which is the price of a chunk that crosses filters written
 //! against the INIT.
 //!
 //! An ICMP unreachable is read as a filter, and one of its codes is worth
 //! knowing about: a host with no SCTP stack at all answers protocol
-//! unreachable, so a range that comes back entirely filtered may be a machine
+//! unreachable, so a range that comes back entirely blocked may be a machine
 //! that does not speak SCTP rather than a firewall in front of one.
 //!
 //! ## Tying a reply to its probe
@@ -339,15 +339,15 @@ impl SctpPortScanner {
         // is in every probe this scan sends, so the target of the scan has it
         // for free and an off-path guesser has fourteen bits of it — once, for
         // the whole run. A forged Port Unreachable would retire the probe as
-        // filtered, remove it from the ledger so that no retransmission follows,
+        // blocked, remove it from the ledger so that no retransmission follows,
         // and record `IcmpProhibited` against the target as the evidence.
         //
-        // Refusing costs almost nothing, which is what makes this the right
-        // trade rather than a cautious one: an INIT scan already reads silence
-        // as filtered, so a probe left outstanding here reaches the *same*
-        // verdict by its own retry schedule. What is given up is an earlier
-        // resolution and an evidence label, and what is bought is that neither
-        // can be forged.
+        // Refusing costs little, which is what makes this the right trade
+        // rather than a cautious one: an INIT scan reads silence as `NoReply`,
+        // so a probe left outstanding here still settles, by its own retry
+        // schedule, as a port the probe did not reach. What is given up is an
+        // earlier resolution and the refusal's own `Blocked` and evidence
+        // label, and what is bought is that none of them can be forged.
         //
         // The gate stands in front of every code, `Unreachable::Host` included.
         // A missing nonce here does not only mean a short quotation: for a
@@ -382,7 +382,7 @@ impl SctpPortScanner {
                 .resolve_probe(
                     key,
                     token,
-                    PortState::Filtered,
+                    PortState::Blocked,
                     Answer {
                         drawn_by: None,
                         sender: Some(reply.source),
@@ -466,15 +466,15 @@ impl SctpPortScanner {
                     },
                 ),
             )),
-            (PortState::Filtered, Some(sender)) if sender == ip => Some((
+            (PortState::Blocked, Some(sender)) if sender == ip => Some((
                 HostStatus::Up,
                 StatusReason::new(
                     StatusProtocol::IcmpUnreachable,
                     "unreachable for a probed sctp port, from the host",
                 ),
             )),
-            (PortState::Filtered, Some(sender)) => Some((
-                HostStatus::Filtered,
+            (PortState::Blocked, Some(sender)) => Some((
+                HostStatus::Blocked,
                 StatusReason::new(
                     StatusProtocol::IcmpUnreachable,
                     "unreachable for a probed sctp port, from the path",
@@ -517,11 +517,11 @@ fn port_evidence(
     match (state, drawn_by, sender) {
         (_, Some(SctpReply::InitAck), _) => Some(ScanResponse::SctpInitAck),
         (_, Some(SctpReply::Abort), _) => Some(ScanResponse::SctpAbort),
-        (PortState::Filtered, None, Some(from)) => Some(match from == target {
+        (PortState::Blocked, None, Some(from)) => Some(match from == target {
             true => ScanResponse::IcmpProhibited,
             false => ScanResponse::IcmpUnreachable,
         }),
-        (PortState::Filtered, None, None) => Some(ScanResponse::NoResponse),
+        (PortState::NoReply, None, None) => Some(ScanResponse::NoResponse),
         _ => None,
     }
 }
@@ -543,7 +543,7 @@ impl RawPortScan for SctpPortScanner {
 
     /// The technique's answer. An INIT is answered by an open port and a closed
     /// one alike, so silence there is a filter; a COOKIE-ECHO is answered only
-    /// by a closed port, so silence is open-or-filtered and stays so.
+    /// by a closed port, so silence is `OpenOrNoReply` and stays so.
     fn silence_means(&self) -> PortState {
         self.technique.silence_means()
     }
@@ -619,8 +619,8 @@ impl RawPortScan for SctpPortScanner {
 ///
 /// A failure comes back whole rather than logged here, so the scan can sort it
 /// by whose fact it is and report it once. A scan whose probes never left
-/// reports every port filtered, which is what a firewall produces, and only the
-/// failure says otherwise. See
+/// reports every port unanswered, which is what a filter dropping everything
+/// produces, and only the failure says otherwise. See
 /// [`RawProbeScan::record_send`](super::RawProbeScan::record_send).
 #[allow(clippy::too_many_arguments)]
 fn send_probe(
@@ -978,30 +978,30 @@ mod tests {
         assert_eq!(port_state(&session, 2905), None);
     }
 
-    /// Silence is a filter here rather than the open-or-filtered a UDP scan
+    /// Silence is `NoReply` here rather than the `OpenOrNoReply` a UDP scan
     /// reports, because both an open SCTP port and a closed one answer.
     #[test]
-    fn an_unanswered_probe_is_filtered_rather_than_open_filtered() {
+    fn an_unanswered_probe_is_no_reply_rather_than_open_or_no_reply() {
         let (mut scanner, session, sent) = scanner_with_mock();
         probe(&mut scanner, &sent, 2905);
 
         super::super::run_out(&mut scanner);
 
-        assert_eq!(port_state(&session, 2905), Some(PortState::Filtered));
-        assert_eq!(scanner.silence_means(), PortState::Filtered);
+        assert_eq!(port_state(&session, 2905), Some(PortState::NoReply));
+        assert_eq!(scanner.silence_means(), PortState::NoReply);
     }
 
     /// A closed SCTP port sends an abort of its own, so an ICMP refusal is
     /// something stopping the probe rather than a port saying no.
     #[test]
-    fn an_icmp_refusal_is_a_filter_and_not_a_closed_port() {
+    fn an_icmp_refusal_is_blocked_and_not_a_closed_port() {
         let (mut scanner, session, sent) = scanner_with_mock();
         let tag = probe(&mut scanner, &sent, 2905);
 
         // Protocol unreachable: what a host with no SCTP stack answers.
         scanner.handle_reply(&icmp_error(TARGET, IcmpCode(2), 2905, tag), Instant::now());
 
-        assert_eq!(port_state(&session, 2905), Some(PortState::Filtered));
+        assert_eq!(port_state(&session, 2905), Some(PortState::Blocked));
         let host = session.hosts().get(TARGET).expect("the host is recorded");
         assert!(
             host.status().is_up(),
@@ -1012,13 +1012,13 @@ mod tests {
     /// The same refusal from the path is a perimeter rather than the host's own
     /// policy, and a middlebox answering must not be read as the host being up.
     #[test]
-    fn a_refusal_from_the_path_is_filtered_without_promoting_the_host() {
+    fn a_refusal_from_the_path_is_blocked_without_promoting_the_host() {
         let (mut scanner, session, sent) = scanner_with_mock();
         let tag = probe(&mut scanner, &sent, 2905);
 
         scanner.handle_reply(&icmp_error(ROUTER, IcmpCode(13), 2905, tag), Instant::now());
 
-        assert_eq!(port_state(&session, 2905), Some(PortState::Filtered));
+        assert_eq!(port_state(&session, 2905), Some(PortState::Blocked));
         let host = session.hosts().get(TARGET).expect("the host is recorded");
         assert!(!host.status().is_up());
     }
@@ -1061,14 +1061,14 @@ mod tests {
 
     /// The price of the quieter chunk. A listener discards a cookie it cannot
     /// authenticate without a word, so silence here cannot be told from a
-    /// filter, where an init scan would have called it filtered outright.
+    /// filter, where an init scan would have called it `NoReply` outright.
     #[test]
-    fn a_cookie_echo_reads_silence_as_open_or_filtered() {
+    fn a_cookie_echo_reads_silence_as_open_or_no_reply() {
         let (mut scanner, session, sent) = scanner_probing(SctpScanTechnique::CookieEcho);
         let _ = cookie_probe(&mut scanner, &sent, 2905);
         super::super::run_out(&mut scanner);
 
-        assert_eq!(port_state(&session, 2905), Some(PortState::OpenFiltered));
+        assert_eq!(port_state(&session, 2905), Some(PortState::OpenOrNoReply));
     }
 
     /// An icmp error is still a filter and still not a closed port, whichever
@@ -1092,7 +1092,7 @@ mod tests {
             Instant::now(),
         );
 
-        assert_eq!(port_state(&session, 3868), Some(PortState::Filtered));
+        assert_eq!(port_state(&session, 3868), Some(PortState::Blocked));
     }
 
     /// **An ICMP error that cannot name the attempt retires nothing.**
@@ -1139,6 +1139,6 @@ mod tests {
 
         // The same error carrying the tag that really went out does resolve it.
         scanner.handle_reply(&icmp_error(TARGET, IcmpCode(2), 4001, real), Instant::now());
-        assert_eq!(port_state(&session, 4001), Some(PortState::Filtered));
+        assert_eq!(port_state(&session, 4001), Some(PortState::Blocked));
     }
 }

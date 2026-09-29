@@ -2,10 +2,10 @@
 
 The engine is tested in layers, because the things worth testing have very
 different costs. Parsing a packet is cheap to check and can be done thousands of
-times a second. Watching a scanner decide that a port is filtered takes as long
-as the scan's deadline, and doing it against a real firewall takes root and a
-Linux kernel. Mixing all of that into one suite would mean either running the
-slow parts constantly or skipping the interesting parts entirely.
+times a second. Watching a scanner decide that a port will never answer takes
+as long as the scan's deadline, and doing it against a real firewall takes root
+and a Linux kernel. Mixing all of that into one suite would mean either running
+the slow parts constantly or skipping the interesting parts entirely.
 
 So the suite is split into tiers. Each one answers a different question, and each
 one runs somewhere different.
@@ -156,15 +156,6 @@ three times reported one laptop as four.
 An `#[ignore]`d test here is a claim about something the engine does not do yet,
 not a test that is switched off. It runs, it fails for the reason it says, and
 removing the attribute is the definition of done.
-
-One live claim stands under the convention, and it is in Tier 3:
-`an_administratively_prohibited_port_is_filtered_rather_than_closed`. A real
-ICMP prohibition comes back as `Unasked` rather than `Filtered`, because Linux
-delivers the error to the socket and the next send reports it, which reads as a
-probe the operating system refused to send. `Unasked` is documented to mean
-exactly that, so nothing is behaving unexpectedly; what is open is which
-evidence should win, an error the target really sent or the local send failure
-that error caused. Removing the attribute is the definition of done.
 
 One `#[ignore]`d test in the crate is a different thing entirely. It is gated on
 an environment rather than on a missing feature and says so in its attribute:

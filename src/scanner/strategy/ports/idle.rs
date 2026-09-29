@@ -25,7 +25,7 @@
 //!    - **Open**: the target answers each with a SYN+ACK: to the zombie, which
 //!      never asked for it and resets each one, advancing its counter once per
 //!      probe.
-//!    - **Closed or filtered**: the target resets (which the zombie ignores) or
+//!    - **Closed, or no reply**: the target resets (which the zombie ignores) or
 //!      drops the probe; either way the zombie sends nothing and its counter does
 //!      not move.
 //! 3. Probe the zombie again and read `after`.
@@ -33,16 +33,16 @@
 //! Between the two readings the zombie sent one packet for the second reading
 //! itself, plus one per forged probe the target bounced off it. So `after -
 //! before` is about `SPOOFED_PROBES + 1` for an open port and about `1` for a
-//! closed or filtered one, and [`OPEN_MIN_DELTA`] is the line between them. The
+//! closed or unreached one, and [`OPEN_MIN_DELTA`] is the line between them. The
 //! several probes per port are the whole of the method's noise tolerance: one
 //! stray packet from the zombie shifts the count by one, where the signal is
 //! [`SPOOFED_PROBES`] wide.
 //!
-//! ## Open, or closed-and-filtered, and nothing finer
+//! ## Open, or closed-or-no-reply, and nothing finer
 //!
-//! A closed port's reset and a filtered port's silence both leave the zombie's
+//! A closed port's reset and a dropped probe's silence both leave the zombie's
 //! counter still, so the scan cannot tell them apart: its verdicts are
-//! [`PortState::Open`] and [`PortState::ClosedFiltered`], the honest pair for a
+//! [`PortState::Open`] and [`PortState::ClosedOrNoReply`], the honest pair for a
 //! technique that reads a port only through what a third party bounced off it.
 //!
 //! ## What it demands, and what it refuses
@@ -365,13 +365,14 @@ impl IdlePortScanner {
     ///
     /// Reads the counter, forges [`SPOOFED_PROBES`] SYNs from the zombie to the
     /// port, reads the counter again, and reads the advance: an open port bounced
-    /// each probe off the zombie and moved it, a closed or filtered one did not.
-    /// A counter reading that cannot be had leaves the port
-    /// [`PortState::Filtered`]: an honest "not determined", since nothing about
-    /// the target was learned.
+    /// each probe off the zombie and moved it, a closed one or one the probes
+    /// never reached did not. A counter reading that cannot be had leaves the
+    /// port [`PortState::Unasked`]: no verdict was reached, since nothing about
+    /// the target was learned, and a silence filed against it would be the
+    /// zombie's rather than the target's.
     async fn measure(&mut self, source: IpAddr, target: IpAddr, port: u16) -> PortState {
         let Some(before) = self.read_counter(source).await else {
-            return PortState::Filtered;
+            return PortState::Unasked;
         };
 
         for _ in 0..SPOOFED_PROBES {
@@ -398,7 +399,7 @@ impl IdlePortScanner {
         }
 
         let Some(after) = self.read_counter(source).await else {
-            return PortState::Filtered;
+            return PortState::Unasked;
         };
 
         verdict(before.ip_id, after.ip_id)
@@ -407,7 +408,7 @@ impl IdlePortScanner {
     /// Files a port's verdict, and the host as up when the verdict proves it.
     ///
     /// An open port is one the target answered, to the zombie, but answer it
-    /// did, so it is proof the host is alive; a closed-or-filtered verdict
+    /// did, so it is proof the host is alive; a closed-or-no-reply verdict
     /// proves nothing about the host and records nothing about it.
     fn record(&self, target: IpAddr, port: u16, state: PortState) {
         let recorded = fingerprint::baseline_port(port, Protocol::Tcp, state);
@@ -561,13 +562,13 @@ fn unsuitable_zombie(class: IdClass) -> &'static str {
 /// difference; `before` already accounts for the reading that produced it, so
 /// every step past the one `after`'s own reading causes is a probe the target
 /// bounced off the zombie. An advance that reaches [`OPEN_MIN_DELTA`] is an open
-/// port; anything less is a closed or filtered one, which this technique cannot
+/// port; anything less is a closed or unreached one, which this technique cannot
 /// tell apart.
 fn verdict(before: u16, after: u16) -> PortState {
     if after.wrapping_sub(before) >= OPEN_MIN_DELTA {
         PortState::Open
     } else {
-        PortState::ClosedFiltered
+        PortState::ClosedOrNoReply
     }
 }
 
@@ -603,20 +604,20 @@ mod tests {
         // The clean cases: an open port advances the counter by SPOOFED_PROBES
         // plus the reading's own step; a closed one, by the reading alone.
         assert_eq!(verdict(100, 100 + SPOOFED_PROBES + 1), PortState::Open);
-        assert_eq!(verdict(100, 101), PortState::ClosedFiltered);
+        assert_eq!(verdict(100, 101), PortState::ClosedOrNoReply);
 
         // The threshold itself is open; one short of it is not.
         assert_eq!(verdict(100, 100 + OPEN_MIN_DELTA), PortState::Open);
         assert_eq!(
             verdict(100, 100 + OPEN_MIN_DELTA - 1),
-            PortState::ClosedFiltered
+            PortState::ClosedOrNoReply
         );
 
         // Across the field's wrap the advance is the true short distance, not the
         // huge one a plain subtraction would see: an open port whose probes
         // carried the counter over the top is still read open.
         assert_eq!(verdict(65_530, 2), PortState::Open); // an advance of eight
-        assert_eq!(verdict(u16::MAX, 0), PortState::ClosedFiltered); // an advance of one
+        assert_eq!(verdict(u16::MAX, 0), PortState::ClosedOrNoReply); // an advance of one
     }
 
     /// How the synthetic zombie writes its IP-ID: a shared counter that advances,
@@ -753,7 +754,7 @@ mod tests {
     }
 
     /// The whole side channel, end to end: an open port and a closed one read
-    /// through a counting zombie come back open and closed-filtered.
+    /// through a counting zombie come back open and closed-or-no-reply.
     ///
     /// Nothing here addresses the target directly: the open verdict is the
     /// counter having advanced the extra steps the target bounced off the zombie,
@@ -770,7 +771,7 @@ mod tests {
         assert_eq!(port_state(&session, OPEN_PORT), Some(PortState::Open));
         assert_eq!(
             port_state(&session, CLOSED_PORT),
-            Some(PortState::ClosedFiltered)
+            Some(PortState::ClosedOrNoReply)
         );
     }
 

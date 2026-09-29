@@ -589,7 +589,7 @@ fn address(text: &str) -> Result<IpAddr, String> {
 /// journal is a file this engine wrote, so a value it cannot read there belongs
 /// to a newer build of itself and the format's version bargain covers it. A
 /// document handed in from outside has made no such promise, and a
-/// port state read as `filtered` because this build did not recognise the word
+/// port state read as `unasked` because this build did not recognise the word
 /// is a report claiming something the scan never established.
 fn known<T>(parsed: Option<T>, what: &str, value: &str) -> Result<(), String> {
     parsed

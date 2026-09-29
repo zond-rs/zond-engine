@@ -493,8 +493,8 @@ pub(super) fn send_syn(
 ///
 /// A failure comes back whole rather than logged here, so the port scan can
 /// sort it by whose fact it is and report it once. A UDP scan whose probes never
-/// left reports every port open-filtered, the same answer a firewall produces,
-/// and only the failure says otherwise. See
+/// left reports every port `OpenOrNoReply`, the same answer a filter dropping
+/// everything produces, and only the failure says otherwise. See
 /// [`RawProbeScan::record_send`](super::ports::RawProbeScan::record_send).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn send_udp(

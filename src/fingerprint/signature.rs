@@ -278,7 +278,7 @@ pub struct Probe {
     /// A UDP payload is held to [`MAX_UDP_PROBE_BYTES`] and parsed at build
     /// time the way the target service would parse it, because a malformed
     /// datagram is dropped in silence and a scan reads that silence as a
-    /// filtered port.
+    /// port that never answered.
     pub payload: String,
     /// The transport carrying the payload: `"tcp"` or `"udp"`. Anything else
     /// warns at build time, and the loader drops the probe rather than guess
@@ -498,7 +498,7 @@ pub enum DefinitionError {
     /// A UDP probe payload that is empty, or past [`MAX_UDP_PROBE_BYTES`].
     ///
     /// An empty datagram cannot elicit a reply, and an oversized one costs more
-    /// than it can return. Both read as a filtered port.
+    /// than it can return. Both read as a port that never answered.
     UdpProbeSize {
         /// Which `[[probe]]`, counting from zero.
         probe: usize,

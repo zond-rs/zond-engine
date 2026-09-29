@@ -478,9 +478,9 @@ pub(crate) fn start_loading_corpus() {
 /// A [`Port`] in the given `state` carrying only the [`baseline_service`] label.
 ///
 /// This is the shape every discovery path records before (and if) a full
-/// fingerprint refines it: the SYN and filtered/closed paths stop here, while
-/// the connect and service-detection paths hand the result to
-/// [`fingerprint_tcp_detailed`] to upgrade in place.
+/// fingerprint refines it: the SYN path and every path to a port that did not
+/// open stop here, while the connect and service-detection paths hand the
+/// result to [`fingerprint_tcp_detailed`] to upgrade in place.
 pub fn baseline_port(port: u16, protocol: Protocol, state: PortState) -> Port {
     let mut classified = Port::new(port, protocol, state);
     if let Some(service) = baseline_service(port) {
@@ -766,7 +766,7 @@ async fn identify_tcp(
 ///
 /// Claim a port answered when it did not. `None` means silence, and silence
 /// over UDP is the ordinary case: no connection is refused and no banner is
-/// withheld, so nothing distinguishes a filtered port from one with nothing
+/// withheld, so nothing distinguishes a dropped probe from a port with nothing
 /// behind it. A caller that dialled a port on its own account uses this to tell
 /// whether it found anything at all.
 ///

@@ -2254,12 +2254,12 @@ mod tests {
             ),
             (
                 PortState::Open,
-                PortState::Filtered,
+                PortState::NoReply,
                 Some(Significance::Notable),
             ),
             (
                 PortState::Open,
-                PortState::OpenFiltered,
+                PortState::OpenOrNoReply,
                 Some(Significance::Notable),
             ),
             (
@@ -2270,26 +2270,26 @@ mod tests {
             (PortState::Closed, PortState::Closed, None),
             (
                 PortState::Closed,
-                PortState::Filtered,
+                PortState::NoReply,
                 Some(Significance::Routine),
             ),
             (
-                PortState::Filtered,
+                PortState::NoReply,
                 PortState::Open,
                 Some(Significance::Urgent),
             ),
             (
-                PortState::Filtered,
+                PortState::NoReply,
                 PortState::Closed,
                 Some(Significance::Routine),
             ),
-            (PortState::Filtered, PortState::Filtered, None),
+            (PortState::NoReply, PortState::NoReply, None),
             (
-                PortState::OpenFiltered,
+                PortState::OpenOrNoReply,
                 PortState::Open,
                 Some(Significance::Urgent),
             ),
-            (PortState::OpenFiltered, PortState::OpenFiltered, None),
+            (PortState::OpenOrNoReply, PortState::OpenOrNoReply, None),
             (PortState::Unasked, PortState::Unasked, None),
         ];
 
@@ -2331,8 +2331,8 @@ mod tests {
         for state in [
             PortState::Open,
             PortState::Closed,
-            PortState::Filtered,
-            PortState::OpenFiltered,
+            PortState::NoReply,
+            PortState::OpenOrNoReply,
         ] {
             for (before, after) in [(state, PortState::Unasked), (PortState::Unasked, state)] {
                 let mut baseline = host(1);
@@ -2366,7 +2366,7 @@ mod tests {
     fn a_quiet_address_listed_once_and_found_silent_once_is_no_change() {
         let start = SystemTime::UNIX_EPOCH;
         let mut unheard = Host::new(ip(5));
-        unheard.add_port(Port::new(443, Protocol::Tcp, PortState::Filtered));
+        unheard.add_port(Port::new(443, Protocol::Tcp, PortState::NoReply));
         let listed = scoped(vec![unheard], "203.0.113.0/29", &[], start);
         let silent = found_silent("203.0.113.0/29", "203.0.113.5", start + DAY);
 

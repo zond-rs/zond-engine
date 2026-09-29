@@ -21,7 +21,7 @@
 //!
 //! So a payload-free UDP scan can only ever observe the ICMP half - closed
 //! ports - while every genuinely open port falls to the deadline and reports
-//! [`OpenFiltered`](crate::model::port::PortState::OpenFiltered). That
+//! [`OpenOrNoReply`](crate::model::port::PortState::OpenOrNoReply). That
 //! is a correct verdict for what was asked, and a nearly useless one. Sending
 //! something a service will recognize is what turns "no evidence" into
 //! evidence.
@@ -72,7 +72,7 @@ const NETBIOS_NS: u16 = 137;
 /// Returns an empty slice for a port no service registers a UDP probe for. The
 /// scan still works there - a closed port answers with an ICMP error either
 /// way - but an open one has nothing to react to and can only ever be reported
-/// open-filtered.
+/// `OpenOrNoReply`.
 ///
 /// Keyed on the destination port alone, because it is the only thing known
 /// about a target before anything answers, which is the whole difficulty of UDP
@@ -323,7 +323,7 @@ mod tests {
     /// the one a daemon is most likely to answer: an ordinary client request,
     /// which every server replies to. The control message is the second, and
     /// the service pass is what asks it, because many daemons carry `noquery`
-    /// and would leave the port looking filtered if it were asked first.
+    /// and would leave the port looking silent if it were asked first.
     ///
     /// This is the pairing a scan of a real ntpd showed was wrong. The service
     /// pass took `first` and stopped, so the control message never went out and

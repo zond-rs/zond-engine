@@ -1,4 +1,4 @@
-*t{
+*Œ{
   "schema_version": 1,
   "engine": {
     "name": "zond-engine",
@@ -14,7 +14,7 @@
     "hosts_alive": 1,
     "hosts_by_status": {
       "up": 1,
-      "filtered": 0,
+      "blocked": 0,
       "down": 0,
       "unknown": 0
     },
@@ -22,11 +22,12 @@
     "ports_open": 1,
     "ports_by_state": {
       "open": 1,
-      "open_filtered": 0,
+      "open_or_no_reply": 0,
       "closed": 0,
-      "unfiltered": 0,
-      "filtered": 0,
-      "closed_filtered": 0
+      "reachable": 0,
+      "blocked": 0,
+      "no_reply": 0,
+      "closed_or_no_reply": 0
     },
     "services_identified": 1,
     "hosts_by_family": {

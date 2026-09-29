@@ -123,14 +123,14 @@ async fn the_peer_is_found_alive() {
     );
 }
 
-/// A port a firewall silently discards is reported Filtered.
+/// A port a firewall silently discards is reported `NoReply`.
 ///
 /// The verdict that motivates this whole tier. Loopback cannot produce it and
 /// Tier 2 can only describe it, because silence is not something a cooperating
 /// kernel will give you: it takes a real filter deciding not to answer, and a
 /// scanner that waits out its retry schedule before saying so.
 #[tokio::test]
-async fn a_dropped_port_is_reported_filtered() {
+async fn a_dropped_port_is_reported_no_reply() {
     if !available() {
         return;
     }
@@ -147,12 +147,12 @@ async fn a_dropped_port_is_reported_filtered() {
 
     assert_eq!(
         outcome.port_state(segment.peer(), port),
-        Some(PortState::Filtered),
-        "a port whose probes are dropped should read Filtered, not Closed"
+        Some(PortState::NoReply),
+        "a port whose probes are dropped should read NoReply, not Closed"
     );
 }
 
-/// An ICMP prohibition reads as Filtered rather than Closed.
+/// An ICMP prohibition reads as `Blocked` rather than Closed.
 ///
 /// The near miss worth a test of its own. Both this port and a closed one
 /// answer, and both answers are errors; only the reason differs. Reading an
@@ -165,7 +165,7 @@ async fn a_dropped_port_is_reported_filtered() {
 /// the prohibition as a failed send rather than handing the error to a capture.
 /// On the raw path the ICMP error is read as what it is.
 #[tokio::test]
-async fn an_administratively_prohibited_port_is_filtered_rather_than_closed() {
+async fn an_administratively_prohibited_port_is_blocked_rather_than_closed() {
     if !available() {
         return;
     }
@@ -182,12 +182,12 @@ async fn an_administratively_prohibited_port_is_filtered_rather_than_closed() {
 
     assert_eq!(
         outcome.port_state(segment.peer(), port),
-        Some(PortState::Filtered),
-        "an admin-prohibited ICMP error should read Filtered"
+        Some(PortState::Blocked),
+        "an admin-prohibited ICMP error should read Blocked"
     );
 }
 
-/// A connect scan reads a port a filter rejects as filtered, as the raw path
+/// A connect scan reads a port a filter rejects as blocked, as the raw path
 /// does, rather than as a port it never asked.
 ///
 /// A firewall's reject answers with an ICMP administrative prohibition, and
@@ -197,7 +197,7 @@ async fn an_administratively_prohibited_port_is_filtered_rather_than_closed() {
 /// nothing about the filter it met. Driven directly, since a process with raw
 /// sockets never plans a connect scan here.
 #[tokio::test]
-async fn a_connect_scan_reads_a_port_a_filter_rejects_as_filtered() {
+async fn a_connect_scan_reads_a_port_a_filter_rejects_as_blocked() {
     use zond_engine::config::ServiceDetection;
     use zond_engine::model::port::Protocol;
     use zond_engine::model::port::discovery::ScanResponse;
@@ -243,8 +243,8 @@ async fn a_connect_scan_reads_a_port_a_filter_rejects_as_filtered() {
             port.state(),
             port.discovery().map(|found| found.reason().clone())
         ),
-        (PortState::Filtered, Some(ScanResponse::IcmpUnreachable)),
-        "a rejected connect is a filtered port, settled by the ICMP error"
+        (PortState::Blocked, Some(ScanResponse::IcmpUnreachable)),
+        "a rejected connect is a blocked port, settled by the ICMP error"
     );
     assert!(
         ctx.failures_snapshot().is_empty(),
@@ -253,10 +253,10 @@ async fn a_connect_scan_reads_a_port_a_filter_rejects_as_filtered() {
     );
 }
 
-/// The unprivileged UDP scan reads a datagram a filter rejects as filtered
+/// The unprivileged UDP scan reads a datagram a filter rejects as blocked
 /// too, which a connected socket is handed as a host it cannot reach.
 #[tokio::test]
-async fn a_plain_udp_scan_reads_a_port_a_filter_rejects_as_filtered() {
+async fn a_plain_udp_scan_reads_a_port_a_filter_rejects_as_blocked() {
     use zond_engine::model::port::Protocol;
     use zond_engine::model::target::{PlannedTarget, Target};
     use zond_engine::scanner::session::ScanSession;
@@ -286,8 +286,8 @@ async fn a_plain_udp_scan_reads_a_port_a_filter_rejects_as_filtered() {
 
     assert_eq!(
         crate::support::port_state(&session, target, 161),
-        Some(PortState::Filtered),
-        "a rejected datagram is a filtered port, not an open|filtered one"
+        Some(PortState::Blocked),
+        "a rejected datagram is a blocked port, not an open-or-no-reply one"
     );
 }
 
@@ -320,7 +320,7 @@ async fn a_udp_port_nothing_is_bound_to_is_reported_closed() {
 }
 
 /// A host rationing its ICMP errors is named in the report, so its closed UDP
-/// ports reading open|filtered are not taken for ports that might be open.
+/// ports reading `OpenOrNoReply` are not taken for ports that might be open.
 ///
 /// The peer is a Linux kernel at its defaults, which sends each destination a
 /// burst of six port unreachables and then one a second. Asked about forty
@@ -388,7 +388,7 @@ async fn a_host_answering_every_closed_port_is_not_named_as_rationing() {
 ///
 /// The other half of the same path, and the one that catches a capture filter
 /// which compiles but matches nothing: such a filter turns every open UDP port
-/// into `OpenFiltered`, so the scan keeps running and keeps reporting, just
+/// into `OpenOrNoReply`, so the scan keeps running and keeps reporting, just
 /// never positively. Only live traffic shows it.
 #[tokio::test]
 async fn a_udp_reply_reaches_the_scan_and_opens_the_port() {

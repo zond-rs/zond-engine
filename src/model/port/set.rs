@@ -214,7 +214,7 @@ impl PortSet {
     /// The counterpart of [`top_tcp`](Self::top_tcp), drawn from a much shorter
     /// list: a UDP port costs far more to classify and far
     /// more of them come back
-    /// [`OpenFiltered`](crate::model::port::PortState::OpenFiltered) whatever is
+    /// [`OpenOrNoReply`](crate::model::port::PortState::OpenOrNoReply) whatever is
     /// done, so the catalogue stops where the extra probes stop buying
     /// certainty.
     pub fn top_udp(count: usize) -> Self {

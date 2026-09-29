@@ -126,8 +126,9 @@ pub enum StrategyError {
     /// probe, so its capture would admit none of the scan's answers.
     ///
     /// Refused rather than run, because a scan that hears nothing files every
-    /// port as the silence it reads, which looks exactly like a filtered
-    /// network. Every port it was handed is recorded as one nobody asked about.
+    /// port as the silence it reads, which looks exactly like a network that
+    /// drops everything. Every port it was handed is recorded as one nobody
+    /// asked about.
     #[error(
         "{} transport cannot hear {} port scan's answers",
         .kind.spoken(),

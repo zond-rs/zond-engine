@@ -2735,7 +2735,7 @@ mod tests {
         host.record_ip_protocol(103, IpProtocolState::Unasked);
 
         host.add_port(maximal_port());
-        host.add_port(Port::new(53, Protocol::Udp, PortState::OpenFiltered));
+        host.add_port(Port::new(53, Protocol::Udp, PortState::OpenOrNoReply));
         host.add_port(Port::new(80, Protocol::Tcp, PortState::Closed));
 
         host.add_finding(maximal_finding());
@@ -3285,7 +3285,7 @@ mod tests {
     }
 
     /// What a silence means depends on this, so a record that lost it would
-    /// leave every filtered port's `no reply` unreadable.
+    /// leave every silent port's `NoReply` unreadable.
     #[test]
     fn asking_for_icmp_evidence_survives_the_settings_round_trip() {
         use crate::config::ZondConfig;

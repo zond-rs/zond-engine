@@ -33,7 +33,7 @@
 //!   the record says. It is also one field of one host in a file holding a scan
 //!   that took hours, so refusing the whole journal over it would throw that away
 //!   for the reason the torn last line below does not. It is read as the weakest
-//!   value the type has, so a port state as `Filtered`, a sitting as a discovery
+//!   value the type has, so a port state as `Unasked`, a sitting as a discovery
 //!   sweep and a severity as `Info`, never as a stronger one and never as a
 //!   neighbour. [`record`](crate::record) makes that choice field by field and
 //!   documents each; the parsers guess at nothing and hand back [`None`].

@@ -14,7 +14,7 @@
 //! # Why this matters more than it looks
 //!
 //! Without it, a single lost probe is indistinguishable from a firewall. The SYN
-//! path reports `Filtered`, the UDP path reports `OpenFiltered`, and local
+//! path reports `NoReply`, the UDP path reports `OpenOrNoReply`, and local
 //! discovery reports the host as absent. All three are wrong, and none of them
 //! look wrong: the scan completes, reports a plausible answer, and gives no hint
 //! that it guessed. On a link with a few percent loss, a wide scan quietly
@@ -28,10 +28,10 @@
 //! 2. Retries are spaced out rather than sent back to back, so a congested path
 //!    is given time to drain instead of being hammered.
 //! 3. A reply to *any* attempt resolves the probe, and resolves it exactly once.
-//! 4. Exhausting the attempts is what produces `Filtered`. A port is only
-//!    reported filtered after the engine has genuinely tried.
+//! 4. Exhausting the attempts is what produces `NoReply`. A port is only
+//!    reported silent after the engine has genuinely tried.
 //! 5. Retrying never invents a result. A target that is truly silent still ends
-//!    up `Filtered`, just later, and a closed port stays `Closed`.
+//!    up `NoReply`, just later, and a closed port stays `Closed`.
 //!
 //! # Where it lives
 //!
@@ -103,7 +103,7 @@ async fn a_lost_syn_is_retried_and_the_port_still_reads_open() {
     assert_eq!(
         port_state(&session, TARGET, 80),
         Some(PortState::Open),
-        "a port that answered the second SYN is open, not filtered"
+        "a port that answered the second SYN is open, not silent"
     );
     assert!(
         net.probe_count(TARGET, 80) > 1,
@@ -112,7 +112,7 @@ async fn a_lost_syn_is_retried_and_the_port_still_reads_open() {
     );
 }
 
-/// A closed port whose RST is lost must still read `Closed`, not `Filtered`.
+/// A closed port whose RST is lost must still read `Closed`, not `NoReply`.
 /// Retrying has to recover the true answer, not merely find open ports.
 #[tokio::test]
 async fn a_lost_rst_is_retried_and_the_port_still_reads_closed() {
@@ -132,10 +132,10 @@ async fn a_lost_rst_is_retried_and_the_port_still_reads_closed() {
     assert_eq!(port_state(&session, TARGET, 81), Some(PortState::Closed));
 }
 
-/// Retrying must be bounded. A silent target is still filtered, and the engine
-/// must not sit there resending forever.
+/// Retrying must be bounded. A silent target still reads `NoReply`, and the
+/// engine must not sit there resending forever.
 #[tokio::test]
-async fn a_silent_port_is_filtered_after_a_bounded_number_of_attempts() {
+async fn a_silent_port_reads_no_reply_after_a_bounded_number_of_attempts() {
     let net = FakeNet::new(Layer4::Tcp).host(TARGET, 82, Policy::silent());
 
     let (session, ctx) = ScanSession::new();
@@ -151,8 +151,8 @@ async fn a_silent_port_is_filtered_after_a_bounded_number_of_attempts() {
 
     assert_eq!(
         port_state(&session, TARGET, 82),
-        Some(PortState::Filtered),
-        "silence after every attempt is what filtered means"
+        Some(PortState::NoReply),
+        "silence after every attempt is what no reply means"
     );
     assert_eq!(
         net.probe_count(TARGET, 82),
@@ -481,7 +481,7 @@ async fn a_paced_sweep_probes_every_target_without_bursting_them() {
 // ── UDP ────────────────────────────────────────────────────────────────────
 
 /// UDP has no handshake, so a lost probe is even more costly: there is no
-/// second signal to fall back on, and the result degrades to `OpenFiltered`.
+/// second signal to fall back on, and the result degrades to `OpenOrNoReply`.
 #[tokio::test]
 async fn a_lost_udp_probe_is_retried_and_the_port_still_reads_open() {
     let net = FakeNet::new(Layer4::Udp).host(TARGET, 53, Policy::open().drop_first(1));
@@ -494,7 +494,7 @@ async fn a_lost_udp_probe_is_retried_and_the_port_still_reads_open() {
     assert_eq!(
         port_state(&session, TARGET, 53),
         Some(PortState::Open),
-        "a UDP port that answered the retry is open, not open-filtered"
+        "a UDP port that answered the retry is open, not open|no-reply"
     );
     assert!(
         net.probe_count(TARGET, 53) > 1,

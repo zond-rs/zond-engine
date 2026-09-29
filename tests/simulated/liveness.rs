@@ -9,7 +9,7 @@
 //! Whether a routed sweep finds a host that answers only where it serves.
 //!
 //! A port scan probes the hosts its liveness pass found and no others, so a
-//! host that pass misses is not reported closed or filtered: it is left out of
+//! host that pass misses is not reported closed or silent: it is left out of
 //! the report altogether. The host that is easiest to miss is one behind a
 //! filter that drops a SYN to anything not listening, which is Windows
 //! Firewall's default and what an `iptables` `DROP` policy does. It answers on
@@ -118,7 +118,7 @@ async fn a_host_serving_only_a_port_the_scan_names_is_found_by_the_scan_liveness
     assert_eq!(port_state(&session, TARGET, 8443), Some(PortState::Open));
 }
 
-/// Every port is asked on every attempt, so a SYN to the one port a filtered
+/// Every port is asked on every attempt, so a SYN to the one port a firewalled
 /// host serves has retransmissions behind it like any other. Asked once and
 /// lost, that host would be gone.
 #[tokio::test]

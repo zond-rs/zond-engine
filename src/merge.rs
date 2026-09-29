@@ -1259,7 +1259,7 @@ mod tests {
     }
 
     /// The other half of the carve-out, and what makes it a carve-out rather
-    /// than a rule. `Unknown` is silence; `Down` and `Filtered` are each backed
+    /// than a rule. `Unknown` is silence; `Down` and `Blocked` are each backed
     /// by a packet, so a router calling an address unreachable tonight is a
     /// later word about it than an ARP reply last quarter.
     ///
@@ -1987,7 +1987,7 @@ mod tests {
     /// happen.
     #[test]
     fn a_later_scan_that_never_asked_does_not_erase_what_an_earlier_one_found() {
-        for found in [PortState::Open, PortState::Closed, PortState::Filtered] {
+        for found in [PortState::Open, PortState::Closed, PortState::NoReply] {
             let wide = with_port(host(1), Port::new(3389, Protocol::Tcp, found));
             let narrow = with_port(host(1), Port::new(3389, Protocol::Tcp, PortState::Unasked));
 

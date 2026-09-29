@@ -51,8 +51,8 @@ async fn a_filter_that_judges_by_connection_state_is_named_stateful() {
     let host = outcome.host(segment.peer()).expect("the peer answers");
     assert_eq!(
         outcome.port_state(segment.peer(), port),
-        Some(PortState::Filtered),
-        "the SYN is dropped, so the port itself reads Filtered"
+        Some(PortState::NoReply),
+        "the SYN is dropped, so the port itself reads NoReply"
     );
     assert!(
         host.filtering().contains(&Filtering::StatefulFilter),

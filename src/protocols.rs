@@ -23,7 +23,7 @@
 //!
 //! The one place the line is easy to blur is a reply.
 //! [`tcp::classify_probe_response`] says a RST arrived and does not say what
-//! that means, since a RST is a closed port to a FIN probe and an unfiltered path
+//! that means, since a RST is a closed port to a FIN probe and a reachable port
 //! to an ACK probe. Only the technique that sent the probe knows which, so that
 //! verdict lives on
 //! [`TcpScanTechnique`](crate::model::technique::TcpScanTechnique) instead.

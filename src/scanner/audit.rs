@@ -373,10 +373,10 @@ impl ProbeAudit {
     ///
     /// A scan that degrades quietly is the failure this engine exists not to
     /// have. Measured, against a consumer router: probed faster than it would
-    /// answer, a thousand-port scan reported six hundred ports `filtered`: with
+    /// answer, a thousand-port scan reported six hundred ports `NoReply`: with
     /// no more hesitation than it reported the three that really were, and among
-    /// them two ports running services. Every one of those verdicts is a claim
-    /// about somebody's firewall, and they were claims about this scanner's own
+    /// them two ports running services. Every one of those verdicts reads as a
+    /// claim about the router, and they were claims about this scanner's own
     /// send rate.
     ///
     /// The numbers were already collected; nothing read them back. Two signals,
@@ -440,7 +440,7 @@ impl ProbeAudit {
             silence,
             unasked,
         }) = pacing
-            && silence == PortState::Filtered
+            && silence == PortState::NoReply
             && window.at_floor
             && targets > unasked
         {
@@ -654,8 +654,8 @@ mod tests {
         };
 
         for (silence, warned) in [
-            (PortState::Filtered, true),
-            (PortState::OpenFiltered, false),
+            (PortState::NoReply, true),
+            (PortState::OpenOrNoReply, false),
         ] {
             let said = crate::logging::logged(|| {
                 audit.report(
@@ -704,7 +704,7 @@ mod tests {
                     None,
                     Some(Pacing {
                         window,
-                        silence: PortState::Filtered,
+                        silence: PortState::NoReply,
                         unasked,
                     }),
                 );

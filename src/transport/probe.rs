@@ -300,9 +300,10 @@ impl ProbeKind {
     ///
     /// A port scan over a transport that does not reads every answer as
     /// silence, and silence is a verdict, so the mismatch is refused where it
-    /// would otherwise pass for a filtered network. Either TCP kind carries a
-    /// TCP scan: both admit the resets and SYN+ACKs it reads. A UDP scan needs
-    /// its own kind, since the resolver's admits name-service replies alone.
+    /// would otherwise pass for a network that drops everything. Either TCP
+    /// kind carries a TCP scan: both admit the resets and SYN+ACKs it reads. A
+    /// UDP scan needs its own kind, since the resolver's admits name-service
+    /// replies alone.
     pub(crate) const fn carries_port_scan(self, protocol: Protocol) -> bool {
         match protocol {
             Protocol::Tcp => matches!(self, ProbeKind::TcpSyn | ProbeKind::TcpProbe { .. }),

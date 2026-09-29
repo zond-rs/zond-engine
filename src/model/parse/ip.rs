@@ -506,7 +506,7 @@ mod tests {
     ///
     /// Kept as IPv6 it names no machine a packet can reach: a frame for it goes
     /// to the router as off-link IPv6, and the host behind it, reached by a
-    /// dual-stack socket as the IPv4 address it is, is reported filtered, and
+    /// dual-stack socket as the IPv4 address it is, is reported as no reply, and
     /// reported apart from the same machine written the ordinary way.
     #[test]
     fn a_mapped_address_is_read_as_the_ipv4_host_it_spells() {
