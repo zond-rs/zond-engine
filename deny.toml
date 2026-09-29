@@ -52,6 +52,17 @@ allow = [
 ]
 confidence-threshold = 0.9
 
+# One crate under one licence, rather than the licence for everyone.
+# `webpki-root-certs` is Mozilla's root certificate list as data, under the
+# Community Data License Agreement, which is permissive. `rustls-platform-verifier`
+# depends on it only when built for `wasm32`, where there is no operating system
+# trust store to ask, and this crate does not build for `wasm32` at all, so it
+# is never compiled into anything shipped. It is listed because this gate reads
+# every target's dependencies.
+exceptions = [
+    { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
+]
+
 # `mac_oui` declares `license-file` rather than an SPDX expression, so cargo-deny
 # emits `no-license-field` for it. That is a note about the manifest and not a
 # gap: the licence is read out of the file and checked like any other, which

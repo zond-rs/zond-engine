@@ -240,6 +240,13 @@
 //!   inside one, because its two callers point in opposite directions: an
 //!   [`export`] signs bytes on the way out, and [`detect`] checks a signature
 //!   over bytes on the way in before it compiles them.
+//! - `fetch`: downloading what the engine reasons with and does not ship, the
+//!   distributions' security feeds first, into a directory the caller names.
+//!   Behind the `fetch` feature and run only when called, since it is the one
+//!   part of the crate that talks to hosts nobody asked it to scan. Above
+//!   [`journal`], whose rules for creating files in the invoking user's home
+//!   under `sudo` it follows. Unlinked because it is there only in a build
+//!   with the feature.
 //! - [`error`](mod@crate::error): the stable code every error a public entry
 //!   point hands back carries, as one trait over all of them. Last, because it
 //!   names each module's own error type and none of them names it.
@@ -306,6 +313,8 @@ pub mod diff;
 pub mod error;
 pub mod evasion;
 pub mod export;
+#[cfg(feature = "fetch")]
+pub mod fetch;
 pub mod fingerprint;
 pub mod format;
 pub mod import;

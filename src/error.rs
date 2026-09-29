@@ -60,6 +60,8 @@ use crate::detect::corpus::DetectionError;
 use crate::detect::flow::ParseError as FlowParseError;
 use crate::evasion::EvasionError;
 use crate::export::ExportError;
+#[cfg(feature = "fetch")]
+use crate::fetch::{FetchError, InvalidResource, NetworkFailure, VerificationFailure};
 use crate::fingerprint::os::{InvalidRule, RuleError};
 use crate::fingerprint::{DefinitionError, InvalidDefinition};
 use crate::import::ImportError;
@@ -302,6 +304,57 @@ impl Coded for SettingsError {
             SettingsError::NoPath => "settings.no_path",
             SettingsError::TooLarge { .. } => "settings.too_large",
             SettingsError::UnknownProfile { .. } => "settings.unknown_profile",
+        }
+    }
+}
+
+#[cfg(feature = "fetch")]
+impl Coded for FetchError {
+    fn code(&self) -> &'static str {
+        match self {
+            FetchError::Setup(_) => "fetch.setup",
+            // One code per way the network failed, since a front end retries a
+            // timeout and sends somebody to their trust store over a
+            // certificate.
+            FetchError::Network { failure, .. } => match failure {
+                NetworkFailure::Url => "fetch.unparsable_url",
+                NetworkFailure::Connect => "fetch.connect",
+                NetworkFailure::Certificate => "fetch.certificate",
+                NetworkFailure::Tls => "fetch.tls",
+                NetworkFailure::TimedOut => "fetch.timed_out",
+                NetworkFailure::Interrupted => "fetch.interrupted",
+                NetworkFailure::Redirects => "fetch.redirects",
+                NetworkFailure::Other => "fetch.network",
+            },
+            FetchError::Insecure => "fetch.insecure",
+            FetchError::Status { .. } => "fetch.status",
+            FetchError::TooLarge { .. } => "fetch.too_large",
+            FetchError::Verification(failure) => failure.code(),
+            FetchError::Storage { .. } => "fetch.storage",
+        }
+    }
+}
+
+#[cfg(feature = "fetch")]
+impl Coded for VerificationFailure {
+    fn code(&self) -> &'static str {
+        match self {
+            VerificationFailure::DigestMismatch => "fetch.digest_mismatch",
+            // Its own code rather than the inner error's: the signature being
+            // unreachable is a different thing to act on from the resource
+            // being so.
+            VerificationFailure::NoSignature(_) => "fetch.no_signature",
+            VerificationFailure::Signature(signature) => signature.code(),
+        }
+    }
+}
+
+#[cfg(feature = "fetch")]
+impl Coded for InvalidResource {
+    fn code(&self) -> &'static str {
+        match self {
+            InvalidResource::Id(_) => "fetch.invalid_id",
+            InvalidResource::Url(_) => "fetch.invalid_url",
         }
     }
 }
@@ -915,6 +968,23 @@ mod tests {
             "exchange.no_source",
             "export.io",
             "export.render",
+            "fetch.certificate",
+            "fetch.connect",
+            "fetch.digest_mismatch",
+            "fetch.insecure",
+            "fetch.interrupted",
+            "fetch.invalid_id",
+            "fetch.invalid_url",
+            "fetch.network",
+            "fetch.no_signature",
+            "fetch.redirects",
+            "fetch.setup",
+            "fetch.status",
+            "fetch.storage",
+            "fetch.timed_out",
+            "fetch.tls",
+            "fetch.too_large",
+            "fetch.unparsable_url",
             "finding.empty_id",
             "finding.empty_title",
             "finding.malformed_version",

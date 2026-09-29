@@ -193,6 +193,18 @@ packet-exchange = []
 # no use in a shipped binary: enable it for tests only, never for a release.
 test-support = []
 
+# Downloading the data the engine reasons with and does not ship, such as the
+# distributions' security feeds, into a directory the caller names. Off by
+# default because it is the one thing in the crate that talks to a host nobody
+# asked it to scan, and a consumer who wants the engine offline should not
+# compile a way online. It runs only when called.
+#
+# It pulls in `reqwest` and its HTTP stack. It requires `journal-format`, which
+# costs only `serde_json`, because a store writes into the invoking user's home
+# under `sudo` by the same rules a journal does, and those rules are compiled
+# with the journal.
+fetch = ["journal-format", "dep:reqwest", "dep:rustls-platform-verifier"]
+
 [dependencies]
 async-trait = "0.1.91"
 # The three parts of `pnet` this crate uses, named individually rather than
@@ -272,6 +284,20 @@ x509-parser = "0.18.1"
 # no new supply chain, where hand-rolling the digest would put a cryptographic
 # primitive in this repository for one call site.
 ring = "0.17"
+
+# The HTTP client behind `fetch`, and nothing else. Without its default
+# features, whose TLS provider is `aws-lc-rs`, a C and CMake build the Windows
+# cross-build and some users do not have: `rustls-no-provider` leaves the
+# provider to this crate, which hands it the `ring` one `rustls` already uses
+# here, and `system-proxy` is what makes an update work on a network that only
+# reaches out through a proxy. No HTTP/2: one large file at a time gains nothing
+# from it.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "system-proxy"], optional = true }
+# Verifies a download's certificate against the operating system's trust store,
+# which is where a corporate network that inspects TLS installs its authority.
+# The version `reqwest` itself uses, named here because the TLS configuration
+# is built here; see `fetch`.
+rustls-platform-verifier = { version = "0.7.1", optional = true }
 
 # MD5, for one thing only: the favicon digest the imported signature corpus is
 # keyed on. Recog identifies several hundred products by the MD5 of the icon a

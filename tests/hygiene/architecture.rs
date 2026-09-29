@@ -59,6 +59,9 @@ const ORDER: &[&str] = &[
     "scanner",
     "export",
     "import",
+    // Above `journal`, whose ownership rules decide how a store's files are
+    // created under `sudo`, and named by nothing but `error`.
+    "fetch",
     // Last, and named by nothing above it. It is one trait over every error the
     // modules above declare, so it reaches for all of them and none of them
     // reaches back.

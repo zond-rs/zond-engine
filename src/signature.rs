@@ -282,6 +282,19 @@ impl Signature {
         trusted_key: &[u8],
         domain: Domain,
     ) -> Result<(), SignatureError> {
+        self.verify_digest(&sha256(document), trusted_key, domain)
+    }
+
+    /// [`verify`](Self::verify) for a document already hashed, as SHA-256.
+    ///
+    /// For a document hashed as it streamed past, such as a download, which
+    /// would otherwise have to be held whole or read twice to be checked.
+    pub(crate) fn verify_digest(
+        &self,
+        digest: &[u8],
+        trusted_key: &[u8],
+        domain: Domain,
+    ) -> Result<(), SignatureError> {
         if self.algorithm != ALGORITHM {
             return Err(SignatureError::UnknownAlgorithm {
                 named: self.algorithm.clone(),
@@ -304,7 +317,6 @@ impl Signature {
             return Err(SignatureError::UntrustedKey);
         }
 
-        let digest = sha256(document);
         let recorded = decode_hex(&self.digest)
             .ok_or_else(|| SignatureError::Malformed("the digest is not hex".to_string()))?;
         if digest != recorded {
@@ -315,7 +327,7 @@ impl Signature {
             .ok_or_else(|| SignatureError::Malformed("the signature is not hex".to_string()))?;
 
         UnparsedPublicKey::new(&ED25519, trusted_key)
-            .verify(&signed_payload(domain, &digest), &signature)
+            .verify(&signed_payload(domain, digest), &signature)
             .map_err(|_| SignatureError::Invalid)
     }
 

@@ -37,8 +37,10 @@
 //! A new one of any of these fails the test until somebody writes that line.
 //!
 //! What it cannot see is a socket a dependency opens on the engine's behalf.
-//! The one such dependency is `hickory-resolver`, which asks the host's own
-//! resolvers for names and never a scanned host.
+//! There are two such dependencies, and neither reaches a scanned host:
+//! `hickory-resolver` asks the host's own resolvers for names, and `reqwest`,
+//! behind the `fetch` feature, downloads the resources a caller asks for from
+//! their publishers.
 
 use std::collections::BTreeSet;
 use std::fs;

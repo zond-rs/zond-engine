@@ -650,7 +650,7 @@ pub(crate) fn give(path: &Path) {
 /// For a writer creating on the way to its own location, which is the one
 /// case where what lies above it is known to be somewhere an elevated run of
 /// this crate made on the user's behalf.
-#[cfg(all(unix, feature = "import-settings"))]
+#[cfg(all(unix, any(feature = "import-settings", feature = "fetch")))]
 pub(crate) fn hand_over(leaf: &Path, created: &[PathBuf]) {
     let Some(user) = invoking() else { return };
     let mut on_the_way: Vec<&Path> = leaf
@@ -880,7 +880,7 @@ fn open_at_raw(
 pub(crate) fn give(_path: &Path) {}
 
 /// [`hand_over`], inert for the same reason.
-#[cfg(all(not(unix), feature = "import-settings"))]
+#[cfg(all(not(unix), any(feature = "import-settings", feature = "fetch")))]
 pub(crate) fn hand_over(_leaf: &Path, _created: &[PathBuf]) {}
 
 /// [`give`]'s handle form, inert for the same reason.
