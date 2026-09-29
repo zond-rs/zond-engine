@@ -1042,11 +1042,11 @@
           "enum": [
             "unasked",
             "closed_or_no_reply",
+            "open_or_no_reply",
             "no_reply",
             "blocked",
             "reachable",
             "closed",
-            "open_or_no_reply",
             "open"
           ]
         },

@@ -150,13 +150,30 @@ impl Protocol {
 /// ordinary comparison and two probes that disagree resolve to whichever learned
 /// more.
 ///
-/// The ordering ranks evidence, not how alarming a state is. `Open` outranks
-/// `Closed` because a SYN+ACK settles the question where a RST does not always:
-/// a stack that resets every segment it did not expect answers a flag probe
-/// to an open port with one too.
-/// `Blocked` outranks `NoReply`, since a refusal that arrived is more than a
-/// question nobody answered. `Unasked` is beneath all of them because it is
-/// the absence of evidence rather than a weak grade of it.
+/// The ordering ranks evidence, not how alarming a state is, in three tiers.
+///
+/// - **`Unasked`** is beneath everything, because it is the absence of
+///   evidence rather than a weak grade of it.
+/// - **The silences** come next: `ClosedOrNoReply`, `OpenOrNoReply`,
+///   `NoReply`. Each is drawn from nothing arriving, so any packet outranks
+///   all of them, whichever probe drew it. Among them the one that admits
+///   fewer readings ranks higher: a SYN every live stack answers, drawing
+///   nothing, is narrower than a FIN an open port may ignore. An idle scan's
+///   `ClosedOrNoReply` is lowest, read off a third party's counter rather
+///   than anything the target sent.
+/// - **The packets**: `Blocked` (a refusal from the host or the path), then
+///   `Reachable` and `Closed` (the host's own stack), then `Open`. `Open`
+///   outranks `Closed` because a SYN+ACK settles the question where a RST does
+///   not always: a stack that resets every segment it did not expect answers
+///   a flag probe to an open port with one too.
+///
+/// Merging keeps the higher state rather than intersecting what the two
+/// readings allow, because a silence is a statement about the probe as much as
+/// the port. A filter may pass an ACK and drop a SYN, so a `Reachable` from
+/// one probe and an `OpenOrNoReply` from another do not together establish
+/// `Open`, however neatly the sets intersect; and a silence that contradicts a
+/// packet is a probe that was dropped, not a port that changed. The ranking
+/// keeps the packet and never manufactures a verdict no single probe drew.
 ///
 /// The names follow one rule: a cause is named only where a packet showed it.
 /// [`Blocked`](Self::Blocked) is a refusal somebody sent. Silence is named as
@@ -201,6 +218,11 @@ pub enum PortState {
     /// port whose probes never arrived both leave the zombie's counter alone.
     ClosedOrNoReply,
 
+    /// Open, or no reply. The honest verdict for a probe whose positive result
+    /// *is* silence: a bare FIN that an open port is required to ignore, or a
+    /// UDP payload no service recognised.
+    OpenOrNoReply,
+
     /// Asked on every attempt the retry schedule allows, and nothing came back.
     ///
     /// The lowest state a scan will record from silence alone, and only for the
@@ -229,11 +251,6 @@ pub enum PortState {
 
     /// Nothing is listening. A RST answering a SYN says so outright.
     Closed,
-
-    /// Open, or no reply. The honest verdict for a probe whose positive result
-    /// *is* silence: a bare FIN that an open port is required to ignore, or a
-    /// UDP payload no service recognised.
-    OpenOrNoReply,
 
     /// Something is listening and accepted the connection attempt. Only a SYN
     /// draws the SYN+ACK that establishes this.
@@ -266,11 +283,11 @@ impl PortState {
     pub const ALL: &'static [Self] = &[
         Self::Unasked,
         Self::ClosedOrNoReply,
+        Self::OpenOrNoReply,
         Self::NoReply,
         Self::Blocked,
         Self::Reachable,
         Self::Closed,
-        Self::OpenOrNoReply,
         Self::Open,
     ];
 }
@@ -596,6 +613,54 @@ mod tests {
         let mut silent = Port::new(80, Protocol::Tcp, PortState::NoReply);
         silent.merge(Port::new(80, Protocol::Tcp, PortState::Blocked));
         assert_eq!(silent.state(), PortState::Blocked);
+    }
+
+    /// A packet outranks a silence, whichever probe drew which.
+    ///
+    /// The flag probes and UDP read silence as open or no reply, and a merge
+    /// that let that silence outrank a packet would unlearn one. A FIN scan's
+    /// silence folded over a SYN scan's reset would report "maybe open" about a
+    /// port a stack said is closed; a later UDP scan's silence over an earlier
+    /// port unreachable would undo the one closed verdict UDP ever gets, which
+    /// is exactly what a host rationing its ICMP errors produces.
+    #[test]
+    fn a_silence_never_outranks_a_packet() {
+        let silences = [
+            PortState::ClosedOrNoReply,
+            PortState::OpenOrNoReply,
+            PortState::NoReply,
+        ];
+        let packets = [
+            PortState::Blocked,
+            PortState::Reachable,
+            PortState::Closed,
+            PortState::Open,
+        ];
+        for silence in silences {
+            for packet in packets {
+                assert!(silence < packet, "{silence:?} outranks {packet:?}");
+
+                let mut first = Port::new(80, Protocol::Tcp, silence);
+                first.merge(Port::new(80, Protocol::Tcp, packet));
+                assert_eq!(first.state(), packet, "{packet:?} over {silence:?}");
+
+                let mut first = Port::new(80, Protocol::Tcp, packet);
+                first.merge(Port::new(80, Protocol::Tcp, silence));
+                assert_eq!(first.state(), packet, "{silence:?} over {packet:?}");
+            }
+        }
+    }
+
+    /// Among silences, the one that admits fewer readings wins.
+    ///
+    /// A SYN every live stack answers, drawing nothing, says no stack took it.
+    /// A FIN drawing nothing says the same or an open port that ignored it, so
+    /// the SYN's silence is the narrower reading of the same port and is kept.
+    #[test]
+    fn a_syn_silence_narrows_a_flag_probe_silence() {
+        let mut port = Port::new(80, Protocol::Tcp, PortState::OpenOrNoReply);
+        port.merge(Port::new(80, Protocol::Tcp, PortState::NoReply));
+        assert_eq!(port.state(), PortState::NoReply);
     }
 
     /// Telemetry explains a verdict, so a probe that did not improve the
