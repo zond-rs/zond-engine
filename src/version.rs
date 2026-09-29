@@ -228,7 +228,6 @@ fn component_cmp(a: &str, b: &str) -> Ordering {
 /// the colon is then read as part of the upstream version; dpkg would refuse
 /// such a string, and reading it this way keeps the order total on anything a
 /// feed publishes.
-#[allow(dead_code)]
 pub(crate) fn dpkg_cmp(a: &str, b: &str) -> Ordering {
     let (a_epoch, a_upstream, a_revision) = dpkg_parts(a);
     let (b_epoch, b_upstream, b_revision) = dpkg_parts(b);
@@ -236,6 +235,12 @@ pub(crate) fn dpkg_cmp(a: &str, b: &str) -> Ordering {
     digit_run_cmp(a_epoch, b_epoch)
         .then_with(|| dpkg_part_cmp(a_upstream, b_upstream))
         .then_with(|| dpkg_part_cmp(a_revision, b_revision))
+}
+
+/// A package version's revision, what follows its last hyphen, or `0` where
+/// it has none, as deb-version(7) reads a version without one.
+pub(crate) fn dpkg_revision(version: &str) -> &str {
+    dpkg_parts(version).2
 }
 
 /// Splits a package version into its epoch, upstream version and revision,
@@ -552,6 +557,10 @@ mod tests {
         assert_dpkg_ascending(&["1.2-3-1", "1.2-3-2", "1.2-4-1"]);
         // The upstream part `1.2-3` sorts after `1.2`, whatever the revisions.
         assert_dpkg_ascending(&["1.2-9", "1.2-3-1"]);
+
+        assert_eq!(dpkg_revision("1:6.6p1-2ubuntu2.13"), "2ubuntu2.13");
+        assert_eq!(dpkg_revision("1.2-3-1"), "1");
+        assert_eq!(dpkg_revision("1:1.2"), "0");
     }
 
     /// The version strings a Red Hat build carries have the same shape and

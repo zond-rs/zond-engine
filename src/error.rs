@@ -53,7 +53,7 @@
 
 use crate::config::envelope::UnknownDetectionEnvelope;
 use crate::config::{UnknownOsDetection, UnknownScanEffort, UnknownServiceDetection};
-use crate::cve::CatalogueError;
+use crate::cve::{AdvisoriesError, CatalogueError};
 use crate::detect::bundle::BundleError;
 use crate::detect::compute::{CapError, LoadError, ReplayError};
 use crate::detect::corpus::DetectionError;
@@ -451,6 +451,17 @@ impl Coded for CatalogueError {
             CatalogueError::ReservedId { .. } => "catalogue.reserved_id",
             CatalogueError::TooLarge { .. } => "catalogue.too_large",
             CatalogueError::UnreadableVersion { .. } => "catalogue.unreadable_version",
+        }
+    }
+}
+
+impl Coded for AdvisoriesError {
+    fn code(&self) -> &'static str {
+        match self {
+            AdvisoriesError::NotAdvisories => "advisories.not_advisories",
+            AdvisoriesError::UnsupportedFormat { .. } => "advisories.unsupported_format",
+            AdvisoriesError::TooLarge { .. } => "advisories.too_large",
+            AdvisoriesError::Malformed(_) => "advisories.malformed",
         }
     }
 }
@@ -910,6 +921,10 @@ mod tests {
             "address.malformed",
             "address.unknown_interface",
             "address.zone_on_unscoped_target",
+            "advisories.malformed",
+            "advisories.not_advisories",
+            "advisories.too_large",
+            "advisories.unsupported_format",
             "bundle.altered",
             "bundle.duplicate",
             "bundle.manifest",

@@ -426,6 +426,28 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::ZondConfig
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::ZondConfig
 pub const zond_engine::config::RAW_PRINT_PORTS: &[u16]
 pub mod zond_engine::cve
+#[non_exhaustive] pub enum zond_engine::cve::AdvisoriesError
+pub zond_engine::cve::AdvisoriesError::Malformed(alloc::string::String)
+pub zond_engine::cve::AdvisoriesError::NotAdvisories
+pub zond_engine::cve::AdvisoriesError::TooLarge
+pub zond_engine::cve::AdvisoriesError::TooLarge::limit: u64
+pub zond_engine::cve::AdvisoriesError::UnsupportedFormat
+pub zond_engine::cve::AdvisoriesError::UnsupportedFormat::found: u16
+pub zond_engine::cve::AdvisoriesError::UnsupportedFormat::supported: u16
+impl core::error::Error for zond_engine::cve::AdvisoriesError
+impl core::fmt::Debug for zond_engine::cve::AdvisoriesError
+pub fn zond_engine::cve::AdvisoriesError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::cve::AdvisoriesError
+pub fn zond_engine::cve::AdvisoriesError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl zond_engine::error::Coded for zond_engine::cve::AdvisoriesError
+pub fn zond_engine::cve::AdvisoriesError::code(&self) -> &'static str
+impl core::marker::Freeze for zond_engine::cve::AdvisoriesError
+impl core::marker::Send for zond_engine::cve::AdvisoriesError
+impl core::marker::Sync for zond_engine::cve::AdvisoriesError
+impl core::marker::Unpin for zond_engine::cve::AdvisoriesError
+impl core::marker::UnsafeUnpin for zond_engine::cve::AdvisoriesError
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::cve::AdvisoriesError
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::cve::AdvisoriesError
 #[non_exhaustive] pub enum zond_engine::cve::CatalogueError
 pub zond_engine::cve::CatalogueError::Io(core::io::error::Error)
 pub zond_engine::cve::CatalogueError::Malformed(alloc::string::String)
@@ -456,6 +478,27 @@ impl core::marker::Unpin for zond_engine::cve::CatalogueError
 impl core::marker::UnsafeUnpin for zond_engine::cve::CatalogueError
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::cve::CatalogueError
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::cve::CatalogueError
+pub struct zond_engine::cve::Advisories
+impl zond_engine::cve::Advisories
+pub fn zond_engine::cve::Advisories::content_hash(&self) -> &str
+pub fn zond_engine::cve::Advisories::distributor(&self) -> &str
+pub fn zond_engine::cve::Advisories::from_bytes(&[u8]) -> core::result::Result<Self, zond_engine::cve::AdvisoriesError>
+pub fn zond_engine::cve::Advisories::id(&self) -> &str
+pub fn zond_engine::cve::Advisories::is_empty(&self) -> bool
+pub fn zond_engine::cve::Advisories::len(&self) -> usize
+pub fn zond_engine::cve::Advisories::to_bytes(&self) -> alloc::vec::Vec<u8>
+pub fn zond_engine::cve::Advisories::version(&self) -> zond_engine::model::finding::Version
+impl core::clone::Clone for zond_engine::cve::Advisories
+pub fn zond_engine::cve::Advisories::clone(&self) -> zond_engine::cve::Advisories
+impl core::fmt::Debug for zond_engine::cve::Advisories
+pub fn zond_engine::cve::Advisories::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::cve::Advisories
+impl core::marker::Send for zond_engine::cve::Advisories
+impl core::marker::Sync for zond_engine::cve::Advisories
+impl core::marker::Unpin for zond_engine::cve::Advisories
+impl core::marker::UnsafeUnpin for zond_engine::cve::Advisories
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::cve::Advisories
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::cve::Advisories
 pub struct zond_engine::cve::Catalogue
 impl zond_engine::cve::Catalogue
 pub fn zond_engine::cve::Catalogue::content_hash(&self) -> &str
@@ -2642,6 +2685,8 @@ impl zond_engine::error::Coded for zond_engine::config::UnknownServiceDetection
 pub fn zond_engine::config::UnknownServiceDetection::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::config::envelope::UnknownDetectionEnvelope
 pub fn zond_engine::config::envelope::UnknownDetectionEnvelope::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::cve::AdvisoriesError
+pub fn zond_engine::cve::AdvisoriesError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::cve::CatalogueError
 pub fn zond_engine::cve::CatalogueError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::detect::bundle::BundleError
@@ -19111,6 +19156,8 @@ impl zond_engine::error::Coded for zond_engine::config::UnknownServiceDetection
 pub fn zond_engine::config::UnknownServiceDetection::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::config::envelope::UnknownDetectionEnvelope
 pub fn zond_engine::config::envelope::UnknownDetectionEnvelope::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::cve::AdvisoriesError
+pub fn zond_engine::cve::AdvisoriesError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::cve::CatalogueError
 pub fn zond_engine::cve::CatalogueError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::detect::bundle::BundleError

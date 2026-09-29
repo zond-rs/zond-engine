@@ -94,9 +94,11 @@ use crate::record::wire;
 use crate::report::ScanReport;
 use crate::version::version_cmp;
 
+pub(crate) mod advisories;
 mod applicability;
 mod packages;
 
+pub use advisories::{Advisories, AdvisoriesError};
 use applicability::Applies;
 
 /// The reserved identity the engine's built-in correlator stamps on every finding
