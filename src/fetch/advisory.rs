@@ -91,6 +91,124 @@ impl Feed {
     }
 }
 
+/// A distributor's advisory dataset, converted from its stored feeds.
+///
+/// What a scan consumes: a [`cve::Advisories`](crate::cve::Advisories), which
+/// the correlator reads to judge a distribution's build. Converting one takes
+/// a minute and a hundred megabytes for Ubuntu's archives, so it is done once
+/// per change of feed, beside the feeds in the [`Store`](super::Store), and a
+/// scan reads the converted copy.
+#[cfg(feature = "import-distro")]
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Dataset {
+    /// Ubuntu's, from its OSV and VEX archives.
+    Ubuntu,
+    /// Debian's, from its security tracker.
+    Debian,
+}
+
+#[cfg(feature = "import-distro")]
+impl Dataset {
+    /// Every dataset, in the order an update converts them.
+    pub const ALL: &'static [Dataset] = &[Dataset::Ubuntu, Dataset::Debian];
+
+    /// The stored feeds it is made from, and the name it is kept under.
+    ///
+    /// Versioned by this engine's own version, so a copy made by another
+    /// build of the converter, or one reading another byte format, is never
+    /// taken for current: every release reconverts once, from the feeds
+    /// already stored.
+    pub fn derived(self) -> super::Derived {
+        let (id, feeds): (&str, &[Feed]) = match self {
+            Dataset::Ubuntu => ("advisories/ubuntu", &[Feed::UbuntuOsv, Feed::UbuntuVex]),
+            Dataset::Debian => ("advisories/debian", &[Feed::DebianTracker]),
+        };
+        super::Derived::new(
+            id,
+            concat!("zond-engine ", env!("CARGO_PKG_VERSION")),
+            feeds.iter().map(|feed| feed.resource()).collect(),
+        )
+        .expect("the built-in datasets are valid")
+    }
+
+    /// Converts the stored feeds into the dataset and keeps it in `store`,
+    /// unless the copy there was already made from these feeds by this build.
+    ///
+    /// Blocks, for as long as the conversion takes, so an async caller runs
+    /// it with `spawn_blocking`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::derive`](super::Store::derive): a feed never fetched, a
+    /// feed that would not convert, or a store that could not be written.
+    pub fn convert(
+        self,
+        store: &super::Store,
+    ) -> Result<super::Derivation, super::DeriveError<crate::import::ImportError>> {
+        store.derive(&self.derived(), |sources| {
+            let mut files = sources
+                .into_iter()
+                .map(|stored| std::io::BufReader::new(stored.into_file()));
+            let mut next = || files.next().expect("one file per declared feed");
+            let advisories = match self {
+                Dataset::Ubuntu => {
+                    let (mut osv, mut vex) = (next(), next());
+                    crate::import::ubuntu::read(&mut osv, &mut vex)?
+                }
+                Dataset::Debian => crate::import::debian::read(&mut next())?,
+            };
+            Ok(advisories.to_bytes())
+        })
+    }
+
+    /// The converted dataset `store` holds, with whether it is current, or
+    /// [`None`] where none has been made or the copy is not one this build
+    /// can read.
+    ///
+    /// A copy that is not current, because a feed changed after it was made,
+    /// is still returned: it is what the last conversion concluded, and a
+    /// scan is better judged against it than against nothing. The caller
+    /// says so.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::Storage`](super::FetchError::Storage) where a copy is
+    /// there and cannot be read.
+    pub fn load(self, store: &super::Store) -> Result<Option<Loaded>, super::FetchError> {
+        let Some(copy) = store.open_derived(&self.derived())? else {
+            return Ok(None);
+        };
+        let current = copy.is_current();
+        let metadata = copy.metadata().clone();
+        let path = copy.path().to_path_buf();
+        let bytes = copy
+            .read()
+            .map_err(|source| super::FetchError::Storage { path, source })?;
+        Ok(crate::cve::Advisories::from_bytes(&bytes)
+            .ok()
+            .map(|advisories| Loaded {
+                advisories,
+                current,
+                metadata,
+            }))
+    }
+}
+
+/// A converted dataset as a store held it.
+#[cfg(feature = "import-distro")]
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct Loaded {
+    /// The dataset.
+    pub advisories: crate::cve::Advisories,
+    /// Whether it was made from the feeds stored now.
+    pub current: bool,
+    /// How and when it was made, and from which copies of which feeds: the
+    /// oldest of those copies' fetch times is how old the data is.
+    pub metadata: super::DerivedMetadata,
+}
+
 /// A mebibyte, which the ceilings above are counted in.
 const MIB: u64 = 1024 * 1024;
 
@@ -126,5 +244,61 @@ mod tests {
         )
         .unwrap();
         assert_eq!(Feed::of(&other), None);
+    }
+
+    /// The feeds as stored convert into the datasets a scan loads, and a
+    /// second conversion from the same copies does no work: an update calls
+    /// it after every fetch, and Ubuntu's takes a minute.
+    #[cfg(feature = "import-distro")]
+    #[test]
+    fn stored_feeds_convert_once_into_the_datasets_a_scan_loads() {
+        use super::super::store::testing::put;
+        use super::super::{Derivation, Store};
+
+        let root = std::env::temp_dir().join(format!("zond-datasets-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = Store::new(&root);
+        put(
+            &store,
+            &Feed::UbuntuOsv.resource(),
+            include_bytes!("../../tests/data/distro/ubuntu-osv.tar.xz"),
+        );
+        put(
+            &store,
+            &Feed::UbuntuVex.resource(),
+            include_bytes!("../../tests/data/distro/ubuntu-vex.tar.xz"),
+        );
+        put(
+            &store,
+            &Feed::DebianTracker.resource(),
+            include_bytes!("../../tests/data/distro/debian-tracker.json"),
+        );
+
+        for dataset in Dataset::ALL {
+            assert!(
+                matches!(dataset.convert(&store), Ok(Derivation::Built(_))),
+                "{dataset:?}"
+            );
+            assert!(
+                matches!(dataset.convert(&store), Ok(Derivation::Current(_))),
+                "{dataset:?} converted twice from the same feeds"
+            );
+            let loaded = dataset
+                .load(&store)
+                .expect("the store reads")
+                .expect("a dataset was made");
+            assert!(loaded.current);
+            assert!(!loaded.advisories.is_empty(), "{dataset:?}");
+        }
+        assert_eq!(
+            Dataset::Ubuntu
+                .load(&store)
+                .unwrap()
+                .unwrap()
+                .advisories
+                .distributor(),
+            "ubuntu"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

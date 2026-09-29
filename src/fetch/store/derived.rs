@@ -500,7 +500,6 @@ fn decode(text: &str) -> Result<DerivedMetadata, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::Verified;
     use super::*;
     use crate::fetch::Verify;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -540,23 +539,7 @@ mod tests {
         .unwrap()
     }
 
-    /// Stores `bytes` as `resource`'s copy, as a fetch would.
-    fn put(store: &Store, resource: &Resource, bytes: &[u8]) {
-        let update = store.lock_for_update(resource).unwrap();
-        let (mut file, _) = update.stage().unwrap();
-        file.write_all(bytes).unwrap();
-        let sha256 = ring::digest::digest(&ring::digest::SHA256, bytes)
-            .as_ref()
-            .try_into()
-            .unwrap();
-        let metadata = Metadata::new(
-            resource.url().to_string(),
-            bytes.len() as u64,
-            sha256,
-            Verified::Transport,
-        );
-        update.commit(&metadata, None).unwrap();
-    }
+    use super::super::testing::put;
 
     /// The conversion these tests run: the sources joined, upper-cased, and
     /// counted so a test can tell whether it ran.

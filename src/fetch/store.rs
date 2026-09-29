@@ -697,6 +697,33 @@ fn rename(from: &Path, to: &Path) -> io::Result<()> {
     destination.beside(name)?.rename_over(&destination)
 }
 
+/// Filling a store without a network, for tests anywhere in the crate.
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::io::Write as _;
+
+    use super::{Metadata, Store, Verified};
+    use crate::fetch::Resource;
+
+    /// Stores `bytes` as `resource`'s copy, as a fetch would.
+    pub(crate) fn put(store: &Store, resource: &Resource, bytes: &[u8]) {
+        let update = store.lock_for_update(resource).unwrap();
+        let (mut file, _) = update.stage().unwrap();
+        file.write_all(bytes).unwrap();
+        let sha256 = ring::digest::digest(&ring::digest::SHA256, bytes)
+            .as_ref()
+            .try_into()
+            .unwrap();
+        let metadata = Metadata::new(
+            resource.url().to_string(),
+            bytes.len() as u64,
+            sha256,
+            Verified::Transport,
+        );
+        update.commit(&metadata, None).unwrap();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

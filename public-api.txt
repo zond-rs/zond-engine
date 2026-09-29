@@ -4577,6 +4577,32 @@ pub fn zond_engine::export::nmap::NmapXmlExporter::export(&self, &zond_engine::r
 pub fn zond_engine::export::export_to(&std::path::Path, &zond_engine::report::ScanReport, &mut dyn core::io::write::Write, zond_engine::export::ExportOptions) -> core::option::Option<core::result::Result<(), zond_engine::export::ExportError>>
 pub mod zond_engine::fetch
 pub mod zond_engine::fetch::advisory
+#[non_exhaustive] pub enum zond_engine::fetch::advisory::Dataset
+pub zond_engine::fetch::advisory::Dataset::Debian
+pub zond_engine::fetch::advisory::Dataset::Ubuntu
+impl zond_engine::fetch::advisory::Dataset
+pub const zond_engine::fetch::advisory::Dataset::ALL: &'static [zond_engine::fetch::advisory::Dataset]
+pub fn zond_engine::fetch::advisory::Dataset::convert(self, &zond_engine::fetch::Store) -> core::result::Result<zond_engine::fetch::Derivation, zond_engine::fetch::DeriveError<zond_engine::import::ImportError>>
+pub fn zond_engine::fetch::advisory::Dataset::derived(self) -> zond_engine::fetch::Derived
+pub fn zond_engine::fetch::advisory::Dataset::load(self, &zond_engine::fetch::Store) -> core::result::Result<core::option::Option<zond_engine::fetch::advisory::Loaded>, zond_engine::fetch::FetchError>
+impl core::clone::Clone for zond_engine::fetch::advisory::Dataset
+pub fn zond_engine::fetch::advisory::Dataset::clone(&self) -> zond_engine::fetch::advisory::Dataset
+impl core::cmp::Eq for zond_engine::fetch::advisory::Dataset
+impl core::cmp::PartialEq for zond_engine::fetch::advisory::Dataset
+pub fn zond_engine::fetch::advisory::Dataset::eq(&self, &zond_engine::fetch::advisory::Dataset) -> bool
+impl core::fmt::Debug for zond_engine::fetch::advisory::Dataset
+pub fn zond_engine::fetch::advisory::Dataset::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::fetch::advisory::Dataset
+pub fn zond_engine::fetch::advisory::Dataset::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::fetch::advisory::Dataset
+impl core::marker::StructuralPartialEq for zond_engine::fetch::advisory::Dataset
+impl core::marker::Freeze for zond_engine::fetch::advisory::Dataset
+impl core::marker::Send for zond_engine::fetch::advisory::Dataset
+impl core::marker::Sync for zond_engine::fetch::advisory::Dataset
+impl core::marker::Unpin for zond_engine::fetch::advisory::Dataset
+impl core::marker::UnsafeUnpin for zond_engine::fetch::advisory::Dataset
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::advisory::Dataset
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::advisory::Dataset
 #[non_exhaustive] pub enum zond_engine::fetch::advisory::Feed
 pub zond_engine::fetch::advisory::Feed::DebianTracker
 pub zond_engine::fetch::advisory::Feed::UbuntuOsv
@@ -4604,6 +4630,21 @@ impl core::marker::Unpin for zond_engine::fetch::advisory::Feed
 impl core::marker::UnsafeUnpin for zond_engine::fetch::advisory::Feed
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::advisory::Feed
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::advisory::Feed
+#[non_exhaustive] pub struct zond_engine::fetch::advisory::Loaded
+pub zond_engine::fetch::advisory::Loaded::advisories: zond_engine::cve::Advisories
+pub zond_engine::fetch::advisory::Loaded::current: bool
+pub zond_engine::fetch::advisory::Loaded::metadata: zond_engine::fetch::DerivedMetadata
+impl core::clone::Clone for zond_engine::fetch::advisory::Loaded
+pub fn zond_engine::fetch::advisory::Loaded::clone(&self) -> zond_engine::fetch::advisory::Loaded
+impl core::fmt::Debug for zond_engine::fetch::advisory::Loaded
+pub fn zond_engine::fetch::advisory::Loaded::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::fetch::advisory::Loaded
+impl core::marker::Send for zond_engine::fetch::advisory::Loaded
+impl core::marker::Sync for zond_engine::fetch::advisory::Loaded
+impl core::marker::Unpin for zond_engine::fetch::advisory::Loaded
+impl core::marker::UnsafeUnpin for zond_engine::fetch::advisory::Loaded
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::advisory::Loaded
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::advisory::Loaded
 #[non_exhaustive] pub enum zond_engine::fetch::Derivation
 pub zond_engine::fetch::Derivation::Built(zond_engine::fetch::DerivedMetadata)
 pub zond_engine::fetch::Derivation::Current(zond_engine::fetch::DerivedMetadata)
