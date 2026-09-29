@@ -221,12 +221,9 @@ pub enum Unreachable {
     AdminProhibited,
     /// The host itself could not be reached, which says nothing about the port.
     ///
-    /// The two families genuinely disagree on what this means for a scan, and
-    /// the harness does not paper over it: v4's host-unreachable is an explicit
-    /// delivery failure and reads as the host down, while v6's
-    /// address-unreachable is deliberately left unclassified and leaves the
-    /// probe to time out. A test using this variant should expect the family's
-    /// own behaviour.
+    /// Sent as v4's host unreachable and v6's address unreachable, which both
+    /// families read the same way: an explicit delivery failure, so the host
+    /// is down and the probe is left to time out on its own schedule.
     Host,
 }
 

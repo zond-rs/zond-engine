@@ -659,6 +659,22 @@ async fn a_host_unreachable_error_is_a_verdict_on_the_host() {
     );
 }
 
+/// The same over IPv6, where the message is an address unreachable (RFC 4443
+/// code 3) rather than a host unreachable: the address is down and the port is
+/// left where silence leaves it.
+#[tokio::test]
+async fn an_address_unreachable_over_ipv6_is_a_verdict_on_the_host() {
+    let (session, _net) =
+        udp_scan(TARGET_V6, &[(123, Policy::unreachable(Unreachable::Host))]).await;
+
+    assert_eq!(host_status(&session, TARGET_V6), Some(HostStatus::Down));
+    assert_eq!(
+        port_state(&session, TARGET_V6, 123),
+        Some(PortState::OpenOrNoReply),
+        "the port was never reported on, so it ends where silence leaves it"
+    );
+}
+
 /// The same reasons over IPv6, which numbers them differently. Port-unreachable
 /// is code 3 on v4 and code 4 on v6; a scanner that compared raw code numbers
 /// across families would read one as the other and report the opposite answer.
