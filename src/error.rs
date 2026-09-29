@@ -61,7 +61,7 @@ use crate::detect::flow::ParseError as FlowParseError;
 use crate::evasion::EvasionError;
 use crate::export::ExportError;
 #[cfg(feature = "fetch")]
-use crate::fetch::{FetchError, InvalidResource, NetworkFailure, VerificationFailure};
+use crate::fetch::{DeriveError, FetchError, InvalidResource, NetworkFailure, VerificationFailure};
 use crate::fingerprint::os::{InvalidRule, RuleError};
 use crate::fingerprint::{DefinitionError, InvalidDefinition};
 use crate::import::ImportError;
@@ -350,11 +350,25 @@ impl Coded for VerificationFailure {
 }
 
 #[cfg(feature = "fetch")]
+impl<E: std::error::Error + 'static> Coded for DeriveError<E> {
+    fn code(&self) -> &'static str {
+        match self {
+            DeriveError::Store(store) => store.code(),
+            DeriveError::NotStored { .. } => "fetch.not_stored",
+            // The conversion's error is the caller's type, which this crate
+            // has no code for.
+            DeriveError::Convert(_) => "fetch.conversion",
+        }
+    }
+}
+
+#[cfg(feature = "fetch")]
 impl Coded for InvalidResource {
     fn code(&self) -> &'static str {
         match self {
             InvalidResource::Id(_) => "fetch.invalid_id",
             InvalidResource::Url(_) => "fetch.invalid_url",
+            InvalidResource::NoSources(_) => "fetch.no_sources",
         }
     }
 }
@@ -985,6 +999,7 @@ mod tests {
             "export.render",
             "fetch.certificate",
             "fetch.connect",
+            "fetch.conversion",
             "fetch.digest_mismatch",
             "fetch.insecure",
             "fetch.interrupted",
@@ -992,6 +1007,8 @@ mod tests {
             "fetch.invalid_url",
             "fetch.network",
             "fetch.no_signature",
+            "fetch.no_sources",
+            "fetch.not_stored",
             "fetch.redirects",
             "fetch.setup",
             "fetch.status",

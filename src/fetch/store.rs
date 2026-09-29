@@ -42,6 +42,12 @@
 //! Both are advisory locks on the files' descriptors, released when the
 //! holder exits however it exits.
 //!
+//! ## Data made from fetched data
+//!
+//! What a caller makes out of stored resources, a converted dataset say, is
+//! kept in the same store by the same rules, under `derived/`; see
+//! [`Store::derive`].
+//!
 //! ## Under `sudo`
 //!
 //! What an elevated run creates in the invoking user's home is given back to
@@ -84,6 +90,15 @@ const MAX_METADATA_BYTES: u64 = 64 * 1024;
 /// The version of the metadata layout, so a later one can be told apart.
 const FORMAT: u32 = 1;
 
+/// The first segment every derived file's directory is under, which no
+/// resource id may start with, so a fetch and a derivation never share one;
+/// see [`derived`].
+pub(super) const DERIVED: &str = "derived";
+
+mod derived;
+
+pub use derived::{Derivation, DeriveError, Derived, DerivedCopy, DerivedMetadata, Source};
+
 /// A directory holding fetched resources, one subdirectory each.
 ///
 /// Naming a store touches nothing on disk. A store's directories are created
@@ -109,9 +124,12 @@ impl Store {
 
     /// The directory one resource is kept in.
     pub fn directory(&self, resource: &Resource) -> PathBuf {
-        resource
-            .id()
-            .split('/')
+        self.under(resource.id())
+    }
+
+    /// The directory an id names, one path component per segment.
+    fn under(&self, id: &str) -> PathBuf {
+        id.split('/')
             .fold(self.root.clone(), |path, segment| path.join(segment))
     }
 
@@ -128,32 +146,13 @@ impl Store {
     /// where the data does not have the size its metadata records.
     pub fn open(&self, resource: &Resource) -> Result<Option<Stored>, FetchError> {
         let directory = self.directory(resource);
-        let lock_path = directory.join(READ_LOCK);
-        let lock = match open(&lock_path, Access::Read) {
-            Ok(lock) => lock,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(storage(&lock_path, e)),
+        let Some(_lock) = read_locked(&directory)? else {
+            return Ok(None);
         };
-        lock.lock_shared().map_err(|e| storage(&lock_path, e))?;
-
         let Some(metadata) = read_metadata(&directory)? else {
             return Ok(None);
         };
-        let path = directory.join(DATA);
-        let file = open(&path, Access::Read).map_err(|e| storage(&path, e))?;
-        let size = file.metadata().map_err(|e| storage(&path, e))?.len();
-        if size != metadata.size {
-            return Err(storage(
-                &path,
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "holds {size} bytes, and its metadata records {}",
-                        metadata.size
-                    ),
-                ),
-            ));
-        }
+        let (path, file) = open_data(&directory, metadata.size)?;
         let signature = match metadata.verified {
             Verified::Transport => None,
             Verified::Ed25519(_) => Some(read_signature(&directory)?),
@@ -172,19 +171,65 @@ impl Store {
     /// Blocks while another update runs, so an async caller takes it off the
     /// runtime's workers.
     pub(super) fn lock_for_update(&self, resource: &Resource) -> Result<Update, FetchError> {
-        let directory = self.directory(resource);
-        let created =
-            ownership::create_missing(&directory, None).map_err(|e| storage(&directory, e))?;
-        ownership::hand_over(&directory, &created);
-
-        let lock_path = directory.join(UPDATE_LOCK);
-        let lock = open(&lock_path, Access::CreateOrOpen).map_err(|e| storage(&lock_path, e))?;
-        lock.lock().map_err(|e| storage(&lock_path, e))?;
-        Ok(Update {
-            directory,
-            _lock: lock,
-        })
+        lock_directory(self.directory(resource))
     }
+
+    /// What is known about the copy of `resource` stored now, without
+    /// opening its data; `None` when nothing is stored.
+    fn current_metadata(&self, resource: &Resource) -> Result<Option<Metadata>, FetchError> {
+        let directory = self.directory(resource);
+        let Some(_lock) = read_locked(&directory)? else {
+            return Ok(None);
+        };
+        read_metadata(&directory)
+    }
+}
+
+/// Takes the update lock of the entry at `directory`, creating it, and
+/// returns once no other update holds it. Blocks while another does.
+fn lock_directory(directory: PathBuf) -> Result<Update, FetchError> {
+    let created =
+        ownership::create_missing(&directory, None).map_err(|e| storage(&directory, e))?;
+    ownership::hand_over(&directory, &created);
+
+    let lock_path = directory.join(UPDATE_LOCK);
+    let lock = open(&lock_path, Access::CreateOrOpen).map_err(|e| storage(&lock_path, e))?;
+    lock.lock().map_err(|e| storage(&lock_path, e))?;
+    Ok(Update {
+        directory,
+        _lock: lock,
+    })
+}
+
+/// The read lock of the entry at `directory`, held shared; `None` where the
+/// entry has never been written.
+fn read_locked(directory: &Path) -> Result<Option<File>, FetchError> {
+    let path = directory.join(READ_LOCK);
+    let lock = match open(&path, Access::Read) {
+        Ok(lock) => lock,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(storage(&path, e)),
+    };
+    lock.lock_shared().map_err(|e| storage(&path, e))?;
+    Ok(Some(lock))
+}
+
+/// The data of the entry at `directory`, opened, refused unless it is the
+/// `size` its metadata records.
+fn open_data(directory: &Path, size: u64) -> Result<(PathBuf, File), FetchError> {
+    let path = directory.join(DATA);
+    let file = open(&path, Access::Read).map_err(|e| storage(&path, e))?;
+    let held = file.metadata().map_err(|e| storage(&path, e))?.len();
+    if held != size {
+        return Err(storage(
+            &path,
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("holds {held} bytes, and its metadata records {size}"),
+            ),
+        ));
+    }
+    Ok((path, file))
 }
 
 /// A stored copy of a resource, open for reading.
@@ -355,11 +400,17 @@ impl Update {
         metadata: &Metadata,
         signature: Option<&[u8]>,
     ) -> Result<(), FetchError> {
+        self.replace(&encode(metadata), signature)
+    }
+
+    /// [`commit`](Self::commit) with the metadata already written out, for
+    /// whatever kind of entry this update is of.
+    fn replace(&self, metadata: &str, signature: Option<&[u8]>) -> Result<(), FetchError> {
         let signature_path = self.directory.join(SIGNATURE);
         let staged_signature = signature
             .map(|document| self.stage_file(SIGNATURE_PARTIAL, document))
             .transpose()?;
-        let staged = self.stage_metadata(metadata)?;
+        let staged = self.stage_file(METADATA_PARTIAL, metadata.as_bytes())?;
         self.swapping(|| {
             let data = self.directory.join(DATA);
             let metadata_path = self.directory.join(METADATA);
@@ -380,14 +431,9 @@ impl Update {
     /// Rewrites the metadata of the copy already stored, which the server has
     /// just confirmed is current.
     pub(super) fn confirm(&self, metadata: &Metadata) -> Result<(), FetchError> {
-        let staged = self.stage_metadata(metadata)?;
+        let staged = self.stage_file(METADATA_PARTIAL, encode(metadata).as_bytes())?;
         let destination = self.directory.join(METADATA);
         self.swapping(|| rename(&staged, &destination).map_err(|e| storage(&destination, e)))
-    }
-
-    /// Writes `metadata` beside the file it will replace.
-    fn stage_metadata(&self, metadata: &Metadata) -> Result<PathBuf, FetchError> {
-        self.stage_file(METADATA_PARTIAL, encode(metadata).as_bytes())
     }
 
     /// Writes `contents` to `name` in the resource's directory, on disk
@@ -441,6 +487,15 @@ fn read_signature(directory: &Path) -> Result<Signature, FetchError> {
 
 /// The metadata stored in `directory`, or `None` where there is none.
 fn read_metadata(directory: &Path) -> Result<Option<Metadata>, FetchError> {
+    read_metadata_as(directory, decode)
+}
+
+/// The metadata stored in `directory`, read by `decode`, or `None` where
+/// there is none.
+fn read_metadata_as<M>(
+    directory: &Path,
+    decode: impl FnOnce(&str) -> Result<M, String>,
+) -> Result<Option<M>, FetchError> {
     let path = directory.join(METADATA);
     let file = match open(&path, Access::Read) {
         Ok(file) => file,

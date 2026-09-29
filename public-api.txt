@@ -2791,6 +2791,8 @@ impl zond_engine::error::Coded for zond_engine::transport::probe::TransportError
 pub fn zond_engine::transport::probe::TransportError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::transport::probe::UnknownSendMode
 pub fn zond_engine::transport::probe::UnknownSendMode::code(&self) -> &'static str
+impl<E: core::error::Error + 'static> zond_engine::error::Coded for zond_engine::fetch::DeriveError<E>
+pub fn zond_engine::fetch::DeriveError<E>::code(&self) -> &'static str
 pub mod zond_engine::evasion
 #[non_exhaustive] pub enum zond_engine::evasion::EvasionError
 pub zond_engine::evasion::EvasionError::FragmentTooSmall
@@ -4582,6 +4584,48 @@ impl core::marker::Unpin for zond_engine::fetch::advisory::Feed
 impl core::marker::UnsafeUnpin for zond_engine::fetch::advisory::Feed
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::advisory::Feed
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::advisory::Feed
+#[non_exhaustive] pub enum zond_engine::fetch::Derivation
+pub zond_engine::fetch::Derivation::Built(zond_engine::fetch::DerivedMetadata)
+pub zond_engine::fetch::Derivation::Current(zond_engine::fetch::DerivedMetadata)
+impl zond_engine::fetch::Derivation
+pub fn zond_engine::fetch::Derivation::metadata(&self) -> &zond_engine::fetch::DerivedMetadata
+impl core::clone::Clone for zond_engine::fetch::Derivation
+pub fn zond_engine::fetch::Derivation::clone(&self) -> zond_engine::fetch::Derivation
+impl core::cmp::Eq for zond_engine::fetch::Derivation
+impl core::cmp::PartialEq for zond_engine::fetch::Derivation
+pub fn zond_engine::fetch::Derivation::eq(&self, &zond_engine::fetch::Derivation) -> bool
+impl core::fmt::Debug for zond_engine::fetch::Derivation
+pub fn zond_engine::fetch::Derivation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::fetch::Derivation
+impl core::marker::Freeze for zond_engine::fetch::Derivation
+impl core::marker::Send for zond_engine::fetch::Derivation
+impl core::marker::Sync for zond_engine::fetch::Derivation
+impl core::marker::Unpin for zond_engine::fetch::Derivation
+impl core::marker::UnsafeUnpin for zond_engine::fetch::Derivation
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::Derivation
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::Derivation
+#[non_exhaustive] pub enum zond_engine::fetch::DeriveError<E: core::error::Error + 'static>
+pub zond_engine::fetch::DeriveError::Convert(E)
+pub zond_engine::fetch::DeriveError::NotStored
+pub zond_engine::fetch::DeriveError::NotStored::id: alloc::string::String
+pub zond_engine::fetch::DeriveError::Store(zond_engine::fetch::FetchError)
+impl<E: core::error::Error + 'static> core::convert::From<zond_engine::fetch::FetchError> for zond_engine::fetch::DeriveError<E>
+pub fn zond_engine::fetch::DeriveError<E>::from(zond_engine::fetch::FetchError) -> Self
+impl<E: core::error::Error + 'static> zond_engine::error::Coded for zond_engine::fetch::DeriveError<E>
+pub fn zond_engine::fetch::DeriveError<E>::code(&self) -> &'static str
+impl<E: core::fmt::Debug + core::error::Error + 'static> core::fmt::Debug for zond_engine::fetch::DeriveError<E>
+pub fn zond_engine::fetch::DeriveError<E>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E> core::error::Error for zond_engine::fetch::DeriveError<E> where E: core::error::Error + 'static + core::error::Error, Self: core::fmt::Debug + core::fmt::Display
+pub fn zond_engine::fetch::DeriveError<E>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl<E> core::fmt::Display for zond_engine::fetch::DeriveError<E> where E: core::fmt::Display + core::error::Error + 'static
+pub fn zond_engine::fetch::DeriveError<E>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E> core::marker::Freeze for zond_engine::fetch::DeriveError<E> where E: core::marker::Freeze
+impl<E> core::marker::Send for zond_engine::fetch::DeriveError<E> where E: core::marker::Send
+impl<E> core::marker::Sync for zond_engine::fetch::DeriveError<E> where E: core::marker::Sync
+impl<E> core::marker::Unpin for zond_engine::fetch::DeriveError<E> where E: core::marker::Unpin
+impl<E> core::marker::UnsafeUnpin for zond_engine::fetch::DeriveError<E> where E: core::marker::UnsafeUnpin
+impl<E> !core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::DeriveError<E>
+impl<E> !core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::DeriveError<E>
 #[non_exhaustive] pub enum zond_engine::fetch::FetchError
 pub zond_engine::fetch::FetchError::Insecure
 pub zond_engine::fetch::FetchError::Network
@@ -4604,6 +4648,8 @@ impl core::fmt::Display for zond_engine::fetch::FetchError
 pub fn zond_engine::fetch::FetchError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl zond_engine::error::Coded for zond_engine::fetch::FetchError
 pub fn zond_engine::fetch::FetchError::code(&self) -> &'static str
+impl<E: core::error::Error + 'static> core::convert::From<zond_engine::fetch::FetchError> for zond_engine::fetch::DeriveError<E>
+pub fn zond_engine::fetch::DeriveError<E>::from(zond_engine::fetch::FetchError) -> Self
 impl core::marker::Freeze for zond_engine::fetch::FetchError
 impl core::marker::Send for zond_engine::fetch::FetchError
 impl core::marker::Sync for zond_engine::fetch::FetchError
@@ -4613,6 +4659,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::FetchError
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::FetchError
 #[non_exhaustive] pub enum zond_engine::fetch::InvalidResource
 pub zond_engine::fetch::InvalidResource::Id(alloc::string::String)
+pub zond_engine::fetch::InvalidResource::NoSources(alloc::string::String)
 pub zond_engine::fetch::InvalidResource::Url(alloc::string::String)
 impl core::clone::Clone for zond_engine::fetch::InvalidResource
 pub fn zond_engine::fetch::InvalidResource::clone(&self) -> zond_engine::fetch::InvalidResource
@@ -4738,6 +4785,64 @@ impl core::marker::Unpin for zond_engine::fetch::Client
 impl core::marker::UnsafeUnpin for zond_engine::fetch::Client
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::Client
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::Client
+pub struct zond_engine::fetch::Derived
+impl zond_engine::fetch::Derived
+pub fn zond_engine::fetch::Derived::id(&self) -> &str
+pub fn zond_engine::fetch::Derived::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<zond_engine::fetch::Resource>) -> core::result::Result<Self, zond_engine::fetch::InvalidResource>
+pub fn zond_engine::fetch::Derived::sources(&self) -> &[zond_engine::fetch::Resource]
+pub fn zond_engine::fetch::Derived::version(&self) -> &str
+impl core::clone::Clone for zond_engine::fetch::Derived
+pub fn zond_engine::fetch::Derived::clone(&self) -> zond_engine::fetch::Derived
+impl core::cmp::Eq for zond_engine::fetch::Derived
+impl core::cmp::PartialEq for zond_engine::fetch::Derived
+pub fn zond_engine::fetch::Derived::eq(&self, &zond_engine::fetch::Derived) -> bool
+impl core::fmt::Debug for zond_engine::fetch::Derived
+pub fn zond_engine::fetch::Derived::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::fetch::Derived
+impl core::marker::Freeze for zond_engine::fetch::Derived
+impl core::marker::Send for zond_engine::fetch::Derived
+impl core::marker::Sync for zond_engine::fetch::Derived
+impl core::marker::Unpin for zond_engine::fetch::Derived
+impl core::marker::UnsafeUnpin for zond_engine::fetch::Derived
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::Derived
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::Derived
+pub struct zond_engine::fetch::DerivedCopy
+impl zond_engine::fetch::DerivedCopy
+pub fn zond_engine::fetch::DerivedCopy::into_file(self) -> std::fs::File
+pub fn zond_engine::fetch::DerivedCopy::is_current(&self) -> bool
+pub fn zond_engine::fetch::DerivedCopy::metadata(&self) -> &zond_engine::fetch::DerivedMetadata
+pub fn zond_engine::fetch::DerivedCopy::path(&self) -> &std::path::Path
+pub fn zond_engine::fetch::DerivedCopy::read(self) -> core::io::error::Result<alloc::vec::Vec<u8>>
+impl core::fmt::Debug for zond_engine::fetch::DerivedCopy
+pub fn zond_engine::fetch::DerivedCopy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::fetch::DerivedCopy
+impl core::marker::Send for zond_engine::fetch::DerivedCopy
+impl core::marker::Sync for zond_engine::fetch::DerivedCopy
+impl core::marker::Unpin for zond_engine::fetch::DerivedCopy
+impl core::marker::UnsafeUnpin for zond_engine::fetch::DerivedCopy
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::DerivedCopy
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::DerivedCopy
+#[non_exhaustive] pub struct zond_engine::fetch::DerivedMetadata
+pub zond_engine::fetch::DerivedMetadata::derived_at: std::time::SystemTime
+pub zond_engine::fetch::DerivedMetadata::sha256: [u8; 32]
+pub zond_engine::fetch::DerivedMetadata::size: u64
+pub zond_engine::fetch::DerivedMetadata::sources: alloc::vec::Vec<zond_engine::fetch::Source>
+pub zond_engine::fetch::DerivedMetadata::version: alloc::string::String
+impl core::clone::Clone for zond_engine::fetch::DerivedMetadata
+pub fn zond_engine::fetch::DerivedMetadata::clone(&self) -> zond_engine::fetch::DerivedMetadata
+impl core::cmp::Eq for zond_engine::fetch::DerivedMetadata
+impl core::cmp::PartialEq for zond_engine::fetch::DerivedMetadata
+pub fn zond_engine::fetch::DerivedMetadata::eq(&self, &zond_engine::fetch::DerivedMetadata) -> bool
+impl core::fmt::Debug for zond_engine::fetch::DerivedMetadata
+pub fn zond_engine::fetch::DerivedMetadata::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::fetch::DerivedMetadata
+impl core::marker::Freeze for zond_engine::fetch::DerivedMetadata
+impl core::marker::Send for zond_engine::fetch::DerivedMetadata
+impl core::marker::Sync for zond_engine::fetch::DerivedMetadata
+impl core::marker::Unpin for zond_engine::fetch::DerivedMetadata
+impl core::marker::UnsafeUnpin for zond_engine::fetch::DerivedMetadata
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::DerivedMetadata
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::DerivedMetadata
 #[non_exhaustive] pub struct zond_engine::fetch::Metadata
 pub zond_engine::fetch::Metadata::checked_at: std::time::SystemTime
 pub zond_engine::fetch::Metadata::etag: core::option::Option<alloc::string::String>
@@ -4783,7 +4888,30 @@ impl core::marker::Unpin for zond_engine::fetch::Resource
 impl core::marker::UnsafeUnpin for zond_engine::fetch::Resource
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::Resource
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::Resource
+#[non_exhaustive] pub struct zond_engine::fetch::Source
+pub zond_engine::fetch::Source::fetched_at: std::time::SystemTime
+pub zond_engine::fetch::Source::id: alloc::string::String
+pub zond_engine::fetch::Source::sha256: [u8; 32]
+impl core::clone::Clone for zond_engine::fetch::Source
+pub fn zond_engine::fetch::Source::clone(&self) -> zond_engine::fetch::Source
+impl core::cmp::Eq for zond_engine::fetch::Source
+impl core::cmp::PartialEq for zond_engine::fetch::Source
+pub fn zond_engine::fetch::Source::eq(&self, &zond_engine::fetch::Source) -> bool
+impl core::fmt::Debug for zond_engine::fetch::Source
+pub fn zond_engine::fetch::Source::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::fetch::Source
+impl core::marker::Freeze for zond_engine::fetch::Source
+impl core::marker::Send for zond_engine::fetch::Source
+impl core::marker::Sync for zond_engine::fetch::Source
+impl core::marker::Unpin for zond_engine::fetch::Source
+impl core::marker::UnsafeUnpin for zond_engine::fetch::Source
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::Source
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::Source
 pub struct zond_engine::fetch::Store
+impl zond_engine::fetch::Store
+pub fn zond_engine::fetch::Store::derive<E: core::error::Error + 'static>(&self, &zond_engine::fetch::Derived, impl core::ops::function::FnOnce(alloc::vec::Vec<zond_engine::fetch::Stored>) -> core::result::Result<alloc::vec::Vec<u8>, E>) -> core::result::Result<zond_engine::fetch::Derivation, zond_engine::fetch::DeriveError<E>>
+pub fn zond_engine::fetch::Store::derived_directory(&self, &zond_engine::fetch::Derived) -> std::path::PathBuf
+pub fn zond_engine::fetch::Store::open_derived(&self, &zond_engine::fetch::Derived) -> core::result::Result<core::option::Option<zond_engine::fetch::DerivedCopy>, zond_engine::fetch::FetchError>
 impl zond_engine::fetch::Store
 pub fn zond_engine::fetch::Store::directory(&self, &zond_engine::fetch::Resource) -> std::path::PathBuf
 pub fn zond_engine::fetch::Store::new(impl core::convert::Into<std::path::PathBuf>) -> Self
@@ -19266,6 +19394,8 @@ impl zond_engine::error::Coded for zond_engine::transport::probe::TransportError
 pub fn zond_engine::transport::probe::TransportError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::transport::probe::UnknownSendMode
 pub fn zond_engine::transport::probe::UnknownSendMode::code(&self) -> &'static str
+impl<E: core::error::Error + 'static> zond_engine::error::Coded for zond_engine::fetch::DeriveError<E>
+pub fn zond_engine::fetch::DeriveError<E>::code(&self) -> &'static str
 pub async fn zond_engine::discover(zond_engine::model::ip::set::IpSet, &zond_engine::config::ZondConfig) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
 pub async fn zond_engine::discover_with_journal(zond_engine::model::ip::set::IpSet, &zond_engine::config::ZondConfig, zond_engine::journal::store::Journal) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>
 pub async fn zond_engine::listen(zond_engine::scanner::ListenScope, &zond_engine::config::ZondConfig) -> core::result::Result<(zond_engine::scanner::session::ScanSession, zond_engine::scanner::ScanTask), zond_engine::scanner::ScanError>

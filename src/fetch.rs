@@ -64,7 +64,9 @@ mod store;
 pub use client::{
     Client, DownloadProgress, FetchError, NetworkFailure, Outcome, VerificationFailure,
 };
-pub use store::{Metadata, Store, Stored};
+pub use store::{
+    Derivation, DeriveError, Derived, DerivedCopy, DerivedMetadata, Metadata, Source, Store, Stored,
+};
 
 /// Every resource the engine knows how to fetch.
 ///
@@ -130,7 +132,9 @@ impl Resource {
     /// releases, since a copy is found by it: one or more segments of lowercase
     /// letters, digits, `-`, `_` and `.`, joined by `/`, such as
     /// `advisories/ubuntu-osv`. A segment is never `.` or `..` and never
-    /// starts with a dot, so an id is always a path inside the store.
+    /// starts with a dot, so an id is always a path inside the store. The
+    /// first segment is never `derived`, which is where [`Derived`] data is
+    /// kept.
     ///
     /// # Errors
     ///
@@ -145,7 +149,9 @@ impl Resource {
     ) -> Result<Self, InvalidResource> {
         let id = id.into();
         let url = url.into();
-        if !is_valid_id(&id) {
+        // The first segment `derived` is where derived data is kept, so a
+        // resource there would share a directory with it.
+        if !is_valid_id(&id) || id.split('/').next() == Some(store::DERIVED) {
             return Err(InvalidResource::Id(id));
         }
         check_url(&url)?;
@@ -225,6 +231,10 @@ pub enum InvalidResource {
     /// A URL is not an absolute `http` or `https` URL.
     #[error("'{0}' is not an http or https URL")]
     Url(String),
+
+    /// Derived data was described with nothing to derive it from.
+    #[error("'{0}' is derived from nothing")]
+    NoSources(String),
 }
 
 /// Whether `id` is one or more safe segments joined by `/`.
@@ -293,6 +303,13 @@ mod tests {
             "c:",
         ] {
             assert!(!is_valid_id(bad), "{bad:?} was accepted");
+        }
+        // Where derived data is kept, which a fetch must never write into.
+        for reserved in ["derived", "derived/x"] {
+            assert_eq!(
+                Resource::new(reserved, "https://example.com/x", 1, Verify::Transport),
+                Err(InvalidResource::Id(reserved.into()))
+            );
         }
     }
 
