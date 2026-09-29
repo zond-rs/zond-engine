@@ -708,7 +708,7 @@ pub enum Due<K, P = ()> {
         attempt: u8,
     },
     /// The budget is spent and the probe is no longer outstanding. This is the
-    /// moment a verdict of "no reply" is earned rather than assumed.
+    /// moment a verdict of "no-reply" is earned rather than assumed.
     Exhausted {
         /// The probe being retired.
         key: K,

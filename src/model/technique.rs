@@ -246,7 +246,7 @@ impl SctpScanTechnique {
     /// How a port nothing answered for is described in an audit line.
     pub const fn silence_label(self) -> &'static str {
         match self {
-            Self::Init => "no reply",
+            Self::Init => "no-reply",
             Self::CookieEcho => "open|no-reply",
         }
     }
@@ -829,7 +829,7 @@ mod tests {
     /// produces, so a run's own summary cannot contradict its port table.
     #[test]
     fn the_silence_label_names_the_state_silence_produces() {
-        assert_eq!(SctpScanTechnique::Init.silence_label(), "no reply");
+        assert_eq!(SctpScanTechnique::Init.silence_label(), "no-reply");
         assert_eq!(
             SctpScanTechnique::CookieEcho.silence_label(),
             "open|no-reply"

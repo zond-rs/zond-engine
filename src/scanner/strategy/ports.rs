@@ -2177,7 +2177,7 @@ mod tests {
         core.finish(
             ScannerKind::SynPort,
             "syn-port",
-            "no reply",
+            "no-reply",
             PortState::NoReply,
             2,
             StopReason::AllResponded,
