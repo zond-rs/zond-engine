@@ -1434,3 +1434,16 @@ fn a_mysql_greeting_names_product_version_and_build_apart() {
         assert_eq!(found, build, "{version}");
     }
 }
+
+/// A banner read off the wire runs on past its line into the key exchange,
+/// which OpenSSH sends without waiting for the client. The release a rule
+/// maps the banner to has to survive that, since it is what places a
+/// distribution's build among its fix data.
+#[test]
+fn a_banner_followed_by_the_key_exchange_still_names_its_release() {
+    let banner = "SSH-2.0-OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13\r\n\u{0}\u{0}\u{6}l\n\u{14}\
+                  \u{d8}\u{c4}M\u{86}\"\u{82}curve25519-sha256@libssh.org,ecdh-sha2-nistp256";
+    let verdict = named(22, crate::model::port::Protocol::Tcp, banner);
+    let build = verdict.build.expect("the comment names a build");
+    assert_eq!(build.release().map(|release| release.name()), Some("14.04"));
+}

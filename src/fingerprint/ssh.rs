@@ -80,9 +80,17 @@ const SSH_PORTS: &[u16] = &[22, 2222];
 /// SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u10
 ///         └───────────── this ───────────┘
 /// ```
+///
+/// Only the identification line, which ends at its line break. A server does
+/// not wait for the client's line before sending its key exchange, and OpenSSH
+/// sends it at once, so a banner read off the wire commonly runs on into
+/// binary. Taken whole, the field would end in that binary, and every rule
+/// anchored at the end of the comment, which is every rule naming a release,
+/// would miss the banner it was written for.
 pub(crate) fn software_version(line: &str) -> Option<&str> {
     let (_protocol_version, software) = line
-        .trim_end_matches(['\r', '\n'])
+        .split(['\r', '\n'])
+        .next()?
         .strip_prefix("SSH-")?
         .split_once('-')?;
 
