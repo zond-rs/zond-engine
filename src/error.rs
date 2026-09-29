@@ -313,6 +313,7 @@ impl Coded for FetchError {
     fn code(&self) -> &'static str {
         match self {
             FetchError::Setup(_) => "fetch.setup",
+            FetchError::Cancelled => "fetch.cancelled",
             // One code per way the network failed, since a front end retries a
             // timeout and sends somebody to their trust store over a
             // certificate.
@@ -997,6 +998,7 @@ mod tests {
             "exchange.no_source",
             "export.io",
             "export.render",
+            "fetch.cancelled",
             "fetch.certificate",
             "fetch.connect",
             "fetch.conversion",

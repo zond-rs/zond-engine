@@ -357,13 +357,22 @@ fn validators(headers: &HeaderMap) -> (Option<String>, Option<String>) {
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, FetchError> + Send + 'static,
 ) -> Result<T, FetchError> {
-    match tokio::task::spawn_blocking(work).await {
+    joined(tokio::task::spawn_blocking(work).await)
+}
+
+/// What a task that ran blocking work hands back, as the fetch's own result.
+///
+/// A panic in the work is the work's, and carries on unwinding here. A task
+/// that never finished was cancelled, which for blocking work only happens as
+/// the runtime shuts down, and that is said as itself: the store was never
+/// reached, so it is not a storage failure.
+fn joined<T>(
+    result: Result<Result<T, FetchError>, tokio::task::JoinError>,
+) -> Result<T, FetchError> {
+    match result {
         Ok(result) => result,
         Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
-        Err(e) => Err(FetchError::Storage {
-            path: PathBuf::new(),
-            source: std::io::Error::other(e),
-        }),
+        Err(_) => Err(FetchError::Cancelled),
     }
 }
 
@@ -510,6 +519,11 @@ pub enum FetchError {
     /// The HTTP client could not be built.
     #[error("no HTTP client: {0}")]
     Setup(String),
+
+    /// The fetch was abandoned before it finished, because the runtime it ran
+    /// on is shutting down. The stored copy is as it was.
+    #[error("cancelled (shutting down)")]
+    Cancelled,
 
     /// The request failed below HTTP.
     #[error("{failure}")]
@@ -1065,6 +1079,27 @@ mod tests {
             Resource::new("test/feed", "http://127.0.0.1:9/feed", 1, Verify::Transport).unwrap();
         let refused = client.fetch(&resource, &store("plain"), ()).await;
         assert!(matches!(refused, Err(FetchError::Insecure)), "{refused:?}");
+    }
+
+    /// Blocking work whose task was cancelled, as a runtime shutting down
+    /// cancels it, is reported as cancelled rather than as a storage failure
+    /// at no path, which would send somebody looking at a disk that was never
+    /// touched.
+    #[tokio::test]
+    async fn a_cancelled_task_is_reported_as_cancelled() {
+        let task = tokio::spawn(std::future::pending::<Result<(), FetchError>>());
+        task.abort();
+        let cancelled = task.await;
+        assert!(
+            cancelled
+                .as_ref()
+                .is_err_and(tokio::task::JoinError::is_cancelled)
+        );
+        let reported = joined(cancelled);
+        assert!(
+            matches!(reported, Err(FetchError::Cancelled)),
+            "{reported:?}"
+        );
     }
 
     /// Redirects stay on HTTPS and stop after a handful.

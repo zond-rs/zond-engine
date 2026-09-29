@@ -4627,6 +4627,7 @@ impl<E> core::marker::UnsafeUnpin for zond_engine::fetch::DeriveError<E> where E
 impl<E> !core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::DeriveError<E>
 impl<E> !core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::DeriveError<E>
 #[non_exhaustive] pub enum zond_engine::fetch::FetchError
+pub zond_engine::fetch::FetchError::Cancelled
 pub zond_engine::fetch::FetchError::Insecure
 pub zond_engine::fetch::FetchError::Network
 pub zond_engine::fetch::FetchError::Network::failure: zond_engine::fetch::NetworkFailure
