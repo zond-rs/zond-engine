@@ -1060,7 +1060,7 @@ mod tests {
         // it wherever it matches: a client-side one would be withdrawn, and
         // the assertions below would be about the overlay rather than the
         // version.
-        const ROAMING: &str = r#"{
+        const KEYBOARD_INTERACTIVE: &str = r#"{
           "timestamp": "2026-09-08T00:00:00+00:00",
           "cve_items": [{
             "id": "CVE-2015-5600",
@@ -1074,7 +1074,7 @@ mod tests {
           }]
         }"#;
 
-        let document = to_document_for(&mut ROAMING.as_bytes(), &products(&["openbsd:openssh"]))
+        let document = to_document_for(&mut KEYBOARD_INTERACTIVE.as_bytes(), &products(&["openbsd:openssh"]))
             .expect("converts");
         assert!(document.contains(r#"affected = "== 6.6p1""#), "{document}");
         assert!(document.contains(r#"affected = "== 7.0""#), "{document}");
