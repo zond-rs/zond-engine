@@ -1659,12 +1659,55 @@ pub(super) fn run_correlation(ctx: &ScanContext, detection: ServiceDetection) {
     }
 
     let catalogue = crate::cve::Catalogue::embedded();
+    let correlator =
+        crate::cve::Correlator::new(catalogue).with_advisories(ctx.detections.advisories());
+    let mut withdrawn = crate::cve::Withdrawn::default();
     for key in ctx.hosts_owed_passes() {
         let judged = ctx
-            .read_host(&key, |host| crate::cve::judgements(host, catalogue))
+            .read_host(&key, |host| correlator.judgements(host))
             .unwrap_or_default();
+        for port in &judged {
+            if port.withdrawn.total() > 0 {
+                info!(
+                    verbosity = 2,
+                    "{key} {}/{}: {} CVEs n/a ({})",
+                    port.number,
+                    crate::record::wire::protocol_name(port.protocol),
+                    port.withdrawn.total(),
+                    withdrawn_reasons(&port.withdrawn)
+                );
+            }
+            withdrawn.add(port.withdrawn);
+        }
         record_correlations(ctx, key, catalogue.id(), judged);
     }
+
+    // Why the findings are fewer than the catalogue's match, once for the
+    // scan: a reader comparing against another tool's count wants to know,
+    // and the ports it came from are one level down.
+    if withdrawn.total() > 0 {
+        info!(
+            verbosity = 1,
+            "{} CVEs not reported: {}",
+            withdrawn.total(),
+            withdrawn_reasons(&withdrawn)
+        );
+    }
+}
+
+/// Why correlations withdrew what they did, as the parenthetical a line ends
+/// on: `18 fixed in build, 5 not affected, 4 client or local`.
+fn withdrawn_reasons(withdrawn: &crate::cve::Withdrawn) -> String {
+    [
+        (withdrawn.fixed, "fixed in build"),
+        (withdrawn.not_affected, "not affected"),
+        (withdrawn.elsewhere, "client or local"),
+    ]
+    .into_iter()
+    .filter(|(count, _)| *count > 0)
+    .map(|(count, why)| format!("{count} {why}"))
+    .collect::<Vec<_>>()
+    .join(", ")
 }
 
 /// Records each port's correlations on the host at `key`, replacing what the

@@ -134,7 +134,6 @@ fn document() -> &'static Document {
 /// as the distributor gives it (`"14.04"`, `"12"`), never a codename.
 /// [`None`] where the distributor does not package the product, or packages no
 /// series `upstream` belongs to.
-#[allow(dead_code)]
 pub(crate) fn source_package(
     vendor_product: &str,
     distributor: &str,

@@ -37,8 +37,9 @@
 //! - `undetermined` is **open, needing triage**.
 //!
 //! The tracker's `urgency` becomes the distributor's priority for that release
-//! (never a severity), its `scope` whether exploitation needs local access,
-//! and every version its repositories name joins the release's lineage.
+//! (never a severity), and every version its repositories name joins the
+//! release's lineage. Its `scope` is not kept: it reads `local` on nearly every
+//! record, network daemons' included, so it separates nothing.
 //!
 //! ## Filtered, and streamed
 //!
@@ -62,7 +63,7 @@ use serde::Deserialize;
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, Visitor};
 
 use crate::cve::Advisories;
-use crate::cve::advisories::{Builder, Channel, Distributor, OpenKind, Scope, Standing, Status};
+use crate::cve::advisories::{Builder, Channel, Distributor, OpenKind, Standing, Status};
 use crate::import::{ImportError, ImportOrigin};
 
 /// The most of the tracker's JSON this reads.
@@ -180,8 +181,6 @@ impl<'de> Visitor<'de> for Tracker<'_, '_> {
 #[derive(Deserialize)]
 struct Issue {
     #[serde(default)]
-    scope: Option<String>,
-    #[serde(default)]
     releases: BTreeMap<String, Verdict>,
 }
 
@@ -201,7 +200,7 @@ struct Verdict {
     nodsa_reason: Option<String>,
 }
 
-/// Records one issue's verdicts, its scope and priorities, and the versions
+/// Records one issue's verdicts and priorities, and the versions
 /// its release's repositories name.
 ///
 /// Only CVEs: the tracker also files issues it has not been given a CVE
@@ -210,12 +209,6 @@ fn record(builder: &mut Builder, package: &str, cve: &str, issue: &Issue) {
     if !cve.starts_with("CVE-") {
         return;
     }
-    match issue.scope.as_deref() {
-        Some("local") => builder.scope(cve, Scope::Local),
-        Some("remote") => builder.scope(cve, Scope::Remote),
-        _ => {}
-    }
-
     for (codename, verdict) in &issue.releases {
         // A release this table does not know is one newer than it, and its
         // verdicts wait for the table rather than being filed under a name no
@@ -379,10 +372,10 @@ mod tests {
         );
     }
 
-    /// The repositories' versions are the release's lineage, the urgency
-    /// its priority and the scope the issue's.
+    /// The repositories' versions are the release's lineage, and the urgency
+    /// its priority.
     #[test]
-    fn repositories_urgency_and_scope_are_kept() {
+    fn repositories_and_urgency_are_kept() {
         let data = read_fixture();
         let lineage = data.lineage("12", "openssh").expect("a lineage");
         for version in [
@@ -395,7 +388,6 @@ mod tests {
                 "{version} in {lineage:?}"
             );
         }
-        assert_eq!(data.scope("CVE-2023-38408"), Some(Scope::Local));
         assert_eq!(
             data.priority(Some("12"), "CVE-2007-2768"),
             Some("unimportant")

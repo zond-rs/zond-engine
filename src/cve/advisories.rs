@@ -194,13 +194,6 @@ pub(crate) struct Status {
     pub(crate) advisory: Option<String>,
 }
 
-/// Whether exploiting a vulnerability needs local access, as Debian records it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub(crate) enum Scope {
-    Local,
-    Remote,
-}
-
 /// The package versions a release's source package is known to have had, in
 /// dpkg's order, oldest first.
 ///
@@ -215,7 +208,6 @@ pub(crate) struct Lineage {
 
 impl Lineage {
     /// Every known version, oldest first.
-    #[allow(dead_code)]
     pub(crate) fn versions(&self) -> &[String] {
         &self.versions
     }
@@ -235,7 +227,6 @@ struct Cve {
     priority: Option<String>,
     /// A priority the distributor gives it in one release.
     by_release: BTreeMap<String, String>,
-    scope: Option<Scope>,
 }
 
 /// One distributor's verdicts on the vulnerabilities in the source packages it
@@ -302,7 +293,6 @@ impl Advisories {
 
     /// Every verdict the distributor published on `cve` for `source_package`
     /// in `release`, one per channel. Empty where it published none.
-    #[allow(dead_code)]
     pub(crate) fn statuses(&self, release: &str, source_package: &str, cve: &str) -> &[Status] {
         self.package(release, source_package)
             .and_then(|package| package.verdicts.get(cve))
@@ -310,7 +300,6 @@ impl Advisories {
     }
 
     /// The versions `source_package` is known to have had in `release`.
-    #[allow(dead_code)]
     pub(crate) fn lineage(&self, release: &str, source_package: &str) -> Option<&Lineage> {
         self.package(release, source_package)
             .map(|package| &package.lineage)
@@ -321,7 +310,6 @@ impl Advisories {
     ///
     /// The distributor's judgement of how much the issue matters to its
     /// users, which is information for a reader and never a severity.
-    #[allow(dead_code)]
     pub(crate) fn priority(&self, release: Option<&str>, cve: &str) -> Option<&str> {
         let facts = self.cves.get(cve)?;
         release
@@ -330,14 +318,7 @@ impl Advisories {
             .map(String::as_str)
     }
 
-    /// Whether exploiting `cve` needs local access, where the data says.
-    #[allow(dead_code)]
-    pub(crate) fn scope(&self, cve: &str) -> Option<Scope> {
-        self.cves.get(cve)?.scope
-    }
-
     /// Every release the dataset holds verdicts or versions for.
-    #[allow(dead_code)]
     pub(crate) fn releases(&self) -> impl Iterator<Item = &str> {
         self.releases.keys().map(String::as_str)
     }
@@ -350,7 +331,6 @@ impl Advisories {
     /// and the version it belongs to carries the epoch and upstream version
     /// the banner leaves out. More than one answer means the revision does not
     /// settle the release by itself.
-    #[allow(dead_code)]
     pub(crate) fn builds_with_revision(
         &self,
         source_package: &str,
@@ -464,7 +444,6 @@ impl Advisories {
                     .iter()
                     .map(|(release, priority)| (pool.intern(release), pool.intern(priority)))
                     .collect(),
-                scope: facts.scope,
             })
             .collect();
 
@@ -540,7 +519,6 @@ impl Advisories {
                 Cve {
                     priority: maybe(cve.priority)?,
                     by_release,
-                    scope: cve.scope,
                 },
             );
         }
@@ -626,7 +604,6 @@ struct WireCve {
     cve: u32,
     priority: Option<u32>,
     by_release: Vec<(u32, u32)>,
-    scope: Option<Scope>,
 }
 
 /// Assembles a dataset from a feed's records, whatever order they come in.
@@ -717,11 +694,6 @@ impl Builder {
                     .or_insert_with(|| priority.to_string());
             }
         }
-    }
-
-    /// Records whether exploiting a CVE needs local access.
-    pub(crate) fn scope(&mut self, cve: &str, scope: Scope) {
-        self.cves.entry(cve.to_string()).or_default().scope = Some(scope);
     }
 
     /// Notes a record's timestamp, an ISO date or instant; the newest dates
@@ -863,7 +835,6 @@ mod tests {
         );
         builder.priority(None, "CVE-2023-38408", "medium");
         builder.priority(Some("22.04"), "CVE-2023-38408", "high");
-        builder.scope("CVE-2023-38408", Scope::Local);
         builder.dated("2026-09-22T18:02:37Z");
         builder.dated("2025-01-01T00:00:00Z");
         builder.finish()
@@ -979,9 +950,9 @@ mod tests {
     }
 
     /// A per-release priority answers for its release, the general one for
-    /// every other; the scope is per CVE.
+    /// every other.
     #[test]
-    fn priority_and_scope_are_answered_where_the_data_gives_them() {
+    fn a_priority_is_answered_where_the_data_gives_one() {
         let data = sample();
         assert_eq!(data.priority(Some("22.04"), "CVE-2023-38408"), Some("high"));
         assert_eq!(
@@ -990,8 +961,6 @@ mod tests {
         );
         assert_eq!(data.priority(None, "CVE-2023-38408"), Some("medium"));
         assert_eq!(data.priority(None, "CVE-2016-1908"), None);
-        assert_eq!(data.scope("CVE-2023-38408"), Some(Scope::Local));
-        assert_eq!(data.scope("CVE-2016-1908"), None);
     }
 
     /// The identity is the distributor's and the version the newest record's
@@ -1044,7 +1013,6 @@ mod tests {
             data.lineage("14.04", "openssh")
         );
         assert_eq!(read.priority(Some("22.04"), "CVE-2023-38408"), Some("high"));
-        assert_eq!(read.scope("CVE-2023-38408"), Some(Scope::Local));
     }
 
     /// A different dataset has a different hash.

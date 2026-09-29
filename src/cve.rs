@@ -96,10 +96,13 @@ use crate::version::version_cmp;
 
 pub(crate) mod advisories;
 mod applicability;
+mod backport;
 pub(crate) mod packages;
 
+use advisories::OpenKind;
 pub use advisories::{Advisories, AdvisoriesError};
 use applicability::Applies;
+use backport::{Placement, Ruling, Unplaced, Unsettled, Vulnerable, Withdrawal};
 
 /// The reserved identity the engine's built-in correlator stamps on every finding
 /// it produces, so a report can say exactly what concluded a vulnerability. A
@@ -184,9 +187,6 @@ pub enum CatalogueError {
     },
 }
 
-/// Correlates a finished host's services against the known-vulnerability dataset,
-/// recording a [`Finding`] on each port whose software an entry matches.
-///
 /// The longest a catalogue entry's own title may be and still be used as a
 /// finding's summary.
 ///
@@ -197,9 +197,16 @@ pub enum CatalogueError {
 /// than a title somebody wrote, and it belongs in the excerpt.
 const MAX_SUMMARY_BYTES: usize = 80;
 
-/// Reads each port's service CPE, matches vendor, product and version against the
-/// dataset, and hands each match back to the port it concerns. Idempotent: a
-/// finding deduplicates by claim, so a re-run corroborates rather than doubles.
+/// Correlates a finished host's services against the shipped catalogue,
+/// recording findings on each port whose software an entry matches.
+///
+/// Reads each port's service CPE, matches vendor, product and version against
+/// the dataset, and hands each match back to the port it concerns. Replaces
+/// what the same catalogue drew on the port before, so a re-run reaches the
+/// same findings rather than doubling them.
+///
+/// With no distributor's data, a distribution's build is judged only as far as
+/// its upstream version goes, and said to be; [`Correlator`] takes the data.
 ///
 /// A scan runs this as its own step, after the service pass and before the
 /// report is built. It is public because it is worth running anywhere a host
@@ -263,15 +270,113 @@ pub fn correlate(host: &mut Host) {
 /// # Ok::<(), zond_engine::cve::CatalogueError>(())
 /// ```
 pub fn correlate_with(host: &mut Host, catalogue: &Catalogue) {
-    // Collect first, mutate second: the read borrows the host's ports and the
-    // write needs them mutably, so the two cannot overlap.
-    for judged in judgements(host, catalogue) {
-        host.replace_port_correlations(
-            judged.number,
-            judged.protocol,
-            catalogue.id(),
-            judged.findings,
-        );
+    Correlator::new(catalogue).correlate(host);
+}
+
+/// A correlation to run: a catalogue of known vulnerabilities, and the
+/// distributors' own data a distribution's build is judged against.
+///
+/// The catalogue says which vulnerabilities an upstream release has. A
+/// distribution's build of that release is a different question, because the
+/// distributor patches the release it ships without moving its version, and
+/// only the distributor's data answers it: which of those vulnerabilities its
+/// build fixed, from which package version, and which never affected it. With
+/// that data a service naming its build (`OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13`)
+/// is reported for what the build still carries, with the build to install;
+/// without it, the same service is reported for its upstream release's
+/// vulnerabilities at a confidence that says the build was not checked.
+///
+/// ```
+/// use zond_engine::cve::{Catalogue, Correlator};
+/// use zond_engine::model::host::Host;
+/// # fn advisories() -> Vec<zond_engine::cve::Advisories> { Vec::new() }
+///
+/// let advisories = advisories(); // read from a cache, see `Advisories::from_bytes`
+/// let mut host = Host::new("192.0.2.1".parse().unwrap());
+/// Correlator::new(Catalogue::embedded())
+///     .with_advisories(&advisories)
+///     .correlate(&mut host);
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct Correlator<'a> {
+    catalogue: &'a Catalogue,
+    advisories: &'a [Advisories],
+}
+
+impl<'a> Correlator<'a> {
+    /// A correlation against `catalogue` and no distributor's data.
+    pub fn new(catalogue: &'a Catalogue) -> Self {
+        Self {
+            catalogue,
+            advisories: &[],
+        }
+    }
+
+    /// Judges a distribution's build against its distributor's data, one
+    /// [`Advisories`] per distributor. Where two name the same distributor,
+    /// the first is used.
+    pub fn with_advisories(mut self, advisories: &'a [Advisories]) -> Self {
+        self.advisories = advisories;
+        self
+    }
+
+    /// Records on `host`'s ports what this correlation draws, replacing what
+    /// the same catalogue drew there before.
+    pub fn correlate(&self, host: &mut Host) {
+        // Collect first, mutate second: the read borrows the host's ports and
+        // the write needs them mutably, so the two cannot overlap.
+        for judged in self.judgements(host) {
+            host.replace_port_correlations(
+                judged.number,
+                judged.protocol,
+                self.catalogue.id(),
+                judged.findings,
+            );
+        }
+    }
+
+    /// [`correlate`](Self::correlate), over every host in a finished report.
+    pub fn correlate_report(&self, report: &mut ScanReport) {
+        for host in report.hosts_mut() {
+            self.correlate(host);
+        }
+    }
+
+    /// What [`correlate`](Self::correlate) would record on `host`, port by
+    /// port, without recording it.
+    ///
+    /// For a scan correlating in place, which reads first and writes only a
+    /// host whose correlations change: a write is announced to whoever watches
+    /// the scan and taken down by its journal, and most hosts match nothing. A
+    /// port is listed where the catalogue draws something on it or drew
+    /// something there before, since a correlation is replaced whole and one
+    /// that now draws nothing withdraws what the last one drew.
+    pub(crate) fn judgements(&self, host: &Host) -> Vec<PortJudgement> {
+        host.ports()
+            .filter_map(|port| {
+                let service = port.service()?;
+                let mut findings = Vec::new();
+                let mut withdrawn = Withdrawn::default();
+                for judged in service
+                    .cpes()
+                    .iter()
+                    .filter_map(|cpe| Judged::of(service, cpe))
+                {
+                    let judgement = self.catalogue.judge(&judged, self.advisories);
+                    findings.extend(judgement.findings);
+                    withdrawn.add(judgement.withdrawn);
+                }
+                let held = port.findings().any(|finding| {
+                    finding.is_correlation() && finding.detection().id() == self.catalogue.id()
+                });
+                (!findings.is_empty() || held || withdrawn.total() > 0).then(|| PortJudgement {
+                    number: port.number(),
+                    protocol: port.protocol(),
+                    findings,
+                    withdrawn,
+                })
+            })
+            .collect()
     }
 }
 
@@ -286,37 +391,8 @@ pub(crate) struct PortJudgement {
     /// same catalogue drew there before. Empty where it draws none on a port
     /// that held some.
     pub(crate) findings: Vec<Finding>,
-}
-
-/// What [`correlate_with`] would record on `host`, port by port, without
-/// recording it.
-///
-/// For a scan correlating in place, which reads first and writes only a host
-/// whose correlations change: a write is announced to whoever watches the scan
-/// and taken down by its journal, and most hosts match nothing. A port is
-/// listed where the catalogue draws something on it or drew something there
-/// before, since a correlation is replaced whole and one that now draws nothing
-/// withdraws what the last one drew.
-pub(crate) fn judgements(host: &Host, catalogue: &Catalogue) -> Vec<PortJudgement> {
-    host.ports()
-        .filter_map(|port| {
-            let service = port.service()?;
-            let findings: Vec<Finding> = service
-                .cpes()
-                .iter()
-                .filter_map(|cpe| Judged::of(service, cpe))
-                .flat_map(|judged| catalogue.judge(&judged))
-                .collect();
-            let held = port.findings().any(|finding| {
-                finding.is_correlation() && finding.detection().id() == catalogue.id()
-            });
-            (!findings.is_empty() || held).then(|| PortJudgement {
-                number: port.number(),
-                protocol: port.protocol(),
-                findings,
-            })
-        })
-        .collect()
+    /// What matched and was not reported, by why.
+    pub(crate) withdrawn: Withdrawn,
 }
 
 /// [`correlate_with`], over every host in a finished report.
@@ -340,9 +416,7 @@ pub(crate) fn judgements(host: &Host, catalogue: &Catalogue) -> Vec<PortJudgemen
 /// # }
 /// ```
 pub fn correlate_report(report: &mut ScanReport, catalogue: &Catalogue) {
-    for host in report.hosts_mut() {
-        correlate_with(host, catalogue);
-    }
+    Correlator::new(catalogue).correlate_report(report);
 }
 
 /// A set of known vulnerabilities, keyed by the software each affects.
@@ -559,18 +633,20 @@ impl Catalogue {
     #[cfg(test)]
     fn findings_for(&self, cpe: &str) -> Vec<Finding> {
         Judged::upstream(cpe)
-            .map(|judged| self.judge(&judged))
+            .map(|judged| self.judge(&judged, &[]).findings)
             .unwrap_or_default()
     }
 
-    /// Every finding this catalogue draws on one identification of a service.
+    /// Every finding this catalogue draws on one identification of a service,
+    /// and what it withdrew.
     ///
     /// The entries naming the software at the version found, grouped by what
     /// can honestly be said about each, one finding per group. What can be
-    /// said depends on two things beside the version: whether the entry
-    /// constrained the version at all, and whose build the service is. See
-    /// [`Verdict`].
-    fn judge(&self, judged: &Judged<'_>) -> Vec<Finding> {
+    /// said depends on more than the version: whether the entry constrained
+    /// the version at all, where the flaw lives, and whose build the service
+    /// is, which for a distribution's build means what the distributor's own
+    /// data in `advisories` says. See [`Verdict`].
+    fn judge(&self, judged: &Judged<'_>, advisories: &[Advisories]) -> Judgement {
         let mut matched: Vec<Vulnerability<'_>> = self
             .vulnerability
             .iter()
@@ -594,38 +670,56 @@ impl Catalogue {
         // after the sort, since equal severity orders by identifier.
         matched.dedup_by(|a, b| a.cve == b.cve);
 
+        // Placed once for the identification, and only where anything matched:
+        // most services match nothing and have nothing to place.
+        let placement = match (judged.build, matched.is_empty()) {
+            (Some(build), false) => Some(Placement::of(
+                build,
+                &judged.vendor_product(),
+                &judged.parsed.version,
+                advisories,
+            )),
+            _ => None,
+        };
+
         // Grouped before summarising, because the groups are different claims
         // and a summary may not average them. The map keeps the sorted order
-        // within each group. What cannot reach the listening service is
-        // withdrawn here and only counted.
-        let mut groups: BTreeMap<Verdict, Vec<Vulnerability<'_>>> = BTreeMap::new();
-        let mut withdrawn = 0usize;
+        // within each group. What does not apply is withdrawn here and only
+        // counted.
+        let mut groups: BTreeMap<Verdict, Vec<Ruled<'_>>> = BTreeMap::new();
+        let mut withdrawn = Withdrawn::default();
         for vulnerability in matched {
-            match Verdict::of(&vulnerability, judged) {
-                Some(verdict) => groups.entry(verdict).or_default().push(vulnerability),
-                None => withdrawn += 1,
+            match Verdict::of(&vulnerability, judged, placement.as_ref()) {
+                Classified::Withdrawn(why) => withdrawn.count(why),
+                Classified::Grouped(verdict, ruling) => {
+                    groups.entry(verdict).or_default().push(Ruled {
+                        vulnerability,
+                        ruling,
+                    })
+                }
             }
         }
+
+        let context = Context {
+            judged,
+            placement: placement.as_ref().and_then(|placed| placed.as_ref().ok()),
+            unplaced: placement.as_ref().and_then(|placed| placed.as_ref().err()),
+        };
 
         // Said once, on the first finding, so a reader who counts the
         // identifiers the catalogue holds for this release can reconcile them
         // with what is reported.
-        let mut note = (withdrawn > 0).then(|| {
-            format!(
-                "{withdrawn} more known {} this release live in its client programs or need \
-                 an account on the host, and are not counted against the listening service",
-                match withdrawn {
-                    1 => "vulnerability of",
-                    _ => "vulnerabilities of",
-                }
-            )
-        });
-        groups
+        let mut note = withdrawn.describe(&context);
+        let findings = groups
             .into_iter()
             .filter_map(|(verdict, entries)| {
-                self.finding(judged, verdict, &entries, note.take().as_deref())
+                self.finding(&context, verdict, &entries, note.take().as_deref())
             })
-            .collect()
+            .collect();
+        Judgement {
+            findings,
+            withdrawn,
+        }
     }
 
     /// The one finding a group of matches produces.
@@ -646,12 +740,13 @@ impl Catalogue {
     /// the excerpt.
     fn finding(
         &self,
-        judged: &Judged<'_>,
+        context: &Context<'_, '_>,
         verdict: Verdict,
-        entries: &[Vulnerability<'_>],
+        entries: &[Ruled<'_>],
         note: Option<&str>,
     ) -> Option<Finding> {
-        let worst = entries.first()?;
+        let judged = context.judged;
+        let worst = &entries.first()?.vulnerability;
         let severity = wire::severity(worst.severity)?;
         let detection =
             DetectionId::new(self.id.clone(), self.version, self.content_hash.clone()).ok()?;
@@ -672,17 +767,28 @@ impl Catalogue {
         let counted = |wanted: Severity| {
             entries
                 .iter()
-                .filter(|entry| wire::severity(entry.severity) == Some(wanted))
+                .filter(|entry| wire::severity(entry.vulnerability.severity) == Some(wanted))
                 .count()
         };
         let (critical, high) = (counted(Severity::Critical), counted(Severity::High));
         let named: Vec<&str> = entries
             .iter()
             .take(MAX_NAMED_IN_EXCERPT)
-            .map(|entry| entry.cve)
+            .map(|entry| entry.vulnerability.cve)
             .collect();
         let named = named.join(", ");
         let only = (count == 1).then_some(worst);
+        let cves = |one: &str, many: &str| match count {
+            1 => format!("1 {one}"),
+            n => format!("{n} {many}"),
+        };
+        let tally = format!("{critical} critical and {high} high");
+        let known = match count {
+            1 => "1 known vulnerability".to_string(),
+            n => format!("{n} known vulnerabilities"),
+        };
+        let distributor = context.distributor_label();
+        let placed = context.placed_as();
 
         let (title, excerpt) = match verdict {
             Verdict::Affected | Verdict::AnyVersion => {
@@ -697,10 +803,9 @@ impl Catalogue {
                          the version found was not checked against anything",
                         entry.vendor, entry.product
                     ),
-                    (None, true) => format!(
-                        "{cpe} matches {count} known vulnerabilities, {critical} critical and \
-                         {high} high. The worst are {named}"
-                    ),
+                    (None, true) => {
+                        format!("{cpe} matches {known}, {tally}. The worst are {named}")
+                    }
                     (None, false) => format!(
                         "{cpe} matches {count} entries naming this software at any version: \
                          the version found was not checked against anything. They include {named}"
@@ -728,27 +833,62 @@ impl Catalogue {
             }
             Verdict::BuildUnchecked => {
                 let build = judged.build?;
-                let distributor = build.distributor().label();
-                let noun = match count {
-                    1 => "CVE",
-                    _ => "CVEs",
-                };
+                let why = context
+                    .unplaced
+                    .map(|unplaced| unplaced.describe(distributor))
+                    .unwrap_or_else(|| format!("no {distributor} advisory data was loaded"));
                 (
-                    format!("{software}: {count} upstream {noun}, build unchecked"),
                     format!(
-                        "{cpe} matches {count} known vulnerabilities in the upstream release, \
-                         {critical} critical and {high} high. {distributor} backports fixes \
-                         without changing the upstream version, and whether this build ({}) \
-                         still carries them was not checked against {distributor}'s own fix \
-                         data. The worst are {named}",
+                        "{software}: {}, build unchecked",
+                        cves("upstream CVE", "upstream CVEs")
+                    ),
+                    format!(
+                        "{cpe} matches {known} in the upstream release, {tally}. \
+                         {distributor} backports fixes without changing the upstream \
+                         version, and whether this build ({}) still carries them was not \
+                         checked: {why}. The worst are {named}",
                         build.describe()
                     ),
                 )
             }
+            Verdict::FixAvailable => (
+                format!(
+                    "{software}: {} in a newer {distributor} build",
+                    cves("CVE fixed", "CVEs fixed")
+                ),
+                format!(
+                    "{placed} predates the builds that fixed {known}, {tally}, by \
+                     {distributor}'s own data. The worst are {named}"
+                ),
+            ),
+            Verdict::EsmOnly => (
+                format!(
+                    "{software}: {} only in Ubuntu Pro",
+                    cves("CVE fixed", "CVEs fixed")
+                ),
+                format!(
+                    "{placed} carries {known}, {tally}, fixed by Ubuntu only in its \
+                     Expanded Security Maintenance pockets, which a machine receives with an \
+                     Ubuntu Pro subscription. The build this host runs is not one of those. \
+                     The worst are {named}"
+                ),
+            ),
+            Verdict::NoFix => (
+                format!(
+                    "{software}: {} for {distributor} {}",
+                    cves("CVE with no fix", "CVEs with no fix"),
+                    context.release()
+                ),
+                format!(
+                    "{placed} carries {known}, {tally}, not fixed by {distributor} in this \
+                     release{}. The worst are {named}",
+                    open_kinds(entries)
+                ),
+            ),
             Verdict::NeedsSetting => {
                 let mut settings: Vec<&str> = Vec::new();
                 for entry in entries {
-                    if let Some(requires) = entry.requires()
+                    if let Some(requires) = entry.vulnerability.requires()
                         && !settings.contains(&requires)
                     {
                         settings.push(requires);
@@ -760,29 +900,56 @@ impl Catalogue {
                     .copied()
                     .collect::<Vec<_>>()
                     .join("; ");
-                let more = settings.len().saturating_sub(MAX_NAMED_IN_EXCERPT);
-                let more = match more {
+                let more = match settings.len().saturating_sub(MAX_NAMED_IN_EXCERPT) {
                     0 => String::new(),
                     n => format!(" and {n} more"),
                 };
-                let noun = match count {
-                    1 => "CVE needs",
-                    _ => "CVEs need",
-                };
                 (
-                    format!("{software}: {count} {noun} a non-default setting"),
                     format!(
-                        "{cpe} matches {count} known vulnerabilities, {critical} critical and \
-                         {high} high, that reach the service only where it is set up in a way it \
-                         is not by default: {shown}{more}. The worst are {named}"
+                        "{software}: {} a non-default setting",
+                        cves("CVE needs", "CVEs need")
+                    ),
+                    format!(
+                        "{cpe} matches {known}, {tally}, reaching the service only where it \
+                         is set up in a way it is not by default: {shown}{more}. The worst are \
+                         {named}"
                     ),
                 )
             }
+            Verdict::PatchLevelHidden => (
+                format!(
+                    "{software}: {}, patch level not visible",
+                    cves("CVE", "CVEs")
+                ),
+                format!(
+                    "{distributor} has fixed {known}, {tally}, in builds of {} for release \
+                     {}, and the banner does not say which build this is: it may predate the \
+                     fixes or carry them. The worst are {named}",
+                    context.package(),
+                    context.release()
+                ),
+            ),
+            Verdict::Untriaged => (
+                format!(
+                    "{software}: {} not triaged by {distributor}",
+                    cves("CVE", "CVEs")
+                ),
+                format!(
+                    "{placed} matches {known} in the upstream release, {tally}, not yet \
+                     judged for this release in {distributor}'s data, or not recorded there. \
+                     The worst are {named}"
+                ),
+            ),
         };
-        let excerpt = match note {
-            Some(note) => format!("{excerpt}. {note}"),
-            None => excerpt,
-        };
+        let excerpt = [
+            Some(excerpt),
+            priorities(context, entries),
+            note.map(str::to_owned),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(". ");
 
         let mut finding = Finding::new(
             detection,
@@ -794,9 +961,18 @@ impl Catalogue {
         .ok()?
         .with_excerpt(Excerpt::new(excerpt))
         .with_cpe(cpe)
-        .with_subject(judged.subject(verdict));
+        .with_subject(context.subject(verdict));
         if let Some(build) = judged.build {
             finding = finding.with_build(build.clone());
+        }
+        if let Some(placement) = context.placement
+            && let Ok(stamp) = DetectionId::new(
+                placement.advisories.id(),
+                placement.advisories.version(),
+                placement.advisories.content_hash(),
+            )
+        {
+            finding = finding.with_advised_by(stamp);
         }
 
         // Every one of them, because this is the record: a summary that says
@@ -805,7 +981,7 @@ impl Catalogue {
         // a line. The severity sort above still decides the order, so a front
         // end showing the first few shows the worst few.
         for entry in entries {
-            if let Some(reference) = Reference::cve(entry.cve) {
+            if let Some(reference) = Reference::cve(entry.vulnerability.cve) {
                 finding = finding.with_reference(reference);
             }
         }
@@ -821,15 +997,342 @@ impl Catalogue {
                 finding = finding.with_remediation(remediation);
             }
         }
-        if verdict == Verdict::BuildUnchecked
-            && let Some(build) = judged.build
-        {
-            finding = finding.with_remediation(format!(
-                "Compare the installed package with {}'s security advisories for this release.",
-                build.distributor().label()
-            ));
+        if let Some(remediation) = remediation(context, verdict, entries) {
+            finding = finding.with_remediation(remediation);
         }
         Some(finding)
+    }
+}
+
+/// One identification's findings, and what was withdrawn from it.
+pub(crate) struct Judgement {
+    /// One finding per kind of claim.
+    pub(crate) findings: Vec<Finding>,
+    /// What matched and was not reported, by why.
+    pub(crate) withdrawn: Withdrawn,
+}
+
+/// Known vulnerabilities of a release that a correlation did not report, by
+/// why not.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Withdrawn {
+    /// Fixed at or below the build the service runs, by the distributor's
+    /// data.
+    pub(crate) fixed: usize,
+    /// Never carried by the release, by the distributor's data.
+    pub(crate) not_affected: usize,
+    /// In the client programs installed beside the service, or needing an
+    /// account on the host.
+    pub(crate) elsewhere: usize,
+}
+
+impl Withdrawn {
+    /// Counts one more.
+    fn count(&mut self, why: Why) {
+        match why {
+            Why::Fixed => self.fixed += 1,
+            Why::NotAffected => self.not_affected += 1,
+            Why::Elsewhere => self.elsewhere += 1,
+        }
+    }
+
+    /// How many in all.
+    pub(crate) fn total(&self) -> usize {
+        self.fixed + self.not_affected + self.elsewhere
+    }
+
+    /// Adds another identification's.
+    pub(crate) fn add(&mut self, other: Withdrawn) {
+        self.fixed += other.fixed;
+        self.not_affected += other.not_affected;
+        self.elsewhere += other.elsewhere;
+    }
+
+    /// The sentence an excerpt carries about them, or [`None`] where there
+    /// are none.
+    fn describe(&self, context: &Context<'_, '_>) -> Option<String> {
+        if self.total() == 0 {
+            return None;
+        }
+        let distributor = context.distributor_label();
+        let mut parts = Vec::new();
+        let are = |count: usize| match count {
+            1 => "is",
+            _ => "are",
+        };
+        if self.fixed > 0 {
+            parts.push(format!(
+                "{} {} fixed in this build",
+                self.fixed,
+                are(self.fixed)
+            ));
+        }
+        if self.not_affected > 0 {
+            parts.push(format!(
+                "{} never affected {distributor} {}",
+                self.not_affected,
+                context.release()
+            ));
+        }
+        let by_data = (!parts.is_empty()).then(|| {
+            format!(
+                "Of this release's other known vulnerabilities, {}, by {distributor}'s own data",
+                parts.join(" and ")
+            )
+        });
+        let elsewhere = (self.elsewhere > 0).then(|| {
+            format!(
+                "{} more {} in its client programs or {} an account on the host",
+                self.elsewhere,
+                match self.elsewhere {
+                    1 => "lives",
+                    _ => "live",
+                },
+                match self.elsewhere {
+                    1 => "needs",
+                    _ => "need",
+                }
+            )
+        });
+        let sentence = [by_data, elsewhere]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("; ");
+        Some(format!("{sentence}. None of these is reported"))
+    }
+}
+
+/// Why one vulnerability was withdrawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Why {
+    Fixed,
+    NotAffected,
+    Elsewhere,
+}
+
+/// Where a matched vulnerability goes.
+enum Classified {
+    /// Not reported, for this reason.
+    Withdrawn(Why),
+    /// Reported in this group, with what the distributor's data said where it
+    /// said anything.
+    Grouped(Verdict, Option<Ruling>),
+}
+
+/// A matched vulnerability and what the distributor's data said about it.
+struct Ruled<'a> {
+    vulnerability: Vulnerability<'a>,
+    ruling: Option<Ruling>,
+}
+
+/// What every finding drawn from one identification shares.
+struct Context<'j, 'a> {
+    judged: &'j Judged<'j>,
+    /// Where the build was placed among the distributor's releases.
+    placement: Option<&'j Placement<'a>>,
+    /// Or why it could not be.
+    unplaced: Option<&'j Unplaced>,
+}
+
+impl Context<'_, '_> {
+    /// Who built the service, as a person reads it, or `the distributor`
+    /// where it is an upstream build and nothing needs to name one.
+    fn distributor_label(&self) -> &'static str {
+        self.judged
+            .build
+            .map_or("the distributor", |build| build.distributor().label())
+    }
+
+    /// The release the verdicts are about, or `unknown`.
+    fn release(&self) -> &str {
+        self.placement
+            .map(|placed| placed.release.as_str())
+            .or_else(|| {
+                self.judged
+                    .build
+                    .and_then(|build| build.release())
+                    .map(|release| release.name())
+            })
+            .unwrap_or("unknown")
+    }
+
+    /// The source package the verdicts are about.
+    fn package(&self) -> &str {
+        self.placement
+            .map_or("the package", |placed| placed.package)
+    }
+
+    /// The placed build in one phrase: `openssh 1:6.6p1-2ubuntu2.13 on Ubuntu
+    /// 14.04`, or without the version where the banner gave no revision.
+    fn placed_as(&self) -> String {
+        let distributor = self.distributor_label();
+        match self.placement {
+            Some(placed) => {
+                let inferred = match placed.release_inferred {
+                    true => ", the only release that shipped this build",
+                    false => "",
+                };
+                match &placed.installed {
+                    Some(version) => format!(
+                        "{} {version} on {distributor} {}{inferred}",
+                        placed.package, placed.release
+                    ),
+                    None => format!("{} on {distributor} {}", placed.package, placed.release),
+                }
+            }
+            None => format!("This {distributor} build"),
+        }
+    }
+
+    /// What a claim of kind `verdict` about this identification is about.
+    ///
+    /// The software and its version, whose build it is and which release,
+    /// and the kind of verdict:
+    /// `openbsd:openssh:6.6.1p1@ubuntu-14.04/fix-available`. Not a
+    /// vulnerability identifier, because the set behind a summary moves with
+    /// the data: a catalogue refresh adds entries and a distributor's fix data
+    /// withdraws them, and a claim keyed on any one member would rename itself
+    /// with every change and read, in a comparison of two scans of an unchanged
+    /// host, as one finding gone and another arrived.
+    fn subject(&self, verdict: Verdict) -> String {
+        let parsed = &self.judged.parsed;
+        let scope = match self.judged.build {
+            None => "upstream".to_string(),
+            Some(build) => {
+                let distributor = wire::distributor_name(build.distributor());
+                let release = self
+                    .placement
+                    .map(|placed| placed.release.as_str())
+                    .or_else(|| build.release().map(|release| release.name()));
+                match release {
+                    Some(release) => format!("{distributor}-{release}"),
+                    None => distributor.to_string(),
+                }
+            }
+        };
+        format!(
+            "{}:{}:{}@{scope}/{}",
+            parsed.vendor,
+            parsed.product,
+            parsed.version,
+            verdict.key()
+        )
+    }
+}
+
+/// What the distributor says about why the vulnerabilities of a
+/// [`Verdict::NoFix`] group stay open, as a clause.
+fn open_kinds(entries: &[Ruled<'_>]) -> String {
+    let (mut ignored, mut other) = (0usize, 0usize);
+    for entry in entries {
+        if let Some(Ruling::Vulnerable(Vulnerable::NoFix { kind, .. })) = &entry.ruling {
+            match kind {
+                OpenKind::Ignored => ignored += 1,
+                _ => other += 1,
+            }
+        }
+    }
+    match (ignored, other) {
+        (0, _) => String::new(),
+        (_, 0) => ": it has said it will not fix them in this release".to_string(),
+        (ignored, other) => format!(
+            ": it has said it will not fix {ignored} of them in this release, and {other} await \
+             a fix"
+        ),
+    }
+}
+
+/// The distributor's own ratings of a group's vulnerabilities, as a sentence,
+/// where it rated any. Information for a reader, never the severity: the
+/// severity stays the one scale every product and distribution shares.
+fn priorities(context: &Context<'_, '_>, entries: &[Ruled<'_>]) -> Option<String> {
+    let placement = context.placement?;
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for entry in entries {
+        if let Some(priority) = placement
+            .advisories
+            .priority(Some(&placement.release), entry.vulnerability.cve)
+        {
+            match counts.iter_mut().find(|(seen, _)| *seen == priority) {
+                Some((_, count)) => *count += 1,
+                None => counts.push((priority, 1)),
+            }
+        }
+    }
+    if counts.is_empty() {
+        return None;
+    }
+    let rated = counts
+        .iter()
+        .map(|(priority, count)| format!("{count} {priority}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "{}'s own priority for them: {rated}",
+        context.distributor_label()
+    ))
+}
+
+/// What to do about a group, where the distributor's data says.
+fn remediation(
+    context: &Context<'_, '_>,
+    verdict: Verdict,
+    entries: &[Ruled<'_>],
+) -> Option<String> {
+    let distributor = context.distributor_label();
+    // The newest fix any of them needs, since installing it fixes all of them,
+    // and the notices that published fixes, three at most.
+    let fixes = || {
+        entries.iter().filter_map(|entry| match &entry.ruling {
+            Some(Ruling::Vulnerable(Vulnerable::FixAvailable(fix) | Vulnerable::EsmOnly(fix)))
+            | Some(Ruling::Unsettled(Unsettled::PatchLevelHidden(fix))) => Some(fix),
+            _ => None,
+        })
+    };
+    let newest = fixes()
+        .map(|fix| fix.version.as_str())
+        .max_by(|a, b| crate::version::dpkg_cmp(a, b));
+    let mut notices: Vec<&str> = Vec::new();
+    for fix in fixes() {
+        if let Some(notice) = fix.advisory.as_deref()
+            && !notices.contains(&notice)
+            && notices.len() < MAX_NAMED_IN_EXCERPT
+        {
+            notices.push(notice);
+        }
+    }
+    let citing = match notices.is_empty() {
+        true => String::new(),
+        false => format!(" ({})", notices.join(", ")),
+    };
+    let package = context.package();
+    match verdict {
+        Verdict::FixAvailable => Some(format!(
+            "Upgrade {package} to {} or later{citing}.",
+            newest?
+        )),
+        Verdict::EsmOnly => Some(format!(
+            "Enable Ubuntu Pro and upgrade {package} to {} or later{citing}, or move to a \
+             supported Ubuntu release.",
+            newest?
+        )),
+        Verdict::NoFix => Some(format!(
+            "{distributor} has published no fix for release {}; moving to a supported release \
+             is the remedy.",
+            context.release()
+        )),
+        Verdict::PatchLevelHidden => Some(format!(
+            "Check that {package} is at {} or later{citing}.",
+            newest?
+        )),
+        Verdict::BuildUnchecked => Some(format!(
+            "Compare the installed package with {distributor}'s security advisories for this \
+             release."
+        )),
+        Verdict::Affected | Verdict::NeedsSetting | Verdict::AnyVersion | Verdict::Untriaged => {
+            None
+        }
     }
 }
 
@@ -868,52 +1371,39 @@ impl<'a> Judged<'a> {
         })
     }
 
-    /// What a claim of kind `verdict` about this identification is about.
-    ///
-    /// The software and its version, whose build it is, and the kind of
-    /// verdict: `openbsd:openssh:6.6.1p1@ubuntu-14.04/build-unchecked`. Not a
-    /// vulnerability identifier, because the set behind a summary moves with
-    /// the data: a catalogue refresh adds entries and a distributor's fix data
-    /// withdraws them, and a claim keyed on any one member would rename itself
-    /// with every change and read, in a comparison of two scans of an unchanged
-    /// host, as one finding gone and another arrived.
-    fn subject(&self, verdict: Verdict) -> String {
-        let scope = match self.build {
-            None => "upstream".to_string(),
-            Some(build) => {
-                let distributor = wire::distributor_name(build.distributor());
-                match build.release() {
-                    Some(release) => format!("{distributor}-{}", release.name()),
-                    None => distributor.to_string(),
-                }
-            }
-        };
-        format!(
-            "{}:{}:{}@{scope}/{}",
-            self.parsed.vendor,
-            self.parsed.product,
-            self.parsed.version,
-            verdict.key()
-        )
+    /// The catalogue's key for the software: `openbsd:openssh`.
+    fn vendor_product(&self) -> String {
+        format!("{}:{}", self.parsed.vendor, self.parsed.product)
     }
 }
 
 /// The kinds of claim a correlation makes, one finding each.
 ///
-/// Ordered by how directly the claim follows from what was matched, which is
-/// the order a report lists them in.
+/// Ordered by how surely the claim holds and then by how directly it follows
+/// from what was matched, which is the order a report lists them in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Verdict {
     /// An entry naming a version range was checked against the version found,
     /// on a service that is the upstream release that version names. As sure
     /// as a version string makes anything: [`Confidence::Probable`].
     Affected,
+    /// The distributor fixed it in a build of this release newer than the one
+    /// the service runs: [`Confidence::Probable`], with the build to install.
+    FixAvailable,
+    /// Ubuntu fixed it only in its paid ESM pockets, and the service does not
+    /// run that build: [`Confidence::Probable`].
+    EsmOnly,
+    /// The distributor has not fixed it in this release, and has said so, or
+    /// has said it will not: [`Confidence::Probable`] whatever the build.
+    NoFix,
     /// A vulnerability that reaches the service only where it is configured
     /// in a way it is not by default: an sshd option, an Apache module. The
     /// scan cannot see the configuration, so the claim is as good as the
     /// chance the setting is on: [`Confidence::Weak`].
     NeedsSetting,
-    /// The same range check, on a service that is a distribution's build.
+    /// A range check on a distribution's build that the distributor's own
+    /// data could not be asked about: none was loaded, it does not cover the
+    /// release, or the release could not be told.
     ///
     /// A distribution fixes vulnerabilities by patching the release it ships
     /// and publishing a new build, leaving the upstream version where it was,
@@ -923,6 +1413,13 @@ enum Verdict {
     /// build may still carry any of them, and at [`Confidence::Weak`], because
     /// the version was never the question.
     BuildUnchecked,
+    /// The distributor fixed it in some build of the release, and the banner
+    /// does not say which build this is, as `Apache/2.4.7 (Ubuntu)` does not:
+    /// [`Confidence::Weak`], since the build may predate the fix or carry it.
+    PatchLevelHidden,
+    /// The distributor has not judged it for this release, or holds no record
+    /// of it: [`Confidence::Weak`], on the upstream version's word alone.
+    Untriaged,
     /// An entry whose `affected` is `*` names a product and no version at all,
     /// so it matches a patched installation exactly as readily as a vulnerable
     /// one: [`Confidence::Weak`].
@@ -930,27 +1427,61 @@ enum Verdict {
 }
 
 impl Verdict {
-    /// The verdict `vulnerability` supports on `judged`, or [`None`] for one
-    /// that cannot reach the listening service at all.
+    /// Where `vulnerability` goes, on `judged`, placed as `placement` says.
     ///
     /// Where a vulnerability lives comes first. A flaw in the client programs
     /// installed beside a daemon, or one that needs an account on the host,
     /// is not something a scan of the listening service has found, however
-    /// the version compares; the overlay in
-    /// [`applicability`] says which those are.
-    fn of(vulnerability: &Vulnerability<'_>, judged: &Judged<'_>) -> Option<Self> {
-        match vulnerability.applies().map(|found| found.applies) {
-            Some(Applies::Client | Applies::Local) => return None,
-            Some(Applies::Configuration { .. }) => return Some(Self::NeedsSetting),
-            Some(Applies::Service) | None => {}
+    /// the version compares; the overlay in [`applicability`] says which those
+    /// are. Then, for a distribution's build, what the distributor's data
+    /// says, since a vulnerability the build does not carry needs no setting
+    /// to be withdrawn.
+    fn of(
+        vulnerability: &Vulnerability<'_>,
+        judged: &Judged<'_>,
+        placement: Option<&Result<Placement<'_>, Unplaced>>,
+    ) -> Classified {
+        let applies = vulnerability.applies().map(|found| found.applies);
+        if matches!(applies, Some(Applies::Client | Applies::Local)) {
+            return Classified::Withdrawn(Why::Elsewhere);
         }
-        Some(
-            match (vulnerability.constrains_the_version(), judged.build) {
-                (false, _) => Self::AnyVersion,
-                (true, None) => Self::Affected,
-                (true, Some(_)) => Self::BuildUnchecked,
+        let needs_setting = matches!(applies, Some(Applies::Configuration { .. }));
+
+        let (verdict, ruling) = match placement {
+            Some(Ok(placed)) => match placed.rule(vulnerability.cve) {
+                Ruling::Withdrawn(Withdrawal::Fixed { .. }) => {
+                    return Classified::Withdrawn(Why::Fixed);
+                }
+                Ruling::Withdrawn(Withdrawal::NotAffected { .. }) => {
+                    return Classified::Withdrawn(Why::NotAffected);
+                }
+                ruling => {
+                    let verdict = match &ruling {
+                        Ruling::Vulnerable(Vulnerable::FixAvailable(_)) => Self::FixAvailable,
+                        Ruling::Vulnerable(Vulnerable::EsmOnly(_)) => Self::EsmOnly,
+                        Ruling::Vulnerable(Vulnerable::NoFix { .. }) => Self::NoFix,
+                        Ruling::Unsettled(Unsettled::PatchLevelHidden(_)) => Self::PatchLevelHidden,
+                        Ruling::Unsettled(Unsettled::Untriaged | Unsettled::NotTracked) => {
+                            Self::Untriaged
+                        }
+                        Ruling::Withdrawn(_) => unreachable!("handled above"),
+                    };
+                    (verdict, Some(ruling))
+                }
             },
-        )
+            Some(Err(_)) | None => {
+                let verdict = match (vulnerability.constrains_the_version(), judged.build) {
+                    (false, _) => Self::AnyVersion,
+                    (true, None) => Self::Affected,
+                    (true, Some(_)) => Self::BuildUnchecked,
+                };
+                (verdict, None)
+            }
+        };
+        match needs_setting {
+            true => Classified::Grouped(Self::NeedsSetting, ruling),
+            false => Classified::Grouped(verdict, ruling),
+        }
     }
 
     /// The name a claim's subject carries for it, fixed because claims are
@@ -958,8 +1489,13 @@ impl Verdict {
     const fn key(self) -> &'static str {
         match self {
             Self::Affected => "affected",
+            Self::FixAvailable => "fix-available",
+            Self::EsmOnly => "esm-only",
+            Self::NoFix => "no-fix",
             Self::NeedsSetting => "needs-setting",
             Self::BuildUnchecked => "build-unchecked",
+            Self::PatchLevelHidden => "patch-level-hidden",
+            Self::Untriaged => "untriaged",
             Self::AnyVersion => "any-version",
         }
     }
@@ -967,8 +1503,14 @@ impl Verdict {
     /// How sure a claim of this kind is.
     const fn confidence(self) -> Confidence {
         match self {
-            Self::Affected => Confidence::Probable,
-            Self::NeedsSetting | Self::BuildUnchecked | Self::AnyVersion => Confidence::Weak,
+            Self::Affected | Self::FixAvailable | Self::EsmOnly | Self::NoFix => {
+                Confidence::Probable
+            }
+            Self::NeedsSetting
+            | Self::BuildUnchecked
+            | Self::PatchLevelHidden
+            | Self::Untriaged
+            | Self::AnyVersion => Confidence::Weak,
         }
     }
 }
@@ -1141,20 +1683,6 @@ pub(crate) fn formatted_fields(body: &str) -> Vec<String> {
     }
     fields.push(field);
     fields
-}
-
-/// A value NVD wrote with the 2.3 grammar's escapes, unescaped. See
-/// [`formatted_fields`].
-pub(crate) fn unescaped(value: &str) -> String {
-    let mut plain = String::with_capacity(value.len());
-    let mut characters = value.chars();
-    while let Some(character) = characters.next() {
-        match character {
-            '\\' => plain.extend(characters.next()),
-            other => plain.push(other),
-        }
-    }
-    plain
 }
 
 /// Whether `version` satisfies `predicate`: a comma-joined list of
@@ -1370,7 +1898,6 @@ mod tests {
             formatted_fields("a:acme:ftp\\:d:1.0"),
             ["a", "acme", "ftp:d", "1.0"]
         );
-        assert_eq!(unescaped("0.3\\+4"), "0.3+4");
     }
 
     /// `*` is "any" and `-` is "not applicable" in that grammar, and neither is
@@ -1602,7 +2129,7 @@ affected = "*"
             .cpes()
             .iter()
             .filter_map(|cpe| Judged::of(service, cpe))
-            .flat_map(|judged| catalogue.judge(&judged))
+            .flat_map(|judged| catalogue.judge(&judged, &[]).findings)
             .collect()
     }
 
@@ -1775,9 +2302,10 @@ affected = "*"
             .collect();
         assert!(!cited.contains(&"CVE-2023-38408"), "{cited:?}");
         assert!(
-            findings
-                .iter()
-                .any(|finding| finding.excerpt().as_str().contains("not counted")),
+            findings.iter().any(|finding| finding
+                .excerpt()
+                .as_str()
+                .contains("None of these is reported")),
             "the withdrawn ones are counted somewhere a reader can see"
         );
         let setting = findings
@@ -2074,6 +2602,344 @@ affected = "== 2.4.49"
         assert!(
             port.findings()
                 .all(|finding| finding.cpes().collect::<Vec<_>>() == [cpe])
+        );
+    }
+}
+
+/// A distribution's build judged against its distributor's own data.
+#[cfg(test)]
+mod verdicts {
+    use super::advisories::{Builder, Channel, Distributor as Data, OpenKind, Standing, Status};
+    use super::*;
+    use crate::model::port::{Build, Distributor, Release, ReleaseBasis};
+
+    fn status(channel: Channel, standing: Standing, advisory: Option<&str>) -> Status {
+        Status {
+            channel,
+            standing,
+            advisory: advisory.map(str::to_owned),
+        }
+    }
+
+    fn fixed(version: &str) -> Standing {
+        Standing::Fixed {
+            version: version.to_owned(),
+        }
+    }
+
+    /// Ubuntu 14.04's openssh as its data could describe it: one vulnerability
+    /// of each kind a verdict can reach. The identifiers are ones no overlay
+    /// classifies, so the data alone decides.
+    fn ubuntu() -> Advisories {
+        let mut builder = Builder::new(Data::Ubuntu);
+        let mut record = |cve: &str, status: Status| {
+            builder.record("14.04", "openssh", cve, status);
+        };
+        record(
+            "CVE-2099-0001",
+            status(
+                Channel::Archive,
+                fixed("1:6.6p1-2ubuntu2.7"),
+                Some("USN-9001-1"),
+            ),
+        );
+        record(
+            "CVE-2099-0002",
+            status(
+                Channel::Archive,
+                fixed("1:6.6p1-2ubuntu2.20"),
+                Some("USN-9002-1"),
+            ),
+        );
+        record(
+            "CVE-2099-0003",
+            status(
+                Channel::Esm,
+                fixed("1:6.6p1-2ubuntu2.13+esm1"),
+                Some("USN-9003-2"),
+            ),
+        );
+        record(
+            "CVE-2099-0004",
+            status(
+                Channel::Archive,
+                Standing::Open {
+                    kind: OpenKind::Ignored,
+                    note: Some("end of standard support".into()),
+                },
+                None,
+            ),
+        );
+        record(
+            "CVE-2099-0005",
+            status(Channel::Esm, Standing::NotAffected { reason: None }, None),
+        );
+        record(
+            "CVE-2099-0006",
+            status(
+                Channel::Archive,
+                Standing::Open {
+                    kind: OpenKind::NeedsTriage,
+                    note: None,
+                },
+                None,
+            ),
+        );
+        builder.versions(
+            "14.04",
+            "openssh",
+            [
+                "1:6.6p1-2ubuntu1",
+                "1:6.6p1-2ubuntu2.7",
+                "1:6.6p1-2ubuntu2.13",
+                "1:6.6p1-2ubuntu2.20",
+            ],
+        );
+        builder.dated("2026-09-28T00:00:00Z");
+        builder.finish()
+    }
+
+    /// Seven vulnerabilities of OpenSSH below 7.0, the seventh one the data
+    /// has no record of.
+    fn catalogue() -> Catalogue {
+        let mut document = String::from("id = \"acme:advisories\"\nversion = \"1.0.0\"\n");
+        for index in 1..=7 {
+            document.push_str(&format!(
+                "\n[[vulnerability]]\ncve = \"CVE-2099-{index:04}\"\ntitle = \"Entry {index}\"\n\
+                 severity = \"high\"\nvendor = \"openbsd\"\nproduct = \"openssh\"\n\
+                 affected = \"< 7.0\"\n"
+            ));
+        }
+        Catalogue::read(&mut document.as_bytes()).expect("a valid document")
+    }
+
+    fn ubuntu_build(revision: Option<&str>, release: Option<&str>) -> Build {
+        let mut build = Build::new(Distributor::Ubuntu);
+        if let Some(release) = release {
+            build = build.with_release(Release::new(release, ReleaseBasis::Banner));
+        }
+        if let Some(revision) = revision {
+            build = build.with_revision(revision);
+        }
+        build
+    }
+
+    fn judge(build: Build, advisories: &[Advisories]) -> Judgement {
+        let service = Service::new("ssh", 100)
+            .with_product("OpenSSH")
+            .with_version("6.6.1p1")
+            .with_cpe("cpe:/a:openbsd:openssh:6.6.1p1")
+            .with_build(build);
+        let judged = Judged::of(&service, "cpe:/a:openbsd:openssh:6.6.1p1").expect("a CPE");
+        catalogue().judge(&judged, advisories)
+    }
+
+    fn kinds(judgement: &Judgement) -> Vec<(String, Confidence, Vec<String>)> {
+        judgement
+            .findings
+            .iter()
+            .map(|finding| {
+                let kind = finding
+                    .subject()
+                    .and_then(|subject| subject.rsplit('/').next())
+                    .unwrap_or_default()
+                    .to_owned();
+                let cves = finding
+                    .references()
+                    .filter_map(|reference| match reference {
+                        Reference::Cve(id) => Some(id.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                (kind, finding.confidence(), cves)
+            })
+            .collect()
+    }
+
+    /// Each vulnerability goes where the distributor's verdict on this build
+    /// puts it: fixed below the build or never carried is withdrawn, fixed
+    /// above it is a vulnerability with the build to install, fixed only in
+    /// ESM or not at all is a vulnerability, and one the data leaves open
+    /// stays unsettled.
+    #[test]
+    fn a_placed_build_is_judged_vulnerability_by_vulnerability() {
+        let data = [ubuntu()];
+        let judgement = judge(ubuntu_build(Some("2ubuntu2.13"), Some("14.04")), &data);
+
+        assert_eq!(
+            kinds(&judgement),
+            [
+                (
+                    "fix-available".into(),
+                    Confidence::Probable,
+                    vec!["CVE-2099-0002".into()]
+                ),
+                (
+                    "esm-only".into(),
+                    Confidence::Probable,
+                    vec!["CVE-2099-0003".into()]
+                ),
+                (
+                    "no-fix".into(),
+                    Confidence::Probable,
+                    vec!["CVE-2099-0004".into()]
+                ),
+                (
+                    "untriaged".into(),
+                    Confidence::Weak,
+                    vec!["CVE-2099-0006".into(), "CVE-2099-0007".into()]
+                ),
+            ]
+        );
+        assert_eq!(
+            judgement.withdrawn,
+            Withdrawn {
+                fixed: 1,
+                not_affected: 1,
+                elsewhere: 0
+            }
+        );
+
+        let upgrade = &judgement.findings[0];
+        assert_eq!(
+            upgrade.remediation(),
+            Some("Upgrade openssh to 1:6.6p1-2ubuntu2.20 or later (USN-9002-1).")
+        );
+        assert_eq!(
+            upgrade.advised_by().map(DetectionId::id),
+            Some("ubuntu:security-notices"),
+            "the finding names the data that judged it"
+        );
+        assert!(
+            upgrade
+                .excerpt()
+                .as_str()
+                .contains("openssh 1:6.6p1-2ubuntu2.13 on Ubuntu 14.04"),
+            "{}",
+            upgrade.excerpt().as_str()
+        );
+        assert_eq!(
+            upgrade.subject(),
+            Some("openbsd:openssh:6.6.1p1@ubuntu-14.04/fix-available")
+        );
+    }
+
+    /// A banner that names the revision and not the release is placed by the
+    /// one release whose package ever had that revision, and judged the same.
+    #[test]
+    fn a_build_is_placed_in_the_one_release_that_shipped_its_revision() {
+        let data = [ubuntu()];
+        let named = judge(ubuntu_build(Some("2ubuntu2.13"), Some("14.04")), &data);
+        let placed = judge(ubuntu_build(Some("2ubuntu2.13"), None), &data);
+        assert_eq!(kinds(&named), kinds(&placed));
+        assert!(
+            placed.findings[0]
+                .excerpt()
+                .as_str()
+                .contains("the only release that shipped this build")
+        );
+    }
+
+    /// A banner that says whose build it is and not which build leaves every
+    /// vulnerability the distributor fixed unsettled: the build may predate
+    /// the fix or carry it. What the distributor never fixed in the release is
+    /// a vulnerability whatever the build.
+    #[test]
+    fn a_hidden_patch_level_leaves_what_was_fixed_unsettled() {
+        let data = [ubuntu()];
+        let judgement = judge(ubuntu_build(None, Some("14.04")), &data);
+        let kinds = kinds(&judgement);
+        assert!(kinds.contains(&(
+            "patch-level-hidden".into(),
+            Confidence::Weak,
+            vec![
+                "CVE-2099-0001".into(),
+                "CVE-2099-0002".into(),
+                "CVE-2099-0003".into()
+            ]
+        )));
+        assert!(kinds.contains(&(
+            "no-fix".into(),
+            Confidence::Probable,
+            vec!["CVE-2099-0004".into()]
+        )));
+    }
+
+    /// With no data for the build's distributor, or none at all, the build is
+    /// judged as far as its upstream version goes, and the excerpt says why.
+    #[test]
+    fn a_build_the_data_cannot_place_is_reported_unchecked_and_says_why() {
+        let none = judge(ubuntu_build(Some("2ubuntu2.13"), Some("14.04")), &[]);
+        assert_eq!(none.findings.len(), 1);
+        assert!(
+            none.findings[0]
+                .excerpt()
+                .as_str()
+                .contains("no Ubuntu advisory data was loaded")
+        );
+
+        let data = [ubuntu()];
+        let elsewhere = judge(ubuntu_build(Some("2ubuntu2.13"), Some("16.04")), &data);
+        assert!(
+            elsewhere.findings[0]
+                .excerpt()
+                .as_str()
+                .contains("does not cover release 16.04"),
+            "{}",
+            elsewhere.findings[0].excerpt().as_str()
+        );
+        assert!(
+            elsewhere.findings[0]
+                .subject()
+                .is_some_and(|subject| subject.ends_with("/build-unchecked"))
+        );
+    }
+
+    /// The acceptance case, on the distributors' real data: the scanme banner
+    /// `OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13` against what Ubuntu publishes. A
+    /// fix Ubuntu shipped in 2ubuntu2.2 is withdrawn, a vulnerability its data
+    /// says 14.04 never had is withdrawn, and two flaws of the client programs
+    /// (ssh-agent's, and the algorithm-ordering leak), which the daemon does
+    /// not carry, are withdrawn on the overlay's word before the data is
+    /// asked.
+    #[cfg(feature = "import-distro")]
+    #[test]
+    fn scanmes_openssh_is_judged_against_ubuntus_own_data() {
+        let ubuntu = crate::import::ubuntu::read(
+            &mut &include_bytes!("../tests/data/distro/ubuntu-osv.tar.xz")[..],
+            &mut &include_bytes!("../tests/data/distro/ubuntu-vex.tar.xz")[..],
+        )
+        .expect("the fixture converts");
+
+        let mut document = String::from("id = \"acme:advisories\"\nversion = \"1.0.0\"\n");
+        for cve in [
+            "CVE-2015-5600",
+            "CVE-2016-10010",
+            "CVE-2020-14145",
+            "CVE-2023-38408",
+        ] {
+            document.push_str(&format!(
+                "\n[[vulnerability]]\ncve = \"{cve}\"\ntitle = \"{cve}\"\nseverity = \"high\"\n\
+                 vendor = \"openbsd\"\nproduct = \"openssh\"\naffected = \"< 7.0\"\n"
+            ));
+        }
+        let catalogue = Catalogue::read(&mut document.as_bytes()).expect("a valid document");
+        let service = Service::new("ssh", 100)
+            .with_product("OpenSSH")
+            .with_version("6.6.1p1")
+            .with_cpe("cpe:/a:openbsd:openssh:6.6.1p1")
+            .with_build(ubuntu_build(Some("2ubuntu2.13"), Some("14.04")));
+        let judged = Judged::of(&service, "cpe:/a:openbsd:openssh:6.6.1p1").expect("a CPE");
+        let judgement = catalogue.judge(&judged, std::slice::from_ref(&ubuntu));
+
+        assert!(judgement.findings.is_empty(), "{:?}", kinds(&judgement));
+        assert_eq!(
+            judgement.withdrawn,
+            Withdrawn {
+                fixed: 1,
+                not_affected: 1,
+                elsewhere: 2
+            }
         );
     }
 }

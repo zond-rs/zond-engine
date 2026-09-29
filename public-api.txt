@@ -519,6 +519,24 @@ impl core::marker::Unpin for zond_engine::cve::Catalogue
 impl core::marker::UnsafeUnpin for zond_engine::cve::Catalogue
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::cve::Catalogue
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::cve::Catalogue
+pub struct zond_engine::cve::Correlator<'a>
+impl<'a> zond_engine::cve::Correlator<'a>
+pub fn zond_engine::cve::Correlator<'a>::correlate(&self, &mut zond_engine::model::host::Host)
+pub fn zond_engine::cve::Correlator<'a>::correlate_report(&self, &mut zond_engine::report::ScanReport)
+pub fn zond_engine::cve::Correlator<'a>::new(&'a zond_engine::cve::Catalogue) -> Self
+pub fn zond_engine::cve::Correlator<'a>::with_advisories(self, &'a [zond_engine::cve::Advisories]) -> Self
+impl<'a> core::clone::Clone for zond_engine::cve::Correlator<'a>
+pub fn zond_engine::cve::Correlator<'a>::clone(&self) -> zond_engine::cve::Correlator<'a>
+impl<'a> core::fmt::Debug for zond_engine::cve::Correlator<'a>
+pub fn zond_engine::cve::Correlator<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for zond_engine::cve::Correlator<'a>
+impl<'a> core::marker::Freeze for zond_engine::cve::Correlator<'a>
+impl<'a> core::marker::Send for zond_engine::cve::Correlator<'a>
+impl<'a> core::marker::Sync for zond_engine::cve::Correlator<'a>
+impl<'a> core::marker::Unpin for zond_engine::cve::Correlator<'a>
+impl<'a> core::marker::UnsafeUnpin for zond_engine::cve::Correlator<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::cve::Correlator<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::cve::Correlator<'a>
 pub const zond_engine::cve::MAX_DOCUMENT_BYTES: u64
 pub fn zond_engine::cve::correlate(&mut zond_engine::model::host::Host)
 pub fn zond_engine::cve::correlate_report(&mut zond_engine::report::ScanReport, &zond_engine::cve::Catalogue)
@@ -1324,6 +1342,7 @@ impl zond_engine::detect::corpus::Detections
 pub fn zond_engine::detect::corpus::Detections::builder() -> zond_engine::detect::corpus::DetectionsBuilder
 pub fn zond_engine::detect::corpus::Detections::embedded() -> Self
 pub fn zond_engine::detect::corpus::Detections::listing(&self) -> alloc::vec::Vec<zond_engine::detect::corpus::DetectionSummary>
+pub fn zond_engine::detect::corpus::Detections::with_advisories(self, impl core::iter::traits::collect::IntoIterator<Item = zond_engine::cve::Advisories>) -> Self
 impl core::clone::Clone for zond_engine::detect::corpus::Detections
 pub fn zond_engine::detect::corpus::Detections::clone(&self) -> zond_engine::detect::corpus::Detections
 impl core::default::Default for zond_engine::detect::corpus::Detections
@@ -1811,6 +1830,7 @@ impl zond_engine::detect::corpus::Detections
 pub fn zond_engine::detect::corpus::Detections::builder() -> zond_engine::detect::corpus::DetectionsBuilder
 pub fn zond_engine::detect::corpus::Detections::embedded() -> Self
 pub fn zond_engine::detect::corpus::Detections::listing(&self) -> alloc::vec::Vec<zond_engine::detect::corpus::DetectionSummary>
+pub fn zond_engine::detect::corpus::Detections::with_advisories(self, impl core::iter::traits::collect::IntoIterator<Item = zond_engine::cve::Advisories>) -> Self
 impl core::clone::Clone for zond_engine::detect::corpus::Detections
 pub fn zond_engine::detect::corpus::Detections::clone(&self) -> zond_engine::detect::corpus::Detections
 impl core::default::Default for zond_engine::detect::corpus::Detections

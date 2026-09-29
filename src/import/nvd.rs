@@ -664,7 +664,7 @@ fn affected_range(
     .filter_map(|(op, bound)| {
         bound
             .as_ref()
-            .map(|value| format!("{op} {}", crate::cve::unescaped(value)))
+            .map(|value| format!("{op} {}", unescaped(value)))
     })
     .collect();
 
@@ -687,6 +687,20 @@ fn affected_range(
         false => clauses.join(", "),
     };
     Some((vendor.to_string(), product.to_string(), affected))
+}
+
+/// A value NVD wrote with the 2.3 grammar's escapes, unescaped. See
+/// [`formatted_fields`](crate::cve::formatted_fields).
+fn unescaped(value: &str) -> String {
+    let mut plain = String::with_capacity(value.len());
+    let mut characters = value.chars();
+    while let Some(character) = characters.next() {
+        match character {
+            '\\' => plain.extend(characters.next()),
+            other => plain.push(other),
+        }
+    }
+    plain
 }
 
 /// Whether a CPE field states nothing: `*` is "any" and `-` is "not

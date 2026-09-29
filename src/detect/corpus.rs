@@ -58,6 +58,9 @@ pub struct Detections {
     flows: Arc<FlowDb>,
     modules: Arc<ComputeDb>,
     hosts: Arc<HostDb>,
+    /// The distributors' own data a scan judges a distribution's build
+    /// against when it correlates. See [`with_advisories`](Self::with_advisories).
+    advisories: Arc<[crate::cve::Advisories]>,
 }
 
 /// The shipped corpus, compiled once and shared by every [`Detections::embedded`].
@@ -77,8 +80,32 @@ impl Detections {
                 flows: Arc::new(FlowDb::from_embedded()),
                 modules: Arc::new(ComputeDb::from_embedded()),
                 hosts: Arc::new(HostDb::from_embedded()),
+                advisories: Arc::from([]),
             })
             .clone()
+    }
+
+    /// Judges a distribution's build against its distributor's data when the
+    /// scan correlates its services with known vulnerabilities.
+    ///
+    /// Beside the detections because it is the same kind of thing: what a scan
+    /// knows, rather than what it sends. Without it a service naming its
+    /// distribution's build (`OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13`) is reported
+    /// for its upstream release's vulnerabilities at a confidence that says
+    /// the build was not checked; with it, for what the build still carries.
+    /// See [`cve::Correlator`](crate::cve::Correlator). One dataset per
+    /// distributor; the data is shared rather than copied between clones.
+    pub fn with_advisories(
+        mut self,
+        advisories: impl IntoIterator<Item = crate::cve::Advisories>,
+    ) -> Self {
+        self.advisories = advisories.into_iter().collect();
+        self
+    }
+
+    /// The distributors' data a scan's correlation uses.
+    pub(crate) fn advisories(&self) -> &[crate::cve::Advisories] {
+        &self.advisories
     }
 
     /// A builder for a corpus that adds a caller's own detections, on top of the
@@ -220,6 +247,7 @@ impl fmt::Debug for Detections {
             .field("flows", &self.flows.flows().count())
             .field("modules", &self.modules.detections().len())
             .field("hosts", &self.hosts.detections().len())
+            .field("advisories", &self.advisories.len())
             .finish()
     }
 }
@@ -496,6 +524,7 @@ impl DetectionsBuilder {
             flows: Arc::new(FlowDb::from_flows(flows)),
             modules: Arc::new(ComputeDb::from_parts(self.runtime, modules)),
             hosts: Arc::new(HostDb::from_detections(hosts)),
+            advisories: Arc::from([]),
         }
     }
 }
