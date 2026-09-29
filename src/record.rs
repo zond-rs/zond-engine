@@ -89,7 +89,7 @@ use crate::model::ip::set::IpSet;
 use crate::model::mac::MacAddr;
 use crate::model::port::discovery::{Discovery, ScanResponse};
 use crate::model::port::security::{CertificateInfo, Security};
-use crate::model::port::{Port, PortSet, PortState, Service};
+use crate::model::port::{Build, Port, PortSet, PortState, Release, ReleaseBasis, Service};
 use crate::model::target::{TargetMap, TargetSet};
 use crate::model::tls::{
     CipherSuite, Interruption, TlsSupport, TlsVersion, UnfinishedVersion, VersionSupport,
@@ -406,6 +406,61 @@ pub struct OsRecord {
     /// Platform identifiers.
     #[serde(default)]
     pub cpes: Vec<String>,
+}
+
+/// A distributor's build of a service's software, as a file holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildRecord {
+    /// Who built it, by wire name.
+    pub distributor: String,
+    /// The package revision, where one was stated.
+    #[serde(default)]
+    pub revision: Option<String>,
+    /// The release it belongs to, where anything said.
+    #[serde(default)]
+    pub release: Option<ReleaseRecord>,
+}
+
+/// Which of a distributor's releases a build belongs to, as a file holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseRecord {
+    /// The release, as the distributor numbers it.
+    pub name: String,
+    /// What it was read from, by wire name.
+    pub basis: String,
+}
+
+impl From<&Build> for BuildRecord {
+    fn from(build: &Build) -> Self {
+        Self {
+            distributor: wire::distributor_name(build.distributor()).to_owned(),
+            revision: build.revision().map(str::to_owned),
+            release: build.release().map(|release| ReleaseRecord {
+                name: release.name().to_owned(),
+                basis: wire::release_basis_name(release.basis()).to_owned(),
+            }),
+        }
+    }
+}
+
+impl BuildRecord {
+    /// Rebuilds the build, or [`None`] for a distributor this engine does not
+    /// know.
+    ///
+    /// A release whose basis does not parse reads as the weaker one, a rule's
+    /// inference, rather than being dropped: the release still says which fix
+    /// data applies, and claiming less for it errs the safe way.
+    pub fn rebuild(&self) -> Option<Build> {
+        let mut build = Build::new(wire::distributor(&self.distributor)?);
+        if let Some(revision) = &self.revision {
+            build = build.with_revision(revision.clone());
+        }
+        if let Some(release) = &self.release {
+            let basis = wire::release_basis(&release.basis).unwrap_or(ReleaseBasis::Banner);
+            build = build.with_release(Release::new(release.name.clone(), basis));
+        }
+        Some(build)
+    }
 }
 
 impl From<&OsFingerprint> for OsRecord {
@@ -1137,6 +1192,12 @@ pub struct ServiceRecord {
     /// Platform identifiers.
     #[serde(default)]
     pub cpes: Vec<String>,
+    /// Whose build of the software it is, where the reply said.
+    ///
+    /// Omitted when absent, which is every upstream build and every service a
+    /// reply did not describe that far, and defaulted on the way in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<BuildRecord>,
 }
 
 impl From<&Service> for ServiceRecord {
@@ -1149,6 +1210,7 @@ impl From<&Service> for ServiceRecord {
             version: service.version().map(str::to_owned),
             extrainfo: service.extrainfo().map(str::to_owned),
             cpes: service.cpes().iter().map(|cpe| cpe.to_string()).collect(),
+            build: service.build().map(BuildRecord::from),
         }
     }
 }
@@ -1170,6 +1232,9 @@ impl From<&ServiceRecord> for Service {
         }
         for cpe in &record.cpes {
             service.add_cpe(cpe.clone());
+        }
+        if let Some(build) = record.build.as_ref().and_then(BuildRecord::rebuild) {
+            service = service.with_build(build);
         }
         service
     }

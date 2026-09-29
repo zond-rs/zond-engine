@@ -40,7 +40,7 @@ use crate::model::host::status::StatusProtocol;
 use crate::model::host::{
     Filtering, HostStatus, IpProtocolState, NameKind, NameSource, NetworkRole,
 };
-use crate::model::port::{PortState, Protocol};
+use crate::model::port::{Distributor, PortState, Protocol, ReleaseBasis};
 use crate::model::technique::{SctpScanTechnique, TcpScanTechnique};
 use crate::model::tls::{Interruption, SuiteFault, SuiteStrength, TlsVersion};
 use crate::record::wire::{
@@ -185,6 +185,26 @@ fn enumerations() -> Vec<(&'static str, Vec<String>)> {
         (
             "/$defs/settings/properties/tcp_technique/enum",
             named(TcpScanTechnique::ALL.iter().map(|t| t.name()).collect()),
+        ),
+        (
+            "/$defs/build/properties/distributor/enum",
+            named(
+                Distributor::ALL
+                    .iter()
+                    .copied()
+                    .map(crate::record::wire::distributor_name)
+                    .collect(),
+            ),
+        ),
+        (
+            "/$defs/release/properties/basis/enum",
+            named(
+                ReleaseBasis::ALL
+                    .iter()
+                    .copied()
+                    .map(crate::record::wire::release_basis_name)
+                    .collect(),
+            ),
         ),
         (
             "/$defs/accepted_version/properties/version/enum",

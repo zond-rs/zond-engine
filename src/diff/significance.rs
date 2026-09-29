@@ -336,10 +336,13 @@ fn of_state(state: &Change<PortState>) -> Significance {
 /// What a change to the thing listening amounts to.
 fn of_service(change: &ServiceChange) -> Significance {
     match change {
-        // Something else is listening, or the same thing at a different release.
-        // The second is what a patch looks like from outside, and it is what
-        // makes a rollback visible.
-        ServiceChange::Name(_) | ServiceChange::Version(_) => Significance::Notable,
+        // Something else is listening, or the same thing at a different release
+        // or build. The second is what a patch looks like from outside, whether
+        // upstream's or a distribution's, and it is what makes a rollback
+        // visible.
+        ServiceChange::Name(_) | ServiceChange::Version(_) | ServiceChange::Build(_) => {
+            Significance::Notable
+        }
 
         // An identification appearing or going away usually says the two scans
         // asked differently, which `service_detection` records per phase. The

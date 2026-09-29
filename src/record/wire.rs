@@ -47,7 +47,7 @@ use crate::model::host::{
     Filtering, HostStatus, IpProtocolState, NameKind, NameSource, NetworkRole, StatusProtocol,
 };
 use crate::model::port::discovery::ScanResponse;
-use crate::model::port::{PortSet, PortState, Protocol};
+use crate::model::port::{Distributor, PortSet, PortState, Protocol, ReleaseBasis};
 use crate::protocols::tcp;
 use crate::report::ScannerKind;
 use crate::report::{AttachmentSource, LivenessSkip, Pass, PortScope, ScanKind, StopReason};
@@ -269,6 +269,50 @@ pub fn severity(name: &str) -> Option<Severity> {
         "medium" => Severity::Medium,
         "high" => Severity::High,
         "critical" => Severity::Critical,
+        _ => return None,
+    })
+}
+
+/// Who built a service's software, on the wire.
+pub fn distributor_name(distributor: Distributor) -> &'static str {
+    match distributor {
+        Distributor::Debian => "debian",
+        Distributor::Ubuntu => "ubuntu",
+        Distributor::Raspbian => "raspbian",
+        Distributor::RedHat => "redhat",
+        Distributor::CentOs => "centos",
+        Distributor::Fedora => "fedora",
+        Distributor::Amazon => "amazon",
+        Distributor::Rocky => "rocky",
+        Distributor::Alma => "almalinux",
+        Distributor::Oracle => "oracle",
+        Distributor::Suse => "suse",
+        Distributor::Alpine => "alpine",
+        Distributor::FreeBsd => "freebsd",
+    }
+}
+
+/// [`distributor_name`] read back.
+pub fn distributor(name: &str) -> Option<Distributor> {
+    Distributor::ALL
+        .iter()
+        .copied()
+        .find(|&distributor| distributor_name(distributor) == name)
+}
+
+/// What a build's release was read from, on the wire.
+pub fn release_basis_name(basis: ReleaseBasis) -> &'static str {
+    match basis {
+        ReleaseBasis::Banner => "banner",
+        ReleaseBasis::Revision => "revision",
+    }
+}
+
+/// [`release_basis_name`] read back.
+pub fn release_basis(name: &str) -> Option<ReleaseBasis> {
+    Some(match name {
+        "banner" => ReleaseBasis::Banner,
+        "revision" => ReleaseBasis::Revision,
         _ => return None,
     })
 }
@@ -878,6 +922,14 @@ mod tests {
 
         for &value in Confidence::ALL {
             assert_eq!(confidence(confidence_name(value)), Some(value));
+        }
+
+        for &value in Distributor::ALL {
+            assert_eq!(distributor(distributor_name(value)), Some(value));
+        }
+
+        for &value in ReleaseBasis::ALL {
+            assert_eq!(release_basis(release_basis_name(value)), Some(value));
         }
 
         // A reference carries a value beside its kind, so its round trip is over

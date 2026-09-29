@@ -414,6 +414,7 @@
             "service_vendor",
             "service_version",
             "service_extrainfo",
+            "service_build",
             "cpe_gained",
             "cpe_lost",
             "tls_version",

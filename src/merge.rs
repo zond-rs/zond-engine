@@ -820,6 +820,9 @@ fn fold_service(accounts: &[&Port]) -> Option<Service> {
     if let Some(extrainfo) = newest.extrainfo() {
         folded = folded.with_extrainfo(extrainfo);
     }
+    if let Some(build) = newest.build() {
+        folded = folded.with_build(build.clone());
+    }
 
     for older in others().filter(|older| same_service(newest, older)) {
         if folded.vendor().is_none()
@@ -836,6 +839,15 @@ fn fold_service(accounts: &[&Port]) -> Option<Service> {
             && let Some(extrainfo) = older.extrainfo()
         {
             folded = folded.with_extrainfo(extrainfo);
+        }
+        // A build describes one version's packaging, so an older account's
+        // may complete the fold only where it read the same version: a
+        // revision of 6.6p1 says nothing about how 7.2p2 was packaged.
+        if folded.build().is_none()
+            && folded.version() == older.version()
+            && let Some(build) = older.build()
+        {
+            folded = folded.with_build(build.clone());
         }
     }
 

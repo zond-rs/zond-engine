@@ -93,7 +93,9 @@ use crate::model::host::{
     ip_protocol_name,
 };
 use crate::model::ip::range::IpRange;
-use crate::model::port::{CertificateInfo, Discovery, Port, PortSet, PortState, Security, Service};
+use crate::model::port::{
+    Build, CertificateInfo, Discovery, Port, PortSet, PortState, Security, Service,
+};
 use crate::model::tls::{CipherSuite, UnfinishedVersion, VersionSupport};
 use crate::report::{
     ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, EvasionRecord, PortScope, ProbeStats, Refusal, ScanPhase,
@@ -123,10 +125,11 @@ pub use crate::report::ENGINE_VERSION;
 // than called through, since a caller should not have to know where they live.
 pub use crate::record::wire::{
     attachment_source_name, confidence_name, detection_ceiling_name, detection_class_name,
-    filtering_name, host_status_name, ip_protocol_state_name, liveness_skip_name, name_kind_name,
-    name_source_name, network_role_name, pass_name, port_scope_name, port_state_name,
-    protocol_name, reference_kind_name, scan_kind_name, scan_response_name, scanner_kind_name,
-    severity_name, status_protocol_name, stop_reason_name, tcp_flags_name,
+    distributor_name, filtering_name, host_status_name, ip_protocol_state_name, liveness_skip_name,
+    name_kind_name, name_source_name, network_role_name, pass_name, port_scope_name,
+    port_state_name, protocol_name, reference_kind_name, release_basis_name, scan_kind_name,
+    scan_response_name, scanner_kind_name, severity_name, status_protocol_name, stop_reason_name,
+    tcp_flags_name,
 };
 
 /// The wire name of a send mode.
@@ -2323,6 +2326,51 @@ pub struct ServiceDto<'a> {
     pub extrainfo: Option<Cow<'a, str>>,
     /// CPE identifiers, in the order they were established.
     pub cpes: Vec<Cow<'a, str>>,
+    /// Whose build of the software this is, where the reply said: a
+    /// distribution backports fixes without moving the upstream version, so
+    /// the version alone does not say which fixes a build carries.
+    pub build: Option<BuildDto<'a>>,
+}
+
+/// A distributor's build of a service's software.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize)]
+pub struct BuildDto<'a> {
+    /// Who built it: `debian`, `ubuntu`, `redhat`, ...
+    pub distributor: &'static str,
+    /// The package revision, where the reply stated one. Read from the reply,
+    /// so masked as `extrainfo` is.
+    pub revision: Option<Cow<'a, str>>,
+    /// Which of the distributor's releases the build belongs to, where
+    /// anything said.
+    pub release: Option<ReleaseDto<'a>>,
+}
+
+/// Which release a build belongs to, and what said so.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize)]
+pub struct ReleaseDto<'a> {
+    /// The release as the distributor numbers it: `14.04`, `12`. A rule can
+    /// fill it from what it captured of the reply, so it is masked as
+    /// `revision` is.
+    pub name: Cow<'a, str>,
+    /// `revision` where the package revision names the release outright,
+    /// `banner` where a rule inferred it from what the release shipped.
+    pub basis: &'static str,
+}
+
+impl<'a> BuildDto<'a> {
+    /// Renders a build on the host `masking` was made for.
+    pub fn new(build: &'a Build, masking: &HostRedaction) -> Self {
+        Self {
+            distributor: distributor_name(build.distributor()),
+            revision: build.revision().map(|text| masking.text(text)),
+            release: build.release().map(|release| ReleaseDto {
+                name: masking.text(release.name()),
+                basis: release_basis_name(release.basis()),
+            }),
+        }
+    }
 }
 
 impl<'a> ServiceDto<'a> {
@@ -2336,6 +2384,7 @@ impl<'a> ServiceDto<'a> {
             version: service.version().map(|text| masking.text(text)),
             extrainfo: service.extrainfo().map(|text| masking.text(text)),
             cpes: service.cpes().iter().map(|cpe| masking.text(cpe)).collect(),
+            build: service.build().map(|build| BuildDto::new(build, masking)),
         }
     }
 }

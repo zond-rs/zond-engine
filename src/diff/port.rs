@@ -32,7 +32,7 @@ use crate::diff::change::{Change, Coverage, Presence};
 use crate::diff::host::Reassessment;
 use crate::model::finding::{Finding, Standing};
 use crate::model::port::security::CertificateInfo;
-use crate::model::port::{Port, PortState, Protocol, Security, Service};
+use crate::model::port::{Build, Port, PortState, Protocol, Security, Service};
 
 /// One endpoint, as the two scans hold it.
 ///
@@ -200,6 +200,10 @@ pub enum ServiceChange {
     Version(Change<Option<String>>),
     /// The trailing detail the fingerprint carried changed.
     ExtraInfo(Change<Option<String>>),
+    /// Whose build it is, or which build, changed: a new package revision of
+    /// the same upstream version is how a distribution's security update
+    /// looks from outside.
+    Build(Change<Option<Build>>),
     /// The platform identifiers changed, each list ascending.
     Cpes {
         /// Identifiers the current scan has and the baseline did not.
@@ -579,6 +583,9 @@ fn service_changes(before: Option<&Service>, after: Option<&Service>) -> Vec<Ser
             }
             if let Some(extra) = optional(before.extrainfo(), after.extrainfo()) {
                 changes.push(ServiceChange::ExtraInfo(extra));
+            }
+            if let Some(build) = Change::between(before.build().cloned(), after.build().cloned()) {
+                changes.push(ServiceChange::Build(build));
             }
 
             let (gained, lost) = set_change(

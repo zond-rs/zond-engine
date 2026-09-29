@@ -2093,6 +2093,7 @@ impl core::marker::UnsafeUnpin for zond_engine::diff::port::SecurityChange
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::diff::port::SecurityChange
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::diff::port::SecurityChange
 #[non_exhaustive] pub enum zond_engine::diff::port::ServiceChange
+pub zond_engine::diff::port::ServiceChange::Build(zond_engine::diff::change::Change<core::option::Option<zond_engine::model::port::build::Build>>)
 pub zond_engine::diff::port::ServiceChange::Cpes
 pub zond_engine::diff::port::ServiceChange::Cpes::gained: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::diff::port::ServiceChange::Cpes::lost: alloc::vec::Vec<alloc::string::String>
@@ -2374,6 +2375,7 @@ impl core::marker::UnsafeUnpin for zond_engine::diff::port::SecurityChange
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::diff::port::SecurityChange
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::diff::port::SecurityChange
 #[non_exhaustive] pub enum zond_engine::diff::ServiceChange
+pub zond_engine::diff::ServiceChange::Build(zond_engine::diff::change::Change<core::option::Option<zond_engine::model::port::build::Build>>)
 pub zond_engine::diff::ServiceChange::Cpes
 pub zond_engine::diff::ServiceChange::Cpes::gained: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::diff::ServiceChange::Cpes::lost: alloc::vec::Vec<alloc::string::String>
@@ -3351,6 +3353,25 @@ impl core::marker::Unpin for zond_engine::export::schema::BucketDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::BucketDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::BucketDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::BucketDto
+#[non_exhaustive] pub struct zond_engine::export::schema::BuildDto<'a>
+pub zond_engine::export::schema::BuildDto::distributor: &'static str
+pub zond_engine::export::schema::BuildDto::release: core::option::Option<zond_engine::export::schema::ReleaseDto<'a>>
+pub zond_engine::export::schema::BuildDto::revision: core::option::Option<alloc::borrow::Cow<'a, str>>
+impl<'a> zond_engine::export::schema::BuildDto<'a>
+pub fn zond_engine::export::schema::BuildDto<'a>::new(&'a zond_engine::model::port::build::Build, &zond_engine::export::HostRedaction) -> Self
+impl<'a> core::clone::Clone for zond_engine::export::schema::BuildDto<'a>
+pub fn zond_engine::export::schema::BuildDto<'a>::clone(&self) -> zond_engine::export::schema::BuildDto<'a>
+impl<'a> core::fmt::Debug for zond_engine::export::schema::BuildDto<'a>
+pub fn zond_engine::export::schema::BuildDto<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> serde_core::ser::Serialize for zond_engine::export::schema::BuildDto<'a>
+pub fn zond_engine::export::schema::BuildDto<'a>::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'a> core::marker::Freeze for zond_engine::export::schema::BuildDto<'a>
+impl<'a> core::marker::Send for zond_engine::export::schema::BuildDto<'a>
+impl<'a> core::marker::Sync for zond_engine::export::schema::BuildDto<'a>
+impl<'a> core::marker::Unpin for zond_engine::export::schema::BuildDto<'a>
+impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::BuildDto<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::BuildDto<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::BuildDto<'a>
 #[non_exhaustive] pub struct zond_engine::export::schema::CaptureDto
 pub zond_engine::export::schema::CaptureDto::dropped: u64
 pub zond_engine::export::schema::CaptureDto::if_dropped: u64
@@ -3932,6 +3953,22 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::RefusalDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::RefusalDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::RefusalDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::RefusalDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::ReleaseDto<'a>
+pub zond_engine::export::schema::ReleaseDto::basis: &'static str
+pub zond_engine::export::schema::ReleaseDto::name: alloc::borrow::Cow<'a, str>
+impl<'a> core::clone::Clone for zond_engine::export::schema::ReleaseDto<'a>
+pub fn zond_engine::export::schema::ReleaseDto<'a>::clone(&self) -> zond_engine::export::schema::ReleaseDto<'a>
+impl<'a> core::fmt::Debug for zond_engine::export::schema::ReleaseDto<'a>
+pub fn zond_engine::export::schema::ReleaseDto<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> serde_core::ser::Serialize for zond_engine::export::schema::ReleaseDto<'a>
+pub fn zond_engine::export::schema::ReleaseDto<'a>::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'a> core::marker::Freeze for zond_engine::export::schema::ReleaseDto<'a>
+impl<'a> core::marker::Send for zond_engine::export::schema::ReleaseDto<'a>
+impl<'a> core::marker::Sync for zond_engine::export::schema::ReleaseDto<'a>
+impl<'a> core::marker::Unpin for zond_engine::export::schema::ReleaseDto<'a>
+impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::ReleaseDto<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::ReleaseDto<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::ReleaseDto<'a>
 #[non_exhaustive] pub struct zond_engine::export::schema::ReportDto<'a>
 impl<'a> zond_engine::export::schema::ReportDto<'a>
 pub fn zond_engine::export::schema::ReportDto<'a>::generated_at(&'a zond_engine::report::ScanReport, &'a zond_engine::export::ExportOptions, std::time::SystemTime) -> Self
@@ -4032,6 +4069,7 @@ impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::SecurityDto<
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::SecurityDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::SecurityDto<'a>
 #[non_exhaustive] pub struct zond_engine::export::schema::ServiceDto<'a>
+pub zond_engine::export::schema::ServiceDto::build: core::option::Option<zond_engine::export::schema::BuildDto<'a>>
 pub zond_engine::export::schema::ServiceDto::confidence: u8
 pub zond_engine::export::schema::ServiceDto::cpes: alloc::vec::Vec<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::ServiceDto::extrainfo: core::option::Option<alloc::borrow::Cow<'a, str>>
@@ -4183,6 +4221,7 @@ pub fn zond_engine::export::schema::attachment_source_name(zond_engine::report::
 pub fn zond_engine::export::schema::confidence_name(zond_engine::model::confidence::Confidence) -> &'static str
 pub fn zond_engine::export::schema::detection_ceiling_name(core::option::Option<zond_engine::model::finding::DetectionClass>) -> &'static str
 pub fn zond_engine::export::schema::detection_class_name(zond_engine::model::finding::DetectionClass) -> &'static str
+pub fn zond_engine::export::schema::distributor_name(zond_engine::model::port::build::Distributor) -> &'static str
 pub fn zond_engine::export::schema::filtering_name(zond_engine::model::host::Filtering) -> &'static str
 pub fn zond_engine::export::schema::host_status_name(zond_engine::model::host::status::HostStatus) -> &'static str
 pub fn zond_engine::export::schema::ip_protocol_state_name(zond_engine::model::host::protocol::IpProtocolState) -> &'static str
@@ -4195,6 +4234,7 @@ pub fn zond_engine::export::schema::port_scope_name(&zond_engine::report::PortSc
 pub fn zond_engine::export::schema::port_state_name(zond_engine::model::port::PortState) -> &'static str
 pub fn zond_engine::export::schema::protocol_name(zond_engine::model::port::Protocol) -> &'static str
 pub fn zond_engine::export::schema::reference_kind_name(&zond_engine::model::finding::Reference) -> &'static str
+pub fn zond_engine::export::schema::release_basis_name(zond_engine::model::port::build::ReleaseBasis) -> &'static str
 pub fn zond_engine::export::schema::scan_effort_name(zond_engine::config::ScanEffort) -> &'static str
 pub fn zond_engine::export::schema::scan_kind_name(zond_engine::report::ScanKind) -> &'static str
 pub fn zond_engine::export::schema::scan_response_name(&zond_engine::model::port::discovery::ScanResponse) -> alloc::borrow::Cow<'_, str>
@@ -10688,6 +10728,126 @@ pub fn zond_engine::model::parse::to_set<S>(&[S], core::option::Option<zond_engi
 pub fn zond_engine::model::parse::to_target_map(&[alloc::string::String], zond_engine::model::port::set::PortSet, core::option::Option<zond_engine::model::parse::ip::ResolverFn<'_>>) -> core::result::Result<zond_engine::model::target::TargetMap, zond_engine::model::parse::target::TargetParseError>
 pub type zond_engine::model::parse::HostLookup<'a> = &'a (dyn core::ops::function::Fn(&str) -> core::option::Option<alloc::vec::Vec<core::net::ip_addr::IpAddr>> + core::marker::Sync)
 pub mod zond_engine::model::port
+pub mod zond_engine::model::port::build
+#[non_exhaustive] pub enum zond_engine::model::port::build::Distributor
+pub zond_engine::model::port::build::Distributor::Alma
+pub zond_engine::model::port::build::Distributor::Alpine
+pub zond_engine::model::port::build::Distributor::Amazon
+pub zond_engine::model::port::build::Distributor::CentOs
+pub zond_engine::model::port::build::Distributor::Debian
+pub zond_engine::model::port::build::Distributor::Fedora
+pub zond_engine::model::port::build::Distributor::FreeBsd
+pub zond_engine::model::port::build::Distributor::Oracle
+pub zond_engine::model::port::build::Distributor::Raspbian
+pub zond_engine::model::port::build::Distributor::RedHat
+pub zond_engine::model::port::build::Distributor::Rocky
+pub zond_engine::model::port::build::Distributor::Suse
+pub zond_engine::model::port::build::Distributor::Ubuntu
+impl zond_engine::model::port::build::Distributor
+pub const zond_engine::model::port::build::Distributor::ALL: &'static [Self]
+pub fn zond_engine::model::port::build::Distributor::from_name(&str) -> core::option::Option<Self>
+pub const fn zond_engine::model::port::build::Distributor::label(self) -> &'static str
+pub const fn zond_engine::model::port::build::Distributor::uses_debian_revisions(self) -> bool
+impl core::clone::Clone for zond_engine::model::port::build::Distributor
+pub fn zond_engine::model::port::build::Distributor::clone(&self) -> zond_engine::model::port::build::Distributor
+impl core::cmp::Eq for zond_engine::model::port::build::Distributor
+impl core::cmp::Ord for zond_engine::model::port::build::Distributor
+pub fn zond_engine::model::port::build::Distributor::cmp(&self, &zond_engine::model::port::build::Distributor) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::port::build::Distributor
+pub fn zond_engine::model::port::build::Distributor::eq(&self, &zond_engine::model::port::build::Distributor) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::port::build::Distributor
+pub fn zond_engine::model::port::build::Distributor::partial_cmp(&self, &zond_engine::model::port::build::Distributor) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::port::build::Distributor
+pub fn zond_engine::model::port::build::Distributor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::port::build::Distributor
+pub fn zond_engine::model::port::build::Distributor::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::port::build::Distributor
+impl core::marker::StructuralPartialEq for zond_engine::model::port::build::Distributor
+impl core::marker::Freeze for zond_engine::model::port::build::Distributor
+impl core::marker::Send for zond_engine::model::port::build::Distributor
+impl core::marker::Sync for zond_engine::model::port::build::Distributor
+impl core::marker::Unpin for zond_engine::model::port::build::Distributor
+impl core::marker::UnsafeUnpin for zond_engine::model::port::build::Distributor
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::build::Distributor
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::build::Distributor
+#[non_exhaustive] pub enum zond_engine::model::port::build::ReleaseBasis
+pub zond_engine::model::port::build::ReleaseBasis::Banner
+pub zond_engine::model::port::build::ReleaseBasis::Revision
+impl zond_engine::model::port::build::ReleaseBasis
+pub const zond_engine::model::port::build::ReleaseBasis::ALL: &'static [Self]
+impl core::clone::Clone for zond_engine::model::port::build::ReleaseBasis
+pub fn zond_engine::model::port::build::ReleaseBasis::clone(&self) -> zond_engine::model::port::build::ReleaseBasis
+impl core::cmp::Eq for zond_engine::model::port::build::ReleaseBasis
+impl core::cmp::Ord for zond_engine::model::port::build::ReleaseBasis
+pub fn zond_engine::model::port::build::ReleaseBasis::cmp(&self, &zond_engine::model::port::build::ReleaseBasis) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::port::build::ReleaseBasis
+pub fn zond_engine::model::port::build::ReleaseBasis::eq(&self, &zond_engine::model::port::build::ReleaseBasis) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::port::build::ReleaseBasis
+pub fn zond_engine::model::port::build::ReleaseBasis::partial_cmp(&self, &zond_engine::model::port::build::ReleaseBasis) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::port::build::ReleaseBasis
+pub fn zond_engine::model::port::build::ReleaseBasis::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::port::build::ReleaseBasis
+pub fn zond_engine::model::port::build::ReleaseBasis::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::port::build::ReleaseBasis
+impl core::marker::StructuralPartialEq for zond_engine::model::port::build::ReleaseBasis
+impl core::marker::Freeze for zond_engine::model::port::build::ReleaseBasis
+impl core::marker::Send for zond_engine::model::port::build::ReleaseBasis
+impl core::marker::Sync for zond_engine::model::port::build::ReleaseBasis
+impl core::marker::Unpin for zond_engine::model::port::build::ReleaseBasis
+impl core::marker::UnsafeUnpin for zond_engine::model::port::build::ReleaseBasis
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::build::ReleaseBasis
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::build::ReleaseBasis
+pub struct zond_engine::model::port::build::Build
+impl zond_engine::model::port::build::Build
+pub fn zond_engine::model::port::build::Build::describe(&self) -> alloc::string::String
+pub fn zond_engine::model::port::build::Build::distributor(&self) -> zond_engine::model::port::build::Distributor
+pub fn zond_engine::model::port::build::Build::merge(&mut self, zond_engine::model::port::build::Build)
+pub fn zond_engine::model::port::build::Build::new(zond_engine::model::port::build::Distributor) -> Self
+pub fn zond_engine::model::port::build::Build::release(&self) -> core::option::Option<&zond_engine::model::port::build::Release>
+pub fn zond_engine::model::port::build::Build::revision(&self) -> core::option::Option<&str>
+pub fn zond_engine::model::port::build::Build::with_release(self, zond_engine::model::port::build::Release) -> Self
+pub fn zond_engine::model::port::build::Build::with_revision(self, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
+impl core::clone::Clone for zond_engine::model::port::build::Build
+pub fn zond_engine::model::port::build::Build::clone(&self) -> zond_engine::model::port::build::Build
+impl core::cmp::Eq for zond_engine::model::port::build::Build
+impl core::cmp::PartialEq for zond_engine::model::port::build::Build
+pub fn zond_engine::model::port::build::Build::eq(&self, &zond_engine::model::port::build::Build) -> bool
+impl core::convert::From<&zond_engine::model::port::build::Build> for zond_engine::record::BuildRecord
+pub fn zond_engine::record::BuildRecord::from(&zond_engine::model::port::build::Build) -> Self
+impl core::fmt::Debug for zond_engine::model::port::build::Build
+pub fn zond_engine::model::port::build::Build::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::port::build::Build
+pub fn zond_engine::model::port::build::Build::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for zond_engine::model::port::build::Build
+impl core::marker::Freeze for zond_engine::model::port::build::Build
+impl core::marker::Send for zond_engine::model::port::build::Build
+impl core::marker::Sync for zond_engine::model::port::build::Build
+impl core::marker::Unpin for zond_engine::model::port::build::Build
+impl core::marker::UnsafeUnpin for zond_engine::model::port::build::Build
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::build::Build
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::build::Build
+pub struct zond_engine::model::port::build::Release
+impl zond_engine::model::port::build::Release
+pub fn zond_engine::model::port::build::Release::basis(&self) -> zond_engine::model::port::build::ReleaseBasis
+pub fn zond_engine::model::port::build::Release::name(&self) -> &str
+pub fn zond_engine::model::port::build::Release::new(impl core::convert::Into<alloc::sync::Arc<str>>, zond_engine::model::port::build::ReleaseBasis) -> Self
+impl core::clone::Clone for zond_engine::model::port::build::Release
+pub fn zond_engine::model::port::build::Release::clone(&self) -> zond_engine::model::port::build::Release
+impl core::cmp::Eq for zond_engine::model::port::build::Release
+impl core::cmp::PartialEq for zond_engine::model::port::build::Release
+pub fn zond_engine::model::port::build::Release::eq(&self, &zond_engine::model::port::build::Release) -> bool
+impl core::fmt::Debug for zond_engine::model::port::build::Release
+pub fn zond_engine::model::port::build::Release::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::port::build::Release
+pub fn zond_engine::model::port::build::Release::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for zond_engine::model::port::build::Release
+impl core::marker::Freeze for zond_engine::model::port::build::Release
+impl core::marker::Send for zond_engine::model::port::build::Release
+impl core::marker::Sync for zond_engine::model::port::build::Release
+impl core::marker::Unpin for zond_engine::model::port::build::Release
+impl core::marker::UnsafeUnpin for zond_engine::model::port::build::Release
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::build::Release
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::build::Release
 pub mod zond_engine::model::port::catalog
 pub const zond_engine::model::port::catalog::SCTP_BY_PREVALENCE: &[u16]
 pub const zond_engine::model::port::catalog::TCP_BY_PREVALENCE: &[u16]
@@ -10839,6 +10999,7 @@ pub mod zond_engine::model::port::service
 pub struct zond_engine::model::port::service::Service
 impl zond_engine::model::port::service::Service
 pub fn zond_engine::model::port::service::Service::add_cpe(&mut self, impl core::convert::Into<alloc::sync::Arc<str>>)
+pub fn zond_engine::model::port::service::Service::build(&self) -> core::option::Option<&zond_engine::model::port::build::Build>
 pub fn zond_engine::model::port::service::Service::confidence(&self) -> u8
 pub fn zond_engine::model::port::service::Service::cpes(&self) -> &alloc::collections::btree::set::BTreeSet<alloc::sync::Arc<str>>
 pub fn zond_engine::model::port::service::Service::extrainfo(&self) -> core::option::Option<&str>
@@ -10849,6 +11010,7 @@ pub fn zond_engine::model::port::service::Service::new(impl core::convert::Into<
 pub fn zond_engine::model::port::service::Service::product(&self) -> core::option::Option<&str>
 pub fn zond_engine::model::port::service::Service::vendor(&self) -> core::option::Option<&str>
 pub fn zond_engine::model::port::service::Service::version(&self) -> core::option::Option<&str>
+pub fn zond_engine::model::port::service::Service::with_build(self, zond_engine::model::port::build::Build) -> Self
 pub fn zond_engine::model::port::service::Service::with_cpe(self, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
 pub fn zond_engine::model::port::service::Service::with_extrainfo(self, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
 pub fn zond_engine::model::port::service::Service::with_product(self, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
@@ -10959,6 +11121,47 @@ impl core::marker::UnsafeUnpin for zond_engine::model::port::set::PortSet
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::set::PortSet
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::set::PortSet
 pub const zond_engine::model::port::set::COMMON_DISCOVERY_PORTS: &[u16]
+#[non_exhaustive] pub enum zond_engine::model::port::Distributor
+pub zond_engine::model::port::Distributor::Alma
+pub zond_engine::model::port::Distributor::Alpine
+pub zond_engine::model::port::Distributor::Amazon
+pub zond_engine::model::port::Distributor::CentOs
+pub zond_engine::model::port::Distributor::Debian
+pub zond_engine::model::port::Distributor::Fedora
+pub zond_engine::model::port::Distributor::FreeBsd
+pub zond_engine::model::port::Distributor::Oracle
+pub zond_engine::model::port::Distributor::Raspbian
+pub zond_engine::model::port::Distributor::RedHat
+pub zond_engine::model::port::Distributor::Rocky
+pub zond_engine::model::port::Distributor::Suse
+pub zond_engine::model::port::Distributor::Ubuntu
+impl zond_engine::model::port::build::Distributor
+pub const zond_engine::model::port::build::Distributor::ALL: &'static [Self]
+pub fn zond_engine::model::port::build::Distributor::from_name(&str) -> core::option::Option<Self>
+pub const fn zond_engine::model::port::build::Distributor::label(self) -> &'static str
+pub const fn zond_engine::model::port::build::Distributor::uses_debian_revisions(self) -> bool
+impl core::clone::Clone for zond_engine::model::port::build::Distributor
+pub fn zond_engine::model::port::build::Distributor::clone(&self) -> zond_engine::model::port::build::Distributor
+impl core::cmp::Eq for zond_engine::model::port::build::Distributor
+impl core::cmp::Ord for zond_engine::model::port::build::Distributor
+pub fn zond_engine::model::port::build::Distributor::cmp(&self, &zond_engine::model::port::build::Distributor) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::port::build::Distributor
+pub fn zond_engine::model::port::build::Distributor::eq(&self, &zond_engine::model::port::build::Distributor) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::port::build::Distributor
+pub fn zond_engine::model::port::build::Distributor::partial_cmp(&self, &zond_engine::model::port::build::Distributor) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::port::build::Distributor
+pub fn zond_engine::model::port::build::Distributor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::port::build::Distributor
+pub fn zond_engine::model::port::build::Distributor::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::port::build::Distributor
+impl core::marker::StructuralPartialEq for zond_engine::model::port::build::Distributor
+impl core::marker::Freeze for zond_engine::model::port::build::Distributor
+impl core::marker::Send for zond_engine::model::port::build::Distributor
+impl core::marker::Sync for zond_engine::model::port::build::Distributor
+impl core::marker::Unpin for zond_engine::model::port::build::Distributor
+impl core::marker::UnsafeUnpin for zond_engine::model::port::build::Distributor
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::build::Distributor
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::build::Distributor
 #[non_exhaustive] pub enum zond_engine::model::port::PortSetParseError
 pub zond_engine::model::port::PortSetParseError::InvalidPort
 pub zond_engine::model::port::PortSetParseError::InvalidPort::input: alloc::string::String
@@ -11051,6 +11254,33 @@ impl core::marker::Unpin for zond_engine::model::port::Protocol
 impl core::marker::UnsafeUnpin for zond_engine::model::port::Protocol
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::Protocol
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::Protocol
+#[non_exhaustive] pub enum zond_engine::model::port::ReleaseBasis
+pub zond_engine::model::port::ReleaseBasis::Banner
+pub zond_engine::model::port::ReleaseBasis::Revision
+impl zond_engine::model::port::build::ReleaseBasis
+pub const zond_engine::model::port::build::ReleaseBasis::ALL: &'static [Self]
+impl core::clone::Clone for zond_engine::model::port::build::ReleaseBasis
+pub fn zond_engine::model::port::build::ReleaseBasis::clone(&self) -> zond_engine::model::port::build::ReleaseBasis
+impl core::cmp::Eq for zond_engine::model::port::build::ReleaseBasis
+impl core::cmp::Ord for zond_engine::model::port::build::ReleaseBasis
+pub fn zond_engine::model::port::build::ReleaseBasis::cmp(&self, &zond_engine::model::port::build::ReleaseBasis) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::port::build::ReleaseBasis
+pub fn zond_engine::model::port::build::ReleaseBasis::eq(&self, &zond_engine::model::port::build::ReleaseBasis) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::port::build::ReleaseBasis
+pub fn zond_engine::model::port::build::ReleaseBasis::partial_cmp(&self, &zond_engine::model::port::build::ReleaseBasis) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::port::build::ReleaseBasis
+pub fn zond_engine::model::port::build::ReleaseBasis::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::port::build::ReleaseBasis
+pub fn zond_engine::model::port::build::ReleaseBasis::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::port::build::ReleaseBasis
+impl core::marker::StructuralPartialEq for zond_engine::model::port::build::ReleaseBasis
+impl core::marker::Freeze for zond_engine::model::port::build::ReleaseBasis
+impl core::marker::Send for zond_engine::model::port::build::ReleaseBasis
+impl core::marker::Sync for zond_engine::model::port::build::ReleaseBasis
+impl core::marker::Unpin for zond_engine::model::port::build::ReleaseBasis
+impl core::marker::UnsafeUnpin for zond_engine::model::port::build::ReleaseBasis
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::build::ReleaseBasis
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::build::ReleaseBasis
 #[non_exhaustive] pub enum zond_engine::model::port::ScanResponse
 pub zond_engine::model::port::ScanResponse::ConnectionRefused
 pub zond_engine::model::port::ScanResponse::Custom(alloc::string::String)
@@ -11080,6 +11310,35 @@ impl core::marker::Unpin for zond_engine::model::port::discovery::ScanResponse
 impl core::marker::UnsafeUnpin for zond_engine::model::port::discovery::ScanResponse
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::discovery::ScanResponse
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::discovery::ScanResponse
+pub struct zond_engine::model::port::Build
+impl zond_engine::model::port::build::Build
+pub fn zond_engine::model::port::build::Build::describe(&self) -> alloc::string::String
+pub fn zond_engine::model::port::build::Build::distributor(&self) -> zond_engine::model::port::build::Distributor
+pub fn zond_engine::model::port::build::Build::merge(&mut self, zond_engine::model::port::build::Build)
+pub fn zond_engine::model::port::build::Build::new(zond_engine::model::port::build::Distributor) -> Self
+pub fn zond_engine::model::port::build::Build::release(&self) -> core::option::Option<&zond_engine::model::port::build::Release>
+pub fn zond_engine::model::port::build::Build::revision(&self) -> core::option::Option<&str>
+pub fn zond_engine::model::port::build::Build::with_release(self, zond_engine::model::port::build::Release) -> Self
+pub fn zond_engine::model::port::build::Build::with_revision(self, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
+impl core::clone::Clone for zond_engine::model::port::build::Build
+pub fn zond_engine::model::port::build::Build::clone(&self) -> zond_engine::model::port::build::Build
+impl core::cmp::Eq for zond_engine::model::port::build::Build
+impl core::cmp::PartialEq for zond_engine::model::port::build::Build
+pub fn zond_engine::model::port::build::Build::eq(&self, &zond_engine::model::port::build::Build) -> bool
+impl core::convert::From<&zond_engine::model::port::build::Build> for zond_engine::record::BuildRecord
+pub fn zond_engine::record::BuildRecord::from(&zond_engine::model::port::build::Build) -> Self
+impl core::fmt::Debug for zond_engine::model::port::build::Build
+pub fn zond_engine::model::port::build::Build::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::port::build::Build
+pub fn zond_engine::model::port::build::Build::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for zond_engine::model::port::build::Build
+impl core::marker::Freeze for zond_engine::model::port::build::Build
+impl core::marker::Send for zond_engine::model::port::build::Build
+impl core::marker::Sync for zond_engine::model::port::build::Build
+impl core::marker::Unpin for zond_engine::model::port::build::Build
+impl core::marker::UnsafeUnpin for zond_engine::model::port::build::Build
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::build::Build
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::build::Build
 pub struct zond_engine::model::port::CertificateInfo
 impl zond_engine::model::port::security::CertificateInfo
 pub fn zond_engine::model::port::security::CertificateInfo::common_name(&self) -> &str
@@ -11233,6 +11492,28 @@ impl core::marker::Unpin for zond_engine::model::port::set::PortSet
 impl core::marker::UnsafeUnpin for zond_engine::model::port::set::PortSet
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::set::PortSet
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::set::PortSet
+pub struct zond_engine::model::port::Release
+impl zond_engine::model::port::build::Release
+pub fn zond_engine::model::port::build::Release::basis(&self) -> zond_engine::model::port::build::ReleaseBasis
+pub fn zond_engine::model::port::build::Release::name(&self) -> &str
+pub fn zond_engine::model::port::build::Release::new(impl core::convert::Into<alloc::sync::Arc<str>>, zond_engine::model::port::build::ReleaseBasis) -> Self
+impl core::clone::Clone for zond_engine::model::port::build::Release
+pub fn zond_engine::model::port::build::Release::clone(&self) -> zond_engine::model::port::build::Release
+impl core::cmp::Eq for zond_engine::model::port::build::Release
+impl core::cmp::PartialEq for zond_engine::model::port::build::Release
+pub fn zond_engine::model::port::build::Release::eq(&self, &zond_engine::model::port::build::Release) -> bool
+impl core::fmt::Debug for zond_engine::model::port::build::Release
+pub fn zond_engine::model::port::build::Release::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::port::build::Release
+pub fn zond_engine::model::port::build::Release::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for zond_engine::model::port::build::Release
+impl core::marker::Freeze for zond_engine::model::port::build::Release
+impl core::marker::Send for zond_engine::model::port::build::Release
+impl core::marker::Sync for zond_engine::model::port::build::Release
+impl core::marker::Unpin for zond_engine::model::port::build::Release
+impl core::marker::UnsafeUnpin for zond_engine::model::port::build::Release
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::port::build::Release
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::build::Release
 pub struct zond_engine::model::port::Security
 impl zond_engine::model::port::security::Security
 pub fn zond_engine::model::port::security::Security::add_alpn(&mut self, impl core::convert::Into<alloc::sync::Arc<str>>)
@@ -11277,6 +11558,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::port::security
 pub struct zond_engine::model::port::Service
 impl zond_engine::model::port::service::Service
 pub fn zond_engine::model::port::service::Service::add_cpe(&mut self, impl core::convert::Into<alloc::sync::Arc<str>>)
+pub fn zond_engine::model::port::service::Service::build(&self) -> core::option::Option<&zond_engine::model::port::build::Build>
 pub fn zond_engine::model::port::service::Service::confidence(&self) -> u8
 pub fn zond_engine::model::port::service::Service::cpes(&self) -> &alloc::collections::btree::set::BTreeSet<alloc::sync::Arc<str>>
 pub fn zond_engine::model::port::service::Service::extrainfo(&self) -> core::option::Option<&str>
@@ -11287,6 +11569,7 @@ pub fn zond_engine::model::port::service::Service::new(impl core::convert::Into<
 pub fn zond_engine::model::port::service::Service::product(&self) -> core::option::Option<&str>
 pub fn zond_engine::model::port::service::Service::vendor(&self) -> core::option::Option<&str>
 pub fn zond_engine::model::port::service::Service::version(&self) -> core::option::Option<&str>
+pub fn zond_engine::model::port::service::Service::with_build(self, zond_engine::model::port::build::Build) -> Self
 pub fn zond_engine::model::port::service::Service::with_cpe(self, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
 pub fn zond_engine::model::port::service::Service::with_extrainfo(self, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
 pub fn zond_engine::model::port::service::Service::with_product(self, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
@@ -13246,6 +13529,8 @@ pub fn zond_engine::record::wire::confidence_name(zond_engine::model::confidence
 pub fn zond_engine::record::wire::detection_ceiling_name(core::option::Option<zond_engine::model::finding::DetectionClass>) -> &'static str
 pub fn zond_engine::record::wire::detection_class(&str) -> core::option::Option<zond_engine::model::finding::DetectionClass>
 pub fn zond_engine::record::wire::detection_class_name(zond_engine::model::finding::DetectionClass) -> &'static str
+pub fn zond_engine::record::wire::distributor(&str) -> core::option::Option<zond_engine::model::port::build::Distributor>
+pub fn zond_engine::record::wire::distributor_name(zond_engine::model::port::build::Distributor) -> &'static str
 pub fn zond_engine::record::wire::filtering(&str) -> core::option::Option<zond_engine::model::host::Filtering>
 pub fn zond_engine::record::wire::filtering_name(zond_engine::model::host::Filtering) -> &'static str
 pub fn zond_engine::record::wire::host_status(&str) -> core::option::Option<zond_engine::model::host::status::HostStatus>
@@ -13272,6 +13557,8 @@ pub fn zond_engine::record::wire::protocol(&str) -> core::option::Option<zond_en
 pub fn zond_engine::record::wire::protocol_name(zond_engine::model::port::Protocol) -> &'static str
 pub fn zond_engine::record::wire::reference(&str, &str) -> core::option::Option<zond_engine::model::finding::Reference>
 pub fn zond_engine::record::wire::reference_kind_name(&zond_engine::model::finding::Reference) -> &'static str
+pub fn zond_engine::record::wire::release_basis(&str) -> core::option::Option<zond_engine::model::port::build::ReleaseBasis>
+pub fn zond_engine::record::wire::release_basis_name(zond_engine::model::port::build::ReleaseBasis) -> &'static str
 pub fn zond_engine::record::wire::scan_kind(&str) -> core::option::Option<zond_engine::report::ScanKind>
 pub fn zond_engine::record::wire::scan_kind_name(zond_engine::report::ScanKind) -> &'static str
 pub fn zond_engine::record::wire::scan_response(&str) -> core::option::Option<zond_engine::model::port::discovery::ScanResponse>
@@ -13343,6 +13630,33 @@ impl core::marker::Unpin for zond_engine::record::AttachmentRecord
 impl core::marker::UnsafeUnpin for zond_engine::record::AttachmentRecord
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::AttachmentRecord
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::AttachmentRecord
+pub struct zond_engine::record::BuildRecord
+pub zond_engine::record::BuildRecord::distributor: alloc::string::String
+pub zond_engine::record::BuildRecord::release: core::option::Option<zond_engine::record::ReleaseRecord>
+pub zond_engine::record::BuildRecord::revision: core::option::Option<alloc::string::String>
+impl zond_engine::record::BuildRecord
+pub fn zond_engine::record::BuildRecord::rebuild(&self) -> core::option::Option<zond_engine::model::port::build::Build>
+impl core::clone::Clone for zond_engine::record::BuildRecord
+pub fn zond_engine::record::BuildRecord::clone(&self) -> zond_engine::record::BuildRecord
+impl core::cmp::Eq for zond_engine::record::BuildRecord
+impl core::cmp::PartialEq for zond_engine::record::BuildRecord
+pub fn zond_engine::record::BuildRecord::eq(&self, &zond_engine::record::BuildRecord) -> bool
+impl core::convert::From<&zond_engine::model::port::build::Build> for zond_engine::record::BuildRecord
+pub fn zond_engine::record::BuildRecord::from(&zond_engine::model::port::build::Build) -> Self
+impl core::fmt::Debug for zond_engine::record::BuildRecord
+pub fn zond_engine::record::BuildRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::record::BuildRecord
+impl serde_core::ser::Serialize for zond_engine::record::BuildRecord
+pub fn zond_engine::record::BuildRecord::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::record::BuildRecord
+pub fn zond_engine::record::BuildRecord::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for zond_engine::record::BuildRecord
+impl core::marker::Send for zond_engine::record::BuildRecord
+impl core::marker::Sync for zond_engine::record::BuildRecord
+impl core::marker::Unpin for zond_engine::record::BuildRecord
+impl core::marker::UnsafeUnpin for zond_engine::record::BuildRecord
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::BuildRecord
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::BuildRecord
 pub struct zond_engine::record::CaptureRecord
 pub zond_engine::record::CaptureRecord::dropped: u64
 pub zond_engine::record::CaptureRecord::if_dropped: u64
@@ -14074,6 +14388,28 @@ impl core::marker::Unpin for zond_engine::record::RefusalRecord
 impl core::marker::UnsafeUnpin for zond_engine::record::RefusalRecord
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::RefusalRecord
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::RefusalRecord
+pub struct zond_engine::record::ReleaseRecord
+pub zond_engine::record::ReleaseRecord::basis: alloc::string::String
+pub zond_engine::record::ReleaseRecord::name: alloc::string::String
+impl core::clone::Clone for zond_engine::record::ReleaseRecord
+pub fn zond_engine::record::ReleaseRecord::clone(&self) -> zond_engine::record::ReleaseRecord
+impl core::cmp::Eq for zond_engine::record::ReleaseRecord
+impl core::cmp::PartialEq for zond_engine::record::ReleaseRecord
+pub fn zond_engine::record::ReleaseRecord::eq(&self, &zond_engine::record::ReleaseRecord) -> bool
+impl core::fmt::Debug for zond_engine::record::ReleaseRecord
+pub fn zond_engine::record::ReleaseRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::record::ReleaseRecord
+impl serde_core::ser::Serialize for zond_engine::record::ReleaseRecord
+pub fn zond_engine::record::ReleaseRecord::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::record::ReleaseRecord
+pub fn zond_engine::record::ReleaseRecord::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for zond_engine::record::ReleaseRecord
+impl core::marker::Send for zond_engine::record::ReleaseRecord
+impl core::marker::Sync for zond_engine::record::ReleaseRecord
+impl core::marker::Unpin for zond_engine::record::ReleaseRecord
+impl core::marker::UnsafeUnpin for zond_engine::record::ReleaseRecord
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::ReleaseRecord
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::ReleaseRecord
 pub struct zond_engine::record::ScopeRecord
 pub zond_engine::record::ScopeRecord::addresses: u128
 pub zond_engine::record::ScopeRecord::excluded: alloc::vec::Vec<zond_engine::record::RangeRecord>
@@ -14138,6 +14474,7 @@ impl core::marker::UnsafeUnpin for zond_engine::record::SecurityRecord
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::SecurityRecord
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::SecurityRecord
 pub struct zond_engine::record::ServiceRecord
+pub zond_engine::record::ServiceRecord::build: core::option::Option<zond_engine::record::BuildRecord>
 pub zond_engine::record::ServiceRecord::confidence: u8
 pub zond_engine::record::ServiceRecord::cpes: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::record::ServiceRecord::extrainfo: core::option::Option<alloc::string::String>
@@ -18222,6 +18559,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::scoped::Sc
 pub struct zond_engine::Service
 impl zond_engine::model::port::service::Service
 pub fn zond_engine::model::port::service::Service::add_cpe(&mut self, impl core::convert::Into<alloc::sync::Arc<str>>)
+pub fn zond_engine::model::port::service::Service::build(&self) -> core::option::Option<&zond_engine::model::port::build::Build>
 pub fn zond_engine::model::port::service::Service::confidence(&self) -> u8
 pub fn zond_engine::model::port::service::Service::cpes(&self) -> &alloc::collections::btree::set::BTreeSet<alloc::sync::Arc<str>>
 pub fn zond_engine::model::port::service::Service::extrainfo(&self) -> core::option::Option<&str>
@@ -18232,6 +18570,7 @@ pub fn zond_engine::model::port::service::Service::new(impl core::convert::Into<
 pub fn zond_engine::model::port::service::Service::product(&self) -> core::option::Option<&str>
 pub fn zond_engine::model::port::service::Service::vendor(&self) -> core::option::Option<&str>
 pub fn zond_engine::model::port::service::Service::version(&self) -> core::option::Option<&str>
+pub fn zond_engine::model::port::service::Service::with_build(self, zond_engine::model::port::build::Build) -> Self
 pub fn zond_engine::model::port::service::Service::with_cpe(self, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
 pub fn zond_engine::model::port::service::Service::with_extrainfo(self, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
 pub fn zond_engine::model::port::service::Service::with_product(self, impl core::convert::Into<alloc::sync::Arc<str>>) -> Self

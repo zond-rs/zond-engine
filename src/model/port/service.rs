@@ -23,6 +23,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::model::host::os::MAX_CPES_PER_OS;
+use crate::model::port::Build;
 
 /// The most CPE identifiers one service will have recorded against it.
 ///
@@ -73,6 +74,16 @@ pub struct Service {
     /// of everything already there, and so two services carrying the same
     /// identifiers compare equal whatever order the analyzers found them in.
     cpe: BTreeSet<Arc<str>>,
+
+    /// Whose build of the software this is, where the reply said.
+    ///
+    /// Beside the version rather than folded into it, because the two answer
+    /// different questions: the version names the upstream release the build
+    /// started from, and the build says whose fixes were applied to it since.
+    /// A known-vulnerability match on the first alone is right for an upstream
+    /// build and routinely wrong for a distribution's. See
+    /// [`Build`](crate::model::port::Build).
+    build: Option<Build>,
 }
 
 impl Service {
@@ -90,6 +101,7 @@ impl Service {
             version: None,
             extrainfo: None,
             cpe: BTreeSet::new(),
+            build: None,
         }
     }
 
@@ -149,6 +161,11 @@ impl Service {
         self.extrainfo.as_deref()
     }
 
+    /// Whose build of the software this is, if the reply said.
+    pub fn build(&self) -> Option<&Build> {
+        self.build.as_ref()
+    }
+
     /// The CPE identifiers recorded for this service, in sorted order.
     pub fn cpes(&self) -> &BTreeSet<Arc<str>> {
         &self.cpe
@@ -178,6 +195,12 @@ impl Service {
         self
     }
 
+    /// Builder method to record whose build of the software this is.
+    pub fn with_build(mut self, build: Build) -> Self {
+        self.build = Some(build);
+        self
+    }
+
     /// Records a CPE identifier, if [`MAX_CPES_PER_SERVICE`] leaves room.
     ///
     /// Takes `&mut self`, so a service already attached to a port can be
@@ -200,10 +223,15 @@ impl Service {
     /// Folds another identification of this endpoint into this one.
     ///
     /// Confidence decides. A strictly surer `other` names the service and
-    /// supplies every detail it carries: `name`, `product`, `vendor`, `version`
-    /// and `extrainfo`. An equally sure or less sure one fills the gaps it finds
-    /// and displaces nothing, which is the module's rule that a tie keeps what
-    /// is already recorded.
+    /// supplies every detail it carries: `name`, `product`, `vendor`, `version`,
+    /// `extrainfo` and `build`. An equally sure or less sure one fills the gaps
+    /// it finds and displaces nothing, which is the module's rule that a tie
+    /// keeps what is already recorded.
+    ///
+    /// Two builds by the same distributor are two accounts of one build and
+    /// complete each other, whichever is surer, as [`Build::merge`] describes;
+    /// two by different distributors are different builds, and the surer
+    /// identification's stands.
     ///
     /// CPEs union whatever the confidences were, since a CPE claims that an
     /// identifier applies rather than that this is the service, and a probe that
@@ -224,9 +252,20 @@ impl Service {
             version,
             extrainfo,
             cpe,
+            build,
         } = other;
 
-        if confidence > self.confidence {
+        let surer = confidence > self.confidence;
+        self.build = match (self.build.take(), build) {
+            (Some(mut held), Some(offered)) if held.distributor() == offered.distributor() => {
+                held.merge(offered);
+                Some(held)
+            }
+            (Some(_), Some(offered)) if surer => Some(offered),
+            (held, offered) => held.or(offered),
+        };
+
+        if surer {
             self.name = name;
             self.confidence = confidence;
 
@@ -334,6 +373,43 @@ mod tests {
         );
 
         assert_eq!(ssh.cpes().len(), 2, "one new, one already held");
+    }
+
+    /// Two accounts of one distributor's build complete each other whichever is
+    /// surer: the banner that stated the revision and the rule that named the
+    /// release describe one build. Accounts of different distributors' builds
+    /// are two builds, and the surer identification's stands.
+    #[test]
+    fn a_merge_completes_one_distributors_build_and_ranks_two_by_confidence() {
+        use crate::model::port::{Build, Distributor, Release, ReleaseBasis};
+
+        let mut ssh = Service::new("ssh", 90)
+            .with_build(Build::new(Distributor::Ubuntu).with_revision("2ubuntu2.13"));
+        ssh.merge(
+            Service::new("ssh", 70).with_build(
+                Build::new(Distributor::Ubuntu)
+                    .with_release(Release::new("14.04", ReleaseBasis::Banner)),
+            ),
+        );
+        let build = ssh.build().expect("the build survives");
+        assert_eq!(build.revision(), Some("2ubuntu2.13"));
+        assert_eq!(build.release().map(Release::name), Some("14.04"));
+
+        let mut guess = Service::new("ssh", 50).with_build(Build::new(Distributor::Debian));
+        guess.merge(Service::new("ssh", 90).with_build(Build::new(Distributor::Ubuntu)));
+        assert_eq!(
+            guess.build().map(Build::distributor),
+            Some(Distributor::Ubuntu),
+            "the surer identification's build stands"
+        );
+
+        let mut established = Service::new("ssh", 90).with_build(Build::new(Distributor::Ubuntu));
+        established.merge(Service::new("ssh", 50).with_build(Build::new(Distributor::Debian)));
+        assert_eq!(
+            established.build().map(Build::distributor),
+            Some(Distributor::Ubuntu),
+            "a less sure one displaces nothing"
+        );
     }
 
     /// A service's identifiers come from a banner, which the target writes.

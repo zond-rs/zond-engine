@@ -39,7 +39,8 @@ use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;
 use crate::model::mac::MacAddr;
 use crate::model::port::{
-    CertificateInfo, Discovery, Port, PortState, Protocol, ScanResponse, Security, Service,
+    Build, CertificateInfo, Discovery, Distributor, Port, PortState, Protocol, Release,
+    ReleaseBasis, ScanResponse, Security, Service,
 };
 use crate::model::tls::{
     CipherSuite, Interruption, TlsSupport, TlsVersion, UnfinishedVersion, VersionSupport,
@@ -151,7 +152,12 @@ fn ssh_port() -> Port {
         .with_product("OpenSSH")
         .with_vendor("OpenBSD")
         .with_version("8.9p1")
-        .with_cpe("cpe:/a:openbsd:openssh:8.9p1");
+        .with_cpe("cpe:/a:openbsd:openssh:8.9p1")
+        .with_build(
+            Build::new(Distributor::Ubuntu)
+                .with_revision("3ubuntu0.10")
+                .with_release(Release::new("22.04", ReleaseBasis::Banner)),
+        );
 
     let discovery = Discovery::new(ScanResponse::TcpSynAck)
         .with_rtt(Duration::from_micros(1_450))
@@ -589,7 +595,12 @@ fn compared_router(later: bool) -> Host {
         Port::new(22, Protocol::Tcp, PortState::Open).with_service(
             Service::new("ssh", 100)
                 .with_product("OpenSSH")
-                .with_version(if later { "9.6p1" } else { "8.9p1" }),
+                .with_version(if later { "9.6p1" } else { "8.9p1" })
+                .with_build(Build::new(Distributor::Ubuntu).with_revision(if later {
+                    "3ubuntu13.5"
+                } else {
+                    "3ubuntu0.10"
+                })),
         ),
     );
 
@@ -769,7 +780,12 @@ fn hostile_port() -> Port {
         .with_vendor(HOSTILE)
         .with_version(HOSTILE)
         .with_extrainfo(HOSTILE)
-        .with_cpe(HOSTILE);
+        .with_cpe(HOSTILE)
+        .with_build(
+            Build::new(Distributor::Debian)
+                .with_revision(HOSTILE)
+                .with_release(Release::new(HOSTILE, ReleaseBasis::Banner)),
+        );
 
     let certificate = CertificateInfo::new(
         HOSTILE,
@@ -982,7 +998,12 @@ fn named_host(names: bool, words: bool) -> Host {
     let mut ssh = Port::new(22, Protocol::Tcp, PortState::Open).with_service(
         Service::new("ssh", 95)
             .with_product("OpenSSH")
-            .with_cpe(ssh_cpe.clone()),
+            .with_cpe(ssh_cpe.clone())
+            .with_build(
+                Build::new(Distributor::Debian)
+                    .with_revision(format!("1+{NAMED_HOST}"))
+                    .with_release(Release::new(NAMED_HOST, ReleaseBasis::Banner)),
+            ),
     );
     ssh.add_finding(named_correlation(
         "OpenSSH carries known vulnerabilities",

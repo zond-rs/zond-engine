@@ -48,12 +48,14 @@
 //! deliberate opinion rather than a neutral default, and the module says where
 //! the opinion comes from.
 
+pub mod build;
 pub mod catalog;
 pub mod discovery;
 pub mod security;
 pub mod service;
 pub mod set;
 
+pub use build::{Build, Distributor, Release, ReleaseBasis};
 pub use catalog::{TCP_BY_PREVALENCE, UDP_BY_PREVALENCE};
 pub use discovery::{Discovery, ScanResponse};
 pub use security::{CertificateInfo, Security};

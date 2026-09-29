@@ -108,12 +108,12 @@ use crate::model::technique::{SctpScanTechnique, TcpScanTechnique};
 use crate::model::tls::{Interruption, TlsVersion};
 use crate::record::wire;
 use crate::record::{
-    AcceptedVersionRecord, CaptureRecord, CertificateRecord, DetectionIdRecord, DiscoveryRecord,
-    EvasionSettingsRecord, FailureRecord, FindingRecord, HardwareRecord, HopRecord, HostRecord,
-    IdleScanRecord, OsRecord, PhaseOriginRecord, PhaseRecord, PortRecord, PortsRecord,
-    ProbeStatsRecord, RangeRecord, ReferenceRecord, RefusalRecord, ScopeRecord, SecurityRecord,
-    ServiceRecord, SettingsRecord, StatusReasonRecord, TelemetryRecord, UnfinishedVersionRecord,
-    WindowRecord,
+    AcceptedVersionRecord, BuildRecord, CaptureRecord, CertificateRecord, DetectionIdRecord,
+    DiscoveryRecord, EvasionSettingsRecord, FailureRecord, FindingRecord, HardwareRecord,
+    HopRecord, HostRecord, IdleScanRecord, OsRecord, PhaseOriginRecord, PhaseRecord, PortRecord,
+    PortsRecord, ProbeStatsRecord, RangeRecord, ReferenceRecord, RefusalRecord, ReleaseRecord,
+    ScopeRecord, SecurityRecord, ServiceRecord, SettingsRecord, StatusReasonRecord,
+    TelemetryRecord, UnfinishedVersionRecord, WindowRecord,
 };
 use crate::report::{ScanPhase, ScanReport};
 use crate::transport::probe::SendMode;
@@ -1744,6 +1744,24 @@ struct ServiceDto {
     version: Option<String>,
     extrainfo: Option<String>,
     cpes: Vec<String>,
+    build: Option<BuildDto>,
+}
+
+/// `service.build`, whose build of the software a reply said this is.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct BuildDto {
+    distributor: String,
+    revision: Option<String>,
+    release: Option<ReleaseDto>,
+}
+
+/// `service.build.release`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ReleaseDto {
+    name: String,
+    basis: String,
 }
 
 impl ServiceDto {
@@ -1756,6 +1774,14 @@ impl ServiceDto {
             version: self.version,
             extrainfo: self.extrainfo,
             cpes: self.cpes,
+            build: self.build.map(|build| BuildRecord {
+                distributor: build.distributor,
+                revision: build.revision,
+                release: build.release.map(|release| ReleaseRecord {
+                    name: release.name,
+                    basis: release.basis,
+                }),
+            }),
         }
     }
 }

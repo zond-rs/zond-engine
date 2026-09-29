@@ -835,7 +835,19 @@ fn write_port(out: &mut dyn Write, port: &Port, dto: &PortDto<'_>) -> Result<(),
     let version = service
         .map(|service| {
             let mut text = service.version.as_deref().map(esc).unwrap_or_default();
-            if let Some(extra) = &service.extrainfo {
+            // The build first: it is what says whose fixes the version
+            // carries. An extra detail that only restates the build's revision,
+            // as an OpenSSH comment does, would say the same thing twice.
+            let revision = service
+                .build
+                .as_ref()
+                .and_then(|build| build.revision.as_deref());
+            if let Some(build) = &service.build {
+                text.push_str(&dim(&[esc(&build_text(build))]));
+            }
+            if let Some(extra) = &service.extrainfo
+                && revision.is_none_or(|revision| !extra.contains(revision))
+            {
                 text.push_str(&dim(&[esc(extra)]));
             }
             text
@@ -1958,6 +1970,26 @@ fn addresses_in(ranges: &[RangeDto]) -> u128 {
 /// The secondary half of a value: present, but not what the eye should land on.
 ///
 /// Renders to nothing at all when there is nothing to say, so a caller can
+/// A build as the report shows it: the distributor, then the release and the
+/// package revision where they are known.
+fn build_text(build: &super::schema::BuildDto<'_>) -> String {
+    let mut parts: Vec<&str> = vec![distributor_label(build.distributor)];
+    if let Some(release) = &build.release {
+        parts.push(&release.name);
+    }
+    if let Some(revision) = &build.revision {
+        parts.push(revision);
+    }
+    parts.join(" ")
+}
+
+/// The label for a distributor's wire name, which is what the document holds.
+fn distributor_label(wire_name: &str) -> &str {
+    crate::record::wire::distributor(wire_name)
+        .map(crate::model::port::Distributor::label)
+        .unwrap_or(wire_name)
+}
+
 /// append it unconditionally.
 fn dim(parts: &[String]) -> String {
     let parts: Vec<&str> = parts

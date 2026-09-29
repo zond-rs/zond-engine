@@ -33,6 +33,7 @@ use crate::format::time::rfc3339;
 use crate::model::finding::Finding;
 use crate::model::host::os::OsFingerprint;
 use crate::model::host::{HostName, IpProtocolState, ip_protocol_name};
+use crate::model::port::Build;
 use crate::record::wire::{
     host_status_name, ip_protocol_state_name, name_kind_name, name_source_name, port_state_name,
     protocol_name, scan_kind_name,
@@ -697,6 +698,7 @@ impl ChangeDto {
     /// | `port_state` | the verdict |
     /// | `service_identified`, `service_lost` | something was identified here, or no longer is |
     /// | `service_name`, `service_product`, `service_vendor`, `service_version`, `service_extrainfo` | one field of it |
+    /// | `service_build` | whose build, as distributor, release and package revision |
     /// | `cpe_gained`, `cpe_lost` | one platform identifier each |
     /// | `tls_version`, `cipher_suite` | what was negotiated |
     /// | `alpn_gained`, `alpn_lost` | one application protocol each |
@@ -760,6 +762,11 @@ impl ChangeDto {
                 "service_extrainfo",
                 value.before.as_deref(),
                 value.after.as_deref(),
+            ),
+            ServiceChange::Build(value) => Self::optional(
+                "service_build",
+                value.before.as_ref().map(Build::describe).as_deref(),
+                value.after.as_ref().map(Build::describe).as_deref(),
             ),
             ServiceChange::Cpes { gained, lost } => {
                 Self::set("cpe_gained", "cpe_lost", gained, lost)

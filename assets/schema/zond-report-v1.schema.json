@@ -1816,7 +1816,8 @@
         "vendor",
         "version",
         "extrainfo",
-        "cpes"
+        "cpes",
+        "build"
       ],
       "properties": {
         "name": {
@@ -1856,6 +1857,87 @@
           "items": {
             "type": "string"
           }
+        },
+        "build": {
+          "description": "Whose build of the software this is, where the reply said. A distribution backports fixes without moving the upstream version, so `version` alone does not say which fixes a build carries.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/build"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "build": {
+      "description": "A distributor's build of a service's software.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "distributor",
+        "revision",
+        "release"
+      ],
+      "properties": {
+        "distributor": {
+          "description": "Who built it.",
+          "enum": [
+            "debian",
+            "ubuntu",
+            "raspbian",
+            "redhat",
+            "centos",
+            "fedora",
+            "amazon",
+            "rocky",
+            "almalinux",
+            "oracle",
+            "suse",
+            "alpine",
+            "freebsd"
+          ]
+        },
+        "revision": {
+          "description": "The package revision, where the reply stated one: `2ubuntu2.13`, `2+deb12u3`. For FreeBSD's base system, its date stamp. Untrusted.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "release": {
+          "description": "Which of the distributor's releases the build belongs to, where anything said.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/release"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "release": {
+      "description": "A distributor's release, and what said a build belongs to it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "basis"
+      ],
+      "properties": {
+        "name": {
+          "description": "The release as the distributor numbers it: `14.04` for Ubuntu, `12` for Debian. Untrusted.",
+          "type": "string"
+        },
+        "basis": {
+          "description": "`revision` where the package revision names the release outright; `banner` where a rule inferred it from what the release shipped.",
+          "enum": [
+            "banner",
+            "revision"
+          ]
         }
       }
     },
