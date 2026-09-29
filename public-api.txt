@@ -6525,6 +6525,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::csv::CsvIm
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::import::csv::CsvImporter
 pub mod zond_engine::import::debian
 pub fn zond_engine::import::debian::read(&mut dyn alloc::io::read::Read) -> core::result::Result<zond_engine::cve::Advisories, zond_engine::import::ImportError>
+pub fn zond_engine::import::debian::read_as_of(&mut dyn alloc::io::read::Read, std::time::SystemTime) -> core::result::Result<zond_engine::cve::Advisories, zond_engine::import::ImportError>
 pub mod zond_engine::import::json
 pub struct zond_engine::import::json::JsonImporter
 impl zond_engine::import::json::JsonImporter

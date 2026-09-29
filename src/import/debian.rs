@@ -58,6 +58,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::{BufReader, Read};
+use std::time::SystemTime;
 
 use serde::Deserialize;
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, Visitor};
@@ -112,14 +113,34 @@ fn release_of(codename: &str) -> Option<&'static str> {
 /// Reads the Debian security tracker's JSON as a dataset of Debian's
 /// verdicts, keeping the source packages the engine's map names.
 ///
+/// The tracker's JSON carries no date, so a dataset read this way is version
+/// `0.0.0`; [`read_as_of`] dates it.
+///
 /// # Errors
 ///
 /// [`ImportError::Malformed`] for JSON that is not the tracker's shape,
 /// [`ImportError::DocumentTooLarge`] for a source that does not end, and
 /// [`ImportError::Io`] where the read fails.
 pub fn read(tracker: &mut dyn Read) -> Result<Advisories, ImportError> {
-    let wanted: BTreeSet<&str> = crate::cve::packages::source_packages("debian").collect();
+    read_into(tracker, Builder::new(Distributor::Debian))
+}
+
+/// [`read`], dated `as_of`: the day this copy of the tracker was fetched,
+/// which is the one date anything knows about it and what a dataset's
+/// version says, how current its verdicts are.
+///
+/// # Errors
+///
+/// As [`read`].
+pub fn read_as_of(tracker: &mut dyn Read, as_of: SystemTime) -> Result<Advisories, ImportError> {
     let mut builder = Builder::new(Distributor::Debian);
+    builder.dated(&crate::format::time::rfc3339(as_of));
+    read_into(tracker, builder)
+}
+
+/// Reads the tracker into `builder`, and finishes it.
+fn read_into(tracker: &mut dyn Read, mut builder: Builder) -> Result<Advisories, ImportError> {
+    let wanted: BTreeSet<&str> = crate::cve::packages::source_packages("debian").collect();
     super::bounded::within(&mut BufReader::new(tracker), MAX_TRACKER_BYTES, |input| {
         let mut deserializer = serde_json::Deserializer::from_reader(input);
         Tracker {

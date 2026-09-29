@@ -147,6 +147,11 @@ impl Dataset {
         store: &super::Store,
     ) -> Result<super::Derivation, super::DeriveError<crate::import::ImportError>> {
         store.derive(&self.derived(), |sources| {
+            // The tracker's JSON is undated, so its dataset is dated by when
+            // this copy of it was fetched.
+            let debian_fetched = sources
+                .first()
+                .map_or(std::time::UNIX_EPOCH, |stored| stored.metadata().fetched_at);
             let mut files = sources
                 .into_iter()
                 .map(|stored| std::io::BufReader::new(stored.into_file()));
@@ -156,7 +161,7 @@ impl Dataset {
                     let (mut osv, mut vex) = (next(), next());
                     crate::import::ubuntu::read(&mut osv, &mut vex)?
                 }
-                Dataset::Debian => crate::import::debian::read(&mut next())?,
+                Dataset::Debian => crate::import::debian::read_as_of(&mut next(), debian_fetched)?,
             };
             Ok(advisories.to_bytes())
         })
@@ -298,6 +303,17 @@ mod tests {
                 .advisories
                 .distributor(),
             "ubuntu"
+        );
+        // Debian's feed carries no date, so its dataset is dated by the copy's
+        // fetch rather than left at 0.0.0.
+        assert_ne!(
+            Dataset::Debian
+                .load(&store)
+                .unwrap()
+                .unwrap()
+                .advisories
+                .version(),
+            crate::model::finding::Version::new(0, 0, 0)
         );
         let _ = std::fs::remove_dir_all(&root);
     }
