@@ -39,6 +39,25 @@
 //! own release, and a host running `1.0.0-rc1` against a vulnerability fixed in
 //! `1.0.0` would be reported not affected. A missing vulnerability is the wrong
 //! direction for a scanner to be wrong in, because nobody argues with it.
+//!
+//! ## Package versions, a second order
+//!
+//! A distribution names its builds in its own grammar, and [`dpkg_cmp`]
+//! implements Debian's, the one Debian and Ubuntu publish their fix versions
+//! in: `[epoch:]upstream[-revision]`, where `~` sorts before everything, even
+//! the end of the string, so `1.0~rc1` precedes `1.0`, and where a letter
+//! sorts before any other punctuation.
+//!
+//! The two orders answer different questions about different strings and are
+//! never mixed. [`version_cmp`] reads what a service says about itself, an
+//! upstream version with whatever a banner appends, and has to guess at a
+//! hyphen; [`dpkg_cmp`] reads a version a package manager assigned, where
+//! the grammar is exact and a guess would be wrong. They disagree on real
+//! strings: to the lax order `1.0-rc1` is a pre-release that precedes `1.0`,
+//! to dpkg's it is upstream `1.0` with revision `rc1` and follows it; `1.0~1`
+//! is below `1.0` to dpkg and above it to the lax order. A comparison that
+//! crossed them would put a fix on the wrong side of the build it is
+//! compared with.
 
 use std::cmp::Ordering;
 
@@ -188,6 +207,113 @@ fn component_cmp(a: &str, b: &str) -> Ordering {
             return ordering;
         }
     }
+}
+
+/// Compares two Debian package versions, as deb-version(7) defines them.
+///
+/// A version is `[epoch:]upstream[-revision]`. The epoch is the number before
+/// the first colon and is 0 when there is none; the revision is what follows
+/// the last hyphen and is `0` when there is none, so `1.2` and `1.2-0` are one
+/// version. The epoch decides first, numerically, then the upstream part, then
+/// the revision.
+///
+/// The upstream part and the revision are compared the same way, alternating
+/// between a run of non-digits and a run of digits. Non-digit runs compare
+/// character by character with `~` below everything, the end of the run
+/// included, and letters below every other character; digit runs compare as
+/// numbers. That is what puts `1.0~rc1` before `1.0`, `1.0~~` before `1.0~`,
+/// and `2ubuntu2.13` before `2ubuntu2.13+esm1`.
+///
+/// A prefix before the first colon that is not a number is not an epoch, and
+/// the colon is then read as part of the upstream version; dpkg would refuse
+/// such a string, and reading it this way keeps the order total on anything a
+/// feed publishes.
+#[allow(dead_code)]
+pub(crate) fn dpkg_cmp(a: &str, b: &str) -> Ordering {
+    let (a_epoch, a_upstream, a_revision) = dpkg_parts(a);
+    let (b_epoch, b_upstream, b_revision) = dpkg_parts(b);
+
+    digit_run_cmp(a_epoch, b_epoch)
+        .then_with(|| dpkg_part_cmp(a_upstream, b_upstream))
+        .then_with(|| dpkg_part_cmp(a_revision, b_revision))
+}
+
+/// Splits a package version into its epoch, upstream version and revision,
+/// with the defaults deb-version(7) gives a missing epoch (`0`) and a missing
+/// revision (`0`).
+fn dpkg_parts(version: &str) -> (&str, &str, &str) {
+    let (epoch, rest) = match version.split_once(':') {
+        Some((epoch, rest)) if !epoch.is_empty() && epoch.bytes().all(|b| b.is_ascii_digit()) => {
+            (epoch, rest)
+        }
+        _ => ("0", version),
+    };
+    match rest.rsplit_once('-') {
+        Some((upstream, revision)) => (epoch, upstream, revision),
+        None => (epoch, rest, "0"),
+    }
+}
+
+/// Compares one part of a package version, the upstream version or the
+/// revision, by alternating non-digit and digit runs as dpkg does.
+///
+/// Both runs are taken at every step, and an empty run is a real value: an
+/// empty non-digit run weighs as the end of the string, which a `~` is below
+/// and everything else above, and an empty digit run is zero.
+fn dpkg_part_cmp(a: &str, b: &str) -> Ordering {
+    let (mut a, mut b) = (a.as_bytes(), b.as_bytes());
+    while !a.is_empty() || !b.is_empty() {
+        let (a_text, a_rest) = split_run(a, false);
+        let (b_text, b_rest) = split_run(b, false);
+        let text = (0..a_text.len().max(b_text.len()))
+            .map(|i| dpkg_weight(a_text.get(i)).cmp(&dpkg_weight(b_text.get(i))))
+            .find(|ordering| ordering.is_ne())
+            .unwrap_or(Ordering::Equal);
+        if text.is_ne() {
+            return text;
+        }
+
+        let (a_digits, a_rest) = split_run(a_rest, true);
+        let (b_digits, b_rest) = split_run(b_rest, true);
+        let number = digit_run_cmp(
+            std::str::from_utf8(a_digits).unwrap_or_default(),
+            std::str::from_utf8(b_digits).unwrap_or_default(),
+        );
+        if number.is_ne() {
+            return number;
+        }
+        (a, b) = (a_rest, b_rest);
+    }
+    Ordering::Equal
+}
+
+/// Splits off the leading run of digits, or of non-digits.
+fn split_run(s: &[u8], digits: bool) -> (&[u8], &[u8]) {
+    let end = s
+        .iter()
+        .position(|b| b.is_ascii_digit() != digits)
+        .unwrap_or(s.len());
+    s.split_at(end)
+}
+
+/// Where one character of a non-digit run sorts: `~` below the end of the
+/// run, letters above it, and every other character above every letter.
+fn dpkg_weight(c: Option<&u8>) -> i32 {
+    match c {
+        None => 0,
+        Some(b'~') => -1,
+        Some(&c) if c.is_ascii_alphabetic() => i32::from(c),
+        Some(&c) => i32::from(c) + 256,
+    }
+}
+
+/// Compares two runs of digits as the numbers they spell, with an empty run
+/// reading as zero, at any length: leading zeros are skipped, and then the
+/// longer run is the larger number and equal lengths compare digit by digit.
+fn digit_run_cmp(a: &str, b: &str) -> Ordering {
+    let a = a.trim_start_matches('0');
+    let b = b.trim_start_matches('0');
+    a.len().cmp(&b.len()).then_with(|| a.cmp(b))
 }
 
 #[cfg(test)]
@@ -356,6 +482,150 @@ mod tests {
                     version_cmp(b, a).reverse(),
                     "{a:?} against {b:?}"
                 );
+            }
+        }
+    }
+
+    /// Asserts that each version is strictly below the next under dpkg's
+    /// order, both ways round, so a vector checks `Less` and `Greater` alike.
+    fn assert_dpkg_ascending(versions: &[&str]) {
+        for pair in versions.windows(2) {
+            let (low, high) = (pair[0], pair[1]);
+            assert_eq!(dpkg_cmp(low, high), Ordering::Less, "{low} < {high}");
+            assert_eq!(dpkg_cmp(high, low), Ordering::Greater, "{high} > {low}");
+        }
+    }
+
+    /// The epoch outranks everything after it, so a package that renumbered
+    /// its upstream versions downward still sorts after what it replaced; a
+    /// missing epoch is epoch 0.
+    #[test]
+    fn a_package_epoch_decides_before_the_upstream_version() {
+        assert_dpkg_ascending(&["9.9-1", "1:0.1-1", "1:6.6p1-2", "2:0.1"]);
+        assert_eq!(dpkg_cmp("0:1.2-3", "1.2-3"), Ordering::Equal);
+        assert_eq!(dpkg_cmp("00:1.2", "1.2"), Ordering::Equal);
+        assert_eq!(dpkg_cmp("10:1", "9:1"), Ordering::Greater);
+    }
+
+    /// A tilde sorts before everything, the end of the string included: it is
+    /// how a distribution names a build that has to precede a release, such
+    /// as a release candidate packaged ahead of the final version.
+    #[test]
+    fn a_tilde_sorts_before_the_end_of_a_package_version() {
+        assert_dpkg_ascending(&["1.0~~", "1.0~~a", "1.0~", "1.0~rc1", "1.0", "1.0a"]);
+        assert_dpkg_ascending(&["1.0~rc1", "1.0~rc2", "1.0~rc10"]);
+        assert_dpkg_ascending(&["1.0-1~bpo1", "1.0-1", "1.0-1+b1"]);
+    }
+
+    /// Letters sort before every other non-digit, so `1.0a` is below `1.0+`
+    /// and `1.0.`, where a plain byte order would put `+` and `.` first.
+    #[test]
+    fn letters_sort_before_punctuation_in_a_package_version() {
+        assert_dpkg_ascending(&["1.0", "1.0a", "1.0z", "1.0+", "1.0.", "1.0.1"]);
+        assert_dpkg_ascending(&["1.0Z", "1.0a"]);
+        assert_dpkg_ascending(&["1.0a1", "1.0+1"]);
+    }
+
+    /// A security update appends to the revision it patches, and must sort
+    /// after it: an Ubuntu Pro rebuild after the archive build it extends, and
+    /// a Debian stable update numbered past nine after the ones before it.
+    #[test]
+    fn a_security_rebuild_sorts_after_the_revision_it_extends() {
+        assert_dpkg_ascending(&["2ubuntu2.13", "2ubuntu2.13+esm1", "2ubuntu2.13+esm10"]);
+        assert_dpkg_ascending(&["2+deb12u1", "2+deb12u3", "2+deb12u10"]);
+        assert_dpkg_ascending(&[
+            "1:6.6p1-2ubuntu2",
+            "1:6.6p1-2ubuntu2.2",
+            "1:6.6p1-2ubuntu2.7",
+            "1:6.6p1-2ubuntu2.13",
+            "1:6.6p1-2ubuntu2.13+esm1",
+        ]);
+        assert_dpkg_ascending(&["1:9.2p1-2", "1:9.2p1-2+deb12u1", "1:9.2p1-2+deb12u3"]);
+    }
+
+    /// A revision is what follows the *last* hyphen, so an upstream version
+    /// may carry hyphens of its own, and a missing revision reads as `0`.
+    #[test]
+    fn a_package_revision_follows_the_last_hyphen_and_defaults_to_zero() {
+        assert_eq!(dpkg_cmp("1.2", "1.2-0"), Ordering::Equal);
+        assert_dpkg_ascending(&["1.2", "1.2-1", "1.2-1ubuntu1", "1.2.1"]);
+        assert_dpkg_ascending(&["1.2-3-1", "1.2-3-2", "1.2-4-1"]);
+        // The upstream part `1.2-3` sorts after `1.2`, whatever the revisions.
+        assert_dpkg_ascending(&["1.2-9", "1.2-3-1"]);
+    }
+
+    /// The version strings a Red Hat build carries have the same shape and
+    /// order the same way, the release number and dist tag as a revision.
+    #[test]
+    fn red_hat_style_releases_order_by_their_numbers() {
+        assert_dpkg_ascending(&[
+            "7.4p1-11.el7",
+            "7.4p1-21.el7",
+            "7.4p1-21.el7_9",
+            "7.4p1-22.el7",
+        ]);
+        assert_dpkg_ascending(&["7.4p1-21.el7", "7.4p1-21.el8"]);
+    }
+
+    /// Digit runs compare as numbers at any length and a leading zero does
+    /// not change one; a non-numeric prefix before a colon is not an epoch.
+    #[test]
+    fn package_version_digit_runs_are_numbers() {
+        assert_dpkg_ascending(&["1.9", "1.10", "1.100"]);
+        assert_eq!(dpkg_cmp("1.002", "1.2"), Ordering::Equal);
+        assert_dpkg_ascending(&["1.18446744073709551615", "1.18446744073709551616"]);
+        assert_dpkg_ascending(&["a:1", "b:1"]);
+    }
+
+    /// The two orders disagree on real strings, which is why nothing crosses
+    /// them: a hyphen before letters is a pre-release to the lax order and a
+    /// revision to dpkg's, and a tilde goes the other way round.
+    #[test]
+    fn the_package_order_and_the_banner_order_disagree_where_documented() {
+        assert_eq!(version_cmp("1.0-rc1", "1.0"), Ordering::Less);
+        assert_eq!(dpkg_cmp("1.0-rc1", "1.0"), Ordering::Greater);
+        assert_eq!(version_cmp("1.0~1", "1.0"), Ordering::Greater);
+        assert_eq!(dpkg_cmp("1.0~1", "1.0"), Ordering::Less);
+    }
+
+    /// dpkg's order is total: reversing the arguments reverses the answer
+    /// and equality is mutual, over versions chosen to reach every rule.
+    #[test]
+    fn the_package_order_is_antisymmetric_and_transitive() {
+        let versions = [
+            "",
+            "0",
+            "1.0~~",
+            "1.0~",
+            "1.0~rc1",
+            "1.0",
+            "1.0-0",
+            "1.0a",
+            "1.0+",
+            "1.0.",
+            "1:0.1",
+            "0:1.0",
+            "1.0-1",
+            "1.0-1~bpo1",
+            "a:1",
+            "1.002",
+            "1.2",
+            "1.2-3-1",
+            "2ubuntu2.13+esm1",
+            "7.4p1-21.el7",
+        ];
+        for a in versions {
+            for b in versions {
+                assert_eq!(
+                    dpkg_cmp(a, b),
+                    dpkg_cmp(b, a).reverse(),
+                    "{a:?} against {b:?}"
+                );
+                for c in versions {
+                    if dpkg_cmp(a, b).is_le() && dpkg_cmp(b, c).is_le() {
+                        assert!(dpkg_cmp(a, c).is_le(), "{a:?} <= {b:?} <= {c:?}");
+                    }
+                }
             }
         }
     }
