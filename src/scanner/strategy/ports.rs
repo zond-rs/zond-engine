@@ -1236,7 +1236,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// everything unanswered, and those are identical in every number a caller
     /// otherwise sees. `silence` is the verdict itself, which decides whether
     /// the audit may read the run's unanswered ports as possible loss: it may
-    /// where silence is a filter, and not where an open port answers with it.
+    /// where silence is plain no-reply, and not where an open port answers with it.
     ///
     /// Capture counters are read here, while the transport is still alive: they
     /// live with the capture threads it keeps running.

@@ -47,7 +47,7 @@ use crate::report::{ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, ProbeStats, StopReason};
 /// window it asked through, and what it concludes of a port nothing answered.
 ///
 /// Together because the window is only read against the silence. A window cut
-/// to its floor with most ports unanswered says loss where silence is a filter,
+/// to its floor with most ports unanswered says loss where silence is plain no-reply,
 /// and says nothing where silence is what an open port answers.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Pacing {
@@ -458,7 +458,7 @@ impl ProbeAudit {
         // was still not keeping up. Whatever it recorded as silence on this run
         // is not safe to read as a firewall.
         //
-        // Only where silence is a firewall's verdict. An open port answers a
+        // Only where silence is plain no-reply. An open port answers a
         // FIN, a flagless segment or most datagrams with silence, so a scan
         // asking those counts its open ports among the unanswered, and a share
         // of them reported as possible loss is its findings reported as a fault.
@@ -665,7 +665,7 @@ mod tests {
     }
 
     /// A port scan paced to its floor with most of its ports unanswered is
-    /// told its silence may be loss where silence is a firewall's verdict, and
+    /// told its silence may be loss where silence is plain no-reply, and
     /// not where it is what an open port answers.
     ///
     /// A FIN scan's open ports never answer, so they are counted among the

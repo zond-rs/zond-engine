@@ -175,7 +175,7 @@ async fn syn_classifies_open_closed_and_no_reply() {
     assert_eq!(
         port_state(&session, TARGET, 82),
         Some(PortState::NoReply),
-        "silence until the deadline is what a firewall drop looks like"
+        "silence until the deadline is a SYN no stack took"
     );
 }
 
@@ -968,7 +968,7 @@ async fn an_init_scan_classifies_open_closed_and_no_reply() {
     assert_eq!(
         port_state(&session, TARGET, 36412),
         Some(PortState::NoReply),
-        "silence is a filter here: a live endpoint answers an init either way"
+        "silence is no-reply here: a live endpoint answers an init either way"
     );
 }
 

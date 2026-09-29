@@ -155,7 +155,7 @@ pub enum SctpScanTechnique {
     ///
     /// RFC 4960 fixes both answers: a listener accepts with an INIT-ACK (§5.1)
     /// and a stack with nothing on that port refuses with an ABORT (§8.4), so
-    /// every live endpoint says something and silence is a filter. Neither
+    /// every live endpoint says something and silence means none took it. Neither
     /// answer completes an association, so no port is left half-open.
     #[default]
     Init,
@@ -501,7 +501,7 @@ impl TcpScanTechnique {
     ///
     /// The difference between the two answers is the difference between the
     /// families. A SYN or an ACK that draws nothing was dropped - both are
-    /// answered by any live stack, so silence is a filter. A flag probe that
+    /// answered by any live stack, so silence means no stack took it. A flag probe that
     /// draws nothing was either dropped *or* delivered to an open port that was
     /// required to ignore it, and no amount of waiting separates those.
     pub const fn silence_means(self) -> PortState {
@@ -735,7 +735,7 @@ mod tests {
         }
     }
 
-    /// Silence is a filter only where every live stack would have answered.
+    /// Silence is plain no-reply only where every live stack would have answered.
     /// Getting this backwards would report open ports as no reply on the
     /// techniques whose positive result *is* silence.
     #[test]

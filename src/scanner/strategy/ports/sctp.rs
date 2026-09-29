@@ -21,7 +21,7 @@
 //! accepts the association attempt with an INIT-ACK, and a port with nothing
 //! behind it refuses outright with an ABORT (RFC 4960 §5.1, §8.4). That makes
 //! this the SYN scan's shape rather than the UDP scan's: a live stack always
-//! says something, so silence is a filter and not an open port keeping quiet.
+//! says something, so silence is a probe no stack took and not an open port keeping quiet.
 //! Neither answer completes an association, so no port is ever left half-open on
 //! the target.
 //!
