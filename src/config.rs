@@ -806,6 +806,10 @@ impl FromStr for ServiceDetection {
 ///
 /// # What it costs
 ///
+/// The slow levels also leave out the operating-system timestamp series,
+/// whose samples cannot be taken slower than they are sent; see
+/// [`probe_interval`](ZondConfig::probe_interval).
+///
 /// A spaced scan takes as long as its probes take to leave, and the spacing
 /// is deferred rather than dropped: a thousand ports at `sparing` is a hundred
 /// seconds before any retry, and at `trickle` a quarter of an hour. Setting
@@ -1750,40 +1754,59 @@ pub struct ZondConfig {
     /// [`scan_timeout`](Self::scan_timeout) set, the two meet and the report
     /// says which hosts the budget left part-scanned.
     ///
-    /// Read by the raw port scanners, the routed sweep and the active
-    /// identification pass. The passive listener sends nothing, and the
-    /// timestamp series is timed rather than paced: its probe spacing is the
-    /// measurement, so slowing it would change what it reads rather than how
-    /// politely it reads it.
+    /// ## What reads this
     ///
-    /// ## The unprivileged paths do not honour this yet
+    /// Every pass that sends toward a target, on the privileged and the
+    /// unprivileged paths alike: the raw port scans, the routed sweep and the
+    /// segment sweep, the identification, characterisation, IP-protocol, route
+    /// and idle passes, and every connection and datagram the scan opens
+    /// through the host's own TCP and UDP, which is the connect scans and the
+    /// connect sweep, service identification with every further connection it
+    /// makes, TLS enumeration, the detections, and the SNMP and multicast DNS
+    /// questions. Each takes its slot from one gate the scan's passes share,
+    /// deciding and recording in one step, so passes running at once are held
+    /// to one gap between them rather than each allowing the whole of it.
     ///
-    /// A connect scan ignores it, which matters because that is the path a
-    /// non-root caller gets. This is a gap rather than a decision, and it is not
-    /// the argument [`max_probe_rate`](Self::max_probe_rate) makes about those
-    /// paths pacing themselves by their connection concurrency: concurrency
-    /// bounds how many probes are in flight at once and says nothing about how
-    /// close together two of them reach one address.
-    ///
-    /// What it needs is a gate that claims a host's slot in the same operation
-    /// that checks it. The privileged paths check and then record, in that
-    /// order, because a send the kernel refuses must not spend the slot; a
-    /// connect scan runs its probes as concurrent tasks, so two aimed at one
-    /// address would both find it ready and both proceed. Without that
-    /// primitive, a caller who needs the gap enforced needs the privileged path.
+    /// Three things send without asking it, each for a reason of its own. The
+    /// passive listener sends nothing. Resolving the next hop's hardware
+    /// address and asking a resolver for a name are aimed at a neighbour and a
+    /// name server, not at a target. And the timestamp series is timed rather
+    /// than paced: its probe spacing is the measurement, so slowing it would
+    /// change what it reads rather than how politely it reads it. It runs
+    /// under this gap unchanged; see
+    /// [`probe_interval`](Self::probe_interval) for the one gap it does not.
     ///
     /// ## What a gap counts
     ///
-    /// One probe, which is one packet everywhere but two places, each of which
-    /// treats a question put as several packets back to back as one probe,
-    /// since deferring part of it would leave the rest unanswerable or unretried.
-    /// The identification pass asks an IPv4 target for an echo and a timestamp,
-    /// so two packets. The routed sweep asks an address on each of its
+    /// One probe. On the raw paths that is one packet everywhere but two
+    /// places, each of which treats a question put as several packets back to
+    /// back as one probe, since deferring part of it would leave the rest
+    /// unanswerable or unretried. The identification pass asks an IPv4 target
+    /// for an echo and a timestamp, so two packets. The routed sweep asks an
+    /// address on each of its
     /// [`SynPorts`](crate::scanner::strategy::routed::SynPorts), so five, or up
     /// to eight in a port scan's liveness pass. So a gap of 100 ms admits that
     /// many packets a tenth of a second at one address while those run, and one
     /// everywhere else. The numbers are stated here rather than left for
     /// somebody to find in a capture.
+    ///
+    /// Over the host's own sockets, one probe is one connection attempt, every
+    /// retry and every redial among them, or the first datagram of one
+    /// exchange. What is said over a connection that was answered is the
+    /// conversation rather than a probe, and is not spaced. A probe waits for
+    /// its slot before its socket is opened, and the wait is charged to no
+    /// timeout of the connection or the conversation, so a long gap costs
+    /// time and never an identification.
+    ///
+    /// The idle scan counts a read of its zombie's counter at the zombie and
+    /// each forged probe at the target. A route trace counts each probe at the
+    /// target it is aimed at, though routers on the way answer it.
+    ///
+    /// A probe given back its slot is one this machine refused before
+    /// anything left: no descriptor, no source address, a local route's
+    /// refusal. A probe still waiting when the scan stops or its host's budget
+    /// runs out is never sent, and is reported as never asked rather than as
+    /// silence.
     pub host_probe_interval: Option<Duration>,
 
     /// The shortest gap between any two probes the scan sends, whatever host
@@ -1811,11 +1834,20 @@ pub struct ZondConfig {
     /// may each reach it. This is one gap the scan's passes share, claimed
     /// probe by probe, so passes running at once divide it between them.
     ///
-    /// Held to exactly the probes [`host_probe_interval`](Self::host_probe_interval)
+    /// Held to the probes [`host_probe_interval`](Self::host_probe_interval)
     /// is, counted the same way, and read literally on the same terms,
     /// `Duration::MAX` included: see there for which passes those are and
     /// what one probe is. A probe waits out whichever of the two gaps runs
-    /// out later.
+    /// out later. It also holds the frames the segment sweep puts to a group
+    /// rather than to one address, the router solicitation, the configuration
+    /// request and the all-nodes echo, which spend this gap and no host's.
+    ///
+    /// The timestamp series does not run under a gap longer than its own send
+    /// cadence of a quarter of a millisecond. Its samples are read for the
+    /// interval between them, and spread across a longer gap they would read
+    /// as a stalled counter; sending them anyway would break the bound this
+    /// sets. So it is left out, the report records why, and each host keeps
+    /// what passive identification read of it.
     ///
     /// A probe held here is deferred rather than dropped, so a scan spaced
     /// slower than its plan is large takes longer instead of asking less. A
