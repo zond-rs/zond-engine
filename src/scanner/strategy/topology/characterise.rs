@@ -45,7 +45,7 @@ use crate::model::technique::TcpScanTechnique;
 use crate::protocols::tcp;
 use crate::report::ScannerKind;
 use crate::scanner::session::ScanContext;
-use crate::scanner::strategy::raw::neighbors::{resolve_ahead, send_when_admitted};
+use crate::scanner::strategy::raw::neighbors::{NeighborGates, resolve_ahead, send_when_admitted};
 use crate::system::interface::SourceResolver;
 use crate::transport::link::EthernetSender;
 use crate::transport::probe::{
@@ -211,13 +211,17 @@ async fn run(
         && !ctx.handle.should_stop()
     {
         send_fragmented(
+            ctx,
             &subjects,
             fragmenting.sender,
             &unframed,
             resolver,
             &mut awaiting,
-        );
+        )
+        .await;
     }
+    // From the last send, so no gap between probes can spend the time an
+    // answer is given.
     collect_replies(ctx, transport, &awaiting).await;
 }
 
@@ -230,8 +234,9 @@ struct Diagnostic {
 }
 
 impl Diagnostic {
-    /// Sends this probe to `host` and files what a reply to it would prove.
-    fn send(self, sender: &dyn ProbeSender, awaiting: &mut Awaiting, host: IpAddr) {
+    /// Sends this probe to `host` and files what a reply to it would prove,
+    /// saying whether it reached the wire.
+    fn send(self, sender: &dyn ProbeSender, awaiting: &mut Awaiting, host: IpAddr) -> bool {
         let Self {
             source,
             port,
@@ -239,16 +244,16 @@ impl Diagnostic {
         } = self;
         match conclusion {
             Filtering::InlineMiddlebox => {
-                probe_inline_middlebox(sender, awaiting, source, host, port);
+                probe_inline_middlebox(sender, awaiting, source, host, port)
             }
             Filtering::StatefulFilter => {
-                probe_stateful_filter(sender, awaiting, source, host, port);
+                probe_stateful_filter(sender, awaiting, source, host, port)
             }
             Filtering::PortTrustingAcl => {
-                probe_port_trusting_acl(sender, awaiting, source, host, port);
+                probe_port_trusting_acl(sender, awaiting, source, host, port)
             }
             // Sent on the fragmenting sender instead; see `send_fragmented`.
-            _ => {}
+            _ => false,
         }
     }
 }
@@ -293,13 +298,19 @@ fn plan_diagnostics(
 /// port a plain SYN did not reach, on the frame sender that can place it,
 /// except where that sender's neighbour did not answer, `unframed`, whose
 /// hosts go without this one conclusion.
-fn send_fragmented(
+///
+/// Each is one probe at its host, sent as the gaps the scan keeps between
+/// probes allow. The neighbours were resolved ahead, so no neighbour is asked
+/// about here.
+async fn send_fragmented(
+    ctx: &ScanContext,
     subjects: &[Subject],
     sender: &dyn ProbeSender,
     unframed: &BTreeMap<IpAddr, String>,
     resolver: &mut SourceResolver,
     awaiting: &mut Awaiting,
 ) {
+    let mut planned = Vec::new();
     for subject in subjects {
         let Some(port) = subject.unreached_port else {
             continue;
@@ -310,8 +321,17 @@ fn send_fragmented(
         let Some(source) = resolver.resolve(subject.host) else {
             continue;
         };
-        probe_stateless_filter(sender, awaiting, source, subject.host, port);
+        planned.push((subject.host, (source, port)));
     }
+    send_when_admitted(
+        &mut NeighborGates::default(),
+        ctx,
+        None,
+        resolver,
+        planned,
+        |host, (source, port)| probe_stateless_filter(sender, awaiting, source, host, port),
+    )
+    .await;
 }
 
 /// Sends a SYN with a deliberately bad checksum to an open port. A conformant
@@ -323,7 +343,7 @@ fn probe_inline_middlebox(
     source: IpAddr,
     host: IpAddr,
     port: u16,
-) {
+) -> bool {
     let nonce: u32 = rand::random();
     let src_port: u16 = rand::random_range(50_000..u16::MAX);
     send_diagnostic(
@@ -344,7 +364,7 @@ fn probe_inline_middlebox(
         ),
         Emission::routed(),
         Filtering::InlineMiddlebox,
-    );
+    )
 }
 
 /// Sends an ACK to a port the scan's plain SYN did not reach. A reset back is
@@ -356,7 +376,7 @@ fn probe_stateful_filter(
     source: IpAddr,
     host: IpAddr,
     port: u16,
-) {
+) -> bool {
     let nonce: u32 = rand::random();
     let src_port: u16 = rand::random_range(50_000..u16::MAX);
     send_diagnostic(
@@ -368,7 +388,7 @@ fn probe_stateful_filter(
         tcp::build_probe(TcpScanTechnique::Ack, source, host, src_port, port, nonce),
         Emission::routed(),
         Filtering::StatefulFilter,
-    );
+    )
 }
 
 /// Sends a SYN out of the trusted source port to a port an ordinary SYN did
@@ -380,7 +400,7 @@ fn probe_port_trusting_acl(
     source: IpAddr,
     host: IpAddr,
     port: u16,
-) {
+) -> bool {
     let nonce: u32 = rand::random();
     send_diagnostic(
         sender,
@@ -398,7 +418,7 @@ fn probe_port_trusting_acl(
         ),
         Emission::routed(),
         Filtering::PortTrustingAcl,
-    );
+    )
 }
 
 /// Sends a whole SYN fragmented small enough that its flags fall past the first
@@ -414,7 +434,7 @@ fn probe_stateless_filter(
     source: IpAddr,
     host: IpAddr,
     port: u16,
-) {
+) -> bool {
     let nonce: u32 = rand::random();
     let src_port: u16 = rand::random_range(50_000..u16::MAX);
     send_diagnostic(
@@ -429,11 +449,12 @@ fn probe_stateless_filter(
             ..Emission::routed()
         },
         Filtering::StatelessFilter,
-    );
+    )
 }
 
 /// Builds `packet`, sends it from `source` to `host`, and, if it reached the
 /// wire, files its `nonce` under the `conclusion` a reply to it would prove.
+/// Says whether it did.
 #[allow(clippy::too_many_arguments)]
 fn send_diagnostic(
     sender: &dyn ProbeSender,
@@ -444,7 +465,7 @@ fn send_diagnostic(
     packet: crate::protocols::error::Result<Vec<u8>>,
     emission: Emission,
     conclusion: Filtering,
-) {
+) -> bool {
     let packet = match packet {
         Ok(packet) => packet,
         Err(e) => {
@@ -452,15 +473,17 @@ fn send_diagnostic(
                 verbosity = 2,
                 "cannot build a diagnostic probe for {host}: {e}"
             );
-            return;
+            return false;
         }
     };
     // A refused send files nothing: the fragmented stateless probe reaches only
     // a host the Ethernet path can route to, and one it cannot simply goes
     // uncharacterised rather than credited a conclusion no probe proved.
-    if sender.send(&packet, source, host, None, emission).is_ok() {
+    let sent = sender.send(&packet, source, host, None, emission).is_ok();
+    if sent {
         awaiting.insert(nonce, (host, conclusion));
     }
+    sent
 }
 
 /// Listens until the reply window closes or the scan is stopped, folding every
@@ -648,6 +671,59 @@ mod tests {
             asked.lock().unwrap().len(),
             (dead.len() + 1) * 3,
             "the raw probes, through a transport with nothing to read, go to every host"
+        );
+    }
+
+    /// Under the gaps a scan keeps between probes, every filter probe is still
+    /// sent, each host's no nearer its last than the per-host gap and none
+    /// nearer any other than the scan-wide one, and the pass takes the time
+    /// that costs rather than dropping what the gaps held.
+    #[tokio::test]
+    async fn the_filter_probes_keep_the_gaps_between_probes() {
+        use crate::scanner::session::ScanSession;
+        use crate::system::interface::{Link, LinkAddress};
+        use crate::transport::probe::MockSender;
+
+        const HOST_GAP: Duration = Duration::from_millis(120);
+        const SCAN_GAP: Duration = Duration::from_millis(15);
+        let hosts = [HOST, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2))];
+        let (_session, ctx) = ScanSession::builder()
+            .host_probe_interval(Some(HOST_GAP))
+            .probe_interval(Some(SCAN_GAP))
+            .build();
+        // Nothing to hear, and a stream that says so, so the listening window
+        // ends at once and the time taken is the sending's.
+        let (_, rx) = tokio::sync::mpsc::channel(1);
+        let sender = MockSender::default();
+        let sent = sender.sent.clone();
+        let mut transport = ProbeTransport::from_parts(Box::new(sender), rx);
+        let subjects = hosts
+            .iter()
+            .map(|&host| Subject {
+                host,
+                open_port: Some(80),
+                unreached_port: Some(81),
+            })
+            .collect();
+        let mut resolver =
+            SourceResolver::from_links(&[Link::new("test0", 1).with_addresses(vec![
+                LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50)), 24),
+            ])]);
+
+        let started = Instant::now();
+        run(&ctx, &mut transport, None, &mut resolver, subjects).await;
+        let elapsed = started.elapsed();
+
+        let sent = sent.lock().unwrap();
+        for host in hosts {
+            let to = sent.iter().filter(|(_, _, dst)| *dst == host).count();
+            assert_eq!(to, 3, "{host} is sent every probe the gaps held");
+        }
+        // Three probes at each host, so two gaps at each, run side by side.
+        let least = HOST_GAP * 2;
+        assert!(
+            elapsed >= least,
+            "three probes {HOST_GAP:?} apart at each host cannot all leave in {elapsed:?}"
         );
     }
 

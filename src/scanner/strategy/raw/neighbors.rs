@@ -553,29 +553,38 @@ pub(crate) async fn admit_waiting(
     }
 }
 
-/// Hands each of `probes` to `send` as its host's neighbour allows, in order
-/// for each host, and returns the hosts whose neighbour was given up on, each
-/// with why, which are sent nothing more.
+/// Hands each of `probes` to `send` as its host's neighbour and the gaps the
+/// scan keeps between probes allow, in order for each host, and returns the
+/// hosts whose neighbour was given up on, each with why, which are sent
+/// nothing more.
 ///
 /// The probes held go together: each pass over them sends every one whose
-/// neighbour has answered and waits one [`NEIGHBOR_RECHECK`] for the rest, so
-/// the first probes of every new neighbour start their resolutions together
-/// and a wave of them costs one resolution's wait, or two where any went
-/// unanswered once. For a pass that sends each
-/// probe once and reads nothing from when it left, the filter probes. Probes
-/// not yet sent when the scan is stopped are dropped.
+/// neighbour has answered and whose slot is free, and waits one
+/// [`NEIGHBOR_RECHECK`], or until the first held slot is free where that is
+/// sooner, for the rest. So the first probes of every new neighbour start
+/// their resolutions together and a wave of them costs one resolution's wait,
+/// or two where any went unanswered once. For a pass that sends each probe
+/// once and reads nothing from when it left, the filter probes. Probes not yet
+/// sent when the scan is stopped are dropped, and the stop ends a wait at
+/// once.
+///
+/// Each probe is one probe at its host. Its slot is claimed before its
+/// neighbour is asked about, since admitting it can start a resolution that
+/// only its own write completes, and given back where the neighbour holds it
+/// or `send` reports that it did not reach the wire.
 pub(crate) async fn send_when_admitted<P>(
     gates: &mut NeighborGates,
     ctx: &ScanContext,
     watch: Option<&NeighborWatch>,
     resolver: &mut SourceResolver,
     probes: Vec<(IpAddr, P)>,
-    mut send: impl FnMut(IpAddr, P),
+    mut send: impl FnMut(IpAddr, P) -> bool,
 ) -> BTreeMap<IpAddr, String> {
     let mut unreached = BTreeMap::new();
     let mut held = probes;
     loop {
         let now = Instant::now();
+        let mut wake = now + NEIGHBOR_RECHECK;
         let mut still = Vec::new();
         for (host, probe) in held {
             if unreached.contains_key(&host) {
@@ -586,10 +595,30 @@ pub(crate) async fn send_when_admitted<P>(
             if ctx.handle.should_stop() {
                 return unreached;
             }
+            let claimed = match ctx.probe_ready_at(host, now) {
+                Some(ready) => Err(ready),
+                None => ctx.claim_probe(host),
+            };
+            let claim = match claimed {
+                Ok(claim) => claim,
+                Err(ready) => {
+                    wake = wake.min(ready);
+                    still.push((host, probe));
+                    continue;
+                }
+            };
             match gates.admit(watch, resolver, host, now) {
-                Admission::Send => send(host, probe),
-                Admission::Hold(_) => still.push((host, probe)),
+                Admission::Send => {
+                    if !send(host, probe) {
+                        ctx.refund_probe(claim);
+                    }
+                }
+                Admission::Hold(_) => {
+                    ctx.refund_probe(claim);
+                    still.push((host, probe));
+                }
                 Admission::Unreachable => {
+                    ctx.refund_probe(claim);
                     unreached.insert(host, gates.refusal(host));
                 }
             }
@@ -598,7 +627,9 @@ pub(crate) async fn send_when_admitted<P>(
         if held.is_empty() || ctx.handle.should_stop() {
             return unreached;
         }
-        tokio::time::sleep(NEIGHBOR_RECHECK).await;
+        ctx.handle
+            .or_stopped(tokio::time::sleep_until(wake.into()))
+            .await;
     }
 }
 
