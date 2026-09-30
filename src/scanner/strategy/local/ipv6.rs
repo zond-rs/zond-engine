@@ -343,9 +343,17 @@ impl Ipv6Discovery {
         self.solicited.contains(address)
     }
 
-    /// The next overheard address owed a confirmation.
-    pub(super) fn next_confirmation(&mut self) -> Option<IpAddr> {
-        self.confirming.pop_front()
+    /// The first overheard address owed a confirmation that `ready` allows,
+    /// taken off the queue. Those it declines stay queued, in order.
+    pub(super) fn next_confirmation(&mut self, ready: impl Fn(IpAddr) -> bool) -> Option<IpAddr> {
+        let index = self.confirming.iter().position(|address| ready(*address))?;
+        self.confirming.remove(index)
+    }
+
+    /// Puts back a confirmation that was taken and could not be sent, at the
+    /// back of the queue, still owed.
+    pub(super) fn requeue_confirmation(&mut self, address: IpAddr) {
+        self.confirming.push_back(address);
     }
 
     /// Whether any address is still queued for its confirmation.
@@ -612,8 +620,8 @@ mod tests {
             );
         }
 
-        assert_eq!(ipv6.next_confirmation(), Some(neighbour));
-        assert_eq!(ipv6.next_confirmation(), None, "one probe, not six");
+        assert_eq!(ipv6.next_confirmation(|_| true), Some(neighbour));
+        assert_eq!(ipv6.next_confirmation(|_| true), None, "one probe, not six");
     }
 
     /// A confirmation yields its round trip once. A second advertisement from

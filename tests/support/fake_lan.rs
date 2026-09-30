@@ -248,6 +248,19 @@ pub enum LanProbe {
     DhcpInform { at: Instant },
 }
 
+impl LanProbe {
+    /// When the segment received it.
+    pub fn at(&self) -> Instant {
+        match *self {
+            Self::Arp { at, .. }
+            | Self::Solicitation { at }
+            | Self::Solicit { at, .. }
+            | Self::RouterSolicit { at }
+            | Self::DhcpInform { at } => at,
+        }
+    }
+}
+
 /// A simulated Ethernet segment a [`LocalScanner`] can be pointed at.
 ///
 /// Declare the hosts, hand the scanner a [`handle`](Self::handle), run it, then

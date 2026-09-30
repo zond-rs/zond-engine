@@ -27,7 +27,7 @@
 mod ipv6;
 mod probes;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
@@ -274,12 +274,19 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 const SEND_INTERVAL: Duration = Duration::from_micros(1000);
 
 /// The deadline a sweep of `target_count` addresses runs under when its ARP
-/// requests are retried on `retry`.
+/// requests are retried on `retry`, in a scan that keeps `gap` between probes
+/// at one host (the longer of its two gaps, since every probe waits out both)
+/// and `scan_gap` between any two probes.
 ///
 /// It has to outlive two things the sweep commits to, and it is derived from
 /// both rather than left to [`DEADLINE_CONFIG`]'s ceiling, which a large
 /// enough range outgrows invisibly.
-fn deadline_for(target_count: usize, retry: &RetryPolicy) -> AdaptiveDeadlineConfig {
+fn deadline_for(
+    target_count: usize,
+    retry: &RetryPolicy,
+    gap: Option<Duration>,
+    scan_gap: Option<Duration>,
+) -> AdaptiveDeadlineConfig {
     // The schedule it commits each probe to, or addresses are given up on
     // having never been fully asked. The longer of the two schedules, because
     // the sweep has to outlive whichever probe it commits to last. Sized from
@@ -288,21 +295,32 @@ fn deadline_for(target_count: usize, retry: &RetryPolicy) -> AdaptiveDeadlineCon
     // exists to fix, arriving one layer up. Each is taken at its longest,
     // every attempt at its ceiling, since a segment that answered slowly times
     // its silent addresses from what it heard, up to the ceiling on every
-    // attempt, the first included.
+    // attempt, the first included. And every attempt at the gap, where that
+    // is longer, since a repeat waits it out with its probe's clock stopped.
     let probe_lifetime = retry
-        .longest_probe_lifetime()
-        .max(ipv6::NDP_RETRY_POLICY.longest_probe_lifetime());
+        .longest_spaced_probe_lifetime(gap)
+        .max(ipv6::NDP_RETRY_POLICY.longest_spaced_probe_lifetime(gap));
 
     // And its own pacing, or it stops mid-send. Every frame leaves through one
     // ticker at `SEND_INTERVAL`, a repeat as much as a first attempt, so an
     // address nothing answers costs an interval per attempt, and a range costs
     // that many times its size. Handed over as a pace per address, which
     // raises the ceiling to cover the range rather than leave it to clamp it.
+    //
+    // A scan-wide gap is a slower ticker, and where it is the slower of the
+    // two it is the pace. The frames put to the whole segment spend it too,
+    // a fixed number however large the range, so they are added once.
     let attempts = retry.max_attempts.max(ipv6::NDP_RETRY_POLICY.max_attempts);
+    let tick = SEND_INTERVAL.max(scan_gap.unwrap_or_default());
+    let group_frames = scan_gap.unwrap_or_default().saturating_mul(GROUP_FRAMES);
     DEADLINE_CONFIG
-        .allowing_for(probe_lifetime)
-        .allowing_pace_of(SEND_INTERVAL * u32::from(attempts), target_count)
+        .allowing_for(probe_lifetime.saturating_add(group_frames))
+        .allowing_pace_of(tick.saturating_mul(u32::from(attempts)), target_count)
 }
+
+/// How many frames a sweep puts to the whole segment rather than to an
+/// address: the two segment questions and every all-nodes echo.
+const GROUP_FRAMES: u32 = 2 + ipv6::SOLICITATION_ATTEMPTS as u32;
 
 /// How much of the segment a [`LocalScanner`] run touches.
 ///
@@ -518,7 +536,57 @@ pub struct LocalScanner {
     /// address: [`interface::refuses_neighbour`], or, in a test, a table
     /// refusing as no host the test runs on does.
     refuses: fn(IpAddr) -> bool,
+    /// The questions put to the whole segment that have not left yet, in the
+    /// order they are owed; see [`SegmentQuestion`].
+    questions: VecDeque<SegmentQuestion>,
+    /// First attempts the gaps the scan keeps between probes turned away,
+    /// each sent once its address's slot is free.
+    ///
+    /// Held rather than dropped, because a probe that never left has asked
+    /// nothing: an address dropped here would never be armed, never settle,
+    /// and read as absent from a segment nobody asked about it. Nor put back
+    /// into the walk, which is a stream that cannot be pushed onto.
+    held_first: VecDeque<(Vec<u8>, IpAddr)>,
 }
+
+/// A question a sweep puts to the whole segment rather than to an address,
+/// sent once at its head.
+///
+/// Each is a frame to a group address that no one host was singled out by,
+/// so each spends the scan-wide gap between probes and no host's own; see
+/// [`ScanContext::claim_group_probe`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SegmentQuestion {
+    /// Which machines route this segment; see
+    /// [`router_solicitation`](LocalScanner::router_solicitation).
+    Routers,
+    /// Which machine configures it; see
+    /// [`configuration_request`](LocalScanner::configuration_request).
+    Configuration,
+}
+
+impl SegmentQuestion {
+    /// The group the frame is addressed to, which is what its claim names.
+    fn group(self) -> IpAddr {
+        match self {
+            // All-routers, link-local scope.
+            Self::Routers => IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 2)),
+            Self::Configuration => IpAddr::V4(Ipv4Addr::BROADCAST),
+        }
+    }
+
+    /// What a failed send of it is reported as.
+    fn what(self) -> &'static str {
+        match self {
+            Self::Routers => "router solicitation",
+            Self::Configuration => "dhcp inform",
+        }
+    }
+}
+
+/// The group the all-nodes solicitation is addressed to, which is what its
+/// claim on the scan-wide gap names.
+const ALL_NODES: IpAddr = IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1));
 
 #[async_trait]
 impl HostScanner for LocalScanner {
@@ -571,8 +639,11 @@ impl HostScanner for LocalScanner {
         // answer from an address outside the target set is read for what its
         // sender said it is and for nothing else. See
         // [`note_declaration`](Self::note_declaration).
-        self.solicit_routers();
-        self.ask_for_configuration();
+        //
+        // Both at once where the scan-wide gap allows, as it always does for a
+        // scan that keeps none; one it turns away waits at the head of the
+        // ticker's queue, still owed.
+        while let Some(true) = self.ask_next_question() {}
 
         let mut sending_finished = false;
         let mut send_interval: Interval = tokio::time::interval(SEND_INTERVAL);
@@ -602,6 +673,7 @@ impl HostScanner for LocalScanner {
             // Anything left to put on the wire, whether a first attempt or a
             // repeat, goes through the same paced ticker.
             let sending = !sending_finished
+                || !self.questions.is_empty()
                 || !self.sweep.retries.is_empty()
                 || self.ipv6.confirmations_pending()
                 || self.ipv6.solicitation().is_due(now);
@@ -636,10 +708,16 @@ impl HostScanner for LocalScanner {
         // What the iterator still holds was never asked. Built into frames to
         // be read, which is work only a sweep cut short pays for, and the
         // one reading that names the addresses rather than counting them.
+        // So are first attempts the gaps between probes held back: a probe
+        // never sent is unasked, not unanswered.
         let unasked: Vec<IpAddr> = if sending_finished {
             Vec::new()
         } else {
-            packet_iter.map(|(_, ip)| ip).collect()
+            self.held_first
+                .drain(..)
+                .map(|(_, ip)| ip)
+                .chain(packet_iter.map(|(_, ip)| ip))
+                .collect()
         };
         self.report_outcome(reason, &unasked);
         Ok(())
@@ -724,7 +802,15 @@ impl LocalScanner {
         // possible budget. `ScanBudget::unclamped` saturates its own cast for
         // the same reason one layer down.
         let target_count = usize::try_from(ip_set.len()).unwrap_or(usize::MAX);
-        let deadline = AdaptiveDeadline::new(deadline_for(target_count, &retry), target_count);
+        let deadline = AdaptiveDeadline::new(
+            deadline_for(
+                target_count,
+                &retry,
+                ctx.probe_gap(),
+                ctx.scan_probe_interval(),
+            ),
+            target_count,
+        );
 
         Ok(Self {
             ctx,
@@ -742,6 +828,8 @@ impl LocalScanner {
             send_failure: None,
             prefixes: interface::OnLinkTable::from_links(std::slice::from_ref(&link)),
             refuses: interface::refuses_neighbour,
+            questions: VecDeque::from([SegmentQuestion::Routers, SegmentQuestion::Configuration]),
+            held_first: VecDeque::new(),
         })
     }
 
@@ -809,42 +897,103 @@ impl LocalScanner {
     /// Puts the next frame this sweep owes on the wire, and says which kind it
     /// was.
     ///
-    /// Repeats first: an address already asked once is an obligation this sweep
-    /// owns, where the next new address is only work it intends to do. The two
-    /// IPv6 schedules are ahead of first attempts for the same reason, each
-    /// having a due time to keep.
+    /// The segment questions a gap held back first, since they were owed
+    /// before anything else. Then repeats: an address already asked once is an
+    /// obligation this sweep owns, where the next new address is only work it
+    /// intends to do. The two IPv6 schedules are ahead of first attempts for
+    /// the same reason, each having a due time to keep.
+    ///
+    /// # Pacing
+    ///
+    /// Every frame this sweep sends is a probe the scan keeps its gaps
+    /// between. One asking about a single address, an ARP request or a
+    /// neighbour solicitation, is a probe at that address, although an ARP
+    /// request is broadcast: only the address named answers it, and a gap at
+    /// one host exists to spare that host. One put to a group, the all-nodes
+    /// echo and the two segment questions, singles out no host and spends the
+    /// scan-wide gap alone; see [`ScanContext::claim_group_probe`].
+    ///
+    /// A frame's slot is claimed immediately before it is sent, and a frame
+    /// turned away is kept where it was owed: a repeat stays queued with its
+    /// clock stopped, a confirmation stays queued, the all-nodes echo stays
+    /// due, and a first attempt is held (see
+    /// [`held_first`](Self::held_first)). The choice between them reads each
+    /// address's slot first, so one held address does not stop the ticker
+    /// sending to the next. A frame the link refused gives its slot back.
     fn send_next(
         &mut self,
         packet_iter: &mut probes::PacketIter,
         sending_finished: bool,
         now: Instant,
     ) -> Dispatched {
-        if let Some(target) = self.next_live_retry() {
-            self.send_probe(target, now);
-            Dispatched::Sent
-        } else if let Some(target) = self.ipv6.next_confirmation() {
-            self.send_confirmation(target, now);
-            Dispatched::Sent
+        // Every frame spends the scan-wide gap, so while it is running there
+        // is nothing to choose between. Free for a scan that keeps none.
+        if self.ctx.group_probe_ready_at(now).is_some() {
+            return Dispatched::Nothing;
+        }
+        match self.ask_next_question() {
+            Some(true) => return Dispatched::Sent,
+            Some(false) => return Dispatched::Nothing,
+            None => {}
+        }
+
+        if let Some(target) = self.next_live_retry(now) {
+            self.send_probe(target, now)
+        } else if let Some(target) = self
+            .ipv6
+            .next_confirmation(|address| self.ctx.probe_ready_at(address, now).is_none())
+        {
+            self.send_confirmation(target, now)
         } else if self.ipv6.solicitation().is_due(now) {
-            self.send_solicitation(now);
-            Dispatched::Sent
+            self.send_solicitation(now)
         } else if !sending_finished {
-            match packet_iter.next() {
-                Some((packet, ip)) => {
-                    // Armed only if the frame left. A probe nobody sent
-                    // must not run out of attempts and earn a verdict, and
-                    // the failure the sweep reports on its way out is about
-                    // exactly these addresses.
-                    if self.emit(&packet, "first attempt") {
-                        self.record_probe(ip, Instant::now());
-                    }
-                    Dispatched::Sent
-                }
-                None => Dispatched::Drained,
-            }
+            self.send_first_attempt(packet_iter, now)
         } else {
             Dispatched::Nothing
         }
+    }
+
+    /// Sends the next first attempt: a held one whose address's slot is now
+    /// free, or else the walk's next.
+    ///
+    /// Drained only once the walk is empty and nothing is held, since a held
+    /// first attempt is an address still to be asked.
+    fn send_first_attempt(
+        &mut self,
+        packet_iter: &mut probes::PacketIter,
+        now: Instant,
+    ) -> Dispatched {
+        let ready = self
+            .held_first
+            .iter()
+            .position(|(_, ip)| self.ctx.probe_ready_at(*ip, now).is_none());
+        let next = match ready {
+            Some(index) => self.held_first.remove(index),
+            None => packet_iter.next(),
+        };
+        let Some((packet, ip)) = next else {
+            return if self.held_first.is_empty() {
+                Dispatched::Drained
+            } else {
+                Dispatched::Nothing
+            };
+        };
+
+        // Turned away only where another pass probed the address since it
+        // was read, or where the walk's next was never read at all.
+        let Ok(claim) = self.ctx.claim_probe(ip) else {
+            self.held_first.push_back((packet, ip));
+            return Dispatched::Nothing;
+        };
+        // Armed only if the frame left. A probe nobody sent must not run out
+        // of attempts and earn a verdict, and the failure the sweep reports on
+        // its way out is about exactly these addresses.
+        if self.emit(&packet, "first attempt") {
+            self.record_probe(ip, Instant::now());
+        } else {
+            self.ctx.refund_probe(claim);
+        }
+        Dispatched::Sent
     }
 
     /// What the sweep leaves behind once the loop has stopped: the addresses it
@@ -1046,20 +1195,59 @@ impl LocalScanner {
     }
 
     /// Sends the one solicitation an overheard address gets, and notes when.
-    fn send_confirmation(&mut self, target: IpAddr, now: Instant) {
+    ///
+    /// A probe at that address, although the sweep was never handed it: it is
+    /// put to one host and only that host answers. One turned away by the gaps
+    /// between probes is queued again, still owed.
+    fn send_confirmation(&mut self, target: IpAddr, now: Instant) -> Dispatched {
         let (IpAddr::V6(target_v6), Some(source_v6)) = (target, self.identity.link_local_ipv6)
         else {
-            return;
+            return Dispatched::Nothing;
         };
 
+        let Ok(claim) = self.ctx.claim_probe(target) else {
+            self.ipv6.requeue_confirmation(target);
+            return Dispatched::Nothing;
+        };
         let packet =
             protocol::ndp::build_neighbor_solicitation(self.identity.mac, source_v6, target_v6);
-        self.emit(&packet, "confirming solicitation");
+        if !self.emit(&packet, "confirming solicitation") {
+            self.ctx.refund_probe(claim);
+        }
         self.ipv6.record_confirmation_sent(target, now);
         info!(
             verbosity = 2,
             "asked {target} directly, having only overheard it"
         );
+        Dispatched::Sent
+    }
+
+    /// Puts the first segment question still owed on the wire, if the
+    /// scan-wide gap allows it.
+    ///
+    /// `None` when none is owed, `Some(false)` when the gap turned the next
+    /// away, which leaves it at the head of the queue, and `Some(true)` when
+    /// it was sent, or could not be built and so is not owed. A frame the link
+    /// refused is not asked again, as neither question is, and gives back its
+    /// slot.
+    fn ask_next_question(&mut self) -> Option<bool> {
+        let question = *self.questions.front()?;
+        let packet = match question {
+            SegmentQuestion::Routers => self.router_solicitation(),
+            SegmentQuestion::Configuration => self.configuration_request(),
+        };
+        let Some(packet) = packet else {
+            self.questions.pop_front();
+            return Some(true);
+        };
+        let Ok(claim) = self.ctx.claim_group_probe(question.group()) else {
+            return Some(false);
+        };
+        self.questions.pop_front();
+        if !self.emit(&packet, question.what()) {
+            self.ctx.refund_probe(claim);
+        }
+        Some(true)
     }
 
     /// Asks every router on the segment to say so, once, at the head of a
@@ -1083,13 +1271,14 @@ impl LocalScanner {
     /// finding, not the finding: a router that answers any of the scan's
     /// ordinary neighbour solicitations declares itself in the R flag of the
     /// reply, and every address the sweep asks about is asked more than once.
-    fn solicit_routers(&mut self) {
-        let Some(link_local) = self.identity.link_local_ipv6 else {
-            return;
-        };
-
-        let packet = protocol::ndp::build_router_solicitation(self.identity.mac, link_local);
-        self.emit(&packet, "router solicitation");
+    ///
+    /// `None` for an interface with no link-local address to ask from.
+    fn router_solicitation(&self) -> Option<Vec<u8>> {
+        let link_local = self.identity.link_local_ipv6?;
+        Some(protocol::ndp::build_router_solicitation(
+            self.identity.mac,
+            link_local,
+        ))
     }
 
     /// Asks the segment which machine configures it, once.
@@ -1115,13 +1304,11 @@ impl LocalScanner {
     /// segment by [`DhcpProtocol`](frames::DhcpProtocol) rather than through a
     /// socket: binding UDP/68 is a privilege this scanner already has a better
     /// use for, and the capture sees the reply either way.
-    fn ask_for_configuration(&mut self) {
-        let Some(source) = self.identity.ipv4 else {
-            return;
-        };
-
-        let packet = protocol::dhcp::build_inform(self.identity.mac, source);
-        self.emit(&packet, "dhcp inform");
+    ///
+    /// `None` for an interface with no IPv4 address to ask from.
+    fn configuration_request(&self) -> Option<Vec<u8>> {
+        let source = self.identity.ipv4?;
+        Some(protocol::dhcp::build_inform(self.identity.mac, source))
     }
 
     /// Sends the all-nodes solicitation again.
@@ -1129,9 +1316,15 @@ impl LocalScanner {
     /// Unlike an ARP request this is never retired by an answer, so it is simply
     /// repeated a fixed number of times: a neighbour that missed the last one,
     /// or was asleep when it arrived, gets another chance to hear it.
-    fn send_solicitation(&mut self, now: Instant) {
+    ///
+    /// Put to a group, so it spends the scan-wide gap alone. One that gap
+    /// turns away stays due.
+    fn send_solicitation(&mut self, now: Instant) -> Dispatched {
         let Some(link_local) = self.identity.link_local_ipv6 else {
-            return;
+            return Dispatched::Nothing;
+        };
+        let Ok(claim) = self.ctx.claim_group_probe(ALL_NODES) else {
+            return Dispatched::Nothing;
         };
 
         let packet = protocol::icmp::build_all_nodes_echo_request_v6(
@@ -1140,26 +1333,38 @@ impl LocalScanner {
             self.ipv6.solicitation().identifier,
             self.ipv6.solicitation().next_sequence(),
         );
-        self.emit(&packet, "all-nodes solicitation");
+        if !self.emit(&packet, "all-nodes solicitation") {
+            self.ctx.refund_probe(claim);
+        }
         self.ipv6.record_solicitation_sent(now);
+        Dispatched::Sent
     }
 
-    /// The first queued retry whose probe is still outstanding, taken off the
-    /// queue.
+    /// The first queued retry whose probe is still outstanding and whose
+    /// address's slot is free, taken off the queue.
     ///
     /// One whose probe has left its ledger was answered while it waited, and
     /// is dropped: sending it asks a question nothing is waiting on, and
     /// arming it would start its address a fresh schedule after its verdict.
-    fn next_live_retry(&mut self) -> Option<IpAddr> {
-        while let Some(target) = self.sweep.retries.pop_front() {
+    /// One the gaps between probes hold back stays queued with its clock
+    /// stopped, and the ticker moves on to one that is ready.
+    fn next_live_retry(&mut self, now: Instant) -> Option<IpAddr> {
+        let waiting = self.sweep.retries.len();
+        for _ in 0..waiting {
+            let target = self.sweep.retries.pop_front()?;
             let outstanding = if target.is_ipv6() {
                 self.ipv6.ledger_mut().contains(&target)
             } else {
                 self.sweep.ledger.contains(&target)
             };
-            if outstanding {
-                return Some(target);
+            if !outstanding {
+                continue;
             }
+            if self.ctx.probe_ready_at(target, now).is_some() {
+                self.sweep.retries.push_back(target);
+                continue;
+            }
+            return Some(target);
         }
         None
     }
@@ -1178,7 +1383,15 @@ impl LocalScanner {
     /// that did not leave, whose attempt stays charged so the address still
     /// runs out of attempts on schedule. See
     /// [`HostSweep::retries`](crate::scanner::strategy::sweep::HostSweep::retries).
-    fn send_probe(&mut self, target: IpAddr, now: Instant) {
+    ///
+    /// One another pass took the slot from since it was chosen goes back to
+    /// the queue, its clock still stopped. One that did not leave gives its
+    /// slot back.
+    fn send_probe(&mut self, target: IpAddr, now: Instant) -> Dispatched {
+        let Ok(claim) = self.ctx.claim_probe(target) else {
+            self.sweep.retries.push_back(target);
+            return Dispatched::Nothing;
+        };
         let packet = match target {
             IpAddr::V4(target_v4) => self
                 .identity
@@ -1199,7 +1412,9 @@ impl LocalScanner {
             ledger.rearm(target, target, (), now);
         } else {
             ledger.resume(&target, now);
+            self.ctx.refund_probe(claim);
         }
+        Dispatched::Sent
     }
 
     /// Takes the IPv6 addresses an overheard mDNS message names as leads,
@@ -1993,7 +2208,7 @@ mod tests {
             ("at thorough", thorough, 5),
         ] {
             let needed = SEND_INTERVAL * (SLASH_16 as u32) * attempts;
-            let given = deadline_for(SLASH_16, &RETRY_POLICY.configured(retry))
+            let given = deadline_for(SLASH_16, &RETRY_POLICY.configured(retry), None, None)
                 .max_budget
                 .for_target_count(SLASH_16);
             assert!(
@@ -2001,6 +2216,28 @@ mod tests {
                 "a /16 {case}: needs {needed:?} to send every attempt and is given {given:?}"
             );
         }
+    }
+
+    /// A sweep under a scan-wide gap outlasts every attempt at every address
+    /// and every frame put to the segment, all leaving that gap apart, which
+    /// on a range is far slower than its ticker. Sized from the ticker alone,
+    /// the deadline stops it with most of the range never asked.
+    #[test]
+    fn a_scan_wide_gap_is_the_pace_of_a_segment_sweep() {
+        let gap = Duration::from_secs(1);
+        let targets = 256;
+        let attempts = RETRY_POLICY
+            .max_attempts
+            .max(ipv6::NDP_RETRY_POLICY.max_attempts);
+        let needed = gap * (u32::from(attempts) * targets as u32 + GROUP_FRAMES);
+        let given = deadline_for(targets, &RETRY_POLICY, Some(gap), Some(gap))
+            .max_budget
+            .for_target_count(targets);
+        assert!(
+            given >= needed,
+            "{targets} addresses asked {gap:?} apart take {needed:?} and the \
+             sweep is given {given:?}"
+        );
     }
 
     /// A segment sweep outlasts the schedule of the last address it asks, on
@@ -2025,7 +2262,9 @@ mod tests {
             let needed = arp
                 .longest_probe_lifetime()
                 .max(ipv6::NDP_RETRY_POLICY.longest_probe_lifetime());
-            let given = deadline_for(1, &arp).max_budget.for_target_count(1);
+            let given = deadline_for(1, &arp, None, None)
+                .max_budget
+                .for_target_count(1);
             assert!(
                 given >= needed,
                 "one address {case}: its schedule at the ceiling takes {needed:?} \
@@ -2290,7 +2529,7 @@ mod tests {
         scanner.refuses = refuses_as_linux_does;
         scanner.confirm(link_local);
         assert_eq!(
-            scanner.ipv6.next_confirmation(),
+            scanner.ipv6.next_confirmation(|_| true),
             Some(link_local),
             "an overheard link-local neighbour was read as refused by a route"
         );
@@ -2298,7 +2537,7 @@ mod tests {
         scanner.refuses = refuses_everything;
         scanner.confirm(on_link);
         assert_eq!(
-            scanner.ipv6.next_confirmation(),
+            scanner.ipv6.next_confirmation(|_| true),
             None,
             "an address the table refuses was asked about"
         );
@@ -2320,7 +2559,7 @@ mod tests {
         scanner.refuses = refuses_everything;
         scanner.confirm(elsewhere);
         assert_eq!(
-            scanner.ipv6.next_confirmation(),
+            scanner.ipv6.next_confirmation(|_| true),
             Some(elsewhere),
             "an address off the link's prefixes was read as refused by a route"
         );

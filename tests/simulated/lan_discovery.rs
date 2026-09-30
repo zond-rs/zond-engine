@@ -1532,3 +1532,94 @@ async fn a_targeted_run_asks_the_segment_and_records_only_what_it_asked_about() 
         "and nothing the scan was not asked about became a host"
     );
 }
+
+/// A scan-wide gap spaces every frame a sweep sends, the ones put to the whole
+/// segment among them, and the sweep still finds every host it was handed.
+///
+/// Under no gap the two segment questions leave together and the first
+/// attempts a millisecond apart; held to one gap across the scan, no two
+/// frames reach the segment nearer than it, whichever kind each is.
+#[tokio::test]
+async fn a_scan_wide_gap_spaces_every_frame_a_sweep_sends() {
+    const GAP: Duration = Duration::from_millis(30);
+    let hosts: Vec<IpAddr> = (10..14).map(v4).collect();
+    let mut lan = FakeLan::new()
+        .routing(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), PEER_A)
+        .serving_dhcp(Ipv4Addr::new(192, 0, 2, 1), PEER_A);
+    for (n, &host) in hosts.iter().enumerate() {
+        lan = lan.host(host, LanHost::at(MacAddr::new(0x02, 0, 0, 0, 1, n as u8)));
+    }
+
+    let spaced = ScanSession::builder().probe_interval(Some(GAP)).build();
+    let (session, _ctx) = sweep_in(&lan, &hosts, Scope::Sweep, spaced).await;
+
+    for &host in &hosts {
+        assert!(
+            session.hosts().get(host).is_some(),
+            "{host} answered and was held, not dropped"
+        );
+    }
+    let probes = lan.probes();
+    assert!(
+        probes
+            .iter()
+            .any(|probe| matches!(probe, LanProbe::RouterSolicit { .. }))
+            && probes
+                .iter()
+                .any(|probe| matches!(probe, LanProbe::DhcpInform { .. }))
+            && probes
+                .iter()
+                .any(|probe| matches!(probe, LanProbe::Solicitation { .. })),
+        "the frames put to the segment are held, not skipped: {probes:?}"
+    );
+    // The gap is kept between the moments frames are released, and the
+    // segment logs them a send later; a small allowance for that jitter.
+    let least = GAP - Duration::from_millis(3);
+    for pair in probes.windows(2) {
+        let apart = pair[1].at().saturating_duration_since(pair[0].at());
+        assert!(
+            apart >= least,
+            "{:?} followed {:?} {apart:?} later, under a {GAP:?} gap",
+            pair[1],
+            pair[0]
+        );
+    }
+}
+
+/// A gap at one host spaces the repeats of the request that asks about it,
+/// and the host that missed the first is still found by a later one.
+///
+/// The gap is longer than the sweep's first retry timeout, a second while
+/// nothing has been measured, so it is the gap and not the schedule that
+/// spaces the two.
+#[tokio::test]
+async fn a_host_gap_spaces_the_requests_a_sweep_repeats() {
+    const GAP: Duration = Duration::from_millis(1_500);
+    let lossy = Ipv4Addr::new(192, 0, 2, 10);
+    let lan = FakeLan::new().host(IpAddr::V4(lossy), LanHost::at(PEER_A).drop_first(1));
+
+    let spaced = ScanSession::builder()
+        .host_probe_interval(Some(GAP))
+        .build();
+    let (session, _ctx) = sweep_in(&lan, &[IpAddr::V4(lossy)], Scope::Targeted, spaced).await;
+
+    assert!(
+        session.hosts().get(IpAddr::V4(lossy)).is_some(),
+        "the second request is answered"
+    );
+    let asked: Vec<_> = lan
+        .probes()
+        .into_iter()
+        .filter(|probe| matches!(probe, LanProbe::Arp { target, .. } if *target == lossy))
+        .map(|probe| probe.at())
+        .collect();
+    assert!(asked.len() >= 2, "asked {} times", asked.len());
+    let least = GAP - Duration::from_millis(3);
+    for pair in asked.windows(2) {
+        let apart = pair[1].saturating_duration_since(pair[0]);
+        assert!(
+            apart >= least,
+            "{lossy} was asked again {apart:?} after the last request, under a {GAP:?} gap"
+        );
+    }
+}

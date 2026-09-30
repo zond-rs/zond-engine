@@ -1348,8 +1348,9 @@ impl Slot {
     }
 }
 
-/// A slot [`ScanContext::claim_probe`] handed out: the address a probe may now
-/// be sent to, and the instant it was allowed to leave.
+/// A slot [`ScanContext::claim_probe`] or [`ScanContext::claim_group_probe`]
+/// handed out: the address a probe may now be sent to, and the instant it was
+/// allowed to leave.
 ///
 /// Returned so a caller whose send the kernel refuses can give the slot back
 /// with [`ScanContext::refund_probe`]. A caller whose send went out keeps it
@@ -1359,10 +1360,15 @@ impl Slot {
 pub struct ProbeClaim {
     address: IpAddr,
     at: Instant,
+    /// Whether the slot was taken on `address`'s own clock as well as the
+    /// scan's. False for a frame put to a group, which is aimed at no host
+    /// and so has no host's clock to give back.
+    at_host: bool,
 }
 
 impl ProbeClaim {
-    /// The address the claimed probe is aimed at.
+    /// The address the claimed probe is aimed at: one host's, or for a
+    /// [group probe](ScanContext::claim_group_probe) the group's.
     pub fn address(&self) -> IpAddr {
         self.address
     }
@@ -1404,6 +1410,17 @@ impl ProbeSpacing {
         anywhere.max(at_host)
     }
 
+    /// When a frame put to a group may next leave, or `None` if it may now:
+    /// the scan-wide gap alone, since no host's clock is moved by it.
+    fn group_ready_at(&self, now: Instant) -> Option<Instant> {
+        let gap = self.scan_wide?;
+        let slot = *self
+            .last_anywhere
+            .lock()
+            .unwrap_or_else(|held| held.into_inner());
+        Slot::ready_at(slot, Some(gap), now)
+    }
+
     /// Takes the next slot for a probe to `address` if both gaps allow one
     /// now, or says when they will.
     fn claim(&self, address: IpAddr) -> Result<ProbeClaim, Instant> {
@@ -1421,10 +1438,37 @@ impl ProbeSpacing {
         address: IpAddr,
         clock: impl FnOnce() -> Instant,
     ) -> Result<ProbeClaim, Instant> {
+        self.claim_on(address, true, clock)
+    }
+
+    /// Takes the next slot for a frame put to `group` if the scan-wide gap
+    /// allows one now, or says when it will; no host's clock is read or moved.
+    fn claim_group(&self, group: IpAddr) -> Result<ProbeClaim, Instant> {
+        self.claim_group_with(group, Instant::now)
+    }
+
+    /// [`claim_group`](Self::claim_group), reading the time from `clock` once
+    /// the lock is held.
+    pub(crate) fn claim_group_with(
+        &self,
+        group: IpAddr,
+        clock: impl FnOnce() -> Instant,
+    ) -> Result<ProbeClaim, Instant> {
+        self.claim_on(group, false, clock)
+    }
+
+    /// A claim on the scan-wide clock, and on `address`'s own where `at_host`.
+    fn claim_on(
+        &self,
+        address: IpAddr,
+        at_host: bool,
+        clock: impl FnOnce() -> Instant,
+    ) -> Result<ProbeClaim, Instant> {
         if !self.is_spaced() {
             return Ok(ProbeClaim {
                 address,
                 at: clock(),
+                at_host,
             });
         }
 
@@ -1433,13 +1477,16 @@ impl ProbeSpacing {
                 .lock()
                 .unwrap_or_else(|held| held.into_inner())
         });
-        let at_host = self.per_host.map(|_| self.last_at_host.entry(address));
+        let host_clock = self
+            .per_host
+            .filter(|_| at_host)
+            .map(|_| self.last_at_host.entry(address));
         let now = clock();
 
         let wait_anywhere = anywhere
             .as_deref()
             .and_then(|slot| Slot::ready_at(*slot, self.scan_wide, now));
-        let wait_at_host = at_host.as_ref().and_then(|entry| match entry {
+        let wait_at_host = host_clock.as_ref().and_then(|entry| match entry {
             dashmap::Entry::Occupied(slot) => Slot::ready_at(Some(*slot.get()), self.per_host, now),
             dashmap::Entry::Vacant(_) => None,
         });
@@ -1450,7 +1497,7 @@ impl ProbeSpacing {
         if let Some(slot) = anywhere.as_deref_mut() {
             *slot = Some(Slot::after(*slot, now));
         }
-        if let Some(entry) = at_host {
+        if let Some(entry) = host_clock {
             match entry {
                 dashmap::Entry::Occupied(mut slot) => {
                     let previous = *slot.get();
@@ -1461,7 +1508,11 @@ impl ProbeSpacing {
                 }
             }
         }
-        Ok(ProbeClaim { address, at: now })
+        Ok(ProbeClaim {
+            address,
+            at: now,
+            at_host,
+        })
     }
 
     /// Gives back the slot `claim` took, on either clock where nothing has
@@ -1480,6 +1531,7 @@ impl ProbeSpacing {
             }
         }
         if self.per_host.is_some()
+            && claim.at_host
             && let dashmap::Entry::Occupied(mut slot) = self.last_at_host.entry(claim.address)
         {
             match slot.get().refunded(claim.at) {
@@ -3009,6 +3061,37 @@ impl ScanContext {
     /// never a shorter one.
     pub fn refund_probe(&self, claim: ProbeClaim) {
         self.spacing.refund(claim);
+    }
+
+    /// Takes the slot for one frame put to `group`, a broadcast or multicast
+    /// address, or says when one will be free.
+    ///
+    /// A frame to a group is a probe the scan sends, and so spends the
+    /// scan-wide gap like any other; what it is not is a probe aimed at a host.
+    /// Every machine on the link receives it and none was singled out, so no
+    /// host's clock is read or moved: counting it against each receiver would
+    /// hold every address on the segment for one frame, and against any one of
+    /// them would be arbitrary. A frame that asks about one address, as an ARP
+    /// request does although it is broadcast, is aimed at that address and
+    /// claims with [`claim_probe`](Self::claim_probe).
+    ///
+    /// The same terms as [`claim_probe`](Self::claim_probe) otherwise: taken
+    /// immediately before the send, a frame turned away is owed a send later,
+    /// and one the kernel refused gives its slot back with
+    /// [`refund_probe`](Self::refund_probe).
+    pub fn claim_group_probe(&self, group: IpAddr) -> Result<ProbeClaim, Instant> {
+        self.spacing.claim_group(group)
+    }
+
+    /// When a frame put to a group may next leave, or `None` if it may now;
+    /// see [`claim_group_probe`](Self::claim_group_probe).
+    ///
+    /// Also when *any* probe may next leave, as far as the scan-wide gap is
+    /// concerned, which a pass whose every frame spends it reads to learn it
+    /// has nothing to choose between. Always `None` for a scan that keeps no
+    /// scan-wide gap.
+    pub fn group_probe_ready_at(&self, now: Instant) -> Option<Instant> {
+        self.spacing.group_ready_at(now)
     }
 
     /// The longer of the gaps this scan keeps between probes, or `None` for a
@@ -4960,6 +5043,44 @@ mod tests {
         // Turned away at its host, so the scan-wide slot is still the first
         // probe's and another host may go as soon as that has run.
         assert!(ctx.spacing.claim_with(other, || now + short).is_ok());
+    }
+
+    /// A frame put to a group spends the scan-wide gap and no host's: it
+    /// holds back the next probe anywhere, and leaves every host's own clock
+    /// where it was, so a refund of it gives back the scan's slot alone.
+    #[test]
+    fn a_group_probe_spends_the_scan_wide_gap_and_no_hosts() {
+        let gap = Duration::from_secs(3600);
+        let (_session, ctx) = ScanSession::builder()
+            .host_probe_interval(Some(gap))
+            .probe_interval(Some(gap))
+            .build();
+        let group: IpAddr = "ff02::2".parse().expect("an address");
+        let host: IpAddr = "192.0.2.1".parse().expect("an address");
+        let now = Instant::now();
+
+        let claim = ctx
+            .spacing
+            .claim_group_with(group, || now)
+            .expect("the first frame");
+        assert_eq!(ctx.group_probe_ready_at(now), Some(now + gap));
+        assert_eq!(ctx.spacing.claim_with(host, || now), Err(now + gap));
+        assert!(
+            ctx.spacing.last_at_host.is_empty(),
+            "no host's clock was moved by a frame aimed at none of them"
+        );
+
+        ctx.refund_probe(claim);
+        assert!(ctx.group_probe_ready_at(now).is_none());
+        assert!(
+            ctx.spacing.claim_with(host, || now).is_ok(),
+            "the refunded frame's slot is free again"
+        );
+        assert_eq!(
+            ctx.spacing.claim_group_with(group, || now),
+            Err(now + gap),
+            "and the host probe after it holds the scan's slot"
+        );
     }
 
     /// A send the kernel refused gives its slot back, and the next probe may
