@@ -883,10 +883,14 @@ impl OsSeriesScanner {
     /// pass by design, since repeatedly probing one host is the whole of what
     /// it does. See
     /// [`ZondConfig::probe_interval`](crate::config::ZondConfig::probe_interval).
-    fn disqualifying_gap(&self) -> Option<Duration> {
-        self.ctx
-            .scan_probe_interval()
-            .filter(|gap| *gap > SEND_TICK)
+    ///
+    /// Stepping aside is not a failure, and is not recorded as one. The gap is
+    /// a setting the caller chose, the report records it, and the operating
+    /// system is still identified by every other means the level allows; what
+    /// is withheld is one technique the chosen pace rules out, which is the
+    /// shape of a pass a setting skips rather than of ground left uncovered.
+    pub(crate) fn gap_it_cannot_keep(ctx: &ScanContext) -> Option<Duration> {
+        ctx.scan_probe_interval().filter(|gap| *gap > SEND_TICK)
     }
 
     /// Asks each target the same question several times and reads the
@@ -905,16 +909,7 @@ impl OsSeriesScanner {
         // aside rather than either slowing down or ignoring the bound; see
         // `honours_scan_gap`. Nothing is sent and every target keeps the
         // answer the passive sources gave it.
-        if let Some(gap) = self.disqualifying_gap() {
-            self.ctx.record_failure(
-                ScannerKind::OsSeries,
-                format!(
-                    "the active series was not run: it samples every host on a {SPACING:?} \
-                     window, sending as close as {SEND_TICK:?} apart, and the scan's {gap:?} \
-                     gap between probes is slower than the interval the measurement reads, \
-                     which sending at that gap would destroy rather than measure"
-                ),
-            );
+        if Self::gap_it_cannot_keep(&self.ctx).is_some() {
             return Ok(());
         }
 
@@ -1388,13 +1383,9 @@ mod tests {
             recorded.lock().expect("readable").is_empty(),
             "not one sample is sent under a gap the measurement cannot honour"
         );
-        let failures = ctx.failures_snapshot();
         assert!(
-            failures
-                .iter()
-                .any(|failure| failure.scanner() == ScannerKind::OsSeries
-                    && failure.reason().contains("was not run")),
-            "the declined pass is recorded: {failures:?}"
+            ctx.failures_snapshot().is_empty(),
+            "a pass the chosen pace rules out is not a pass that failed"
         );
     }
 

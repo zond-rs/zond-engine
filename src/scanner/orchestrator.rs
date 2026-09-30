@@ -1173,6 +1173,13 @@ pub(super) async fn run_active_os_series(
         return;
     }
 
+    // Decided before the pass is announced, so a scan that will not run it
+    // does not say it is following anybody.
+    if strategy::identify::series::OsSeriesScanner::gap_it_cannot_keep(ctx).is_some() {
+        info!(verbosity = 1, "OS series skipped (scan-wide gap)");
+        return;
+    }
+
     let samples = if thorough {
         strategy::identify::series::AGGRESSIVE_SAMPLES
     } else {

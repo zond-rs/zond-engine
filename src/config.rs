@@ -1846,8 +1846,9 @@ pub struct ZondConfig {
     /// cadence of a quarter of a millisecond. Its samples are read for the
     /// interval between them, and spread across a longer gap they would read
     /// as a stalled counter; sending them anyway would break the bound this
-    /// sets. So it is left out, the report records why, and each host keeps
-    /// what passive identification read of it.
+    /// sets. So it is left out, which the report's record of this gap
+    /// accounts for, and each host is named by the operating-system passes
+    /// that remain.
     ///
     /// A probe held here is deferred rather than dropped, so a scan spaced
     /// slower than its plan is large takes longer instead of asking less. A
