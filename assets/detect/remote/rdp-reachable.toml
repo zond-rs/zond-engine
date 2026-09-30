@@ -1,15 +1,23 @@
-# Remote Desktop reachable on the network. RDP is a favourite target for
-# credential stuffing, BlueKeep-class exploits and ransomware ingress, so an
-# exposed one is a major attack surface regardless of its configuration. The
-# probe sends an X.224 connection request; a connection-confirm reply is the
-# finding. One handshake; nothing authenticates.
+# Remote Desktop reachable. RDP is a favourite target for credential stuffing,
+# BlueKeep-class exploits and ransomware ingress, so an exposed one is an attack
+# surface regardless of its configuration. The probe sends an X.224 connection
+# request; a connection-confirm reply is the finding. One handshake; nothing
+# authenticates.
+#
+# What "exposed" means is who can reach it, so the severity says both. RDP on a
+# public address is the single most common ransomware entry point there is. RDP on
+# a private one is how the machine is administered, and every scan of every office
+# network would otherwise carry one of these per desktop, at the same rank as a
+# weakness somebody has to act on. It stays reported at `info`, because an
+# administration port answering is worth seeing listed even where it is expected:
+# the same detection is what finds the one that was never meant to be open.
 #
 # The payload is a single-quoted TOML literal string so its byte escapes reach
 # the interpreter rather than the TOML parser.
 
 [detection]
 id      = "rdp-reachable"
-version = "1.0.0"
+version = "1.1.0"
 title   = "Remote Desktop (RDP) reachable"
 
 [detection.when]
@@ -27,8 +35,8 @@ send   = '\x03\x00\x00\x13\x0e\xe0\x00\x00\x00\x00\x00\x01\x00\x08\x00\x03\x00\x
 expect = '(?s)^\x03\x00\x00.[\x06\x0e]\xd0'
   [[step.finding]]
   when         = "matched"
-  severity     = "medium"
+  severity     = { internet = "medium", internal = "info" }
   summary      = "RDP answered a connection request"
-  detail       = "The host completed the X.224 handshake, so Remote Desktop is reachable; RDP exposed to untrusted networks is a leading path for credential stuffing, BlueKeep-class exploits and ransomware."
+  detail       = "The host completed the X.224 handshake, so Remote Desktop is reachable from wherever this scan ran. Reachable from the internet, RDP is a leading path for credential stuffing, BlueKeep-class exploits and ransomware; reachable from the network it serves, it is how the machine is administered."
   references   = [{ cwe = 284 }]
   excerpt_from = "$response"

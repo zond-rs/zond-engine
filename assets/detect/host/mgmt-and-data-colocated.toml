@@ -2,17 +2,23 @@
 # alongside a PostgreSQL database on the same address puts the control plane and
 # the data on one machine, so a foothold on either is a foothold on both. A
 # correlation over identified services; it sends nothing.
+#
+# Graded per rung, and like `windows-sql-server` not down to `info`: the argument is
+# about how the machine was built and holds against an insider as well. But SSH and
+# Postgres on one address is also what every small deployment, every staging box and
+# every developer's own machine looks like, so on a private address it is a note about
+# the architecture rather than work to schedule.
 
 [detection]
 id      = "mgmt-and-data-colocated"
-version = "1.0.0"
+version = "1.1.0"
 title   = "Management and data plane on one host"
 
 [detection.host]
 services = ["ssh", "postgresql"]
 
 [[finding]]
-severity = "medium"
+severity = { internet = "medium", internal = "low" }
 title    = "SSH and a database on one host"
 summary  = "SSH administration and a PostgreSQL database answer on the same host"
 detail   = "The control plane and the data live on one machine, so a foothold on the administration service reaches the database and a database compromise reaches a shell host."

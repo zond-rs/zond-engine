@@ -2,17 +2,29 @@
 # 139 (NetBIOS) and 445 (SMB) all open is a Windows host presenting its complete
 # legacy remote surface, which is what enumeration and lateral movement probe
 # first. A correlation over open ports; it sends nothing.
+#
+# A shape, and a shape has to be read against who can see it. These three ports on a
+# public address are the surface that has been mass-exploited more than any other,
+# down to worms that needed no credential. On a private address they are what a
+# domain-joined Windows machine looks like with nothing wrong with it, and there is
+# one of them per desk: rated `medium` there, a scan of an office network returns a
+# page of them, each ranked with the weaknesses somebody has to act on, and the
+# effect is that none of them get read.
+#
+# It stays reported at `info` rather than dropped, because the shape is what the
+# lateral-movement question is asked of, and a reader who wants to know which hosts
+# present it needs the correlation to have run and said so.
 
 [detection]
 id      = "windows-workstation"
-version = "1.0.0"
+version = "1.1.0"
 title   = "Windows RPC, NetBIOS and SMB all exposed"
 
 [detection.host]
 ports_open = [135, 139, 445]
 
 [[finding]]
-severity = "medium"
+severity = { internet = "high", internal = "info" }
 title    = "Full Windows remote surface"
 summary  = "TCP 135 (RPC), 139 (NetBIOS) and 445 (SMB) are all open"
 detail   = "A host exposing the RPC endpoint mapper, NetBIOS and SMB together presents the complete legacy Windows remote surface, the first thing domain enumeration and lateral movement reach for."

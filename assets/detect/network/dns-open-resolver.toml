@@ -1,17 +1,29 @@
-# An open DNS resolver. A resolver that answers a recursive query for a name it
-# is not authoritative for will resolve anything for anyone, which both amplifies
-# reflection attacks and can be steered toward cache poisoning. The probe asks it
-# to recurse on an external name over TCP; a reply that carries the recursion
-# available flag and an answer is the finding. A patched or authoritative-only
-# server refuses. One query.
+# A resolver that recurses for a name it is not authoritative for. It will resolve
+# anything for anyone that can reach it, which both amplifies reflection attacks
+# and can be steered toward cache poisoning. The probe asks it to recurse on an
+# external name over TCP; a reply that carries the recursion available flag and an
+# answer is the finding. A patched or authoritative-only server refuses. One query.
 #
-# The payload is a single-quoted TOML literal string so its byte escapes reach
-# the interpreter rather than the TOML parser.
+# Who can reach it is the whole question, so the severity is stated per rung. On a
+# public address this is an open resolver: a stranger's traffic is amplified at it
+# and its cache is a target. On a private one, the same answer is the service the
+# network was configured to provide, and the host answering is very often the same
+# box that handed out its own address over DHCP as the resolver to use. Rating that
+# `high` reports a network's own DNS as an attack on it, which is the finding a
+# person scanning their own LAN sees first and trusts the tool less for.
+#
+# It stays a finding at `info` rather than being suppressed. A resolver open to its
+# own network is still the thing that becomes an open resolver the day it is given
+# a public address or a port forward, and a reader looking for that has to be able
+# to see it was asked.
+#
+# The payload is a single-quoted TOML literal string so its byte escapes reach the
+# interpreter rather than the TOML parser.
 
 [detection]
 id      = "dns-open-resolver"
-version = "1.0.0"
-title   = "Open DNS resolver answers recursive queries"
+version = "1.1.0"
+title   = "Resolver recurses for names it is not authoritative for"
 
 [detection.when]
 service  = "dns"
@@ -28,8 +40,8 @@ send   = '\x00\x1d\x13\x37\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x0
 expect = '(?s)\x13\x37.[\x80-\x8f]\x00\x01\x00[\x01-\xff]'
   [[step.finding]]
   when         = "matched"
-  severity     = "high"
-  summary      = "DNS answered a recursive query for an external name"
-  detail       = "The server recursed on a name it is not authoritative for and returned an answer with recursion available, so it is an open resolver usable for reflection amplification and cache attacks."
+  severity     = { internet = "high", internal = "info" }
+  summary      = "DNS recursed on a name it is not authoritative for"
+  detail       = "The server returned an answer with recursion available for an external name, so it resolves for any host that can reach it. Reachable from the internet that is an open resolver, usable for reflection amplification and cache attacks; reachable only from the network it serves, it is the resolver that network is configured to use."
   references   = [{ cwe = 406 }]
   excerpt_from = "$response"

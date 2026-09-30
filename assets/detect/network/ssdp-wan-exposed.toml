@@ -1,16 +1,24 @@
-# SSDP answering discovery from off the local network. SSDP is meant to stay on
-# the LAN; a device that answers an M-SEARCH from a scan running outside it
-# exposes its UPnP stack, which is a control surface and a UDP amplification
-# source. The reply is an HTTP-shaped 200 naming the UPnP version. A single
-# discovery datagram.
+# SSDP answering a unicast discovery request. SSDP is meant to stay on the LAN, so a
+# device that answers one exposes its UPnP stack, which is a control surface and a
+# UDP amplification source. The reply is an HTTP-shaped 200 naming the UPnP version.
+# A single discovery datagram.
+#
+# Neither the summary nor the severity claims the request came from off-network,
+# because the detection cannot know that: it sends the same M-SEARCH wherever the
+# scan runs from. What it can be told is the exposure of the address that answered,
+# and that is what it grades on. Reachable from the internet, a UPnP stack is a
+# control surface a stranger can reach and a reflector pointed at whoever they
+# choose. On a private address it is every television, printer and speaker on the
+# segment doing what UPnP is for, which is a fact about the network rather than a
+# weakness in it.
 #
 # The payload is a single-quoted TOML literal string so its escapes reach the
 # interpreter rather than the TOML parser.
 
 [detection]
 id      = "ssdp-wan-exposed"
-version = "1.0.0"
-title   = "SSDP/UPnP answers discovery from off-network"
+version = "1.1.0"
+title   = "SSDP/UPnP answers a discovery request"
 
 [detection.when]
 service  = "ssdp"
@@ -27,8 +35,8 @@ send   = 'M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: "ssdp:discov
 expect = ["HTTP/[0-9.]+ 200", '(?i)UPnP/[0-9]']
   [[step.finding]]
   when         = "matched"
-  severity     = "low"
-  summary      = "SSDP answered a discovery request from off-network"
-  detail       = "The device replied to a unicast M-SEARCH with its UPnP details, so its discovery stack is reachable from outside the LAN and can be used to amplify UDP traffic."
+  severity     = { internet = "medium", internal = "info" }
+  summary      = "SSDP answered a unicast discovery request"
+  detail       = "The device replied to a unicast M-SEARCH with its UPnP details, so its discovery stack answers any host that can route to it. Where that is the internet, the stack is a control surface reachable from outside the network and a source of UDP amplification; on the segment it was meant for, it is UPnP working as intended."
   references   = [{ cwe = 200 }]
   excerpt_from = "$response"

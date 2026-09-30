@@ -2,17 +2,23 @@
 # host as SMB is a database sharing a machine with file services, so a foothold on
 # either, an SMB relay or a SQL login, reaches the other. A correlation over
 # identified services; it sends nothing.
+#
+# Graded per rung, and not down to `info`: co-location is a real property of how the
+# machine was built rather than a fact about who can reach it, and the foothold-reaches-
+# the-other argument holds against an insider too. What the exposure changes is how
+# much it matters that both are reachable at once, so the internal rung is `low`
+# rather than nothing.
 
 [detection]
 id      = "windows-sql-server"
-version = "1.0.0"
+version = "1.1.0"
 title   = "SQL Server co-located with SMB"
 
 [detection.host]
 services = ["mssql", "smb"]
 
 [[finding]]
-severity = "medium"
+severity = { internet = "high", internal = "low" }
 title    = "SQL Server and SMB on one host"
 summary  = "Microsoft SQL Server and SMB answer on the same host"
 detail   = "A database sharing a machine with file services means a foothold on either, an SMB relay or a SQL login, reaches the other; the two should not sit on one exposed host."

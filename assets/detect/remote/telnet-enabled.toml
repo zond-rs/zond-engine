@@ -1,15 +1,23 @@
 # A reachable Telnet service. Telnet carries the login and the whole session in
-# cleartext, so its presence on the network is the finding. A Telnet server opens
-# with IAC option negotiation, a 0xff byte followed by a command byte, which is
-# what confirms the protocol beyond the port being open. Nothing is sent but a
-# blank line to draw out the negotiation the server already queued.
+# cleartext, so its presence is the finding. A Telnet server opens with IAC option
+# negotiation, a 0xff byte followed by a command byte, which is what confirms the
+# protocol beyond the port being open. Nothing is sent but a blank line to draw out
+# the negotiation the server already queued.
+#
+# Graded per rung, and unusually for this corpus the widest rung is the one that was
+# understated. A password crossing the public internet in clear is read by everything
+# on the path and is a credential handed over, not a hardening step skipped; beside
+# `rdp-reachable`, where at least the credential is encrypted, `low` said the wrong
+# thing. On a private segment it is the appliance nobody has replaced yet, which is
+# worth reporting and is not an incident, and an attacker reading it there is already
+# positioned to read a great deal else.
 #
 # The payload is a single-quoted TOML literal string so its byte escapes reach
 # the interpreter rather than the TOML parser.
 
 [detection]
 id      = "telnet-enabled"
-version = "1.0.0"
+version = "1.1.0"
 title   = "Telnet service reachable in cleartext"
 
 [detection.when]
@@ -27,8 +35,8 @@ send   = '\r\n'
 expect = '\xff[\xfa-\xfe]'
   [[step.finding]]
   when         = "matched"
-  severity     = "low"
+  severity     = { internet = "high", internal = "low" }
   summary      = "A Telnet service is reachable"
-  detail       = "The service opened with Telnet option negotiation; Telnet carries credentials and session data in cleartext and should be replaced with SSH."
+  detail       = "The service opened with Telnet option negotiation, so it carries credentials and session data in cleartext and should be replaced with SSH. Reachable from the internet, every login to it is readable by anything on the path."
   references   = [{ cwe = 319 }]
   excerpt_from = "$response"

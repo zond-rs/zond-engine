@@ -1,12 +1,18 @@
 # Windows Remote Management reachable. WinRM runs PowerShell remoting and is a
-# common lateral-movement and remote-execution channel; its wsman endpoint should
-# not face untrusted networks. The endpoint answers a GET with 405 from the
-# Microsoft HTTP stack, which both confirms WinRM and marks it as exposed. A
-# single read-only request.
+# common lateral-movement and remote-execution channel. The endpoint answers a GET
+# with 405 from the Microsoft HTTP stack, which confirms WinRM is there. A single
+# read-only request.
+#
+# Graded per rung for the reason `rdp-reachable` is, and the two should be read
+# together: both are "an administration channel answered", and rating one of them
+# as a weakness on a LAN while the other is `info` would be an inconsistency a
+# reader would take for a judgement. WinRM facing the internet is a remote-execution
+# endpoint a stranger can reach; WinRM on the network it administers is the channel
+# it exists to be.
 
 [detection]
 id      = "winrm-exposed"
-version = "1.0.0"
+version = "1.1.0"
 title   = "Windows Remote Management (WinRM) reachable"
 
 [detection.when]
@@ -24,8 +30,8 @@ send   = "GET /wsman HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: clos
 expect = ["HTTP/[0-9.]+ 405", '(?im)^Server:\s*Microsoft-HTTPAPI']
   [[step.finding]]
   when         = "matched"
-  severity     = "medium"
+  severity     = { internet = "medium", internal = "info" }
   summary      = "WinRM answered on its wsman endpoint"
-  detail       = "GET /wsman returned 405 from Microsoft-HTTPAPI, so Windows Remote Management is reachable; WinRM runs PowerShell remoting and is a common lateral-movement channel that should not be exposed."
+  detail       = "GET /wsman returned 405 from Microsoft-HTTPAPI, so Windows Remote Management is reachable from wherever this scan ran. Reachable from the internet it is a PowerShell remote-execution endpoint open to strangers; reachable from the network it administers, it is the channel that administration runs over."
   references   = [{ cwe = 284 }]
   excerpt_from = "$response"
