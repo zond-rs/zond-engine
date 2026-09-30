@@ -74,7 +74,7 @@ use crate::info;
 use crate::model::capture::CaptureCounts;
 use crate::model::confidence::Confidence;
 use crate::model::finding::{
-    DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Version,
+    DetectionClass, DetectionId, Excerpt, Finding, FindingGroup, Reference, Severity, Version,
 };
 use crate::model::host::os::OsFingerprint;
 use crate::model::host::path::Hop;
@@ -1066,6 +1066,42 @@ pub struct FindingRecord {
     /// absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advised_by: Option<DetectionIdRecord>,
+    /// The group of detections this finding's own detection covers a weakness
+    /// with, where it declared one.
+    ///
+    /// Omitted when absent, for the reason `remediation` is, and absent from
+    /// every finding whose detection stands alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<FindingGroupRecord>,
+}
+
+/// A finding's group, as a journal records it: the identity its members share
+/// and the phrase they read as together.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FindingGroupRecord {
+    /// The identity every member of the group repeats.
+    pub id: String,
+    /// How the group reads when its findings are spoken of as one.
+    pub summary: String,
+}
+
+impl From<&FindingGroup> for FindingGroupRecord {
+    fn from(group: &FindingGroup) -> Self {
+        Self {
+            id: group.id().to_owned(),
+            summary: group.summary().to_owned(),
+        }
+    }
+}
+
+impl FindingGroupRecord {
+    /// Rebuilds the group, or [`None`] where either half is blank, which the
+    /// model refuses. A finding whose group does not rebuild is kept without
+    /// one, for the reason a reference that will not rebuild is dropped while
+    /// the finding is kept.
+    pub fn rebuild(&self) -> Option<FindingGroup> {
+        FindingGroup::new(self.id.clone(), self.summary.clone()).ok()
+    }
 }
 
 impl From<&Finding> for FindingRecord {
@@ -1084,6 +1120,7 @@ impl From<&Finding> for FindingRecord {
             subject: finding.subject().map(str::to_owned),
             build: finding.build().map(BuildRecord::from),
             advised_by: finding.advised_by().map(DetectionIdRecord::from),
+            group: finding.group().map(FindingGroupRecord::from),
         }
     }
 }
@@ -1134,6 +1171,9 @@ impl FindingRecord {
             .and_then(DetectionIdRecord::rebuild)
         {
             finding = finding.with_advised_by(advised_by);
+        }
+        if let Some(group) = self.group.as_ref().and_then(FindingGroupRecord::rebuild) {
+            finding = finding.with_group(group);
         }
         Some(finding)
     }
@@ -2934,6 +2974,24 @@ mod tests {
         .with_remediation("Upgrade to 8.3.1 or later.")
         .with_cpe("cpe:/a:grafana:grafana:8.3.0")
         .with_cpe("cpe:2.3:a:grafana:grafana:8.3.0:*:*:*:*:*:*:*")
+        .with_group(
+            FindingGroup::new("grafana-plugin-paths", "Grafana plugin path weaknesses").unwrap(),
+        )
+    }
+
+    /// Half a group is not written back into a finding: the model refuses it,
+    /// and a record that lost one of the halves is worth more as the finding it
+    /// still describes than as nothing.
+    #[test]
+    fn a_record_carrying_half_a_group_reads_back_without_one() {
+        let mut record = FindingRecord::from(&maximal_finding());
+        record.group = Some(FindingGroupRecord {
+            id: "grafana-plugin-paths".into(),
+            summary: String::new(),
+        });
+
+        let rebuilt = record.rebuild().expect("the finding still rebuilds");
+        assert!(rebuilt.group().is_none(), "and belongs to no group");
     }
 
     #[test]
@@ -2965,6 +3023,7 @@ mod tests {
         // read to the least it could claim, never guessed upward and never
         // dropped over a soft field.
         let softened = FindingRecord {
+            group: None,
             detection: DetectionIdRecord {
                 id: "det".into(),
                 version: "not-a-version".into(), // -> 0.0.0

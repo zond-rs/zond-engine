@@ -357,6 +357,59 @@ fn is_cve_shaped(id: &str) -> bool {
         && seq.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// What a finding is one of, where several detections cover one weakness
+/// between them.
+///
+/// Four detections read an SSH server's KEXINIT and each says a different thing
+/// is wrong with it: a cipher, a host key, a key exchange, a MAC. They are four
+/// findings and stay four findings, because each is separately true and
+/// separately fixed. They are also one sentence to a person reading a scan, and
+/// a presentation with one line to spend on them has no way to say so unless the
+/// detections say it themselves.
+///
+/// So a detection may declare which group it belongs to and how the group reads
+/// when it is spoken of as a whole. Nothing here decides what a front end does
+/// with that, and nothing merges: the group is what the detections agree on, and
+/// what agreement is worth is the reader's end of the question.
+///
+/// Both halves are author-chosen and untrusted, as the detection's own id and
+/// title are.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FindingGroup {
+    id: String,
+    summary: String,
+}
+
+impl FindingGroup {
+    /// A group from its identity and how it reads, or
+    /// [`FindingError::EmptyGroup`] if either is blank.
+    ///
+    /// The summary is a plural noun phrase a count can lead: `weak SSH
+    /// algorithms offered`, so that four of them read as *4 weak SSH algorithms
+    /// offered*. It is not checked against that, which no check could be, and a
+    /// detection that writes a sentence here gets a front end that prints one.
+    pub fn new(id: impl Into<String>, summary: impl Into<String>) -> Result<Self, FindingError> {
+        let id = id.into();
+        let summary = summary.into();
+        if id.trim().is_empty() || summary.trim().is_empty() {
+            return Err(FindingError::EmptyGroup);
+        }
+        Ok(Self { id, summary })
+    }
+
+    /// The author-chosen identity every member shares. Untrusted; escape before
+    /// display.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// How the group reads when its members are spoken of as one. Untrusted;
+    /// escape before display.
+    pub fn summary(&self) -> &str {
+        &self.summary
+    }
+}
+
 /// The bytes that made a detection fire, bounded and safe to carry everywhere.
 ///
 /// A newtype rather than a bare `String`, so the [`MAX_EXCERPT_BYTES`] bound is
@@ -548,6 +601,11 @@ pub struct Finding {
     /// was and moves only this, and a [`merge`](crate::merge) asking whether a
     /// newer scan still backs the claim has to be able to see it move.
     build: Option<Build>,
+    /// What this finding is one of, where its detection declared a
+    /// [`FindingGroup`]. Absent from a detection that declared none, which is
+    /// most of them: a weakness one detection covers by itself is its own
+    /// sentence already.
+    group: Option<FindingGroup>,
     /// The distributor's advisory data a correlation consulted, where it
     /// consulted any.
     ///
@@ -592,6 +650,7 @@ impl Finding {
             subject: None,
             build: None,
             advised_by: None,
+            group: None,
         })
     }
 
@@ -655,6 +714,18 @@ impl Finding {
     pub fn with_advised_by(mut self, advised_by: DetectionId) -> Self {
         self.advised_by = Some(advised_by);
         self
+    }
+
+    /// Records which group of findings this one belongs to.
+    #[must_use]
+    pub fn with_group(mut self, group: FindingGroup) -> Self {
+        self.group = Some(group);
+        self
+    }
+
+    /// What this finding is one of, where its detection declared a group.
+    pub fn group(&self) -> Option<&FindingGroup> {
+        self.group.as_ref()
     }
 
     /// What the claim is about, where the detection named it. Untrusted.
@@ -840,6 +911,7 @@ impl Finding {
             subject,
             build,
             advised_by,
+            group,
         } = other;
 
         let mut changed = false;
@@ -892,6 +964,16 @@ impl Finding {
         // construction; one that named it fills one that did not.
         if self.subject.is_none() && subject.is_some() {
             self.subject = subject;
+            changed = true;
+        }
+
+        // The group is a fact about the detection rather than about the claim,
+        // so both accounts of one claim declare the same one or neither does.
+        // An account that carries it fills one that does not, which is what
+        // moves a finding recorded before its detection joined a group onto the
+        // group once a newer scan says so.
+        if at_least_as_new && group.is_some() && group != self.group {
+            self.group = group;
             changed = true;
         }
 
@@ -969,8 +1051,8 @@ pub(crate) enum Standing {
 
 /// Why a [`Finding`] or a [`DetectionId`] could not be constructed.
 ///
-/// Both cases are an empty identifier or title. A finding has to say what
-/// produced it and what it claims, and a blank string says neither.
+/// Every case is an empty identifier, title or phrase. A finding has to say
+/// what produced it and what it claims, and a blank string says neither.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum FindingError {
@@ -980,6 +1062,11 @@ pub enum FindingError {
     /// A [`Finding`] was given a blank title.
     #[error("a finding title cannot be empty")]
     EmptyTitle,
+    /// A [`FindingGroup`] was given a blank id or a blank summary. Either
+    /// alone is half a group: an id nothing can be printed for, or a phrase
+    /// nothing can be gathered by.
+    #[error("a finding group needs both an id and a summary")]
+    EmptyGroup,
 }
 
 #[cfg(test)]

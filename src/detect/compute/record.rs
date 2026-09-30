@@ -421,6 +421,7 @@ mod tests {
 
     fn grant() -> Grant {
         Grant {
+            group: None,
             detection: DetectionId::new("record-test", Version::new(1, 0, 0), "hash").unwrap(),
             class: DetectionClass::ActiveBenign,
             budget: budget(),

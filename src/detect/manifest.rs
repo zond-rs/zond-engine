@@ -62,11 +62,43 @@ pub struct DetectionManifest {
     /// A one-line human name for the detection, the label a report prints for
     /// it. Required; the build rejects an empty one.
     pub title: String,
+    /// `[detection.group]`: which group of detections this one covers a
+    /// weakness with, where it shares one. Absent from a detection that stands
+    /// alone, which is most of them.
+    #[serde(default)]
+    pub group: Option<GroupSpec>,
     /// The cheap gate deciding whether this detection runs for a port at all.
     pub when: Rule,
     /// `[detection.capabilities]`: the class this detection runs at and the
     /// budget it declares.
     pub capabilities: CapabilitySpec,
+}
+
+/// `[detection.group]`, what a detection covers a weakness together with.
+///
+/// Four detections read one SSH KEXINIT and each reports a different weak
+/// algorithm in it. They are four findings, separately true and separately
+/// fixed, and they are also one thing to say to a person. A group is how the
+/// detections say so themselves, rather than a front end guessing it from a
+/// shared CWE and a shared port, which is a guess that is wrong the first time
+/// two unrelated weaknesses land on one number.
+///
+/// Both fields are required where the table is written at all: an id nothing can
+/// be printed for, or a phrase nothing can be gathered by, is half a group. The
+/// build rejects either empty, as it rejects an empty title.
+///
+/// `non_exhaustive` for the reason [`DetectionManifest`] is.
+#[non_exhaustive]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroupSpec {
+    /// The identity every detection in the group repeats, `ssh-weak-algorithms`.
+    /// Two detections are in one group when they spell this the same.
+    pub id: String,
+    /// How the group reads when its findings are spoken of as one: a plural noun
+    /// phrase a count can lead, `weak SSH algorithms offered`, so that four of
+    /// them read as *4 weak SSH algorithms offered*.
+    pub summary: String,
 }
 
 /// `[detection.when]`, the rule that gates the whole detection, nmap's portrule.

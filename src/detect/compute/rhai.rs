@@ -773,6 +773,12 @@ fn finding_from_map(map: &Map, grant: &Grant) -> Result<Finding, RunOutcome> {
     )
     .map_err(|error| bad_output(&error.to_string()))?;
 
+    // From the grant, beside the provenance: a module states what it found, and
+    // which detections cover a weakness between them is not its to state.
+    if let Some(group) = grant.group.clone() {
+        finding = finding.with_group(group);
+    }
+
     if let Some(text) = map_str(map, "excerpt").or_else(|| map_str(map, "detail")) {
         finding = finding.with_excerpt(Excerpt::new(text));
     }
@@ -924,6 +930,7 @@ mod tests {
 
     fn grant(class: DetectionClass, speak: bool) -> Grant {
         Grant {
+            group: None,
             detection: DetectionId::new("test-detection", Version::new(1, 0, 0), "hash").unwrap(),
             class,
             budget: budget(),

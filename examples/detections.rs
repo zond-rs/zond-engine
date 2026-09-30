@@ -41,6 +41,27 @@
 //! compiled and then never run until somebody raises the ceiling.
 //!
 //! Nothing a detection says about itself changes what it is handed.
+//!
+//! ## Detections that cover one weakness between them
+//!
+//! Some weaknesses arrive in pieces. Four detections read one SSH KEXINIT and
+//! each reports a different weak algorithm in it: four findings, separately
+//! true and separately fixed, and one sentence to the person reading the scan.
+//!
+//! An optional `[detection.group]` is where the detections say so themselves:
+//!
+//! ```toml
+//! [detection.group]
+//! id      = "ssh-weak-algorithms"
+//! summary = "weak SSH algorithms offered"
+//! ```
+//!
+//! Every member repeats the same `id`, and `summary` is a plural noun phrase a
+//! count can lead, so that four of them read as *4 weak SSH algorithms offered*.
+//! Nothing here merges anything: the group reaches each finding as it is
+//! produced, every file format carries all four, and what a front end does with
+//! the fact is the front end's to decide. The build rejects a group that names
+//! only one of the two.
 
 use std::collections::BTreeMap;
 use std::io::Write;

@@ -18,11 +18,11 @@
 //! findings carry.
 
 use crate::model::finding::{
-    DetectionClass, Reference as ModelReference, Severity as ModelSeverity,
+    DetectionClass, FindingGroup, Reference as ModelReference, Severity as ModelSeverity,
 };
 
 use super::authoring::{Reference, Severity};
-use super::manifest::Class;
+use super::manifest::{Class, GroupSpec};
 
 impl Class {
     /// The model class this authoring class names.
@@ -51,6 +51,19 @@ impl Severity {
             Severity::High => ModelSeverity::High,
             Severity::Critical => ModelSeverity::Critical,
         }
+    }
+}
+
+impl GroupSpec {
+    /// The model group this names, or [`None`] where either half is blank,
+    /// which the model refuses and so does this. The corpus validator rejects
+    /// such a detection at build, so a loaded one always converts.
+    ///
+    /// Borrows rather than consumes, as [`Reference::to_model`] does: a
+    /// manifest's group is read once per finding the detection produces, and
+    /// the manifest outlives them all.
+    pub fn to_model(&self) -> Option<FindingGroup> {
+        FindingGroup::new(self.id.clone(), self.summary.clone()).ok()
     }
 }
 
@@ -112,5 +125,41 @@ mod tests {
     #[test]
     fn a_malformed_cve_is_refused_exactly_as_the_model_refuses_it() {
         assert!(Reference::Cve("not-a-cve".into()).to_model().is_none());
+    }
+
+    #[test]
+    fn a_group_carries_both_halves_across() {
+        let group = GroupSpec {
+            id: "ssh-weak-algorithms".into(),
+            summary: "weak SSH algorithms offered".into(),
+        }
+        .to_model()
+        .expect("both halves are filled");
+
+        assert_eq!(group.id(), "ssh-weak-algorithms");
+        assert_eq!(group.summary(), "weak SSH algorithms offered");
+    }
+
+    /// Half a group is no group: an id nothing prints for, or a phrase nothing
+    /// gathers by. Refused here as the model refuses it, rather than lowered
+    /// into a finding that claims membership of something unnameable.
+    #[test]
+    fn half_a_group_is_refused() {
+        assert!(
+            GroupSpec {
+                id: "ssh-weak-algorithms".into(),
+                summary: "  ".into(),
+            }
+            .to_model()
+            .is_none()
+        );
+        assert!(
+            GroupSpec {
+                id: String::new(),
+                summary: "weak SSH algorithms offered".into(),
+            }
+            .to_model()
+            .is_none()
+        );
     }
 }

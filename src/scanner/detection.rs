@@ -1421,6 +1421,7 @@ mod tests {
             .expect("a valid detection id");
         let budget = Budget::new(1_000_000, Duration::from_secs(2));
         let grant = Grant {
+            group: None,
             detection: detection.clone(),
             class: DetectionClass::ActiveBenign,
             budget,

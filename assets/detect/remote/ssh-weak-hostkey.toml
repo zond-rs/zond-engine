@@ -9,6 +9,13 @@ id      = "ssh-weak-hostkey"
 version = "1.0.0"
 title   = "SSH offers a DSA host key"
 
+# One weakness in four readings of the same KEXINIT: each is separately true and
+# separately fixed, so they stay four findings, and a scan with one line to spend
+# on them can spend it on the group instead.
+[detection.group]
+id      = "ssh-weak-algorithms"
+summary = "weak SSH algorithms offered"
+
 [detection.when]
 service  = "ssh"
 protocol = "tcp"

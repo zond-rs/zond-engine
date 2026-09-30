@@ -285,6 +285,7 @@ mod tests {
         source: &str,
     ) -> LoadedDetection<<RhaiRuntime as ComputeRuntime>::Module> {
         let manifest = DetectionManifest {
+            group: None,
             id: id.to_string(),
             version: "1.0.0".to_string(),
             title: id.to_string(),

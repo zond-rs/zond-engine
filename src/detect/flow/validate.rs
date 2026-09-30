@@ -91,6 +91,10 @@ pub enum ValidationError {
     EmptyId,
     /// An empty `title`.
     EmptyTitle,
+    /// A `[detection.group]` with an empty `id` or an empty `summary`. Half a
+    /// group is no group: an id nothing can be printed for, or a phrase nothing
+    /// can be gathered by.
+    HalfGroup,
     /// An `id` claiming the reserved `zond:` namespace.
     ReservedId(String),
     /// A step names an `expect` but sends nothing, so no reply is drawn for it to
@@ -153,6 +157,9 @@ impl fmt::Display for ValidationError {
             }
             ValidationError::EmptyId => write!(f, "has an empty id"),
             ValidationError::EmptyTitle => write!(f, "has an empty title"),
+            ValidationError::HalfGroup => {
+                write!(f, "has a group without both an id and a summary")
+            }
             ValidationError::ReservedId(id) => {
                 write!(
                     f,
@@ -211,6 +218,11 @@ fn check_identity(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
     }
     if flow.detection.title.trim().is_empty() {
         errors.push(ValidationError::EmptyTitle);
+    }
+    if let Some(group) = &flow.detection.group
+        && (group.id.trim().is_empty() || group.summary.trim().is_empty())
+    {
+        errors.push(ValidationError::HalfGroup);
     }
     if !is_version_triple(&flow.detection.version) {
         errors.push(ValidationError::MalformedVersion(

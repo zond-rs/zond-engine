@@ -23,7 +23,9 @@ use crate::model::confidence::Confidence;
 use crate::model::finding::{DetectionClass, DetectionId, Excerpt, Finding, Version};
 use crate::record::wire;
 
-use super::schema::{FindingSpec, HostDetection};
+use crate::detect::manifest::GroupSpec;
+
+use super::schema::{FindingSpec, HostDetection, HostManifest};
 
 /// A host detection compiled and ready to run: its authoring form and the content
 /// hash of the file it came from, stamped on the findings it draws as provenance.
@@ -97,7 +99,7 @@ pub(crate) fn detect_host(
             continue;
         };
         for spec in &loaded.detection.finding {
-            if let Some(finding) = build_finding(spec, &id, &manifest.title) {
+            if let Some(finding) = build_finding(spec, &id, manifest) {
                 findings.push(finding);
             }
         }
@@ -110,13 +112,13 @@ pub(crate) fn detect_host(
 /// it declares [`Derived`](super::super::manifest::Class::Derived) and runs at
 /// [`DetectionClass::Passive`], which is what a finding records — the
 /// intrusiveness it ran at, rather than where its conclusion came from.
-fn build_finding(spec: &FindingSpec, id: &DetectionId, fallback_title: &str) -> Option<Finding> {
+fn build_finding(spec: &FindingSpec, id: &DetectionId, manifest: &HostManifest) -> Option<Finding> {
     let title = spec
         .title
         .as_deref()
         .filter(|title| !title.trim().is_empty())
         .or_else(|| Some(spec.summary.as_str()).filter(|summary| !summary.trim().is_empty()))
-        .unwrap_or(fallback_title)
+        .unwrap_or(manifest.title.as_str())
         .to_string();
     let confidence = spec
         .confidence
@@ -144,6 +146,12 @@ fn build_finding(spec: &FindingSpec, id: &DetectionId, fallback_title: &str) -> 
     if let Some(remediation) = spec.remediation.as_deref().filter(|r| !r.trim().is_empty()) {
         finding = finding.with_remediation(remediation.to_owned());
     }
+    // From the manifest, for the reason the flow tier takes it from there: which
+    // detections cover a weakness together is not a thing one finding of one of
+    // them can say.
+    if let Some(group) = manifest.group.as_ref().and_then(GroupSpec::to_model) {
+        finding = finding.with_group(group);
+    }
 
     Some(finding)
 }
@@ -159,6 +167,7 @@ mod tests {
         LoadedHostDetection::new(
             HostDetection {
                 detection: HostManifest {
+                    group: None,
                     id: "domain-controller".to_string(),
                     version: "1.0.0".to_string(),
                     title: "Windows domain controller".to_string(),

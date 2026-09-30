@@ -38,6 +38,8 @@ use crate::model::confidence::Confidence;
 use crate::model::finding::{DetectionId, Excerpt, Finding, Version};
 use crate::record::wire;
 
+use crate::detect::manifest::GroupSpec;
+
 use super::schema::{FindingSpec, FlowDetection, MatchSpec, OnNoMatch, Step};
 use super::schema::{MAX_FLOW_STEPS, MAX_LOOP_ITEMS, SEED_VAR_HOST, SEED_VAR_PORT};
 use super::{Env, eval};
@@ -427,6 +429,13 @@ fn build_finding(
     let class = flow.detection.capabilities.class.into_model();
 
     let mut finding = Finding::new(detection, title, severity, confidence, class).ok()?;
+
+    // From the manifest rather than the finding spec: a group is a fact about
+    // which detections cover a weakness together, which one step of one of them
+    // is not in a position to state.
+    if let Some(group) = flow.detection.group.as_ref().and_then(GroupSpec::to_model) {
+        finding = finding.with_group(group);
+    }
 
     // The excerpt: an explicit source, the interpolated detail, or the reply.
     let excerpt = match spec.excerpt_from.as_deref() {
@@ -1028,6 +1037,98 @@ mod tests {
             leak: b"root:x:0:0:should-never-be-sent",
         };
         assert!(run(&grafana, "", &seed(), &mut other).is_empty());
+    }
+
+    /// **A flow's group reaches every finding it produces.**
+    ///
+    /// Declared on the detection rather than on a step's finding, because which
+    /// detections cover a weakness between them is not a thing one step of one
+    /// of them is in a position to state.
+    #[test]
+    fn a_flow_stamps_its_group_on_what_it_finds() {
+        let toml = r#"
+            [detection]
+            id = "ssh-weak-mac"
+            version = "1.0.0"
+            title = "SSH offers a weak MAC"
+            [detection.group]
+            id = "ssh-weak-algorithms"
+            summary = "weak SSH algorithms offered"
+            [detection.when]
+            service = "ssh"
+            [detection.capabilities]
+            class = "active-benign"
+            speak = "target"
+            [[step]]
+            send = "SSH-2.0-zond\r\n"
+            expect = '(hmac-md5)'
+            [[step.finding]]
+            when = "matched"
+            severity = "medium"
+            summary = "SSH offered an MD5 or truncated MAC"
+        "#;
+        let flow: FlowDetection = toml::from_str(toml).expect("a parseable flow");
+
+        let findings = run(
+            &flow,
+            "",
+            &seed(),
+            &mut Echo {
+                sent: Vec::new(),
+                reply: b"SSH-2.0-OpenSSH_6.6.1p1 hmac-md5".to_vec(),
+            },
+        );
+
+        let group = findings
+            .first()
+            .expect("the flow matched")
+            .group()
+            .expect("the detection declared one");
+        assert_eq!(group.id(), "ssh-weak-algorithms");
+        assert_eq!(group.summary(), "weak SSH algorithms offered");
+    }
+
+    /// A detection that declares no group produces findings that belong to
+    /// none, which is most of them.
+    #[test]
+    fn a_flow_without_a_group_stamps_none() {
+        let toml = r#"
+            [detection]
+            id = "solitary"
+            version = "1.0.0"
+            title = "solitary"
+            [detection.when]
+            service = "http"
+            [detection.capabilities]
+            class = "active-benign"
+            speak = "target"
+            [[step]]
+            send = "GET / HTTP/1.0\r\n\r\n"
+            expect = '(200)'
+            [[step.finding]]
+            when = "matched"
+            severity = "low"
+            summary = "answered"
+        "#;
+        let flow: FlowDetection = toml::from_str(toml).expect("a parseable flow");
+
+        let findings = run(
+            &flow,
+            "",
+            &seed(),
+            &mut Echo {
+                sent: Vec::new(),
+                reply: b"HTTP/1.1 200 OK".to_vec(),
+            },
+        );
+
+        assert!(
+            findings
+                .first()
+                .expect("the flow matched")
+                .group()
+                .is_none()
+        );
     }
 
     #[test]

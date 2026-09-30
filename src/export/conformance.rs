@@ -565,6 +565,9 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         ("finding", "cpe"),
         ("finding", "cpes"),
         ("finding", "excerpt"),
+        // A finding whose detection covers its weakness by itself, which is
+        // most of them.
+        ("finding", "group"),
         ("finding", "remediation"),
         ("finding", "subject"),
         // A rule names whichever parts of a box it knows, and most name one or
@@ -1610,6 +1613,12 @@ fn redaction_masks_the_host_s_words_in_every_field_its_replies_fill() {
         "host.findings[].advised_by.id",
         "host.findings[].advised_by.version",
         "host.findings[].content_hash",
+        // A group is written into the detection manifest beside the title of
+        // the detection, and unlike a finding's own title it carries no `{var}`
+        // a reply could fill: it says which detections cover a weakness
+        // together, which is settled before any host answers.
+        "host.findings[].group.id",
+        "host.findings[].group.summary",
         "host.findings[].id",
         "host.findings[].version",
         "host.first_seen",
@@ -1626,6 +1635,8 @@ fn redaction_masks_the_host_s_words_in_every_field_its_replies_fill() {
         "host.ports[].findings[].advised_by.id",
         "host.ports[].findings[].advised_by.version",
         "host.ports[].findings[].content_hash",
+        "host.ports[].findings[].group.id",
+        "host.ports[].findings[].group.summary",
         "host.ports[].findings[].id",
         "host.ports[].findings[].version",
         "host.ports[].security.accepts[].suites[].code",

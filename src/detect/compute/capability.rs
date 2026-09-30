@@ -39,8 +39,9 @@ use thiserror::Error;
 
 use crate::detect::manifest::{
     Class, DEFAULT_MAX_BYTES, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_MILLIS, DetectionManifest,
+    GroupSpec,
 };
-use crate::model::finding::{DetectionClass, DetectionId, Version};
+use crate::model::finding::{DetectionClass, DetectionId, FindingGroup, Version};
 
 use super::budget::Budget;
 
@@ -219,6 +220,10 @@ pub struct Grant {
     pub detection: DetectionId,
     /// The intrusiveness the module runs at, recorded on each finding.
     pub class: DetectionClass,
+    /// The group stamped on every finding, where the manifest declared one.
+    /// Beside the provenance and for the same reason: which detections cover a
+    /// weakness together is the loader's to state, never the module's.
+    pub group: Option<FindingGroup>,
     /// The bounds the run is held to.
     pub budget: Budget,
     /// Whether to serve [`speak`](Capabilities::speak). False for a `passive`
@@ -257,6 +262,7 @@ impl Grant {
         Some(Self {
             detection,
             class: caps.class.into_model(),
+            group: manifest.group.as_ref().and_then(GroupSpec::to_model),
             budget: Budget {
                 fuel: DEFAULT_FUEL,
                 deadline: Duration::from_millis(
@@ -281,6 +287,7 @@ mod tests {
 
     fn manifest(class: Class, speak: bool, resolve: bool) -> DetectionManifest {
         DetectionManifest {
+            group: None,
             id: "test".into(),
             version: "2.1.0".into(),
             title: "test".into(),

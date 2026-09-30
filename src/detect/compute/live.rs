@@ -327,6 +327,7 @@ mod tests {
             .load(&ModuleBody::Rhai(source.to_string()))
             .expect("the module compiles");
         let grant = Grant {
+            group: None,
             detection: DetectionId::new("live-test", Version::new(1, 0, 0), "hash").unwrap(),
             class: DetectionClass::ActiveBenign,
             budget: budget(),

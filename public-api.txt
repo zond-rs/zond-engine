@@ -1018,6 +1018,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::compute::Dete
 pub zond_engine::detect::compute::Grant::budget: zond_engine::detect::compute::Budget
 pub zond_engine::detect::compute::Grant::class: zond_engine::model::finding::DetectionClass
 pub zond_engine::detect::compute::Grant::detection: zond_engine::model::finding::DetectionId
+pub zond_engine::detect::compute::Grant::group: core::option::Option<zond_engine::model::finding::FindingGroup>
 pub zond_engine::detect::compute::Grant::resolve: bool
 pub zond_engine::detect::compute::Grant::speak: bool
 impl zond_engine::detect::compute::Grant
@@ -1571,6 +1572,7 @@ pub zond_engine::detect::flow::ValidationError::EmptyLoop(usize)
 pub zond_engine::detect::flow::ValidationError::EmptyTitle
 pub zond_engine::detect::flow::ValidationError::ExpectWithoutSend(usize)
 pub zond_engine::detect::flow::ValidationError::GuardParseError(usize, &'static str, zond_engine::detect::flow::ParseError)
+pub zond_engine::detect::flow::ValidationError::HalfGroup
 pub zond_engine::detect::flow::ValidationError::LoopTooLong(usize, usize)
 pub zond_engine::detect::flow::ValidationError::LoopVarShadows(usize, alloc::string::String)
 pub zond_engine::detect::flow::ValidationError::MalformedVersion(alloc::string::String)
@@ -1721,6 +1723,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::manifest::
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::manifest::CapabilitySpec
 #[non_exhaustive] pub struct zond_engine::detect::manifest::DetectionManifest
 pub zond_engine::detect::manifest::DetectionManifest::capabilities: zond_engine::detect::manifest::CapabilitySpec
+pub zond_engine::detect::manifest::DetectionManifest::group: core::option::Option<zond_engine::detect::manifest::GroupSpec>
 pub zond_engine::detect::manifest::DetectionManifest::id: alloc::string::String
 pub zond_engine::detect::manifest::DetectionManifest::title: alloc::string::String
 pub zond_engine::detect::manifest::DetectionManifest::version: alloc::string::String
@@ -1738,6 +1741,24 @@ impl core::marker::Unpin for zond_engine::detect::manifest::DetectionManifest
 impl core::marker::UnsafeUnpin for zond_engine::detect::manifest::DetectionManifest
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::manifest::DetectionManifest
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::manifest::DetectionManifest
+#[non_exhaustive] pub struct zond_engine::detect::manifest::GroupSpec
+pub zond_engine::detect::manifest::GroupSpec::id: alloc::string::String
+pub zond_engine::detect::manifest::GroupSpec::summary: alloc::string::String
+impl zond_engine::detect::manifest::GroupSpec
+pub fn zond_engine::detect::manifest::GroupSpec::to_model(&self) -> core::option::Option<zond_engine::model::finding::FindingGroup>
+impl core::clone::Clone for zond_engine::detect::manifest::GroupSpec
+pub fn zond_engine::detect::manifest::GroupSpec::clone(&self) -> zond_engine::detect::manifest::GroupSpec
+impl core::fmt::Debug for zond_engine::detect::manifest::GroupSpec
+pub fn zond_engine::detect::manifest::GroupSpec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::detect::manifest::GroupSpec
+pub fn zond_engine::detect::manifest::GroupSpec::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for zond_engine::detect::manifest::GroupSpec
+impl core::marker::Send for zond_engine::detect::manifest::GroupSpec
+impl core::marker::Sync for zond_engine::detect::manifest::GroupSpec
+impl core::marker::Unpin for zond_engine::detect::manifest::GroupSpec
+impl core::marker::UnsafeUnpin for zond_engine::detect::manifest::GroupSpec
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::manifest::GroupSpec
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::manifest::GroupSpec
 #[non_exhaustive] pub struct zond_engine::detect::manifest::Rule
 pub zond_engine::detect::manifest::Rule::port: core::option::Option<u16>
 pub zond_engine::detect::manifest::Rule::ports: alloc::vec::Vec<u16>
@@ -3614,6 +3635,7 @@ pub zond_engine::export::schema::FindingDto::content_hash: &'a str
 pub zond_engine::export::schema::FindingDto::cpe: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::FindingDto::cpes: alloc::vec::Vec<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::FindingDto::excerpt: core::option::Option<alloc::borrow::Cow<'a, str>>
+pub zond_engine::export::schema::FindingDto::group: core::option::Option<zond_engine::export::schema::GroupDto<'a>>
 pub zond_engine::export::schema::FindingDto::id: &'a str
 pub zond_engine::export::schema::FindingDto::references: alloc::vec::Vec<zond_engine::export::schema::ReferenceDto<'a>>
 pub zond_engine::export::schema::FindingDto::remediation: core::option::Option<alloc::borrow::Cow<'a, str>>
@@ -3636,6 +3658,22 @@ impl<'a> core::marker::Unpin for zond_engine::export::schema::FindingDto<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::FindingDto<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::FindingDto<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::FindingDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::GroupDto<'a>
+pub zond_engine::export::schema::GroupDto::id: alloc::borrow::Cow<'a, str>
+pub zond_engine::export::schema::GroupDto::summary: alloc::borrow::Cow<'a, str>
+impl<'a> core::clone::Clone for zond_engine::export::schema::GroupDto<'a>
+pub fn zond_engine::export::schema::GroupDto<'a>::clone(&self) -> zond_engine::export::schema::GroupDto<'a>
+impl<'a> core::fmt::Debug for zond_engine::export::schema::GroupDto<'a>
+pub fn zond_engine::export::schema::GroupDto<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> serde_core::ser::Serialize for zond_engine::export::schema::GroupDto<'a>
+pub fn zond_engine::export::schema::GroupDto<'a>::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'a> core::marker::Freeze for zond_engine::export::schema::GroupDto<'a>
+impl<'a> core::marker::Send for zond_engine::export::schema::GroupDto<'a>
+impl<'a> core::marker::Sync for zond_engine::export::schema::GroupDto<'a>
+impl<'a> core::marker::Unpin for zond_engine::export::schema::GroupDto<'a>
+impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::GroupDto<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::GroupDto<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::GroupDto<'a>
 #[non_exhaustive] pub struct zond_engine::export::schema::HardwareDto<'a>
 pub zond_engine::export::schema::HardwareDto::cpe23: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::HardwareDto::family: core::option::Option<alloc::borrow::Cow<'a, str>>
@@ -8639,6 +8677,7 @@ impl core::marker::UnsafeUnpin for zond_engine::model::finding::DetectionClass
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::finding::DetectionClass
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::finding::DetectionClass
 #[non_exhaustive] pub enum zond_engine::model::finding::FindingError
+pub zond_engine::model::finding::FindingError::EmptyGroup
 pub zond_engine::model::finding::FindingError::EmptyId
 pub zond_engine::model::finding::FindingError::EmptyTitle
 impl core::clone::Clone for zond_engine::model::finding::FindingError
@@ -8814,6 +8853,7 @@ pub fn zond_engine::model::finding::Finding::corroborate(&mut self, zond_engine:
 pub fn zond_engine::model::finding::Finding::cpes(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str>
 pub fn zond_engine::model::finding::Finding::detection(&self) -> &zond_engine::model::finding::DetectionId
 pub fn zond_engine::model::finding::Finding::excerpt(&self) -> &zond_engine::model::finding::Excerpt
+pub fn zond_engine::model::finding::Finding::group(&self) -> core::option::Option<&zond_engine::model::finding::FindingGroup>
 pub fn zond_engine::model::finding::Finding::new(zond_engine::model::finding::DetectionId, impl core::convert::Into<alloc::string::String>, zond_engine::model::finding::Severity, zond_engine::model::confidence::Confidence, zond_engine::model::finding::DetectionClass) -> core::result::Result<Self, zond_engine::model::finding::FindingError>
 pub fn zond_engine::model::finding::Finding::references(&self) -> impl core::iter::traits::iterator::Iterator<Item = &zond_engine::model::finding::Reference>
 pub fn zond_engine::model::finding::Finding::remediation(&self) -> core::option::Option<&str>
@@ -8824,6 +8864,7 @@ pub fn zond_engine::model::finding::Finding::with_advised_by(self, zond_engine::
 pub fn zond_engine::model::finding::Finding::with_build(self, zond_engine::model::port::build::Build) -> Self
 pub fn zond_engine::model::finding::Finding::with_cpe(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn zond_engine::model::finding::Finding::with_excerpt(self, zond_engine::model::finding::Excerpt) -> Self
+pub fn zond_engine::model::finding::Finding::with_group(self, zond_engine::model::finding::FindingGroup) -> Self
 pub fn zond_engine::model::finding::Finding::with_reference(self, zond_engine::model::finding::Reference) -> Self
 pub fn zond_engine::model::finding::Finding::with_remediation(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn zond_engine::model::finding::Finding::with_subject(self, impl core::convert::Into<alloc::string::String>) -> Self
@@ -8844,6 +8885,30 @@ impl core::marker::Unpin for zond_engine::model::finding::Finding
 impl core::marker::UnsafeUnpin for zond_engine::model::finding::Finding
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::finding::Finding
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::finding::Finding
+pub struct zond_engine::model::finding::FindingGroup
+impl zond_engine::model::finding::FindingGroup
+pub fn zond_engine::model::finding::FindingGroup::id(&self) -> &str
+pub fn zond_engine::model::finding::FindingGroup::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, zond_engine::model::finding::FindingError>
+pub fn zond_engine::model::finding::FindingGroup::summary(&self) -> &str
+impl core::clone::Clone for zond_engine::model::finding::FindingGroup
+pub fn zond_engine::model::finding::FindingGroup::clone(&self) -> zond_engine::model::finding::FindingGroup
+impl core::cmp::Eq for zond_engine::model::finding::FindingGroup
+impl core::cmp::PartialEq for zond_engine::model::finding::FindingGroup
+pub fn zond_engine::model::finding::FindingGroup::eq(&self, &zond_engine::model::finding::FindingGroup) -> bool
+impl core::convert::From<&zond_engine::model::finding::FindingGroup> for zond_engine::record::FindingGroupRecord
+pub fn zond_engine::record::FindingGroupRecord::from(&zond_engine::model::finding::FindingGroup) -> Self
+impl core::fmt::Debug for zond_engine::model::finding::FindingGroup
+pub fn zond_engine::model::finding::FindingGroup::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::finding::FindingGroup
+pub fn zond_engine::model::finding::FindingGroup::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for zond_engine::model::finding::FindingGroup
+impl core::marker::Freeze for zond_engine::model::finding::FindingGroup
+impl core::marker::Send for zond_engine::model::finding::FindingGroup
+impl core::marker::Sync for zond_engine::model::finding::FindingGroup
+impl core::marker::Unpin for zond_engine::model::finding::FindingGroup
+impl core::marker::UnsafeUnpin for zond_engine::model::finding::FindingGroup
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::finding::FindingGroup
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::finding::FindingGroup
 #[non_exhaustive] pub struct zond_engine::model::finding::Version
 pub zond_engine::model::finding::Version::major: u16
 pub zond_engine::model::finding::Version::minor: u16
@@ -14383,6 +14448,32 @@ impl core::marker::Unpin for zond_engine::record::FailureRecord
 impl core::marker::UnsafeUnpin for zond_engine::record::FailureRecord
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::FailureRecord
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::FailureRecord
+pub struct zond_engine::record::FindingGroupRecord
+pub zond_engine::record::FindingGroupRecord::id: alloc::string::String
+pub zond_engine::record::FindingGroupRecord::summary: alloc::string::String
+impl zond_engine::record::FindingGroupRecord
+pub fn zond_engine::record::FindingGroupRecord::rebuild(&self) -> core::option::Option<zond_engine::model::finding::FindingGroup>
+impl core::clone::Clone for zond_engine::record::FindingGroupRecord
+pub fn zond_engine::record::FindingGroupRecord::clone(&self) -> zond_engine::record::FindingGroupRecord
+impl core::cmp::Eq for zond_engine::record::FindingGroupRecord
+impl core::cmp::PartialEq for zond_engine::record::FindingGroupRecord
+pub fn zond_engine::record::FindingGroupRecord::eq(&self, &zond_engine::record::FindingGroupRecord) -> bool
+impl core::convert::From<&zond_engine::model::finding::FindingGroup> for zond_engine::record::FindingGroupRecord
+pub fn zond_engine::record::FindingGroupRecord::from(&zond_engine::model::finding::FindingGroup) -> Self
+impl core::fmt::Debug for zond_engine::record::FindingGroupRecord
+pub fn zond_engine::record::FindingGroupRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::record::FindingGroupRecord
+impl serde_core::ser::Serialize for zond_engine::record::FindingGroupRecord
+pub fn zond_engine::record::FindingGroupRecord::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::record::FindingGroupRecord
+pub fn zond_engine::record::FindingGroupRecord::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for zond_engine::record::FindingGroupRecord
+impl core::marker::Send for zond_engine::record::FindingGroupRecord
+impl core::marker::Sync for zond_engine::record::FindingGroupRecord
+impl core::marker::Unpin for zond_engine::record::FindingGroupRecord
+impl core::marker::UnsafeUnpin for zond_engine::record::FindingGroupRecord
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::FindingGroupRecord
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::FindingGroupRecord
 pub struct zond_engine::record::FindingRecord
 pub zond_engine::record::FindingRecord::advised_by: core::option::Option<zond_engine::record::DetectionIdRecord>
 pub zond_engine::record::FindingRecord::build: core::option::Option<zond_engine::record::BuildRecord>
@@ -14392,6 +14483,7 @@ pub zond_engine::record::FindingRecord::cpe: core::option::Option<alloc::string:
 pub zond_engine::record::FindingRecord::cpes: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::record::FindingRecord::detection: zond_engine::record::DetectionIdRecord
 pub zond_engine::record::FindingRecord::excerpt: core::option::Option<alloc::string::String>
+pub zond_engine::record::FindingRecord::group: core::option::Option<zond_engine::record::FindingGroupRecord>
 pub zond_engine::record::FindingRecord::references: alloc::vec::Vec<zond_engine::record::ReferenceRecord>
 pub zond_engine::record::FindingRecord::remediation: core::option::Option<alloc::string::String>
 pub zond_engine::record::FindingRecord::severity: alloc::string::String

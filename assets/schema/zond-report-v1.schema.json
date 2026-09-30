@@ -1204,6 +1204,25 @@
               "type": "string"
             }
           }
+        },
+        "group": {
+          "description": "What the finding is one of, where several detections cover one weakness between them and say so: four readings of one SSH handshake are four findings and also one sentence. Absent from a finding whose detection stands alone, which is most of them. Untrusted.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "summary"
+          ],
+          "properties": {
+            "id": {
+              "description": "The identity every member of the group repeats, such as `ssh-weak-algorithms`. Two findings are of one group when they spell this the same. Untrusted.",
+              "type": "string"
+            },
+            "summary": {
+              "description": "How the group reads when its findings are spoken of as one: a plural noun phrase a count can lead, such as `weak SSH algorithms offered`. Untrusted.",
+              "type": "string"
+            }
+          }
         }
       }
     },

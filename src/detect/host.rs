@@ -43,6 +43,7 @@
 // `super::authoring` in both the library, where it lives one level up in
 // `detect`, and `build.rs`, where every shared file is a crate-root sibling.
 pub(crate) use super::authoring;
+pub(crate) use super::manifest;
 
 pub(crate) mod db;
 pub(crate) mod schema;

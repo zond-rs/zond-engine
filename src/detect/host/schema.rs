@@ -21,6 +21,7 @@
 #![allow(dead_code)]
 
 use super::authoring::{Reference, Severity};
+use super::manifest::GroupSpec;
 use std::collections::BTreeSet;
 
 use serde::Deserialize;
@@ -50,6 +51,11 @@ pub struct HostManifest {
     pub version: String,
     /// A one-line human name for the detection, the label a report prints for it.
     pub title: String,
+    /// `[detection.group]`: which group of detections this one covers a weakness
+    /// with, where it shares one. Spelled as the other tiers spell it, so a
+    /// group can hold detections of more than one tier.
+    #[serde(default)]
+    pub group: Option<GroupSpec>,
     /// The gate: the ports and services a host must present together to fit.
     pub host: HostGate,
 }

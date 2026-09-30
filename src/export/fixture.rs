@@ -28,7 +28,7 @@ use crate::model::capture::CaptureCounts;
 use crate::model::confidence::Confidence;
 use crate::model::exclusion::Exclusions;
 use crate::model::finding::{
-    DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Version,
+    DetectionClass, DetectionId, Excerpt, Finding, FindingGroup, Reference, Severity, Version,
 };
 use crate::model::host::{
     EvidenceSource, Filtering, HardwareDescription, HardwareInfo, Hop, Host, HostName, HostStatus,
@@ -718,6 +718,7 @@ fn hostile_finding() -> Finding {
     .with_remediation(HOSTILE)
     .with_cpe(HOSTILE)
     .with_subject(HOSTILE)
+    .with_group(FindingGroup::new(HOSTILE, HOSTILE).unwrap())
 }
 
 fn hostile_host() -> Host {

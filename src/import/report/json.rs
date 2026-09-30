@@ -109,11 +109,11 @@ use crate::model::tls::{Interruption, TlsVersion};
 use crate::record::wire;
 use crate::record::{
     AcceptedVersionRecord, BuildRecord, CaptureRecord, CertificateRecord, DetectionIdRecord,
-    DiscoveryRecord, EvasionSettingsRecord, FailureRecord, FindingRecord, HardwareRecord,
-    HopRecord, HostRecord, IdleScanRecord, OsRecord, PhaseOriginRecord, PhaseRecord, PortRecord,
-    PortsRecord, ProbeStatsRecord, RangeRecord, ReferenceRecord, RefusalRecord, ReleaseRecord,
-    ScopeRecord, SecurityRecord, ServiceRecord, SettingsRecord, StatusReasonRecord,
-    TelemetryRecord, UnfinishedVersionRecord, WindowRecord,
+    DiscoveryRecord, EvasionSettingsRecord, FailureRecord, FindingGroupRecord, FindingRecord,
+    HardwareRecord, HopRecord, HostRecord, IdleScanRecord, OsRecord, PhaseOriginRecord,
+    PhaseRecord, PortRecord, PortsRecord, ProbeStatsRecord, RangeRecord, ReferenceRecord,
+    RefusalRecord, ReleaseRecord, ScopeRecord, SecurityRecord, ServiceRecord, SettingsRecord,
+    StatusReasonRecord, TelemetryRecord, UnfinishedVersionRecord, WindowRecord,
 };
 use crate::report::{ScanPhase, ScanReport};
 use crate::transport::probe::SendMode;
@@ -1801,6 +1801,16 @@ struct FindingDto {
     subject: Option<String>,
     build: Option<BuildDto>,
     advised_by: Option<AdvisedByDto>,
+    group: Option<GroupDto>,
+}
+
+/// `finding.group`, the group of detections that cover one weakness between
+/// them.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct GroupDto {
+    id: String,
+    summary: String,
 }
 
 /// `finding.advised_by`, the advisory data a correlation consulted.
@@ -1873,6 +1883,17 @@ impl FindingDto {
                 id: advised.id,
                 version: advised.version,
                 content_hash: advised.content_hash,
+            }),
+            // Half a group is dropped rather than rebuilt, as the record layer
+            // drops one: the model refuses it, and a finding is worth more than
+            // the membership it could not state.
+            group: self.group.and_then(|group| {
+                (!group.id.trim().is_empty() && !group.summary.trim().is_empty()).then_some(
+                    FindingGroupRecord {
+                        id: group.id,
+                        summary: group.summary,
+                    },
+                )
             }),
         })
     }

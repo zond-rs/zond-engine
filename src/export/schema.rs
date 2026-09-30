@@ -2245,6 +2245,28 @@ pub struct FindingDto<'a> {
     /// consulted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub advised_by: Option<AdvisedByDto<'a>>,
+    /// What this finding is one of, where several detections cover one weakness
+    /// between them and say so: the identity they share and the phrase they
+    /// read as together, so a consumer with one line to spend on four findings
+    /// can spend it on the group rather than on whichever of them sorted first.
+    /// Absent from a finding whose detection stands alone, which is most of
+    /// them. Untrusted; the detection author's words rather than the host's, so
+    /// no redaction reaches them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<GroupDto<'a>>,
+}
+
+/// The group a finding belongs to: what its members share, and how they read as
+/// one.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupDto<'a> {
+    /// The identity every member repeats, `ssh-weak-algorithms`. Two findings
+    /// are of one group when they spell this the same. Untrusted.
+    pub id: Cow<'a, str>,
+    /// How the group reads when its findings are spoken of as one: a plural
+    /// noun phrase a count can lead, `weak SSH algorithms offered`. Untrusted.
+    pub summary: Cow<'a, str>,
 }
 
 /// Which snapshot of a distributor's advisory data a correlation consulted.
@@ -2285,6 +2307,14 @@ impl<'a> FindingDto<'a> {
                 id: advised.id(),
                 version: advised.version().to_string(),
                 content_hash: advised.content_hash(),
+            }),
+            // Unmasked, as the detection's own identity is: both halves are
+            // the detection author's words, fixed before any host answered, and
+            // carry no template a reply could fill. Untrusted all the same, and
+            // escaped where they are drawn.
+            group: finding.group().map(|group| GroupDto {
+                id: Cow::Borrowed(group.id()),
+                summary: Cow::Borrowed(group.summary()),
             }),
         }
     }

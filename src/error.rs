@@ -404,6 +404,7 @@ impl Coded for FindingError {
         match self {
             FindingError::EmptyId => "finding.empty_id",
             FindingError::EmptyTitle => "finding.empty_title",
+            FindingError::EmptyGroup => "finding.empty_group",
         }
     }
 }
@@ -1019,6 +1020,7 @@ mod tests {
             "fetch.tls",
             "fetch.too_large",
             "fetch.unparsable_url",
+            "finding.empty_group",
             "finding.empty_id",
             "finding.empty_title",
             "finding.malformed_version",
