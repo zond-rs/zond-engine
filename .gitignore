@@ -14,6 +14,10 @@
 # engine behaves, kept private for the reason the audit notes above are.
 /research/
 
+# Work decided on and not yet started, noted for whoever picks it up. Private
+# for the reason the audit notes above are.
+/todo/
+
 # The fuzzing harnesses are tracked; everything the fuzzer produces is not.
 # A corpus and a crash file are machine-local artifacts of one run, and a corpus
 # checked in goes stale the moment a parser's framing changes.
