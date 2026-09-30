@@ -1,0 +1,29 @@
+name: Wrong or missing identification
+description: A service, version or operating system the engine named wrongly or couldn't name.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: reported
+    attributes:
+      label: What the engine reported
+      description: The port, and the service, version or OS it gave. "Nothing" is a fine answer.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What it actually is
+      description: Product, version, and the distribution package if you know it.
+    validations:
+      required: true
+  - type: textarea
+    id: response
+    attributes:
+      label: What the service sends
+      description: |
+        The banner or response, as exactly as you can get it. With the CLI,
+        `zond scan <host> -p <port> -vv` prints it. Remove anything private
+        (hostnames, serial numbers, internal addresses) before posting.
+      render: text
+    validations:
+      required: true

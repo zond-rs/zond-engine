@@ -7,7 +7,7 @@ particular than most.
 
 ## Before you start
 
-For anything larger than a bug fix, **open an issue or a discussion first**. A
+For anything larger than a bug fix, **open an issue first**. A
 scanner has a lot of load-bearing detail in it, timing, retransmission and
 privilege boundaries, and it is much cheaper to agree on an approach than to
 rework a finished pull request.

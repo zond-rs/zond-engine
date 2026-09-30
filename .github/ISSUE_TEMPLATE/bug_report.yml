@@ -1,64 +1,51 @@
-name: 🐛 Bug Report
-description: Create a report to help us improve zond
+name: Bug report
+description: The engine crashed, returned an error it shouldn't have, or got a result wrong.
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to fill out this bug report!
+        Using the `zond` command rather than the library? Please report it at
+        [zond-rs/zond](https://github.com/zond-rs/zond/issues/new/choose) instead.
   - type: textarea
-    id: description
+    id: what
     attributes:
-      label: Description
-      description: A concise description of the bug.
-      placeholder: e.g. Discovery probes local IP during unprivileged scans.
+      label: What happened
+      description: And what you expected instead.
     validations:
       required: true
   - type: textarea
-    id: reproduction
+    id: reproduce
     attributes:
-      label: Steps to Reproduce
-      description: How can we make this happen again?
-      placeholder: |
-        1. Run 'zond discover...'
-        2. ...
+      label: How to reproduce it
+      description: The smallest code or input that shows it. A report file or a packet capture helps if the network is involved.
+      render: rust
     validations:
       required: true
-  - type: textarea
-    id: expected
-    attributes:
-      label: Expected Behavior
-      placeholder: The tool should skip the local interface IP.
   - type: input
     id: version
     attributes:
-      label: Zond Version
-      description: Run `zond --version`
-      placeholder: v0.1.0
-  - type: textarea
-    id: logs
-    attributes:
-      label: Trace Logs
-      description: Please run the command with `-vv` and paste the relevant output.
-      placeholder: |
-        [TRACE] ...
-        [DEBUG] ...
+      label: Version and features
+      placeholder: 0.19.0, default features plus export-all
     validations:
-      required: false
-  - type: textarea
-    id: fix
-    attributes:
-      label: Proposed Fix
-      description: If you have a technical suggestion or a snippet, please share it!
-      placeholder: e.g. We should use zond_core::net::interface to filter the scan targets.
-    validations:
-      required: false
+      required: true
   - type: dropdown
-    id: os
+    id: platform
     attributes:
-      label: Operating System
+      label: Platform
       options:
         - Linux
         - macOS
         - Windows
         - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: privileges
+    attributes:
+      label: Raw sockets available
+      description: Root, CAP_NET_RAW, BPF access on macOS, or Administrator with Npcap on Windows.
+      options:
+        - "Yes"
+        - "No"
+        - Not sure

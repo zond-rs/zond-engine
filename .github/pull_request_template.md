@@ -1,57 +1,15 @@
-## 📝 Description
+<!-- For anything bigger than a small fix, please open an issue first so we can agree on the approach. -->
 
-Fixes # (issue)
+## What this changes
 
----
+Fixes #
 
-## 🛠️ Type of Change
+## How you checked it
 
-- [ ] 🔍 **New Fingerprint:** Added detection for a new service/protocol.
-- [ ] 🚀 **New Feature:** Added a new CLI flag or capability.
-- [ ] 🐛 **Bug Fix:** Fixed an issue in the engine or discovery logic.
-- [ ] ⚡ **Performance:** Improved scan speed or resource usage.
-- [ ] 📝 **Docs:** Updated README, help text, or documentation.
+<!-- The tests you added or ran. If it changes what goes on the wire, say what you saw on a real network. -->
 
----
+- [ ] `cargo fmt --check`, `cargo clippy --all-features --all-targets -- -D warnings` and `cargo test --all-features` pass
+- [ ] New fingerprints or detections match only what they're meant to, and come with an example
 
-## 🧪 How Has This Been Tested?
-
-- [ ] **Target Test:** I ran `zond` against a live/containerized target.
-- [ ] **Regression Test:** Verified that existing fingerprints still work.
-- [ ] **Noisiness Check:** Verified this doesn't send an excessive amount of packets.
-
-**Test Configuration:**
-- OS:
-- Target Service:
-- Command used: `zond ...`
-
----
-
-## 📸 Screenshots / Logs
-
-<details>
-<summary>Click to expand logs</summary>
-
-```text
-(Paste output here)
-```
-
-</details>
-
----
-
-## ✅ Checklist
-
-- [ ] My code follows the project's style guidelines.
-- [ ] I have commented my code, particularly in hard-to-understand areas.
-- [ ] My changes generate no new warnings/errors.
-- [ ] I have added/updated documentation.
-- [ ] I did not read any of this, just clicking for the green button.
-- [ ] **(If adding a fingerprint)** The regex/logic is as specific as possible to avoid false positives.
-- [ ] I have read and agree to the [Contributor License Agreement](../CLA.md).
-
----
-*Zond Engine is licensed under the GNU AGPL v3 or later. By submitting this pull
-request you agree to license your contribution under those terms and to the
-[Contributor License Agreement](../CLA.md). The CLA Assistant bot will ask you to
-sign on your first contribution — it only takes a comment.*
+On your first pull request the CLA bot will ask you to sign the
+[Contributor License Agreement](https://github.com/zond-rs/zond-engine/blob/main/CLA.md) with a comment.

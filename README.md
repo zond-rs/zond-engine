@@ -1,35 +1,27 @@
-# Zond Engine
+# zond-engine
 
-![Test Status](https://github.com/zond-rs/zond-engine/actions/workflows/test.yml/badge.svg)
-![Lint Status](https://github.com/zond-rs/zond-engine/actions/workflows/lint.yml/badge.svg)
 [![Crates.io](https://img.shields.io/crates/v/zond-engine.svg)](https://crates.io/crates/zond-engine)
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-![Rust Version](https://img.shields.io/badge/rustc-1.93+-blue.svg)
+[![Docs](https://docs.rs/zond-engine/badge.svg)](https://docs.rs/zond-engine)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 
-A network scanner, as a library. Addresses in, and it reports which hosts are
-alive; hosts and ports in, and it reports which of those are open and what is
-listening behind them. The scanning, the domain model, the report and the file
-formats are all here.
-
-[Zond](https://github.com/zond-rs/zond) is the official command-line front end,
-and one consumer of this crate among others.
+A network scanner as a Rust library: host discovery, port scanning, service
+and OS identification, vulnerability matching, and the reports that come out
+of it. [zond](https://github.com/zond-rs/zond) is the command-line tool built on
+it; anything else you build gets the same scans and the same report format.
 
 ```toml
 [dependencies]
-zond-engine = "0.18"
+zond-engine = "0.19"
+tokio = { version = "1", features = ["full"] }
 ```
 
-## Two phases
+## Example
 
-`discover` establishes which hosts exist. `scan` classifies the ports of hosts
-already known. Separate calls, because sweeping a `/24` is a few hundred packets
-and port-scanning all of it is a few hundred thousand.
+Find the live hosts in a range, printing each as it turns up:
 
 ```rust
 use zond_engine::{Resolver, ScanEvent, ZondConfig, discover, resolve};
 
-// One call handles the address grammar, this host's interface table for `lan`
-// and `%en0`, any hostnames, and whether a segment sweep was asked for.
 let resolver = Resolver::from_system();
 let targets = resolve::for_discovery(&["192.0.2.0/24"], Some(&resolver)).await?;
 
@@ -38,7 +30,6 @@ targets.apply_to(&mut cfg);
 
 let (mut session, task) = discover(targets.into_ips(), &cfg).await?;
 
-// Hosts arrive as they are found.
 while let Some(event) = session.events().recv().await {
     if let ScanEvent::HostUpdated(address) = event
         && let Some(host) = session.hosts().get(&address)
@@ -47,104 +38,68 @@ while let Some(event) = session.events().recv().await {
     }
 }
 
-// And the record of the sweep once it is over.
 let report = task.join().await?;
 println!("{} hosts up", report.summary().hosts_alive);
 ```
 
-Both run without root, falling back to TCP connect attempts, and the report
-records which it was.
+`scan` works the same way for ports, and `listen` records what a link carries
+without sending anything. Every call gives you a live session to watch and a
+report at the end that says what was asked, what came back, and what failed.
 
-A third entry point, `listen`, sends nothing and reads what a link already
-carries: which switch port this machine is on, which VLANs it carries, what a
-device says about itself while asking for an address.
+## What's in it
 
-## What it can do
+- **Discovery**: ARP and ICMPv6 on the local segment, TCP SYN beyond it, a TCP
+  connect fallback when there are no raw sockets.
+- **Port scanning**: TCP (SYN and six other techniques), UDP and SCTP, with
+  retransmission and adaptive timing.
+- **Identification**: services, versions and operating systems from an
+  embedded signature set, and a full TLS enumeration of what an endpoint
+  accepts.
+- **Findings**: a sandboxed detection language, and CVE matching that checks a
+  distribution's build against its own fix data (Ubuntu, Debian) instead of
+  trusting the version number. Findings citing a CVE that CISA lists as
+  exploited are marked.
+- **Records**: scans are journalled as they run, so they can be resumed.
+  Reports export as JSON, JSONL, CSV, HTML or nmap XML, and can be diffed and
+  merged, nmap's included.
+- **Scope**: excluded addresses are enforced before the first packet and
+  checked again on every result, and excluded ports are never probed.
 
-**Finding hosts.** ARP and ICMPv6 on the local segment, raw TCP SYN through a
-gateway, an unprivileged connect fallback, and an ICMP timestamp beside every
-echo.
+The [docs](https://docs.rs/zond-engine) walk through all of it; the crate-level
+page is the place to start. File formats and optional pieces sit behind cargo
+features, listed in `Cargo.toml`.
 
-**Classifying ports.** Seven TCP techniques, raw UDP, SCTP by INIT chunk or
-COOKIE-ECHO, with retransmission and an adaptive deadline. A separate pass asks
-which IP protocols the stack takes delivery of, one layer below the ports.
+## Platforms and privileges
 
-**Naming what is listening.** Service, product and version from an embedded
-signature corpus, the operating system from the shape of a reply. A TLS port can
-be asked what it *accepts* rather than what one handshake negotiated: every
-version and suite offered in turn, each graded from its own parts.
+Linux, macOS and Windows. Building needs libpcap: `libpcap-dev` on Debian and
+Ubuntu, `libpcap-devel` on Fedora, nothing extra on macOS, and
+[Npcap](https://npcap.com) on Windows.
 
-**Saying what is wrong with it.** A detection corpus that turns a service name
-into a finding. Detections are TOML: a bounded sequence of probes and matches,
-or a sandboxed module that reaches the network only through the verbs its class
-grants. The operator sets the ceiling, so anything above `active-benign` ships
-inert. Known vulnerabilities are matched to what was identified, and a
-distribution's build is judged by its distributor's own fix data rather than by
-its upstream version: the Ubuntu and Debian feeds, fetched when a caller asks.
-What stands is marked where CISA lists it as exploited in the wild.
+Raw sockets (root, `CAP_NET_RAW`, or BPF access on macOS) give you ARP, ICMPv6
+and SYN. Without them everything still runs over plain TCP connections, and the
+report says so.
 
-**Keeping the result.** Every scan is journalled as it runs, so one that stopped
-continues and one that finished replays without the network. Reports export as
-JSON, JSONL, CSV, a self-contained HTML page or nmap XML; targets import from a
-list, CSV, this engine's JSON or somebody else's nmap XML. Two reports compare,
-any number fold into one.
-
-**Staying inside a scope.** Excluded addresses are enforced before the first
-packet and again at every finding, and the report carries the ranges and what
-they withheld.
-
-## Modules
-
-| | |
-|---|---|
-| `model` | Hosts, ports, IP sets, targets, and the addresses and exclusions they are expressed in. `config` sits beside it. |
-| `scanner` | `discover`, `scan` and `listen`, the strategies behind them, the live session and the finished report. |
-| `fingerprint` | Service and operating-system identification over an open port. |
-| `detect` | What to conclude beyond a service name. Flows, the sandboxed compute tier, signed bundles, and `cve` correlation. |
-| `diff` / `merge` | What changed between two scans, and any number of scans folded into one. |
-| `journal` | A scan written down as it runs, so it can be resumed or replayed. |
-| `export` / `import` | Reports out, targets and settings in. `record` is the model as data. |
-| `protocols` | Parsing and packet crafting: TCP, UDP, ICMP, ARP, NDP, DNS, mDNS. |
-| `transport` | Raw send and capture, beneath the protocol layer. `resolve` turns names into addresses above it. |
-| `system` | Interfaces, routing and privilege checks. The only place the engine asks the host about itself. |
-
-Each import and export format sits behind a cargo feature. The reference on
-[docs.rs](https://docs.rs/zond-engine) is built with all of them on.
-
-## Compatibility
-
-Linux, macOS and Windows. On Windows the engine sends and captures through
-[Npcap](https://npcap.com).
-
-|                                | IPv4       | IPv6                                                                |
-| ------------------------------ | ---------- | ------------------------------------------------------------------- |
-| Local-segment discovery        | ARP sweep  | all-nodes echo, neighbour discovery, the host's own cache, mDNS      |
-| TCP port scanning              | yes        | yes                                                                 |
-| UDP port scanning              | yes        | yes                                                                 |
-| Sweeping a network by range    | yes        | no, an IPv6 network is searched rather than enumerated               |
-
-A `/64` holds 2^64 addresses, so there is no equivalent of walking a `/24`.
-Multicast probes and the neighbour table find what is on the link, and a prefix
-too large to probe one address at a time is refused rather than sampled.
+IPv6 is supported throughout, with one difference: an IPv6 network is searched
+(multicast, neighbour discovery, mDNS) rather than swept address by address,
+since a /64 is too big to walk.
 
 ## Contributing
 
-Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers what the
-AGPL asks of you and the Contributor License Agreement you will be asked to sign
-on your first pull request.
+Issues and pull requests are welcome. Please read
+[CONTRIBUTING.md](CONTRIBUTING.md) first; your first pull request will ask you
+to sign a Contributor License Agreement. Report security problems privately, as
+described in [SECURITY.md](SECURITY.md).
 
 ## License
 
-GNU Affero General Public License, version 3 or later. See
-[LICENSE](LICENSE).
+AGPL-3.0-or-later, see [LICENSE](LICENSE). If you distribute it, or run a
+modified version as a network service, you have to offer your users the source.
+If that doesn't work for you, a commercial license is available:
+licensing@zond.rs.
 
-You may use, study, modify and redistribute this software. If you distribute it,
-or run a modified version as a network service, you must offer your users the
-corresponding source under the same terms. If that does not suit your
-deployment, a commercial license is available: **licensing@zond.rs**.
+The signatures under `assets/fingerprinting/imported/rapid7/` come from
+[Rapid7 Recog](https://github.com/rapid7/recog) and stay under BSD-2-Clause.
+CISA's list of exploited vulnerabilities in `assets/cve/kev.toml` is public
+domain (CC0).
 
-The fingerprint signatures under `assets/fingerprinting/imported/rapid7/` are
-derived from [Rapid7 Recog](https://github.com/rapid7/recog) and remain under
-their original BSD-2-Clause license.
-
-Copyright (c) 2026 Erik Lening (hollowpointer) and Contributors.
+Copyright (c) 2026 Erik Lening (hollowpointer) and contributors.
