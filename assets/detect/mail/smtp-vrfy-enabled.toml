@@ -3,10 +3,19 @@
 # accounts before ever authenticating. Most servers disable it; one that does not
 # is the finding. VRFY and QUIT are pipelined onto the one connection a flow opens
 # per send.
+#
+# `low`, not `medium`. What VRFY hands over is a list of local part names, which is
+# information disclosure that shortens a password-guessing campaign rather than a
+# weakness anything is exploited through: the accounts it confirms are the ones any
+# directory, signature block or mail archive names anyway, and the server still asks
+# for a password. `medium` is the rank for a weakness worth scheduling work against,
+# and putting an account-name oracle there ranks it with a missing authentication
+# check. The same reading holds wherever the server sits, so the rating is flat: an
+# insider enumerating accounts is the same small gain as a stranger doing it.
 
 [detection]
 id      = "smtp-vrfy-enabled"
-version = "1.0.0"
+version = "1.1.0"
 title   = "SMTP VRFY discloses valid accounts"
 
 [detection.when]
@@ -24,7 +33,7 @@ send   = 'VRFY root\r\nQUIT\r\n'
 expect = '(?m)^250[ -]'
   [[step.finding]]
   when         = "matched"
-  severity     = "medium"
+  severity     = "low"
   summary      = "SMTP answered VRFY with 250"
   detail       = "The server confirmed a local address through VRFY, so an attacker can enumerate valid accounts without authenticating; VRFY should be disabled."
   references   = [{ cwe = 200 }]

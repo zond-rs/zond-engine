@@ -330,8 +330,10 @@ async fn a_flow_fires_against_the_service_name_its_own_fingerprint_produces() {
 /// drew, and adds no traffic of its own.
 ///
 /// Its severity is *computed* rather than declared, which is what earns the
-/// tier: four of the four baseline headers absent is `medium`, one or two would
-/// be `low`.
+/// tier: four of the four baseline headers absent is `low`, one or two would be
+/// `info`. Both rungs sit below `medium` on purpose, since an absent header is an
+/// absent mitigation rather than a way in; the gradient is the point here, not
+/// where it starts.
 ///
 /// The phases are assembled here rather than taken from `scanner::scan`, which
 /// is the second of the three altitudes the `scanner` module documents. It is
@@ -364,7 +366,7 @@ async fn a_compute_module_grades_the_response_the_scan_already_gathered() {
     let finding = port_finding(&host, server.port, "http-missing-security-headers")
         .expect("the compute module fired over the gathered response");
 
-    assert_eq!(finding.severity(), Severity::Medium);
+    assert_eq!(finding.severity(), Severity::Low);
     // The count, not the sentence around it. What earns the tier is that the
     // module counted four and graded on the number; the wording is report copy,
     // and pinning it here breaks this test on an edit that changes no behaviour,
