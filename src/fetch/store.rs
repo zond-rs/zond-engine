@@ -57,14 +57,14 @@
 //! scan run with `sudo` then share one copy that both can read and replace.
 
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::journal::ownership::{self, Place};
 use crate::signature::Signature;
 
-use super::{FetchError, Resource, Verify};
+use super::{FetchError, Resource, Verify, is_valid_id};
 
 /// The downloaded bytes.
 const DATA: &str = "data";
@@ -94,6 +94,13 @@ const FORMAT: u32 = 1;
 /// resource id may start with, so a fetch and a derivation never share one;
 /// see [`derived`].
 pub(super) const DERIVED: &str = "derived";
+
+/// The directory a caller's notes are kept in, which no resource id may start
+/// with either; see [`Store::note`].
+pub(super) const NOTES: &str = "notes";
+
+/// The longest note kept: a word or a line, never a document.
+const MAX_NOTE_BYTES: u64 = 4096;
 
 mod derived;
 
@@ -125,6 +132,61 @@ impl Store {
     /// The directory one resource is kept in.
     pub fn directory(&self, resource: &Resource) -> PathBuf {
         self.under(resource.id())
+    }
+
+    /// The note the caller left under `name`, where there is one.
+    ///
+    /// For a front end's own small records about what it fetches, such as a
+    /// person having declined a dataset when asked, so they are not asked
+    /// again. Kept in the store beside the data it is about, so clearing the
+    /// cache clears the choice with it, and written as the store's files are:
+    /// never through a link, and under `sudo` for the invoking user.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::Storage`] for a name that is not one lowercase path
+    /// segment, and where a note is there and cannot be read.
+    pub fn note(&self, name: &str) -> Result<Option<String>, FetchError> {
+        let path = self.note_path(name)?;
+        let file = match open(&path, Access::Read) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(storage(&path, e)),
+        };
+        let mut text = String::new();
+        file.take(MAX_NOTE_BYTES)
+            .read_to_string(&mut text)
+            .map_err(|e| storage(&path, e))?;
+        Ok(Some(text))
+    }
+
+    /// Leaves `text` under `name`, replacing a note already there. See
+    /// [`note`](Self::note).
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::Storage`] for a name that is not one lowercase path
+    /// segment, and where the note cannot be written.
+    pub fn set_note(&self, name: &str, text: &str) -> Result<(), FetchError> {
+        let path = self.note_path(name)?;
+        let directory = self.root.join(NOTES);
+        let created =
+            ownership::create_missing(&directory, None).map_err(|e| storage(&directory, e))?;
+        ownership::hand_over(&directory, &created);
+        let mut file = create(&path).map_err(|e| storage(&path, e))?;
+        file.write_all(text.as_bytes())
+            .and_then(|()| file.sync_all())
+            .map_err(|e| storage(&path, e))
+    }
+
+    /// Where the note `name` is kept, refusing a name that is not one path
+    /// segment of a resource id's shape.
+    fn note_path(&self, name: &str) -> Result<PathBuf, FetchError> {
+        if name.contains('/') || !is_valid_id(name) {
+            let invalid = io::Error::new(io::ErrorKind::InvalidInput, "not a note name");
+            return Err(storage(&self.root.join(NOTES).join(name), invalid));
+        }
+        Ok(self.root.join(NOTES).join(name))
     }
 
     /// The directory an id names, one path component per segment.
@@ -731,6 +793,35 @@ mod tests {
     /// What an update writes is what the next one reads, every field of it,
     /// or a conditional request would be made with a validator the server
     /// never sent.
+    /// A note is the one thing a front end keeps in the store about its own
+    /// choices, so it has to read back as written, be absent until written,
+    /// and never reach outside the notes directory by its name.
+    #[test]
+    fn a_note_reads_back_and_its_name_stays_inside_the_store() {
+        let root = std::env::temp_dir().join(format!("zond-notes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = Store::new(&root);
+
+        assert_eq!(store.note("debian-declined").unwrap(), None);
+        store
+            .set_note("debian-declined", "declined 2026-09-30")
+            .unwrap();
+        assert_eq!(
+            store.note("debian-declined").unwrap().as_deref(),
+            Some("declined 2026-09-30")
+        );
+        store.set_note("debian-declined", "again").unwrap();
+        assert_eq!(
+            store.note("debian-declined").unwrap().as_deref(),
+            Some("again")
+        );
+
+        for name in ["../escape", "a/b", "", ".hidden", "UPPER"] {
+            assert!(store.set_note(name, "x").is_err(), "{name:?} was accepted");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn metadata_reads_back_as_it_was_written() {
         let mut metadata = Metadata::new(

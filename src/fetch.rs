@@ -149,9 +149,11 @@ impl Resource {
     ) -> Result<Self, InvalidResource> {
         let id = id.into();
         let url = url.into();
-        // The first segment `derived` is where derived data is kept, so a
-        // resource there would share a directory with it.
-        if !is_valid_id(&id) || id.split('/').next() == Some(store::DERIVED) {
+        // The first segments `derived` and `notes` are where derived data and
+        // notes are kept, so a resource there would share a directory with
+        // them.
+        if !is_valid_id(&id) || matches!(id.split('/').next(), Some(store::DERIVED | store::NOTES))
+        {
             return Err(InvalidResource::Id(id));
         }
         check_url(&url)?;

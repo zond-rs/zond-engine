@@ -5135,8 +5135,10 @@ pub fn zond_engine::fetch::Store::open_derived(&self, &zond_engine::fetch::Deriv
 impl zond_engine::fetch::Store
 pub fn zond_engine::fetch::Store::directory(&self, &zond_engine::fetch::Resource) -> std::path::PathBuf
 pub fn zond_engine::fetch::Store::new(impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn zond_engine::fetch::Store::note(&self, &str) -> core::result::Result<core::option::Option<alloc::string::String>, zond_engine::fetch::FetchError>
 pub fn zond_engine::fetch::Store::open(&self, &zond_engine::fetch::Resource) -> core::result::Result<core::option::Option<zond_engine::fetch::Stored>, zond_engine::fetch::FetchError>
 pub fn zond_engine::fetch::Store::root(&self) -> &std::path::Path
+pub fn zond_engine::fetch::Store::set_note(&self, &str, &str) -> core::result::Result<(), zond_engine::fetch::FetchError>
 impl core::clone::Clone for zond_engine::fetch::Store
 pub fn zond_engine::fetch::Store::clone(&self) -> zond_engine::fetch::Store
 impl core::cmp::Eq for zond_engine::fetch::Store
