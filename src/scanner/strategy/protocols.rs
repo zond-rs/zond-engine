@@ -59,7 +59,7 @@
 //! because the kernel does that better. A number whose socket the kernel refuses
 //! is left [`Unasked`](IpProtocolState::Unasked) rather than reported quiet.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
@@ -68,7 +68,7 @@ use pnet_packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use crate::model::host::IpProtocolState;
 use crate::protocols::{icmp, sctp, tcp, udp};
 use crate::report::ScannerKind;
-use crate::scanner::session::ScanContext;
+use crate::scanner::session::{ProbeClaim, ScanContext};
 use crate::scanner::strategy::icmp_error::{self, Unreachable};
 use crate::system::interface::SourceResolver;
 use crate::transport::frame::IpSegment;
@@ -271,14 +271,140 @@ pub async fn probe(ctx: &ScanContext, targets: &[IpAddr], protocols: &BTreeSet<u
         sources: BTreeSet::new(),
     };
 
-    send_probes(ctx, targets, &senders, &mut resolver, &mut keys);
+    let owed = Owed::resolve(targets, &senders, &mut resolver, &mut keys);
 
     // What a reply is matched against: the hosts asked, and the numbers that got
     // a socket. Built once and as sets, because every captured message is
     // checked against both and the capture admits every ICMP on the host.
-    let probed: BTreeSet<IpAddr> = targets.iter().copied().collect();
-    let asked: BTreeSet<u8> = senders.keys().copied().collect();
-    collect_replies(ctx, &mut transport, &probed, &asked, &keys).await;
+    let listening = Listening {
+        probed: targets.iter().copied().collect(),
+        asked: senders.keys().copied().collect(),
+        keys,
+    };
+    send_probes(ctx, owed, &senders, &mut transport, &listening).await;
+    collect_replies(ctx, &mut transport, &listening).await;
+}
+
+/// What an answer is matched against: the hosts asked, the numbers that got a
+/// socket, and the identity the probes carried.
+struct Listening {
+    probed: BTreeSet<IpAddr>,
+    asked: BTreeSet<u8>,
+    keys: Correlation,
+}
+
+impl Listening {
+    /// Raises whatever `reply` establishes, where it is an answer to this pass.
+    fn settle(&self, ctx: &ScanContext, reply: &crate::transport::capture::CapturedSegment) {
+        if let Some((host, number, state)) = matched(reply, &self.probed, &self.asked, &self.keys) {
+            ctx.update_host(host, |host| {
+                host.record_ip_protocol(number, state);
+            });
+        }
+    }
+}
+
+/// One probe the pass owes: a protocol number to ask a host about, and the
+/// address it leaves from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Question {
+    host: IpAddr,
+    number: u8,
+    source: IpAddr,
+}
+
+/// The probes a pass still owes, in the order they are owed.
+///
+/// Each is one probe at its host, for the gaps the scan keeps between probes:
+/// a datagram under one protocol number, aimed at that host alone. The pass
+/// asks a dozen numbers of every host, so a per-host gap is what spaces it
+/// most, and taking whichever owed probe is ready, rather than the next in
+/// order, is what lets the pass ask the next host while the last one's gap
+/// runs.
+#[derive(Debug, Default)]
+struct Owed {
+    pending: VecDeque<Question>,
+}
+
+impl Owed {
+    /// Every question the pass owes `targets`, one per number in `senders`,
+    /// each from the source address the routing table picks for its host.
+    ///
+    /// A host with no source address to send from is passed over entirely: a
+    /// probe that never left proves nothing, and recording silence for it
+    /// would report the scanner's own reach as the host's policy.
+    fn resolve<S>(
+        targets: &[IpAddr],
+        senders: &BTreeMap<u8, S>,
+        resolver: &mut SourceResolver,
+        keys: &mut Correlation,
+    ) -> Self {
+        let mut pending = VecDeque::new();
+        for &host in targets {
+            let Some(source) = resolver.resolve(host) else {
+                continue;
+            };
+            // Collected as they are used rather than asked of the resolver
+            // again: this is the set a quotation's source address is checked
+            // against, so it has to be the addresses probes really left from
+            // and not the ones the routing table would pick a second time.
+            keys.sources.insert(source);
+            pending.extend(senders.keys().map(|&number| Question {
+                host,
+                number,
+                source,
+            }));
+        }
+        Self { pending }
+    }
+
+    /// The first owed question whose host's slot is free, taken off the queue
+    /// with the slot it claimed; or, where none is, when the first will be.
+    ///
+    /// `None` once nothing is owed. A question turned away stays where it
+    /// was, since a probe never sent is owed a send or an unasked verdict and
+    /// never a silence.
+    fn take_ready(
+        &mut self,
+        ctx: &ScanContext,
+        now: Instant,
+    ) -> Option<Result<(Question, ProbeClaim), Instant>> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        // Every probe spends the scan-wide gap, so while it runs there is
+        // nothing to choose between.
+        if let Some(ready) = ctx.group_probe_ready_at(now) {
+            return Some(Err(ready));
+        }
+        let mut earliest: Option<Instant> = None;
+        for index in 0..self.pending.len() {
+            let question = self.pending[index];
+            let ready = match ctx.probe_ready_at(question.host, now) {
+                Some(ready) => ready,
+                None => match ctx.claim_probe(question.host) {
+                    Ok(claim) => {
+                        self.pending.remove(index);
+                        return Some(Ok((question, claim)));
+                    }
+                    Err(ready) => ready,
+                },
+            };
+            earliest = Some(earliest.map_or(ready, |earliest| earliest.min(ready)));
+        }
+        // Something was pending and nothing was ready, so something is held.
+        Some(Err(earliest.unwrap_or(now)))
+    }
+
+    /// Records every question still owed as unasked of its host, which is
+    /// what it was.
+    fn abandon(self, ctx: &ScanContext) {
+        for question in self.pending {
+            ctx.update_host(question.host, |host| {
+                host.record_ip_protocol(question.number, IpProtocolState::Unasked);
+            });
+        }
+    }
 }
 
 /// One capture for the whole pass, and one sender per protocol.
@@ -338,56 +464,70 @@ fn open(
 
 /// Sends one probe per host and protocol, recording what each is owed.
 ///
-/// A host with no source address to send from is passed over entirely: a probe
-/// that never left proves nothing, and recording silence for it would report the
-/// scanner's own reach as the host's policy. The stop is read before each host,
-/// so a pass over many hosts does not send its whole burst after the caller
-/// asked it to stop.
-fn send_probes(
+/// Each probe takes its slot from the gaps the scan keeps between probes
+/// immediately before it leaves; while none is free the pass waits for the
+/// first that will be, reading answers as they arrive rather than leaving
+/// them to queue. A send the kernel refused gives its slot back and is
+/// recorded unasked.
+///
+/// The stop is read before every probe and ends a wait at once, and every
+/// probe not yet sent when it arrives is recorded unasked of its host, which
+/// is what it was. The listening window runs from the last send, so no gap
+/// can spend the time an answer is given.
+async fn send_probes(
     ctx: &ScanContext,
-    targets: &[IpAddr],
+    mut owed: Owed,
     senders: &BTreeMap<u8, TransportSenderHandle>,
-    resolver: &mut SourceResolver,
-    keys: &mut Correlation,
+    transport: &mut ProbeTransport,
+    listening: &Listening,
 ) {
-    for &host in targets {
-        // A host the pass had not reached when the scan was stopped is sent
-        // nothing, and every protocol is recorded unasked of it, which is what
-        // it was.
+    let mut capturing = true;
+    loop {
         if ctx.handle.should_stop() {
-            ctx.update_host(host, |host| {
-                for &number in senders.keys() {
-                    host.record_ip_protocol(number, IpProtocolState::Unasked);
+            owed.abandon(ctx);
+            return;
+        }
+        let (question, claim) = match owed.take_ready(ctx, Instant::now()) {
+            None => return,
+            Some(Ok(ready)) => ready,
+            Some(Err(ready)) => {
+                tokio::select! {
+                    () = ctx.handle.stopping() => {}
+                    () = tokio::time::sleep_until(ready.into()) => {}
+                    reply = transport.rx.recv(), if capturing => match reply {
+                        Some(reply) => listening.settle(ctx, &reply),
+                        None => capturing = false,
+                    },
                 }
-            });
-            continue;
-        }
-        let Some(source) = resolver.resolve(host) else {
-            continue;
+                continue;
+            }
         };
-        // Collected as they are used rather than asked of the resolver again:
-        // this is the set a quotation's source address is checked against, so it
-        // has to be the addresses probes really left from and not the ones the
-        // routing table would pick a second time.
-        keys.sources.insert(source);
 
-        for (&number, sender) in senders {
-            let payload = probe_payload(number, source, host, keys);
-            let sent = sender
+        let Question {
+            host,
+            number,
+            source,
+        } = question;
+        let payload = probe_payload(number, source, host, &listening.keys);
+        let sent = senders.get(&number).is_some_and(|sender| {
+            sender
                 .send_to(Datagram(&payload), host, None, Emission::routed().hop_limit)
-                .is_ok();
-
-            // Written down before anything answers, so that the record says a
-            // protocol was asked about even where the answer never comes. The
-            // reply loop only ever raises these.
-            let state = match sent {
-                true => IpProtocolState::OpenOrNoReply,
-                false => IpProtocolState::Unasked,
-            };
-            ctx.update_host(host, |host| {
-                host.record_ip_protocol(number, state);
-            });
+                .is_ok()
+        });
+        if !sent {
+            ctx.refund_probe(claim);
         }
+
+        // Written down before anything answers, so that the record says a
+        // protocol was asked about even where the answer never comes. The
+        // reply loop only ever raises these.
+        let state = match sent {
+            true => IpProtocolState::OpenOrNoReply,
+            false => IpProtocolState::Unasked,
+        };
+        ctx.update_host(host, |host| {
+            host.record_ip_protocol(number, state);
+        });
     }
 }
 
@@ -436,13 +576,7 @@ fn probe_payload(number: u8, source: IpAddr, host: IpAddr, keys: &Correlation) -
 }
 
 /// Listens out the window and raises whatever the answers establish.
-async fn collect_replies(
-    ctx: &ScanContext,
-    transport: &mut ProbeTransport,
-    probed: &BTreeSet<IpAddr>,
-    asked: &BTreeSet<u8>,
-    keys: &Correlation,
-) {
+async fn collect_replies(ctx: &ScanContext, transport: &mut ProbeTransport, listening: &Listening) {
     let deadline = Instant::now() + REPLY_WINDOW;
     loop {
         if ctx.handle.should_stop() {
@@ -454,13 +588,7 @@ async fn collect_replies(
         }
 
         match tokio::time::timeout(remaining, transport.rx.recv()).await {
-            Ok(Some(reply)) => {
-                if let Some((host, number, state)) = matched(&reply, probed, asked, keys) {
-                    ctx.update_host(host, |host| {
-                        host.record_ip_protocol(number, state);
-                    });
-                }
-            }
+            Ok(Some(reply)) => listening.settle(ctx, &reply),
             // The stream closed, or the window elapsed. Either way there is
             // nothing more to hear.
             Ok(None) | Err(_) => return,
@@ -946,6 +1074,65 @@ mod tests {
             None,
             "and one from anywhere else is not"
         );
+    }
+
+    /// Two hosts asked two numbers each, as the pass owes them.
+    fn owed_of_two_hosts() -> Owed {
+        let other = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 201));
+        let pending = [TARGET, other]
+            .into_iter()
+            .flat_map(|host| {
+                [1, 17].map(|number| Question {
+                    host,
+                    number,
+                    source: LOCAL,
+                })
+            })
+            .collect();
+        Owed { pending }
+    }
+
+    /// Under a gap at each host, the pass asks the next host while the last
+    /// one's gap runs, and holds what no host is ready for rather than
+    /// dropping it.
+    #[test]
+    fn a_host_gap_moves_the_pass_to_the_next_host_and_holds_the_rest() {
+        let gap = Duration::from_secs(3600);
+        let (_session, ctx) = crate::scanner::session::ScanSession::builder()
+            .host_probe_interval(Some(gap))
+            .build();
+        let mut owed = owed_of_two_hosts();
+        let now = Instant::now();
+
+        let mut taken = || match owed.take_ready(&ctx, now) {
+            Some(Ok((question, _claim))) => Ok((question.host, question.number)),
+            Some(Err(ready)) => Err(ready),
+            None => panic!("four were owed"),
+        };
+        let first = taken().expect("nothing has been asked yet");
+        let second = taken().expect("the other host has not been asked");
+        assert_eq!(first.1, second.1, "the same number of the next host");
+        assert_ne!(first.0, second.0);
+        let held = taken().expect_err("both hosts were just asked");
+        assert!(held > now + gap / 2, "held until the gap has run, {held:?}");
+        assert_eq!(owed.pending.len(), 2, "and nothing was dropped");
+    }
+
+    /// With no gap, the pass asks in the order it owes, every probe ready.
+    #[test]
+    fn with_no_gap_every_probe_is_taken_in_order() {
+        let (_session, ctx) = crate::scanner::session::ScanSession::new();
+        let mut owed = owed_of_two_hosts();
+        let order: Vec<Question> = owed.pending.iter().copied().collect();
+        let now = Instant::now();
+
+        for expected in order {
+            match owed.take_ready(&ctx, now) {
+                Some(Ok((question, _claim))) => assert_eq!(question, expected),
+                other => panic!("expected {expected:?}, got {other:?}"),
+            }
+        }
+        assert!(owed.take_ready(&ctx, now).is_none());
     }
 
     /// The pass draws a fresh source port and identifier each time, so two runs
