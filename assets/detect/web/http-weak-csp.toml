@@ -4,7 +4,7 @@
 
 [detection]
 id      = "http-weak-csp"
-version = "1.0.0"
+version = "1.1.0"
 title   = "Weak Content-Security-Policy"
 
 [detection.when]

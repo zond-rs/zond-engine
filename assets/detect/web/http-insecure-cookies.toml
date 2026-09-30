@@ -4,7 +4,7 @@
 
 [detection]
 id      = "http-insecure-cookies"
-version = "1.0.0"
+version = "1.1.0"
 title   = "Session cookie set without security flags"
 
 [detection.when]

@@ -160,6 +160,12 @@ pub fn replay_run(run: &DetectionRunRecord) -> Result<Vec<Finding>, ReplayError>
     let protocol = wire::protocol(&run.protocol)
         .ok_or_else(|| ReplayError::UnknownTransport(run.protocol.clone()))?;
 
+    // Rebuilt from the recorded host, which is also what carries `ctx.exposure`
+    // across a replay: the rung is read off this address, so a run recorded
+    // against a private one grades offline exactly as it graded live. Nothing
+    // about the exposure has to be journalled for that to hold, and nothing may
+    // be, since a rung written into the file could disagree with the address
+    // beside it.
     let addr = run
         .host
         .parse::<IpAddr>()
@@ -341,14 +347,32 @@ mod tests {
         };
 
         // A response with none of the baseline headers: a finding, and the count of
-        // four omitted lands it at medium rather than low.
+        // four omitted lands it at low rather than info.
+        //
+        // Low and not medium, whatever the count. An absent header is an absent
+        // mitigation rather than a way in, and this check has read nothing that says
+        // whether the attack it mitigates is reachable. Ranked medium it fires on
+        // nearly every web server, at the rank meant for work somebody schedules.
         let bare = b"HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Type: text/html\r\n\r\n";
         let findings = run(bare);
         let finding = findings
             .iter()
             .find(|f| f.detection().id() == "http-missing-security-headers")
             .expect("the header detection fired on a bare response");
-        assert_eq!(finding.severity(), Severity::Medium);
+        assert_eq!(finding.severity(), Severity::Low);
+
+        // One header short of the baseline: the same claim, a rung down, because the
+        // count is what this check computes and the gradient is why it is a module.
+        let mostly = b"HTTP/1.1 200 OK\r\n\
+            Strict-Transport-Security: max-age=31536000\r\n\
+            Content-Security-Policy: default-src 'self'\r\n\
+            X-Frame-Options: DENY\r\n\r\n";
+        let findings = run(mostly);
+        let finding = findings
+            .iter()
+            .find(|f| f.detection().id() == "http-missing-security-headers")
+            .expect("one missing header is still reported");
+        assert_eq!(finding.severity(), Severity::Info);
 
         // A response carrying all four: computed clean, no finding.
         let hardened = b"HTTP/1.1 200 OK\r\n\
@@ -374,6 +398,260 @@ mod tests {
                 .iter()
                 .any(|f| f.detection().id() == "http-missing-security-headers"),
             "a bare http-to-https redirect was graded as a missing-headers finding"
+        );
+    }
+
+    /// **A nonce policy is not a weak policy.**
+    ///
+    /// The false positive this detection was rewritten to stop producing. CSP
+    /// Level 3 tells an author deploying a nonce to write `'unsafe-inline'` beside
+    /// it, so that a browser too old to understand either keyword still gets a
+    /// working page; a browser that understands the nonce ignores
+    /// `'unsafe-inline'` outright. Read as one string, the header therefore accuses
+    /// exactly the policies somebody did the work on.
+    ///
+    /// The header is the one an Arris router serves, which is where this was found:
+    /// nonce, `'strict-dynamic'`, `object-src 'none'` and `base-uri 'none'`, a
+    /// better policy than most sites deploy, reported as undermining itself.
+    #[test]
+    fn a_nonce_governed_policy_is_not_graded_for_the_unsafe_inline_beside_the_nonce() {
+        let db = ComputeDb::global();
+        let csp = |policy: &str| {
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Security-Policy: {policy}\r\nContent-Length: 0\r\n\r\n"
+            );
+            super::super::stage::detect_port(
+                db.runtime(),
+                db.detections(),
+                &DetectionEnvelope::default(),
+                Some("http"),
+                &http_ctx(),
+                &[response.as_bytes()],
+                |_grant| Some(Box::new(NoCaps)),
+                |_, _| {},
+            )
+            .findings
+            .into_iter()
+            .find(|f| f.detection().id() == "http-weak-csp")
+        };
+
+        // A nonce with `'strict-dynamic'`: the recommended deployment. Its
+        // `img-src *` is a wildcard for pictures and not a script source, and its
+        // `style-src 'unsafe-inline'` is the one real gap, so the finding names
+        // that and nothing else, a rung below a script failure.
+        let arris = "default-src 'self' 'nonce-abc' ; img-src *; \
+                     style-src 'self' 'unsafe-inline'; \
+                     script-src 'strict-dynamic' 'unsafe-inline' 'nonce-abc' http: https:; \
+                     base-uri 'none'; object-src 'none';";
+        let finding = csp(arris).expect("the inline style is a real gap and is reported");
+        assert_eq!(finding.severity(), Severity::Low);
+        assert!(
+            finding.excerpt().as_str().contains("style-src"),
+            "the finding named something other than the inline style: {}",
+            finding.excerpt().as_str()
+        );
+        assert!(
+            !finding.excerpt().as_str().contains("script-src"),
+            "a nonce-governed script-src was graded: {}",
+            finding.excerpt().as_str()
+        );
+
+        // A nonce alone cancels it too, and so does a hash.
+        assert!(
+            csp("script-src 'nonce-abc' 'unsafe-inline'").is_none(),
+            "a nonce did not cancel the `'unsafe-inline'` beside it"
+        );
+        assert!(
+            csp("script-src 'sha256-abc' 'unsafe-inline'").is_none(),
+            "a hash did not cancel the `'unsafe-inline'` beside it"
+        );
+    }
+
+    /// The policies that really are weak still are, and each is named where it was
+    /// found rather than anywhere in the header.
+    #[test]
+    fn a_policy_that_permits_inline_script_or_any_origin_is_still_graded() {
+        let db = ComputeDb::global();
+        let csp = |policy: &str| {
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Security-Policy: {policy}\r\nContent-Length: 0\r\n\r\n"
+            );
+            super::super::stage::detect_port(
+                db.runtime(),
+                db.detections(),
+                &DetectionEnvelope::default(),
+                Some("http"),
+                &http_ctx(),
+                &[response.as_bytes()],
+                |_grant| Some(Box::new(NoCaps)),
+                |_, _| {},
+            )
+            .findings
+            .into_iter()
+            .find(|f| f.detection().id() == "http-weak-csp")
+        };
+
+        // Inline script with nothing holding it back: the policy failing at its
+        // main job.
+        let bare_inline = csp("default-src 'self'; script-src 'self' 'unsafe-inline'")
+            .expect("inline script with no nonce is a weakness");
+        assert_eq!(bare_inline.severity(), Severity::Medium);
+
+        // `'unsafe-eval'` is not cancelled by a nonce: a nonce says nothing about
+        // the strings `eval` is handed.
+        let eval = csp("script-src 'nonce-abc' 'unsafe-eval'")
+            .expect("`'unsafe-eval'` is a weakness beside a nonce");
+        assert_eq!(eval.severity(), Severity::Medium);
+
+        // A wildcard script source permits any script from anywhere.
+        let wild = csp("script-src *").expect("a script wildcard is a weakness");
+        assert_eq!(wild.severity(), Severity::Medium);
+
+        // A wildcard that is part of a host pattern is a named domain, not any
+        // origin, and `img-src *` is pictures.
+        assert!(
+            csp("default-src 'self'; script-src 'self' *.example.com; img-src *").is_none(),
+            "a host pattern or an image wildcard was read as permitting any script"
+        );
+
+        // A policy governing no script at all, whatever else it says.
+        let ungoverned =
+            csp("img-src 'self'; style-src 'self'").expect("no script-src and no default-src");
+        assert_eq!(ungoverned.severity(), Severity::Medium);
+
+        // A directive whose name merely starts with another's is not that one.
+        assert!(
+            csp("default-src 'self'; script-src-elem 'self' 'unsafe-inline'").is_none(),
+            "`script-src-elem` was read as `script-src`"
+        );
+    }
+
+    /// **The cookie finding names the flag that is actually missing.**
+    ///
+    /// A fixed summary naming both flags is wrong on the ordinary case, and wrong on
+    /// the one line a console prints: a cookie that *is* `HttpOnly` and merely lacks
+    /// `Secure` was reported as having neither, contradicting its own detail.
+    ///
+    /// The severity follows the same reading. Script access to a session is what
+    /// turns an injection into a stolen account; a missing `Secure` alone is a rung
+    /// below that, and on a plaintext origin it is a restatement of the origin being
+    /// plaintext, which a browser will not let the flag fix anyway.
+    #[test]
+    fn the_cookie_finding_names_the_flag_that_is_missing_and_grades_by_it() {
+        let db = ComputeDb::global();
+        let cookie = |header: &str| {
+            let response =
+                format!("HTTP/1.1 200 OK\r\nSet-Cookie: {header}\r\nContent-Length: 0\r\n\r\n");
+            super::super::stage::detect_port(
+                db.runtime(),
+                db.detections(),
+                &DetectionEnvelope::default(),
+                Some("http"),
+                &http_ctx(),
+                &[response.as_bytes()],
+                |_grant| Some(Box::new(NoCaps)),
+                |_, _| {},
+            )
+            .findings
+            .into_iter()
+            .find(|f| f.detection().id() == "http-insecure-cookies")
+        };
+
+        // The Arris router's own cookie: HttpOnly, no Secure. One flag missing, and
+        // the summary says which.
+        let only_secure = cookie("PHPSESSID=c91c971aadd19d0e; path=/; HttpOnly")
+            .expect("a session cookie without Secure is still reported");
+        assert_eq!(
+            only_secure.title(),
+            "A session cookie is set without Secure",
+            "the summary named a flag the cookie carries"
+        );
+        assert_eq!(only_secure.severity(), Severity::Low);
+
+        // Neither flag: both named, and the material one sets the rank.
+        let neither = cookie("PHPSESSID=c91c971aadd19d0e; path=/")
+            .expect("a session cookie with no flags is reported");
+        assert_eq!(
+            neither.title(),
+            "A session cookie is set without HttpOnly or Secure"
+        );
+        assert_eq!(neither.severity(), Severity::Medium);
+
+        // Secure but not HttpOnly: readable by script, which is the one that matters.
+        let only_httponly = cookie("PHPSESSID=c91c971aadd19d0e; path=/; Secure")
+            .expect("a session cookie readable by script is reported");
+        assert_eq!(
+            only_httponly.title(),
+            "A session cookie is set without HttpOnly"
+        );
+        assert_eq!(only_httponly.severity(), Severity::Medium);
+
+        // Both flags: nothing to report.
+        assert!(
+            cookie("PHPSESSID=c91c971aadd19d0e; path=/; HttpOnly; Secure").is_none(),
+            "a cookie carrying both flags was flagged"
+        );
+    }
+
+    /// A flag is an attribute, not a substring of the line, and a cookie being
+    /// withdrawn is not a session.
+    ///
+    /// Both of these were reported wrongly by a check that searched the whole
+    /// header: a cookie *named* `secure_session` read as carrying `Secure`, and the
+    /// `PHPSESSID=deleted` a logout sends read as an unprotected session.
+    #[test]
+    fn a_cookie_name_is_not_a_flag_and_a_withdrawn_cookie_is_not_a_session() {
+        let db = ComputeDb::global();
+        let cookie = |header: &str| {
+            let response =
+                format!("HTTP/1.1 200 OK\r\nSet-Cookie: {header}\r\nContent-Length: 0\r\n\r\n");
+            super::super::stage::detect_port(
+                db.runtime(),
+                db.detections(),
+                &DetectionEnvelope::default(),
+                Some("http"),
+                &http_ctx(),
+                &[response.as_bytes()],
+                |_grant| Some(Box::new(NoCaps)),
+                |_, _| {},
+            )
+            .findings
+            .into_iter()
+            .find(|f| f.detection().id() == "http-insecure-cookies")
+        };
+
+        // `secure` in the name is not the `Secure` attribute, so this cookie is
+        // missing both flags and has to be reported as missing both.
+        let named = cookie("secure_session=abc123; path=/")
+            .expect("a cookie whose name contains `secure` still has no flags");
+        assert_eq!(
+            named.title(),
+            "A session cookie is set without HttpOnly or Secure",
+            "the cookie's own name was read as its Secure flag"
+        );
+
+        // The logout, spelled the three ways frameworks spell it. Nothing is being
+        // stored, so there is nothing to protect.
+        for withdrawn in [
+            "PHPSESSID=deleted; expires=Thu, 01-Jan-1970 00:00:01 GMT; Max-Age=0; path=/",
+            "PHPSESSID=; path=/",
+            "sessionid=abc; Max-Age=0; path=/",
+        ] {
+            assert!(
+                cookie(withdrawn).is_none(),
+                "a cookie being withdrawn was reported as a session: {withdrawn}"
+            );
+        }
+
+        // A name that merely contains `sid` is not a session identifier; one that
+        // ends with it is.
+        assert!(
+            cookie("residency=London; path=/").is_none(),
+            "an ordinary cookie was read as a session identifier"
+        );
+        assert!(
+            cookie("connect.sid=s%3Aabc; path=/").is_some(),
+            "a real session cookie was missed"
         );
     }
 
