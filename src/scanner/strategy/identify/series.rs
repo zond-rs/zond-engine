@@ -1428,7 +1428,7 @@ mod tests {
         );
     }
 
-    /// Every sweep of a run takes a source port no other sweep of it took,    /// Every sweep of a run takes a source port no other sweep of it took,
+    /// Every sweep of a run takes a source port no other sweep of it took,
     /// wherever in the range the run starts: drawn per sweep instead, two of
     /// a dozen samples share a 4-tuple about once in two hundred and fifty runs.
     #[test]

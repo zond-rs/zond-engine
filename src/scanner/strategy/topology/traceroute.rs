@@ -1500,7 +1500,7 @@ mod tests {
         }
     }
 
-    /// A router the scan may not report is withheld on every path through it,    /// A router the scan may not report is withheld on every path through it,
+    /// A router the scan may not report is withheld on every path through it,
     /// the one measured and the one spliced from it alike.
     ///
     /// The splice is the case worth driving the whole loop for. The cache
