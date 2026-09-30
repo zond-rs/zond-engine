@@ -143,6 +143,48 @@ impl core::marker::Unpin for zond_engine::config::ScanEffort
 impl core::marker::UnsafeUnpin for zond_engine::config::ScanEffort
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::ScanEffort
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::ScanEffort
+#[non_exhaustive] pub enum zond_engine::config::ScanPace
+pub zond_engine::config::ScanPace::Brisk
+pub zond_engine::config::ScanPace::Gentle
+pub zond_engine::config::ScanPace::Hurried
+pub zond_engine::config::ScanPace::Normal
+pub zond_engine::config::ScanPace::Sparing
+pub zond_engine::config::ScanPace::Trickle
+impl zond_engine::config::ScanPace
+pub const zond_engine::config::ScanPace::ALL: &'static [Self]
+pub fn zond_engine::config::ScanPace::apply_to(self, &mut zond_engine::config::ZondConfig)
+pub const fn zond_engine::config::ScanPace::from_level(u8) -> core::option::Option<Self>
+pub const fn zond_engine::config::ScanPace::level(self) -> u8
+pub const fn zond_engine::config::ScanPace::name(self) -> &'static str
+impl core::clone::Clone for zond_engine::config::ScanPace
+pub fn zond_engine::config::ScanPace::clone(&self) -> zond_engine::config::ScanPace
+impl core::cmp::Eq for zond_engine::config::ScanPace
+impl core::cmp::Ord for zond_engine::config::ScanPace
+pub fn zond_engine::config::ScanPace::cmp(&self, &zond_engine::config::ScanPace) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::config::ScanPace
+pub fn zond_engine::config::ScanPace::eq(&self, &zond_engine::config::ScanPace) -> bool
+impl core::cmp::PartialOrd for zond_engine::config::ScanPace
+pub fn zond_engine::config::ScanPace::partial_cmp(&self, &zond_engine::config::ScanPace) -> core::option::Option<core::cmp::Ordering>
+impl core::default::Default for zond_engine::config::ScanPace
+pub fn zond_engine::config::ScanPace::default() -> zond_engine::config::ScanPace
+impl core::fmt::Debug for zond_engine::config::ScanPace
+pub fn zond_engine::config::ScanPace::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::config::ScanPace
+pub fn zond_engine::config::ScanPace::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::config::ScanPace
+pub fn zond_engine::config::ScanPace::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::config::ScanPace
+impl core::marker::StructuralPartialEq for zond_engine::config::ScanPace
+impl core::str::traits::FromStr for zond_engine::config::ScanPace
+pub type zond_engine::config::ScanPace::Err = zond_engine::config::UnknownScanPace
+pub fn zond_engine::config::ScanPace::from_str(&str) -> core::result::Result<Self, Self::Err>
+impl core::marker::Freeze for zond_engine::config::ScanPace
+impl core::marker::Send for zond_engine::config::ScanPace
+impl core::marker::Sync for zond_engine::config::ScanPace
+impl core::marker::Unpin for zond_engine::config::ScanPace
+impl core::marker::UnsafeUnpin for zond_engine::config::ScanPace
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::ScanPace
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::ScanPace
 #[non_exhaustive] pub enum zond_engine::config::ServiceDetection
 pub zond_engine::config::ServiceDetection::Banner
 pub zond_engine::config::ServiceDetection::Off
@@ -356,6 +398,28 @@ impl core::marker::Unpin for zond_engine::config::UnknownScanEffort
 impl core::marker::UnsafeUnpin for zond_engine::config::UnknownScanEffort
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::UnknownScanEffort
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::UnknownScanEffort
+#[non_exhaustive] pub struct zond_engine::config::UnknownScanPace
+pub zond_engine::config::UnknownScanPace::input: alloc::string::String
+impl core::clone::Clone for zond_engine::config::UnknownScanPace
+pub fn zond_engine::config::UnknownScanPace::clone(&self) -> zond_engine::config::UnknownScanPace
+impl core::cmp::Eq for zond_engine::config::UnknownScanPace
+impl core::cmp::PartialEq for zond_engine::config::UnknownScanPace
+pub fn zond_engine::config::UnknownScanPace::eq(&self, &zond_engine::config::UnknownScanPace) -> bool
+impl core::error::Error for zond_engine::config::UnknownScanPace
+impl core::fmt::Debug for zond_engine::config::UnknownScanPace
+pub fn zond_engine::config::UnknownScanPace::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::config::UnknownScanPace
+pub fn zond_engine::config::UnknownScanPace::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::config::UnknownScanPace
+impl zond_engine::error::Coded for zond_engine::config::UnknownScanPace
+pub fn zond_engine::config::UnknownScanPace::code(&self) -> &'static str
+impl core::marker::Freeze for zond_engine::config::UnknownScanPace
+impl core::marker::Send for zond_engine::config::UnknownScanPace
+impl core::marker::Sync for zond_engine::config::UnknownScanPace
+impl core::marker::Unpin for zond_engine::config::UnknownScanPace
+impl core::marker::UnsafeUnpin for zond_engine::config::UnknownScanPace
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::UnknownScanPace
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::UnknownScanPace
 #[non_exhaustive] pub struct zond_engine::config::UnknownServiceDetection
 pub zond_engine::config::UnknownServiceDetection::input: alloc::string::String
 impl core::clone::Clone for zond_engine::config::UnknownServiceDetection
@@ -2772,6 +2836,8 @@ impl zond_engine::error::Coded for zond_engine::config::UnknownOsDetection
 pub fn zond_engine::config::UnknownOsDetection::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::config::UnknownScanEffort
 pub fn zond_engine::config::UnknownScanEffort::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::config::UnknownScanPace
+pub fn zond_engine::config::UnknownScanPace::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::config::UnknownServiceDetection
 pub fn zond_engine::config::UnknownServiceDetection::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::config::envelope::UnknownDetectionEnvelope
@@ -7046,6 +7112,7 @@ pub zond_engine::import::settings::Settings::max_attempts: core::option::Option<
 pub zond_engine::import::settings::Settings::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::import::settings::Settings::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::import::settings::Settings::no_dns: core::option::Option<bool>
+pub zond_engine::import::settings::Settings::pace: core::option::Option<zond_engine::config::ScanPace>
 pub zond_engine::import::settings::Settings::probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::import::settings::Settings::redact: core::option::Option<bool>
 pub zond_engine::import::settings::Settings::scan_timeout: core::option::Option<core::time::Duration>
@@ -7578,6 +7645,7 @@ pub zond_engine::import::Settings::max_attempts: core::option::Option<core::num:
 pub zond_engine::import::Settings::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::import::Settings::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::import::Settings::no_dns: core::option::Option<bool>
+pub zond_engine::import::Settings::pace: core::option::Option<zond_engine::config::ScanPace>
 pub zond_engine::import::Settings::probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::import::Settings::redact: core::option::Option<bool>
 pub zond_engine::import::Settings::scan_timeout: core::option::Option<core::time::Duration>
@@ -18544,6 +18612,48 @@ impl core::marker::Unpin for zond_engine::scanner::session::ScanEvent
 impl core::marker::UnsafeUnpin for zond_engine::scanner::session::ScanEvent
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::ScanEvent
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::ScanEvent
+#[non_exhaustive] pub enum zond_engine::ScanPace
+pub zond_engine::ScanPace::Brisk
+pub zond_engine::ScanPace::Gentle
+pub zond_engine::ScanPace::Hurried
+pub zond_engine::ScanPace::Normal
+pub zond_engine::ScanPace::Sparing
+pub zond_engine::ScanPace::Trickle
+impl zond_engine::config::ScanPace
+pub const zond_engine::config::ScanPace::ALL: &'static [Self]
+pub fn zond_engine::config::ScanPace::apply_to(self, &mut zond_engine::config::ZondConfig)
+pub const fn zond_engine::config::ScanPace::from_level(u8) -> core::option::Option<Self>
+pub const fn zond_engine::config::ScanPace::level(self) -> u8
+pub const fn zond_engine::config::ScanPace::name(self) -> &'static str
+impl core::clone::Clone for zond_engine::config::ScanPace
+pub fn zond_engine::config::ScanPace::clone(&self) -> zond_engine::config::ScanPace
+impl core::cmp::Eq for zond_engine::config::ScanPace
+impl core::cmp::Ord for zond_engine::config::ScanPace
+pub fn zond_engine::config::ScanPace::cmp(&self, &zond_engine::config::ScanPace) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::config::ScanPace
+pub fn zond_engine::config::ScanPace::eq(&self, &zond_engine::config::ScanPace) -> bool
+impl core::cmp::PartialOrd for zond_engine::config::ScanPace
+pub fn zond_engine::config::ScanPace::partial_cmp(&self, &zond_engine::config::ScanPace) -> core::option::Option<core::cmp::Ordering>
+impl core::default::Default for zond_engine::config::ScanPace
+pub fn zond_engine::config::ScanPace::default() -> zond_engine::config::ScanPace
+impl core::fmt::Debug for zond_engine::config::ScanPace
+pub fn zond_engine::config::ScanPace::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::config::ScanPace
+pub fn zond_engine::config::ScanPace::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::config::ScanPace
+pub fn zond_engine::config::ScanPace::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::config::ScanPace
+impl core::marker::StructuralPartialEq for zond_engine::config::ScanPace
+impl core::str::traits::FromStr for zond_engine::config::ScanPace
+pub type zond_engine::config::ScanPace::Err = zond_engine::config::UnknownScanPace
+pub fn zond_engine::config::ScanPace::from_str(&str) -> core::result::Result<Self, Self::Err>
+impl core::marker::Freeze for zond_engine::config::ScanPace
+impl core::marker::Send for zond_engine::config::ScanPace
+impl core::marker::Sync for zond_engine::config::ScanPace
+impl core::marker::Unpin for zond_engine::config::ScanPace
+impl core::marker::UnsafeUnpin for zond_engine::config::ScanPace
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::config::ScanPace
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::config::ScanPace
 #[non_exhaustive] pub enum zond_engine::SendMode
 pub zond_engine::SendMode::Auto
 pub zond_engine::SendMode::Ethernet
@@ -19546,6 +19656,8 @@ impl zond_engine::error::Coded for zond_engine::config::UnknownOsDetection
 pub fn zond_engine::config::UnknownOsDetection::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::config::UnknownScanEffort
 pub fn zond_engine::config::UnknownScanEffort::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::config::UnknownScanPace
+pub fn zond_engine::config::UnknownScanPace::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::config::UnknownServiceDetection
 pub fn zond_engine::config::UnknownServiceDetection::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::config::envelope::UnknownDetectionEnvelope

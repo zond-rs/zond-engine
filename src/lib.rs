@@ -348,7 +348,7 @@ pub(crate) mod logging;
 // well, so this is a convenience and never the only way to name a type; what it
 // costs is that each name is a commitment, which is why the crate's whole
 // vocabulary is not re-exported wholesale.
-pub use crate::config::{RetryConfig, ScanEffort, ZondConfig};
+pub use crate::config::{RetryConfig, ScanEffort, ScanPace, ZondConfig};
 pub use crate::error::Coded;
 pub use crate::evasion::EvasionProfile;
 pub use crate::model::exclusion::Exclusions;

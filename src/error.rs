@@ -52,7 +52,9 @@
 //! read for themselves in `evasion.hop_limit_zero`.
 
 use crate::config::envelope::UnknownDetectionEnvelope;
-use crate::config::{UnknownOsDetection, UnknownScanEffort, UnknownServiceDetection};
+use crate::config::{
+    UnknownOsDetection, UnknownScanEffort, UnknownScanPace, UnknownServiceDetection,
+};
 use crate::cve::{AdvisoriesError, CatalogueError};
 use crate::detect::bundle::BundleError;
 use crate::detect::compute::{CapError, LoadError, ReplayError};
@@ -389,6 +391,7 @@ macro_rules! one_code {
 one_code! {
     UnknownOsDetection => "config.unknown_os_detection",
     UnknownScanEffort => "config.unknown_scan_effort",
+    UnknownScanPace => "config.unknown_scan_pace",
     UnknownServiceDetection => "config.unknown_service_detection",
     UnknownDetectionEnvelope => "config.unknown_detection_envelope",
     UnknownTechnique => "config.unknown_tcp_technique",
@@ -974,6 +977,7 @@ mod tests {
             "config.unknown_detection_envelope",
             "config.unknown_os_detection",
             "config.unknown_scan_effort",
+            "config.unknown_scan_pace",
             "config.unknown_sctp_technique",
             "config.unknown_send_mode",
             "config.unknown_service_detection",

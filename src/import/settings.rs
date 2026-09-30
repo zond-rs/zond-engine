@@ -143,7 +143,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::config::ZondConfig;
-use crate::config::{ScanEffort, TimeoutScale};
+use crate::config::{ScanEffort, ScanPace, TimeoutScale};
 use crate::model::exclusion::Exclusions;
 use crate::model::ip::set::IpSet;
 use crate::model::port::PortSet;
@@ -389,6 +389,16 @@ pub struct Settings {
     /// How hard the scan tries before accepting silence as an answer.
     #[serde(deserialize_with = "de_effort")]
     pub effort: Option<ScanEffort>,
+    /// How gently the scan treats the network, as a preset over the gaps and
+    /// the patience.
+    ///
+    /// Applied before every other key of the layer it ends up in, so a
+    /// document naming a pace and a gap of its own gets its own gap: the pace
+    /// is a starting point and the key beside it the correction. See
+    /// [`ScanPace::apply_to`] for what each level writes and why a slow one
+    /// never loosens a gap already set.
+    #[serde(deserialize_with = "de_pace")]
+    pub pace: Option<ScanPace>,
     /// Replaces the attempt budget outright. One disables retransmission, and
     /// zero is refused: a probe that is never sent is not a scan setting.
     #[serde(deserialize_with = "de_max_attempts")]
@@ -483,6 +493,7 @@ impl Settings {
             tcp_technique,
             sctp_technique,
             effort,
+            pace,
             max_attempts,
             timeout_scale,
             dampen_silent_hosts,
@@ -519,6 +530,11 @@ impl Settings {
     /// a running scan; a caller builds its configuration, applies what it
     /// loaded, and starts.
     pub fn apply_to(&self, config: &mut ZondConfig) {
+        // First, so every key below that says something of its own replaces
+        // what the pace wrote rather than being replaced by it.
+        if let Some(pace) = self.pace {
+            pace.apply_to(config);
+        }
         if let Some(value) = self.no_dns {
             config.no_dns = value;
         }
@@ -589,7 +605,7 @@ impl Settings {
 /// `the_template_documents_every_key_and_no_others` holds this list and the
 /// template to each other in both directions; nothing can hold either to the
 /// struct, so that step is by hand.
-const KNOWN_KEYS: [&str; 19] = [
+const KNOWN_KEYS: [&str; 20] = [
     "exclude",
     "exclude_ports",
     "no_dns",
@@ -604,6 +620,7 @@ const KNOWN_KEYS: [&str; 19] = [
     "tcp_technique",
     "sctp_technique",
     "effort",
+    "pace",
     "max_attempts",
     "timeout_scale",
     "dampen_silent_hosts",
@@ -966,6 +983,11 @@ fn de_sctp_technique<'de, D: serde::Deserializer<'de>>(
 
 /// [`de_send_mode`] for the scan effort.
 fn de_effort<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<ScanEffort>, D::Error> {
+    de_named(d)
+}
+
+/// [`de_send_mode`] for the scan pace.
+fn de_pace<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<ScanPace>, D::Error> {
     de_named(d)
 }
 
@@ -1525,6 +1547,30 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("stealth"), "{message}");
         assert!(message.contains("syn"), "the accepted names: {message}");
+    }
+
+    /// A pace is the starting point of the layer it is in, and a key beside it
+    /// is the correction: the document's own gap holds, and the pace's other
+    /// values still arrive.
+    #[test]
+    fn a_pace_gives_way_to_the_keys_beside_it() {
+        let loaded = document(
+            r#"
+            [defaults]
+            probe_interval = 250
+            pace = "sparing"
+            "#,
+        );
+
+        let mut config = ZondConfig::default();
+        loaded.document.defaults.apply_to(&mut config);
+
+        assert_eq!(config.probe_interval, Some(Duration::from_millis(250)));
+        assert_eq!(
+            config.host_probe_interval,
+            Some(Duration::from_millis(100)),
+            "the pace's per-host gap, which the document left alone"
+        );
     }
 
     /// Settings move in exactly one direction, and only over the keys they set.

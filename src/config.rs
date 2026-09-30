@@ -20,11 +20,18 @@
 //! attempts a probe gets and how long each one waits. [`OsDetection`] and
 //! [`ServiceDetection`] set how far a run may go to name what it found.
 //!
-//! All three are one vocabulary and are built alike: an ordered scale, an `ALL`
+//! [`ScanPace`] sits above them as a preset: the one dial for how gently a scan
+//! treats the network. It writes the gaps between probes and the patience into
+//! the other fields rather than being read by anything itself, so what a scan
+//! ran under is always the fields, and a setting chosen after the pace replaces
+//! what it wrote.
+//!
+//! All four are one vocabulary and are built alike: an ordered scale, an `ALL`
 //! in that order, a `name` and a `level` for each rung, and a `FromStr` that
 //! takes either spelling so a front end can accept a word from a settings file
-//! and a number from a flag without keeping a table of its own. Each is carried
-//! into the report, so a result says what was asked of it.
+//! and a number from a flag without keeping a table of its own. The first three
+//! are carried into the report, so a result says what was asked of it, and a
+//! pace is carried as the fields it wrote.
 //!
 //! Where the default sits is each scale's own decision rather than a rule.
 //! [`ScanEffort`] and [`OsDetection`] default low, since effort and traffic are
@@ -731,6 +738,321 @@ impl FromStr for ServiceDetection {
             UnknownServiceDetection {
                 input: input.to_string(),
             }
+        })
+    }
+}
+
+/// How gently a scan treats the network it is pointed at, as one dial.
+///
+/// The other scales in this module each govern one thing. This one is a preset
+/// over several of them, for a caller who knows how much load a network can
+/// take and not which of the engine's knobs express that: a pace is written
+/// into a [`ZondConfig`] by [`apply_to`](Self::apply_to) and is gone once it has
+/// been, so what a scan ran under is the fields it set, and those are what the
+/// report records. Nothing downstream reads a pace.
+///
+/// That is the design, rather than a field the strategies consult. A field
+/// would be a second account of the gaps and the patience beside the fields
+/// that already hold them, and every strategy would need a rule for which one
+/// wins. Written out instead, an explicit setting applied after the pace
+/// replaces what the pace wrote, and there is nothing to reconcile.
+///
+/// # What the levels change
+///
+/// [`Normal`](Self::Normal) changes nothing, so a caller who picks it gets
+/// exactly [`ZondConfig::default`]. Below it the pace spaces the scan's probes;
+/// above it the pace shortens how long the scan waits for answers.
+///
+/// | Level | Name | Writes |
+/// |---|---|---|
+/// | 0 | `trickle` | one probe a second, across the scan and at any one host; twice the patience |
+/// | 1 | `sparing` | ten probes a second, across the scan and at any one host; half again the patience |
+/// | 2 | `gentle` | two hundred a second across the scan, twenty at any one host |
+/// | 3 | `normal` | nothing |
+/// | 4 | `brisk` | [`ScanEffort::Fast`] |
+/// | 5 | `hurried` | [`ScanEffort::Fast`], and half that patience again |
+///
+/// The slow levels space probes with
+/// [`probe_interval`](ZondConfig::probe_interval) and
+/// [`host_probe_interval`](ZondConfig::host_probe_interval), the one bound every
+/// pass shares, and never with
+/// [`max_probe_rate`](ZondConfig::max_probe_rate). A rate replaces each
+/// scanner's own default rather than capping it, so a ceiling low enough to be
+/// gentle on a TCP scan would be *faster* than the UDP scan's own pace, and a
+/// preset for sparing a network must not speed any part of a scan up.
+///
+/// Every slow level keeps a per-host gap, where the two slowest keep it at
+/// their scan-wide one. That changes nothing while both hold, since a scan
+/// spaced a second apart is spaced a second apart at each host, and it is what
+/// keeps each host spared when a caller loosens the scan-wide gap afterwards
+/// for a range too large to cover at it.
+///
+/// The slow levels also raise the patience, because at their spacing it costs
+/// nothing: every probe waits out the gap before the next can leave, and a
+/// longer timeout inside that wait adds no time to the scan. It does catch the
+/// answers a slow device sends late, and a network being spared is often a
+/// network of slow devices.
+///
+/// # What the fast levels do not do
+///
+/// Push harder. A TCP port scan paces itself on how fast its targets answer,
+/// through a congestion window no setting overrides, and nothing here tries:
+/// pushing a target harder than it is answering is how a scan turns loss into
+/// verdicts. What the fast levels trade is patience, fewer attempts and shorter
+/// waits for an answer, which is a trade of coverage for time on a network that
+/// answers promptly and a poor one on a network that does not.
+/// [`hurried`](Self::Hurried) never goes below the shortest wait a protocol
+/// allows; see [`TimeoutScale`] for that floor.
+///
+/// # What it costs
+///
+/// A spaced scan takes as long as its probes take to leave, and the spacing
+/// is deferred rather than dropped: a thousand ports at `sparing` is a hundred
+/// seconds before any retry, and at `trickle` a quarter of an hour. Setting
+/// [`scan_timeout`](ZondConfig::scan_timeout) alongside a slow level bounds
+/// that, and the report says which hosts the budget left part-scanned.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ScanPace {
+    /// Level 0. One probe a second across the whole scan, and twice the usual
+    /// patience for each.
+    ///
+    /// For a network that must barely notice the scan: a link a few kilobits
+    /// wide, equipment known to fall over under any sustained traffic, or an
+    /// owner who asked for a scan that stays below a packet a second. Slow by
+    /// construction, and that is the whole of what it is for.
+    Trickle,
+    /// Level 1. Ten probes a second across the whole scan, and half again the
+    /// usual patience for each.
+    ///
+    /// For a network whose owner wants the scan kept well below anything its
+    /// monitoring would call load, and who can wait minutes rather than
+    /// seconds for a host's ports.
+    Sparing,
+    /// Level 2. At most two hundred probes a second across the whole scan, and
+    /// twenty a second at any one host.
+    ///
+    /// For a network with fragile hosts on it: a controller, a printer or an
+    /// old embedded stack that copes with a scan and not with a burst. The
+    /// per-host bound is what spares them on a scan of a range, where the
+    /// scan-wide one alone would still allow a burst at whichever host the
+    /// plan happens to reach.
+    Gentle,
+    /// Level 3, and the default. Every setting as it is; each pass paces
+    /// itself as it would with no pace chosen.
+    #[default]
+    Normal,
+    /// Level 4. [`ScanEffort::Fast`]: an attempt fewer and less patience per
+    /// probe.
+    ///
+    /// For a network already known to be healthy, where a missed port is
+    /// cheaper than the time spent confirming its silence.
+    Brisk,
+    /// Level 5. [`ScanEffort::Fast`], with each wait halved again.
+    ///
+    /// For a quick look at a network that answers promptly, accepting that
+    /// anything slow to answer is reported as silent. It is the level at
+    /// which silence says least, and a result from it is a first look rather
+    /// than a verdict.
+    Hurried,
+}
+
+impl ScanPace {
+    /// Every level, ordered from gentlest to fastest. The index of a level in
+    /// this array is its [`level`](Self::level) number.
+    pub const ALL: &'static [Self] = &[
+        ScanPace::Trickle,
+        ScanPace::Sparing,
+        ScanPace::Gentle,
+        ScanPace::Normal,
+        ScanPace::Brisk,
+        ScanPace::Hurried,
+    ];
+
+    /// The name this level is written under, wherever it arrives as text.
+    pub const fn name(self) -> &'static str {
+        match self {
+            ScanPace::Trickle => "trickle",
+            ScanPace::Sparing => "sparing",
+            ScanPace::Gentle => "gentle",
+            ScanPace::Normal => "normal",
+            ScanPace::Brisk => "brisk",
+            ScanPace::Hurried => "hurried",
+        }
+    }
+
+    /// The number this level is written as, for a front end that offers it as a
+    /// dial rather than a word.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zond_engine::config::ScanPace;
+    ///
+    /// assert_eq!(ScanPace::default().level(), 3);
+    /// ```
+    pub const fn level(self) -> u8 {
+        match self {
+            ScanPace::Trickle => 0,
+            ScanPace::Sparing => 1,
+            ScanPace::Gentle => 2,
+            ScanPace::Normal => 3,
+            ScanPace::Brisk => 4,
+            ScanPace::Hurried => 5,
+        }
+    }
+
+    /// The level with this number, or `None` past the highest there is.
+    ///
+    /// Deliberately not saturating, on the reasoning
+    /// [`OsDetection::from_level`] gives.
+    pub const fn from_level(level: u8) -> Option<Self> {
+        match level {
+            0 => Some(ScanPace::Trickle),
+            1 => Some(ScanPace::Sparing),
+            2 => Some(ScanPace::Gentle),
+            3 => Some(ScanPace::Normal),
+            4 => Some(ScanPace::Brisk),
+            5 => Some(ScanPace::Hurried),
+            _ => None,
+        }
+    }
+
+    /// Writes this pace into `config`, leaving every field it has no view on
+    /// as it was.
+    ///
+    /// Apply it before anything the caller set explicitly, which then replaces
+    /// what the pace wrote: a pace is a starting point, and a caller who
+    /// chose `gentle` and a gap of their own meant the gap.
+    ///
+    /// A slow level never loosens what `config` already holds. It takes the
+    /// longer of its own gap and one already set, and the larger of its own
+    /// patience and one already set, since a gap in a configuration is somebody's
+    /// judgement of what a network can take, and a preset for sparing a network
+    /// that could shorten one would do the opposite of its name. A fast level
+    /// sets effort and patience outright, because loosening those is what it
+    /// was chosen for, and touches no gap and no rate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use zond_engine::config::{ScanPace, ZondConfig};
+    ///
+    /// let mut cfg = ZondConfig::default();
+    /// ScanPace::Sparing.apply_to(&mut cfg);
+    /// assert_eq!(cfg.probe_interval, Some(Duration::from_millis(100)));
+    ///
+    /// // An explicit setting applied afterwards is the one that holds.
+    /// cfg.probe_interval = Some(Duration::from_millis(250));
+    /// ```
+    pub fn apply_to(self, config: &mut ZondConfig) {
+        let Some(spacing) = self.spacing() else {
+            match self {
+                ScanPace::Brisk => config.retry.effort = ScanEffort::Fast,
+                ScanPace::Hurried => {
+                    config.retry.effort = ScanEffort::Fast;
+                    config.retry.timeout_scale = TimeoutScale::new(HURRIED_PATIENCE);
+                }
+                _ => {}
+            }
+            return;
+        };
+
+        config.probe_interval = config.probe_interval.max(Some(spacing.anywhere));
+        config.host_probe_interval = config.host_probe_interval.max(Some(spacing.at_host));
+        if let Some(patience) = spacing.patience {
+            config.retry.timeout_scale = match config.retry.timeout_scale {
+                Some(set) if set >= patience => Some(set),
+                _ => Some(patience),
+            };
+        }
+    }
+
+    /// What a slow level writes, or `None` for a level that spaces nothing.
+    fn spacing(self) -> Option<PaceSpacing> {
+        let patience = |factor| TimeoutScale::new(factor);
+        match self {
+            ScanPace::Trickle => Some(PaceSpacing {
+                anywhere: Duration::from_secs(1),
+                at_host: Duration::from_secs(1),
+                patience: patience(2.0),
+            }),
+            ScanPace::Sparing => Some(PaceSpacing {
+                anywhere: Duration::from_millis(100),
+                at_host: Duration::from_millis(100),
+                patience: patience(1.5),
+            }),
+            ScanPace::Gentle => Some(PaceSpacing {
+                anywhere: Duration::from_millis(5),
+                at_host: Duration::from_millis(50),
+                patience: None,
+            }),
+            ScanPace::Normal | ScanPace::Brisk | ScanPace::Hurried => None,
+        }
+    }
+}
+
+/// The patience [`ScanPace::Hurried`] scales every wait by, on top of what
+/// [`ScanEffort::Fast`] already takes off.
+///
+/// Half, so the level is a clear step past `brisk` rather than a rounding of
+/// it: `Fast` waits six tenths of the usual time, and this makes it three
+/// tenths. The floor every policy keeps under its timeouts is untouched by
+/// any scale, so what this shortens is the long waits a slow path earns, and
+/// never the shortest wait a protocol can be answered in.
+const HURRIED_PATIENCE: f64 = 0.5;
+
+/// What a slow [`ScanPace`] writes: the gap across the scan, the gap at one
+/// host, and the patience where it raises it.
+struct PaceSpacing {
+    anywhere: Duration,
+    at_host: Duration,
+    patience: Option<TimeoutScale>,
+}
+
+impl fmt::Display for ScanPace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// The error parsing a [`ScanPace`] returns, carrying the names that would have
+/// worked so a front end can print it verbatim.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownScanPace {
+    /// What the caller wrote.
+    pub input: String,
+}
+
+impl fmt::Display for UnknownScanPace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown scan pace '{}', ", self.input)?;
+        expected_levels(ScanPace::ALL, ScanPace::name, f)
+    }
+}
+
+impl std::error::Error for UnknownScanPace {}
+
+impl FromStr for ScanPace {
+    type Err = UnknownScanPace;
+
+    /// Parses a pace written as its name or its number, ignoring case and
+    /// surrounding whitespace.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zond_engine::config::ScanPace;
+    ///
+    /// assert_eq!("Gentle".parse(), Ok(ScanPace::Gentle));
+    /// assert_eq!("0".parse(), Ok(ScanPace::Trickle));
+    /// assert!("6".parse::<ScanPace>().is_err());
+    /// ```
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        parse_level(input, Self::ALL, Self::name, Self::from_level).ok_or_else(|| UnknownScanPace {
+            input: input.to_string(),
         })
     }
 }
@@ -1853,8 +2175,8 @@ mod tests {
     use super::*;
     use std::num::NonZeroU8;
 
-    /// The three scales are one vocabulary, so what holds for one holds for all
-    /// three. Written per type, they drifted: `ScanEffort` took no number, and
+    /// The scales are one vocabulary, so what holds for one holds for all of
+    /// them. Written per type, they drifted: `ScanEffort` took no number, and
     /// the module documentation promised that all three did.
     #[test]
     fn every_scale_agrees_with_its_own_numbering() {
@@ -1895,6 +2217,12 @@ mod tests {
             ServiceDetection::level,
             ServiceDetection::from_level,
         );
+        check(
+            ScanPace::ALL,
+            ScanPace::name,
+            ScanPace::level,
+            ScanPace::from_level,
+        );
     }
 
     /// Both spellings are one setting for every scale, as the module
@@ -1918,6 +2246,10 @@ mod tests {
         for &detection in ServiceDetection::ALL {
             assert_eq!(detection.name().parse(), Ok(detection));
             assert_eq!(detection.level().to_string().parse(), Ok(detection));
+        }
+        for &pace in ScanPace::ALL {
+            assert_eq!(pace.name().parse(), Ok(pace));
+            assert_eq!(pace.level().to_string().parse(), Ok(pace));
         }
     }
 
@@ -1948,6 +2280,124 @@ mod tests {
             assert!(service.contains(level.name()), "{service} omits {level}");
         }
         assert!(service.contains("0 to 3"), "{service}");
+
+        let pace = "6".parse::<ScanPace>().unwrap_err().to_string();
+        for &level in ScanPace::ALL {
+            assert!(pace.contains(level.name()), "{pace} omits {level}");
+        }
+        assert!(pace.contains("0 to 5"), "{pace}");
+    }
+
+    /// The default pace is the default scan, to the last field.
+    ///
+    /// A front end offering the dial writes whatever level it shows, the
+    /// default included, and a scan run at `normal` must be the scan run with
+    /// no pace chosen. Compared as a whole rather than field by field, so a
+    /// field added later is held to it too.
+    #[test]
+    fn the_default_pace_changes_nothing() {
+        let mut paced = ZondConfig::default();
+        ScanPace::default().apply_to(&mut paced);
+        assert_eq!(ScanPace::default(), ScanPace::Normal);
+        assert_eq!(format!("{paced:?}"), format!("{:?}", ZondConfig::default()));
+    }
+
+    /// Every level is at least as gentle as the one above it: no slower level
+    /// spaces probes closer, at one host or across the scan, or waits less
+    /// for an answer.
+    ///
+    /// The dial is read as an ordering, so a level out of order would be a
+    /// setting that does the opposite of where it sits. Patience is compared
+    /// through a retry schedule rather than through the fields, since what
+    /// matters is how long a probe is given, and effort and scale both move it.
+    #[test]
+    fn a_slower_pace_never_spaces_closer_or_waits_less() {
+        use crate::scanner::pacing::retry::RetryPolicy;
+
+        let policy = RetryPolicy::new(
+            3,
+            Duration::from_millis(500),
+            Duration::from_millis(50),
+            Duration::from_secs(3),
+            2.0,
+            0.2,
+            None,
+        );
+        let paced: Vec<(Duration, Duration, Duration)> = ScanPace::ALL
+            .iter()
+            .map(|pace| {
+                let mut cfg = ZondConfig::default();
+                pace.apply_to(&mut cfg);
+                (
+                    cfg.probe_interval.unwrap_or_default(),
+                    cfg.host_probe_interval.unwrap_or_default(),
+                    policy.configured(cfg.retry).longest_probe_lifetime(),
+                )
+            })
+            .collect();
+
+        for (slower, faster) in ScanPace::ALL.iter().zip(&ScanPace::ALL[1..]) {
+            let (a, b) = (
+                paced[slower.level() as usize],
+                paced[faster.level() as usize],
+            );
+            assert!(a.0 >= b.0, "{slower} spaces the scan closer than {faster}");
+            assert!(a.1 >= b.1, "{slower} spaces a host closer than {faster}");
+            assert!(a.2 >= b.2, "{slower} waits less than {faster}");
+        }
+        assert!(
+            paced[0].0 > paced[5].0 && paced[0].2 > paced[5].2,
+            "and the dial moves something from one end to the other"
+        );
+    }
+
+    /// A slow pace takes the longer of its own gap and one already set, and
+    /// the larger patience, so a preset for sparing a network never shortens a
+    /// gap somebody chose for it.
+    #[test]
+    fn a_slow_pace_never_loosens_what_the_configuration_holds() {
+        let mut cfg = ZondConfig {
+            probe_interval: Some(Duration::from_secs(2)),
+            host_probe_interval: Some(Duration::from_secs(3)),
+            ..ZondConfig::default()
+        };
+        cfg.retry.timeout_scale = TimeoutScale::new(4.0);
+
+        ScanPace::Gentle.apply_to(&mut cfg);
+        ScanPace::Trickle.apply_to(&mut cfg);
+
+        assert_eq!(cfg.probe_interval, Some(Duration::from_secs(2)));
+        assert_eq!(cfg.host_probe_interval, Some(Duration::from_secs(3)));
+        assert_eq!(cfg.retry.timeout_scale, TimeoutScale::new(4.0));
+
+        // And where nothing was set, the level's own values are written.
+        let mut fresh = ZondConfig::default();
+        ScanPace::Gentle.apply_to(&mut fresh);
+        assert_eq!(fresh.probe_interval, Some(Duration::from_millis(5)));
+        assert_eq!(fresh.host_probe_interval, Some(Duration::from_millis(50)));
+    }
+
+    /// A fast pace trades patience and nothing else: no gap and no rate, so it
+    /// cannot lift a ceiling a settings file set to protect a network.
+    #[test]
+    fn a_fast_pace_touches_no_gap_and_no_rate() {
+        for pace in [ScanPace::Brisk, ScanPace::Hurried] {
+            let mut cfg = ZondConfig {
+                max_probe_rate: NonZeroU32::new(100),
+                probe_interval: Some(Duration::from_millis(250)),
+                ..ZondConfig::default()
+            };
+            pace.apply_to(&mut cfg);
+
+            assert_eq!(cfg.max_probe_rate, NonZeroU32::new(100), "{pace}");
+            assert_eq!(cfg.min_probe_rate, None, "{pace}");
+            assert_eq!(
+                cfg.probe_interval,
+                Some(Duration::from_millis(250)),
+                "{pace}"
+            );
+            assert_eq!(cfg.retry.effort, ScanEffort::Fast, "{pace}");
+        }
     }
 
     /// A scale no schedule can be built from is refused where it is set.

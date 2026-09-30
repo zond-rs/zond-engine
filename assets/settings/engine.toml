@@ -34,6 +34,22 @@
 #
 # effort = "balanced"
 
+# How gently the scan treats the network, as one dial over the gaps between
+# probes and how long each waits for an answer. Written as a name or as its
+# number. Any key below that sets the same thing replaces what the pace wrote.
+#
+#   trickle  (0)  one probe a second, across the scan and at any one host.
+#   sparing  (1)  ten probes a second, across the scan and at any one host.
+#   gentle   (2)  two hundred a second across the scan, twenty at any one host.
+#   normal   (3)  the default: nothing changed.
+#   brisk    (4)  effort "fast".
+#   hurried  (5)  effort "fast", and half that patience again.
+#
+# The slow levels never shorten a gap another layer set. The fast ones trade
+# patience for time and never push a target harder than it is answering.
+#
+# pace = "normal"
+
 # Replaces the attempt budget outright, whatever `effort` implies. 1 disables
 # retransmission entirely.
 #
