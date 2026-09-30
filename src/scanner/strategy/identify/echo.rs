@@ -219,9 +219,18 @@ impl OsEchoScanner {
         identifier: u16,
         emission: Emission,
     ) -> Self {
-        let send_duration = SEND_TICK.saturating_mul(targets.len() as u32);
+        // A scan-wide gap is a slower ticker, and every attempt at every
+        // target waits it out; where it is the slower of the two it is how
+        // long sending takes.
+        let spaced = ctx
+            .scan_probe_interval()
+            .unwrap_or_default()
+            .saturating_mul(
+                (targets.len() as u32).saturating_mul(u32::from(RETRY_POLICY.max_attempts)),
+            );
+        let send_duration = SEND_TICK.saturating_mul(targets.len() as u32).max(spaced);
         let target_count = targets.len();
-        let probe_lifetime = RETRY_POLICY.longest_spaced_probe_lifetime(ctx.host_probe_interval());
+        let probe_lifetime = RETRY_POLICY.longest_spaced_probe_lifetime(ctx.probe_gap());
         let held = if transport.neighbors().is_some() {
             NEIGHBOR_BUDGET
         } else {
@@ -292,7 +301,22 @@ impl OsEchoScanner {
                 None => return,
             },
         };
+        // Taken last, once nothing else holds the target back, so a target
+        // held for its neighbour spends no slot. Turned away only where
+        // another pass took the slot since the target was chosen.
+        let Ok(claim) = self.ctx.claim_probe(target) else {
+            self.queue(retry).push_back(target);
+            return;
+        };
         let sent = self.send_pair(target, now);
+        // A pair that got nowhere gives its slot back, on the same reasoning
+        // `record_send` gives for keeping a refused probe out of the congestion
+        // window. The timestamp is not consulted: it is the smaller half of
+        // the probe and IPv4-only, so a target that answered neither question
+        // would otherwise have its slot decided by which family it is in.
+        if !matches!(sent, Attempt::Sent(_)) {
+            self.ctx.refund_probe(claim);
+        }
         // A retry restarts its probe's clock whatever became of it: from the
         // send, which re-arms it, or from now for one that did not leave, whose
         // attempt stays charged so an unroutable target exhausts on schedule
@@ -332,7 +356,7 @@ impl OsEchoScanner {
         let waiting = self.queue(retries).len();
         for _ in 0..waiting {
             let candidate = self.queue(retries).pop_front()?;
-            if self.ctx.host_ready_at(candidate, now).is_some()
+            if self.ctx.probe_ready_at(candidate, now).is_some()
                 || self.faults.held_until(candidate, now).is_some()
             {
                 self.queue(retries).push_back(candidate);
@@ -442,15 +466,7 @@ impl OsEchoScanner {
 
         self.send_timestamp(source, target);
 
-        // After the pair and only for a pair that got somewhere. A probe the
-        // kernel refused reached no target and must not spend its slot, on the
-        // same reasoning `record_send` gives for keeping it out of the
-        // congestion window. The timestamp is not consulted: it is the smaller
-        // half of the probe and IPv4-only, so a target that answered neither
-        // question would otherwise have its slot decided by which family it is
-        // in.
         if sent {
-            self.ctx.host_probed(target, now);
             Attempt::Sent(sequence)
         } else {
             Attempt::Unsent

@@ -1464,6 +1464,44 @@ pub struct ZondConfig {
     /// somebody to find in a capture.
     pub host_probe_interval: Option<Duration>,
 
+    /// The shortest gap between any two probes the scan sends, whatever host
+    /// each is aimed at, or `None` to leave the pace to each pass.
+    ///
+    /// The scan-wide counterpart of
+    /// [`host_probe_interval`](Self::host_probe_interval), and the one to reach
+    /// for when what must not be pushed is the path rather than a host: a thin
+    /// link, a busy firewall's session table, a network whose owner asked for
+    /// a scan that stays below a few packets a second. A gap of a second is one
+    /// probe a second across the whole range, where the per-host gap at a
+    /// second still lets a scan of a thousand hosts send a thousand a second.
+    ///
+    /// A duration rather than a rate for two reasons. It is what the pacing
+    /// gate holds, and converting would round, which is the argument
+    /// [`host_probe_interval`](Self::host_probe_interval) makes. And the slow
+    /// end of the scale is where this is used, where
+    /// [`max_probe_rate`](Self::max_probe_rate), a whole number of probes a
+    /// second, cannot go: one probe every five seconds is no rate it can
+    /// write.
+    ///
+    /// The two are not the same bound. [`max_probe_rate`](Self::max_probe_rate)
+    /// is each pass's own ceiling, read by the passes that pace themselves by
+    /// a rate and handed to each undivided, so two passes running at once
+    /// may each reach it. This is one gap the scan's passes share, claimed
+    /// probe by probe, so passes running at once divide it between them.
+    ///
+    /// Held to exactly the probes [`host_probe_interval`](Self::host_probe_interval)
+    /// is, counted the same way, and read literally on the same terms,
+    /// `Duration::MAX` included: see there for which passes those are and
+    /// what one probe is. A probe waits out whichever of the two gaps runs
+    /// out later.
+    ///
+    /// A probe held here is deferred rather than dropped, so a scan spaced
+    /// slower than its plan is large takes longer instead of asking less. A
+    /// thousand ports at a second apart is a quarter of an hour before any
+    /// retry; with [`scan_timeout`](Self::scan_timeout) set, the two meet and
+    /// the report says which hosts the budget left part-scanned.
+    pub probe_interval: Option<Duration>,
+
     /// The longest a scan will keep working on one host before leaving it with
     /// what it has, or `None` for no bound.
     ///
@@ -1675,6 +1713,7 @@ impl Default for ZondConfig {
             max_probe_rate: Default::default(),
             min_probe_rate: Default::default(),
             host_probe_interval: Default::default(),
+            probe_interval: Default::default(),
             host_timeout: Default::default(),
             scan_timeout: Default::default(),
             tcp_technique: Default::default(),
@@ -1739,11 +1778,12 @@ impl ZondConfig {
             host_timeout: _,
             scan_timeout: _,
 
-            // The per-host gap, which goes the same way as the host budget and
-            // for the same reason: a bound on one host has to be one map every
-            // pass consults, not a copy per strategy. Two passes each holding
-            // their own would each allow the whole gap.
+            // The two gaps, which go the same way as the host budget and for
+            // the same reason: a bound on the scan's probes has to be one gate
+            // every pass claims from, not a copy per strategy. Two passes each
+            // holding their own would each allow the whole gap.
             host_probe_interval: _,
+            probe_interval: _,
         } = self;
 
         ProbeTuning {

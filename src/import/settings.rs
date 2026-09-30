@@ -366,8 +366,12 @@ pub struct Settings {
     pub min_probe_rate: Option<NonZeroU32>,
     /// The shortest gap between two probes at one host, in whole milliseconds.
     /// Refused if zero, which is the absence of a gap rather than a gap.
-    #[serde(deserialize_with = "de_millis")]
+    #[serde(deserialize_with = "de_host_gap")]
     pub host_probe_interval: Option<Duration>,
+    /// The shortest gap between any two probes, in whole milliseconds. Refused
+    /// if zero, on the same reading.
+    #[serde(deserialize_with = "de_scan_gap")]
+    pub probe_interval: Option<Duration>,
     /// How long a scan may spend on one host, in whole seconds. Refused if
     /// zero, which is a scan that asks nothing rather than a quick one.
     #[serde(deserialize_with = "de_timeout")]
@@ -473,6 +477,7 @@ impl Settings {
             max_probe_rate,
             min_probe_rate,
             host_probe_interval,
+            probe_interval,
             host_timeout,
             scan_timeout,
             tcp_technique,
@@ -532,6 +537,9 @@ impl Settings {
         if self.host_probe_interval.is_some() {
             config.host_probe_interval = self.host_probe_interval;
         }
+        if self.probe_interval.is_some() {
+            config.probe_interval = self.probe_interval;
+        }
         if self.host_timeout.is_some() {
             config.host_timeout = self.host_timeout;
         }
@@ -581,7 +589,7 @@ impl Settings {
 /// `the_template_documents_every_key_and_no_others` holds this list and the
 /// template to each other in both directions; nothing can hold either to the
 /// struct, so that step is by hand.
-const KNOWN_KEYS: [&str; 18] = [
+const KNOWN_KEYS: [&str; 19] = [
     "exclude",
     "exclude_ports",
     "no_dns",
@@ -590,6 +598,7 @@ const KNOWN_KEYS: [&str; 18] = [
     "max_probe_rate",
     "min_probe_rate",
     "host_probe_interval",
+    "probe_interval",
     "host_timeout",
     "scan_timeout",
     "tcp_technique",
@@ -1029,15 +1038,30 @@ fn de_timeout<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duration>
 /// Zero is refused for the reason [`de_min_probe_rate`] refuses a floor of zero:
 /// a gap of no time is what leaving the key out already says, and accepting it
 /// would put a bound in the report that never bound anything.
-fn de_millis<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+fn de_host_gap<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+    de_millis("host_probe_interval", d)
+}
+
+/// Reads `probe_interval`, refusing a gap of zero on the same reading.
+fn de_scan_gap<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+    de_millis("probe_interval", d)
+}
+
+/// Reads a gap in whole milliseconds under `key`, refusing zero: a gap of no
+/// time is what leaving the key out already says, and the value reaches the
+/// report, which must not record a gap that was never kept.
+fn de_millis<'de, D: serde::Deserializer<'de>>(
+    key: &str,
+    d: D,
+) -> Result<Option<Duration>, D::Error> {
     let Some(millis) = Option::<u64>::deserialize(d)? else {
         return Ok(None);
     };
     if millis == 0 {
-        return Err(serde::de::Error::custom(
-            "host_probe_interval = 0: a gap of no time is the absence of a gap. \
-             Remove the key to let each pass send as fast as its own pacing allows.",
-        ));
+        return Err(serde::de::Error::custom(format!(
+            "{key} = 0: a gap of no time is the absence of a gap. \
+             Remove the key to let each pass send as fast as its own pacing allows."
+        )));
     }
     Ok(Some(Duration::from_millis(millis)))
 }
@@ -1141,6 +1165,7 @@ mod tests {
                 "[defaults]\nhost_probe_interval = 0\n",
                 "host_probe_interval",
             ),
+            ("[defaults]\nprobe_interval = 0\n", "probe_interval"),
             ("[defaults]\nmax_attempts = 0\n", "max_attempts"),
             ("[defaults]\ntimeout_scale = 0.0\n", "timeout_scale"),
             ("[defaults]\ntimeout_scale = -1.5\n", "timeout_scale"),

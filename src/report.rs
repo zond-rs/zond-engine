@@ -783,6 +783,13 @@ pub struct ScanSettings {
     /// needs to see the spacing before reading the slower one as a slower
     /// network.
     pub host_probe_interval: Option<Duration>,
+    /// The shortest gap kept between any two probes the scan sent, or `None`
+    /// if none was asked for.
+    ///
+    /// Recorded for the reason [`host_probe_interval`](Self::host_probe_interval)
+    /// is, and more so: a thousand ports a second apart cannot have been asked
+    /// in under a quarter of an hour, whatever the network did.
+    pub probe_interval: Option<Duration>,
     /// The wall-clock budget each host was given, or `None` if none was set.
     ///
     /// Recorded because it bounds what a host's entry can say. A machine with
@@ -953,6 +960,7 @@ impl From<&ZondConfig> for ScanSettings {
             max_probe_rate,
             min_probe_rate,
             host_probe_interval,
+            probe_interval,
             host_timeout,
             scan_timeout,
             no_dns,
@@ -997,6 +1005,7 @@ impl From<&ZondConfig> for ScanSettings {
             max_probe_rate: *max_probe_rate,
             min_probe_rate: *min_probe_rate,
             host_probe_interval: *host_probe_interval,
+            probe_interval: *probe_interval,
             host_timeout: *host_timeout,
             scan_timeout: *scan_timeout,
             dns_enabled: !no_dns,

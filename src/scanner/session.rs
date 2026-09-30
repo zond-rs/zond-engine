@@ -1255,64 +1255,243 @@ pub(crate) struct HostClocks {
     started: DashMap<IpAddr, Instant>,
 }
 
-/// The shortest gap the scan keeps between two probes aimed at one host.
+/// The gaps the scan keeps between the probes it sends: between two aimed at
+/// one host, and between any two at all.
 ///
 /// The companion to [`HostClocks`], built the same way and for the same reason:
-/// a bound on one host is a property of the scan rather than of whichever pass
-/// happens to be probing, so it lives on the context every pass already holds.
-/// A copy per strategy would be no bound at all, since
-/// [`max_probe_rate`](crate::config::ZondConfig::max_probe_rate) is handed to
-/// each strategy undivided and two passes probing one address would each allow
-/// the whole gap.
+/// a bound on the scan's traffic is a property of the scan rather than of
+/// whichever pass happens to be probing, so it lives on the context every pass
+/// already holds. A copy per strategy would be no bound at all, since two
+/// passes probing at once would each allow the whole gap.
 ///
-/// `minimum` is `None` for a scan that set none, which is the ordinary case: the
-/// map is then never touched and every question is a read of an `Option`.
+/// Both gaps are `None` for a scan that set neither, which is the ordinary
+/// case: nothing is then locked or stored, and every question is a read of two
+/// `Option`s.
 ///
-/// ## Deciding, not enforcing
+/// ## Claiming, not checking
 ///
-/// This answers *when* and records *that*, in two calls a caller makes in that
-/// order. It cannot enforce anything on its own, because what to do with a probe
-/// it turns away is not its business: the raw port scanner has a queue to hold
-/// one in, and the sweep would rather ask the next host and come back. Folding a
-/// wait in here would make the decision for both of them, and inside a lock.
+/// A slot is taken by [`claim`](Self::claim), which decides whether a probe may
+/// leave and records that it did in one operation, under the locks both gaps
+/// are kept behind. Checking and then recording, as two calls, is correct only
+/// for a caller that is alone: two port scanners running side by side against
+/// one host would each find it ready and each send, and a connect scan's
+/// probes are concurrent tasks of their own. A claim is what lets every pass,
+/// whatever its concurrency, be held to the same bound.
+///
+/// The clock is read after the locks are taken, so an instant recorded here
+/// is never earlier than one recorded before it. A caller that read the time
+/// before waiting for a lock would record a stale instant, and the next probe
+/// would be measured against a slot that ended before the last probe left.
+///
+/// What a claim cannot see is how long the caller then takes to send. The gap
+/// is kept between the moments probes are released to the kernel, and a probe
+/// released late is only ever further from the one before it; one released
+/// late *before* the next is released on time can land nearer to it than the
+/// gap by the send's own latency, which is the kernel's and not this gate's.
+///
+/// ## Refunds
+///
+/// A probe the kernel refused reached nobody and must not spend a slot, on the
+/// same reasoning `RawProbeScan::record_send` gives for keeping it out of the
+/// congestion window. [`refund`](Self::refund) puts back the slot a claim took,
+/// provided no later claim has been recorded over it; one that has is left
+/// alone, since the only cost is a gap longer than asked for.
 ///
 /// ## What it costs
 ///
-/// One instant per address the scan probes, on the same reasoning
-/// [`HostClocks`] gives for its own map. The two are deliberately not one type:
-/// a budget is read once per target and starts a clock, a gap is read once per
-/// *probe* and moves one, and merging them would put both writes behind
-/// whichever question was asked first.
+/// One instant pair per address the scan probes, on the reasoning [`HostClocks`]
+/// gives for its own map. The two are deliberately not one type: a budget is
+/// read once per target and starts a clock, a gap is claimed once per *probe*
+/// and moves one, and merging them would put both writes behind whichever
+/// question was asked first.
 #[derive(Debug, Default)]
-pub(crate) struct HostSpacing {
-    minimum: Option<Duration>,
-    last_sent: DashMap<IpAddr, Instant>,
+pub(crate) struct ProbeSpacing {
+    per_host: Option<Duration>,
+    scan_wide: Option<Duration>,
+    last_at_host: DashMap<IpAddr, Slot>,
+    last_anywhere: Mutex<Option<Slot>>,
 }
 
-impl HostSpacing {
-    /// When `address` may next be probed, or `None` if it may be probed now.
-    ///
-    /// Reads only. A caller that goes on to send says so with
-    /// [`sent`](Self::sent), and one that defers the probe leaves nothing
-    /// behind, so a target turned away does not push its own next slot back.
-    fn ready_at(&self, address: IpAddr, now: Instant) -> Option<Instant> {
-        let minimum = self.minimum?;
-        let last = *self.last_sent.get(&address)?;
-        let ready = crate::scanner::pacing::timer::later(last, minimum);
+/// The last slot taken on one of [`ProbeSpacing`]'s clocks, and the one before
+/// it, which is what a refund restores.
+#[derive(Debug, Clone, Copy)]
+struct Slot {
+    at: Instant,
+    before: Option<Instant>,
+}
+
+impl Slot {
+    /// The slot taken at `at`, over whatever `previous` held.
+    fn after(previous: Option<Slot>, at: Instant) -> Self {
+        Self {
+            at,
+            before: previous.map(|slot| slot.at),
+        }
+    }
+
+    /// When a probe may next leave under `gap`, or `None` if it may now.
+    fn ready_at(slot: Option<Slot>, gap: Option<Duration>, now: Instant) -> Option<Instant> {
+        let ready = crate::scanner::pacing::timer::later(slot?.at, gap?);
         (ready > now).then_some(ready)
     }
 
-    /// Records a probe leaving for `address`.
+    /// What is left on the clock once the slot taken at `at` is given back:
+    /// the one before it, or nothing. `None` for a slot recorded over since,
+    /// which is kept.
+    fn refunded(self, at: Instant) -> Option<Option<Slot>> {
+        (self.at == at).then(|| {
+            self.before.map(|before| Slot {
+                at: before,
+                before: None,
+            })
+        })
+    }
+}
+
+/// A slot [`ScanContext::claim_probe`] handed out: the address a probe may now
+/// be sent to, and the instant it was allowed to leave.
+///
+/// Returned so a caller whose send the kernel refuses can give the slot back
+/// with [`ScanContext::refund_probe`]. A caller whose send went out keeps it
+/// and need do nothing more; dropping one is how a slot is spent.
+#[must_use = "a claim is a slot the scan has spent; a refused send gives it back with refund_probe"]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProbeClaim {
+    address: IpAddr,
+    at: Instant,
+}
+
+impl ProbeClaim {
+    /// The address the claimed probe is aimed at.
+    pub fn address(&self) -> IpAddr {
+        self.address
+    }
+}
+
+impl ProbeSpacing {
+    /// Whether this scan keeps any gap at all. A scan that keeps none never
+    /// locks or stores anything here.
+    fn is_spaced(&self) -> bool {
+        self.per_host.is_some() || self.scan_wide.is_some()
+    }
+
+    /// The longer of the two gaps, for a caller sizing a deadline: every probe
+    /// at one host waits out the first, and every probe at all the second.
+    fn longest(&self) -> Option<Duration> {
+        self.per_host.max(self.scan_wide)
+    }
+
+    /// When a probe to `address` may next leave, or `None` if it may now.
     ///
-    /// Called after the send rather than before it, so a probe the kernel
-    /// refused does not spend the host's slot. Nothing is stored for a scan that
-    /// set no minimum: without one there is no question for the instant to
-    /// answer.
-    fn sent(&self, address: IpAddr, now: Instant) {
-        if self.minimum.is_none() {
+    /// Reads only, and so answers for this instant rather than promising the
+    /// next: a concurrent pass may take the slot before the caller does. What
+    /// it is for is choosing which probe to try, and a claim is what decides.
+    fn ready_at(&self, address: IpAddr, now: Instant) -> Option<Instant> {
+        if !self.is_spaced() {
+            return None;
+        }
+        let anywhere = self.scan_wide.and_then(|gap| {
+            let slot = *self
+                .last_anywhere
+                .lock()
+                .unwrap_or_else(|held| held.into_inner());
+            Slot::ready_at(slot, Some(gap), now)
+        });
+        let at_host = self.per_host.and_then(|gap| {
+            let slot = self.last_at_host.get(&address).map(|slot| *slot);
+            Slot::ready_at(slot, Some(gap), now)
+        });
+        anywhere.max(at_host)
+    }
+
+    /// Takes the next slot for a probe to `address` if both gaps allow one
+    /// now, or says when they will.
+    fn claim(&self, address: IpAddr) -> Result<ProbeClaim, Instant> {
+        self.claim_with(address, Instant::now)
+    }
+
+    /// [`claim`](Self::claim), reading the time from `clock` once the locks
+    /// are held.
+    ///
+    /// The scan-wide lock is always taken before the host's, by this and by
+    /// [`refund`](Self::refund) alike, so two claims can never each
+    /// hold the lock the other is waiting for.
+    pub(crate) fn claim_with(
+        &self,
+        address: IpAddr,
+        clock: impl FnOnce() -> Instant,
+    ) -> Result<ProbeClaim, Instant> {
+        if !self.is_spaced() {
+            return Ok(ProbeClaim {
+                address,
+                at: clock(),
+            });
+        }
+
+        let mut anywhere = self.scan_wide.map(|_| {
+            self.last_anywhere
+                .lock()
+                .unwrap_or_else(|held| held.into_inner())
+        });
+        let at_host = self.per_host.map(|_| self.last_at_host.entry(address));
+        let now = clock();
+
+        let wait_anywhere = anywhere
+            .as_deref()
+            .and_then(|slot| Slot::ready_at(*slot, self.scan_wide, now));
+        let wait_at_host = at_host.as_ref().and_then(|entry| match entry {
+            dashmap::Entry::Occupied(slot) => Slot::ready_at(Some(*slot.get()), self.per_host, now),
+            dashmap::Entry::Vacant(_) => None,
+        });
+        if let Some(ready) = wait_anywhere.max(wait_at_host) {
+            return Err(ready);
+        }
+
+        if let Some(slot) = anywhere.as_deref_mut() {
+            *slot = Some(Slot::after(*slot, now));
+        }
+        if let Some(entry) = at_host {
+            match entry {
+                dashmap::Entry::Occupied(mut slot) => {
+                    let previous = *slot.get();
+                    slot.insert(Slot::after(Some(previous), now));
+                }
+                dashmap::Entry::Vacant(slot) => {
+                    slot.insert(Slot::after(None, now));
+                }
+            }
+        }
+        Ok(ProbeClaim { address, at: now })
+    }
+
+    /// Gives back the slot `claim` took, on either clock where nothing has
+    /// been recorded over it since.
+    fn refund(&self, claim: ProbeClaim) {
+        if !self.is_spaced() {
             return;
         }
-        self.last_sent.insert(address, now);
+        if self.scan_wide.is_some() {
+            let mut anywhere = self
+                .last_anywhere
+                .lock()
+                .unwrap_or_else(|held| held.into_inner());
+            if let Some(restored) = anywhere.and_then(|slot| slot.refunded(claim.at)) {
+                *anywhere = restored;
+            }
+        }
+        if self.per_host.is_some()
+            && let dashmap::Entry::Occupied(mut slot) = self.last_at_host.entry(claim.address)
+        {
+            match slot.get().refunded(claim.at) {
+                Some(Some(restored)) => {
+                    slot.insert(restored);
+                }
+                Some(None) => {
+                    slot.remove();
+                }
+                None => {}
+            }
+        }
     }
 }
 
@@ -1893,7 +2072,8 @@ pub struct ScanContext {
     pub(crate) plan_stage: Stage,
     /// When each host's budget started, for a scan that set one.
     pub(crate) clocks: Arc<HostClocks>,
-    pub(crate) spacing: Arc<HostSpacing>,
+    /// The gaps kept between the probes this scan sends.
+    pub(crate) spacing: Arc<ProbeSpacing>,
     /// The interface each of this scan's link-local targets was named on.
     ///
     /// A link-local address is not a key on its own, and a scanner addressing
@@ -2778,46 +2958,76 @@ impl ScanContext {
             .collect()
     }
 
-    /// When `address` may next be probed, or `None` if it may be probed now.
+    /// When a probe to `address` may next leave, or `None` if it may now.
     ///
-    /// The question every send site asks beside
-    /// [`host_expired`](Self::host_expired), and the two are different in kind:
-    /// an expired host is finished with and gets written into the phase's
-    /// [`timed_out`](crate::report::ScanPhase::timed_out) list, while one asked
-    /// too soon is fine and will be ready at the instant this returns.
+    /// For choosing which probe to try, and not for deciding whether to send
+    /// it: another pass may take the slot between this answer and the send.
+    /// [`claim_probe`](Self::claim_probe) is what decides.
     ///
-    /// **A refusal here is not a verdict.** The probe has not been sent and the
-    /// port has not been settled, so a caller that drops one on this answer
+    /// **Being turned away is not a verdict.** The probe has not been sent and
+    /// the port has not been settled, so a caller that drops one on this answer
     /// reports a port nobody asked about as though the target had been silent.
-    /// Hold it and send it at the instant returned, or file it
-    /// [`Unasked`](crate::model::port::PortState::Unasked); a scanner with
-    /// nowhere to hold one should be reading
-    /// [`ZondConfig::host_probe_interval`](crate::config::ZondConfig::host_probe_interval)
-    /// as a reason not to have taken the target off its queue yet.
+    /// Hold it and try again at the instant returned, or file it
+    /// [`Unasked`](crate::model::port::PortState::Unasked).
     ///
-    /// Always `None` for a scan that set no minimum, which is what keeps this
-    /// cheap enough to ask once per probe rather than once per target. See
-    /// [`ZondConfig::host_probe_interval`](crate::config::ZondConfig::host_probe_interval).
-    pub fn host_ready_at(&self, address: IpAddr, now: Instant) -> Option<Instant> {
+    /// Always `None` for a scan that keeps no gap, which is what keeps this
+    /// cheap enough to ask once per probe. See
+    /// [`ZondConfig::host_probe_interval`](crate::config::ZondConfig::host_probe_interval)
+    /// and [`ZondConfig::probe_interval`](crate::config::ZondConfig::probe_interval).
+    pub fn probe_ready_at(&self, address: IpAddr, now: Instant) -> Option<Instant> {
         self.spacing.ready_at(address, now)
     }
 
-    /// Records a probe leaving for `address`, moving its next slot.
+    /// Takes the slot for one probe to `address`, or says when one will be
+    /// free.
     ///
-    /// Called after the send and only for one that reached the wire: a probe the
-    /// kernel refused occupied nothing and must not spend the host's slot, on
-    /// the same reasoning `RawProbeScan::record_send` gives for keeping it out
-    /// of the congestion window.
-    pub fn host_probed(&self, address: IpAddr, now: Instant) {
-        self.spacing.sent(address, now);
+    /// Every send site asks this immediately before sending, beside
+    /// [`host_expired`](Self::host_expired), and the two are different in kind:
+    /// an expired host is finished with and gets written into the phase's
+    /// [`timed_out`](crate::report::ScanPhase::timed_out) list, while one turned
+    /// away here is fine and will be ready at the instant returned. The same
+    /// warning as [`probe_ready_at`](Self::probe_ready_at) applies to a probe
+    /// turned away: it is owed a send or an `Unasked`, never a silence.
+    ///
+    /// The decision and the record are one operation, so passes running at the
+    /// same time are held to one bound between them. A send the kernel refuses
+    /// gives the slot back with [`refund_probe`](Self::refund_probe).
+    ///
+    /// Always granted for a scan that keeps no gap, and then nothing is locked
+    /// or stored.
+    pub fn claim_probe(&self, address: IpAddr) -> Result<ProbeClaim, Instant> {
+        self.spacing.claim(address)
     }
 
-    /// The gap this scan keeps between two probes at one address, or `None`
-    /// for a scan that set none. A scanner sizing its own deadline reads it,
-    /// since every probe at one host waits it out in turn. See
-    /// [`ZondConfig::host_probe_interval`](crate::config::ZondConfig::host_probe_interval).
-    pub(crate) fn host_probe_interval(&self) -> Option<Duration> {
-        self.spacing.minimum
+    /// Gives back the slot `claim` took, for a probe that never reached the
+    /// wire.
+    ///
+    /// A probe the kernel refused occupied nothing and must not spend a slot,
+    /// on the same reasoning `RawProbeScan::record_send` gives for keeping it
+    /// out of the congestion window. A slot another probe has been recorded
+    /// over since stays spent, which costs a gap longer than asked for and
+    /// never a shorter one.
+    pub fn refund_probe(&self, claim: ProbeClaim) {
+        self.spacing.refund(claim);
+    }
+
+    /// The longer of the gaps this scan keeps between probes, or `None` for a
+    /// scan that keeps neither.
+    ///
+    /// A scanner sizing its own deadline reads it, since every probe at one
+    /// host waits out the per-host gap and every probe at all the scan-wide
+    /// one. See
+    /// [`ZondConfig::host_probe_interval`](crate::config::ZondConfig::host_probe_interval)
+    /// and [`ZondConfig::probe_interval`](crate::config::ZondConfig::probe_interval).
+    pub(crate) fn probe_gap(&self) -> Option<Duration> {
+        self.spacing.longest()
+    }
+
+    /// The gap this scan keeps between any two probes, wherever they are
+    /// aimed, or `None` for a scan that keeps none. A pass whose own send rate
+    /// is what sizes its deadline reads it as the slower rate it is.
+    pub(crate) fn scan_probe_interval(&self) -> Option<Duration> {
+        self.spacing.scan_wide
     }
 
     /// The addresses left early so far, taken.
@@ -3317,6 +3527,7 @@ pub struct SessionBuilder {
     host_timeout: Option<Duration>,
     scan_timeout: Option<Duration>,
     host_probe_interval: Option<Duration>,
+    probe_interval: Option<Duration>,
     order: Order,
     send_source: Vec<IpAddr>,
     /// `None` for the default, [`RAW_PRINT_PORTS`](crate::config::RAW_PRINT_PORTS).
@@ -3508,15 +3719,28 @@ impl SessionBuilder {
     /// A caller orchestrating their own scan sets this to have the same spacing
     /// [`scan`](crate::scanner::scan) applies from
     /// [`ZondConfig::host_probe_interval`](crate::config::ZondConfig::host_probe_interval).
-    /// Every pass that sends reads it through
-    /// [`ScanContext::host_ready_at`], which is also where what the two words
-    /// mean for a probe that arrives early is written down.
+    /// Every pass that sends claims its slots through
+    /// [`ScanContext::claim_probe`], which is also where what being turned
+    /// away means for a probe is written down.
     ///
     /// `None` is no gap. `Some(Duration::MAX)` is the longest gap there is,
     /// one probe per host for the rest of the scan, and not a way to say no
     /// limit; see the config field for why.
     pub fn host_probe_interval(mut self, minimum: Option<Duration>) -> Self {
         self.host_probe_interval = minimum;
+        self
+    }
+
+    /// The shortest gap the scan keeps between any two probes it sends,
+    /// whatever host each is aimed at.
+    ///
+    /// A caller orchestrating their own scan sets this to have the same spacing
+    /// [`scan`](crate::scanner::scan) applies from
+    /// [`ZondConfig::probe_interval`](crate::config::ZondConfig::probe_interval).
+    /// Claimed through [`ScanContext::claim_probe`] alongside the per-host gap,
+    /// and read literally on the same terms.
+    pub fn probe_interval(mut self, minimum: Option<Duration>) -> Self {
+        self.probe_interval = minimum;
         self
     }
 
@@ -3618,9 +3842,10 @@ impl SessionBuilder {
                 budget: self.host_timeout,
                 started: DashMap::new(),
             }),
-            spacing: Arc::new(HostSpacing {
-                minimum: self.host_probe_interval,
-                last_sent: DashMap::new(),
+            spacing: Arc::new(ProbeSpacing {
+                per_host: self.host_probe_interval,
+                scan_wide: self.probe_interval,
+                ..ProbeSpacing::default()
             }),
             zones: Arc::new(OnceLock::new()),
             capture_links: Arc::new(OnceLock::new()),
@@ -4608,20 +4833,21 @@ mod tests {
         assert_eq!(ctx.take_timed_out(), vec![ip]);
     }
 
-    /// A scan with no gap set answers every question with "now" and never
-    /// touches the map, which is what makes it cheap enough to ask per probe.
+    /// A scan with no gap set grants every claim and never touches the map,
+    /// which is what makes it cheap enough to ask per probe.
     #[test]
     fn a_scan_with_no_gap_never_holds_a_probe() {
         let (_session, ctx) = ScanSession::new();
         let ip: IpAddr = "192.0.2.1".parse().expect("an address");
         let now = Instant::now();
 
-        assert!(ctx.host_ready_at(ip, now).is_none());
-        ctx.host_probed(ip, now);
+        assert!(ctx.spacing.claim_with(ip, || now).is_ok());
         assert!(
-            ctx.host_ready_at(ip, now).is_none(),
-            "a recorded send moves nothing while there is no gap to move it against"
+            ctx.spacing.claim_with(ip, || now).is_ok(),
+            "a granted claim holds nothing back while there is no gap to hold it against"
         );
+        assert!(ctx.probe_ready_at(ip, now).is_none());
+        assert!(ctx.spacing.last_at_host.is_empty());
     }
 
     /// The longest gap a caller can write holds a host's next probe past the
@@ -4635,16 +4861,19 @@ mod tests {
         let ip: IpAddr = "192.0.2.1".parse().expect("an address");
         let now = Instant::now();
 
-        ctx.host_probed(ip, now);
-        let ready = ctx.host_ready_at(ip, now).expect("asked too recently");
+        let _ = ctx.spacing.claim_with(ip, || now).expect("the first probe");
+        let ready = ctx
+            .spacing
+            .claim_with(ip, || now)
+            .expect_err("asked too recently");
         assert!(ready > now + Duration::from_secs(365 * 24 * 60 * 60));
     }
 
     /// A host is ready until it is probed, and then not until the gap has run.
     ///
-    /// The first half is what lets a sweep send a first attempt without
-    /// consulting anything: an address this scan has never asked about has no
-    /// earlier probe to be too close to.
+    /// The first half is what lets a pass send a first attempt without waiting
+    /// on anything: an address this scan has never asked about has no earlier
+    /// probe to be too close to.
     #[test]
     fn a_gap_starts_at_the_first_probe_and_runs_from_the_last() {
         let gap = Duration::from_secs(3600);
@@ -4655,25 +4884,24 @@ mod tests {
         let now = Instant::now();
 
         assert!(
-            ctx.host_ready_at(ip, now).is_none(),
+            ctx.probe_ready_at(ip, now).is_none(),
             "an address nothing has probed is ready"
         );
+        let _ = ctx.spacing.claim_with(ip, || now).expect("the first probe");
 
-        ctx.host_probed(ip, now);
-        let ready = ctx.host_ready_at(ip, now).expect("asked too recently");
-        assert_eq!(ready, now + gap);
-
+        assert_eq!(ctx.probe_ready_at(ip, now), Some(now + gap));
+        assert_eq!(ctx.spacing.claim_with(ip, || now), Err(now + gap));
         assert!(
-            ctx.host_ready_at(ip, now + gap).is_none(),
+            ctx.spacing.claim_with(ip, || now + gap).is_ok(),
             "the gap having run, the host is ready again"
         );
     }
 
     /// One host's gap says nothing about another's.
     ///
-    /// The bound is per source and destination, which is the whole reason it is
-    /// not `max_probe_rate`: a scan spaced at one address must not be spaced
-    /// across the range.
+    /// The per-host bound is per source and destination, which is the whole
+    /// reason it is not the scan-wide one: a scan spaced at one address must not
+    /// be spaced across the range.
     #[test]
     fn a_gap_at_one_host_leaves_every_other_host_ready() {
         let (_session, ctx) = ScanSession::builder()
@@ -4683,10 +4911,148 @@ mod tests {
         let other: IpAddr = "192.0.2.2".parse().expect("an address");
         let now = Instant::now();
 
-        ctx.host_probed(probed, now);
+        let _ = ctx
+            .spacing
+            .claim_with(probed, || now)
+            .expect("the first probe");
 
-        assert!(ctx.host_ready_at(probed, now).is_some());
-        assert!(ctx.host_ready_at(other, now).is_none());
+        assert!(ctx.spacing.claim_with(probed, || now).is_err());
+        assert!(ctx.spacing.claim_with(other, || now).is_ok());
+    }
+
+    /// The scan-wide gap is the one that spaces a range: a probe at one host
+    /// holds back the next probe at any other.
+    #[test]
+    fn a_scan_wide_gap_holds_every_host_behind_the_last_probe() {
+        let gap = Duration::from_secs(3600);
+        let (_session, ctx) = ScanSession::builder().probe_interval(Some(gap)).build();
+        let first: IpAddr = "192.0.2.1".parse().expect("an address");
+        let other: IpAddr = "192.0.2.2".parse().expect("an address");
+        let now = Instant::now();
+
+        let _ = ctx
+            .spacing
+            .claim_with(first, || now)
+            .expect("the first probe");
+
+        assert_eq!(ctx.probe_ready_at(other, now), Some(now + gap));
+        assert_eq!(ctx.spacing.claim_with(other, || now), Err(now + gap));
+        assert!(ctx.spacing.claim_with(other, || now + gap).is_ok());
+    }
+
+    /// With both gaps kept, a probe waits for whichever runs out later, and a
+    /// claim turned away by one records nothing on the other.
+    #[test]
+    fn two_gaps_hold_a_probe_until_the_later_has_run() {
+        let short = Duration::from_secs(60);
+        let long = Duration::from_secs(3600);
+        let (_session, ctx) = ScanSession::builder()
+            .host_probe_interval(Some(long))
+            .probe_interval(Some(short))
+            .build();
+        let ip: IpAddr = "192.0.2.1".parse().expect("an address");
+        let other: IpAddr = "192.0.2.2".parse().expect("an address");
+        let now = Instant::now();
+
+        let _ = ctx.spacing.claim_with(ip, || now).expect("the first probe");
+        assert_eq!(ctx.spacing.claim_with(ip, || now + short), Err(now + long));
+
+        // Turned away at its host, so the scan-wide slot is still the first
+        // probe's and another host may go as soon as that has run.
+        assert!(ctx.spacing.claim_with(other, || now + short).is_ok());
+    }
+
+    /// A send the kernel refused gives its slot back, and the next probe may
+    /// leave as though it had never been claimed.
+    #[test]
+    fn a_refunded_claim_frees_its_slot() {
+        let gap = Duration::from_secs(3600);
+        let (_session, ctx) = ScanSession::builder()
+            .host_probe_interval(Some(gap))
+            .probe_interval(Some(gap))
+            .build();
+        let ip: IpAddr = "192.0.2.1".parse().expect("an address");
+        let now = Instant::now();
+
+        let earlier = ctx.spacing.claim_with(ip, || now).expect("the first probe");
+        let refused = ctx
+            .spacing
+            .claim_with(ip, || now + gap)
+            .expect("the gap has run");
+        ctx.refund_probe(refused);
+
+        assert_eq!(
+            ctx.probe_ready_at(ip, now + gap),
+            None,
+            "the refused probe's slot is free again"
+        );
+        assert_eq!(
+            ctx.probe_ready_at(ip, now),
+            Some(now + gap),
+            "and the probe before it still holds its own"
+        );
+        let _ = earlier;
+    }
+
+    /// A refund arriving after a later claim leaves that claim's slot alone,
+    /// since giving it back would let the next probe leave too soon after one
+    /// that did go out.
+    #[test]
+    fn a_refund_never_frees_a_later_probes_slot() {
+        let gap = Duration::from_secs(3600);
+        let (_session, ctx) = ScanSession::builder().probe_interval(Some(gap)).build();
+        let first: IpAddr = "192.0.2.1".parse().expect("an address");
+        let second: IpAddr = "192.0.2.2".parse().expect("an address");
+        let now = Instant::now();
+
+        let refused = ctx
+            .spacing
+            .claim_with(first, || now)
+            .expect("the first probe");
+        let sent = ctx
+            .spacing
+            .claim_with(second, || now + gap)
+            .expect("the gap has run");
+        ctx.refund_probe(refused);
+
+        assert_eq!(
+            ctx.probe_ready_at(first, now + gap),
+            Some(now + gap + gap),
+            "the probe that went out still holds the scan-wide slot"
+        );
+        let _ = sent;
+    }
+
+    /// Claims made at once from many threads grant one slot, not one each.
+    ///
+    /// The property the claim exists for: two passes that each checked the gap
+    /// and then recorded a send would both find the host ready and both send.
+    #[test]
+    fn concurrent_claims_share_one_slot() {
+        let (_session, ctx) = ScanSession::builder()
+            .host_probe_interval(Some(Duration::from_secs(3600)))
+            .probe_interval(Some(Duration::from_secs(3600)))
+            .build();
+        let ip: IpAddr = "192.0.2.1".parse().expect("an address");
+        let start = std::sync::Barrier::new(16);
+
+        let granted = std::thread::scope(|scope| {
+            let claims: Vec<_> = (0..16)
+                .map(|_| {
+                    scope.spawn(|| {
+                        start.wait();
+                        ctx.claim_probe(ip).is_ok()
+                    })
+                })
+                .collect();
+            claims
+                .into_iter()
+                .map(|claim| claim.join().expect("a claiming thread"))
+                .filter(|granted| *granted)
+                .count()
+        });
+
+        assert_eq!(granted, 1);
     }
 
     /// The clock starts on the first probe aimed at a host rather than when the

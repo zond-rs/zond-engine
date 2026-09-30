@@ -101,6 +101,21 @@
 #
 # host_probe_interval = 100
 
+# The shortest gap between any two probes the scan sends, in whole milliseconds,
+# whatever host each is aimed at.
+#
+# The scan-wide counterpart of host_probe_interval, for when what must not be
+# pushed is the path rather than a host: a thin link, a busy firewall, a network
+# whose owner asked for a scan that stays below a few packets a second. It goes
+# slower than max_probe_rate can, since one probe every five seconds is no whole
+# number of probes a second, and it is one gap every pass shares rather than a
+# ceiling each pass reaches on its own.
+#
+# Deferred, not dropped, like host_probe_interval: a thousand ports a second
+# apart is a quarter of an hour before any retry.
+#
+# probe_interval = 1000
+
 # How long the scan may spend on one host, in whole seconds.
 #
 # The clock starts on the first probe aimed at an address and covers the port

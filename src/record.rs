@@ -2213,6 +2213,9 @@ pub struct SettingsRecord {
     /// The shortest gap kept between two probes at one host, where one applied.
     #[serde(default)]
     pub host_probe_interval: Option<Duration>,
+    /// The shortest gap kept between any two probes, where one applied.
+    #[serde(default)]
+    pub probe_interval: Option<Duration>,
     /// The wall-clock budget each host was given, where one applied.
     ///
     /// Defaulted on the way in, so a record written before the budget existed
@@ -2345,6 +2348,7 @@ impl From<&ScanSettings> for SettingsRecord {
             max_probe_rate: settings.max_probe_rate.map(NonZeroU32::get),
             min_probe_rate: settings.min_probe_rate.map(NonZeroU32::get),
             host_probe_interval: settings.host_probe_interval,
+            probe_interval: settings.probe_interval,
             host_timeout: settings.host_timeout,
             scan_timeout: settings.scan_timeout,
             dns_enabled: settings.dns_enabled,
@@ -2396,6 +2400,7 @@ impl From<&SettingsRecord> for ScanSettings {
             max_probe_rate: record.max_probe_rate.and_then(NonZeroU32::new),
             min_probe_rate: record.min_probe_rate.and_then(NonZeroU32::new),
             host_probe_interval: record.host_probe_interval,
+            probe_interval: record.probe_interval,
             host_timeout: record.host_timeout,
             scan_timeout: record.scan_timeout,
             dns_enabled: record.dns_enabled,

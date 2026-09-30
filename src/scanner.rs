@@ -653,6 +653,7 @@ pub async fn discover(
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
         .host_probe_interval(cfg.host_probe_interval)
+        .probe_interval(cfg.probe_interval)
         .send_source(cfg.send_source.clone())
         .listening_only_to(cfg.listen_only_ports.clone())
         .counting(positions)
@@ -771,6 +772,7 @@ pub async fn discover_with_journal(
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
         .host_probe_interval(cfg.host_probe_interval)
+        .probe_interval(cfg.probe_interval)
         .send_source(cfg.send_source.clone())
         .listening_only_to(cfg.listen_only_ports.clone())
         .resuming(&resume_point)
@@ -1474,6 +1476,7 @@ pub async fn listen(
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
         .host_probe_interval(cfg.host_probe_interval)
+        .probe_interval(cfg.probe_interval)
         .staging(vec![Stage::Listening])
         .build();
     let handle = spawn_listen(scope, cfg, ctx);
@@ -1541,6 +1544,7 @@ pub async fn listen_with_journal(
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
         .host_probe_interval(cfg.host_probe_interval)
+        .probe_interval(cfg.probe_interval)
         .staging(vec![Stage::Listening])
         .build();
 
@@ -1713,6 +1717,7 @@ pub async fn scan(
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
         .host_probe_interval(cfg.host_probe_interval)
+        .probe_interval(cfg.probe_interval)
         .send_source(cfg.send_source.clone())
         .listening_only_to(cfg.listen_only_ports.clone())
         .detections(detections)
@@ -1818,6 +1823,7 @@ pub async fn scan_with_journal(
         .host_timeout(cfg.host_timeout)
         .scan_timeout(cfg.scan_timeout)
         .host_probe_interval(cfg.host_probe_interval)
+        .probe_interval(cfg.probe_interval)
         .send_source(cfg.send_source.clone())
         .listening_only_to(cfg.listen_only_ports.clone())
         .withholding_ports(withheld_ports)

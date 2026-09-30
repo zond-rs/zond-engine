@@ -1228,11 +1228,14 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         settings
             .scan_timeout_us
             .map(|us| format!("whole scan {}", duration(us))),
-        // A gap, not a budget, and it belongs on this line anyway: it is the
-        // third reason the page below may have taken as long as it did.
+        // The gaps, not budgets, and they belong on this line anyway: each is
+        // a reason the page below may have taken as long as it did.
         settings
             .host_probe_interval_us
             .map(|us| format!("{} between probes at one host", duration(us))),
+        settings
+            .probe_interval_us
+            .map(|us| format!("{} between any two probes", duration(us))),
     ]
     .into_iter()
     .flatten()

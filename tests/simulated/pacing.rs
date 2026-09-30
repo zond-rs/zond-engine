@@ -508,6 +508,58 @@ async fn a_scan_spaced_at_one_host_still_answers_every_port_and_takes_the_time()
     );
 }
 
+/// A scan-wide gap spaces probes at different hosts, which a per-host gap
+/// never does, and still leaves every port with the verdict it earned.
+///
+/// Eight hosts with one port each: under the per-host gap alone every probe
+/// would leave at once, since none has an earlier probe at its own host to be
+/// too close to. Held to one gap across the scan, they cannot finish before
+/// the seven gaps between them have run.
+#[tokio::test]
+async fn a_scan_wide_gap_spaces_probes_across_hosts() {
+    let hosts: Vec<IpAddr> = (1..=SPACED_PORTS)
+        .map(|n| IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, n as u8)))
+        .collect();
+
+    let mut net = FakeNet::new(Layer4::Tcp);
+    for &host in &hosts {
+        net = net.host(host, FIRST, Policy::open());
+    }
+
+    let (session, ctx) = ScanSession::builder().probe_interval(Some(GAP)).build();
+    let mut scanner = zond_engine::scanner::strategy::ports::TcpPortScanner::with_transport(
+        scanner_resolver(),
+        ctx,
+        TcpScanTechnique::Syn,
+        net.transport(),
+        hosts.len(),
+        SCANNER_PORT,
+    );
+
+    let targets = hosts.iter().map(|&host| tcp(host, FIRST)).collect();
+    let started = Instant::now();
+    run_port_scanner(&mut scanner, targets).await;
+    let elapsed = started.elapsed();
+
+    for &address in &hosts {
+        let host = session
+            .hosts()
+            .get(address)
+            .unwrap_or_else(|| panic!("{address} answered and so is on record"));
+        let recorded = host
+            .ports()
+            .find(|recorded| recorded.number() == FIRST)
+            .unwrap_or_else(|| panic!("{address} was given to the scan and has no verdict"));
+        assert_eq!(recorded.state(), PortState::Open);
+    }
+
+    let least = GAP * u32::from(SPACED_PORTS - 1);
+    assert!(
+        elapsed >= least,
+        "eight probes a {GAP:?} scan-wide gap apart cannot finish in {elapsed:?}"
+    );
+}
+
 /// A scan that stops while probes are still held reports them as never asked.
 ///
 /// The failure this guards against is the worst one the queue can produce. A

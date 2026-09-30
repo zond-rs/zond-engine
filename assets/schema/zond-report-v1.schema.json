@@ -2004,6 +2004,7 @@
         "max_probe_rate",
         "min_probe_rate",
         "host_probe_interval_us",
+        "probe_interval_us",
         "host_timeout_us",
         "scan_timeout_us",
         "dns_enabled",
@@ -2067,6 +2068,17 @@
         },
         "host_probe_interval_us": {
           "description": "The shortest gap the scan kept between two probes aimed at one host, or null if none was asked for. It bounds how long the phase's own numbers took to reach: a sweep of a thousand addresses spaced a tenth of a second apart cannot have finished in under a hundred seconds.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/duration_us"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "probe_interval_us": {
+          "description": "The shortest gap the scan kept between any two probes it sent, whatever host each was aimed at, or null if none was asked for. It bounds the phase's pace outright: a thousand ports a second apart cannot have been asked in under a quarter of an hour.",
           "oneOf": [
             {
               "$ref": "#/$defs/duration_us"

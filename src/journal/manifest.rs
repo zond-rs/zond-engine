@@ -911,6 +911,7 @@ impl JobOptions {
         cfg.max_probe_rate = recorded.max_probe_rate;
         cfg.min_probe_rate = recorded.min_probe_rate;
         cfg.host_probe_interval = recorded.host_probe_interval;
+        cfg.probe_interval = recorded.probe_interval;
         cfg.host_timeout = recorded.host_timeout;
         cfg.scan_timeout = recorded.scan_timeout;
         cfg.no_dns = !recorded.dns_enabled;

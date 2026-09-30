@@ -1071,6 +1071,12 @@ pub struct SettingsDto {
     /// thousand addresses spaced a tenth of a second apart cannot have finished
     /// in under a hundred seconds.
     pub host_probe_interval_us: Option<u64>,
+    /// The shortest gap kept between any two probes the scan sent, or `null`
+    /// if none was asked for.
+    ///
+    /// It bounds the phase's pace outright: a thousand ports a second apart
+    /// cannot have been asked in under a quarter of an hour.
+    pub probe_interval_us: Option<u64>,
     /// The wall-clock budget each host was given, or `null` if none was set.
     ///
     /// It bounds what a host's entry can claim. Three open ports out of a
@@ -1244,6 +1250,7 @@ impl SettingsDto {
             max_probe_rate: settings.max_probe_rate.map(std::num::NonZeroU32::get),
             min_probe_rate: settings.min_probe_rate.map(std::num::NonZeroU32::get),
             host_probe_interval_us: micros_opt(settings.host_probe_interval),
+            probe_interval_us: micros_opt(settings.probe_interval),
             host_timeout_us: micros_opt(settings.host_timeout),
             scan_timeout_us: micros_opt(settings.scan_timeout),
             dns_enabled: settings.dns_enabled,

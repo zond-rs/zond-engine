@@ -395,6 +395,7 @@ pub zond_engine::config::ZondConfig::max_probe_rate: core::option::Option<core::
 pub zond_engine::config::ZondConfig::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::config::ZondConfig::no_dns: bool
 pub zond_engine::config::ZondConfig::os_detection: zond_engine::config::OsDetection
+pub zond_engine::config::ZondConfig::probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::config::ZondConfig::redact: bool
 pub zond_engine::config::ZondConfig::retry: zond_engine::config::RetryConfig
 pub zond_engine::config::ZondConfig::scan_timeout: core::option::Option<core::time::Duration>
@@ -4287,6 +4288,7 @@ pub zond_engine::export::schema::SettingsDto::listen_only_ports: alloc::vec::Vec
 pub zond_engine::export::schema::SettingsDto::max_probe_rate: core::option::Option<u32>
 pub zond_engine::export::schema::SettingsDto::min_probe_rate: core::option::Option<u32>
 pub zond_engine::export::schema::SettingsDto::os_detection: &'static str
+pub zond_engine::export::schema::SettingsDto::probe_interval_us: core::option::Option<u64>
 pub zond_engine::export::schema::SettingsDto::redact: bool
 pub zond_engine::export::schema::SettingsDto::retry: zond_engine::export::schema::RetryDto
 pub zond_engine::export::schema::SettingsDto::scan_timeout_us: core::option::Option<u64>
@@ -7044,6 +7046,7 @@ pub zond_engine::import::settings::Settings::max_attempts: core::option::Option<
 pub zond_engine::import::settings::Settings::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::import::settings::Settings::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::import::settings::Settings::no_dns: core::option::Option<bool>
+pub zond_engine::import::settings::Settings::probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::import::settings::Settings::redact: core::option::Option<bool>
 pub zond_engine::import::settings::Settings::scan_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::import::settings::Settings::sctp_technique: core::option::Option<zond_engine::model::technique::SctpScanTechnique>
@@ -7575,6 +7578,7 @@ pub zond_engine::import::Settings::max_attempts: core::option::Option<core::num:
 pub zond_engine::import::Settings::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::import::Settings::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::import::Settings::no_dns: core::option::Option<bool>
+pub zond_engine::import::Settings::probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::import::Settings::redact: core::option::Option<bool>
 pub zond_engine::import::Settings::scan_timeout: core::option::Option<core::time::Duration>
 pub zond_engine::import::Settings::sctp_technique: core::option::Option<zond_engine::model::technique::SctpScanTechnique>
@@ -15247,6 +15251,7 @@ pub zond_engine::record::SettingsRecord::listen_only_ports: alloc::vec::Vec<u16>
 pub zond_engine::record::SettingsRecord::max_probe_rate: core::option::Option<u32>
 pub zond_engine::record::SettingsRecord::min_probe_rate: core::option::Option<u32>
 pub zond_engine::record::SettingsRecord::os_detection: alloc::string::String
+pub zond_engine::record::SettingsRecord::probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::record::SettingsRecord::redact: bool
 pub zond_engine::record::SettingsRecord::retry_dampen_silent_hosts: bool
 pub zond_engine::record::SettingsRecord::retry_effort: alloc::string::String
@@ -16000,6 +16005,7 @@ pub zond_engine::report::ScanSettings::listen_only_ports: alloc::vec::Vec<u16>
 pub zond_engine::report::ScanSettings::max_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::report::ScanSettings::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::report::ScanSettings::os_detection: zond_engine::config::OsDetection
+pub zond_engine::report::ScanSettings::probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::report::ScanSettings::redact: bool
 pub zond_engine::report::ScanSettings::retry: zond_engine::config::RetryConfig
 pub zond_engine::report::ScanSettings::scan_timeout: core::option::Option<core::time::Duration>
@@ -16622,6 +16628,25 @@ impl core::marker::Unpin for zond_engine::scanner::session::HostStore
 impl core::marker::UnsafeUnpin for zond_engine::scanner::session::HostStore
 impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::HostStore
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::HostStore
+pub struct zond_engine::scanner::session::ProbeClaim
+impl zond_engine::scanner::session::ProbeClaim
+pub fn zond_engine::scanner::session::ProbeClaim::address(&self) -> core::net::ip_addr::IpAddr
+impl core::clone::Clone for zond_engine::scanner::session::ProbeClaim
+pub fn zond_engine::scanner::session::ProbeClaim::clone(&self) -> zond_engine::scanner::session::ProbeClaim
+impl core::cmp::Eq for zond_engine::scanner::session::ProbeClaim
+impl core::cmp::PartialEq for zond_engine::scanner::session::ProbeClaim
+pub fn zond_engine::scanner::session::ProbeClaim::eq(&self, &zond_engine::scanner::session::ProbeClaim) -> bool
+impl core::fmt::Debug for zond_engine::scanner::session::ProbeClaim
+pub fn zond_engine::scanner::session::ProbeClaim::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::scanner::session::ProbeClaim
+impl core::marker::StructuralPartialEq for zond_engine::scanner::session::ProbeClaim
+impl core::marker::Freeze for zond_engine::scanner::session::ProbeClaim
+impl core::marker::Send for zond_engine::scanner::session::ProbeClaim
+impl core::marker::Sync for zond_engine::scanner::session::ProbeClaim
+impl core::marker::Unpin for zond_engine::scanner::session::ProbeClaim
+impl core::marker::UnsafeUnpin for zond_engine::scanner::session::ProbeClaim
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::ProbeClaim
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::ProbeClaim
 pub struct zond_engine::scanner::session::Progress
 impl zond_engine::scanner::session::Progress
 pub fn zond_engine::scanner::session::Progress::counted(&self) -> core::option::Option<(u64, u64)>
@@ -16646,16 +16671,16 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::Progress
 pub struct zond_engine::scanner::session::ScanContext
 impl zond_engine::scanner::session::ScanContext
+pub fn zond_engine::scanner::session::ScanContext::claim_probe(&self, core::net::ip_addr::IpAddr) -> core::result::Result<zond_engine::scanner::session::ProbeClaim, std::time::Instant>
 pub fn zond_engine::scanner::session::ScanContext::contains_host(&self, &zond_engine::model::ip::scoped::ScopedIp) -> bool
 pub fn zond_engine::scanner::session::ScanContext::enter_stage(&self, zond_engine::scanner::session::Stage, core::option::Option<u64>)
 pub fn zond_engine::scanner::session::ScanContext::failures_snapshot(&self) -> alloc::vec::Vec<zond_engine::report::ScannerFailure>
 pub fn zond_engine::scanner::session::ScanContext::host_addresses(&self) -> alloc::vec::Vec<zond_engine::model::ip::scoped::ScopedIp>
 pub fn zond_engine::scanner::session::ScanContext::host_count(&self) -> usize
 pub fn zond_engine::scanner::session::ScanContext::host_expired(&self, core::net::ip_addr::IpAddr) -> bool
-pub fn zond_engine::scanner::session::ScanContext::host_probed(&self, core::net::ip_addr::IpAddr, std::time::Instant)
-pub fn zond_engine::scanner::session::ScanContext::host_ready_at(&self, core::net::ip_addr::IpAddr, std::time::Instant) -> core::option::Option<std::time::Instant>
 pub fn zond_engine::scanner::session::ScanContext::hosts_snapshot(&self) -> alloc::vec::Vec<zond_engine::model::host::Host>
 pub fn zond_engine::scanner::session::ScanContext::may_probe(&self, &core::net::ip_addr::IpAddr) -> bool
+pub fn zond_engine::scanner::session::ScanContext::probe_ready_at(&self, core::net::ip_addr::IpAddr, std::time::Instant) -> core::option::Option<std::time::Instant>
 pub fn zond_engine::scanner::session::ScanContext::probe_stats_snapshot(&self) -> alloc::vec::Vec<zond_engine::report::ProbeStats>
 pub fn zond_engine::scanner::session::ScanContext::progress(&self) -> zond_engine::scanner::session::ScanProgress
 pub fn zond_engine::scanner::session::ScanContext::read_host<R>(&self, impl core::convert::Into<zond_engine::model::ip::scoped::ScopedIp>, impl core::ops::function::FnOnce(&zond_engine::model::host::Host) -> R) -> core::option::Option<R>
@@ -16668,6 +16693,7 @@ pub fn zond_engine::scanner::session::ScanContext::record_reached_by_connect(&se
 pub fn zond_engine::scanner::session::ScanContext::record_refusal(&self, zond_engine::report::Refusal)
 pub fn zond_engine::scanner::session::ScanContext::record_sweep(&self, zond_engine::model::ip::scoped::Zone)
 pub fn zond_engine::scanner::session::ScanContext::record_unroutable(&self, core::net::ip_addr::IpAddr)
+pub fn zond_engine::scanner::session::ScanContext::refund_probe(&self, zond_engine::scanner::session::ProbeClaim)
 pub fn zond_engine::scanner::session::ScanContext::refusals_snapshot(&self) -> alloc::vec::Vec<zond_engine::report::Refusal>
 pub fn zond_engine::scanner::session::ScanContext::restore_hosts(&self, &[zond_engine::model::host::Host])
 pub fn zond_engine::scanner::session::ScanContext::settle_address(&self, core::net::ip_addr::IpAddr, zond_engine::journal::settle::Settled)
@@ -16747,6 +16773,7 @@ pub fn zond_engine::scanner::session::SessionBuilder::listening_only_to(self, al
 pub fn zond_engine::scanner::session::SessionBuilder::naming(self, alloc::collections::btree::map::BTreeMap<core::net::ip_addr::IpAddr, alloc::string::String>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::ordering(self, core::option::Option<u64>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::planning(self, zond_engine::scanner::session::Stage, core::option::Option<u64>) -> Self
+pub fn zond_engine::scanner::session::SessionBuilder::probe_interval(self, core::option::Option<core::time::Duration>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::resuming(self, &zond_engine::journal::cursor::Checkpoint) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::scan_timeout(self, core::option::Option<core::time::Duration>) -> Self
 pub fn zond_engine::scanner::session::SessionBuilder::send_source(self, alloc::vec::Vec<core::net::ip_addr::IpAddr>) -> Self
@@ -19424,6 +19451,7 @@ pub zond_engine::ZondConfig::max_probe_rate: core::option::Option<core::num::non
 pub zond_engine::ZondConfig::min_probe_rate: core::option::Option<core::num::nonzero::NonZeroU32>
 pub zond_engine::ZondConfig::no_dns: bool
 pub zond_engine::ZondConfig::os_detection: zond_engine::config::OsDetection
+pub zond_engine::ZondConfig::probe_interval: core::option::Option<core::time::Duration>
 pub zond_engine::ZondConfig::redact: bool
 pub zond_engine::ZondConfig::retry: zond_engine::config::RetryConfig
 pub zond_engine::ZondConfig::scan_timeout: core::option::Option<core::time::Duration>

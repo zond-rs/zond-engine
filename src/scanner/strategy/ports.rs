@@ -103,7 +103,7 @@ use crate::scanner::pacing::deadline::{AdaptiveDeadline, AdaptiveDeadlineConfig}
 use crate::scanner::pacing::retry::{
     Due, ProbeLedger, Resolution, RetryPolicy, SilentHostPolicy, saturating_mul,
 };
-use crate::scanner::session::ScanContext;
+use crate::scanner::session::{ProbeClaim, ScanContext};
 use crate::scanner::strategy::raw::neighbors::{
     Admission, HoldDowns, NEIGHBOR_RECHECK, NeighborGates, RESOLUTION_BUDGET,
 };
@@ -264,9 +264,11 @@ const SEND_SLACK: f64 = 1.5;
 ///   floor on such a path is the pacing working as designed.
 /// - **The rate**, with every attempt at every endpoint leaving through the
 ///   send ticker, and [`SEND_SLACK`] for a ticker that falls behind.
-/// - **The gap between two probes at one host**, with every attempt at every
-///   endpoint waiting its turn as though all of them were one host's, since
-///   the scan is not told how its endpoints spread over addresses.
+/// - **The gap between probes**, the longer of the per-host and scan-wide
+///   ones, with every attempt at every endpoint waiting its turn. Exact for
+///   the scan-wide gap, which every probe waits out; for the per-host one it
+///   is as though every endpoint were one host's, since the scan is not told
+///   how its endpoints spread over addresses.
 ///
 /// The slowest of the three is the pace, and the three are not added, since
 /// they bind at once rather than in turn. On top of the pace comes the tail:
@@ -284,7 +286,7 @@ fn deadline_for(
     retry: &RetryPolicy,
     window: WindowLimits,
     rate: NonZeroU32,
-    host_gap: Option<Duration>,
+    gap: Option<Duration>,
     target_count: usize,
 ) -> AdaptiveDeadlineConfig {
     let attempts = u32::from(retry.max_attempts.max(1));
@@ -293,7 +295,7 @@ fn deadline_for(
         Duration::from_secs(1),
         SEND_SLACK * f64::from(attempts) / f64::from(rate.get()),
     );
-    let by_gap = host_gap.unwrap_or_default().saturating_mul(attempts);
+    let by_gap = gap.unwrap_or_default().saturating_mul(attempts);
     config
         .allowing_for(retry.longest_probe_lifetime())
         .allowing_pace_of(by_window.max(by_rate).max(by_gap), target_count)
@@ -347,6 +349,10 @@ pub(crate) struct RawProbeScan<T> {
     /// empty. Resolved once from the scan's
     /// [`EvasionProfile`](crate::evasion::EvasionProfile).
     pub decoys: Vec<IpAddr>,
+    /// The slot claimed for the probe being sent, between the claim and
+    /// [`record_send`](Self::record_send), which gives it back if the kernel
+    /// refused the send. See [`ScanContext::claim_probe`].
+    pub claimed: Option<ProbeClaim>,
     /// Why the first probe this host's own sender would not put on the wire
     /// failed, if any did.
     ///
@@ -558,7 +564,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             &retry,
             window,
             rate,
-            ctx.host_probe_interval(),
+            ctx.probe_gap(),
             target_count,
         );
 
@@ -573,6 +579,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
             emission: tuning.evasion.emission(),
             shaping: tuning.evasion.segment_shaping(),
             decoys: tuning.evasion.decoys.clone(),
+            claimed: None,
             send_failure: None,
             unasked_refused: 0,
             retries_refused: 0,
@@ -701,7 +708,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// Callers that cannot hold a probe must not ask, since a probe dropped on
     /// that answer is a port reported as silent that nobody sent anything to;
     /// see
-    /// [`ScanContext::host_ready_at`](crate::scanner::session::ScanContext::host_ready_at).
+    /// [`ScanContext::probe_ready_at`](crate::scanner::session::ScanContext::probe_ready_at).
     fn hold(&mut self, ip: IpAddr, port: u16, position: Option<u64>, ready: Instant) {
         let entry = HeldProbe {
             ip,
@@ -724,7 +731,7 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     ///
     /// That cannot loop. A re-checked entry is pushed back with an instant
     /// strictly later than `now`, because that is the only kind
-    /// [`host_ready_at`](crate::scanner::session::ScanContext::host_ready_at)
+    /// [`probe_ready_at`](crate::scanner::session::ScanContext::probe_ready_at)
     /// returns, so it cannot be drawn again on this call: every iteration either
     /// yields a probe or takes one entry out of the queue's due prefix.
     fn take_ready(&mut self, now: Instant) -> Option<HeldProbe> {
@@ -743,9 +750,9 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
     /// apart, drifts apart: the audit counts every attempt so a scan that could
     /// not send can say so, the window counts only the ones that reached the
     /// wire, since a probe nobody sent occupied nothing and must not be part of
-    /// the evidence that the path is busy, and `target`'s host slot under
-    /// [`ZondConfig::host_probe_interval`](crate::config::ZondConfig::host_probe_interval)
-    /// moves on the same terms as the window, for the same reason.
+    /// the evidence that the path is busy, and the slot the send was
+    /// [claimed](ScanContext::claim_probe) under is given back on the same
+    /// terms as the window, for the same reason.
     ///
     /// A refusal is sorted by whose fact it is, the way
     /// [`SendError::is_unroutable`] draws the line, and by whether `target`'s
@@ -787,9 +794,12 @@ impl<T: Copy + PartialEq> RawProbeScan<T> {
         first_attempt: bool,
     ) {
         self.audit.record_send(sent.is_ok());
+        let claim = self.claimed.take();
+        if let (Err(_), Some(claim)) = (sent, claim) {
+            self.ctx.refund_probe(claim);
+        }
         match (sent, first_attempt) {
             (Ok(()), first) => {
-                self.ctx.host_probed(host, Instant::now());
                 if first {
                     self.window.record_send();
                 } else {
@@ -1321,7 +1331,7 @@ fn take_ready_from(
             return None;
         }
         let mut entry = queue.pop().expect("peeked");
-        match ctx.host_ready_at(entry.ip, now) {
+        match ctx.probe_ready_at(entry.ip, now) {
             None => return Some(entry),
             Some(ready) => {
                 entry.ready = ready;
@@ -1446,7 +1456,14 @@ pub(crate) trait RawPortScan: PortScanner {
     /// the ledger so it comes back when the probe retires.
     fn probe(&mut self, ip: IpAddr, port: u16, position: u64, now: Instant) {
         match self.core_mut().admit(ip, now) {
-            Admission::Send => send_timed(self, ip, port, Some(position), now),
+            Admission::Send => match self.core().ctx.claim_probe(ip) {
+                Ok(claim) => send_timed(self, claim, port, Some(position), now),
+                // Another pass took the slot since this probe was chosen.
+                Err(ready) => {
+                    self.core_mut().hold(ip, port, Some(position), ready);
+                    return;
+                }
+            },
             Admission::Hold(ready) => {
                 self.core_mut().hold(ip, port, Some(position), ready);
                 return;
@@ -1493,7 +1510,13 @@ pub(crate) trait RawPortScan: PortScanner {
             return;
         }
         match self.core_mut().admit(ip, now) {
-            Admission::Send => send_timed(self, ip, port, None, now),
+            Admission::Send => match self.core().ctx.claim_probe(ip) {
+                Ok(claim) => send_timed(self, claim, port, None, now),
+                Err(ready) => {
+                    self.core_mut().hold(ip, port, None, ready);
+                    return;
+                }
+            },
             Admission::Hold(ready) => {
                 self.core_mut().hold(ip, port, None, ready);
                 return;
@@ -1655,7 +1678,7 @@ pub(crate) trait RawPortScan: PortScanner {
                     // as silent having asked once.
                     let core = self.core_mut();
                     core.ledger.defer(&(ip, port));
-                    let ready = core.ctx.host_ready_at(ip, now).unwrap_or(now);
+                    let ready = core.ctx.probe_ready_at(ip, now).unwrap_or(now);
                     core.hold(ip, port, None, ready);
                 }
                 Due::Exhausted {
@@ -1823,23 +1846,34 @@ pub(crate) fn run_out<S: RawPortScan>(scanner: &mut S) {
     }
 }
 
-/// [`RawPortScan::send`], with the time it took given back to the deadline.
+/// [`RawPortScan::send`] under the slot `claim` took, with the time it took
+/// given back to the deadline.
 ///
 /// A sender that frames its own probes resolves a neighbour inside the send
 /// when [`RawProbeScan::admit`] could not hold the probe for it, as when the
 /// link would not carry the resolution it asked for, and holds the loop for
 /// the whole wait. See [`AdaptiveDeadline::allow_for_sending`].
+///
+/// The claim is left with the core for [`RawProbeScan::record_send`], which
+/// gives it back for a send the kernel refused. A send that declined before
+/// reaching the kernel, having no route to ask by, never records one, and its
+/// slot is given back here: nothing left for the target.
 fn send_timed<S: RawPortScan + ?Sized>(
     scanner: &mut S,
-    ip: IpAddr,
+    claim: ProbeClaim,
     port: u16,
     position: Option<u64>,
     now: Instant,
 ) {
+    scanner.core_mut().claimed = Some(claim);
     let started = Instant::now();
-    scanner.send(ip, port, position, now);
+    scanner.send(claim.address(), port, position, now);
     let spent = started.elapsed();
-    scanner.core_mut().deadline.allow_for_sending(spent);
+    let core = scanner.core_mut();
+    core.deadline.allow_for_sending(spent);
+    if let Some(unspent) = core.claimed.take() {
+        core.ctx.refund_probe(unspent);
+    }
 }
 
 /// Reads every reply already waiting in `scanner`'s capture stream, without
@@ -2028,7 +2062,7 @@ pub(crate) async fn drive<S: RawPortScan>(
                             if scanner.core().ctx.host_expired(target.ip()) {
                                 scanner.record_unasked(target);
                             } else if let Some(ready) =
-                                scanner.core().ctx.host_ready_at(target.ip(), now)
+                                scanner.core().ctx.probe_ready_at(target.ip(), now)
                             {
                                 // Asked too recently. Held rather than dropped:
                                 // this target has been counted and owes a
@@ -2152,6 +2186,7 @@ mod tests {
             emission: Emission::routed(),
             shaping: SegmentShaping::default(),
             decoys: Vec::new(),
+            claimed: None,
             send_failure: None,
             unasked_refused: 0,
             retries_refused: 0,
@@ -2285,6 +2320,7 @@ mod tests {
             emission: Emission::routed(),
             shaping: SegmentShaping::default(),
             decoys: Vec::new(),
+            claimed: None,
             send_failure: None,
             unasked_refused: 0,
             retries_refused: 0,
@@ -2344,7 +2380,11 @@ mod tests {
         // Held as though its host were ready immediately.
         core.hold(TARGET, 80, Some(0), now);
         // And then the host is probed, which moves the real slot an hour out.
-        core.ctx.host_probed(TARGET, now);
+        let _ = core
+            .ctx
+            .spacing
+            .claim_with(TARGET, || now)
+            .expect("a host nothing has probed");
 
         assert!(
             core.take_ready(now).is_none(),
