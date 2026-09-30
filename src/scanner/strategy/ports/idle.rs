@@ -681,7 +681,7 @@ mod tests {
         open_ports: Vec<u16>,
         /// When each probe reached the segment, and the address it was aimed
         /// at, so a test can assert on how the sends were spaced.
-        sent_at: std::sync::Arc<std::sync::Mutex<Vec<(IpAddr, Instant)>>>,
+        sent_at: SendLog,
     }
 
     impl Zombie {
@@ -758,6 +758,9 @@ mod tests {
         }
     }
 
+    /// A shared log of the address each probe left for, and when.
+    type SendLog = std::sync::Arc<std::sync::Mutex<Vec<(IpAddr, Instant)>>>;
+
     /// A scanner pointed at the synthetic [`Zombie`], over a synthetic transport.
     fn scanner(ctx: &ScanContext, kind: Counter, open_ports: Vec<u16>) -> IdlePortScanner {
         scanner_logging(ctx, kind, open_ports).0
@@ -768,10 +771,7 @@ mod tests {
         ctx: &ScanContext,
         kind: Counter,
         open_ports: Vec<u16>,
-    ) -> (
-        IdlePortScanner,
-        std::sync::Arc<std::sync::Mutex<Vec<(IpAddr, Instant)>>>,
-    ) {
+    ) -> (IdlePortScanner, SendLog) {
         let (tx, rx) = mpsc::channel(1024);
         let sent_at = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let zombie = Zombie {

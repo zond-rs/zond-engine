@@ -16739,10 +16739,12 @@ impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::scanner::session::
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::scanner::session::Progress
 pub struct zond_engine::scanner::session::ScanContext
 impl zond_engine::scanner::session::ScanContext
+pub fn zond_engine::scanner::session::ScanContext::claim_group_probe(&self, core::net::ip_addr::IpAddr) -> core::result::Result<zond_engine::scanner::session::ProbeClaim, std::time::Instant>
 pub fn zond_engine::scanner::session::ScanContext::claim_probe(&self, core::net::ip_addr::IpAddr) -> core::result::Result<zond_engine::scanner::session::ProbeClaim, std::time::Instant>
 pub fn zond_engine::scanner::session::ScanContext::contains_host(&self, &zond_engine::model::ip::scoped::ScopedIp) -> bool
 pub fn zond_engine::scanner::session::ScanContext::enter_stage(&self, zond_engine::scanner::session::Stage, core::option::Option<u64>)
 pub fn zond_engine::scanner::session::ScanContext::failures_snapshot(&self) -> alloc::vec::Vec<zond_engine::report::ScannerFailure>
+pub fn zond_engine::scanner::session::ScanContext::group_probe_ready_at(&self, std::time::Instant) -> core::option::Option<std::time::Instant>
 pub fn zond_engine::scanner::session::ScanContext::host_addresses(&self) -> alloc::vec::Vec<zond_engine::model::ip::scoped::ScopedIp>
 pub fn zond_engine::scanner::session::ScanContext::host_count(&self) -> usize
 pub fn zond_engine::scanner::session::ScanContext::host_expired(&self, core::net::ip_addr::IpAddr) -> bool
