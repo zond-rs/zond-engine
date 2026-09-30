@@ -394,6 +394,43 @@ impl Tracer {
         }
     }
 
+    /// Waits until a probe to `target` may leave under the gaps the scan keeps
+    /// between probes, then [sends](Self::send) one built to expire `distance`
+    /// hops away, and says whether it reached the wire.
+    ///
+    /// A trace probe carries the target's address and draws its answers from
+    /// the routers on the way to it, so it is a probe at the target and spends
+    /// both the per-host and the scan-wide gap on that address. The slot is
+    /// taken immediately before the send and given back where the transport
+    /// refused it, on the same reasoning `send` counts a refused probe apart
+    /// from the ones that left. Waiting costs a trace nothing it measures: a
+    /// round trip is timed from the probe's own send, and each round's reply
+    /// window opens once its probes are out.
+    ///
+    /// `false` where the probe did not leave, whether the transport refused it
+    /// or the scan stopped while it waited for a slot; the caller reads the
+    /// stop from [`should_stop`](crate::scanner::handle::ScanHandle::should_stop)
+    /// as it does for any other probe it did not send.
+    async fn send_paced(&mut self, target: IpAddr, distance: u8, source: IpAddr) -> bool {
+        loop {
+            match self.ctx.claim_probe(target) {
+                Ok(claim) => {
+                    let left = self.send(target, distance, source);
+                    if !left {
+                        self.ctx.refund_probe(claim);
+                    }
+                    return left;
+                }
+                Err(ready) => {
+                    tokio::select! {
+                        () = self.ctx.handle.stopping() => return false,
+                        () = tokio::time::sleep_until(ready.into()) => {}
+                    }
+                }
+            }
+        }
+    }
+
     /// Reads replies until `deadline`, handing each to `on_reply`.
     ///
     /// Stops early once nothing is outstanding, so a round that is fully
@@ -813,7 +850,7 @@ impl Tracer {
             .filter(|host| sources.contains_key(host))
             .collect();
         for &target in &waiting {
-            self.send(target, MAX_HOPS, sources[&target]);
+            self.send_paced(target, MAX_HOPS, sources[&target]).await;
         }
         self.in_flight.clear();
 
@@ -838,7 +875,7 @@ impl Tracer {
                 }
             });
             for target in asking_again {
-                self.send(target, MAX_HOPS, sources[&target]);
+                self.send_paced(target, MAX_HOPS, sources[&target]).await;
             }
             self.in_flight.clear();
         }
@@ -933,7 +970,7 @@ impl Tracer {
                 let mut admitted = Vec::with_capacity(asked.len());
                 for (target, source) in asked {
                     if self.admitted(target).await {
-                        self.send(target, MAX_HOPS, source);
+                        self.send_paced(target, MAX_HOPS, source).await;
                         admitted.push((target, source));
                     }
                 }
@@ -980,7 +1017,7 @@ impl Tracer {
                 self.in_flight.clear();
                 return None;
             }
-            self.send(target, at, source);
+            self.send_paced(target, at, source).await;
         }
         let deadline = Instant::now() + ROUND_TIMEOUT;
 
@@ -1390,7 +1427,80 @@ mod tests {
         );
     }
 
-    /// A router the scan may not report is withheld on every path through it,
+    /// A recording sender that answers as the target at every distance, so a
+    /// trace through it sends its probes and finishes at once, and logs when
+    /// each probe left.
+    struct TimedNetwork {
+        reply_ttl: u8,
+        replies: mpsc::Sender<CapturedSegment>,
+        sent_at: std::sync::Arc<std::sync::Mutex<Vec<Instant>>>,
+    }
+
+    impl ProbeSender for TimedNetwork {
+        fn send(
+            &self,
+            segment: &[u8],
+            _src: IpAddr,
+            dst: IpAddr,
+            _zone: Option<u32>,
+            _emission: Emission,
+        ) -> Result<(), SendError> {
+            self.sent_at.lock().unwrap().push(Instant::now());
+            let reply = Network::observed(
+                dst,
+                IpNextHeaderProtocols::Tcp,
+                syn_ack_to(segment),
+                self.reply_ttl,
+            );
+            let _ = self.replies.try_send(reply);
+            Ok(())
+        }
+    }
+
+    /// Under a gap the scan keeps between probes, no two of a trace's probes
+    /// leave nearer than the gap, and every one is still sent.
+    ///
+    /// A trace probe carries the target's address and is a probe at it, so
+    /// the per-host gap spaces a single target's whole walk. The fixture
+    /// answers every probe, so what is left to measure is the spacing the gate
+    /// imposed on the sends.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_gap_spaces_a_traces_probes() {
+        let gap = Duration::from_millis(40);
+        let target = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
+        let (_session, ctx) = ScanSession::builder()
+            .host_probe_interval(Some(gap))
+            .build();
+        let (tx, rx) = mpsc::channel(1024);
+        let sent_at = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let network = TimedNetwork {
+            reply_ttl: 60,
+            replies: tx,
+            sent_at: sent_at.clone(),
+        };
+        let transport = ProbeTransport::from_parts(Box::new(network), rx);
+        let mut tracer = Tracer::new(
+            ctx.clone(),
+            transport,
+            TraceProbe::Syn { port: 443 },
+            41_234,
+            PathCache::new(),
+        );
+
+        tracer.run(vec![target]).await;
+
+        let sent = sent_at.lock().unwrap();
+        assert!(sent.len() >= 3, "the trace sent its probes: {}", sent.len());
+        for pair in sent.windows(2) {
+            assert!(
+                pair[1].duration_since(pair[0]) >= gap,
+                "two probes left {:?} apart, under a {gap:?} gap",
+                pair[1].duration_since(pair[0])
+            );
+        }
+    }
+
+    /// A router the scan may not report is withheld on every path through it,    /// A router the scan may not report is withheld on every path through it,
     /// the one measured and the one spliced from it alike.
     ///
     /// The splice is the case worth driving the whole loop for. The cache
