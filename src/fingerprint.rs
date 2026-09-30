@@ -120,7 +120,7 @@ use crate::config::ServiceDetection;
 use crate::model::port::{Port, PortState, Protocol, Service};
 use crate::system::descriptors;
 use crate::transport::dial::PathAllowance;
-use crate::transport::dial::{Egress, Shaping};
+use crate::transport::dial::{Egress, Shaping, pacing};
 use authority::Authority;
 
 /// How long to wait for a service to speak first (banner grab).
@@ -535,7 +535,7 @@ pub async fn fingerprint_tcp_detailed(
         stream,
         port,
         detection,
-        Egress::KERNEL,
+        &Egress::KERNEL,
         PathAllowance::NONE,
         None,
     )
@@ -605,7 +605,7 @@ pub(crate) async fn fingerprint_tcp_via(
     stream: TcpStream,
     port: Port,
     detection: ServiceDetection,
-    egress: Egress,
+    egress: &Egress,
     path: PathAllowance,
     name: Option<Arc<str>>,
 ) -> Fingerprinted {
@@ -615,16 +615,21 @@ pub(crate) async fn fingerprint_tcp_via(
     // `DIALLING`.
     let tally = Arc::new(Tally::default());
     let dialling = Dialling {
-        egress,
+        egress: egress.clone(),
         path,
         tally: Arc::clone(&tally),
     };
-    let (port, about_the_host, responses) = DIALLING
-        .scope(
+    // The ceilings of a paced identification stand still while one of its
+    // connections waits for its slot, since that wait is the scan's and not
+    // the port's; see `dial::pacing`.
+    let (port, about_the_host, responses) = pacing::holding(
+        egress,
+        DIALLING.scope(
             dialling,
             identify_tcp(stream, port, detection, egress, path, name),
-        )
-        .await;
+        ),
+    )
+    .await;
     Fingerprinted {
         port,
         about_the_host,
@@ -644,7 +649,7 @@ async fn identify_tcp(
     stream: TcpStream,
     mut port: Port,
     detection: ServiceDetection,
-    egress: Egress,
+    egress: &Egress,
     path: PathAllowance,
     name: Option<Arc<str>>,
 ) -> (Port, AboutTheHost, Vec<String>) {
@@ -657,11 +662,11 @@ async fn identify_tcp(
     // Every stage inside `gather` is bounded and their sum is nobody's property;
     // see [`COLLECTION_BUDGET`]. A port that runs out of it is left exactly as
     // the scan recorded it, which is what a port that said nothing gets.
-    let Ok((responses, tunnel)) = timeout(
-        path.over_each(COLLECTION_BUDGET, COLLECTION_WAITS),
-        gather(stream, port.number(), detection, egress, name.clone()),
-    )
-    .await
+    let Ok((responses, tunnel)) =
+        pacing::timeout(path.over_each(COLLECTION_BUDGET, COLLECTION_WAITS), || {
+            gather(stream, port.number(), detection, egress, name.clone())
+        })
+        .await
     else {
         return (port, AboutTheHost::default(), Vec::new());
     };
@@ -782,14 +787,14 @@ pub async fn fingerprint_udp_detailed(
     addr: std::net::SocketAddr,
     port: Port,
 ) -> Option<Fingerprinted> {
-    fingerprint_udp_via(addr, port, Egress::KERNEL).await
+    fingerprint_udp_via(addr, port, &Egress::KERNEL).await
 }
 
 /// [`fingerprint_udp_detailed`], with the datagram leaving by `egress`.
 pub(crate) async fn fingerprint_udp_via(
     addr: std::net::SocketAddr,
     port: Port,
-    egress: Egress,
+    egress: &Egress,
 ) -> Option<Fingerprinted> {
     fingerprint_udp_on(addr, port, egress, PathAllowance::NONE).await
 }
@@ -798,7 +803,7 @@ pub(crate) async fn fingerprint_udp_via(
 pub(crate) async fn fingerprint_udp_on(
     addr: std::net::SocketAddr,
     port: Port,
-    egress: Egress,
+    egress: &Egress,
     path: PathAllowance,
 ) -> Option<Fingerprinted> {
     fingerprint_udp_within(addr, port, egress, descriptors::PATIENCE, path).await
@@ -809,13 +814,13 @@ pub(crate) async fn fingerprint_udp_on(
 async fn fingerprint_udp_within(
     addr: std::net::SocketAddr,
     mut port: Port,
-    egress: Egress,
+    egress: &Egress,
     patience: Duration,
     path: PathAllowance,
 ) -> Option<Fingerprinted> {
     let responses = match probe_udp(addr, egress, patience, path).await {
         Datagram::Reply(responses) => responses,
-        Datagram::Silent => return None,
+        Datagram::Silent | Datagram::Unasked => return None,
         Datagram::Starved => {
             return Some(Fingerprinted {
                 port,
@@ -879,6 +884,9 @@ enum Datagram<T> {
     /// The process had no socket to ask it with, for as long as it waited
     /// for one, so it was never asked.
     Starved,
+    /// The scan stopped, or the host ran out of its budget, while the
+    /// exchange waited for its slot, so it was never asked.
+    Unasked,
 }
 
 /// Sends this port's registered probes and reads back whatever text a reply
@@ -913,7 +921,7 @@ enum Datagram<T> {
 /// next would ask, and the port has not been asked anything yet.
 async fn probe_udp(
     addr: std::net::SocketAddr,
-    egress: Egress,
+    egress: &Egress,
     patience: Duration,
     path: PathAllowance,
 ) -> Datagram<ResponseSet> {
@@ -930,7 +938,11 @@ async fn probe_udp(
                 }
             }
             Datagram::Silent => {}
+            // Neither the table that refused one socket nor the scan that
+            // stopped, or the budget that ran out, lets the next probe be
+            // asked either.
             Datagram::Starved => return Datagram::Starved,
+            Datagram::Unasked => return Datagram::Unasked,
         }
     }
     Datagram::Silent
@@ -950,14 +962,14 @@ async fn probe_udp(
 ///
 /// Empty when nothing answered or nothing could be read from what did.
 pub async fn probe_udp_with(addr: std::net::SocketAddr, payload: &[u8]) -> Vec<String> {
-    probe_udp_with_via(addr, payload, Egress::KERNEL).await
+    probe_udp_with_via(addr, payload, &Egress::KERNEL).await
 }
 
 /// [`probe_udp_with`], with the datagram leaving by `egress`.
 pub(crate) async fn probe_udp_with_via(
     addr: std::net::SocketAddr,
     payload: &[u8],
-    egress: Egress,
+    egress: &Egress,
 ) -> Vec<String> {
     match probe_udp_raw_via(addr, payload, egress).await {
         Some(reply) => extract::from_datagram(addr.port(), &reply),
@@ -975,14 +987,14 @@ pub(crate) async fn probe_udp_with_via(
 ///
 /// [`None`] when nothing answered.
 pub async fn probe_udp_raw(addr: std::net::SocketAddr, payload: &[u8]) -> Option<Vec<u8>> {
-    probe_udp_raw_via(addr, payload, Egress::KERNEL).await
+    probe_udp_raw_via(addr, payload, &Egress::KERNEL).await
 }
 
 /// [`probe_udp_raw`], with the datagram leaving by `egress`.
 pub(crate) async fn probe_udp_raw_via(
     addr: std::net::SocketAddr,
     payload: &[u8],
-    egress: Egress,
+    egress: &Egress,
 ) -> Option<Vec<u8>> {
     match exchange_datagram(
         addr,
@@ -994,7 +1006,7 @@ pub(crate) async fn probe_udp_raw_via(
     .await
     {
         Datagram::Reply(reply) => Some(reply),
-        Datagram::Silent | Datagram::Starved => None,
+        Datagram::Silent | Datagram::Starved | Datagram::Unasked => None,
     }
 }
 
@@ -1002,19 +1014,38 @@ pub(crate) async fn probe_udp_raw_via(
 /// datagram that comes back, telling a port that said nothing from a process
 /// that had no socket to ask it with, after waiting `patience` for one. The
 /// wait for the reply allows for `path`.
+///
+/// The datagram is one probe, and waits for its slot under the scan's pacing
+/// before its socket is asked for; the wait for the reply starts once it has
+/// left. One the scan stopped, or the host's budget ran out, before its turn
+/// is [`Datagram::Unasked`].
 async fn exchange_datagram(
     addr: std::net::SocketAddr,
     payload: &[u8],
-    egress: Egress,
+    egress: &Egress,
     patience: Duration,
     path: PathAllowance,
 ) -> Datagram<Vec<u8>> {
-    let socket = match egress.udp(addr.ip(), patience).await {
-        Ok(socket) => socket,
-        Err(e) if descriptors::exhausted(&e) => return Datagram::Starved,
-        Err(_) => return Datagram::Silent,
+    let Ok(slot) = egress.slot(addr.ip()).await else {
+        return Datagram::Unasked;
     };
-    if socket.connect(addr).await.is_err() || socket.send(payload).await.is_err() {
+    let socket = match egress.udp(&slot, addr.ip(), patience).await {
+        Ok(socket) => socket,
+        Err(e) if descriptors::exhausted(&e) => {
+            slot.refund();
+            return Datagram::Starved;
+        }
+        Err(_) => {
+            slot.refund();
+            return Datagram::Silent;
+        }
+    };
+    let sent = match socket.connect(addr).await {
+        Ok(()) => socket.send(payload).await.map(drop),
+        Err(e) => Err(e),
+    };
+    slot.settle(&sent);
+    if sent.is_err() {
         return Datagram::Silent;
     }
 
@@ -1049,7 +1080,7 @@ async fn gather(
     mut stream: TcpStream,
     port: u16,
     detection: ServiceDetection,
-    egress: Egress,
+    egress: &Egress,
     name: Option<Arc<str>>,
 ) -> (ResponseSet, Option<Tunnel>) {
     // Identify nothing. Reached only from the unprivileged path, where the
@@ -1176,7 +1207,7 @@ async fn asked_through_tls(
     clear: ResponseSet,
     port: u16,
     peer: &Authority,
-    egress: Egress,
+    egress: &Egress,
 ) -> (ResponseSet, Option<Tunnel>) {
     let Some(stream) = redial(peer.socket(), egress).await else {
         return (clear, None);
@@ -1206,7 +1237,7 @@ async fn asked_through_tls(
 /// fingerprints the port holds one for the whole identification, whose
 /// connections follow one another. A table full for other reasons is waited
 /// out before that timeout starts, not within it; see [`dial_again`].
-async fn redial(socket: SocketAddr, egress: Egress) -> Option<TcpStream> {
+async fn redial(socket: SocketAddr, egress: &Egress) -> Option<TcpStream> {
     dial_again(socket, egress, Some(on_path(CONNECT_RETRY_TIMEOUT)))
         .await
         .ok()
@@ -1223,24 +1254,37 @@ async fn redial(socket: SocketAddr, egress: Egress) -> Option<TcpStream> {
 /// while this still waits on it, the identification is marked starved on the
 /// way out, which is what its caller files: whatever the connection was to
 /// ask went unasked, and raising the limit is the remedy.
+///
+/// The connection is a probe of its own, and waits for its slot under the
+/// scan's pacing before any of that, outside `limit` and the patience alike;
+/// the identification's clocks stand still for the wait, see
+/// [`fingerprint_tcp_via`]. One the scan stopped, or the host's budget ran
+/// out, before its turn is an error and never a connection made.
 async fn dial_again(
     addr: SocketAddr,
-    egress: Egress,
+    egress: &Egress,
     limit: Option<Duration>,
 ) -> std::io::Result<TcpStream> {
+    // The slot first, so neither `limit` nor the patience for a socket is
+    // spent on the scan's gap; the identification's own clocks stand still
+    // for it, see `fingerprint_tcp_via`.
+    let slot = egress.slot(addr.ip()).await?;
     let refused = Refused::default();
-    let refused = &refused;
-    descriptors::patiently(descriptors::patience(), || async move {
+    let (refused, slot_held) = (&refused, &slot);
+    let connected = descriptors::patiently(descriptors::patience(), || async move {
+        let connecting = egress.connect_shaped(slot_held, addr, Shaping::default());
         let attempt = match limit {
-            Some(limit) => timeout(limit, egress.connect_shaped(addr, Shaping::default()))
+            Some(limit) => timeout(limit, connecting)
                 .await
                 .unwrap_or_else(|_elapsed| Err(std::io::ErrorKind::TimedOut.into())),
-            None => egress.connect_shaped(addr, Shaping::default()).await,
+            None => connecting.await,
         };
         refused.saw(&attempt);
         attempt
     })
-    .await
+    .await;
+    slot.settle(&connected);
+    connected
 }
 
 /// Whether the connection [`dial_again`] is making was last refused a socket,
@@ -1328,7 +1372,7 @@ impl Rung {
         port: u16,
         peer: &Authority,
         detection: ServiceDetection,
-        egress: Egress,
+        egress: &Egress,
     ) -> (ResponseSet, Option<Tunnel>) {
         match self {
             Rung::Tls => {
@@ -1372,7 +1416,7 @@ async fn last_resort(
     peer: &Authority,
     port: u16,
     detection: ServiceDetection,
-    egress: Egress,
+    egress: &Egress,
 ) -> ResponseSet {
     let mut probes =
         SignatureDb::global().universal_tcp_probe_payloads(port, detection.probe_intensity());
@@ -1451,7 +1495,7 @@ async fn plaintext(
     mut stream: TcpStream,
     port: u16,
     peer: Option<&Authority>,
-    egress: Egress,
+    egress: &Egress,
 ) -> ResponseSet {
     let db = SignatureDb::global();
     let mut conversations = db.tcp_probe_conversations(port).peekable();
@@ -1546,7 +1590,7 @@ enum GenericReply {
 async fn ask_generically(
     mut stream: TcpStream,
     peer: Option<&Authority>,
-    egress: Egress,
+    egress: &Egress,
 ) -> GenericReply {
     for payload in SignatureDb::global().generic_tcp_probe_payloads() {
         let payload = match peer {
@@ -1659,7 +1703,7 @@ fn redirect_path(response: &str, peer: Option<&Authority>) -> Option<String> {
 ///
 /// Through a handshake of its own where the port is spoken to through TLS,
 /// naming the site the port is asked for as the first did.
-async fn follow_redirect(peer: &Authority, path: &str, egress: Egress) -> Option<String> {
+async fn follow_redirect(peer: &Authority, path: &str, egress: &Egress) -> Option<String> {
     let stream = dial_again(peer.socket(), egress, Some(on_path(CONNECT_RETRY_TIMEOUT)))
         .await
         .ok()?;
@@ -1704,7 +1748,7 @@ where
 async fn with_redirect_followed(
     mut banners: Vec<String>,
     peer: Option<&Authority>,
-    egress: Egress,
+    egress: &Egress,
 ) -> Vec<String> {
     let Some(peer) = peer else {
         return banners;
@@ -1760,7 +1804,7 @@ async fn tunneled(
     handshake: Option<(tls::TlsTunnel, TlsInfo)>,
     port: u16,
     peer: &Authority,
-    egress: Egress,
+    egress: &Egress,
 ) -> (ResponseSet, Option<Tunnel>) {
     let Some((mut tunnel, info)) = handshake else {
         return (ResponseSet::default(), None);
@@ -1811,7 +1855,7 @@ async fn tunneled(
 
 /// A fresh tunnel to a port whose handshake has already completed once, or
 /// `None` where it can no longer be dialled or no longer completes one.
-async fn retunneled(peer: &Authority, egress: Egress) -> Option<tls::TlsTunnel> {
+async fn retunneled(peer: &Authority, egress: &Egress) -> Option<tls::TlsTunnel> {
     let stream = redial(peer.socket(), egress).await?;
     let (tunnel, _) = tls::handshake(stream, peer.server_name()).await?;
     Some(tunnel)
@@ -1996,9 +2040,9 @@ tokio::task_local! {
 /// report to.
 pub(crate) async fn analyzer_connect(addr: SocketAddr) -> std::io::Result<TcpStream> {
     let egress = DIALLING
-        .try_with(|dialling| dialling.egress)
+        .try_with(|dialling| dialling.egress.clone())
         .unwrap_or(Egress::KERNEL);
-    dial_again(addr, egress, None).await
+    dial_again(addr, &egress, None).await
 }
 
 /// The analyzer registry. New evidence sources (HTTP, JARM, SNMP, nerva binary
@@ -2623,7 +2667,7 @@ mod tests {
         });
 
         let stream = TcpStream::connect(addr).await.expect("connects");
-        let _ = plaintext(stream, 51987, Some(&Authority::new(addr)), Egress::KERNEL).await;
+        let _ = plaintext(stream, 51987, Some(&Authority::new(addr)), &Egress::KERNEL).await;
         let request = server.await.expect("the listener finishes");
 
         let host = format!("\r\nHost: [::1]:{}\r\n", addr.port());
@@ -2983,7 +3027,7 @@ mod tests {
         let stream = TcpStream::connect(addr).await.expect("connects");
         let port = baseline_port(443, Protocol::Tcp, PortState::Open);
         let (responses, tunnel) =
-            gather(stream, 443, ServiceDetection::Probe, Egress::KERNEL, None).await;
+            gather(stream, 443, ServiceDetection::Probe, &Egress::KERNEL, None).await;
         server.abort();
         let _ = port;
 
@@ -3242,7 +3286,7 @@ mod tests {
             stream,
             port,
             ServiceDetection::Banner,
-            Egress::KERNEL,
+            &Egress::KERNEL,
             PathAllowance::NONE,
             None,
         )
@@ -3294,7 +3338,7 @@ mod tests {
         });
 
         let stream = TcpStream::connect(addr).await.expect("connects");
-        plaintext(stream, number, None, Egress::KERNEL).await;
+        plaintext(stream, number, None, &Egress::KERNEL).await;
         server.await.expect("the listener finishes")
     }
 
@@ -3366,7 +3410,7 @@ mod tests {
         DIALLING
             .scope(
                 dialling,
-                last_resort(first, &peer, 2222, detection, Egress::KERNEL),
+                last_resort(first, &peer, 2222, detection, &Egress::KERNEL),
             )
             .await;
         server.abort();
@@ -3696,11 +3740,11 @@ mod tests {
 
         let held = refuse_every_descriptor();
         let unasked =
-            fingerprint_udp_within(snmp, port(), Egress::KERNEL, patience, PathAllowance::NONE)
+            fingerprint_udp_within(snmp, port(), &Egress::KERNEL, patience, PathAllowance::NONE)
                 .await;
         drop(held);
         let asked =
-            fingerprint_udp_within(snmp, port(), Egress::KERNEL, patience, PathAllowance::NONE)
+            fingerprint_udp_within(snmp, port(), &Egress::KERNEL, patience, PathAllowance::NONE)
                 .await;
 
         let unasked = unasked.expect("a datagram never sent was read as the port's silence");
@@ -3747,7 +3791,7 @@ mod tests {
         });
 
         let stream = TcpStream::connect(addr).await.expect("connects");
-        let banners = plaintext(stream, 51987, Some(&Authority::new(addr)), Egress::KERNEL)
+        let banners = plaintext(stream, 51987, Some(&Authority::new(addr)), &Egress::KERNEL)
             .await
             .banners;
         let first_open = server.await.expect("the listener finishes");
@@ -3926,7 +3970,7 @@ mod tests {
             stream,
             port,
             ServiceDetection::Probe,
-            Egress::KERNEL,
+            &Egress::KERNEL,
             PathAllowance::NONE,
             Some(Arc::from("box.example")),
         )
@@ -3963,7 +4007,7 @@ mod tests {
             stream,
             port,
             ServiceDetection::Probe,
-            Egress::KERNEL,
+            &Egress::KERNEL,
             PathAllowance::NONE,
             Some(Arc::from("box.example")),
         )
@@ -4087,7 +4131,7 @@ mod tests {
             stream,
             baseline_port(number, Protocol::Tcp, PortState::Open),
             ServiceDetection::Probe,
-            Egress::KERNEL,
+            &Egress::KERNEL,
             PathAllowance::NONE,
             name.map(Arc::from),
         )
@@ -4147,7 +4191,7 @@ mod tests {
             stream,
             baseline_port(443, Protocol::Tcp, PortState::Open),
             ServiceDetection::Probe,
-            Egress::KERNEL,
+            &Egress::KERNEL,
             PathAllowance::NONE,
             None,
         )
@@ -4171,7 +4215,7 @@ mod tests {
             stream,
             baseline_port(443, Protocol::Tcp, PortState::Open),
             ServiceDetection::Probe,
-            Egress::KERNEL,
+            &Egress::KERNEL,
             PathAllowance::NONE,
             Some(Arc::from("box.example")),
         )
@@ -4208,9 +4252,14 @@ mod tests {
         let number = 8080;
         assert!(!SignatureDb::global().tcp_probe_payloads(number).is_empty());
         let stream = TcpStream::connect(clear).await.expect("connects");
-        let banners = plaintext(stream, number, Some(&Authority::new(clear)), Egress::KERNEL)
-            .await
-            .banners;
+        let banners = plaintext(
+            stream,
+            number,
+            Some(&Authority::new(clear)),
+            &Egress::KERNEL,
+        )
+        .await
+        .banners;
         let asked = server.await.expect("the listener finishes");
         assert!(
             asked
@@ -4233,7 +4282,7 @@ mod tests {
             stream,
             baseline_port(443, Protocol::Tcp, PortState::Open),
             ServiceDetection::Probe,
-            Egress::KERNEL,
+            &Egress::KERNEL,
             PathAllowance::NONE,
             Some(Arc::from("box.example")),
         )

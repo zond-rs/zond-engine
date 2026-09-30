@@ -172,6 +172,13 @@ pub enum CapError {
     /// limit, is the caller's.
     #[error("no file descriptor was free for the exchange's socket")]
     OutOfDescriptors,
+    /// The scan stopped, or the host ran out of the time the scan gave it,
+    /// while the exchange waited for its turn under the scan's pacing, so
+    /// nothing was sent. A hard end, for the reason
+    /// [`OutOfDescriptors`](Self::OutOfDescriptors) is one: the port was never
+    /// asked, and nothing the module tries next will be sent either.
+    #[error("the scan stopped, or left the host, before the exchange's turn came")]
+    Withheld,
     /// The exchange timed out. Handed back to the module.
     #[error("the exchange timed out")]
     TimedOut,
@@ -194,6 +201,7 @@ impl CapError {
                 | Self::ConnectionBudgetExhausted
                 | Self::Denied(_)
                 | Self::OutOfDescriptors
+                | Self::Withheld
         )
     }
 }

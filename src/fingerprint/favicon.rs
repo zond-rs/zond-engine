@@ -45,6 +45,7 @@ use super::analyzer::{Analyzer, PortContext};
 use super::authority::Authority;
 use super::model::{Evidence, SourceId, Tunnel};
 use super::response::{Collected, ResponseSet};
+use crate::transport::dial::pacing;
 
 /// How long the whole exchange may take, connect included.
 ///
@@ -110,7 +111,9 @@ impl Analyzer for FaviconAnalyzer {
         };
         // One budget for the whole search, however many requests it takes, so a
         // slow server cannot cost more by declaring its icon than by not.
-        match timeout(super::on_path(FETCH_TIMEOUT), icon_of(&peer, responses)).await {
+        // The scan's gaps before the search's connections are not its time;
+        // see `dial::pacing`.
+        match pacing::timeout(super::on_path(FETCH_TIMEOUT), || icon_of(&peer, responses)).await {
             Ok(Some(icon)) => Collected::from_frames(vec![icon]),
             _ => Collected::default(),
         }

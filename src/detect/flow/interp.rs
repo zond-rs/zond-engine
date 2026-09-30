@@ -66,6 +66,11 @@ pub enum ProbeRefusal {
     /// detection's: the process's descriptor limit is too small for what it
     /// has open, and raising it is the remedy.
     Descriptors,
+    /// The scan stopped, or the host ran out of the time the scan gave it,
+    /// while the exchange waited for its turn under the scan's pacing, so
+    /// nothing was sent. The scan's record says which: the pass it left, or
+    /// the host it left early.
+    Withheld,
 }
 
 /// The one capability a flow reaches the world through: send bytes to the scanned

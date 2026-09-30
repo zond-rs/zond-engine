@@ -816,6 +816,19 @@ async fn fingerprint_one(
     // refine it over the live exchange.
     let port = crate::fingerprint::baseline_port(port_number, protocol, PortState::Open);
 
+    // A TCP port's first connection waits for its slot before anything else,
+    // so the scan's gap holds neither a socket's share nor the connect's own
+    // budget. A scan that stopped, or a host that ran out of its budget,
+    // while it waited leaves the port as the port phase recorded it. A UDP
+    // port's datagrams each wait for theirs as they are sent.
+    let slot = match protocol {
+        Protocol::Tcp => match egress.slot(addr.ip()).await {
+            Ok(slot) => Some(slot),
+            Err(_withheld) => return Attempt::Quiet,
+        },
+        _ => None,
+    };
+
     // One socket's share of the process's budget, held for the whole of the
     // port's identification. Its connections are made one after another, so
     // one share covers them; see `descriptors`.
@@ -824,10 +837,10 @@ async fn fingerprint_one(
         .await
         .expect("the descriptor gate is never closed");
 
-    let (port, about_the_host, banners, identified_in_part) = match protocol {
-        Protocol::Tcp => {
+    let (port, about_the_host, banners, identified_in_part) = match (protocol, slot) {
+        (Protocol::Tcp, Some(slot)) => {
             let within = path.over(CONNECT_PROBE_TIMEOUT);
-            let stream = match egress.connect_timed(addr, within).await {
+            let stream = match egress.connect_timed(slot, addr, within).await {
                 Ok(stream) => stream,
                 Err(e) => {
                     return Attempt::Unreachable {
@@ -838,7 +851,7 @@ async fn fingerprint_one(
                 }
             };
             let identified = crowd
-                .identify(target.clone(), stream, port, detection, egress, path)
+                .identify(target.clone(), stream, port, detection, &egress, path)
                 .await;
             (
                 identified.port,
@@ -851,8 +864,8 @@ async fn fingerprint_one(
         // the scan what it had to. A port the process had no socket to ask
         // was told nothing, and is filed the way a connection refused a
         // socket is.
-        Protocol::Udp => {
-            match crate::fingerprint::fingerprint_udp_on(addr, port, egress, path).await {
+        (Protocol::Udp, _) => {
+            match crate::fingerprint::fingerprint_udp_on(addr, port, &egress, path).await {
                 Some(identified) if identified.starved => {
                     return Attempt::Unreachable {
                         ip: target,
@@ -871,7 +884,7 @@ async fn fingerprint_one(
         }
         // Nothing here speaks SCTP as a client, so an open SCTP port keeps the
         // name the scan gave it rather than being dialled for a banner.
-        Protocol::Sctp => return Attempt::Quiet,
+        (Protocol::Sctp, _) | (Protocol::Tcp, None) => return Attempt::Quiet,
     };
 
     // The key, not the address: this is what the finding is written back
@@ -1114,7 +1127,7 @@ impl Crowd {
         stream: TcpStream,
         port: Port,
         detection: ServiceDetection,
-        egress: Egress,
+        egress: &Egress,
         path: PathAllowance,
     ) -> Fingerprinted {
         let addr = stream.peer_addr().ok();
@@ -1159,7 +1172,7 @@ impl Crowd {
                     addr,
                     port,
                     detection,
-                    egress,
+                    egress: egress.clone(),
                     path,
                     in_part: found.starved,
                 });
@@ -1233,6 +1246,12 @@ impl Crowd {
             {
                 break;
             }
+            // The connection's slot, before its socket's share and its
+            // connect budget; a scan that stopped, or a host that ran out of
+            // its budget, while it waited asks nothing more.
+            let Ok(slot) = egress.slot(addr.ip()).await else {
+                break;
+            };
             // One socket's share, for the connections the identification
             // makes one after another; see `descriptors`.
             let _descriptor = descriptors::gate()
@@ -1241,9 +1260,10 @@ impl Crowd {
                 .expect("the descriptor gate is never closed");
             let number = port.number();
             let name = self.name.clone();
+            let egress = &egress;
             let identified = async {
                 let stream = egress
-                    .connect_timed(addr, path.over(CONNECT_PROBE_TIMEOUT))
+                    .connect_timed(slot, addr, path.over(CONNECT_PROBE_TIMEOUT))
                     .await?;
                 Ok::<_, std::io::Error>(
                     crate::fingerprint::fingerprint_tcp_via(
@@ -1426,7 +1446,7 @@ mod tests {
                     stream,
                     port,
                     ServiceDetection::Banner,
-                    Egress::KERNEL,
+                    &Egress::KERNEL,
                     PathAllowance::NONE,
                 )
                 .await;
@@ -2196,7 +2216,7 @@ mod tests {
                 stream,
                 port,
                 ServiceDetection::default(),
-                Egress::KERNEL,
+                &Egress::KERNEL,
                 PathAllowance::NONE,
             )
             .await;
@@ -2440,7 +2460,7 @@ mod tests {
                 TcpStream::connect(addr).await.unwrap(),
                 crate::fingerprint::baseline_port(addr.port(), Protocol::Tcp, PortState::Open),
                 ServiceDetection::Banner,
-                Egress::KERNEL,
+                &Egress::KERNEL,
                 PathAllowance::NONE,
             )
             .await;
@@ -2479,7 +2499,7 @@ mod tests {
                         stream,
                         baseline,
                         ServiceDetection::default(),
-                        Egress::KERNEL,
+                        &Egress::KERNEL,
                         PathAllowance::NONE,
                     )
                     .await

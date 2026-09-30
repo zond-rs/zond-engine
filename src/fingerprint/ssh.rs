@@ -45,12 +45,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::time::timeout;
 
 use super::analyzer::{Analyzer, PortContext};
 use super::model::{Evidence, SourceId};
 use super::response::{Collected, ResponseSet};
 use crate::model::confidence::Confidence;
+use crate::transport::dial::pacing;
 
 /// Ports where an SSH server is expected, and thus worth an active probe.
 const SSH_PORTS: &[u16] = &[22, 2222];
@@ -160,7 +160,9 @@ impl Analyzer for SshAnalyzer {
         let Some(addr) = ctx.addr else {
             return Collected::default();
         };
-        match timeout(super::on_path(EXCHANGE_TIMEOUT), kexinit_exchange(addr)).await {
+        // The scan's gap before the connection is not the exchange's time;
+        // see `dial::pacing`.
+        match pacing::timeout(super::on_path(EXCHANGE_TIMEOUT), || kexinit_exchange(addr)).await {
             Ok(Some(packet)) => Collected::from_frames(vec![packet]),
             _ => Collected::default(),
         }

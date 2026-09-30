@@ -70,6 +70,7 @@
 //! the registry would cost.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -84,7 +85,7 @@ use crate::model::tls::{
 };
 use crate::protocols::tls::{self, Offer, RECORD_HEADER_LEN, ServerResponse};
 use crate::system::descriptors;
-use crate::transport::dial::{Egress, Shaping};
+use crate::transport::dial::{Egress, Shaping, pacing};
 use crate::{info, warn};
 
 /// The most offers put to one endpoint under one version.
@@ -147,7 +148,7 @@ const RETRY_PAUSES: [Duration; 2] = [Duration::from_millis(250), Duration::from_
 /// Every connection goes where the routing table sends it. A scan forced to a
 /// source enumerates through the same walk with its connections pinned there.
 pub async fn enumerate_tls(addr: SocketAddr) -> TlsSupport {
-    enumerate_tls_while(addr, None, Egress::KERNEL, || true).await
+    enumerate_tls_while(addr, None, &Egress::KERNEL, || true).await
 }
 
 /// [`enumerate_tls`], asking for `addr` by `name`, the host name its address
@@ -161,7 +162,7 @@ pub async fn enumerate_tls(addr: SocketAddr) -> TlsSupport {
 /// walk is the one [`enumerate_tls`] makes.
 pub async fn enumerate_tls_named(addr: SocketAddr, name: &str) -> TlsSupport {
     let server_name = Authority::new(addr).named(Some(Arc::from(name))).sni();
-    enumerate_tls_while(addr, server_name.as_deref(), Egress::KERNEL, || true).await
+    enumerate_tls_while(addr, server_name.as_deref(), &Egress::KERNEL, || true).await
 }
 
 /// [`enumerate_tls`], asking `may_probe` before every connection and ending
@@ -181,7 +182,7 @@ pub async fn enumerate_tls_named(addr: SocketAddr, name: &str) -> TlsSupport {
 pub(crate) async fn enumerate_tls_while(
     addr: SocketAddr,
     server_name: Option<&str>,
-    egress: Egress,
+    egress: &Egress,
     may_probe: impl Fn() -> bool,
 ) -> TlsSupport {
     let may_probe = &may_probe;
@@ -222,7 +223,7 @@ pub(crate) async fn enumerate_tls_while(
 async fn walk(
     addr: SocketAddr,
     server_name: Option<&str>,
-    egress: Egress,
+    egress: &Egress,
     version: TlsVersion,
     control: &OnceLock<Control>,
     may_probe: &impl Fn() -> bool,
@@ -401,7 +402,7 @@ enum Answer {
 /// is this machine's, so a pause says nothing more about the endpoint.
 async fn ask(
     addr: SocketAddr,
-    egress: Egress,
+    egress: &Egress,
     offer: &Offer<'_>,
     control: &OnceLock<Control>,
     may_probe: &impl Fn() -> bool,
@@ -438,12 +439,14 @@ async fn ask(
                 match exchange(addr, egress, &control.offer(offer.server_name), patience).await {
                     Exchange::Answered(ServerResponse::Hello { .. }) => return Answer::Declined,
                     Exchange::Starved => return Answer::Interrupted(Interruption::FileLimit),
+                    Exchange::Unasked => return Answer::Interrupted(Interruption::Stopped),
                     _ => {}
                 }
             }
             Exchange::HungUp => hung_up = true,
             Exchange::Lost => {}
             Exchange::Starved => return Answer::Interrupted(Interruption::FileLimit),
+            Exchange::Unasked => return Answer::Interrupted(Interruption::Stopped),
         }
 
         let Some(pause) = pauses.next() else {
@@ -470,6 +473,9 @@ enum Exchange {
     /// No question was put because the process had no socket to put it on,
     /// for as long as the offer would wait for one.
     Starved,
+    /// No question was put because the scan stopped, or the host ran out of
+    /// its budget, while the offer waited for its slot.
+    Unasked,
 }
 
 /// One offer: connect, send the hello, read the first record back, hang up.
@@ -485,33 +491,45 @@ enum Exchange {
 /// [`Exchange::Starved`] rather than an offer lost on the endpoint's account.
 async fn exchange(
     addr: SocketAddr,
-    egress: Egress,
+    egress: &Egress,
     offer: &Offer<'_>,
     patience: Duration,
 ) -> Exchange {
     let hello = tls::client_hello(offer);
 
-    // The five versions' walks each hold a connection at once, so each offer
-    // takes its own share of the process's descriptor budget. Taken before the
-    // offer's clock starts, so a queue for a socket is never read as an
-    // endpoint that did not answer.
+    // The offer's slot first, and then its share of the process's descriptor
+    // budget, since the five versions' walks each hold a connection at once.
+    // Both are taken before the offer's clock starts, so neither the scan's
+    // gap nor a queue for a socket is ever read as an endpoint that did not
+    // answer.
+    let Ok(slot) = egress.slot(addr.ip()).await else {
+        return Exchange::Unasked;
+    };
     let _descriptor = descriptors::gate()
         .acquire()
         .await
         .expect("the descriptor gate is never closed");
 
-    let hello = &hello;
+    let (hello, slot_held) = (&hello, &slot);
+    // Whether the last attempt's connect was refused before anything left,
+    // which gives the slot back.
+    let unsent = &AtomicBool::new(false);
     let exchanged = descriptors::patiently(patience, || async move {
         timeout(EXCHANGE_TIMEOUT, async {
             let connected = timeout(
                 CONNECT_PROBE_TIMEOUT,
-                egress.connect_shaped(addr, Shaping::default()),
+                egress.connect_shaped(slot_held, addr, Shaping::default()),
             )
             .await;
+            unsent.store(false, Ordering::Relaxed);
             let mut stream = match connected {
                 Ok(Ok(stream)) => stream,
                 Ok(Err(e)) if descriptors::exhausted(&e) => return Err(e),
-                _ => return Ok(Exchange::Lost),
+                Ok(Err(e)) => {
+                    unsent.store(pacing::never_left(&e), Ordering::Relaxed);
+                    return Ok(Exchange::Lost);
+                }
+                Err(_elapsed) => return Ok(Exchange::Lost),
             };
             if stream.write_all(hello).await.is_err() {
                 return Ok(Exchange::Lost);
@@ -535,6 +553,11 @@ async fn exchange(
     .await;
     // Only a refusal of a socket comes back as an error, and only once
     // `patience` has passed.
+    match exchanged {
+        Ok(_) if unsent.load(Ordering::Relaxed) => slot.refund(),
+        Ok(_) => drop(slot),
+        Err(_) => slot.refund(),
+    }
     exchanged.unwrap_or(Exchange::Starved)
 }
 
@@ -1168,7 +1191,7 @@ mod tests {
 
         let answer = ask(
             addr,
-            Egress::KERNEL,
+            &Egress::KERNEL,
             &offer,
             &OnceLock::new(),
             &|| true,

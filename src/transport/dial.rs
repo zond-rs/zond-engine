@@ -16,7 +16,7 @@
 //! and SNMP agents.
 //!
 //! One place because what a socket has to carry before it connects is not a
-//! property of the caller, and there are two such things.
+//! property of the caller, and there are three such things.
 //!
 //! **Where it leaves from.** A scan forced to a source, to leave by a LAN
 //! interface when a VPN holds the default route, has its raw probes sent from
@@ -32,7 +32,12 @@
 //! before the connect, whoever is connecting and whatever it wants to learn;
 //! see `dial/syn_retries.rs`, compiled for Windows and for the tests only.
 //!
-//! A third thing is not the caller's either: a socket refused because the
+//! **When it may leave.** A scan that keeps a gap between its probes keeps it
+//! between these too: every socket here is opened with the [`Slot`] one probe
+//! was given, which the scan's egress hands out only once the gap allows, so a
+//! pass cannot dial a target without asking. See [`pacing`].
+//!
+//! Another thing is not the caller's either: a socket refused because the
 //! process's descriptor table is full says nothing about the target, so it is
 //! asked for again for a while rather than handed back as the connection's
 //! outcome; see [`descriptors`]. How many sockets a scan holds at once is not
@@ -80,6 +85,9 @@ pub(crate) use allowance::PathAllowance;
 #[cfg(test)]
 pub(crate) use allowance::UNMEASURED_PATH_WAIT;
 
+pub(crate) mod pacing;
+pub(crate) use pacing::Slot;
+
 /// How many TCP connections this process has begun to each destination, for
 /// a test that has to know a pass asked a port nothing.
 ///
@@ -96,17 +104,38 @@ pub(crate) mod dialled {
     use std::collections::HashMap;
     use std::net::SocketAddr;
     use std::sync::{LazyLock, Mutex};
+    use std::time::Instant;
 
-    static DIALLED: LazyLock<Mutex<HashMap<SocketAddr, usize>>> = LazyLock::new(Mutex::default);
+    /// When each connection to an address was begun, in order.
+    static DIALLED: LazyLock<Mutex<HashMap<SocketAddr, Vec<Instant>>>> =
+        LazyLock::new(Mutex::default);
 
-    /// Counts a connection begun to `addr`.
+    /// Counts a connection begun to `addr`, now.
     pub(super) fn note(addr: SocketAddr) {
-        *DIALLED.lock().unwrap().entry(addr).or_default() += 1;
+        DIALLED
+            .lock()
+            .unwrap()
+            .entry(addr)
+            .or_default()
+            .push(Instant::now());
     }
 
     /// How many connections this process has begun to `addr`.
     pub(crate) fn to(addr: SocketAddr) -> usize {
-        DIALLED.lock().unwrap().get(&addr).copied().unwrap_or(0)
+        DIALLED.lock().unwrap().get(&addr).map_or(0, Vec::len)
+    }
+
+    /// When this process began each of its connections to `addr`, for a test
+    /// that has to know how far apart they left. Read here rather than off an
+    /// accept, which a connection closed the moment it completed may never
+    /// reach as this process's.
+    pub(crate) fn times(addr: SocketAddr) -> Vec<Instant> {
+        DIALLED
+            .lock()
+            .unwrap()
+            .get(&addr)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The error each connection begun to an address is refused with, and
@@ -252,7 +281,10 @@ impl ForcedSources {
         if reached_directly {
             return Egress::KERNEL;
         }
-        Egress { pin: Some(*pin) }
+        Egress {
+            pin: Some(*pin),
+            gate: None,
+        }
     }
 }
 
@@ -269,11 +301,19 @@ impl ForcedSources {
 /// link's routes alone, which finds the LAN's own gateway: a VPN that takes
 /// the default route over leaves that one beneath its own.
 ///
-/// Copied into every phase that dials, so the choice made once for a
+/// Cloned into every phase that dials, so the choice made once for a
 /// destination travels with it to every connection made there.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// It carries the scan's pacing too, where the scan keeps a gap between its
+/// probes: every socket method here takes the [`Slot`] one probe was given,
+/// which only [`slot`](Self::slot) hands out, and a scan's egress hands one
+/// out only once its gate lets the probe leave. See [`pacing`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Egress {
     pin: Option<Pin>,
+    /// The scan whose gaps this egress's probes keep, or `None` for a scan
+    /// that keeps none and for a connection made outside a scan.
+    gate: Option<pacing::Gate>,
 }
 
 /// A forced source, and the interface that holds it.
@@ -287,17 +327,31 @@ struct Pin {
 }
 
 impl Egress {
-    /// Wherever the routing table sends it.
-    pub(crate) const KERNEL: Self = Self { pin: None };
+    /// Wherever the routing table sends it, and whenever the caller likes.
+    pub(crate) const KERNEL: Self = Self {
+        pin: None,
+        gate: None,
+    };
 
-    /// Connects to `addr`, waiting out a full descriptor table first, and
-    /// giving the connection itself `timeout`.
+    /// The same egress, its probes held to the gaps `gate` keeps between
+    /// them, or to none where there is no gate.
+    ///
+    /// A scan that keeps no gap gives none, and then its slots are free.
+    pub(crate) fn paced_by(mut self, gate: Option<pacing::Gate>) -> Self {
+        self.gate = gate;
+        self
+    }
+
+    /// Connects to `addr` for the probe `slot` was given, waiting out a full
+    /// descriptor table first, and giving the connection itself `timeout`.
     ///
     /// A socket refused because the process holds too many is asked for again
     /// for up to [`descriptors::patience`] rather than returned as a failed
     /// connection, which a caller would read as something the target did; see
     /// [`descriptors::patiently`]. Past that the refusal is returned, and
-    /// [`descriptors::exhausted`] names it.
+    /// [`descriptors::exhausted`] names it. Every attempt is the one probe,
+    /// since none before the last left this machine, and the slot is given
+    /// back where the last did not either; see [`Slot::settle`].
     ///
     /// The budget is the connection's and not the wait's: each attempt is
     /// timed on its own, and one refused a socket is refused before its clock
@@ -306,35 +360,49 @@ impl Egress {
     /// first and the budget running out being the same outcome, a SYN out and
     /// nothing back.
     pub(crate) async fn connect_timed(
-        self,
+        &self,
+        slot: Slot,
         addr: SocketAddr,
         timeout: Duration,
     ) -> io::Result<TcpStream> {
-        descriptors::patiently(descriptors::patience(), || async move {
-            tokio::time::timeout(timeout, self.connect_shaped(addr, Shaping::default()))
+        debug_assert!(slot.is_for(addr.ip()), "a slot claimed for another host");
+        let connected = descriptors::patiently(descriptors::patience(), || async move {
+            tokio::time::timeout(timeout, self.connect_once(addr, Shaping::default()))
                 .await
                 .unwrap_or_else(|_elapsed| Err(io::ErrorKind::TimedOut.into()))
         })
-        .await
+        .await;
+        slot.settle(&connected);
+        connected
     }
 
-    /// Connects to `addr` once, honouring `shaping`.
+    /// Connects to `addr` once, honouring `shaping`, for the probe `slot` was
+    /// given.
     ///
-    /// One attempt, a refusal of a socket included, for the connect scanner,
-    /// which waits out a full table itself because it gives its descriptor back
-    /// between attempts and answers to the scan's stop while it waits, and for
-    /// a caller that has to know which of its attempts a full table refused.
-    /// Every other caller takes [`connect_timed`](Self::connect_timed).
+    /// One attempt, a refusal of a socket included, for a caller that waits
+    /// out a full table itself, or has to know which of its attempts a full
+    /// table refused. The slot stays the caller's, since a refusal of a
+    /// socket leaves the probe unsent and the next attempt is the same probe;
+    /// the caller settles it with the outcome of the last. Every other caller
+    /// takes [`connect_timed`](Self::connect_timed).
     ///
     /// Unpinned, unshaped and on Unix this is exactly [`TcpStream::connect`],
     /// so a connection that chose nothing sends the SYN it always would, byte
     /// for byte. Windows needs an option on every TCP socket before it
     /// connects, so there the socket is always built.
     pub(crate) async fn connect_shaped(
-        self,
+        &self,
+        slot: &Slot,
         addr: SocketAddr,
         shaping: Shaping,
     ) -> io::Result<TcpStream> {
+        debug_assert!(slot.is_for(addr.ip()), "a slot claimed for another host");
+        self.connect_once(addr, shaping).await
+    }
+
+    /// [`connect_shaped`](Self::connect_shaped), for a caller in this module
+    /// that holds the slot itself.
+    async fn connect_once(&self, addr: SocketAddr, shaping: Shaping) -> io::Result<TcpStream> {
         #[cfg(test)]
         dialled::note(addr);
         if self.tcp_is_plain(shaping) {
@@ -368,11 +436,16 @@ impl Egress {
     /// A connect that met itself is refused here on the platforms that refuse
     /// one outright, and comes back from [`Connecting::finish`] on the ones
     /// that complete it; [`met_itself`] names it either way.
+    ///
+    /// The slot stays the caller's, as [`connect_shaped`](Self::connect_shaped)'s
+    /// does, and every error here is one that spends none.
     pub(crate) fn start_connect(
-        self,
+        &self,
+        slot: &Slot,
         addr: SocketAddr,
         shaping: Shaping,
     ) -> io::Result<Connecting> {
+        debug_assert!(slot.is_for(addr.ip()), "a slot claimed for another host");
         #[cfg(test)]
         {
             dialled::note(addr);
@@ -435,23 +508,26 @@ impl Egress {
         })
     }
 
-    /// Connects to `addr` on the calling thread, giving the connection
-    /// `timeout` and a full descriptor table `patience`.
+    /// Connects to `addr` on the calling thread for the probe `slot` was
+    /// given, giving the connection `timeout` and a full descriptor table
+    /// `patience`.
     ///
     /// For a caller that holds a blocking socket, which is a detection running
     /// on the blocking pool. The same socket [`connect_timed`](Self::connect_timed) would
     /// build, connected the way [`std::net::TcpStream::connect_timeout`]
-    /// connects one, and a full descriptor table waited out the same way
-    /// before it, outside `timeout`. The patience is the caller's, because a
-    /// detection's exchange has a clock of its own that a wait for a socket
-    /// cannot outlast.
+    /// connects one, a full descriptor table waited out the same way before
+    /// it, outside `timeout`, and the slot settled the same way after. The
+    /// patience is the caller's, because a detection's exchange has a clock of
+    /// its own that a wait for a socket cannot outlast.
     pub(crate) fn connect_within(
-        self,
+        &self,
+        slot: Slot,
         addr: SocketAddr,
         timeout: Duration,
         patience: Duration,
     ) -> io::Result<std::net::TcpStream> {
-        descriptors::patiently_blocking(patience, || {
+        debug_assert!(slot.is_for(addr.ip()), "a slot claimed for another host");
+        let connected = descriptors::patiently_blocking(patience, || {
             #[cfg(test)]
             dialled::note(addr);
             if self.tcp_is_plain(Shaping::default()) {
@@ -460,43 +536,66 @@ impl Egress {
             let socket = self.socket(addr.ip(), Protocol::Tcp, Shaping::default())?;
             socket.connect_timeout(&addr.into(), timeout)?;
             Ok(socket.into())
-        })
+        });
+        slot.settle(&connected);
+        connected
     }
 
-    /// A UDP socket bound for `peer`, ready to be connected to it, with a full
-    /// descriptor table waited out for `patience`, as
-    /// [`connect_timed`](Self::connect_timed) waits it out for
+    /// A UDP socket bound for `peer`, ready to be connected to it, for the
+    /// exchange `slot` was given, with a full descriptor table waited out for
+    /// `patience`, as [`connect_timed`](Self::connect_timed) waits it out for
     /// [`PATIENCE`](descriptors::PATIENCE).
-    pub(crate) async fn udp(self, peer: IpAddr, patience: Duration) -> io::Result<UdpSocket> {
-        descriptors::patiently(patience, || self.udp_shaped(peer, Shaping::default())).await
+    ///
+    /// The slot stays the caller's: the probe leaves with the first datagram
+    /// sent on the socket, which is the caller's to send, and a socket this
+    /// machine refused, or a send it did, is the caller's to settle.
+    pub(crate) async fn udp(
+        &self,
+        slot: &Slot,
+        peer: IpAddr,
+        patience: Duration,
+    ) -> io::Result<UdpSocket> {
+        descriptors::patiently(patience, || {
+            std::future::ready(self.udp_shaped(slot, peer, Shaping::default()))
+        })
+        .await
     }
 
     /// A UDP socket bound for `peer` and honouring `shaping`, ready to be
-    /// connected to it.
+    /// connected to it, for the exchange `slot` was given.
     ///
     /// One attempt, for the connect scanner's own wait; see
     /// [`connect_shaped`](Self::connect_shaped).
     ///
     /// Unpinned and unshaped, this is the plain ephemeral bind. Otherwise the
     /// socket carries its pin, the chosen hop limit, and the chosen source port
-    /// or an ephemeral one.
-    pub(crate) async fn udp_shaped(self, peer: IpAddr, shaping: Shaping) -> io::Result<UdpSocket> {
-        if self.pin.is_none() && !shaping.is_active() {
-            return UdpSocket::bind(wildcard(peer, 0)).await;
-        }
-        let socket = self.socket(peer, Protocol::Udp, shaping)?;
+    /// or an ephemeral one. Bound on the calling task, which a bind never
+    /// waits on, and handed to the runtime it is called on.
+    pub(crate) fn udp_shaped(
+        &self,
+        slot: &Slot,
+        peer: IpAddr,
+        shaping: Shaping,
+    ) -> io::Result<UdpSocket> {
+        debug_assert!(slot.is_for(peer), "a slot claimed for another host");
+        let socket = match self.pin.is_none() && !shaping.is_active() {
+            true => std::net::UdpSocket::bind(wildcard(peer, 0))?,
+            false => self.socket(peer, Protocol::Udp, shaping)?.into(),
+        };
         socket.set_nonblocking(true)?;
-        UdpSocket::from_std(std::net::UdpSocket::from(socket))
+        UdpSocket::from_std(socket)
     }
 
     /// [`udp`](Self::udp), for a caller holding a blocking socket, waiting
     /// out a full descriptor table for `patience`; see
     /// [`connect_within`](Self::connect_within).
     pub(crate) fn udp_blocking(
-        self,
+        &self,
+        slot: &Slot,
         peer: IpAddr,
         patience: Duration,
     ) -> io::Result<std::net::UdpSocket> {
+        debug_assert!(slot.is_for(peer), "a slot claimed for another host");
         descriptors::patiently_blocking(patience, || {
             if self.pin.is_none() {
                 return std::net::UdpSocket::bind(wildcard(peer, 0));
@@ -511,7 +610,7 @@ impl Egress {
     ///
     /// Never on Windows, where every TCP socket carries the SYN retransmission
     /// limit.
-    fn tcp_is_plain(self, shaping: Shaping) -> bool {
+    fn tcp_is_plain(&self, shaping: Shaping) -> bool {
         self.pin.is_none() && !shaping.is_active() && cfg!(not(windows))
     }
 
@@ -529,7 +628,7 @@ impl Egress {
     /// scan runs at once each bind one pinned source port: every one still
     /// carries a distinct four-tuple through its destination, so the kernel
     /// keeps their replies apart.
-    fn socket(self, target: IpAddr, protocol: Protocol, shaping: Shaping) -> io::Result<Socket> {
+    fn socket(&self, target: IpAddr, protocol: Protocol, shaping: Shaping) -> io::Result<Socket> {
         let domain = match target {
             IpAddr::V4(_) => Domain::IPV4,
             IpAddr::V6(_) => Domain::IPV6,
@@ -815,7 +914,7 @@ mod tests {
         );
 
         let connected = Egress::KERNEL
-            .connect_timed(addr, Duration::from_secs(30))
+            .connect_timed(Slot::unpaced(), addr, Duration::from_secs(30))
             .await
             .expect("connects to loopback");
         drop(connected);
@@ -867,6 +966,7 @@ mod tests {
                 source: v4(192, 0, 2, 10),
                 interface: NonZeroU32::new(2),
             }),
+            gate: None,
         };
         assert!(
             !pinned.tcp_is_plain(Shaping::default()),
@@ -901,7 +1001,7 @@ mod tests {
             std::io::Result::Ok((accepted, peer))
         });
         let stream = Egress::KERNEL
-            .connect_shaped(addr, shaping)
+            .connect_shaped(&Slot::unpaced(), addr, shaping)
             .await
             .expect("the shaped connect completes");
         let (_accepted, peer) = accept
@@ -940,8 +1040,7 @@ mod tests {
             hop_limit: None,
         };
         let socket = Egress::KERNEL
-            .udp_shaped(IpAddr::V4(Ipv4Addr::LOCALHOST), shaping)
-            .await
+            .udp_shaped(&Slot::unpaced(), IpAddr::V4(Ipv4Addr::LOCALHOST), shaping)
             .expect("a shaped UDP socket");
         socket
             .connect(server_addr)
@@ -972,7 +1071,12 @@ mod tests {
             let listener = std::net::TcpListener::bind((ip, 0)).expect("a loopback listener");
             let addr = listener.local_addr().expect("its address");
             let stream = Egress::KERNEL
-                .connect_within(addr, Duration::from_secs(1), descriptors::PATIENCE)
+                .connect_within(
+                    Slot::unpaced(),
+                    addr,
+                    Duration::from_secs(1),
+                    descriptors::PATIENCE,
+                )
                 .expect("the connect completes");
             assert_eq!(stream.peer_addr().expect("a peer"), addr, "{ip}");
         }
@@ -992,6 +1096,7 @@ mod tests {
                 source,
                 interface: NonZeroU32::new(interface),
             }),
+            gate: None,
         }
     }
 
@@ -1031,7 +1136,7 @@ mod tests {
         let lan_v6 = pinned(v6("2001:db8:1::10"), 2);
 
         for (target, expected, why) in [
-            (v4(198, 18, 0, 1), lan_v4, "a routed target"),
+            (v4(198, 18, 0, 1), lan_v4.clone(), "a routed target"),
             (v6("2001:db8:ffff::1"), lan_v6, "a routed IPv6 target"),
             (
                 v4(203, 0, 113, 50),
@@ -1155,7 +1260,11 @@ mod tests {
 
         assert!(
             egress
-                .connect_timed(addr, crate::config::limits::CONNECT_PROBE_TIMEOUT)
+                .connect_timed(
+                    Slot::unpaced(),
+                    addr,
+                    crate::config::limits::CONNECT_PROBE_TIMEOUT
+                )
                 .await
                 .is_err(),
             "a connection forced to an address this host does not hold went out anyway"
@@ -1215,11 +1324,11 @@ mod tests {
         });
         let within = crate::config::limits::CONNECT_PROBE_TIMEOUT;
         let pinned = egress
-            .connect_timed(addr, within)
+            .connect_timed(Slot::unpaced(), addr, within)
             .await
             .expect("the pinned connect");
         let plain = Egress::KERNEL
-            .connect_timed(addr, within)
+            .connect_timed(Slot::unpaced(), addr, within)
             .await
             .expect("the plain connect");
         let (first, second) = accept.await.expect("the accept task joins");
@@ -1257,7 +1366,7 @@ mod tests {
         let server = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP server");
         let server_addr = server.local_addr().expect("its address");
         let socket = egress
-            .udp(server_addr.ip(), descriptors::PATIENCE)
+            .udp(&Slot::unpaced(), server_addr.ip(), descriptors::PATIENCE)
             .await
             .expect("a pinned socket");
         socket
@@ -1283,7 +1392,12 @@ mod tests {
             std::io::Result::Ok((accepted, peer))
         });
         let _stream = egress
-            .connect_within(addr, Duration::from_secs(1), descriptors::PATIENCE)
+            .connect_within(
+                Slot::unpaced(),
+                addr,
+                Duration::from_secs(1),
+                descriptors::PATIENCE,
+            )
             .expect("the blocking connect");
         let (_accepted, from) = handle.join().expect("the accept joins").expect("an accept");
         assert_eq!(from.ip(), source, "the blocking connection's source");

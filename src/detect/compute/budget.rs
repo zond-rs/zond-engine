@@ -179,6 +179,11 @@ pub enum RunOutcome {
     /// neither the module's nor the port's, and raising the process's file
     /// limit is its remedy.
     OutOfDescriptors,
+    /// The scan stopped, or the host ran out of the time the scan gave it,
+    /// while one of the module's exchanges waited for its turn under the
+    /// scan's pacing, so a question went unasked. The scan's record says
+    /// which: the pass it left, or the host it left early.
+    Withheld,
     /// The module broke.
     Faulted(ModuleFault),
     /// A [`Capabilities`](super::Capabilities) implementation re-entered the

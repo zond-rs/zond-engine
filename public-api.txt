@@ -830,6 +830,7 @@ pub zond_engine::detect::compute::CapError::Denied(alloc::string::String)
 pub zond_engine::detect::compute::CapError::OutOfDescriptors
 pub zond_engine::detect::compute::CapError::Reset
 pub zond_engine::detect::compute::CapError::TimedOut
+pub zond_engine::detect::compute::CapError::Withheld
 impl core::clone::Clone for zond_engine::detect::compute::CapError
 pub fn zond_engine::detect::compute::CapError::clone(&self) -> zond_engine::detect::compute::CapError
 impl core::cmp::Eq for zond_engine::detect::compute::CapError
@@ -966,6 +967,7 @@ pub zond_engine::detect::compute::RunOutcome::Denied(zond_engine::detect::comput
 pub zond_engine::detect::compute::RunOutcome::Faulted(zond_engine::detect::compute::ModuleFault)
 pub zond_engine::detect::compute::RunOutcome::HostReentered
 pub zond_engine::detect::compute::RunOutcome::OutOfDescriptors
+pub zond_engine::detect::compute::RunOutcome::Withheld
 impl core::clone::Clone for zond_engine::detect::compute::RunOutcome
 pub fn zond_engine::detect::compute::RunOutcome::clone(&self) -> zond_engine::detect::compute::RunOutcome
 impl core::cmp::Eq for zond_engine::detect::compute::RunOutcome
@@ -1663,6 +1665,7 @@ pub zond_engine::detect::flow::ProbeRefusal::Bytes
 pub zond_engine::detect::flow::ProbeRefusal::Connections
 pub zond_engine::detect::flow::ProbeRefusal::Deadline
 pub zond_engine::detect::flow::ProbeRefusal::Descriptors
+pub zond_engine::detect::flow::ProbeRefusal::Withheld
 impl core::clone::Clone for zond_engine::detect::flow::ProbeRefusal
 pub fn zond_engine::detect::flow::ProbeRefusal::clone(&self) -> zond_engine::detect::flow::ProbeRefusal
 impl core::cmp::Eq for zond_engine::detect::flow::ProbeRefusal

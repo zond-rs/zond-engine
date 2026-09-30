@@ -161,13 +161,30 @@ impl Capabilities for LiveCapabilities {
         if self.connections_left == 0 {
             return Err(CapError::ConnectionBudgetExhausted);
         }
-        let Some(left) = exchange::remaining(self.deadline) else {
+        if exchange::remaining(self.deadline).is_none() {
             return Err(CapError::TimedOut);
-        };
+        }
         let sent = bytes.len() as u64;
         if sent > self.bytes_left {
             return Err(CapError::ByteBudgetExhausted);
         }
+        if self.protocol == Protocol::Sctp {
+            return Err(CapError::Denied(
+                "a detection cannot speak to an SCTP port: the engine scans SCTP without a client \
+                 stack to hold an association open"
+                    .to_string(),
+            ));
+        }
+        // The exchange's slot under the scan's pacing, once every budget has
+        // said it may go. The wait is the scan's, and moves the run's deadline
+        // by as much; the runtime's own clock reads the same wait off the
+        // thread, see `held_here`.
+        let (slot, waited) = exchange::slot(&self.egress, self.peer.socket().ip())?;
+        self.deadline += waited;
+        let Some(left) = exchange::remaining(self.deadline) else {
+            slot.refund();
+            return Err(CapError::TimedOut);
+        };
         self.bytes_left -= sent;
         // The datagram's wait is a share of the time left among the datagrams
         // the budget still permits, this one counted in before it is spent.
@@ -178,7 +195,8 @@ impl Capabilities for LiveCapabilities {
         let reply = match self.protocol {
             Protocol::Tcp => exchange::tcp(
                 &self.peer,
-                self.egress,
+                &self.egress,
+                slot,
                 self.tunnel,
                 bytes,
                 self.deadline,
@@ -194,17 +212,14 @@ impl Capabilities for LiveCapabilities {
             // reaches the last. See [`datagram_deadline`](Self::datagram_deadline).
             Protocol::Udp => exchange::udp(
                 self.peer.socket(),
-                self.egress,
+                &self.egress,
+                slot,
                 bytes,
                 datagram_until,
                 self.bytes_left,
             )
             .map_err(CapError::from),
-            Protocol::Sctp => Err(CapError::Denied(
-                "a detection cannot speak to an SCTP port: the engine scans SCTP without a client \
-                 stack to hold an association open"
-                    .to_string(),
-            )),
+            Protocol::Sctp => unreachable!("an SCTP port is refused before its slot"),
         }?
         .bytes;
         self.bytes_left -= reply.len() as u64;
@@ -235,6 +250,7 @@ impl From<ExchangeError> for CapError {
             ExchangeError::ConnectionRefused => CapError::ConnectionRefused,
             ExchangeError::Reset => CapError::Reset,
             ExchangeError::Starved => CapError::OutOfDescriptors,
+            ExchangeError::Withheld => CapError::Withheld,
         }
     }
 }

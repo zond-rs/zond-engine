@@ -207,15 +207,40 @@ impl Probe for SocketProbe {
             self.last_refusal = Some(ProbeRefusal::Connections);
             return None;
         }
-        let Some(left) = exchange::remaining(self.deadline) else {
+        if exchange::remaining(self.deadline).is_none() {
             self.last_refusal = Some(ProbeRefusal::Deadline);
             return None;
-        };
+        }
         let sent = bytes.len() as u64;
         if sent > self.bytes_left {
             self.last_refusal = Some(ProbeRefusal::Bytes);
             return None;
         }
+        // An SCTP port is scanned without a client stack, so there is nothing
+        // here for a detection to hold a conversation over, and no probe to
+        // pace.
+        if self.protocol == Protocol::Sctp {
+            return None;
+        }
+        // The exchange's slot under the scan's pacing, once every budget has
+        // said it may go. The wait is the scan's, and moves the flow's
+        // deadline by as much, so the time the flow has for the port is what
+        // it was given.
+        let slot = match exchange::slot(&self.egress, self.peer.socket().ip()) {
+            Ok((slot, waited)) => {
+                self.deadline += waited;
+                slot
+            }
+            Err(_withheld) => {
+                self.last_refusal = Some(ProbeRefusal::Withheld);
+                return None;
+            }
+        };
+        let Some(left) = exchange::remaining(self.deadline) else {
+            slot.refund();
+            self.last_refusal = Some(ProbeRefusal::Deadline);
+            return None;
+        };
         self.bytes_left -= sent;
         self.connections_left -= 1;
         let datagram = self.datagram_wait(left);
@@ -228,7 +253,8 @@ impl Probe for SocketProbe {
         let reply = match self.protocol {
             Protocol::Tcp => exchange::tcp(
                 &self.peer,
-                self.egress,
+                &self.egress,
+                slot,
                 self.tunnel,
                 bytes,
                 self.deadline,
@@ -237,14 +263,13 @@ impl Probe for SocketProbe {
             ),
             Protocol::Udp => exchange::udp(
                 self.peer.socket(),
-                self.egress,
+                &self.egress,
+                slot,
                 bytes,
                 datagram.until,
                 self.bytes_left,
             ),
-            // An SCTP port is scanned without a client stack, so there is
-            // nothing here for a detection to hold a conversation over.
-            Protocol::Sctp => return None,
+            Protocol::Sctp => unreachable!("an SCTP port is answered before its slot"),
         };
         if matches!(reply, Err(exchange::ExchangeError::Starved)) {
             self.last_refusal = Some(ProbeRefusal::Descriptors);
@@ -682,6 +707,53 @@ mod tests {
 
         assert!(probe.speak(b"anything").is_none());
         assert_eq!(probe.last_refusal(), None);
+    }
+
+    /// **A flow's exchanges with one port keep the scan's gap between them,
+    /// and the gap does not come out of the flow's own time.**
+    ///
+    /// The flow is given a third of a second and the host a gap of twice
+    /// that between probes, so the second exchange waits longer for its turn
+    /// than the flow has in all. Its reply still comes, since the wait is the
+    /// scan's, and the two connections arrive a whole gap apart.
+    #[test]
+    fn a_flow_keeps_the_scan_gap_without_spending_its_own_time_on_it() {
+        let gap = Duration::from_millis(600);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
+        let addr = listener.local_addr().expect("its address");
+        let accepted = std::thread::spawn(move || {
+            from_this_process(&listener)
+                .take(2)
+                .map(|mut connection| {
+                    let at = Instant::now();
+                    let mut request = [0u8; 64];
+                    let _ = std::io::Read::read(&mut connection, &mut request);
+                    let _ = std::io::Write::write_all(&mut connection, b"pong");
+                    at
+                })
+                .collect::<Vec<_>>()
+        });
+
+        let (_session, ctx) = crate::scanner::session::ScanSession::builder()
+            .host_probe_interval(Some(gap))
+            .build();
+        let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, 300, 8))
+            .via(ctx.egress_toward(addr.ip()));
+
+        for exchange in ["first", "second"] {
+            assert_eq!(
+                probe.speak(b"ping").as_deref(),
+                Some(&b"pong"[..]),
+                "the {exchange} exchange went unanswered, refused {:?}",
+                probe.last_refusal()
+            );
+        }
+        let times = accepted.join().expect("the listener joins");
+        let apart = times[1] - times[0];
+        assert!(
+            apart + gap / 3 >= gap,
+            "two connections {apart:?} apart under a {gap:?} gap"
+        );
     }
 
     /// An SCTP port has no client stack behind it here, so a flow aimed at one

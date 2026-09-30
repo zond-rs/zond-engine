@@ -65,6 +65,7 @@ use super::db::SignatureDb;
 use super::model::{Evidence, SourceId};
 use super::response::{Collected, ResponseSet};
 use crate::model::confidence::Confidence;
+use crate::transport::dial::pacing;
 
 /// Whole-exchange budget: connect, write, read both replies. A reachable
 /// server answers well under a second on a path that costs nothing; a scan
@@ -225,7 +226,9 @@ async fn exchange(addr: SocketAddr, request: &[u8], messages: usize) -> Option<V
         }
         (!reply.is_empty()).then_some(reply)
     };
-    timeout(super::on_path(EXCHANGE_TIMEOUT), talk)
+    // The scan's gap before the connection is not the exchange's time; see
+    // `dial::pacing`.
+    pacing::timeout(super::on_path(EXCHANGE_TIMEOUT), || talk)
         .await
         .ok()
         .flatten()

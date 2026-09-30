@@ -40,7 +40,7 @@
 //! first few and leaves the rest unasked.
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use super::patterns::KeptPattern;
@@ -49,7 +49,7 @@ use crate::fingerprint::Tunnel;
 use crate::fingerprint::authority::Authority;
 use crate::protocols::http::message_end as http_message_end;
 use crate::system::descriptors;
-use crate::transport::dial::Egress;
+use crate::transport::dial::{Egress, Slot};
 
 /// The pattern a step declares its reply ends at, compiled once.
 ///
@@ -124,6 +124,10 @@ pub(crate) enum ExchangeError {
     /// shortfall rather than anything the port did, and kept apart from a
     /// reset so that it is reported rather than read as the port's answer.
     Starved,
+    /// The scan stopped, or the host ran out of the time the scan gave it,
+    /// while the exchange waited for its slot, so nothing was sent. The
+    /// scan's own record says which, and neither is the port's answer.
+    Withheld,
 }
 
 impl ExchangeError {
@@ -138,6 +142,23 @@ impl ExchangeError {
             _ => Self::Reset,
         }
     }
+}
+
+/// Waits for the slot of the coming exchange with `peer`, which the scan's
+/// pacing gives out by `egress`, and says how long the wait took.
+///
+/// Taken before the exchange's own clock is read, and the wait is handed back
+/// so the caller can add it to that clock's deadline: the gap between the
+/// scan's probes is the scan's time, and a detection that spent it would
+/// report a budget run out on a port that was never slow. The same wait on a
+/// thread is what [`held_here`](crate::transport::dial::pacing::held_here)
+/// adds up, for the clocks a caller cannot move.
+pub(crate) fn slot(egress: &Egress, peer: IpAddr) -> Result<(Slot, Duration), ExchangeError> {
+    let asked = Instant::now();
+    let slot = egress
+        .slot_blocking(peer)
+        .map_err(|_withheld| ExchangeError::Withheld)?;
+    Ok((slot, asked.elapsed()))
 }
 
 /// The time left before `deadline`, or [`None`] once it has passed.
@@ -176,18 +197,25 @@ pub(crate) fn remaining(deadline: Instant) -> Option<Duration> {
 /// so a pause the port takes before answering a pipelined command does not read
 /// as the end. [`None`] leaves the reply to end at the idle gap, which is right
 /// for a service that answers one command per connection.
+///
+/// The connection is the probe `slot` was given; see [`slot`].
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn tcp(
     peer: &Authority,
-    egress: Egress,
+    egress: &Egress,
+    slot: Slot,
     tunnel: Option<Tunnel>,
     bytes: &[u8],
     deadline: Instant,
     cap: u64,
     until: Option<&ReplyEnd>,
 ) -> Result<Reply, ExchangeError> {
-    let left = remaining(deadline).ok_or(ExchangeError::TimedOut)?;
+    let Some(left) = remaining(deadline) else {
+        slot.refund();
+        return Err(ExchangeError::TimedOut);
+    };
     let tcp = egress
-        .connect_within(peer.socket(), left.min(CONNECT_PROBE_TIMEOUT), left)
+        .connect_within(slot, peer.socket(), left.min(CONNECT_PROBE_TIMEOUT), left)
         .map_err(|error| ExchangeError::of(&error))?;
     tcp.set_read_timeout(Some(remaining(deadline).ok_or(ExchangeError::TimedOut)?))
         .map_err(|error| ExchangeError::of(&error))?;
@@ -284,26 +312,38 @@ fn idle_gap(first_byte: Duration, left: Duration) -> Duration {
 ///
 /// A datagram is one whole message, so a reply that arrives is complete. Silence
 /// is an empty reply, as it is over TCP.
+///
+/// The datagram is the probe `slot` was given, spent once it leaves and given
+/// back where this machine refused to open, address or send it.
 pub(crate) fn udp(
     addr: SocketAddr,
-    egress: Egress,
+    egress: &Egress,
+    slot: Slot,
     bytes: &[u8],
     deadline: Instant,
     cap: u64,
 ) -> Result<Reply, ExchangeError> {
-    let left = remaining(deadline).ok_or(ExchangeError::TimedOut)?;
-    let socket = egress
-        .udp_blocking(addr.ip(), left)
-        .map_err(|error| ExchangeError::of(&error))?;
-    socket
+    let Some(left) = remaining(deadline) else {
+        slot.refund();
+        return Err(ExchangeError::TimedOut);
+    };
+    let socket = match egress.udp_blocking(&slot, addr.ip(), left) {
+        Ok(socket) => socket,
+        Err(error) => {
+            slot.refund();
+            return Err(ExchangeError::of(&error));
+        }
+    };
+    let Some(wait) = remaining(deadline) else {
+        slot.refund();
+        return Err(ExchangeError::TimedOut);
+    };
+    let sent = socket
         .connect(addr)
-        .map_err(|error| ExchangeError::of(&error))?;
-    socket
-        .set_read_timeout(Some(remaining(deadline).ok_or(ExchangeError::TimedOut)?))
-        .map_err(|error| ExchangeError::of(&error))?;
-    socket
-        .send(bytes)
-        .map_err(|error| ExchangeError::of(&error))?;
+        .and_then(|()| socket.set_read_timeout(Some(wait)))
+        .and_then(|()| socket.send(bytes));
+    slot.settle(&sent);
+    sent.map_err(|error| ExchangeError::of(&error))?;
 
     let mut buffer = vec![0u8; cap.min(LARGEST_DATAGRAM) as usize];
     match socket.recv(&mut buffer) {
@@ -399,7 +439,8 @@ mod tests {
 
         let reply = super::tcp(
             &super::Authority::new(addr),
-            crate::transport::dial::Egress::KERNEL,
+            &crate::transport::dial::Egress::KERNEL,
+            crate::transport::dial::Slot::unpaced(),
             None,
             b"GET / HTTP/1.1\r\n\r\n",
             Instant::now() + Duration::from_secs(5),

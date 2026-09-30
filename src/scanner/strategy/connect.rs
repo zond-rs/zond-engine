@@ -70,7 +70,7 @@ use crate::scanner::strategy::{HostScanner, PortScanner, StrategyError, record_u
 use crate::system::descriptors::{self, Descriptor};
 use crate::system::interface::{OnLinkTable, refuses_neighbour};
 use crate::transport::dial::PathAllowance;
-use crate::transport::dial::{Connecting, Egress, Holder, Shaping, SourcePortHeld};
+use crate::transport::dial::{Connecting, Egress, Holder, Shaping, Slot, SourcePortHeld};
 use async_trait::async_trait;
 use std::io::{self, ErrorKind};
 use std::net::{IpAddr, SocketAddr};
@@ -1427,9 +1427,12 @@ fn note_handshake(ctx: &ScanContext, ip: IpAddr, rtt: Duration) {
 /// socket, up to [`SELF_MEETINGS`] times.
 ///
 /// The connection, and every one the fingerprint makes after it, leaves by
-/// `egress`. Its socket comes from the process's budget and is held until the
-/// fingerprint is done with it; a port the process has no socket for, or that
-/// the scan stopped before asking, is `Unasked` too.
+/// `egress`, each in a slot of the scan's pacing, so a scan keeping a gap
+/// between its probes keeps it here; see [`dial`]. Its socket comes from the
+/// process's budget and is held until the fingerprint is done with it; a port
+/// the process has no socket for, or that the scan stopped before asking, or
+/// whose host ran out of its budget while it waited for its slot, is
+/// `Unasked` too.
 ///
 /// The handshake is given `patience` to be answered, which the scan sizes
 /// from the path to the host; see [`connect_patience`]. An open port is
@@ -1532,36 +1535,42 @@ async fn port_prober(
         if let Some(until) = neighbours.held_until(target.ip) {
             return held_down(until);
         }
-        let (handshake, rtt, descriptor) = match dial(handle, descriptors::PATIENCE, || {
-            std::future::ready(egress.start_connect(socket_addr, shaping))
-        })
-        .await
-        {
-            Dialled::Ran {
-                result: Ok(connecting),
-                began,
-                descriptor,
-            } => {
-                // The SYN left, so a stop that cuts the wait leaves a port
-                // asked with no verdict, as the raw path files a probe whose
-                // schedule the stop cut: unasked, and asked again by a resume.
-                let Some(finished) = handshake(connecting, patience, handle).await else {
-                    return unasked(Outcome::Interrupted, Attempt::Sent);
-                };
-                // Read before the fingerprint talks to the port, which is the
-                // service's time rather than the path's.
-                (Handshake::sent(finished), began.elapsed(), Some(descriptor))
-            }
-            Dialled::Ran {
-                result: Err(e),
-                began,
-                ..
-            } => (Handshake::unsent(e), began.elapsed(), None),
-            // Not a local failure: the scan ended first, as for a target still
-            // queued (see `record_unasked`).
-            Dialled::Stopped => return unasked(Outcome::Unasked, Attempt::Unmade),
-            Dialled::Starved => return unasked(Outcome::Unroutable, Attempt::Starved),
-        };
+        let (handshake, rtt, descriptor) =
+            match dial(handle, &egress, target.ip, descriptors::PATIENCE, |slot| {
+                std::future::ready(egress.start_connect(slot, socket_addr, shaping))
+            })
+            .await
+            {
+                Dialled::Ran {
+                    result: Ok(connecting),
+                    began,
+                    descriptor,
+                    ..
+                } => {
+                    // The SYN left, so a stop that cuts the wait leaves a port
+                    // asked with no verdict, as the raw path files a probe whose
+                    // schedule the stop cut: unasked, and asked again by a resume.
+                    let Some(finished) = handshake(connecting, patience, handle).await else {
+                        return unasked(Outcome::Interrupted, Attempt::Sent);
+                    };
+                    // Read before the fingerprint talks to the port, which is the
+                    // service's time rather than the path's.
+                    (Handshake::sent(finished), began.elapsed(), Some(descriptor))
+                }
+                Dialled::Ran {
+                    result: Err(e),
+                    began,
+                    slot,
+                    ..
+                } => {
+                    slot.refund();
+                    (Handshake::unsent(e), began.elapsed(), None)
+                }
+                // Not a local failure: the scan ended first, or the host's budget
+                // did, as for a target still queued (see `record_unasked`).
+                Dialled::Unmade => return unasked(Outcome::Unasked, Attempt::Unmade),
+                Dialled::Starved => return unasked(Outcome::Unroutable, Attempt::Starved),
+            };
 
         // A host unreachable, or a wait run out, is no packet at all where the
         // kernel held the SYN for a neighbour it has not resolved.
@@ -1618,7 +1627,7 @@ async fn port_prober(
                         stream,
                         port,
                         detection,
-                        egress,
+                        &egress,
                         path,
                     ))
                     .await;
@@ -1899,8 +1908,9 @@ async fn handshake(
 /// Errors that say nothing about the target (no local socket, no route) are
 /// logged and yield no record rather than a guess.
 ///
-/// The datagram leaves by `egress`, from a socket out of the process's budget,
-/// and a port the process has no socket for is recorded unasked.
+/// The datagram leaves by `egress` in a slot of the scan's pacing, from a
+/// socket out of the process's budget, and a port the process has no socket
+/// for, or that the scan stopped before its turn, is recorded unasked.
 async fn udp_port_prober(
     planned: PlannedTarget,
     shaping: Shaping,
@@ -1958,37 +1968,47 @@ async fn udp_port_prober(
     // outcome is `Unroutable` rather than `Unasked` for the reason the TCP
     // prober gives: this host gave up, which the next sitting may not.
     let refused = |e: &io::Error| Attempt::Refused(Refusal::of(e));
-    let (socket, _descriptor) = match dial(&handle, descriptors::PATIENCE, || {
-        egress.udp_shaped(target.ip, shaping)
-    })
-    .await
-    {
-        Dialled::Ran {
-            result: Ok(socket),
-            descriptor,
-            ..
-        } => (socket, descriptor),
-        Dialled::Ran { result: Err(e), .. } => {
-            error!(
-                verbosity = 2,
-                "no UDP socket for probing {socket_addr}: {e}"
-            );
-            return record(PortState::Unasked, false, Outcome::Unroutable, refused(&e));
-        }
-        Dialled::Stopped => {
-            return record(PortState::Unasked, false, Outcome::Unasked, Attempt::Unmade);
-        }
-        Dialled::Starved => {
-            return record(
-                PortState::Unasked,
-                false,
-                Outcome::Unroutable,
-                Attempt::Starved,
-            );
-        }
-    };
+    let (socket, _descriptor, slot) =
+        match dial(&handle, &egress, target.ip, descriptors::PATIENCE, |slot| {
+            std::future::ready(egress.udp_shaped(slot, target.ip, shaping))
+        })
+        .await
+        {
+            Dialled::Ran {
+                result: Ok(socket),
+                descriptor,
+                slot,
+                ..
+            } => (socket, descriptor, slot),
+            Dialled::Ran {
+                result: Err(e),
+                slot,
+                ..
+            } => {
+                slot.refund();
+                error!(
+                    verbosity = 2,
+                    "no UDP socket for probing {socket_addr}: {e}"
+                );
+                return record(PortState::Unasked, false, Outcome::Unroutable, refused(&e));
+            }
+            Dialled::Unmade => {
+                return record(PortState::Unasked, false, Outcome::Unasked, Attempt::Unmade);
+            }
+            Dialled::Starved => {
+                return record(
+                    PortState::Unasked,
+                    false,
+                    Outcome::Unroutable,
+                    Attempt::Starved,
+                );
+            }
+        };
 
+    // The datagram is the probe, so its slot is spent once it leaves, and
+    // given back where this machine refused to address or send it.
     if let Err(e) = socket.connect(socket_addr).await {
+        slot.refund();
         error!(
             verbosity = 2,
             "cannot address UDP probe to {socket_addr}: {e}"
@@ -2007,6 +2027,7 @@ async fn udp_port_prober(
                 Attempt::Sent,
             ),
             _ => {
+                slot.refund();
                 error!(
                     verbosity = 2,
                     "failed to send UDP probe to {socket_addr}: {e}"
@@ -2015,6 +2036,7 @@ async fn udp_port_prober(
             }
         };
     }
+    drop(slot);
 
     let mut buf = [0u8; 1024];
     match timeout(CONNECT_PROBE_TIMEOUT, socket.recv(&mut buf)).await {
@@ -2081,48 +2103,68 @@ async fn udp_port_prober(
 
 /// What asking the process for a socket, and then using it, came to.
 enum Dialled<T> {
-    /// A socket was had and the attempt ran.
+    /// A slot and a socket were had and the attempt ran.
     Ran {
         /// What the attempt came to. Never the process running out of
         /// sockets, which is waited out rather than returned.
         result: io::Result<T>,
-        /// When the attempt that ran began, after any wait for a socket, so a
-        /// round trip timed from it is the target's and not the queue's.
+        /// When the attempt that ran began, after any wait for its slot or a
+        /// socket, so a round trip timed from it is the target's and not the
+        /// queue's.
         began: Instant,
         /// The socket's share of the process's budget, given back when it is
         /// dropped. Kept for as long as what `result` holds is, or the budget
         /// would count a socket as closed while it is still open.
         descriptor: Descriptor,
+        /// The probe's slot, spent where it is dropped. An error in `result`
+        /// left nothing, since both attempts this runs fail only before
+        /// anything leaves, and gives it back.
+        slot: Slot,
     },
-    /// The scan stopped before a socket could be had.
-    Stopped,
+    /// The scan stopped, or the host ran out of its budget, before the probe
+    /// had a slot and a socket, so nothing was sent.
+    Unmade,
     /// The process had no socket to give for as long as the probe would wait.
     Starved,
 }
 
-/// Runs `attempt` on a socket from the process's descriptor budget.
+/// Runs `attempt`, one probe to `peer`, in the slot `egress` gives it and on a
+/// socket from the process's descriptor budget.
 ///
-/// The budget is taken first, so a sweep never asks for more sockets than
-/// [`descriptors`] allows it. The attempt can still be refused a socket, when
-/// something else in the process has filled the table, and that refusal is
-/// never passed on: it is raised before anything is sent, so it says nothing
-/// about the target, and read as an answer it becomes an address passed over
-/// as silent or a port filed as asked. The attempt is made again once a
-/// descriptor may have come free, for as long as `patience` allows from the
-/// first refusal, and then given up as [`Dialled::Starved`].
+/// The slot is waited for first, so the scan's gap between probes holds
+/// neither a socket nor any part of the attempt's own budget; a scan that
+/// stops, or a host that runs out of its budget, while the probe waits leaves
+/// it [`Dialled::Unmade`]. The budget is taken next, so a sweep never asks for
+/// more sockets than [`descriptors`] allows it. The attempt can still be
+/// refused a socket, when something else in the process has filled the table,
+/// and that refusal is never passed on: it is raised before anything is sent,
+/// so it says nothing about the target, and read as an answer it becomes an
+/// address passed over as silent or a port filed as asked. The attempt is made
+/// again, in the same slot since nothing left, once a descriptor may have come
+/// free, for as long as `patience` allows from the first refusal, and then
+/// given up as [`Dialled::Starved`], its slot given back.
 ///
-/// Each attempt's own time budget starts only once it has its socket, so no
-/// part of the wait is ever read as a target's silence.
+/// Each attempt's own time budget starts only once it has its slot and its
+/// socket, so no part of either wait is ever read as a target's silence.
 ///
 /// The same wait as [`descriptors::patiently`], every other connection's, in a
 /// loop of its own because a sweep keeps thousands of these in flight: each
 /// gives its descriptor back while it waits, so a queued probe can use it, and
 /// asks the scan's stop before it asks again.
-async fn dial<T, F, Fut>(handle: &ScanHandle, patience: Duration, mut attempt: F) -> Dialled<T>
+async fn dial<T, F, Fut>(
+    handle: &ScanHandle,
+    egress: &Egress,
+    peer: IpAddr,
+    patience: Duration,
+    mut attempt: F,
+) -> Dialled<T>
 where
-    F: FnMut() -> Fut,
+    F: FnMut(&Slot) -> Fut,
     Fut: Future<Output = io::Result<T>>,
 {
+    let Ok(slot) = egress.slot(peer).await else {
+        return Dialled::Unmade;
+    };
     let mut refused_since: Option<Instant> = None;
     let mut pause = descriptors::FIRST_PAUSE;
     loop {
@@ -2131,13 +2173,15 @@ where
             .await
             .expect("the descriptor gate is never closed");
         if handle.should_stop() {
-            return Dialled::Stopped;
+            slot.refund();
+            return Dialled::Unmade;
         }
         let began = Instant::now();
-        match attempt().await {
+        match attempt(&slot).await {
             Err(e) if descriptors::exhausted(&e) => {
                 drop(descriptor);
                 if refused_since.get_or_insert(began).elapsed() >= patience {
+                    slot.refund();
                     return Dialled::Starved;
                 }
                 tokio::time::sleep(pause).await;
@@ -2148,6 +2192,7 @@ where
                     result,
                     began,
                     descriptor,
+                    slot,
                 };
             }
         }
@@ -2483,8 +2528,9 @@ fn path_finding_wait(neighbour: bool) -> Duration {
 /// was not asked everything, and is left for the next sitting, with the
 /// reason reported.
 ///
-/// Every connect leaves by `egress`, on a socket from the process's budget,
-/// and waits at most `patience` for one the process has none of.
+/// Every connect leaves by `egress`, in a slot of the scan's pacing and on a
+/// socket from the process's budget, and waits at most `patience` for one the
+/// process has none of.
 ///
 /// The first connect to leave is how the path to the address is found, and
 /// waits for the longest path a connect looks for, and for the address
@@ -2528,38 +2574,44 @@ async fn prober(
             // The descriptor is held until the attempt's socket is dropped,
             // at the end of this pass, so the budget counts every socket still
             // open.
-            let (handshake, start, _descriptor) = match dial(&handle, patience, || {
-                std::future::ready(egress.start_connect(addr, shaping))
-            })
-            .await
-            {
-                Dialled::Ran {
-                    result: Ok(connecting),
-                    began,
-                    descriptor,
-                } => {
-                    // Asked, with no answer yet, where the stop cut the wait.
-                    let Some(finished) = handshake(connecting, waiting, &handle).await else {
-                        return cut_short(true);
-                    };
-                    let sent = Handshake::sent(finished);
-                    waiting = CONNECT_PROBE_TIMEOUT;
-                    let resolving = neighbour && !std::mem::replace(&mut left, true);
-                    (sent, (began, resolving), Some(descriptor))
-                }
-                Dialled::Ran {
-                    result: Err(e),
-                    began,
-                    ..
-                } => (Handshake::unsent(e), (began, false), None),
-                Dialled::Stopped => return cut_short(asked),
-                Dialled::Starved => {
-                    return ProbedHost {
-                        ip,
-                        fate: Fate::Starved,
-                    };
-                }
-            };
+            let (handshake, start, _descriptor) =
+                match dial(&handle, &egress, ip, patience, |slot| {
+                    std::future::ready(egress.start_connect(slot, addr, shaping))
+                })
+                .await
+                {
+                    Dialled::Ran {
+                        result: Ok(connecting),
+                        began,
+                        descriptor,
+                        ..
+                    } => {
+                        // Asked, with no answer yet, where the stop cut the wait.
+                        let Some(finished) = handshake(connecting, waiting, &handle).await else {
+                            return cut_short(true);
+                        };
+                        let sent = Handshake::sent(finished);
+                        waiting = CONNECT_PROBE_TIMEOUT;
+                        let resolving = neighbour && !std::mem::replace(&mut left, true);
+                        (sent, (began, resolving), Some(descriptor))
+                    }
+                    Dialled::Ran {
+                        result: Err(e),
+                        began,
+                        slot,
+                        ..
+                    } => {
+                        slot.refund();
+                        (Handshake::unsent(e), (began, false), None)
+                    }
+                    Dialled::Unmade => return cut_short(asked),
+                    Dialled::Starved => {
+                        return ProbedHost {
+                            ip,
+                            fate: Fate::Starved,
+                        };
+                    }
+                };
             match Knock::of(handshake) {
                 Knock::MetItself(e) => met_itself = Some(e),
                 other => {
@@ -3647,6 +3699,227 @@ mod tests {
             (1, 1),
             "a send this machine refused is a send that failed"
         );
+    }
+
+    /// Listeners on `count` ports of `ip`, and the ports. Never accepted
+    /// from: the kernel completes a handshake into the backlog, which is all
+    /// a connect scan asks of an open port.
+    fn listeners(ip: IpAddr, count: usize) -> (Vec<std::net::TcpListener>, Vec<u16>) {
+        (0..count)
+            .map(|_| {
+                let listener = std::net::TcpListener::bind((ip, 0)).expect("bind a listener");
+                let port = listener.local_addr().expect("its address").port();
+                (listener, port)
+            })
+            .unzip()
+    }
+
+    /// Asserts that this process began one connection to each of `addrs`,
+    /// and began them at least `gap` apart, less a margin for scheduling,
+    /// however they were ordered.
+    ///
+    /// Read from where every connection to a target is begun, the one place
+    /// that sees each SYN handed to the kernel whether or not a listener ever
+    /// accepts it; see [`dialled`](crate::transport::dial::dialled).
+    fn assert_spaced(addrs: &[SocketAddr], gap: Duration) {
+        let mut times: Vec<Instant> = addrs
+            .iter()
+            .flat_map(|&addr| crate::transport::dial::dialled::times(addr))
+            .collect();
+        assert_eq!(times.len(), addrs.len(), "every port was connected to once");
+        times.sort();
+        let margin = gap / 3;
+        for pair in times.windows(2) {
+            let apart = pair[1] - pair[0];
+            assert!(
+                apart + margin >= gap,
+                "two connections {apart:?} apart under a {gap:?} gap"
+            );
+        }
+    }
+
+    /// Runs a connect scan of `targets`, as many at once as there are, with
+    /// nothing identified, and returns once it has drained.
+    async fn scan_all(ctx: &ScanContext, targets: Vec<PlannedTarget>) {
+        let (tx, rx) = mpsc::channel(targets.len());
+        let concurrency = targets.len();
+        for target in targets {
+            tx.send(target).await.expect("queued");
+        }
+        drop(tx);
+        // On the heap, as a scan run from a strategy is: the walk's state is
+        // more than a test thread's stack should carry.
+        Box::pin(scan(
+            rx,
+            concurrency,
+            ctx.clone(),
+            ServiceDetection::Off,
+            &EvasionProfile::default(),
+            &ZoneMap::new(),
+        ))
+        .await
+        .expect("the scan runs");
+    }
+
+    /// The states the scan recorded for `ports` of `ip`, in the order given.
+    fn states_of(
+        session: &crate::scanner::session::ScanSession,
+        ip: IpAddr,
+        ports: &[u16],
+    ) -> Vec<Option<PortState>> {
+        ports
+            .iter()
+            .map(|&number| {
+                session
+                    .hosts()
+                    .read(ip, |host| {
+                        host.ports()
+                            .find(|port| port.number() == number)
+                            .map(Port::state)
+                    })
+                    .flatten()
+            })
+            .collect()
+    }
+
+    /// **A connect scan's connections to one host keep the host's gap**,
+    /// however many the pool holds at once, and every port still gets the
+    /// verdict it earned.
+    ///
+    /// The pool admits every port together, so what spaces them is the slot
+    /// each connection claims before its SYN; a connection that dialled
+    /// without one would leave at once.
+    #[tokio::test]
+    async fn a_connect_scan_keeps_the_host_gap_between_its_connections() {
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let gap = Duration::from_millis(300);
+        let (_listeners, ports) = listeners(ip, 4);
+        let (session, ctx) = crate::scanner::session::ScanSession::builder()
+            .host_probe_interval(Some(gap))
+            .build();
+
+        scan_all(
+            &ctx,
+            ports.iter().map(|&port| tcp_target(ip, port)).collect(),
+        )
+        .await;
+
+        assert_eq!(
+            states_of(&session, ip, &ports),
+            vec![Some(PortState::Open); ports.len()],
+            "a port held for its slot lost its verdict"
+        );
+        let addrs: Vec<SocketAddr> = ports
+            .iter()
+            .map(|&port| SocketAddr::new(ip, port))
+            .collect();
+        assert_spaced(&addrs, gap);
+    }
+
+    /// **A connect scan's connections keep the scan-wide gap across hosts**,
+    /// which no host's own gap would: the two hosts here are asked side by
+    /// side, and only the one gap between any two probes holds them apart.
+    #[tokio::test]
+    async fn a_connect_scan_keeps_the_scan_wide_gap_across_hosts() {
+        let gap = Duration::from_millis(300);
+        let hosts = [
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ];
+        let mut held = Vec::new();
+        let mut asked = Vec::new();
+        for ip in hosts {
+            let (listening, ports) = listeners(ip, 2);
+            held.push(listening);
+            asked.push((ip, ports));
+        }
+        let (session, ctx) = crate::scanner::session::ScanSession::builder()
+            .probe_interval(Some(gap))
+            .build();
+
+        let targets = asked
+            .iter()
+            .flat_map(|(ip, ports)| ports.iter().map(|&port| tcp_target(*ip, port)))
+            .collect();
+        scan_all(&ctx, targets).await;
+
+        for (ip, ports) in &asked {
+            assert_eq!(
+                states_of(&session, *ip, ports),
+                vec![Some(PortState::Open); ports.len()],
+                "{ip}: a port held for its slot lost its verdict"
+            );
+        }
+        let addrs: Vec<SocketAddr> = asked
+            .iter()
+            .flat_map(|(ip, ports)| ports.iter().map(|&port| SocketAddr::new(*ip, port)))
+            .collect();
+        assert_spaced(&addrs, gap);
+    }
+
+    /// **A scan stopped while its connections wait for their slots ends at
+    /// once**, and the ports still waiting are unasked rather than silent.
+    ///
+    /// The gap here is an hour, so only the stop can end the wait, and a port
+    /// filed `NoReply` would report a silence nobody listened for.
+    #[tokio::test]
+    async fn a_stop_ends_the_wait_for_a_slot_and_leaves_the_port_unasked() {
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let (_listeners, ports) = listeners(ip, 3);
+        let (session, ctx) = crate::scanner::session::ScanSession::builder()
+            .host_probe_interval(Some(Duration::from_secs(3600)))
+            .build();
+        let addrs: Vec<SocketAddr> = ports
+            .iter()
+            .map(|&port| SocketAddr::new(ip, port))
+            .collect();
+        let begun = move |addrs: &[SocketAddr]| -> usize {
+            addrs
+                .iter()
+                .map(|&addr| crate::transport::dial::dialled::to(addr))
+                .sum()
+        };
+        // Stopped once the first connection has left and the others are
+        // waiting behind it, however long the scan took to start.
+        let stopper = ctx.handle.clone();
+        let watched = addrs.clone();
+        let stopped_at = tokio::spawn(async move {
+            while begun(&watched) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            stopper.abort();
+            Instant::now()
+        });
+
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            scan_all(
+                &ctx,
+                ports.iter().map(|&port| tcp_target(ip, port)).collect(),
+            ),
+        )
+        .await
+        .expect("the stop ended the waits");
+        let stopped_at = stopped_at.await.expect("the stopper joins");
+        assert!(
+            stopped_at.elapsed() < Duration::from_secs(2),
+            "the scan outlived its stop by {:?}",
+            stopped_at.elapsed()
+        );
+
+        let mut states = states_of(&session, ip, &ports);
+        states.sort_by_key(|state| format!("{state:?}"));
+        assert_eq!(
+            states,
+            vec![
+                Some(PortState::Open),
+                Some(PortState::Unasked),
+                Some(PortState::Unasked)
+            ],
+            "the first port was asked and the two behind it were not"
+        );
+        assert_eq!(begun(&addrs), 1, "one connection left");
     }
 
     /// Scans `target` alone through [`scan_among`], with the kernel's

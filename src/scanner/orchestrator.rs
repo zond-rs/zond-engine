@@ -1492,7 +1492,7 @@ const MDNS_PORT: u16 = 5353;
 async fn own_name(
     addr: std::net::SocketAddr,
     ip: IpAddr,
-    egress: crate::transport::dial::Egress,
+    egress: &crate::transport::dial::Egress,
 ) -> Option<String> {
     let query = crate::protocols::mdns::build_reverse_query(ip).ok()?;
     let reply = crate::fingerprint::probe_udp_raw_via(addr, &query, egress).await?;
@@ -1524,12 +1524,12 @@ async fn ask_what_hardware(
     // lookup about its own address with the name it publishes under.
     let query = match hostname.as_deref().and_then(device_info_query) {
         Some(query) => query,
-        None => device_info_query(&own_name(addr, target.addr(), egress).await?)?,
+        None => device_info_query(&own_name(addr, target.addr(), &egress).await?)?,
     };
 
     // Each `key=value` is its own claim: the model and the Darwin release are
     // two facts about one machine, and a rule reads one of them.
-    let evidence: Vec<OsEvidence> = crate::fingerprint::probe_udp_with_via(addr, &query, egress)
+    let evidence: Vec<OsEvidence> = crate::fingerprint::probe_udp_with_via(addr, &query, &egress)
         .await
         .iter()
         .filter_map(|text| {
@@ -1565,7 +1565,7 @@ async fn ask_for_kernel(
     let addr = target.to_socket_addr(SNMP_PORT)?;
 
     let port = crate::fingerprint::baseline_port(SNMP_PORT, Protocol::Udp, PortState::Open);
-    let found = crate::fingerprint::fingerprint_udp_via(addr, port, egress).await?;
+    let found = crate::fingerprint::fingerprint_udp_via(addr, port, &egress).await?;
 
     // The key, not the address: an SNMP agent on a link-local neighbour is
     // reachable here, `to_socket_addr` put the scope id on the socket, and
@@ -2088,7 +2088,7 @@ async fn enumerate_one(
     let support = crate::fingerprint::enumerate_tls_while(
         socket,
         server_name.as_deref(),
-        ctx.egress_toward(ip),
+        &ctx.egress_toward(ip),
         || !ctx.stopping_before(Pass::Tls) && !ctx.host_expired(ip),
     )
     .await;

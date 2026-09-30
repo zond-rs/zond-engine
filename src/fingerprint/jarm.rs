@@ -49,7 +49,6 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::time::timeout;
 
 use super::analyzer::{Analyzer, PortContext};
 use super::model::{Evidence, SourceId};
@@ -57,6 +56,7 @@ use super::response::{Collected, ResponseSet};
 use crate::config::ServiceDetection;
 use crate::model::port::Protocol;
 use crate::protocols::tls;
+use crate::transport::dial::pacing;
 
 /// How long one probe may take, connection included.
 ///
@@ -998,7 +998,7 @@ async fn fingerprint_within(addr: SocketAddr, host: &str, limits: Limits) -> Opt
         let mut answers = Vec::with_capacity(PROBES.len());
         for probe in &PROBES {
             answers.push(
-                match timeout(limits.probe, exchange(addr, probe, host)).await {
+                match pacing::timeout(limits.probe, || exchange(addr, probe, host)).await {
                     Ok(Some(reply)) => read_answer(&reply),
                     Ok(None) | Err(_) => Answer::default(),
                 },
@@ -1006,7 +1006,9 @@ async fn fingerprint_within(addr: SocketAddr, host: &str, limits: Limits) -> Opt
         }
         answers
     };
-    let answers = timeout(limits.all, asked).await.ok()?;
+    // Neither clock counts the scan's gaps before each of the ten
+    // connections; see `dial::pacing`.
+    let answers = pacing::timeout(limits.all, || asked).await.ok()?;
 
     let found = hash(&answers);
     (found != EMPTY_HASH).then_some(found)

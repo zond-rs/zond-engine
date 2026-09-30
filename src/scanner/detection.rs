@@ -132,6 +132,16 @@ enum Unfinished {
     /// rather than the detection's, and so says the same thing about every
     /// detection gated onto the port: a web port given up on leaves dozens.
     PortGivenUp { id: String, why: String },
+    /// The scan stopped, or the host ran out of the time the scan gave it,
+    /// while one of the detection's exchanges waited for its turn under the
+    /// scan's pacing.
+    ///
+    /// Filed as neither a shortfall of the detection nor one of the port,
+    /// since the scan's own record already says what happened, once for the
+    /// whole pass or the whole host: the pass a stop left, which this names
+    /// if nothing else has, or the host
+    /// [`host_expired`](ScanContext::host_expired) filed as left early.
+    Withheld,
 }
 
 impl Unfinished {
@@ -191,6 +201,9 @@ impl Unfinished {
                 ),
             Unfinished::Failed { id, why } => {
                 ctx.record_failure(ScannerKind::Detection, format!("{id} on {endpoint}: {why}"))
+            }
+            Unfinished::Withheld => {
+                ctx.stopping_before(Pass::Detections);
             }
         }
     }
@@ -459,8 +472,8 @@ async fn detect_one(
                 // The permit first: building the probe starts the flow's clock,
                 // and the wait for a socket must not come out of its budget.
                 let permit = gate.acquire();
-                let probe =
-                    SocketProbe::new(addr, protocol, tunnel, &flow_budget(caps)).via(egress);
+                let probe = SocketProbe::new(addr, protocol, tunnel, &flow_budget(caps))
+                    .via(egress.clone());
                 Some(Box::new(Pooled {
                     inner: match &name {
                         Some(name) => probe.named(Arc::clone(name)),
@@ -513,7 +526,8 @@ async fn detect_one(
                 // starts the flow's clock: the wait for a socket must not come
                 // out of the flow's own time budget.
                 let permit = gate.acquire();
-                let caps = LiveCapabilities::new(addr, protocol, tunnel, &grant.budget).via(egress);
+                let caps = LiveCapabilities::new(addr, protocol, tunnel, &grant.budget)
+                    .via(egress.clone());
                 Some(Box::new(Permitted {
                     inner: match &name {
                         Some(name) => caps.named(Arc::clone(name)),
@@ -583,6 +597,7 @@ fn describe_outcome(run: &InconclusiveRun) -> Unfinished {
             id,
             why: no_socket(None),
         },
+        RunOutcome::Withheld => Unfinished::Withheld,
         RunOutcome::Denied(denial) => Unfinished::Failed {
             id,
             why: format!("denied {:?}: {}", denial.capability, denial.reason),
@@ -615,7 +630,9 @@ fn describe_shortfall(shortfall: &Shortfall) -> Unfinished {
             ProbeRefusal::Bytes => format!("{limit}-byte budget"),
             ProbeRefusal::Connections => format!("{limit}-connection budget"),
             ProbeRefusal::Descriptors => return starved(shortfall),
+            ProbeRefusal::Withheld => return Unfinished::Withheld,
         },
+        Stopped::Withheld => return Unfinished::Withheld,
         Stopped::PortUnresponsive => {
             return Unfinished::PortGivenUp {
                 id: shortfall.detection.clone(),

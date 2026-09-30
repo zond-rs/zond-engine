@@ -48,6 +48,7 @@ use crate::detect::contention::HostContention;
 use crate::detect::manifest::{
     CapabilitySpec, Class, DEFAULT_MAX_BYTES, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_MILLIS,
 };
+use crate::transport::dial::pacing::held_here;
 
 /// Runs `corpus`'s enabled, applicable flows against each open port of `host`,
 /// recording every finding they produce. `probe_for` supplies the [`Probe`] a
@@ -346,6 +347,11 @@ pub(crate) enum Stopped {
     /// shortfall is this machine's, neither the port's nor the flow's budget,
     /// and raising the process's descriptor limit is its remedy.
     Starved,
+    /// The scan stopped, or the host ran out of the time the scan gave it,
+    /// while one of the flow's exchanges waited for its turn under the scan's
+    /// pacing, so a question went unasked. The scan's record already says
+    /// which, as the pass it left or the host it left early.
+    Withheld,
 }
 
 /// The ceilings a flow runs under, the ones it declared and this runtime's
@@ -376,7 +382,7 @@ impl Limits {
             ProbeRefusal::Deadline => Some(self.millis),
             ProbeRefusal::Bytes => Some(self.bytes),
             ProbeRefusal::Connections => Some(self.connections),
-            ProbeRefusal::Descriptors => None,
+            ProbeRefusal::Descriptors | ProbeRefusal::Withheld => None,
         }
     }
 }
@@ -542,6 +548,7 @@ impl<'a> CachingProbe<'a> {
         let refusal = self.refused?;
         Some(match limits.of_refusal(refusal) {
             Some(limit) => Stopped::Budget { refusal, limit },
+            None if refusal == ProbeRefusal::Withheld => Stopped::Withheld,
             None => Stopped::Starved,
         })
     }
@@ -597,18 +604,30 @@ impl Probe for CachingProbe<'_> {
         // began before it ended: the whole wait was the port's.
         let visit = self.port.contention.enter();
         let started = Instant::now();
+        let held = held_here();
         let reply = self.inner.speak(bytes);
-        let elapsed = started.elapsed();
+        // What the exchange waited for its slot under the scan's pacing is
+        // the scan's time and not the port's, and a port slow only by the
+        // scan's gap is no dead port.
+        let elapsed = started
+            .elapsed()
+            .saturating_sub(held_here().saturating_sub(held));
         let alone = visit.leave();
 
         self.crowded |= !alone;
         // An exchange the process had no socket for spent its wait on the
         // descriptor table, not on the port, which was never asked: counted
         // as a dead wait, a full table would write off every port it met and
-        // file each flow left behind as the port's silence.
+        // file each flow left behind as the port's silence. One the scan
+        // withheld was never asked either.
+        let unasked = reply.is_none()
+            && matches!(
+                self.inner.last_refusal(),
+                Some(ProbeRefusal::Descriptors | ProbeRefusal::Withheld)
+            );
         let starved =
             reply.is_none() && self.inner.last_refusal() == Some(ProbeRefusal::Descriptors);
-        if elapsed >= self.dead_after && !starved {
+        if elapsed >= self.dead_after && !unasked {
             self.stalled = true;
             if alone {
                 self.struck = true;

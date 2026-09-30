@@ -1374,6 +1374,41 @@ impl ProbeClaim {
     }
 }
 
+/// The scan's own gate, as the connections and datagrams it opens through
+/// [`Egress`](crate::transport::dial::Egress) ask it; see
+/// [`dial::pacing`](crate::transport::dial::pacing).
+impl crate::transport::dial::pacing::Pacer for ScanContext {
+    fn claim(&self, peer: IpAddr) -> Result<crate::transport::dial::pacing::Claim, Instant> {
+        self.claim_probe(peer)
+            .map(|claim| crate::transport::dial::pacing::Claim {
+                address: claim.address,
+                at: claim.at,
+            })
+    }
+
+    fn refund(&self, claim: crate::transport::dial::pacing::Claim) {
+        // A connection or a datagram is always aimed at one host, so its slot
+        // was taken on that host's clock as well as the scan's.
+        self.refund_probe(ProbeClaim {
+            address: claim.address,
+            at: claim.at,
+            at_host: true,
+        });
+    }
+
+    fn host_expired(&self, peer: IpAddr) -> bool {
+        ScanContext::host_expired(self, peer)
+    }
+
+    fn should_stop(&self) -> bool {
+        self.handle.should_stop()
+    }
+
+    fn stopping(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(self.handle.stopping())
+    }
+}
+
 impl ProbeSpacing {
     /// Whether this scan keeps any gap at all. A scan that keeps none never
     /// locks or stores anything here.
@@ -2237,13 +2272,18 @@ impl ScanContext {
         self.target_names.get(&ip).cloned()
     }
 
-    /// Where a connection this scan opens to `target` leaves from.
+    /// Where a connection this scan opens to `target` leaves from, and when.
     ///
     /// Asked by every phase that dials, once per destination, and handed to
     /// each connection it makes there, so a port the scan's probe reached from
-    /// a forced source is spoken to from that source too.
+    /// a forced source is spoken to from that source too, and every connection
+    /// and datagram keeps the gaps this scan keeps between its probes; see
+    /// [`dial::pacing`](crate::transport::dial::pacing).
     pub(crate) fn egress_toward(&self, target: IpAddr) -> crate::transport::dial::Egress {
-        self.forced.toward(target)
+        let gate = self
+            .probe_gap()
+            .map(|_| crate::transport::dial::pacing::Gate::new(std::sync::Arc::new(self.clone())));
+        self.forced.toward(target).paced_by(gate)
     }
 
     /// Whether this scan may do no more than connect to `number` over

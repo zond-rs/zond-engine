@@ -44,7 +44,7 @@
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ::rhai::{
     AST, Array, Blob, Dynamic, Engine, EvalAltResult, ImmutableString, Map, NativeCallContext,
@@ -56,6 +56,7 @@ use crate::model::confidence::Confidence;
 use crate::model::finding::{Excerpt, Finding, Reference};
 use crate::model::ip::Exposure;
 use crate::record::wire;
+use crate::transport::dial::pacing::held_here;
 
 use super::budget::{BudgetTrap, Denial, ModuleFault, RunOutcome};
 use super::capability::{CapError, Capabilities, Capability, Grant};
@@ -89,8 +90,11 @@ thread_local! {
     /// or policy refusal the guest cannot catch. Read once the guest returns.
     static ABORT: RefCell<Option<RunOutcome>> = const { RefCell::new(None) };
     /// When the running module's wall-clock budget expires, read by the engine's
-    /// progress callback so a run that never speaks is still bounded in time.
-    static RUN_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// progress callback so a run that never speaks is still bounded in time,
+    /// and how long this thread had waited for probe slots when the run began:
+    /// what it waits for them during the run is the scan's time and moves the
+    /// deadline, see [`held_here`].
+    static RUN_DEADLINE: Cell<Option<(Instant, Duration)>> = const { Cell::new(None) };
 }
 
 /// Sets the thread-local capability pointer for the span of one run and restores
@@ -99,7 +103,7 @@ thread_local! {
 struct ActiveRun {
     previous_caps: Option<NonNull<dyn Capabilities>>,
     previous_abort: Option<RunOutcome>,
-    previous_deadline: Option<Instant>,
+    previous_deadline: Option<(Instant, Duration)>,
 }
 
 impl ActiveRun {
@@ -138,7 +142,8 @@ impl ActiveRun {
 
         let previous_caps = ACTIVE_CAPS.with(|cell| cell.replace(NonNull::new(caps)));
         let previous_abort = ABORT.with(|cell| cell.borrow_mut().take());
-        let previous_deadline = RUN_DEADLINE.with(|cell| cell.replace(Some(deadline)));
+        let previous_deadline =
+            RUN_DEADLINE.with(|cell| cell.replace(Some((deadline, held_here()))));
         Some(Self {
             previous_caps,
             previous_abort,
@@ -270,11 +275,15 @@ impl ComputeRuntime for RhaiRuntime {
         // a passive module, still stops when its time is spent, where a deadline
         // read only inside `speak` never would. A run past its deadline is
         // terminated, which `classify` reads back as `BudgetTrap::Deadline`.
+        // The time the run's exchanges waited for their slots under the scan's
+        // pacing is not the run's, and moves the deadline by as much.
         engine.on_progress(|operations| {
             if operations % PROGRESS_STRIDE == 0
                 && RUN_DEADLINE
                     .with(|cell| cell.get())
-                    .is_some_and(|deadline| Instant::now() >= deadline)
+                    .is_some_and(|(deadline, held)| {
+                        Instant::now() >= deadline + held_here().saturating_sub(held)
+                    })
             {
                 Some(Dynamic::UNIT)
             } else {
@@ -635,6 +644,7 @@ fn outcome_for(error: &CapError, capability: Capability) -> RunOutcome {
             reason: reason.clone(),
         }),
         CapError::OutOfDescriptors => RunOutcome::OutOfDescriptors,
+        CapError::Withheld => RunOutcome::Withheld,
         // The non-fatal errors are handed back to the module, never here.
         other => RunOutcome::Faulted(ModuleFault::Runtime(other.to_string())),
     }
