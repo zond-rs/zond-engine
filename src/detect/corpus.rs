@@ -61,6 +61,10 @@ pub struct Detections {
     /// The distributors' own data a scan judges a distribution's build
     /// against when it correlates. See [`with_advisories`](Self::with_advisories).
     advisories: Arc<[crate::cve::Advisories]>,
+    /// The list of exploited vulnerabilities a scan marks what it reports by,
+    /// where a caller supplied one in place of the list this crate ships. See
+    /// [`with_exploited`](Self::with_exploited).
+    exploited: Option<Arc<crate::cve::KnownExploited>>,
 }
 
 /// The shipped corpus, compiled once and shared by every [`Detections::embedded`].
@@ -81,6 +85,7 @@ impl Detections {
                 modules: Arc::new(ComputeDb::from_embedded()),
                 hosts: Arc::new(HostDb::from_embedded()),
                 advisories: Arc::from([]),
+                exploited: None,
             })
             .clone()
     }
@@ -106,6 +111,23 @@ impl Detections {
     /// The distributors' data a scan's correlation uses.
     pub(crate) fn advisories(&self) -> &[crate::cve::Advisories] {
         &self.advisories
+    }
+
+    /// Marks the vulnerabilities a scan's correlation reports by `exploited`
+    /// in place of the list this crate ships: a newer copy of CISA's catalogue,
+    /// or anybody else's. Marking only; see
+    /// [`Correlator::with_exploited`](crate::cve::Correlator::with_exploited).
+    pub fn with_exploited(mut self, exploited: crate::cve::KnownExploited) -> Self {
+        self.exploited = Some(Arc::new(exploited));
+        self
+    }
+
+    /// The list of exploited vulnerabilities a scan's correlation marks by.
+    pub(crate) fn exploited(&self) -> &crate::cve::KnownExploited {
+        match &self.exploited {
+            Some(exploited) => exploited,
+            None => crate::cve::KnownExploited::embedded(),
+        }
     }
 
     /// A builder for a corpus that adds a caller's own detections, on top of the
@@ -248,6 +270,7 @@ impl fmt::Debug for Detections {
             .field("modules", &self.modules.detections().len())
             .field("hosts", &self.hosts.detections().len())
             .field("advisories", &self.advisories.len())
+            .field("exploited", &self.exploited().len())
             .finish()
     }
 }
@@ -525,6 +548,7 @@ impl DetectionsBuilder {
             modules: Arc::new(ComputeDb::from_parts(self.runtime, modules)),
             hosts: Arc::new(HostDb::from_detections(hosts)),
             advisories: Arc::from([]),
+            exploited: None,
         }
     }
 }

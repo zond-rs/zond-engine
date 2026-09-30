@@ -81,6 +81,7 @@ grants. The operator sets the ceiling, so anything above `active-benign` ships
 inert. Known vulnerabilities are matched to what was identified, and a
 distribution's build is judged by its distributor's own fix data rather than by
 its upstream version: the Ubuntu and Debian feeds, fetched when a caller asks.
+What stands is marked where CISA lists it as exploited in the wild.
 
 **Keeping the result.** Every scan is journalled as it runs, so one that stopped
 continues and one that finished replays without the network. Reports export as

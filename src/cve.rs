@@ -47,6 +47,18 @@
 //! reported against the service, and counted), and which need a setting the
 //! service does not ship with (reported as their own, weaker claim).
 //!
+//! ## Which of them somebody is exploiting
+//!
+//! What stands after all that can still be dozens of vulnerabilities, and
+//! they are not equally urgent. A [`KnownExploited`] list, CISA's Known
+//! Exploited Vulnerabilities catalogue unless the caller supplies another,
+//! names the ones being used against someone in the wild, and a finding
+//! citing any of them carries an [`Exploitation`](crate::model::finding::Exploitation)
+//! saying which, cites them first, and names them in its excerpt. It marks and
+//! decides nothing: the severity stays the catalogue's, the confidence stays
+//! the verdict's, and a vulnerability the distributor fixed stays withdrawn
+//! however widely it is exploited elsewhere. A front end orders by it.
+//!
 //! ## The one number two ways
 //!
 //! No finding this pass records is certain, and that is the case the
@@ -84,8 +96,10 @@
 //! vulnerability data can only move when the crate is rebuilt reports last
 //! release's picture however long ago that was.
 //!
-//! So both are values. [`Catalogue::embedded`] is the catalogue this crate
-//! ships and [`Catalogue::read`] takes a caller's own. No distributor's data is
+//! So all three are values. [`Catalogue::embedded`] is the catalogue this
+//! crate ships and [`Catalogue::read`] takes a caller's own;
+//! [`KnownExploited::embedded`] is CISA's list as this release carries it, and
+//! [`Correlator::with_exploited`] takes a newer one. No distributor's data is
 //! shipped: [`Advisories`] are converted from the distributors' feeds, which
 //! [`fetch`](crate::fetch) downloads when a caller asks, and handed to a scan on
 //! its [`Detections`](crate::detect::Detections) or to a [`Correlator`] over a
@@ -130,12 +144,14 @@ use crate::version::version_cmp;
 pub(crate) mod advisories;
 mod applicability;
 mod backport;
+mod exploited;
 pub(crate) mod packages;
 
 use advisories::OpenKind;
 pub use advisories::{Advisories, AdvisoriesError};
 use applicability::Applies;
 use backport::{Placement, ReleaseFrom, Ruling, Unplaced, Unsettled, Vulnerable, Withdrawal};
+pub use exploited::KnownExploited;
 
 /// The reserved identity the engine's built-in correlator stamps on every finding
 /// it produces, so a report can say exactly what concluded a vulnerability. A
@@ -334,15 +350,30 @@ pub fn correlate_with(host: &mut Host, catalogue: &Catalogue) {
 pub struct Correlator<'a> {
     catalogue: &'a Catalogue,
     advisories: &'a [Advisories],
+    exploited: &'a KnownExploited,
 }
 
 impl<'a> Correlator<'a> {
-    /// A correlation against `catalogue` and no distributor's data.
+    /// A correlation against `catalogue` and no distributor's data, marking
+    /// what it reports by the list of exploited vulnerabilities this crate
+    /// ships.
     pub fn new(catalogue: &'a Catalogue) -> Self {
         Self {
             catalogue,
             advisories: &[],
+            exploited: KnownExploited::embedded(),
         }
+    }
+
+    /// Marks what the correlation reports by `exploited` in place of the list
+    /// this crate ships: a newer copy of CISA's, or anybody else's.
+    ///
+    /// Marking only. A vulnerability the list names keeps the severity the
+    /// catalogue gives it and the confidence the verdict does, and one the
+    /// distributor's data withdrew stays withdrawn.
+    pub fn with_exploited(mut self, exploited: &'a KnownExploited) -> Self {
+        self.exploited = exploited;
+        self
     }
 
     /// Judges a distribution's build against its distributor's data, one
@@ -408,7 +439,9 @@ impl<'a> Correlator<'a> {
                     .filter_map(|cpe| Judged::of(service, cpe))
                     .map(|judged| judged.on_host(&releases))
                 {
-                    let judgement = self.catalogue.judge(&judged, self.advisories);
+                    let judgement =
+                        self.catalogue
+                            .judge(&judged, self.advisories, Some(self.exploited));
                     findings.extend(judgement.findings);
                     withdrawn.add(judgement.withdrawn);
                 }
@@ -679,7 +712,7 @@ impl Catalogue {
     #[cfg(test)]
     fn findings_for(&self, cpe: &str) -> Vec<Finding> {
         Judged::upstream(cpe)
-            .map(|judged| self.judge(&judged, &[]).findings)
+            .map(|judged| self.judge(&judged, &[], None).findings)
             .unwrap_or_default()
     }
 
@@ -691,8 +724,14 @@ impl Catalogue {
     /// said depends on more than the version: whether the entry constrained
     /// the version at all, where the flaw lives, and whose build the service
     /// is, which for a distribution's build means what the distributor's own
-    /// data in `advisories` says. See [`Verdict`].
-    fn judge(&self, judged: &Judged<'_>, advisories: &[Advisories]) -> Judgement {
+    /// data in `advisories` says. See [`Verdict`]. What `exploited` names is
+    /// marked on the findings that cite it.
+    fn judge(
+        &self,
+        judged: &Judged<'_>,
+        advisories: &[Advisories],
+        exploited: Option<&KnownExploited>,
+    ) -> Judgement {
         let mut matched: Vec<Vulnerability<'_>> = self
             .vulnerability
             .iter()
@@ -760,7 +799,13 @@ impl Catalogue {
         let findings = groups
             .into_iter()
             .filter_map(|(verdict, entries)| {
-                self.finding(&context, verdict, &entries, note.take().as_deref())
+                self.finding(
+                    &context,
+                    verdict,
+                    &entries,
+                    note.take().as_deref(),
+                    exploited,
+                )
             })
             .collect();
         Judgement {
@@ -784,13 +829,15 @@ impl Catalogue {
     /// a reader with the report open has the identifiers.
     ///
     /// `note` is a sentence about the identification as a whole, appended to
-    /// the excerpt.
+    /// the excerpt. What `exploited` names among the group is marked, cited
+    /// first and named in the excerpt.
     fn finding(
         &self,
         context: &Context<'_, '_>,
         verdict: Verdict,
         entries: &[Ruled<'_>],
         note: Option<&str>,
+        exploited: Option<&KnownExploited>,
     ) -> Option<Finding> {
         let judged = context.judged;
         let worst = &entries.first()?.vulnerability;
@@ -986,8 +1033,11 @@ impl Catalogue {
                 ),
             ),
         };
+        let exploitation = exploited
+            .and_then(|list| list.mark(entries.iter().map(|entry| entry.vulnerability.cve)));
         let excerpt = [
             Some(excerpt),
+            exploitation.as_ref().map(exploited_in_the_wild),
             priorities(context, entries),
             note.map(str::to_owned),
         ]
@@ -1023,12 +1073,25 @@ impl Catalogue {
         // Every one of them, because this is the record: a summary that says
         // forty-four and cites twenty is a report a reader cannot reconcile, and
         // the presentation is the right place to decide how many of them fit on
-        // a line. The severity sort above still decides the order, so a front
-        // end showing the first few shows the worst few.
-        for entry in entries {
+        // a line. Those somebody is exploiting first, then the rest, each worst
+        // first by the sort above, so a front end showing the first few shows
+        // the few to act on.
+        let listed = |entry: &&Ruled<'_>| {
+            exploitation
+                .as_ref()
+                .is_some_and(|marked| marked.cves().any(|cve| cve == entry.vulnerability.cve))
+        };
+        for entry in entries
+            .iter()
+            .filter(listed)
+            .chain(entries.iter().filter(|entry| !listed(entry)))
+        {
             if let Some(reference) = Reference::cve(entry.vulnerability.cve) {
                 finding = finding.with_reference(reference);
             }
+        }
+        if let Some(exploitation) = exploitation {
+            finding = finding.with_exploitation(exploitation);
         }
 
         // A weakness and a remedy describe one vulnerability. On a summary they
@@ -1047,6 +1110,26 @@ impl Catalogue {
         }
         Some(finding)
     }
+}
+
+/// The sentence an excerpt carries for the vulnerabilities a list names
+/// exploited: `Known exploited in the wild, by cisa:kev: CVE-2021-41773`.
+fn exploited_in_the_wild(exploitation: &crate::model::finding::Exploitation) -> String {
+    let cves: Vec<&str> = exploitation.cves().collect();
+    let named = cves
+        .iter()
+        .take(MAX_NAMED_IN_EXCERPT)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = match cves.len().saturating_sub(MAX_NAMED_IN_EXCERPT) {
+        0 => String::new(),
+        n => format!(" and {n} more"),
+    };
+    format!(
+        "Known exploited in the wild, by {}: {named}{more}",
+        exploitation.by().id()
+    )
 }
 
 /// One identification's findings, and what was withdrawn from it.
@@ -2195,7 +2278,7 @@ affected = "*"
             .cpes()
             .iter()
             .filter_map(|cpe| Judged::of(service, cpe))
-            .flat_map(|judged| catalogue.judge(&judged, &[]).findings)
+            .flat_map(|judged| catalogue.judge(&judged, &[], None).findings)
             .collect()
     }
 
@@ -2797,7 +2880,7 @@ mod verdicts {
             .with_cpe("cpe:/a:openbsd:openssh:6.6.1p1")
             .with_build(build);
         let judged = Judged::of(&service, "cpe:/a:openbsd:openssh:6.6.1p1").expect("a CPE");
-        catalogue().judge(&judged, advisories)
+        catalogue().judge(&judged, advisories, None)
     }
 
     fn kinds(judgement: &Judgement) -> Vec<(String, Confidence, Vec<String>)> {
@@ -2943,7 +3026,7 @@ mod verdicts {
             .with_cpe("cpe:/a:openbsd:openssh:6.6.1p1")
             .with_build(ubuntu_build(None, None));
         let mut judged = Judged::of(&service, "cpe:/a:openbsd:openssh:6.6.1p1").expect("a CPE");
-        let alone = catalogue().judge(&judged, &data);
+        let alone = catalogue().judge(&judged, &data, None);
         assert!(
             kinds(&alone)
                 .iter()
@@ -2953,7 +3036,7 @@ mod verdicts {
         );
 
         judged.host_release = Some("14.04".to_owned());
-        let placed = catalogue().judge(&judged, &data);
+        let placed = catalogue().judge(&judged, &data, None);
         assert!(
             kinds(&placed)
                 .iter()
@@ -3033,7 +3116,7 @@ mod verdicts {
             .with_cpe("cpe:/a:openbsd:openssh:6.6.1p1")
             .with_build(ubuntu_build(Some("2ubuntu2.13"), Some("14.04")));
         let judged = Judged::of(&service, "cpe:/a:openbsd:openssh:6.6.1p1").expect("a CPE");
-        let judgement = catalogue.judge(&judged, std::slice::from_ref(&ubuntu));
+        let judgement = catalogue.judge(&judged, std::slice::from_ref(&ubuntu), None);
 
         assert!(judgement.findings.is_empty(), "{:?}", kinds(&judgement));
         assert_eq!(
@@ -3043,6 +3126,129 @@ mod verdicts {
                 not_affected: 1,
                 elsewhere: 2
             }
+        );
+    }
+
+    /// A list of exploited vulnerabilities marks what a correlation reports
+    /// and decides nothing: the marked are cited first, the severity and the
+    /// confidence stay the verdict's, and what the distributor fixed or never
+    /// shipped stays withdrawn however widely it is exploited elsewhere.
+    #[test]
+    fn a_list_of_exploited_vulnerabilities_marks_and_decides_nothing() {
+        let data = [ubuntu()];
+        let list = KnownExploited::new(
+            "acme:exploited",
+            Version::new(1, 0, 0),
+            ["CVE-2099-0001", "CVE-2099-0005", "CVE-2099-0007"],
+        )
+        .expect("a valid list");
+        let service = Service::new("ssh", 100)
+            .with_product("OpenSSH")
+            .with_version("6.6.1p1")
+            .with_cpe("cpe:/a:openbsd:openssh:6.6.1p1")
+            .with_build(ubuntu_build(Some("2ubuntu2.13"), Some("14.04")));
+        let judged = Judged::of(&service, "cpe:/a:openbsd:openssh:6.6.1p1").expect("a CPE");
+        let unmarked = catalogue().judge(&judged, &data, None);
+        let marked = catalogue().judge(&judged, &data, Some(&list));
+
+        assert_eq!(marked.withdrawn, unmarked.withdrawn);
+        assert_eq!(marked.findings.len(), unmarked.findings.len());
+        for (marked, unmarked) in marked.findings.iter().zip(&unmarked.findings) {
+            assert_eq!(marked.claim_id(), unmarked.claim_id());
+            assert_eq!(marked.severity(), unmarked.severity());
+            assert_eq!(marked.confidence(), unmarked.confidence());
+            let cited = |finding: &Finding| finding.references().cloned().collect::<BTreeSet<_>>();
+            assert_eq!(cited(marked), cited(unmarked));
+        }
+
+        // Only the untriaged claim cites a listed vulnerability that stands;
+        // the fixed and the never-shipped ones the list also names mark
+        // nothing.
+        let (listed, rest): (Vec<&Finding>, Vec<&Finding>) = marked
+            .findings
+            .iter()
+            .partition(|finding| finding.exploitation().is_some());
+        assert_eq!(listed.len(), 1);
+        assert!(rest.iter().all(|finding| finding.exploitation().is_none()));
+
+        let untriaged = listed[0];
+        let exploitation = untriaged.exploitation().unwrap();
+        assert_eq!(exploitation.cves().collect::<Vec<_>>(), ["CVE-2099-0007"]);
+        assert_eq!(exploitation.by().id(), "acme:exploited");
+        assert_eq!(
+            kinds(&Judgement {
+                findings: vec![untriaged.clone()],
+                withdrawn: Withdrawn::default(),
+            })[0]
+                .2,
+            ["CVE-2099-0007", "CVE-2099-0006"],
+            "the exploited one is cited first"
+        );
+        assert!(
+            untriaged
+                .excerpt()
+                .as_str()
+                .contains("Known exploited in the wild, by acme:exploited: CVE-2099-0007"),
+            "{}",
+            untriaged.excerpt().as_str()
+        );
+    }
+
+    /// A correlation marks by the list the crate ships unless it is handed
+    /// another, which then marks in its place.
+    #[test]
+    fn a_correlator_marks_by_the_shipped_list_unless_handed_another() {
+        let apache = || {
+            let mut host = Host::new("192.0.2.1".parse().unwrap());
+            host.add_port(
+                crate::model::port::Port::new(
+                    80,
+                    Protocol::Tcp,
+                    crate::model::port::PortState::Open,
+                )
+                .with_service(
+                    Service::new("http", 90).with_cpe("cpe:/a:apache:http_server:2.4.49"),
+                ),
+            );
+            host
+        };
+        let marked_by = |host: &Host| -> Vec<(String, Vec<String>)> {
+            host.ports()
+                .flat_map(|port| port.findings())
+                .filter_map(|finding| finding.exploitation())
+                .map(|marked| {
+                    (
+                        marked.by().id().to_owned(),
+                        marked.cves().map(str::to_owned).collect(),
+                    )
+                })
+                .collect()
+        };
+
+        let mut shipped = apache();
+        Correlator::new(Catalogue::embedded()).correlate(&mut shipped);
+        let shipped = marked_by(&shipped);
+        assert!(!shipped.is_empty());
+        assert!(shipped.iter().all(|(by, _)| by == "cisa:kev"));
+        assert!(
+            shipped
+                .iter()
+                .any(|(_, cves)| cves.iter().any(|cve| cve == "CVE-2021-41773")),
+            "{shipped:?}"
+        );
+
+        let list = KnownExploited::new("acme:exploited", Version::new(1, 0, 0), ["CVE-2021-42013"])
+            .unwrap();
+        let mut other = apache();
+        Correlator::new(Catalogue::embedded())
+            .with_exploited(&list)
+            .correlate(&mut other);
+        assert_eq!(
+            marked_by(&other),
+            [(
+                "acme:exploited".to_owned(),
+                vec!["CVE-2021-42013".to_owned()]
+            )]
         );
     }
 }

@@ -513,6 +513,65 @@ impl DetectionId {
     }
 }
 
+/// Which of a finding's vulnerabilities are known to be exploited in the wild,
+/// and whose list says so.
+///
+/// Beside the verdict rather than part of it. That somebody is exploiting a
+/// vulnerability says nothing about whether this host has it, which the
+/// [`Confidence`] answers, nor about how bad it is if it does, which the
+/// [`Severity`] answers. It says which of the claims a host does carry are
+/// already being used against someone, which is the order a reader works
+/// through them in. So it raises neither axis, and a front end marks and
+/// orders by it.
+///
+/// Stamped with the list that said so, for the reason a finding is stamped
+/// with its detection: the list is somebody else's data on somebody else's
+/// schedule, CISA's by default, and a report has to say which copy of it
+/// marked what.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Exploitation {
+    by: DetectionId,
+    cves: Vec<String>,
+}
+
+impl Exploitation {
+    /// The CVE identifiers among `cves` that `by` lists as exploited, in the
+    /// order given and without repeats, or [`FindingError::NoExploitedCve`]
+    /// where none of them is one.
+    ///
+    /// Anything not shaped like a CVE identifier is left out, as
+    /// [`Reference::cve`] leaves it out, since a malformed identifier names
+    /// nothing a finding could cite.
+    pub fn new(
+        by: DetectionId,
+        cves: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<Self, FindingError> {
+        let mut kept: Vec<String> = Vec::new();
+        for cve in cves {
+            let cve = cve.into();
+            if is_cve_shaped(&cve) && !kept.contains(&cve) {
+                kept.push(cve);
+            }
+        }
+        if kept.is_empty() {
+            return Err(FindingError::NoExploitedCve);
+        }
+        Ok(Self { by, cves: kept })
+    }
+
+    /// The list that names them exploited: its identity, version and content
+    /// hash. Untrusted; escape before display.
+    pub fn by(&self) -> &DetectionId {
+        &self.by
+    }
+
+    /// The finding's vulnerabilities the list names, in the order the finding
+    /// cites them. Never empty.
+    pub fn cves(&self) -> impl Iterator<Item = &str> {
+        self.cves.iter().map(String::as_str)
+    }
+}
+
 /// What makes two findings *the same finding*: the detection that asserts it and
 /// the thing it asserts.
 ///
@@ -616,6 +675,9 @@ pub struct Finding {
     /// finding withdrawn or confirmed by the second has to say which snapshot
     /// of it did, for the reason the first is stamped at all.
     advised_by: Option<DetectionId>,
+    /// Which of the vulnerabilities it cites are known to be exploited, where
+    /// the correlation that drew it consulted a list naming any.
+    exploitation: Option<Exploitation>,
 }
 
 impl Finding {
@@ -650,6 +712,7 @@ impl Finding {
             subject: None,
             build: None,
             advised_by: None,
+            exploitation: None,
             group: None,
         })
     }
@@ -716,6 +779,14 @@ impl Finding {
         self
     }
 
+    /// Records which of the vulnerabilities it cites are known to be
+    /// exploited.
+    #[must_use]
+    pub fn with_exploitation(mut self, exploitation: Exploitation) -> Self {
+        self.exploitation = Some(exploitation);
+        self
+    }
+
     /// Records which group of findings this one belongs to.
     #[must_use]
     pub fn with_group(mut self, group: FindingGroup) -> Self {
@@ -741,6 +812,12 @@ impl Finding {
     /// The distributor's advisory data a correlation consulted, if any.
     pub fn advised_by(&self) -> Option<&DetectionId> {
         self.advised_by.as_ref()
+    }
+
+    /// Which of the vulnerabilities it cites are known to be exploited, if a
+    /// list consulted names any.
+    pub fn exploitation(&self) -> Option<&Exploitation> {
+        self.exploitation.as_ref()
     }
 
     /// The detection that produced this finding.
@@ -883,8 +960,9 @@ impl Finding {
     /// earlier account ever cited into every later report, at the surest grade
     /// any account ever gave it, which is the outcome a distribution's own fix
     /// data is consulted to prevent. So an account of a correlation at the
-    /// same version or newer replaces the certainty, the references, the build
-    /// and the advisory stamp outright, and an older one supplies none of them.
+    /// same version or newer replaces the certainty, the references, the build,
+    /// the advisory stamp and which of its vulnerabilities are known exploited
+    /// outright, and an older one supplies none of them.
     ///
     /// The excerpt and the remediation travel with the verdict where there is
     /// one to take, and fill a gap where there is not.
@@ -911,6 +989,7 @@ impl Finding {
             subject,
             build,
             advised_by,
+            exploitation,
             group,
         } = other;
 
@@ -937,6 +1016,10 @@ impl Finding {
                     self.advised_by = advised_by;
                     changed = true;
                 }
+                if exploitation != self.exploitation {
+                    self.exploitation = exploitation;
+                    changed = true;
+                }
             }
         } else {
             let stronger = self.confidence.max(confidence);
@@ -956,6 +1039,10 @@ impl Finding {
             }
             if self.advised_by.is_none() && advised_by.is_some() {
                 self.advised_by = advised_by;
+                changed = true;
+            }
+            if self.exploitation.is_none() && exploitation.is_some() {
+                self.exploitation = exploitation;
                 changed = true;
             }
         }
@@ -1051,8 +1138,8 @@ pub(crate) enum Standing {
 
 /// Why a [`Finding`] or a [`DetectionId`] could not be constructed.
 ///
-/// Every case is an empty identifier, title or phrase. A finding has to say
-/// what produced it and what it claims, and a blank string says neither.
+/// Every case is an empty identifier, title, phrase or list. A finding has to
+/// say what produced it and what it claims, and a blank string says neither.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum FindingError {
@@ -1067,6 +1154,10 @@ pub enum FindingError {
     /// nothing can be gathered by.
     #[error("a finding group needs both an id and a summary")]
     EmptyGroup,
+    /// An [`Exploitation`] was given no CVE identifier. A list that marks none
+    /// of a finding's vulnerabilities marks nothing, and is left off it.
+    #[error("an exploitation needs at least one CVE identifier")]
+    NoExploitedCve,
 }
 
 #[cfg(test)]

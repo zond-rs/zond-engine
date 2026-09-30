@@ -74,7 +74,8 @@ use crate::info;
 use crate::model::capture::CaptureCounts;
 use crate::model::confidence::Confidence;
 use crate::model::finding::{
-    DetectionClass, DetectionId, Excerpt, Finding, FindingGroup, Reference, Severity, Version,
+    DetectionClass, DetectionId, Excerpt, Exploitation, Finding, FindingGroup, Reference, Severity,
+    Version,
 };
 use crate::model::host::os::OsFingerprint;
 use crate::model::host::path::Hop;
@@ -1066,6 +1067,10 @@ pub struct FindingRecord {
     /// absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advised_by: Option<DetectionIdRecord>,
+    /// Which of the vulnerabilities it cites are known to be exploited, and
+    /// whose list says so. Omitted when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exploited: Option<ExploitationRecord>,
     /// The group of detections this finding's own detection covers a weakness
     /// with, where it declared one.
     ///
@@ -1073,6 +1078,34 @@ pub struct FindingRecord {
     /// every finding whose detection stands alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<FindingGroupRecord>,
+}
+
+/// Which of a finding's vulnerabilities are known to be exploited, as a journal
+/// records it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExploitationRecord {
+    /// The list that names them.
+    pub by: DetectionIdRecord,
+    /// The CVE identifiers it names, in the order the finding cites them.
+    pub cves: Vec<String>,
+}
+
+impl From<&Exploitation> for ExploitationRecord {
+    fn from(exploitation: &Exploitation) -> Self {
+        Self {
+            by: DetectionIdRecord::from(exploitation.by()),
+            cves: exploitation.cves().map(str::to_owned).collect(),
+        }
+    }
+}
+
+impl ExploitationRecord {
+    /// Rebuilds the marking, or [`None`] where the list names nothing or none
+    /// of the identifiers is a CVE's. A finding whose marking does not rebuild
+    /// is kept without it.
+    pub fn rebuild(&self) -> Option<Exploitation> {
+        Exploitation::new(self.by.rebuild()?, self.cves.iter().cloned()).ok()
+    }
 }
 
 /// A finding's group, as a journal records it: the identity its members share
@@ -1120,6 +1153,7 @@ impl From<&Finding> for FindingRecord {
             subject: finding.subject().map(str::to_owned),
             build: finding.build().map(BuildRecord::from),
             advised_by: finding.advised_by().map(DetectionIdRecord::from),
+            exploited: finding.exploitation().map(ExploitationRecord::from),
             group: finding.group().map(FindingGroupRecord::from),
         }
     }
@@ -1171,6 +1205,13 @@ impl FindingRecord {
             .and_then(DetectionIdRecord::rebuild)
         {
             finding = finding.with_advised_by(advised_by);
+        }
+        if let Some(exploitation) = self
+            .exploited
+            .as_ref()
+            .and_then(ExploitationRecord::rebuild)
+        {
+            finding = finding.with_exploitation(exploitation);
         }
         if let Some(group) = self.group.as_ref().and_then(FindingGroupRecord::rebuild) {
             finding = finding.with_group(group);
@@ -3049,6 +3090,7 @@ mod tests {
             subject: None,
             build: None,
             advised_by: None,
+            exploited: None,
         };
         let finding = softened
             .rebuild()

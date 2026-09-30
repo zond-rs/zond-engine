@@ -1666,8 +1666,9 @@ pub(super) fn run_correlation(ctx: &ScanContext, detection: ServiceDetection) {
     }
 
     let catalogue = crate::cve::Catalogue::embedded();
-    let correlator =
-        crate::cve::Correlator::new(catalogue).with_advisories(ctx.detections.advisories());
+    let correlator = crate::cve::Correlator::new(catalogue)
+        .with_advisories(ctx.detections.advisories())
+        .with_exploited(ctx.detections.exploited());
     let mut withdrawn = crate::cve::Withdrawn::default();
     for key in ctx.hosts_owed_passes() {
         let judged = ctx

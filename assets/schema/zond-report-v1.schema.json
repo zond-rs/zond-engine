@@ -1205,6 +1205,50 @@
             }
           }
         },
+        "exploited": {
+          "description": "Which of the vulnerabilities in `references` are known to be exploited in the wild, and whose list says so: CISA's Known Exploited Vulnerabilities catalogue unless the caller supplied another. It raises neither the severity nor the confidence; a consumer marks the finding and orders by it. Absent where no list consulted names any of them.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "by",
+            "cves"
+          ],
+          "properties": {
+            "by": {
+              "description": "The list that names them, stamped as a detection is.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "version",
+                "content_hash"
+              ],
+              "properties": {
+                "id": {
+                  "description": "The list's identity, such as `cisa:kev`. Untrusted.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "The list's version, as `major.minor.patch`, read off its publication date.",
+                  "type": "string"
+                },
+                "content_hash": {
+                  "description": "The content hash of the list, for reproducibility.",
+                  "type": "string"
+                }
+              }
+            },
+            "cves": {
+              "description": "The CVE identifiers it names, in the order the finding cites them.",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^CVE-[0-9]{4}-[0-9]+$"
+              }
+            }
+          }
+        },
         "group": {
           "description": "What the finding is one of, where several detections cover one weakness between them and say so: four readings of one SSH handshake are four findings and also one sentence. Absent from a finding whose detection stands alone, which is most of them. Untrusted.",
           "type": "object",

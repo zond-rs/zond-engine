@@ -408,6 +408,7 @@ impl Coded for FindingError {
             FindingError::EmptyId => "finding.empty_id",
             FindingError::EmptyTitle => "finding.empty_title",
             FindingError::EmptyGroup => "finding.empty_group",
+            FindingError::NoExploitedCve => "finding.no_exploited_cve",
         }
     }
 }
@@ -1030,6 +1031,7 @@ mod tests {
             "finding.empty_id",
             "finding.empty_title",
             "finding.malformed_version",
+            "finding.no_exploited_cve",
             "flow.empty",
             "flow.expected",
             "flow.int_overflow",

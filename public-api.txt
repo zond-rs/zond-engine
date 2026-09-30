@@ -590,6 +590,7 @@ pub fn zond_engine::cve::Correlator<'a>::correlate(&self, &mut zond_engine::mode
 pub fn zond_engine::cve::Correlator<'a>::correlate_report(&self, &mut zond_engine::report::ScanReport)
 pub fn zond_engine::cve::Correlator<'a>::new(&'a zond_engine::cve::Catalogue) -> Self
 pub fn zond_engine::cve::Correlator<'a>::with_advisories(self, &'a [zond_engine::cve::Advisories]) -> Self
+pub fn zond_engine::cve::Correlator<'a>::with_exploited(self, &'a zond_engine::cve::KnownExploited) -> Self
 impl<'a> core::clone::Clone for zond_engine::cve::Correlator<'a>
 pub fn zond_engine::cve::Correlator<'a>::clone(&self) -> zond_engine::cve::Correlator<'a>
 impl<'a> core::fmt::Debug for zond_engine::cve::Correlator<'a>
@@ -602,6 +603,29 @@ impl<'a> core::marker::Unpin for zond_engine::cve::Correlator<'a>
 impl<'a> core::marker::UnsafeUnpin for zond_engine::cve::Correlator<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::cve::Correlator<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::cve::Correlator<'a>
+pub struct zond_engine::cve::KnownExploited
+impl zond_engine::cve::KnownExploited
+pub fn zond_engine::cve::KnownExploited::contains(&self, &str) -> bool
+pub fn zond_engine::cve::KnownExploited::content_hash(&self) -> &str
+pub fn zond_engine::cve::KnownExploited::embedded() -> &'static Self
+pub fn zond_engine::cve::KnownExploited::id(&self) -> &str
+pub fn zond_engine::cve::KnownExploited::is_empty(&self) -> bool
+pub fn zond_engine::cve::KnownExploited::len(&self) -> usize
+pub fn zond_engine::cve::KnownExploited::new(impl core::convert::Into<alloc::string::String>, zond_engine::model::finding::Version, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>) -> core::result::Result<Self, zond_engine::cve::CatalogueError>
+pub fn zond_engine::cve::KnownExploited::read(&mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<Self, zond_engine::cve::CatalogueError>
+pub fn zond_engine::cve::KnownExploited::to_document(&self) -> alloc::string::String
+pub fn zond_engine::cve::KnownExploited::version(&self) -> zond_engine::model::finding::Version
+impl core::clone::Clone for zond_engine::cve::KnownExploited
+pub fn zond_engine::cve::KnownExploited::clone(&self) -> zond_engine::cve::KnownExploited
+impl core::fmt::Debug for zond_engine::cve::KnownExploited
+pub fn zond_engine::cve::KnownExploited::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::cve::KnownExploited
+impl core::marker::Send for zond_engine::cve::KnownExploited
+impl core::marker::Sync for zond_engine::cve::KnownExploited
+impl core::marker::Unpin for zond_engine::cve::KnownExploited
+impl core::marker::UnsafeUnpin for zond_engine::cve::KnownExploited
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::cve::KnownExploited
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::cve::KnownExploited
 pub const zond_engine::cve::MAX_DOCUMENT_BYTES: u64
 pub fn zond_engine::cve::correlate(&mut zond_engine::model::host::Host)
 pub fn zond_engine::cve::correlate_report(&mut zond_engine::report::ScanReport, &zond_engine::cve::Catalogue)
@@ -1459,6 +1483,7 @@ pub fn zond_engine::detect::corpus::Detections::builder() -> zond_engine::detect
 pub fn zond_engine::detect::corpus::Detections::embedded() -> Self
 pub fn zond_engine::detect::corpus::Detections::listing(&self) -> alloc::vec::Vec<zond_engine::detect::corpus::DetectionSummary>
 pub fn zond_engine::detect::corpus::Detections::with_advisories(self, impl core::iter::traits::collect::IntoIterator<Item = zond_engine::cve::Advisories>) -> Self
+pub fn zond_engine::detect::corpus::Detections::with_exploited(self, zond_engine::cve::KnownExploited) -> Self
 impl core::clone::Clone for zond_engine::detect::corpus::Detections
 pub fn zond_engine::detect::corpus::Detections::clone(&self) -> zond_engine::detect::corpus::Detections
 impl core::default::Default for zond_engine::detect::corpus::Detections
@@ -1969,6 +1994,7 @@ pub fn zond_engine::detect::corpus::Detections::builder() -> zond_engine::detect
 pub fn zond_engine::detect::corpus::Detections::embedded() -> Self
 pub fn zond_engine::detect::corpus::Detections::listing(&self) -> alloc::vec::Vec<zond_engine::detect::corpus::DetectionSummary>
 pub fn zond_engine::detect::corpus::Detections::with_advisories(self, impl core::iter::traits::collect::IntoIterator<Item = zond_engine::cve::Advisories>) -> Self
+pub fn zond_engine::detect::corpus::Detections::with_exploited(self, zond_engine::cve::KnownExploited) -> Self
 impl core::clone::Clone for zond_engine::detect::corpus::Detections
 pub fn zond_engine::detect::corpus::Detections::clone(&self) -> zond_engine::detect::corpus::Detections
 impl core::default::Default for zond_engine::detect::corpus::Detections
@@ -3707,6 +3733,39 @@ impl core::marker::Unpin for zond_engine::export::schema::EvasionDto
 impl core::marker::UnsafeUnpin for zond_engine::export::schema::EvasionDto
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::EvasionDto
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::EvasionDto
+#[non_exhaustive] pub struct zond_engine::export::schema::ExploitedByDto<'a>
+pub zond_engine::export::schema::ExploitedByDto::content_hash: &'a str
+pub zond_engine::export::schema::ExploitedByDto::id: &'a str
+pub zond_engine::export::schema::ExploitedByDto::version: alloc::string::String
+impl<'a> core::clone::Clone for zond_engine::export::schema::ExploitedByDto<'a>
+pub fn zond_engine::export::schema::ExploitedByDto<'a>::clone(&self) -> zond_engine::export::schema::ExploitedByDto<'a>
+impl<'a> core::fmt::Debug for zond_engine::export::schema::ExploitedByDto<'a>
+pub fn zond_engine::export::schema::ExploitedByDto<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> serde_core::ser::Serialize for zond_engine::export::schema::ExploitedByDto<'a>
+pub fn zond_engine::export::schema::ExploitedByDto<'a>::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'a> core::marker::Freeze for zond_engine::export::schema::ExploitedByDto<'a>
+impl<'a> core::marker::Send for zond_engine::export::schema::ExploitedByDto<'a>
+impl<'a> core::marker::Sync for zond_engine::export::schema::ExploitedByDto<'a>
+impl<'a> core::marker::Unpin for zond_engine::export::schema::ExploitedByDto<'a>
+impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::ExploitedByDto<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::ExploitedByDto<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::ExploitedByDto<'a>
+#[non_exhaustive] pub struct zond_engine::export::schema::ExploitedDto<'a>
+pub zond_engine::export::schema::ExploitedDto::by: zond_engine::export::schema::ExploitedByDto<'a>
+pub zond_engine::export::schema::ExploitedDto::cves: alloc::vec::Vec<&'a str>
+impl<'a> core::clone::Clone for zond_engine::export::schema::ExploitedDto<'a>
+pub fn zond_engine::export::schema::ExploitedDto<'a>::clone(&self) -> zond_engine::export::schema::ExploitedDto<'a>
+impl<'a> core::fmt::Debug for zond_engine::export::schema::ExploitedDto<'a>
+pub fn zond_engine::export::schema::ExploitedDto<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> serde_core::ser::Serialize for zond_engine::export::schema::ExploitedDto<'a>
+pub fn zond_engine::export::schema::ExploitedDto<'a>::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'a> core::marker::Freeze for zond_engine::export::schema::ExploitedDto<'a>
+impl<'a> core::marker::Send for zond_engine::export::schema::ExploitedDto<'a>
+impl<'a> core::marker::Sync for zond_engine::export::schema::ExploitedDto<'a>
+impl<'a> core::marker::Unpin for zond_engine::export::schema::ExploitedDto<'a>
+impl<'a> core::marker::UnsafeUnpin for zond_engine::export::schema::ExploitedDto<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for zond_engine::export::schema::ExploitedDto<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for zond_engine::export::schema::ExploitedDto<'a>
 #[non_exhaustive] pub struct zond_engine::export::schema::FailureDto<'a>
 pub zond_engine::export::schema::FailureDto::at: alloc::string::String
 pub zond_engine::export::schema::FailureDto::cut_short: bool
@@ -3754,6 +3813,7 @@ pub zond_engine::export::schema::FindingDto::content_hash: &'a str
 pub zond_engine::export::schema::FindingDto::cpe: core::option::Option<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::FindingDto::cpes: alloc::vec::Vec<alloc::borrow::Cow<'a, str>>
 pub zond_engine::export::schema::FindingDto::excerpt: core::option::Option<alloc::borrow::Cow<'a, str>>
+pub zond_engine::export::schema::FindingDto::exploited: core::option::Option<zond_engine::export::schema::ExploitedDto<'a>>
 pub zond_engine::export::schema::FindingDto::group: core::option::Option<zond_engine::export::schema::GroupDto<'a>>
 pub zond_engine::export::schema::FindingDto::id: &'a str
 pub zond_engine::export::schema::FindingDto::references: alloc::vec::Vec<zond_engine::export::schema::ReferenceDto<'a>>
@@ -4762,6 +4822,7 @@ impl core::marker::UnsafeUnpin for zond_engine::fetch::advisory::Dataset
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::advisory::Dataset
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::advisory::Dataset
 #[non_exhaustive] pub enum zond_engine::fetch::advisory::Feed
+pub zond_engine::fetch::advisory::Feed::CisaKev
 pub zond_engine::fetch::advisory::Feed::DebianTracker
 pub zond_engine::fetch::advisory::Feed::UbuntuOsv
 pub zond_engine::fetch::advisory::Feed::UbuntuVex
@@ -4803,6 +4864,21 @@ impl core::marker::Unpin for zond_engine::fetch::advisory::Loaded
 impl core::marker::UnsafeUnpin for zond_engine::fetch::advisory::Loaded
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::advisory::Loaded
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::advisory::Loaded
+#[non_exhaustive] pub struct zond_engine::fetch::advisory::LoadedList
+pub zond_engine::fetch::advisory::LoadedList::exploited: zond_engine::cve::KnownExploited
+pub zond_engine::fetch::advisory::LoadedList::metadata: zond_engine::fetch::Metadata
+impl core::clone::Clone for zond_engine::fetch::advisory::LoadedList
+pub fn zond_engine::fetch::advisory::LoadedList::clone(&self) -> zond_engine::fetch::advisory::LoadedList
+impl core::fmt::Debug for zond_engine::fetch::advisory::LoadedList
+pub fn zond_engine::fetch::advisory::LoadedList::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for zond_engine::fetch::advisory::LoadedList
+impl core::marker::Send for zond_engine::fetch::advisory::LoadedList
+impl core::marker::Sync for zond_engine::fetch::advisory::LoadedList
+impl core::marker::Unpin for zond_engine::fetch::advisory::LoadedList
+impl core::marker::UnsafeUnpin for zond_engine::fetch::advisory::LoadedList
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::fetch::advisory::LoadedList
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::fetch::advisory::LoadedList
+pub fn zond_engine::fetch::advisory::known_exploited(&zond_engine::fetch::Store) -> core::result::Result<core::option::Option<zond_engine::fetch::advisory::LoadedList>, zond_engine::fetch::FetchError>
 #[non_exhaustive] pub enum zond_engine::fetch::Derivation
 pub zond_engine::fetch::Derivation::Built(zond_engine::fetch::DerivedMetadata)
 pub zond_engine::fetch::Derivation::Current(zond_engine::fetch::DerivedMetadata)
@@ -6753,6 +6829,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for zond_engine::import::kev::KevE
 impl !core::panic::unwind_safe::UnwindSafe for zond_engine::import::kev::KevError
 pub const zond_engine::import::kev::KEV_ID: &str
 pub fn zond_engine::import::kev::cpe_identity(&str) -> alloc::string::String
+pub fn zond_engine::import::kev::exploited(&mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<zond_engine::cve::KnownExploited, zond_engine::import::kev::KevError>
 pub fn zond_engine::import::kev::read(&mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<zond_engine::cve::Catalogue, zond_engine::import::kev::KevError>
 pub fn zond_engine::import::kev::to_document(&mut dyn alloc::io::buf_read::BufRead) -> core::result::Result<alloc::string::String, zond_engine::import::kev::KevError>
 pub mod zond_engine::import::list
@@ -8806,6 +8883,7 @@ impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::finding::Detec
 pub zond_engine::model::finding::FindingError::EmptyGroup
 pub zond_engine::model::finding::FindingError::EmptyId
 pub zond_engine::model::finding::FindingError::EmptyTitle
+pub zond_engine::model::finding::FindingError::NoExploitedCve
 impl core::clone::Clone for zond_engine::model::finding::FindingError
 pub fn zond_engine::model::finding::FindingError::clone(&self) -> zond_engine::model::finding::FindingError
 impl core::cmp::Eq for zond_engine::model::finding::FindingError
@@ -8968,6 +9046,30 @@ impl core::marker::Unpin for zond_engine::model::finding::Excerpt
 impl core::marker::UnsafeUnpin for zond_engine::model::finding::Excerpt
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::finding::Excerpt
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::finding::Excerpt
+pub struct zond_engine::model::finding::Exploitation
+impl zond_engine::model::finding::Exploitation
+pub fn zond_engine::model::finding::Exploitation::by(&self) -> &zond_engine::model::finding::DetectionId
+pub fn zond_engine::model::finding::Exploitation::cves(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str>
+pub fn zond_engine::model::finding::Exploitation::new(zond_engine::model::finding::DetectionId, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>) -> core::result::Result<Self, zond_engine::model::finding::FindingError>
+impl core::clone::Clone for zond_engine::model::finding::Exploitation
+pub fn zond_engine::model::finding::Exploitation::clone(&self) -> zond_engine::model::finding::Exploitation
+impl core::cmp::Eq for zond_engine::model::finding::Exploitation
+impl core::cmp::PartialEq for zond_engine::model::finding::Exploitation
+pub fn zond_engine::model::finding::Exploitation::eq(&self, &zond_engine::model::finding::Exploitation) -> bool
+impl core::convert::From<&zond_engine::model::finding::Exploitation> for zond_engine::record::ExploitationRecord
+pub fn zond_engine::record::ExploitationRecord::from(&zond_engine::model::finding::Exploitation) -> Self
+impl core::fmt::Debug for zond_engine::model::finding::Exploitation
+pub fn zond_engine::model::finding::Exploitation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::finding::Exploitation
+pub fn zond_engine::model::finding::Exploitation::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for zond_engine::model::finding::Exploitation
+impl core::marker::Freeze for zond_engine::model::finding::Exploitation
+impl core::marker::Send for zond_engine::model::finding::Exploitation
+impl core::marker::Sync for zond_engine::model::finding::Exploitation
+impl core::marker::Unpin for zond_engine::model::finding::Exploitation
+impl core::marker::UnsafeUnpin for zond_engine::model::finding::Exploitation
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::finding::Exploitation
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::finding::Exploitation
 pub struct zond_engine::model::finding::Finding
 impl zond_engine::model::finding::Finding
 pub fn zond_engine::model::finding::Finding::advised_by(&self) -> core::option::Option<&zond_engine::model::finding::DetectionId>
@@ -8979,6 +9081,7 @@ pub fn zond_engine::model::finding::Finding::corroborate(&mut self, zond_engine:
 pub fn zond_engine::model::finding::Finding::cpes(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str>
 pub fn zond_engine::model::finding::Finding::detection(&self) -> &zond_engine::model::finding::DetectionId
 pub fn zond_engine::model::finding::Finding::excerpt(&self) -> &zond_engine::model::finding::Excerpt
+pub fn zond_engine::model::finding::Finding::exploitation(&self) -> core::option::Option<&zond_engine::model::finding::Exploitation>
 pub fn zond_engine::model::finding::Finding::group(&self) -> core::option::Option<&zond_engine::model::finding::FindingGroup>
 pub fn zond_engine::model::finding::Finding::new(zond_engine::model::finding::DetectionId, impl core::convert::Into<alloc::string::String>, zond_engine::model::finding::Severity, zond_engine::model::confidence::Confidence, zond_engine::model::finding::DetectionClass) -> core::result::Result<Self, zond_engine::model::finding::FindingError>
 pub fn zond_engine::model::finding::Finding::references(&self) -> impl core::iter::traits::iterator::Iterator<Item = &zond_engine::model::finding::Reference>
@@ -8990,6 +9093,7 @@ pub fn zond_engine::model::finding::Finding::with_advised_by(self, zond_engine::
 pub fn zond_engine::model::finding::Finding::with_build(self, zond_engine::model::port::build::Build) -> Self
 pub fn zond_engine::model::finding::Finding::with_cpe(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn zond_engine::model::finding::Finding::with_excerpt(self, zond_engine::model::finding::Excerpt) -> Self
+pub fn zond_engine::model::finding::Finding::with_exploitation(self, zond_engine::model::finding::Exploitation) -> Self
 pub fn zond_engine::model::finding::Finding::with_group(self, zond_engine::model::finding::FindingGroup) -> Self
 pub fn zond_engine::model::finding::Finding::with_reference(self, zond_engine::model::finding::Reference) -> Self
 pub fn zond_engine::model::finding::Finding::with_remediation(self, impl core::convert::Into<alloc::string::String>) -> Self
@@ -14576,6 +14680,32 @@ impl core::marker::Unpin for zond_engine::record::EvasionSettingsRecord
 impl core::marker::UnsafeUnpin for zond_engine::record::EvasionSettingsRecord
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::EvasionSettingsRecord
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::EvasionSettingsRecord
+pub struct zond_engine::record::ExploitationRecord
+pub zond_engine::record::ExploitationRecord::by: zond_engine::record::DetectionIdRecord
+pub zond_engine::record::ExploitationRecord::cves: alloc::vec::Vec<alloc::string::String>
+impl zond_engine::record::ExploitationRecord
+pub fn zond_engine::record::ExploitationRecord::rebuild(&self) -> core::option::Option<zond_engine::model::finding::Exploitation>
+impl core::clone::Clone for zond_engine::record::ExploitationRecord
+pub fn zond_engine::record::ExploitationRecord::clone(&self) -> zond_engine::record::ExploitationRecord
+impl core::cmp::Eq for zond_engine::record::ExploitationRecord
+impl core::cmp::PartialEq for zond_engine::record::ExploitationRecord
+pub fn zond_engine::record::ExploitationRecord::eq(&self, &zond_engine::record::ExploitationRecord) -> bool
+impl core::convert::From<&zond_engine::model::finding::Exploitation> for zond_engine::record::ExploitationRecord
+pub fn zond_engine::record::ExploitationRecord::from(&zond_engine::model::finding::Exploitation) -> Self
+impl core::fmt::Debug for zond_engine::record::ExploitationRecord
+pub fn zond_engine::record::ExploitationRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::record::ExploitationRecord
+impl serde_core::ser::Serialize for zond_engine::record::ExploitationRecord
+pub fn zond_engine::record::ExploitationRecord::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::record::ExploitationRecord
+pub fn zond_engine::record::ExploitationRecord::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for zond_engine::record::ExploitationRecord
+impl core::marker::Send for zond_engine::record::ExploitationRecord
+impl core::marker::Sync for zond_engine::record::ExploitationRecord
+impl core::marker::Unpin for zond_engine::record::ExploitationRecord
+impl core::marker::UnsafeUnpin for zond_engine::record::ExploitationRecord
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::record::ExploitationRecord
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::record::ExploitationRecord
 pub struct zond_engine::record::FailureRecord
 pub zond_engine::record::FailureRecord::at: std::time::SystemTime
 pub zond_engine::record::FailureRecord::cut_short: bool
@@ -14639,6 +14769,7 @@ pub zond_engine::record::FindingRecord::cpe: core::option::Option<alloc::string:
 pub zond_engine::record::FindingRecord::cpes: alloc::vec::Vec<alloc::string::String>
 pub zond_engine::record::FindingRecord::detection: zond_engine::record::DetectionIdRecord
 pub zond_engine::record::FindingRecord::excerpt: core::option::Option<alloc::string::String>
+pub zond_engine::record::FindingRecord::exploited: core::option::Option<zond_engine::record::ExploitationRecord>
 pub zond_engine::record::FindingRecord::group: core::option::Option<zond_engine::record::FindingGroupRecord>
 pub zond_engine::record::FindingRecord::references: alloc::vec::Vec<zond_engine::record::ReferenceRecord>
 pub zond_engine::record::FindingRecord::remediation: core::option::Option<alloc::string::String>

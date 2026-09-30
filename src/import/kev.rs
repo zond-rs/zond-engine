@@ -8,7 +8,11 @@
 
 //! # CISA's Known Exploited Vulnerabilities catalogue
 //!
-//! Turns the JSON CISA publishes into a [`Catalogue`] the correlator can use.
+//! Turns the JSON CISA publishes into what the correlator can use: the list of
+//! vulnerabilities it names exploited, which [`exploited`] reads and which
+//! marks the findings a correlation draws from its other data, or a
+//! [`Catalogue`] of its own, which [`read`] makes and which draws findings
+//! from KEV alone.
 //! The answer to the first question anybody asks after seeing that
 //! [`cve`](crate::cve) takes its dataset as a parameter: how do I point it at the
 //! real one.
@@ -16,7 +20,14 @@
 //! ```no_run
 //! use std::fs::File;
 //! use std::io::BufReader;
+//! use zond_engine::cve::{Catalogue, Correlator};
 //!
+//! // Marking what the shipped catalogue finds by today's copy of the list:
+//! let file = File::open("known_exploited_vulnerabilities.json")?;
+//! let exploited = zond_engine::import::kev::exploited(&mut BufReader::new(file))?;
+//! let correlator = Correlator::new(Catalogue::embedded()).with_exploited(&exploited);
+//!
+//! // Or finding by KEV alone, product by product:
 //! let file = File::open("known_exploited_vulnerabilities.json")?;
 //! let catalogue = zond_engine::import::kev::read(&mut BufReader::new(file))?;
 //! # Ok::<(), Box<dyn std::error::Error>>(())
@@ -71,7 +82,7 @@ use std::io::BufRead;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cve::{Catalogue, CatalogueError, MAX_DOCUMENT_BYTES};
+use crate::cve::{Catalogue, CatalogueError, KnownExploited, MAX_DOCUMENT_BYTES};
 
 /// What a converted catalogue names itself.
 ///
@@ -117,24 +128,7 @@ pub enum KevError {
 /// [`KevError::Malformed`] for JSON that is not this feed, and
 /// [`KevError::TooLarge`] past [`MAX_DOCUMENT_BYTES`].
 pub fn to_document(input: &mut dyn BufRead) -> Result<String, KevError> {
-    // Bounded before the read, on the reasoning `Catalogue::read` gives: this is
-    // by definition a feed fetched from somewhere else, and a source with no end
-    // must not be held in memory to discover it had none.
-    let mut source = String::new();
-    let read = {
-        use std::io::Read as _;
-        std::io::Read::take(input, MAX_DOCUMENT_BYTES.saturating_add(1))
-            .read_to_string(&mut source)?
-    };
-    if read as u64 > MAX_DOCUMENT_BYTES {
-        return Err(KevError::TooLarge {
-            limit: MAX_DOCUMENT_BYTES,
-        });
-    }
-
-    let feed: Feed =
-        serde_json::from_str(&source).map_err(|error| KevError::Malformed(error.to_string()))?;
-
+    let feed = feed(input)?;
     let document = Document {
         id: KEV_ID.to_string(),
         version: catalogue_version(&feed.catalog_version),
@@ -160,6 +154,51 @@ pub fn to_document(input: &mut dyn BufRead) -> Result<String, KevError> {
 pub fn read(input: &mut dyn BufRead) -> Result<Catalogue, KevError> {
     let document = to_document(input)?;
     Ok(Catalogue::read(&mut document.as_bytes())?)
+}
+
+/// Reads the KEV JSON in `input` as the list of vulnerabilities it names
+/// exploited, for marking what a correlation finds.
+///
+/// The other use of the feed, and the one its data fits: KEV is keyed by CVE
+/// identifier, which a correlation already has for every vulnerability it
+/// reports, so nothing here rests on [`cpe_identity`]'s heuristic. The list
+/// names itself [`KEV_ID`] and carries CISA's `catalogVersion`.
+///
+/// # Errors
+///
+/// [`KevError::Malformed`] for JSON that is not this feed,
+/// [`KevError::TooLarge`] past [`MAX_DOCUMENT_BYTES`], and
+/// [`KevError::Rejected`] where its version does not read as one.
+pub fn exploited(input: &mut dyn BufRead) -> Result<KnownExploited, KevError> {
+    let feed = feed(input)?;
+    let version = catalogue_version(&feed.catalog_version);
+    let version = version
+        .parse()
+        .map_err(|_| CatalogueError::UnreadableVersion { version })?;
+    Ok(KnownExploited::new(
+        KEV_ID,
+        version,
+        feed.vulnerabilities.into_iter().map(|entry| entry.cve_id),
+    )?)
+}
+
+/// The feed in `input`, read no further than [`MAX_DOCUMENT_BYTES`].
+fn feed(input: &mut dyn BufRead) -> Result<Feed, KevError> {
+    // Bounded before the read, on the reasoning `Catalogue::read` gives: this is
+    // by definition a feed fetched from somewhere else, and a source with no end
+    // must not be held in memory to discover it had none.
+    let mut source = String::new();
+    let read = {
+        use std::io::Read as _;
+        std::io::Read::take(input, MAX_DOCUMENT_BYTES.saturating_add(1))
+            .read_to_string(&mut source)?
+    };
+    if read as u64 > MAX_DOCUMENT_BYTES {
+        return Err(KevError::TooLarge {
+            limit: MAX_DOCUMENT_BYTES,
+        });
+    }
+    serde_json::from_str(&source).map_err(|error| KevError::Malformed(error.to_string()))
 }
 
 /// The identity a CPE would carry for a name KEV writes for a person.

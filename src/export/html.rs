@@ -884,6 +884,14 @@ fn write_port(out: &mut dyn Write, port: &Port, dto: &PortDto<'_>) -> Result<(),
 fn write_finding_facts(facts: &mut String, findings: &[FindingDto<'_>]) {
     for finding in findings {
         let mut detail = vec![Text(finding.confidence).to_string()];
+        // Beside the confidence rather than in the severity column: it says
+        // which of these somebody is exploiting, not how bad they are.
+        if let Some(exploited) = &finding.exploited {
+            detail.push(format!(
+                "known exploited: {}",
+                esc(&exploited.cves.join(", "))
+            ));
+        }
         if !finding.references.is_empty() {
             let references: Vec<String> =
                 finding.references.iter().map(|r| esc(&r.value)).collect();

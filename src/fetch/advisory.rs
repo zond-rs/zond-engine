@@ -6,13 +6,14 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # The distributions' security feeds
+//! # The security feeds a correlation reads
 //!
 //! A distribution fixes a vulnerability by backporting the patch into the
 //! version it already ships, so the upstream version a banner shows says
 //! little about what the host still has. Each distribution publishes which of
 //! its package builds fixed what, and these are the feeds the engine reads
-//! that from.
+//! that from. Beside them, CISA's catalogue of vulnerabilities known to be
+//! exploited, which marks what a correlation reports rather than deciding it.
 //!
 //! Declared here, beside the fetching, rather than beside the correlator:
 //! what a feed *is* to the engine is where it lives, how large it may grow and
@@ -23,9 +24,11 @@
 //! [`Feed::of`] is how an update walking [`registry`](super::registry) finds
 //! which feed a resource it just fetched is.
 //!
-//! None of this data is shipped with the crate. The Ubuntu feeds are licensed
-//! CC BY-SA 4.0 and are fetched by whoever runs the engine, from the
-//! publisher, when they ask for it.
+//! None of the distributions' data is shipped with the crate. The Ubuntu feeds
+//! are licensed CC BY-SA 4.0 and are fetched by whoever runs the engine, from
+//! the publisher, when they ask for it. CISA's catalogue is in the public
+//! domain, and the crate ships the list it held at release, which a fetched
+//! copy replaces.
 
 use super::{Resource, Verify};
 
@@ -43,11 +46,18 @@ pub enum Feed {
     /// The Debian security tracker's whole database as one JSON document:
     /// every source package, every CVE, and the fixed version per release.
     DebianTracker,
+    /// CISA's Known Exploited Vulnerabilities catalogue as one JSON document.
+    CisaKev,
 }
 
 impl Feed {
     /// Every feed, in the order an update walks them.
-    pub const ALL: &'static [Feed] = &[Feed::UbuntuOsv, Feed::UbuntuVex, Feed::DebianTracker];
+    pub const ALL: &'static [Feed] = &[
+        Feed::UbuntuOsv,
+        Feed::UbuntuVex,
+        Feed::DebianTracker,
+        Feed::CisaKev,
+    ];
 
     /// The resource this feed is fetched as.
     ///
@@ -74,6 +84,12 @@ impl Feed {
                 "advisories/debian-tracker",
                 "https://security-tracker.debian.org/tracker/data/json",
                 320 * MIB,
+            ),
+            // About 1.8 MB in 2026. Capped at what the list's reader takes.
+            Feed::CisaKev => (
+                "advisories/cisa-kev",
+                "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+                crate::cve::MAX_DOCUMENT_BYTES,
             ),
         };
         Resource::new(id, url, max_bytes, Verify::Transport)
@@ -214,6 +230,46 @@ pub struct Loaded {
     pub metadata: super::DerivedMetadata,
 }
 
+/// The list of exploited vulnerabilities read from the copy of CISA's
+/// catalogue `store` holds, or [`None`] where none has been fetched.
+///
+/// Read from the feed itself on every call rather than converted once: it is
+/// a couple of megabytes of JSON and reads in milliseconds.
+///
+/// # Errors
+///
+/// [`FetchError::Storage`](super::FetchError::Storage) where a copy is there
+/// and cannot be read, or does not read as CISA's catalogue.
+#[cfg(feature = "import-kev")]
+pub fn known_exploited(store: &super::Store) -> Result<Option<LoadedList>, super::FetchError> {
+    let Some(copy) = store.open(&Feed::CisaKev.resource())? else {
+        return Ok(None);
+    };
+    let path = copy.path().to_path_buf();
+    let metadata = copy.metadata().clone();
+    let mut file = std::io::BufReader::new(copy.into_file());
+    let exploited =
+        crate::import::kev::exploited(&mut file).map_err(|error| super::FetchError::Storage {
+            path,
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+        })?;
+    Ok(Some(LoadedList {
+        exploited,
+        metadata,
+    }))
+}
+
+/// A list of exploited vulnerabilities as a store held it.
+#[cfg(feature = "import-kev")]
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct LoadedList {
+    /// The list.
+    pub exploited: crate::cve::KnownExploited,
+    /// How and when the copy it was read from was fetched.
+    pub metadata: super::Metadata,
+}
+
 /// A mebibyte, which the ceilings above are counted in.
 const MIB: u64 = 1024 * 1024;
 
@@ -315,6 +371,44 @@ mod tests {
                 .version(),
             crate::model::finding::Version::new(0, 0, 0)
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A stored copy of CISA's feed reads as the list a scan marks by, dated
+    /// by when it was fetched; a store without one has none, and a copy that
+    /// is not the feed is an error rather than an empty list.
+    #[cfg(feature = "import-kev")]
+    #[test]
+    fn a_stored_copy_of_the_kev_feed_reads_as_the_list() {
+        use super::super::Store;
+        use super::super::store::testing::put;
+
+        let root = std::env::temp_dir().join(format!("zond-kev-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = Store::new(&root);
+        assert!(known_exploited(&store).unwrap().is_none());
+
+        put(
+            &store,
+            &Feed::CisaKev.resource(),
+            br#"{"catalogVersion": "2026.09.29", "vulnerabilities": [
+                {"cveID": "CVE-2021-41773", "vendorProject": "Apache", "product": "HTTP Server"}
+            ]}"#,
+        );
+        let loaded = known_exploited(&store).unwrap().expect("a list");
+        assert_eq!(loaded.exploited.id(), "cisa:kev");
+        assert_eq!(
+            loaded.exploited.version(),
+            crate::model::finding::Version::new(2026, 9, 29)
+        );
+        assert!(loaded.exploited.contains("CVE-2021-41773"));
+
+        put(
+            &store,
+            &Feed::CisaKev.resource(),
+            b"<html>maintenance</html>",
+        );
+        assert!(known_exploited(&store).is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

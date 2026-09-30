@@ -2252,6 +2252,13 @@ pub struct FindingDto<'a> {
     /// consulted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub advised_by: Option<AdvisedByDto<'a>>,
+    /// Which of the vulnerabilities in `references` are known to be exploited
+    /// in the wild, and whose list says so: CISA's Known Exploited
+    /// Vulnerabilities catalogue unless the caller supplied another. It raises
+    /// neither the severity nor the confidence; a consumer marks the finding
+    /// and orders by it. Absent where no list consulted names any of them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exploited: Option<ExploitedDto<'a>>,
     /// What this finding is one of, where several detections cover one weakness
     /// between them and say so: the identity they share and the phrase they
     /// read as together, so a consumer with one line to spend on four findings
@@ -2288,6 +2295,30 @@ pub struct AdvisedByDto<'a> {
     pub content_hash: &'a str,
 }
 
+/// Which of a finding's vulnerabilities are known to be exploited, and whose
+/// list says so.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize)]
+pub struct ExploitedDto<'a> {
+    /// The list that names them, stamped as a detection is.
+    pub by: ExploitedByDto<'a>,
+    /// The CVE identifiers it names, in the order the finding cites them. Never
+    /// empty.
+    pub cves: Vec<&'a str>,
+}
+
+/// Which snapshot of a list of exploited vulnerabilities marked a finding.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize)]
+pub struct ExploitedByDto<'a> {
+    /// The list's identity, such as `cisa:kev`. Untrusted.
+    pub id: &'a str,
+    /// The list's version, `major.minor.patch`, read off its publication date.
+    pub version: String,
+    /// The content hash of the list, for reproducibility.
+    pub content_hash: &'a str,
+}
+
 impl<'a> FindingDto<'a> {
     /// Renders a finding of the host `masking` was made for.
     pub fn new(finding: &'a Finding, masking: &HostRedaction) -> Self {
@@ -2314,6 +2345,16 @@ impl<'a> FindingDto<'a> {
                 id: advised.id(),
                 version: advised.version().to_string(),
                 content_hash: advised.content_hash(),
+            }),
+            // Unmasked, as the detection's identity is: the list's words and
+            // CVE identifiers, which no host's reply reaches.
+            exploited: finding.exploitation().map(|exploitation| ExploitedDto {
+                by: ExploitedByDto {
+                    id: exploitation.by().id(),
+                    version: exploitation.by().version().to_string(),
+                    content_hash: exploitation.by().content_hash(),
+                },
+                cves: exploitation.cves().collect(),
             }),
             // Unmasked, as the detection's own identity is: both halves are
             // the detection author's words, fixed before any host answered, and

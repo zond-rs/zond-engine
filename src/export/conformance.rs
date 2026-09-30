@@ -565,6 +565,9 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
         ("finding", "cpe"),
         ("finding", "cpes"),
         ("finding", "excerpt"),
+        // A finding none of whose vulnerabilities a list of exploited ones
+        // names, which is most correlations and every other finding.
+        ("finding", "exploited"),
         // A finding whose detection covers its weakness by itself, which is
         // most of them.
         ("finding", "group"),
@@ -1613,6 +1616,13 @@ fn redaction_masks_the_host_s_words_in_every_field_its_replies_fill() {
         "host.findings[].advised_by.id",
         "host.findings[].advised_by.version",
         "host.findings[].content_hash",
+        // A list of exploited vulnerabilities names itself and CVE
+        // identifiers; the engine or an operator chose it, and no reply
+        // reaches it.
+        "host.findings[].exploited.by.content_hash",
+        "host.findings[].exploited.by.id",
+        "host.findings[].exploited.by.version",
+        "host.findings[].exploited.cves[]",
         // A group is written into the detection manifest beside the title of
         // the detection, and unlike a finding's own title it carries no `{var}`
         // a reply could fill: it says which detections cover a weakness
@@ -1635,6 +1645,10 @@ fn redaction_masks_the_host_s_words_in_every_field_its_replies_fill() {
         "host.ports[].findings[].advised_by.id",
         "host.ports[].findings[].advised_by.version",
         "host.ports[].findings[].content_hash",
+        "host.ports[].findings[].exploited.by.content_hash",
+        "host.ports[].findings[].exploited.by.id",
+        "host.ports[].findings[].exploited.by.version",
+        "host.ports[].findings[].exploited.cves[]",
         "host.ports[].findings[].group.id",
         "host.ports[].findings[].group.summary",
         "host.ports[].findings[].id",

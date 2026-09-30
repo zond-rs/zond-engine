@@ -28,7 +28,8 @@ use crate::model::capture::CaptureCounts;
 use crate::model::confidence::Confidence;
 use crate::model::exclusion::Exclusions;
 use crate::model::finding::{
-    DetectionClass, DetectionId, Excerpt, Finding, FindingGroup, Reference, Severity, Version,
+    DetectionClass, DetectionId, Excerpt, Exploitation, Finding, FindingGroup, Reference, Severity,
+    Version,
 };
 use crate::model::host::{
     EvidenceSource, Filtering, HardwareDescription, HardwareInfo, Hop, Host, HostName, HostStatus,
@@ -719,6 +720,13 @@ fn hostile_finding() -> Finding {
     .with_cpe(HOSTILE)
     .with_subject(HOSTILE)
     .with_group(FindingGroup::new(HOSTILE, HOSTILE).unwrap())
+    .with_exploitation(
+        Exploitation::new(
+            DetectionId::new(HOSTILE, Version::new(1, 0, 0), HOSTILE).unwrap(),
+            ["CVE-2021-41773"],
+        )
+        .unwrap(),
+    )
 }
 
 fn hostile_host() -> Host {

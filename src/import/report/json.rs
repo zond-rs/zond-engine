@@ -109,11 +109,11 @@ use crate::model::tls::{Interruption, TlsVersion};
 use crate::record::wire;
 use crate::record::{
     AcceptedVersionRecord, BuildRecord, CaptureRecord, CertificateRecord, DetectionIdRecord,
-    DiscoveryRecord, EvasionSettingsRecord, FailureRecord, FindingGroupRecord, FindingRecord,
-    HardwareRecord, HopRecord, HostRecord, IdleScanRecord, OsRecord, PhaseOriginRecord,
-    PhaseRecord, PortRecord, PortsRecord, ProbeStatsRecord, RangeRecord, ReferenceRecord,
-    RefusalRecord, ReleaseRecord, ScopeRecord, SecurityRecord, ServiceRecord, SettingsRecord,
-    StatusReasonRecord, TelemetryRecord, UnfinishedVersionRecord, WindowRecord,
+    DiscoveryRecord, EvasionSettingsRecord, ExploitationRecord, FailureRecord, FindingGroupRecord,
+    FindingRecord, HardwareRecord, HopRecord, HostRecord, IdleScanRecord, OsRecord,
+    PhaseOriginRecord, PhaseRecord, PortRecord, PortsRecord, ProbeStatsRecord, RangeRecord,
+    ReferenceRecord, RefusalRecord, ReleaseRecord, ScopeRecord, SecurityRecord, ServiceRecord,
+    SettingsRecord, StatusReasonRecord, TelemetryRecord, UnfinishedVersionRecord, WindowRecord,
 };
 use crate::report::{ScanPhase, ScanReport};
 use crate::transport::probe::SendMode;
@@ -1802,7 +1802,8 @@ struct FindingDto {
     cpes: Vec<String>,
     subject: Option<String>,
     build: Option<BuildDto>,
-    advised_by: Option<AdvisedByDto>,
+    advised_by: Option<StampDto>,
+    exploited: Option<ExploitedDto>,
     group: Option<GroupDto>,
 }
 
@@ -1815,13 +1816,22 @@ struct GroupDto {
     summary: String,
 }
 
-/// `finding.advised_by`, the advisory data a correlation consulted.
+/// A dataset's stamp: `finding.advised_by`, the advisory data a correlation
+/// consulted, and the list `finding.exploited` names.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
-struct AdvisedByDto {
+struct StampDto {
     id: String,
     version: String,
     content_hash: String,
+}
+
+/// `finding.exploited`, which of its vulnerabilities a list names exploited.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ExploitedDto {
+    by: StampDto,
+    cves: Vec<String>,
 }
 
 impl BuildDto {
@@ -1885,6 +1895,14 @@ impl FindingDto {
                 id: advised.id,
                 version: advised.version,
                 content_hash: advised.content_hash,
+            }),
+            exploited: self.exploited.map(|exploited| ExploitationRecord {
+                by: DetectionIdRecord {
+                    id: exploited.by.id,
+                    version: exploited.by.version,
+                    content_hash: exploited.by.content_hash,
+                },
+                cves: exploited.cves,
             }),
             // Half a group is dropped rather than rebuilt, as the record layer
             // drops one: the model refuses it, and a finding is worth more than
