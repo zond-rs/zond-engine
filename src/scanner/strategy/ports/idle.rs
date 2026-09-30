@@ -86,7 +86,7 @@ use crate::protocols::tcp::{self, flags};
 use crate::report::ScannerKind;
 use crate::report::StopReason;
 use crate::scanner::audit::ProbeAudit;
-use crate::scanner::session::ScanContext;
+use crate::scanner::session::{ProbeClaim, ScanContext};
 use crate::scanner::strategy::{PortScanner, StrategyError, record_unasked};
 use crate::system::interface::SourceResolver;
 use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
@@ -244,12 +244,39 @@ impl IdlePortScanner {
         }
     }
 
+    /// Waits until a probe to `address` may leave under the gaps the scan
+    /// keeps between probes, then hands back the slot it claimed, or `None`
+    /// where the scan stopped while it waited.
+    ///
+    /// Taken immediately before a send, so a slot is never held while the wire
+    /// is idle, and given back by the caller with
+    /// [`ScanContext::refund_probe`] where the send did not leave. Waiting
+    /// costs nothing this scan measures: the counter is read from the zombie's
+    /// own reply, timed from that reply.
+    async fn claim_paced(&self, address: IpAddr) -> Option<ProbeClaim> {
+        loop {
+            match self.ctx.claim_probe(address) {
+                Ok(claim) => return Some(claim),
+                Err(ready) => {
+                    tokio::select! {
+                        () = self.ctx.handle.stopping() => return None,
+                        () = tokio::time::sleep_until(ready.into()) => {}
+                    }
+                }
+            }
+        }
+    }
+
     /// Probes the zombie once and reads its counter, retrying a lost reply.
     ///
     /// The probe is an unsolicited SYN+ACK, which any port resets; the reset's
     /// acknowledgement carries the nonce this probe put in its own, so a reset
     /// echoing it is this scan's and its IP-ID is the reading. `None` means the
-    /// zombie did not answer within [`ZOMBIE_READ_ATTEMPTS`] tries.
+    /// zombie did not answer within [`ZOMBIE_READ_ATTEMPTS`] tries, or the scan
+    /// stopped while a slot was held back.
+    ///
+    /// Each read is a probe at the zombie, since the zombie is the host it is
+    /// addressed to and answers, so it takes its slot on the zombie's address.
     async fn read_counter(&mut self, source: IpAddr) -> Option<Reading> {
         for _ in 0..ZOMBIE_READ_ATTEMPTS {
             let nonce: u32 = rand::random();
@@ -266,6 +293,7 @@ impl IdlePortScanner {
                 return None;
             };
 
+            let claim = self.claim_paced(self.zombie).await?;
             let sent = self
                 .transport
                 .tx
@@ -273,6 +301,7 @@ impl IdlePortScanner {
                 .is_ok();
             self.audit.record_send(sent);
             if !sent {
+                self.ctx.refund_probe(claim);
                 continue;
             }
 
@@ -375,6 +404,11 @@ impl IdlePortScanner {
             return PortState::Unasked;
         };
 
+        // Each forged probe is a probe at the target, however it is addressed
+        // on the wire, so it takes its slot on the target's address and the
+        // burst is held to the same gaps every other pass's probes are. A slot
+        // turned away waits; one the scan stopped over abandons the burst, and
+        // the measurement then reads the target as unasked rather than closed.
         for _ in 0..SPOOFED_PROBES {
             let nonce: u32 = rand::random();
             let spoofed_port: u16 = rand::random_range(50_000..u16::MAX);
@@ -388,6 +422,9 @@ impl IdlePortScanner {
             ) else {
                 continue;
             };
+            let Some(claim) = self.claim_paced(target).await else {
+                return PortState::Unasked;
+            };
             // Forged from the zombie: the target's answer, if any, goes to the
             // zombie and never here. The reply is neither awaited nor captured.
             let sent = self
@@ -396,6 +433,9 @@ impl IdlePortScanner {
                 .send(&probe, self.zombie, target, None, Emission::routed())
                 .is_ok();
             self.audit.record_send(sent);
+            if !sent {
+                self.ctx.refund_probe(claim);
+            }
         }
 
         let Some(after) = self.read_counter(source).await else {
@@ -639,6 +679,9 @@ mod tests {
         counter: AtomicU16,
         kind: Counter,
         open_ports: Vec<u16>,
+        /// When each probe reached the segment, and the address it was aimed
+        /// at, so a test can assert on how the sends were spaced.
+        sent_at: std::sync::Arc<std::sync::Mutex<Vec<(IpAddr, Instant)>>>,
     }
 
     impl Zombie {
@@ -661,6 +704,7 @@ mod tests {
             _zone: Option<u32>,
             _emission: Emission,
         ) -> Result<(), SendError> {
+            self.sent_at.lock().unwrap().push((dst, Instant::now()));
             let Ok(tcp) = tcp::parse(segment) else {
                 return Ok(());
             };
@@ -716,15 +760,32 @@ mod tests {
 
     /// A scanner pointed at the synthetic [`Zombie`], over a synthetic transport.
     fn scanner(ctx: &ScanContext, kind: Counter, open_ports: Vec<u16>) -> IdlePortScanner {
+        scanner_logging(ctx, kind, open_ports).0
+    }
+
+    /// [`scanner`], keeping the log of what left the segment and when.
+    fn scanner_logging(
+        ctx: &ScanContext,
+        kind: Counter,
+        open_ports: Vec<u16>,
+    ) -> (
+        IdlePortScanner,
+        std::sync::Arc<std::sync::Mutex<Vec<(IpAddr, Instant)>>>,
+    ) {
         let (tx, rx) = mpsc::channel(1024);
+        let sent_at = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let zombie = Zombie {
             replies: tx,
             counter: AtomicU16::new(1000),
             kind,
             open_ports,
+            sent_at: sent_at.clone(),
         };
         let transport = ProbeTransport::from_parts(Box::new(zombie), rx as CaptureStream);
-        IdlePortScanner::with_transport(ctx.clone(), ZOMBIE, None, SOURCE, transport)
+        (
+            IdlePortScanner::with_transport(ctx.clone(), ZOMBIE, None, SOURCE, transport),
+            sent_at,
+        )
     }
 
     /// Runs `scanner` over `ports` of the target and returns once it is done.
@@ -799,6 +860,44 @@ mod tests {
             "the refusal flags what the counter did, not \"a constant IP-ID counter\": {}",
             refusal.reason()
         );
+    }
+
+    /// Under a gap the scan keeps between probes, no two probes at one address
+    /// leave nearer than the per-host gap, and the whole scan still reaches its
+    /// verdict.
+    ///
+    /// A zombie read is a probe at the zombie and a forged probe is a probe at
+    /// the target, so the per-host gap spaces the zombie's readings among
+    /// themselves and the target's burst among itself, and each verdict is
+    /// still reached.
+    #[tokio::test]
+    async fn a_gap_spaces_the_zombie_reads_and_the_forged_burst() {
+        let gap = Duration::from_millis(20);
+        let (session, ctx) = ScanSession::builder()
+            .host_probe_interval(Some(gap))
+            .build();
+        let (mut scanner, sent_at) = scanner_logging(&ctx, Counter::Counting, vec![OPEN_PORT]);
+
+        scan(&mut scanner, &[OPEN_PORT]).await;
+
+        assert_eq!(port_state(&session, OPEN_PORT), Some(PortState::Open));
+
+        let log = sent_at.lock().unwrap();
+        for address in [ZOMBIE, TARGET] {
+            let at: Vec<Instant> = log
+                .iter()
+                .filter(|(dst, _)| *dst == address)
+                .map(|(_, at)| *at)
+                .collect();
+            assert!(at.len() >= 2, "{address} was probed more than once");
+            for pair in at.windows(2) {
+                assert!(
+                    pair[1].duration_since(pair[0]) >= gap,
+                    "two probes at {address} left {:?} apart, under a {gap:?} gap",
+                    pair[1].duration_since(pair[0])
+                );
+            }
+        }
     }
 
     /// A refused scan records every target it is handed as unasked on its
