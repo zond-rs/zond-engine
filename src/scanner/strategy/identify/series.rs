@@ -862,6 +862,33 @@ impl OsSeriesScanner {
 }
 
 impl OsSeriesScanner {
+    /// The scan-wide gap between probes this pass cannot honour, or `None`
+    /// when it can run.
+    ///
+    /// The series is a measurement, and its spacing is what it measures: a
+    /// host is sampled across a [`SPACING`] window, and within one sweep the
+    /// probes leave as close as [`SEND_TICK`] apart. A gap the scan keeps
+    /// between probes that is no wider than that cadence is one the pass
+    /// already satisfies by sending as it always does, so it runs unchanged
+    /// and claims no slot: waiting on the gate between two samples is the one
+    /// thing it must not do, since a sample taken late reads as one taken at a
+    /// time nothing planned, and the interval a clock rate is computed over is
+    /// the reading itself.
+    ///
+    /// A gap wider than the cadence cannot be honoured without spreading the
+    /// samples of one series across it, which is not a slower version of the
+    /// measurement but a different, unreadable one. The pass steps aside there
+    /// rather than send at full speed and break the scan-wide bound the caller
+    /// set. Only the scan-wide gap is weighed: the per-host gap exempts this
+    /// pass by design, since repeatedly probing one host is the whole of what
+    /// it does. See
+    /// [`ZondConfig::probe_interval`](crate::config::ZondConfig::probe_interval).
+    fn disqualifying_gap(&self) -> Option<Duration> {
+        self.ctx
+            .scan_probe_interval()
+            .filter(|gap| *gap > SEND_TICK)
+    }
+
     /// Asks each target the same question several times and reads the
     /// policies behind the answers.
     ///
@@ -874,6 +901,23 @@ impl OsSeriesScanner {
     /// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort), and
     /// `Err` only where the probe itself could not do its job.
     pub async fn probe(&mut self) -> Result<(), StrategyError> {
+        // A scan-wide gap this pass's own cadence cannot fit steps the pass
+        // aside rather than either slowing down or ignoring the bound; see
+        // `honours_scan_gap`. Nothing is sent and every target keeps the
+        // answer the passive sources gave it.
+        if let Some(gap) = self.disqualifying_gap() {
+            self.ctx.record_failure(
+                ScannerKind::OsSeries,
+                format!(
+                    "the active series was not run: it samples every host on a {SPACING:?} \
+                     window, sending as close as {SEND_TICK:?} apart, and the scan's {gap:?} \
+                     gap between probes is slower than the interval the measurement reads, \
+                     which sending at that gap would destroy rather than measure"
+                ),
+            );
+            return Ok(());
+        }
+
         let followed: u128 = self.batches.iter().map(|batch| batch.len() as u128).sum();
         let mut reason = StopReason::AttemptsSpent;
 
@@ -1312,7 +1356,79 @@ mod tests {
         );
     }
 
-    /// Every sweep of a run takes a source port no other sweep of it took,
+    /// A scan-wide gap slower than the series' own cadence steps the pass
+    /// aside: nothing is sent, and the reason is recorded so the reader knows
+    /// the measurement was declined rather than found nothing.
+    ///
+    /// Sending at that gap would spread one host's samples across it and read
+    /// as a counter that never advances, and sending at full speed would break
+    /// the bound the caller set; the pass does neither.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_scan_wide_gap_slower_than_the_cadence_steps_the_series_aside() {
+        use crate::transport::probe::MockSender;
+
+        let (_session, ctx) = ScanSession::builder()
+            .probe_interval(Some(SEND_TICK * 8))
+            .build();
+        let mock = MockSender::default();
+        let recorded = mock.sent.clone();
+        let (_tx, rx) = mpsc::channel(1024);
+        let transport = ProbeTransport::from_parts(Box::new(mock), rx as CaptureStream);
+        let mut scanner = OsSeriesScanner::with_transport(
+            ctx.clone(),
+            vec![both_ports()],
+            4,
+            transport,
+            Emission::routed(),
+        );
+
+        scanner.probe().await.expect("the phase runs");
+
+        assert!(
+            recorded.lock().expect("readable").is_empty(),
+            "not one sample is sent under a gap the measurement cannot honour"
+        );
+        let failures = ctx.failures_snapshot();
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.scanner() == ScannerKind::OsSeries
+                    && failure.reason().contains("was not run")),
+            "the declined pass is recorded: {failures:?}"
+        );
+    }
+
+    /// A scan-wide gap the series' cadence already satisfies leaves the pass
+    /// running as it always does, every sample sent.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_scan_wide_gap_within_the_cadence_leaves_the_series_running() {
+        use crate::transport::probe::MockSender;
+
+        let (_session, ctx) = ScanSession::builder()
+            .probe_interval(Some(SEND_TICK / 2))
+            .build();
+        let mock = MockSender::default();
+        let recorded = mock.sent.clone();
+        let (_tx, rx) = mpsc::channel(1024);
+        let transport = ProbeTransport::from_parts(Box::new(mock), rx as CaptureStream);
+        let mut scanner = OsSeriesScanner::with_transport(
+            ctx.clone(),
+            vec![both_ports()],
+            4,
+            transport,
+            Emission::routed(),
+        );
+
+        scanner.probe().await.expect("the phase runs");
+
+        assert_eq!(
+            recorded.lock().expect("readable").len(),
+            8,
+            "both ports, four samples each, all sent"
+        );
+    }
+
+    /// Every sweep of a run takes a source port no other sweep of it took,    /// Every sweep of a run takes a source port no other sweep of it took,
     /// wherever in the range the run starts: drawn per sweep instead, two of
     /// a dozen samples share a 4-tuple about once in two hundred and fifty runs.
     #[test]
