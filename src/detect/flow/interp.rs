@@ -32,10 +32,13 @@
 //! its step's match result, so a finding fires only in the case it names. An
 //! absent guard always holds; an unparseable one never does.
 
+use std::net::IpAddr;
+
 use crate::detect::patterns;
 use crate::fingerprint::{MAX_COMPILED_REGEX_BYTES, pattern, unescape};
 use crate::model::confidence::Confidence;
 use crate::model::finding::{DetectionId, Excerpt, Finding, Version};
+use crate::model::ip::Exposure;
 use crate::record::wire;
 
 use crate::detect::manifest::GroupSpec;
@@ -162,14 +165,36 @@ pub struct FlowSeed {
     pub host: String,
     /// The port the flow reached it on, seeded as `{port}`.
     pub port: u16,
+    /// Who else can reach [`host`](Self::host), which is what a finding's
+    /// severity is graded against where the flow stated one per rung.
+    ///
+    /// Read rather than set: [`new`](Self::new) derives it from `host`, so the
+    /// exposure and the address it describes cannot be made to disagree. That is
+    /// the reason it is not a constructor argument. A caller holding both would
+    /// be a caller able to pass a private address rated as the internet, and the
+    /// rating would be wrong in the one direction that matters without anything
+    /// being able to notice.
+    pub exposure: Exposure,
 }
 
 impl FlowSeed {
     /// A seed for the endpoint at `host` on `port`.
+    ///
+    /// `host` is an address as text, which is what the scan path hands over, and
+    /// the [`exposure`](Self::exposure) is read off it. A `host` that is not an
+    /// address, which a caller naming a target by hostname would pass, is
+    /// [`Internet`](Exposure::Internet): the widest audience is what a severity
+    /// means when nothing narrower has been established, so an unparsed host
+    /// leaves every finding rated exactly as its detection wrote it.
     pub fn new(host: impl Into<String>, port: u16) -> Self {
+        let host = host.into();
+        let exposure = host
+            .parse::<IpAddr>()
+            .map_or(Exposure::Internet, Exposure::of);
         Self {
-            host: host.into(),
+            host,
             port,
+            exposure,
         }
     }
 
@@ -211,15 +236,30 @@ pub fn run(
                 for item in for_each.items.iter().take(MAX_LOOP_ITEMS) {
                     let mut local = env.clone();
                     local.insert(for_each.var.clone(), item.clone());
-                    if run_step(flow, content_hash, step, &mut local, probe, &mut findings)
-                        == Flow::Halt
+                    if run_step(
+                        flow,
+                        content_hash,
+                        seed,
+                        step,
+                        &mut local,
+                        probe,
+                        &mut findings,
+                    ) == Flow::Halt
                     {
                         return findings;
                     }
                 }
             }
             None => {
-                if run_step(flow, content_hash, step, &mut env, probe, &mut findings) == Flow::Halt
+                if run_step(
+                    flow,
+                    content_hash,
+                    seed,
+                    step,
+                    &mut env,
+                    probe,
+                    &mut findings,
+                ) == Flow::Halt
                 {
                     return findings;
                 }
@@ -260,6 +300,7 @@ pub(crate) fn exchanges(flow: &FlowDetection) -> u32 {
 fn run_step(
     flow: &FlowDetection,
     content_hash: &str,
+    seed: &FlowSeed,
     step: &Step,
     env: &mut Env,
     probe: &mut dyn Probe,
@@ -315,7 +356,8 @@ fn run_step(
 
     for spec in &step.finding {
         if eval::holds(spec.when.as_deref(), env, Some(matched))
-            && let Some(finding) = build_finding(flow, content_hash, spec, env, response.as_deref())
+            && let Some(finding) =
+                build_finding(flow, content_hash, seed, spec, env, response.as_deref())
         {
             findings.push(finding);
         }
@@ -406,6 +448,7 @@ fn capture(spec: &MatchSpec, text: &str, name: &str) -> Option<String> {
 fn build_finding(
     flow: &FlowDetection,
     content_hash: &str,
+    seed: &FlowSeed,
     spec: &FindingSpec,
     env: &Env,
     response: Option<&str>,
@@ -420,7 +463,10 @@ fn build_finding(
     // The finding's one-line title is its own `title`, or its `summary` when it
     // names none.
     let title = interpolate(spec.title.as_deref().unwrap_or(spec.summary.as_str()), env)?;
-    let severity = spec.severity.into_model();
+    // The severity is graded against who can reach the endpoint, which the seed
+    // holds. A flow that stated one rating reads the same at every rung; see
+    // `SeveritySpec`.
+    let severity = spec.severity.into_model_at(seed.exposure);
     let confidence = spec
         .confidence
         .as_deref()
@@ -1037,6 +1083,89 @@ mod tests {
             leak: b"root:x:0:0:should-never-be-sent",
         };
         assert!(run(&grafana, "", &seed(), &mut other).is_empty());
+    }
+
+    /// **A flow's severity is graded against who can reach the endpoint.**
+    ///
+    /// The seed carries the exposure, read off the address it holds, so one flow
+    /// run against a private address and a public one reports the same claim at
+    /// two ratings. This is the whole mechanism: the flow states both readings and
+    /// the engine picks, rather than a detection guessing at its audience.
+    #[test]
+    fn a_severity_stated_per_rung_is_graded_by_the_seeds_exposure() {
+        let toml = r#"
+            [detection]
+            id = "resolver"
+            version = "1.0.0"
+            title = "A resolver that recurses"
+            [detection.when]
+            service = "dns"
+            [detection.capabilities]
+            class = "active-benign"
+            speak = "target"
+            [[step]]
+            send = "q"
+            expect = 'recursed'
+            [[step.finding]]
+            when = "matched"
+            severity = { internet = "high", internal = "info" }
+            summary = "the resolver recursed for an external name"
+        "#;
+        let flow: FlowDetection = toml::from_str(toml).expect("a parseable flow");
+
+        let graded = |host: &str| {
+            let findings = run(
+                &flow,
+                "",
+                &FlowSeed::new(host, 53),
+                &mut Echo {
+                    sent: Vec::new(),
+                    reply: b"recursed".to_vec(),
+                },
+            );
+            findings.first().expect("the flow matched").severity()
+        };
+
+        assert_eq!(graded("198.51.100.7"), Severity::High);
+        assert_eq!(graded("192.168.0.1"), Severity::Info);
+        assert_eq!(graded("127.0.0.1"), Severity::Info, "unstated `local`");
+    }
+
+    /// A flow stating one severity reports it at every rung, which is what nearly
+    /// every shipped flow does: an unauthenticated database is handed over to
+    /// whoever opened the socket, and a network whose own machines can do that is
+    /// how an intruder moves sideways.
+    #[test]
+    fn a_flat_severity_is_the_same_rating_wherever_the_endpoint_is() {
+        let redis = flow("redis-unauth-access");
+        for host in ["198.51.100.7", "192.168.0.10", "127.0.0.1"] {
+            let findings = run(
+                &redis,
+                "",
+                &FlowSeed::new(host, 6379),
+                &mut Echo {
+                    sent: Vec::new(),
+                    reply: b"# Server\r\nredis_version:7.0.11\r\n".to_vec(),
+                },
+            );
+            assert_eq!(
+                findings.first().expect("the flow matched").severity(),
+                Severity::High,
+                "{host}"
+            );
+        }
+    }
+
+    /// A seed whose host is not an address rates at the widest audience, so a
+    /// caller naming a target by hostname reports every finding exactly as its
+    /// detection wrote it. The one thing an unreadable host may not do is reduce a
+    /// rating.
+    #[test]
+    fn a_host_that_is_not_an_address_rates_at_the_widest_audience() {
+        assert_eq!(
+            FlowSeed::new("scanme.example.invalid", 53).exposure,
+            Exposure::Internet
+        );
     }
 
     /// **A flow's group reaches every finding it produces.**

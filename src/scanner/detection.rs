@@ -78,6 +78,7 @@ use crate::detect::manifest::{
 };
 use crate::fingerprint::{PortContext, Tunnel};
 use crate::model::finding::Finding;
+use crate::model::ip::Exposure;
 use crate::model::ip::scoped::ScopedIp;
 use crate::model::port::{PortState, Protocol};
 use crate::record::{DetectionIdRecord, wire};
@@ -700,7 +701,12 @@ fn detect_hosts(ctx: &ScanContext) {
 
     for (key, open_ports, service_names) in per_host {
         let services: BTreeSet<&str> = service_names.iter().map(String::as_str).collect();
-        let findings = host_stage::detect_host(host_db.detections(), &open_ports, &services);
+        // Read off the address the host was reached at, which is what grades a
+        // correlation that stated a severity per rung: RPC and SMB open together
+        // is a Windows desktop on a LAN and an incident on a public address.
+        let exposure = Exposure::of(key.addr());
+        let findings =
+            host_stage::detect_host(host_db.detections(), &open_ports, &services, exposure);
         if findings.is_empty() {
             continue;
         }

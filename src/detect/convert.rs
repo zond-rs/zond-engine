@@ -16,12 +16,19 @@
 //! Everything shared between the tiers converts in one place: the intrusiveness
 //! [`Class`] a detection declares, and the [`Severity`] and [`Reference`] its
 //! findings carry.
+//!
+//! It is also the one file that reads both vocabularies at once, which is what
+//! [`SeveritySpec::into_model_at`] needs: a severity stated per exposure is
+//! resolved against the model's [`Exposure`], so the
+//! authoring side never has to name it and the scan path never has to translate
+//! into the authoring side to ask.
 
 use crate::model::finding::{
     DetectionClass, FindingGroup, Reference as ModelReference, Severity as ModelSeverity,
 };
+use crate::model::ip::Exposure;
 
-use super::authoring::{Reference, Severity};
+use super::authoring::{Reference, Severity, SeveritySpec};
 use super::manifest::{Class, GroupSpec};
 
 impl Class {
@@ -51,6 +58,32 @@ impl Severity {
             Severity::High => ModelSeverity::High,
             Severity::Critical => ModelSeverity::Critical,
         }
+    }
+}
+
+impl SeveritySpec {
+    /// The model severity this spec states for a subject at `exposure`.
+    ///
+    /// A [`Flat`](SeveritySpec::Flat) spec ignores the exposure, which is the
+    /// whole of what "this weakness means the same thing wherever it is" comes to.
+    /// A [`PerExposure`](SeveritySpec::PerExposure) one reads the rung, falling
+    /// back along the table as
+    /// [`SeverityByExposure`](super::authoring::SeverityByExposure) documents.
+    ///
+    /// The match on the exposure is exhaustive on purpose. A rung added later
+    /// must be given a reading here rather than silently landing on the widest
+    /// one, which is the only place in the lowering where a missing decision
+    /// would change a published severity.
+    pub fn into_model_at(self, exposure: Exposure) -> ModelSeverity {
+        let severity = match self {
+            SeveritySpec::Flat(severity) => severity,
+            SeveritySpec::PerExposure(table) => match exposure {
+                Exposure::Local => table.local(),
+                Exposure::Internal => table.internal(),
+                Exposure::Internet => table.internet,
+            },
+        };
+        severity.into_model()
     }
 }
 
@@ -85,6 +118,108 @@ impl Reference {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A holder for the one field under test, since `severity` is read as part of
+    /// a finding rather than as a document of its own.
+    #[derive(Debug, serde::Deserialize)]
+    struct Wrapper {
+        severity: SeveritySpec,
+    }
+
+    /// A bare severity is the same rating at every rung: what "this means the
+    /// same thing wherever it is" comes to.
+    #[test]
+    fn a_flat_severity_ignores_the_exposure() {
+        let spec = SeveritySpec::Flat(Severity::High);
+        for exposure in Exposure::ALL {
+            assert_eq!(
+                spec.into_model_at(*exposure),
+                ModelSeverity::High,
+                "{}",
+                exposure.label()
+            );
+        }
+    }
+
+    /// A table reads the rung it was given, and an unstated rung falls back to
+    /// the next wider one rather than to a default.
+    #[test]
+    fn a_stated_rung_is_read_and_an_unstated_one_falls_back_to_the_wider() {
+        let spec: SeveritySpec =
+            toml::from_str::<Wrapper>(r#"severity = { internet = "high", internal = "info" }"#)
+                .expect("the table parses")
+                .severity;
+
+        assert_eq!(spec.into_model_at(Exposure::Internet), ModelSeverity::High);
+        assert_eq!(spec.into_model_at(Exposure::Internal), ModelSeverity::Info);
+        // `local` was not stated, so it is whatever `internal` says.
+        assert_eq!(spec.into_model_at(Exposure::Local), ModelSeverity::Info);
+    }
+
+    /// The fallback is transitive: a table stating only `internet` is a flat
+    /// severity written the long way, and one stating `local` reaches past an
+    /// unstated `internal`.
+    #[test]
+    fn the_fallback_runs_the_whole_way_to_the_widest_rung() {
+        let only_internet: SeveritySpec =
+            toml::from_str::<Wrapper>(r#"severity = { internet = "critical" }"#)
+                .expect("the table parses")
+                .severity;
+        for exposure in Exposure::ALL {
+            assert_eq!(
+                only_internet.into_model_at(*exposure),
+                ModelSeverity::Critical,
+                "{}",
+                exposure.label()
+            );
+        }
+
+        let skips_internal: SeveritySpec =
+            toml::from_str::<Wrapper>(r#"severity = { internet = "high", local = "info" }"#)
+                .expect("the table parses")
+                .severity;
+        assert_eq!(
+            skips_internal.into_model_at(Exposure::Internal),
+            ModelSeverity::High,
+            "an unstated `internal` is the internet rating, not the local one"
+        );
+        assert_eq!(
+            skips_internal.into_model_at(Exposure::Local),
+            ModelSeverity::Info
+        );
+    }
+
+    /// The bare string is the ordinary spelling, so it has to keep parsing as one
+    /// after the table form was added. Every shipped detection but a handful
+    /// writes it.
+    #[test]
+    fn the_bare_string_still_parses_as_a_severity() {
+        let spec = toml::from_str::<Wrapper>(r#"severity = "medium""#)
+            .expect("a bare severity parses")
+            .severity;
+        assert_eq!(spec, SeveritySpec::Flat(Severity::Medium));
+    }
+
+    /// A rung misspelled is a build failure rather than a severity that silently
+    /// falls back, which is the whole reason the table denies unknown fields.
+    #[test]
+    fn a_misspelled_rung_is_refused_rather_than_ignored() {
+        assert!(
+            toml::from_str::<Wrapper>(r#"severity = { internet = "high", internel = "info" }"#)
+                .is_err(),
+            "`internel` was accepted, so the rung it meant fell back in silence"
+        );
+    }
+
+    /// A table with no `internet` rung states no rating for the audience every
+    /// severity is written against, and is refused.
+    #[test]
+    fn a_table_without_the_widest_rung_is_refused() {
+        assert!(
+            toml::from_str::<Wrapper>(r#"severity = { internal = "info" }"#).is_err(),
+            "a table stating only the reduced rung was accepted"
+        );
+    }
 
     #[test]
     fn each_authoring_class_maps_onto_its_model_class() {

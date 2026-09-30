@@ -47,7 +47,7 @@
 // schema nothing in the build reads every field back.)
 #![allow(dead_code)]
 
-use super::authoring::{Reference, Severity};
+use super::authoring::{Reference, SeveritySpec};
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Deserializer};
@@ -246,8 +246,9 @@ pub struct FindingSpec {
     /// Emit only if this holds. Absent = emit whenever reached.
     #[serde(default)]
     pub when: Option<String>,
-    /// How bad the finding is if it holds.
-    pub severity: Severity,
+    /// How bad the finding is if it holds: one rating, or one per
+    /// [`Exposure`](crate::model::ip::Exposure) rung. See [`SeveritySpec`].
+    pub severity: SeveritySpec,
     /// The finding's one-line title. Falls back to [`summary`](Self::summary)
     /// when a flow omits it, which most do. `{var}`-interpolated.
     #[serde(default)]
@@ -326,7 +327,10 @@ mod tests {
 
         let finding = &step.finding[0];
         assert_eq!(finding.when.as_deref(), Some("matched"));
-        assert_eq!(finding.severity, Severity::High);
+        assert_eq!(
+            finding.severity,
+            SeveritySpec::Flat(super::super::authoring::Severity::High)
+        );
         assert_eq!(finding.references, vec![Reference::Cwe(306)]);
     }
 

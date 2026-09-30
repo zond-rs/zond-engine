@@ -198,8 +198,12 @@ fn analyze(ctx, responses) {
         return [];
     }
 
+    // The count drives the grade, which is what earns the tier. Both rungs sit
+    // below `medium`: an absent header is an absent mitigation rather than a way
+    // in, and a finding that fires on every web server at the rank meant for work
+    // somebody schedules is a finding nobody reads.
     [ #{
-        severity: if missing.len() >= 3 { "medium" } else { "low" },
+        severity: if missing.len() >= 3 { "low" } else { "info" },
         summary: "the server omits " + missing.len() + " baseline security headers",
         detail: "Absent: " + missing,
     } ]
@@ -211,6 +215,14 @@ fn analyze(ctx, responses) {
 //
 // A conclusion drawn from what a host presents as a whole rather than from any
 // one port. It sends nothing, so it declares no class.
+//
+// It is also where `severity` is most often written as a table rather than a
+// single word. A host correlation names a *shape*, and a shape is read against
+// who can see it: a domain controller's three ports reachable from the internet
+// is a domain exposed to strangers, and the same three on the network it serves
+// is the controller doing its job. `internet` is the rung a bare severity already
+// means, so it is required; `internal` and `local` fall back to it when a
+// detection has no separate reading for them.
 const DOMAIN_CONTROLLER: &str = r#"
 [detection]
 id      = "example-domain-controller"
@@ -221,9 +233,9 @@ title   = "Host presents as a domain controller"
 ports_open = [88, 389, 445]
 
 [[finding]]
-severity = "info"
+severity = { internet = "high", internal = "info" }
 summary  = "this host answers on Kerberos, LDAP and SMB together"
-detail   = "The combination is what a domain controller presents; it is worth knowing which machine it is."
+detail   = "The combination is what a domain controller presents; it is worth knowing which machine it is, and worth more than knowing where the internet can reach one."
 "#;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

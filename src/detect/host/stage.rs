@@ -14,6 +14,12 @@
 //! [`Finding`] for each detection whose gate fits. It sends nothing: a host
 //! correlation reads only facts the scan already holds.
 //!
+//! The host's [`Exposure`] is one of those facts, and this tier is the one that
+//! reads it most. A correlation names a shape rather than a flaw, and a shape is
+//! read differently depending on who can see it, so a detection here often states
+//! a severity per rung; see
+//! [`SeveritySpec`](crate::detect::authoring::SeveritySpec).
+//!
 //! [flow]: crate::detect::flow::stage
 //! [compute]: crate::detect::compute::stage
 
@@ -21,6 +27,7 @@ use std::collections::BTreeSet;
 
 use crate::model::confidence::Confidence;
 use crate::model::finding::{DetectionClass, DetectionId, Excerpt, Finding, Version};
+use crate::model::ip::Exposure;
 use crate::record::wire;
 
 use crate::detect::manifest::GroupSpec;
@@ -82,10 +89,16 @@ impl LoadedHostDetection {
 /// numbers of its open ports and the names of the services identified on them. A
 /// detection whose gate fits draws each of its findings; one whose gate does not is
 /// skipped, having concluded nothing.
+///
+/// `exposure` grades the findings that stated a severity per rung. It gates
+/// nothing: a correlation that fits is a correlation that fits wherever the host
+/// sits, and suppressing it would leave a reader unable to tell a shape that was
+/// looked for and absent from one that was never reported.
 pub(crate) fn detect_host(
     detections: &[LoadedHostDetection],
     open_ports: &BTreeSet<u16>,
     services: &BTreeSet<&str>,
+    exposure: Exposure,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
     for loaded in detections {
@@ -99,7 +112,7 @@ pub(crate) fn detect_host(
             continue;
         };
         for spec in &loaded.detection.finding {
-            if let Some(finding) = build_finding(spec, &id, manifest) {
+            if let Some(finding) = build_finding(spec, &id, manifest, exposure) {
                 findings.push(finding);
             }
         }
@@ -112,7 +125,12 @@ pub(crate) fn detect_host(
 /// it declares [`Derived`](super::super::manifest::Class::Derived) and runs at
 /// [`DetectionClass::Passive`], which is what a finding records — the
 /// intrusiveness it ran at, rather than where its conclusion came from.
-fn build_finding(spec: &FindingSpec, id: &DetectionId, manifest: &HostManifest) -> Option<Finding> {
+fn build_finding(
+    spec: &FindingSpec,
+    id: &DetectionId,
+    manifest: &HostManifest,
+    exposure: Exposure,
+) -> Option<Finding> {
     let title = spec
         .title
         .as_deref()
@@ -129,7 +147,7 @@ fn build_finding(spec: &FindingSpec, id: &DetectionId, manifest: &HostManifest) 
     let mut finding = Finding::new(
         id.clone(),
         title,
-        spec.severity.into_model(),
+        spec.severity.into_model_at(exposure),
         confidence,
         DetectionClass::Passive,
     )
@@ -158,12 +176,14 @@ fn build_finding(spec: &FindingSpec, id: &DetectionId, manifest: &HostManifest) 
 
 #[cfg(test)]
 mod tests {
-    use super::super::authoring::Severity;
+    use super::super::authoring::{Severity, SeverityByExposure, SeveritySpec};
     use super::super::schema::{FindingSpec, HostGate, HostManifest};
     use super::*;
     use crate::model::finding::Severity as ModelSeverity;
 
-    fn domain_controller() -> LoadedHostDetection {
+    /// The shipped domain-controller shape, with whatever severity a test needs
+    /// to grade.
+    fn domain_controller(severity: SeveritySpec) -> LoadedHostDetection {
         LoadedHostDetection::new(
             HostDetection {
                 detection: HostManifest {
@@ -177,7 +197,7 @@ mod tests {
                     },
                 },
                 finding: vec![FindingSpec {
-                    severity: Severity::Info,
+                    severity,
                     summary: "Kerberos, LDAP and SMB open together: a domain controller"
                         .to_string(),
                     title: None,
@@ -195,7 +215,12 @@ mod tests {
     fn a_host_presenting_every_gate_port_draws_the_finding() {
         // 88, 389 and 445 open, among other ports: the gate fits.
         let open: BTreeSet<u16> = [53, 88, 135, 389, 445].into_iter().collect();
-        let findings = detect_host(&[domain_controller()], &open, &BTreeSet::new());
+        let findings = detect_host(
+            &[domain_controller(SeveritySpec::Flat(Severity::Info))],
+            &open,
+            &BTreeSet::new(),
+            Exposure::Internet,
+        );
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].detection().id(), "domain-controller");
         assert_eq!(findings[0].severity(), ModelSeverity::Info);
@@ -205,10 +230,61 @@ mod tests {
     fn a_host_missing_one_gate_port_draws_nothing() {
         // 445 closed: not a domain controller, whatever else is open.
         let open: BTreeSet<u16> = [88, 389].into_iter().collect();
-        let findings = detect_host(&[domain_controller()], &open, &BTreeSet::new());
+        let findings = detect_host(
+            &[domain_controller(SeveritySpec::Flat(Severity::Info))],
+            &open,
+            &BTreeSet::new(),
+            Exposure::Internet,
+        );
         assert!(
             findings.is_empty(),
             "a host missing SMB was still called a domain controller"
         );
+    }
+
+    /// A shape stated per rung is graded by the exposure of the address the host
+    /// was reached at, which is this tier's whole reason for reading one: the
+    /// same three open ports are an incident on a public address and a desktop on
+    /// a LAN.
+    #[test]
+    fn a_severity_stated_per_rung_is_graded_by_the_hosts_exposure() {
+        let per_rung = SeveritySpec::PerExposure(SeverityByExposure {
+            internet: Severity::High,
+            internal: Some(Severity::Info),
+            local: None,
+        });
+        let open: BTreeSet<u16> = [88, 389, 445].into_iter().collect();
+
+        let graded = |exposure| {
+            let findings = detect_host(
+                &[domain_controller(per_rung)],
+                &open,
+                &BTreeSet::new(),
+                exposure,
+            );
+            findings[0].severity()
+        };
+
+        assert_eq!(graded(Exposure::Internet), ModelSeverity::High);
+        assert_eq!(graded(Exposure::Internal), ModelSeverity::Info);
+        // `local` was left unstated, so it reads whatever `internal` says.
+        assert_eq!(graded(Exposure::Local), ModelSeverity::Info);
+    }
+
+    /// The exposure grades a finding and never gates one. A correlation that fits
+    /// is reported wherever the host sits, so a reader can tell a shape that was
+    /// looked for and found from one that was never reported.
+    #[test]
+    fn a_correlation_that_fits_is_drawn_at_every_exposure() {
+        let open: BTreeSet<u16> = [88, 389, 445].into_iter().collect();
+        for exposure in Exposure::ALL {
+            let findings = detect_host(
+                &[domain_controller(SeveritySpec::Flat(Severity::Info))],
+                &open,
+                &BTreeSet::new(),
+                *exposure,
+            );
+            assert_eq!(findings.len(), 1, "{}", exposure.label());
+        }
     }
 }

@@ -592,6 +592,54 @@ impl core::marker::Unpin for zond_engine::detect::authoring::Severity
 impl core::marker::UnsafeUnpin for zond_engine::detect::authoring::Severity
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::authoring::Severity
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::authoring::Severity
+#[non_exhaustive] pub enum zond_engine::detect::authoring::SeveritySpec
+pub zond_engine::detect::authoring::SeveritySpec::Flat(zond_engine::detect::authoring::Severity)
+pub zond_engine::detect::authoring::SeveritySpec::PerExposure(zond_engine::detect::authoring::SeverityByExposure)
+impl zond_engine::detect::authoring::SeveritySpec
+pub fn zond_engine::detect::authoring::SeveritySpec::into_model_at(self, zond_engine::model::ip::Exposure) -> zond_engine::model::finding::Severity
+impl core::clone::Clone for zond_engine::detect::authoring::SeveritySpec
+pub fn zond_engine::detect::authoring::SeveritySpec::clone(&self) -> zond_engine::detect::authoring::SeveritySpec
+impl core::cmp::Eq for zond_engine::detect::authoring::SeveritySpec
+impl core::cmp::PartialEq for zond_engine::detect::authoring::SeveritySpec
+pub fn zond_engine::detect::authoring::SeveritySpec::eq(&self, &zond_engine::detect::authoring::SeveritySpec) -> bool
+impl core::fmt::Debug for zond_engine::detect::authoring::SeveritySpec
+pub fn zond_engine::detect::authoring::SeveritySpec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::detect::authoring::SeveritySpec
+impl core::marker::StructuralPartialEq for zond_engine::detect::authoring::SeveritySpec
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::detect::authoring::SeveritySpec
+pub fn zond_engine::detect::authoring::SeveritySpec::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for zond_engine::detect::authoring::SeveritySpec
+impl core::marker::Send for zond_engine::detect::authoring::SeveritySpec
+impl core::marker::Sync for zond_engine::detect::authoring::SeveritySpec
+impl core::marker::Unpin for zond_engine::detect::authoring::SeveritySpec
+impl core::marker::UnsafeUnpin for zond_engine::detect::authoring::SeveritySpec
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::authoring::SeveritySpec
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::authoring::SeveritySpec
+#[non_exhaustive] pub struct zond_engine::detect::authoring::SeverityByExposure
+pub zond_engine::detect::authoring::SeverityByExposure::internal: core::option::Option<zond_engine::detect::authoring::Severity>
+pub zond_engine::detect::authoring::SeverityByExposure::internet: zond_engine::detect::authoring::Severity
+pub zond_engine::detect::authoring::SeverityByExposure::local: core::option::Option<zond_engine::detect::authoring::Severity>
+impl zond_engine::detect::authoring::SeverityByExposure
+pub fn zond_engine::detect::authoring::SeverityByExposure::internal(&self) -> zond_engine::detect::authoring::Severity
+pub fn zond_engine::detect::authoring::SeverityByExposure::local(&self) -> zond_engine::detect::authoring::Severity
+impl core::clone::Clone for zond_engine::detect::authoring::SeverityByExposure
+pub fn zond_engine::detect::authoring::SeverityByExposure::clone(&self) -> zond_engine::detect::authoring::SeverityByExposure
+impl core::cmp::Eq for zond_engine::detect::authoring::SeverityByExposure
+impl core::cmp::PartialEq for zond_engine::detect::authoring::SeverityByExposure
+pub fn zond_engine::detect::authoring::SeverityByExposure::eq(&self, &zond_engine::detect::authoring::SeverityByExposure) -> bool
+impl core::fmt::Debug for zond_engine::detect::authoring::SeverityByExposure
+pub fn zond_engine::detect::authoring::SeverityByExposure::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for zond_engine::detect::authoring::SeverityByExposure
+impl core::marker::StructuralPartialEq for zond_engine::detect::authoring::SeverityByExposure
+impl<'de> serde_core::de::Deserialize<'de> for zond_engine::detect::authoring::SeverityByExposure
+pub fn zond_engine::detect::authoring::SeverityByExposure::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for zond_engine::detect::authoring::SeverityByExposure
+impl core::marker::Send for zond_engine::detect::authoring::SeverityByExposure
+impl core::marker::Sync for zond_engine::detect::authoring::SeverityByExposure
+impl core::marker::Unpin for zond_engine::detect::authoring::SeverityByExposure
+impl core::marker::UnsafeUnpin for zond_engine::detect::authoring::SeverityByExposure
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::authoring::SeverityByExposure
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::authoring::SeverityByExposure
 pub mod zond_engine::detect::bundle
 #[non_exhaustive] pub enum zond_engine::detect::bundle::BundleError
 pub zond_engine::detect::bundle::BundleError::Altered
@@ -1423,7 +1471,7 @@ pub zond_engine::detect::flow::schema::FindingSpec::detail: core::option::Option
 pub zond_engine::detect::flow::schema::FindingSpec::excerpt_from: core::option::Option<alloc::string::String>
 pub zond_engine::detect::flow::schema::FindingSpec::references: alloc::vec::Vec<zond_engine::detect::authoring::Reference>
 pub zond_engine::detect::flow::schema::FindingSpec::remediation: core::option::Option<alloc::string::String>
-pub zond_engine::detect::flow::schema::FindingSpec::severity: zond_engine::detect::authoring::Severity
+pub zond_engine::detect::flow::schema::FindingSpec::severity: zond_engine::detect::authoring::SeveritySpec
 pub zond_engine::detect::flow::schema::FindingSpec::summary: alloc::string::String
 pub zond_engine::detect::flow::schema::FindingSpec::title: core::option::Option<alloc::string::String>
 pub zond_engine::detect::flow::schema::FindingSpec::when: core::option::Option<alloc::string::String>
@@ -1603,6 +1651,7 @@ impl core::marker::UnsafeUnpin for zond_engine::detect::flow::ValidationError
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::detect::flow::ValidationError
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::detect::flow::ValidationError
 #[non_exhaustive] pub struct zond_engine::detect::flow::FlowSeed
+pub zond_engine::detect::flow::FlowSeed::exposure: zond_engine::model::ip::Exposure
 pub zond_engine::detect::flow::FlowSeed::host: alloc::string::String
 pub zond_engine::detect::flow::FlowSeed::port: u16
 impl zond_engine::detect::flow::FlowSeed
@@ -10554,6 +10603,36 @@ impl core::marker::Unpin for zond_engine::model::ip::set::Positions
 impl core::marker::UnsafeUnpin for zond_engine::model::ip::set::Positions
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::ip::set::Positions
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::set::Positions
+#[non_exhaustive] pub enum zond_engine::model::ip::Exposure
+pub zond_engine::model::ip::Exposure::Internal
+pub zond_engine::model::ip::Exposure::Internet
+pub zond_engine::model::ip::Exposure::Local
+impl zond_engine::model::ip::Exposure
+pub const zond_engine::model::ip::Exposure::ALL: &'static [Self]
+pub const fn zond_engine::model::ip::Exposure::label(self) -> &'static str
+pub fn zond_engine::model::ip::Exposure::of(core::net::ip_addr::IpAddr) -> Self
+impl core::clone::Clone for zond_engine::model::ip::Exposure
+pub fn zond_engine::model::ip::Exposure::clone(&self) -> zond_engine::model::ip::Exposure
+impl core::cmp::Eq for zond_engine::model::ip::Exposure
+impl core::cmp::Ord for zond_engine::model::ip::Exposure
+pub fn zond_engine::model::ip::Exposure::cmp(&self, &zond_engine::model::ip::Exposure) -> core::cmp::Ordering
+impl core::cmp::PartialEq for zond_engine::model::ip::Exposure
+pub fn zond_engine::model::ip::Exposure::eq(&self, &zond_engine::model::ip::Exposure) -> bool
+impl core::cmp::PartialOrd for zond_engine::model::ip::Exposure
+pub fn zond_engine::model::ip::Exposure::partial_cmp(&self, &zond_engine::model::ip::Exposure) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for zond_engine::model::ip::Exposure
+pub fn zond_engine::model::ip::Exposure::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for zond_engine::model::ip::Exposure
+pub fn zond_engine::model::ip::Exposure::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for zond_engine::model::ip::Exposure
+impl core::marker::StructuralPartialEq for zond_engine::model::ip::Exposure
+impl core::marker::Freeze for zond_engine::model::ip::Exposure
+impl core::marker::Send for zond_engine::model::ip::Exposure
+impl core::marker::Sync for zond_engine::model::ip::Exposure
+impl core::marker::Unpin for zond_engine::model::ip::Exposure
+impl core::marker::UnsafeUnpin for zond_engine::model::ip::Exposure
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::model::ip::Exposure
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::model::ip::Exposure
 #[non_exhaustive] pub enum zond_engine::model::ip::IpError
 pub zond_engine::model::ip::IpError::AddrParse(core::net::parser::AddrParseError)
 pub zond_engine::model::ip::IpError::InvalidFormat(alloc::string::String)

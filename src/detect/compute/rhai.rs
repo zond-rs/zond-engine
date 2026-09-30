@@ -54,6 +54,7 @@ use ::rhai::{
 use crate::fingerprint::PortContext;
 use crate::model::confidence::Confidence;
 use crate::model::finding::{Excerpt, Finding, Reference};
+use crate::model::ip::Exposure;
 use crate::record::wire;
 
 use super::budget::{BudgetTrap, Denial, ModuleFault, RunOutcome};
@@ -687,13 +688,30 @@ fn names_capability(signature: &str) -> bool {
 // ── Marshalling between the model and Rhai values ────────────────────────────
 
 /// The port context, as the object map a module reads: `ctx.port`,
-/// `ctx.protocol`, `ctx.addr`, and `ctx.hostname`, the name a target reached
-/// the address by, where it named a host.
+/// `ctx.protocol`, `ctx.addr`, `ctx.hostname`, the name a target reached the
+/// address by where it named a host, and `ctx.exposure`.
 ///
-/// Each is unit where the context holds none. The name is what a module
-/// writing a URL or a certificate check needs: the site a server holding
-/// several at one address was asked for, which the address alone does not
-/// say.
+/// Each of the first four is unit where the context holds none. The name is
+/// what a module writing a URL or a certificate check needs: the site a server
+/// holding several at one address was asked for, which the address alone does
+/// not say.
+///
+/// `ctx.exposure` is the one that is never unit, and it is how this tier asks
+/// the question the other two answer declaratively. A [flow](crate::detect::flow)
+/// and a [host correlation](crate::detect::host) state a severity per
+/// [`Exposure`] rung and the engine resolves it; a
+/// module is code, so it is handed the rung and decides for itself, which is the
+/// same division of labour that puts a computed verdict in this tier at all. It
+/// reads `"local"`, `"internal"` or `"internet"`, by
+/// [`Exposure::label`](crate::model::ip::Exposure::label), so a module and a
+/// report spell it one way.
+///
+/// A context holding no address reads `"internet"`, which is
+/// [`Exposure::of`](crate::model::ip::Exposure::of)'s own fallback and not a
+/// separate rule: the widest audience is what a severity means before anything
+/// narrower is established, so a module comparing against it grades as its author
+/// wrote it. Never unit, so a module needs no branch for the case, and the one
+/// thing a missing address cannot do is silently reduce a rating.
 fn build_context(ctx: &PortContext) -> Map {
     let mut map = Map::new();
     map.insert("port".into(), (i64::from(ctx.port)).into());
@@ -708,6 +726,10 @@ fn build_context(ctx: &PortContext) -> Map {
         None => Dynamic::UNIT,
     };
     map.insert("hostname".into(), hostname);
+    let exposure = ctx
+        .addr
+        .map_or(Exposure::Internet, |addr| Exposure::of(addr.ip()));
+    map.insert("exposure".into(), exposure.label().into());
     map
 }
 
@@ -965,6 +987,52 @@ mod tests {
             .instantiate(&module, &grant)
             .expect("the module instantiates");
         runtime.run(&mut instance, &ctx(6379), &[], caps)
+    }
+
+    /// **A module reads who can reach the port, and decides for itself.**
+    ///
+    /// The compute tier's half of the exposure mechanism. A flow states a severity
+    /// per rung and the engine resolves it; a module is code, so it is handed the
+    /// rung and grades its own finding, which is the same reason a computed verdict
+    /// lives in this tier at all.
+    #[test]
+    fn a_module_reads_the_exposure_of_the_address_it_ran_against() {
+        let source = r#"
+            fn analyze(ctx, responses) {
+                [ #{ severity: "info", summary: "reached over " + ctx.exposure } ]
+            }
+        "#;
+        let runtime = RhaiRuntime::new();
+        let module = runtime
+            .load(&ModuleBody::Rhai(source.to_string()))
+            .expect("the module compiles");
+        let summary = |addr: Option<&str>| {
+            let mut instance = runtime
+                .instantiate(&module, &grant(DetectionClass::Passive, false))
+                .expect("the module instantiates");
+            let context = PortContext {
+                addr: addr.map(|text| {
+                    std::net::SocketAddr::new(text.parse().expect("a valid address"), 6379)
+                }),
+                ..ctx(6379)
+            };
+            let findings = runtime
+                .run(
+                    &mut instance,
+                    &context,
+                    &[],
+                    &mut RecordedCaps::new(Vec::new()),
+                )
+                .expect("the module ran");
+            findings[0].title().to_string()
+        };
+
+        assert_eq!(summary(Some("198.51.100.7")), "reached over internet");
+        assert_eq!(summary(Some("192.168.0.1")), "reached over internal");
+        assert_eq!(summary(Some("127.0.0.1")), "reached over local");
+        // No address is the widest audience, never unit: a module needs no branch
+        // for it, and a missing address cannot quietly reduce a rating.
+        assert_eq!(summary(None), "reached over internet");
     }
 
     /// A module reads the name a target reached the address by, and unit where

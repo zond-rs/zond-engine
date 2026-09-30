@@ -20,7 +20,7 @@
 // it is silenced here rather than item by item.
 #![allow(dead_code)]
 
-use super::authoring::{Reference, Severity};
+use super::authoring::{Reference, SeveritySpec};
 use super::manifest::GroupSpec;
 use std::collections::BTreeSet;
 
@@ -93,8 +93,15 @@ impl HostGate {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FindingSpec {
-    /// How bad it is if true.
-    pub severity: Severity,
+    /// How bad it is if true: one rating, or one per
+    /// [`Exposure`](crate::model::ip::Exposure) rung. See [`SeveritySpec`].
+    ///
+    /// The tier where the second form earns its keep most often. A host
+    /// correlation describes a *shape*, and a shape means different things
+    /// depending on who is looking at it: RPC, NetBIOS and SMB open together is
+    /// the first thing lateral movement reaches for, and it is also what every
+    /// Windows desktop on every office network looks like.
+    pub severity: SeveritySpec,
     /// The one-line conclusion, which becomes the finding's title unless
     /// [`title`](Self::title) overrides it.
     pub summary: String,
