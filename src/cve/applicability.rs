@@ -12,8 +12,8 @@
 //! package is more than its daemon. CVE-2023-38408 is a flaw in ssh-agent,
 //! reached only through an agent someone forwarded to a hostile machine, and
 //! NVD states it against `openbsd:openssh` exactly as it states regreSSHion. A
-//! scan that found sshd listening can confirm the second and has no business
-//! charging the host with the first.
+//! scan that found sshd listening can confirm the second and should not charge
+//! the host with the first.
 //!
 //! `assets/cve/applicability.toml` is the hand-written overlay that says which
 //! is which, one CVE and one `vendor:product` at a time, and this module reads
@@ -21,10 +21,9 @@
 //! file's header, beside the entries they govern.
 //!
 //! Parsed once, on first use, from a copy compiled into the crate. A malformed
-//! overlay is a defect in this crate rather than in anything a caller did, so
-//! the tests below are what refuse one; a scan reading it treats a document
-//! that does not parse as having no entries and correlates as it would without
-//! the overlay, rather than failing.
+//! overlay is a defect in this crate, so the tests below refuse one; a scan
+//! treats a document that does not parse as having no entries and correlates as
+//! it would without the overlay.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -78,8 +77,8 @@ pub(crate) fn applicability(cve: &str, vendor_product: &str) -> Option<Applicabi
 
 /// The shipped overlay, parsed on first use, by CVE id.
 ///
-/// Empty if it does not parse; see the module documentation for why that is
-/// the tests' to refuse rather than a scan's.
+/// Empty if it does not parse; the tests refuse a malformed overlay (see the
+/// module documentation).
 fn overlay() -> &'static Overlay {
     static OVERLAY: OnceLock<Overlay> = OnceLock::new();
     OVERLAY.get_or_init(|| parse(SOURCE).unwrap_or_default())
@@ -168,9 +167,8 @@ fn parse(source: &str) -> Result<Overlay, String> {
             ("client", None) => Class::Client,
             ("local", None) => Class::Local,
             ("configuration", Some(requires)) => Class::Configuration(requires),
-            // A setting on anything but a configuration entry is a class chosen
-            // by mistake, and a configuration entry without one cannot say what
-            // a reader should go and check.
+            // A setting on any other class is a class chosen by mistake, and a
+            // configuration entry without one cannot say what to check.
             ("configuration", None) => return Err(format!("{at}: configuration needs requires")),
             ("service" | "client" | "local", Some(_)) => {
                 return Err(format!("{at}: requires is only for configuration"));
@@ -248,9 +246,8 @@ mod tests {
 
     /// The shipped overlay parses, every value in it included.
     ///
-    /// The one place a malformed overlay is caught. A scan reading one that
-    /// does not parse carries on without it, which is the right thing for a
-    /// scan to do and the wrong thing for a release to ship.
+    /// The one place a malformed overlay is caught: a scan reading one that
+    /// does not parse carries on without it.
     #[test]
     fn the_shipped_overlay_parses() {
         let parsed = parse(SOURCE).expect("the shipped overlay parses");
@@ -261,9 +258,8 @@ mod tests {
     /// Every OpenSSH CVE the catalogue carries has a class.
     ///
     /// OpenSSH is the package whose client flaws are most often charged to a
-    /// listening daemon, and a regeneration that brings in a new one has to
-    /// bring a decision about it too, or the correlator charges sshd with it
-    /// by default.
+    /// listening daemon. A regeneration that brings in a new CVE has to
+    /// classify it too, or the correlator charges sshd with it by default.
     #[test]
     fn every_openssh_cve_in_the_catalogue_is_classified() {
         let classified = classified("openbsd:openssh");
@@ -300,9 +296,9 @@ mod tests {
 
     /// No entry names a CVE the catalogue does not carry for that product.
     ///
-    /// An entry the catalogue has no row for can never be consulted, and is
-    /// either a typo in the id or a product key the catalogue spells another
-    /// way; both are silent without this.
+    /// An entry the catalogue has no row for is never consulted. It is either
+    /// a typo in the id or a product key the catalogue spells another way, and
+    /// both are silent without this test.
     #[test]
     fn nothing_classified_is_missing_from_the_catalogue() {
         let parsed = parse(SOURCE).expect("the shipped overlay parses");
@@ -346,10 +342,10 @@ mod tests {
         assert_eq!(applicability("CVE-1999-0000", "openbsd:openssh"), None);
     }
 
-    /// An overlay that says something it cannot mean is refused, each way it
-    /// can: a class that does not exist, a configuration that does not name
-    /// its setting, a setting on a class that has none, a CVE stated twice
-    /// for one product, a malformed id, and a field nobody reads.
+    /// An overlay that says something it cannot mean is refused: a class that
+    /// does not exist, a configuration that does not name its setting, a
+    /// setting on a class that has none, a CVE stated twice for one product, a
+    /// malformed id, and a field nobody reads.
     #[test]
     fn a_malformed_overlay_is_refused() {
         let row = |fields: &str| format!("[[cve]]\n{fields}\n");

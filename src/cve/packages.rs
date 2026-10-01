@@ -11,9 +11,9 @@
 //! A distribution files its security verdicts under its own source package
 //! names, and a scan identifies software by CPE. `assets/cve/packages.toml` is
 //! the join, written by hand for every product the fingerprint corpus can put
-//! a version to; this module reads it once and answers one question: under
+//! a version to. This module reads it once and answers one question: under
 //! which name does this distributor publish verdicts for this product, in this
-//! release, at this upstream version.
+//! release, at this upstream version?
 //!
 //! The upstream version is part of the question because a release can carry
 //! several series of one product side by side, each built from a source
@@ -23,10 +23,8 @@
 //! the other says nothing true: Tomcat 10 would read as carrying every fix
 //! made to Tomcat 9.
 //!
-//! The same map bounds what the advisory converters keep. A distribution's
-//! feed covers thousands of source packages and a scan can only ever ask
-//! about these, so converting the rest would cost memory and time for data
-//! nothing reads.
+//! The same map bounds what the advisory converters keep: a distribution's feed
+//! covers thousands of source packages, and a scan can only ask about these.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;

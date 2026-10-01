@@ -26,23 +26,20 @@
 //!   build before it does not. It needs the build's version to be judged.
 //! - **Not affected** says the release never carried the vulnerability: the
 //!   code is not there, the feature is compiled out, the version predates the
-//!   bug. It needs nothing from the build at all, and it is the verdict that
-//!   removes false positives outright, because it holds for a build whose
-//!   exact revision the scan cannot see.
+//!   bug. It needs nothing from the build, so it removes false positives
+//!   even for a build whose exact revision the scan cannot see.
 //! - **Open** says the release carries it and no fix is published, with the
 //!   distributor's reason where it gave one: a fix is needed, deferred, the
 //!   issue ignored as not worth fixing in that release, or still to be
-//!   triaged. It confirms what the upstream range says rather than
-//!   overturning it.
+//!   triaged. It confirms what the upstream range says.
 //!
 //! ## Per release
 //!
 //! Verdicts are keyed by release because a fix is a build of one release's
 //! package: `1:6.6p1-2ubuntu2.7` fixes CVE-2016-1908 in Ubuntu 14.04 and means
-//! nothing in 16.04, whose package has a lineage of its own. Comparing a build
-//! with another release's fix version would compare two branches of a tree.
-//! [`Lineage`] records the versions each release's package is known to have
-//! had, which is how a banner's revision is tied to a release.
+//! nothing in 16.04, whose package has a lineage of its own. [`Lineage`]
+//! records the versions each release's package is known to have had, which is
+//! how a banner's revision is tied to a release.
 //!
 //! ## The ESM channel
 //!
@@ -51,8 +48,7 @@
 //! subscription. A release can then hold two verdicts on one vulnerability:
 //! no fix in the archive every machine sees, and a fix in ESM that only a
 //! subscribed machine has. They are kept apart as [`Channel`]s, because which
-//! one applies depends on the machine, and a report that merged them would
-//! call every unsubscribed machine patched or every subscribed one exposed.
+//! one applies depends on the machine.
 //!
 //! ## Kept as bytes
 //!
@@ -60,7 +56,7 @@
 //! hundred kilobytes, so a converted one is meant to be cached.
 //! [`Advisories::to_bytes`] writes a compact, pooled form behind a magic
 //! header and a format number, and [`Advisories::from_bytes`] refuses a form
-//! it cannot read rather than misreading it.
+//! it cannot read.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -76,15 +72,15 @@ const MAGIC: &[u8; 8] = b"ZONDADV\0";
 
 /// The serialized form this engine writes and reads. Anything that changes
 /// the bytes' meaning, a new variant of a stored enum included, takes a new
-/// number, so an older engine refuses a newer cache rather than misreading it.
+/// number, so an older engine refuses a newer cache.
 const FORMAT: u16 = 1;
 
 /// The most a serialized dataset may be.
 ///
 /// Every mapped source package of one distributor, across every release it
-/// publishes data for, converts to well under a megabyte; sixty-four is a
-/// mistake or a hostile file rather than a large dataset, and the bound is
-/// what keeps either from taking the process's memory.
+/// publishes data for, converts to well under a megabyte, so input past 64 MiB
+/// is a mistake or a hostile file. The bound keeps it from taking the process's
+/// memory.
 pub(crate) const MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Why serialized advisory data could not be read.
@@ -97,8 +93,8 @@ pub enum AdvisoriesError {
 
     /// The bytes are advisory data in a form this engine does not read.
     ///
-    /// A cache written by a newer engine. Refused rather than guessed at,
-    /// because a misread verdict is a vulnerability reported fixed.
+    /// A cache written by a newer engine. Refused, because a misread verdict
+    /// can report a vulnerability as fixed.
     #[error("advisory data in format {found}; this engine reads format {supported}")]
     UnsupportedFormat {
         /// The form the bytes say they are in.
@@ -136,7 +132,7 @@ impl Distributor {
     }
 
     /// The identity a finding drawn from this distributor's data carries: the
-    /// distributor's own name for the data, never this engine's `zond:`.
+    /// distributor's own name for the data.
     fn id(self) -> &'static str {
         match self {
             Self::Ubuntu => "ubuntu:security-notices",
@@ -200,7 +196,7 @@ pub(crate) struct Status {
 /// Gathered from every version the data names for the release: fix versions,
 /// the versions in its repositories, and the version lists a feed publishes.
 /// The correlator reads the release's `epoch:upstream` from it and checks that
-/// a banner's revision is one of this release's builds rather than another's.
+/// a banner's revision is one of this release's builds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Lineage {
     versions: Vec<String>,
@@ -309,7 +305,7 @@ impl Advisories {
     /// one per release, and otherwise the one it gives everywhere.
     ///
     /// The distributor's judgement of how much the issue matters to its
-    /// users, which is information for a reader and never a severity.
+    /// users. Shown to a reader; it does not set a finding's severity.
     pub(crate) fn priority(&self, release: Option<&str>, cve: &str) -> Option<&str> {
         let facts = self.cves.get(cve)?;
         release
@@ -614,9 +610,8 @@ struct WireCve {
 ///
 /// - a fix outranks everything, since it names the build that settles the
 ///   question, and "not affected" never overrides one;
-/// - "not affected" outranks an open verdict, since it is the distributor's
-///   own considered answer where an open one is often a placeholder a
-///   different feed of the same distributor has not caught up with;
+/// - "not affected" outranks an open verdict, since an open one is often a
+///   placeholder another feed of the same distributor has not caught up with;
 /// - of two fixes, the later version stands, so a build is only ever read as
 ///   fixed once every record agrees it is.
 #[cfg_attr(not(feature = "import-distro"), allow(dead_code))]
@@ -710,7 +705,7 @@ impl Builder {
     }
 
     /// The finished dataset. Data with no dated record is version `0.0.0`,
-    /// which sorts below every real one and says plainly that it was undated.
+    /// which sorts below every real one.
     pub(crate) fn finish(self) -> Advisories {
         let releases = self
             .releases
@@ -841,8 +836,7 @@ mod tests {
     }
 
     /// A release can hold one verdict per channel on the same vulnerability,
-    /// and a lookup hands back both: no fix in the archive and a fix in ESM
-    /// are two facts about two kinds of machine.
+    /// and a lookup hands back both.
     #[test]
     fn a_release_holds_a_verdict_per_channel() {
         let data = sample();
@@ -906,7 +900,7 @@ mod tests {
     }
 
     /// The lineage holds every version the data named, fix versions
-    /// included, in dpkg's order rather than the order they arrived in.
+    /// included, in dpkg's order.
     #[test]
     fn a_lineage_is_every_named_version_in_package_order() {
         let data = sample();
@@ -1029,7 +1023,7 @@ mod tests {
     }
 
     /// Bytes that are not a dataset, or are one in a form this engine does
-    /// not read, are refused with the reason rather than misread.
+    /// not read, are refused with the reason.
     #[test]
     fn unreadable_bytes_are_refused_with_the_reason() {
         let bytes = sample().to_bytes();
@@ -1064,7 +1058,7 @@ mod tests {
         ));
     }
 
-    /// A body whose indices point past its pool is malformed, not a panic.
+    /// A body whose indices point past its pool is malformed and does not panic.
     #[test]
     fn an_index_past_the_pool_is_malformed() {
         let mut wire = sample().to_wire();

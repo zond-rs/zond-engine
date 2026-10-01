@@ -10,9 +10,8 @@
 //!
 //! A report-level pass that reads the CPE a service identification produced and,
 //! where a known vulnerability names the same software at an affected version,
-//! records a [`Finding`] on the port. It answers the question most people run a
-//! scan to answer, not "what is listening" but "what is listening that I need to
-//! fix", from data the engine already produces, with no probe of its own.
+//! records a [`Finding`] on the port. It says which of the listening services
+//! need fixing, from data the engine already produces, with no probe of its own.
 //!
 //! ## Two datasets, because a version is two questions
 //!
@@ -22,19 +21,18 @@
 //!
 //! Most services on a Linux server are not. A distribution fixes a
 //! vulnerability by patching the release it ships and publishing a new build of
-//! it, and the version string never moves: `OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13`
+//! it under the same version string: `OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13`
 //! is 6.6.1p1 carrying every fix Ubuntu made to it up to that build. The
 //! catalogue reports the upstream release's vulnerabilities against it, and
 //! most of them are fixed. Only the distributor can say which, and
 //! [`Advisories`] is what it says: per release and source package, which build
 //! fixed each vulnerability, which the release never carried, and which remain
 //! open. A service names its build in its [`Build`], and a [`Correlator`] given
-//! the distributor's advisories judges the build rather than the version:
-//! what the build fixed or never carried is withdrawn and only counted, what it
-//! still carries is reported with the build to install, and what the data does
-//! not settle stays at a confidence that says so. Without the data, a
-//! distribution's build is reported as unchecked, never as surely as an
-//! upstream release.
+//! the distributor's advisories judges the build: what the build fixed or never
+//! carried is withdrawn and only counted, what it still carries is reported with
+//! the build to install, and what the data does not settle stays at a confidence
+//! that says so. Without the data, a distribution's build is reported as
+//! unchecked, at a lower confidence than an upstream release.
 //!
 //! ## Where a flaw lives
 //!
@@ -54,27 +52,25 @@
 //! Exploited Vulnerabilities catalogue unless the caller supplies another,
 //! names the ones being used against someone in the wild, and a finding
 //! citing any of them carries an [`Exploitation`](crate::model::finding::Exploitation)
-//! saying which, cites them first, and names them in its excerpt. It marks and
-//! decides nothing: the severity stays the catalogue's, the confidence stays
-//! the verdict's, and a vulnerability the distributor fixed stays withdrawn
-//! however widely it is exploited elsewhere. A front end orders by it.
+//! saying which, cites them first, and names them in its excerpt. The mark
+//! changes nothing else: the severity stays the catalogue's, the confidence
+//! stays the verdict's, and a vulnerability the distributor fixed stays
+//! withdrawn however widely it is exploited elsewhere. A front end orders by it.
 //!
 //! ## The one number two ways
 //!
-//! No finding this pass records is certain, and that is the case the
-//! [two-axis finding](crate::model::finding) was built for: a vulnerability
-//! matched on a version is genuinely
-//! [`Critical`](crate::model::finding::Severity::Critical) *and* genuinely
-//! unsure. The severity says how bad it is if true, and stays the catalogue's so
-//! one scale holds across every product and distribution; the confidence says
-//! how directly the claim follows from what was seen. An upstream release in a
-//! version range, or a build the distributor says predates the fix, is
+//! No finding this pass records is certain. A vulnerability matched on a version
+//! can be [`Critical`](crate::model::finding::Severity::Critical) and unsure at
+//! once, which the [two-axis finding](crate::model::finding) expresses. The
+//! severity says how bad it is if true, and stays the catalogue's so one scale
+//! holds across every product and distribution; the confidence says how directly
+//! the claim follows from what was seen. An upstream release in a version range,
+//! or a build the distributor says predates the fix, is
 //! [`Confidence::Probable`]. A distribution's build nobody could check, a patch
 //! level the banner hides, a setting the scan cannot see, or an entry whose
-//! `affected` is `*` and names no version at all, is [`Confidence::Weak`]: a
-//! feed like CISA's KEV carries no version data, and reporting its entries as
-//! surely as a version match would give a patched server the same finding as a
-//! vulnerable one.
+//! `affected` is `*` and names no version at all, is [`Confidence::Weak`]. A feed
+//! like CISA's KEV carries no version data, so its entries say nothing about
+//! whether this server is patched.
 //!
 //! ## One claim per kind, keyed on what it is about
 //!
@@ -82,22 +78,16 @@
 //! vulnerabilities, so each kind of claim about one identification is one
 //! finding carrying every identifier as a reference, worst first. It is keyed on
 //! the software, whose build and release, and the kind of claim
-//! ([`Finding::subject`]), never on one of the identifiers, since those move
-//! whenever either dataset does. A correlation is a computation, so running it
-//! again replaces what the same catalogue drew on the port before rather than
-//! adding to it, and a [`merge`](crate::merge) retires a claim once a newer
-//! scan's identifier or build no longer backs it.
+//! ([`Finding::subject`]). The identifiers stay out of the key because they move
+//! whenever either dataset does. Running a correlation again replaces what the
+//! same catalogue drew on the port before, and a [`merge`](crate::merge) retires
+//! a claim once a newer scan's identifier or build no longer backs it.
 //!
 //! ## The datasets are parameters
 //!
-//! Every other corpus in this engine changes when its understanding of the world
-//! changes, and shipping it with the release is right. These change on
-//! somebody else's schedule: fixes are published daily, and a scanner whose
-//! vulnerability data can only move when the crate is rebuilt reports last
-//! release's picture however long ago that was.
-//!
-//! So all three are values. [`Catalogue::embedded`] is the catalogue this
-//! crate ships and [`Catalogue::read`] takes a caller's own;
+//! Vulnerability data changes on somebody else's schedule: fixes are published
+//! daily. So all three datasets are values. [`Catalogue::embedded`] is the
+//! catalogue this crate ships and [`Catalogue::read`] takes a caller's own;
 //! [`KnownExploited::embedded`] is CISA's list as this release carries it, and
 //! [`Correlator::with_exploited`] takes a newer one. No distributor's data is
 //! shipped: [`Advisories`] are converted from the distributors' feeds, which
@@ -154,8 +144,8 @@ use backport::{Placement, ReleaseFrom, Ruling, Unplaced, Unsettled, Vulnerable, 
 pub use exploited::KnownExploited;
 
 /// The reserved identity the engine's built-in correlator stamps on every finding
-/// it produces, so a report can say exactly what concluded a vulnerability. A
-/// third-party detection may not claim the `zond:` namespace.
+/// it produces, so a report can say what concluded a vulnerability. A third-party
+/// detection may not claim the `zond:` namespace.
 const CORRELATOR_ID: &str = "zond:cve-kev";
 
 /// The prefix a catalogue read from outside this crate may not claim.
@@ -164,37 +154,28 @@ const RESERVED_PREFIX: &str = "zond:";
 /// The shipped catalogue's version, carried on every finding it produces.
 ///
 /// It versions the verdicts as well as the data, since a finding is both, and
-/// moves whenever either does: a report drawn from one is distinguishable from
-/// a report drawn from another by it, which is the whole reason a dataset
-/// carries a version, and a [`merge`](crate::merge) retires an earlier
-/// correlator's claims wherever a later one judged the same port. `0.3.0`
-/// marks the correlator that tells a distribution's build from the upstream
-/// release it started from and keys each claim on what it is about, over a
-/// converted feed whose entries carry a CPE's patch level as part of the
-/// release they name and leave out ranges NVD states only for one platform,
-/// beside the hand-picked entries in `seed.toml`.
+/// moves whenever either does. Reports drawn from different versions can be told
+/// apart by it, and a [`merge`](crate::merge) retires an earlier correlator's
+/// claims wherever a later one judged the same port.
 const SEED_VERSION: Version = Version::new(0, 3, 0);
 
 /// The catalogue compiled from `assets/cve/` by `build.rs`: a string pool and
 /// the entries that index into it.
 ///
-/// Compiled rather than parsed because the documents are twenty megabytes of
-/// TOML and parsing them costs a tenth of a second on the first correlation of
+/// Compiled at build time because the documents are twenty megabytes of TOML,
+/// and parsing them would cost a tenth of a second on the first correlation of
 /// every process. See `compile_cve_catalogue` in `build.rs`.
 const EMBEDDED_DB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cve_catalogue.bin"));
 
 /// The most a catalogue document may be.
 ///
-/// A ceiling in the shape [`import::settings`](crate::import::settings) already
-/// uses, and for a stronger reason. `read` takes a [`BufRead`] precisely so the
-/// bytes can come from a socket, and a CVE catalogue is by definition a feed:
-/// fetched from somewhere else, refreshed on a schedule, pointed at by an
-/// operator who did not write it. A feed that answers with a stream that does not
-/// end would otherwise take the process's memory with it, and `toml::from_str`
-/// then takes several times the document again to parse it.
+/// `read` takes a [`BufRead`] so the bytes can come from a socket, and a
+/// catalogue is usually a feed fetched from elsewhere. The bound keeps a stream
+/// that does not end from taking the process's memory; `toml::from_str` needs
+/// several times the document again to parse it.
 ///
-/// Sixteen megabytes because the shipped seed is a few kilobytes and a catalogue
-/// two thousand times that is a mistake rather than a large feed.
+/// Sixteen megabytes because the shipped seed is a few kilobytes, and a
+/// catalogue two thousand times that is a mistake.
 pub const MAX_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Why a catalogue could not be read.
@@ -214,7 +195,7 @@ pub enum CatalogueError {
     /// A report says which detection concluded a finding, and `zond:` is how it
     /// says the engine's own correlator did. A catalogue somebody else wrote
     /// claiming that prefix would make its findings indistinguishable from the
-    /// shipped seed's, which is the whole thing the identity exists to answer.
+    /// shipped seed's.
     #[error("a catalogue may not name itself '{id}': '{RESERVED_PREFIX}' is reserved")]
     ReservedId {
         /// What the document called itself.
@@ -242,8 +223,8 @@ pub enum CatalogueError {
 /// A summary sits in a column beside a port and a severity, and the rows around
 /// it are phrases: `squid 6.13 has 7 known vulnerabilities`, `VNC offered the
 /// None security type`. Every hand-written entry in the shipped seed is under
-/// sixty characters. Anything longer is a description that was cut to fit rather
-/// than a title somebody wrote, and it belongs in the excerpt.
+/// sixty characters. Anything longer is a cut-down description, which belongs in
+/// the excerpt.
 const MAX_SUMMARY_BYTES: usize = 80;
 
 /// Correlates a finished host's services against the shipped catalogue,
@@ -251,16 +232,16 @@ const MAX_SUMMARY_BYTES: usize = 80;
 ///
 /// Reads each port's service CPE, matches vendor, product and version against
 /// the dataset, and hands each match back to the port it concerns. Replaces
-/// what the same catalogue drew on the port before, so a re-run reaches the
-/// same findings rather than doubling them.
+/// what the same catalogue drew on the port before, so a re-run does not
+/// duplicate findings.
 ///
 /// With no distributor's data, a distribution's build is judged only as far as
-/// its upstream version goes, and said to be; [`Correlator`] takes the data.
+/// its upstream version goes, and the finding says so; [`Correlator`] takes the
+/// data.
 ///
 /// A scan runs this as its own step, after the service pass and before the
-/// report is built. It is public because it is worth running anywhere a host
-/// carries a CPE, which includes a host that came out of a file rather than off
-/// a network: an archived report correlates against today's dataset without
+/// report is built. It works on any host that carries a CPE, including one read
+/// from a file: an archived report correlates against today's dataset without
 /// rescanning anything.
 ///
 /// ```
@@ -282,10 +263,10 @@ pub fn correlate(host: &mut Host) {
 
 /// [`correlate`], against a catalogue the caller supplied.
 ///
-/// The call for anybody whose vulnerability data moves faster than this crate's
-/// releases, which is everybody: a refreshed KEV dump, or the advisory feed an
-/// organisation already keeps. Every finding is stamped with `catalogue`'s
-/// identity and version, so a report says which dataset drew it.
+/// For vulnerability data newer than this crate's release: a refreshed KEV
+/// dump, or the advisory feed an organisation already keeps. Every finding is
+/// stamped with `catalogue`'s identity and version, so a report says which
+/// dataset drew it.
 ///
 /// ```
 /// use std::io::Cursor;
@@ -387,8 +368,7 @@ impl<'a> Correlator<'a> {
     /// Records on `host`'s ports what this correlation draws, replacing what
     /// the same catalogue drew there before.
     pub fn correlate(&self, host: &mut Host) {
-        // Collect first, mutate second: the read borrows the host's ports and
-        // the write needs them mutably, so the two cannot overlap.
+        // Collect first: the read borrows the ports, the write needs them mutably.
         for judged in self.judgements(host) {
             host.replace_port_correlations(
                 judged.number,
@@ -409,12 +389,11 @@ impl<'a> Correlator<'a> {
     /// What [`correlate`](Self::correlate) would record on `host`, port by
     /// port, without recording it.
     ///
-    /// For a scan correlating in place, which reads first and writes only a
-    /// host whose correlations change: a write is announced to whoever watches
-    /// the scan and taken down by its journal, and most hosts match nothing. A
+    /// Lets a scan write only the hosts whose correlations change: each write
+    /// is announced to watchers and journaled, and most hosts match nothing. A
     /// port is listed where the catalogue draws something on it or drew
-    /// something there before, since a correlation is replaced whole and one
-    /// that now draws nothing withdraws what the last one drew.
+    /// something there before, since a correlation is replaced whole and an
+    /// empty one withdraws what the last one drew.
     pub(crate) fn judgements(&self, host: &Host) -> Vec<PortJudgement> {
         // The releases the host's own banners name, by distributor, for a
         // build that names none. See `Placement::of`.
@@ -476,13 +455,11 @@ pub(crate) struct PortJudgement {
 
 /// [`correlate_with`], over every host in a finished report.
 ///
-/// The call for a caller whose vulnerability data is their own. A scan
-/// correlates against [`Catalogue::embedded`] as it runs, because that is the
-/// only catalogue it has; this is how a report gets joined against a feed the
-/// operator keeps, without rescanning anything.
+/// Joins a finished report against a feed the operator keeps, without
+/// rescanning. A scan itself correlates against [`Catalogue::embedded`].
 ///
 /// Findings deduplicate by claim and each carries the catalogue that drew it, so
-/// a report joined against two datasets says so rather than double-counting.
+/// a report joined against two datasets shows both without double-counting.
 ///
 /// ```no_run
 /// use std::fs::File;
@@ -502,11 +479,10 @@ pub fn correlate_report(report: &mut ScanReport, catalogue: &Catalogue) {
 ///
 /// [`embedded`](Self::embedded) is the one this crate ships and
 /// [`read`](Self::read) takes anybody else's. See the
-/// [module documentation](self) for why this is a value rather than a constant.
+/// [module documentation](self) for why it is a value.
 ///
 /// A catalogue names itself and its version, and both travel onto every finding
-/// it produces, because "which dataset said this" is a question a report has to
-/// be able to answer once more than one dataset exists.
+/// it produces, so a report can say which dataset drew each one.
 #[derive(Debug, Clone)]
 pub struct Catalogue {
     id: String,
@@ -516,13 +492,11 @@ pub struct Catalogue {
     ///
     /// A real feed repeats itself enormously: seventy-two thousand entries are
     /// backed by eight thousand advisories, because NVD states one entry per
-    /// affected version rather than one per vulnerability, and every one of them
-    /// carries the same title. Six and a half thousand distinct titles, a
-    /// hundred and sixty-one distinct products.
+    /// affected version and each carries the advisory's title. Six and a half
+    /// thousand distinct titles, a hundred and sixty-one distinct products.
     ///
-    /// Stored flat with the entries holding indices, which is what makes the
-    /// shipped catalogue two megabytes rather than sixteen. The saving is the
-    /// same in memory as on disk, so a scan pays it once either way.
+    /// The entries hold indices into it, which shrinks the shipped catalogue
+    /// from sixteen megabytes to two, in memory as on disk.
     pool: Vec<String>,
     vulnerability: Vec<Entry>,
 }
@@ -540,11 +514,10 @@ struct Entry {
     remediation: Option<u32>,
 }
 
-/// One entry with its strings resolved, which is what everything that reads a
-/// catalogue actually wants.
+/// One entry with its strings resolved.
 ///
-/// Borrowed from the pool rather than copied out of it: an entry is looked at
-/// once per matching CPE and never outlives the catalogue it came from.
+/// Borrowed from the pool: an entry is looked at once per matching CPE and
+/// does not outlive the catalogue it came from.
 struct Vulnerability<'a> {
     cve: &'a str,
     title: &'a str,
@@ -583,7 +556,7 @@ impl Interner {
 impl Catalogue {
     /// The catalogue this crate ships, parsed once on first use.
     ///
-    /// A starting corpus rather than a complete one; see the
+    /// A starting corpus, not a complete one; see the
     /// [module documentation](self).
     pub fn embedded() -> &'static Self {
         static EMBEDDED: OnceLock<Catalogue> = OnceLock::new();
@@ -597,9 +570,7 @@ impl Catalogue {
             Catalogue {
                 id: CORRELATOR_ID.to_string(),
                 version: SEED_VERSION,
-                // Of the compiled bytes rather than of the documents they came
-                // from. It answers the same question — which dataset concluded
-                // this — and it is the only thing the running process has.
+                // Of the compiled bytes, the only form the running process has.
                 content_hash: content_hash(EMBEDDED_DB),
                 pool,
                 vulnerability,
@@ -608,9 +579,6 @@ impl Catalogue {
     }
 
     /// Reads a catalogue from a TOML document.
-    ///
-    /// Takes a reader rather than a path, as every other reading surface in this
-    /// crate does: where the bytes come from is the caller's business.
     ///
     /// The document names itself in `id` and `version`, and those reach every
     /// finding it produces. Its content hash is computed here from the bytes, so
@@ -625,9 +593,9 @@ impl Catalogue {
     /// in this engine's own namespace, and [`CatalogueError::TooLarge`] for one
     /// past [`MAX_DOCUMENT_BYTES`].
     pub fn read(input: &mut dyn BufRead) -> Result<Self, CatalogueError> {
-        // Bounded before the read rather than measured after: a feed with no end
-        // must not be held in memory to discover it had none. One byte past the
-        // ceiling is read so a document exactly at it is still accepted.
+        // Bounded during the read, so a feed with no end is never held in
+        // memory. One byte past the ceiling is read so a document exactly at it
+        // is accepted.
         let mut source = String::new();
         let read = {
             use std::io::Read as _;
@@ -720,7 +688,7 @@ impl Catalogue {
     /// and what it withdrew.
     ///
     /// The entries naming the software at the version found, grouped by what
-    /// can honestly be said about each, one finding per group. What can be
+    /// can be said about each, one finding per group. What can be
     /// said depends on more than the version: whether the entry constrained
     /// the version at all, where the flaw lives, and whose build the service
     /// is, which for a distribution's build means what the distributor's own
@@ -748,11 +716,10 @@ impl Catalogue {
                 .then_with(|| a.cve.cmp(b.cve))
         });
 
-        // One vulnerability, however many ways it is stated. A CVE with disjoint
-        // ranges is two entries and matches through whichever range covers the
-        // version found, and a report saying a host has nineteen when eighteen
-        // identifiers back them is a report a reader cannot reconcile. Adjacent
-        // after the sort, since equal severity orders by identifier.
+        // One vulnerability, however many ways it is stated: a CVE with
+        // disjoint ranges is two entries, and counting both would report more
+        // vulnerabilities than identifiers. Duplicates are adjacent after the
+        // sort, since equal severity orders by identifier.
         matched.dedup_by(|a, b| a.cve == b.cve);
 
         // Placed once for the identification, and only where anything matched:
@@ -818,15 +785,14 @@ impl Catalogue {
     ///
     /// A version-matched CPE against a real feed draws dozens: Apache 2.4.49 has
     /// sixty-eight, MySQL 8.0.32 a hundred and eighteen. Recorded one by one they
-    /// are not a report, they are a wall, and they push past
+    /// push past
     /// [`MAX_FINDINGS_PER_SUBJECT`](crate::model::finding::MAX_FINDINGS_PER_SUBJECT)
-    /// on a host running a handful of identifiable services, at which point the
-    /// ones that survive are decided by arrival order rather than by severity.
+    /// on a host running a handful of identifiable services, and then arrival
+    /// order decides which survive.
     ///
-    /// So a group arrives as one finding that says how many and how bad,
-    /// carrying every one of them as references, worst first. A reader
-    /// scanning a port table sees one row per kind of claim about the service;
-    /// a reader with the report open has the identifiers.
+    /// So a group becomes one finding that says how many and how bad, carrying
+    /// each as a reference, worst first: one row per kind of claim about the
+    /// service.
     ///
     /// `note` is a sentence about the identification as a whole, appended to
     /// the excerpt. What `exploited` names among the group is marked, cited
@@ -846,11 +812,10 @@ impl Catalogue {
             DetectionId::new(self.id.clone(), self.version, self.content_hash.clone()).ok()?;
         let cpe = judged.cpe;
 
-        // Named the way the port table names it: the service's own product
-        // name where the identification carried one (`Apache HTTP Server
-        // 2.4.7`, not `http_server 2.4.7`), and the catalogue's where it did
-        // not. The vendor is in the CPE the excerpt quotes, for anyone who
-        // needs to tell two products of the same name apart.
+        // Named as the port table names it: the service's own product name
+        // (`Apache HTTP Server 2.4.7`) where the identification carried one,
+        // else the catalogue's (`http_server`). The vendor is in the CPE the
+        // excerpt quotes.
         let product = judged.product.unwrap_or(worst.product);
         let software = match judged.parsed.version.is_empty() {
             true => product.to_string(),
@@ -906,12 +871,9 @@ impl Catalogue {
                     ),
                 };
                 match only {
-                    // One match is its own best description, where the entry
-                    // has a title short enough to be one. NVD publishes no
-                    // title, and `import::nvd` cuts the description to fit, so
-                    // almost every NVD entry's is a paragraph cut mid-word;
-                    // that moves to the excerpt, where it is the evidence
-                    // anyway, and the line says what it says for a run.
+                    // One match takes its entry's title where it is short
+                    // enough. NVD publishes no title and `import::nvd` cuts the
+                    // description to fit, so a long one moves to the excerpt.
                     Some(entry) if entry.title.len() <= MAX_SUMMARY_BYTES => {
                         (entry.title.to_string(), excerpt)
                     }
@@ -1070,12 +1032,10 @@ impl Catalogue {
             finding = finding.with_advised_by(stamp);
         }
 
-        // Every one of them, because this is the record: a summary that says
-        // forty-four and cites twenty is a report a reader cannot reconcile, and
-        // the presentation is the right place to decide how many of them fit on
-        // a line. Those somebody is exploiting first, then the rest, each worst
-        // first by the sort above, so a front end showing the first few shows
-        // the few to act on.
+        // Every one of them, so the count and the references agree; a front end
+        // decides how many fit on a line. Exploited ones first, then the rest,
+        // each worst first by the sort above, so the first few shown are the
+        // ones to act on.
         let listed = |entry: &&Ruled<'_>| {
             exploitation
                 .as_ref()
@@ -1322,11 +1282,9 @@ impl Context<'_, '_> {
     /// The software and its version, whose build it is and which release,
     /// and the kind of verdict:
     /// `openbsd:openssh:6.6.1p1@ubuntu-14.04/fix-available`. Not a
-    /// vulnerability identifier, because the set behind a summary moves with
-    /// the data: a catalogue refresh adds entries and a distributor's fix data
-    /// withdraws them, and a claim keyed on any one member would rename itself
-    /// with every change and read, in a comparison of two scans of an unchanged
-    /// host, as one finding gone and another arrived.
+    /// vulnerability identifier: the set behind a summary moves with the data,
+    /// and a key on one member would make two scans of an unchanged host read
+    /// as one finding gone and another arrived.
     fn subject(&self, verdict: Verdict) -> String {
         let parsed = &self.judged.parsed;
         let scope = match self.judged.build {
@@ -1377,8 +1335,8 @@ fn open_kinds(entries: &[Ruled<'_>]) -> String {
 }
 
 /// The distributor's own ratings of a group's vulnerabilities, as a sentence,
-/// where it rated any. Information for a reader, never the severity: the
-/// severity stays the one scale every product and distribution shares.
+/// where it rated any. Shown to a reader only; the severity stays the
+/// catalogue's, one scale across every product and distribution.
 fn priorities(context: &Context<'_, '_>, entries: &[Ruled<'_>]) -> Option<String> {
     let placement = context.placement?;
     let mut counts: Vec<(&str, usize)> = Vec::new();
@@ -1554,13 +1512,11 @@ enum Verdict {
     /// data could not be asked about: none was loaded, it does not cover the
     /// release, or the release could not be told.
     ///
-    /// A distribution fixes vulnerabilities by patching the release it ships
-    /// and publishing a new build, leaving the upstream version where it was,
-    /// so the check says the upstream release had these vulnerabilities and
-    /// says nothing about whether this build still does. Against a
-    /// long-maintained release most of them are fixed. Reported, because the
-    /// build may still carry any of them, and at [`Confidence::Weak`], because
-    /// the version was never the question.
+    /// The distributor patches the release it ships without changing the
+    /// upstream version, so the check says only that the upstream release had
+    /// these vulnerabilities; against a long-maintained release most are fixed.
+    /// Reported, since the build may still carry any of them, at
+    /// [`Confidence::Weak`].
     BuildUnchecked,
     /// The distributor fixed it in some build of the release, and the banner
     /// does not say which build this is, as `Apache/2.4.7 (Ubuntu)` does not:
@@ -1578,13 +1534,12 @@ enum Verdict {
 impl Verdict {
     /// Where `vulnerability` goes, on `judged`, placed as `placement` says.
     ///
-    /// Where a vulnerability lives comes first. A flaw in the client programs
-    /// installed beside a daemon, or one that needs an account on the host,
-    /// is not something a scan of the listening service has found, however
-    /// the version compares; the overlay in [`applicability`] says which those
-    /// are. Then, for a distribution's build, what the distributor's data
-    /// says, since a vulnerability the build does not carry needs no setting
-    /// to be withdrawn.
+    /// Where a vulnerability lives comes first: a flaw in the client programs
+    /// installed beside a daemon, or one that needs an account on the host, is
+    /// withdrawn whatever the version, as the overlay in [`applicability`]
+    /// says. Then, for a distribution's build, the distributor's data, which
+    /// withdraws what the build does not carry before any setting is
+    /// considered.
     fn of(
         vulnerability: &Vulnerability<'_>,
         judged: &Judged<'_>,
@@ -1677,8 +1632,7 @@ struct CatalogueDocument {
 
 /// The SHA-256 of a catalogue's bytes, as lowercase hex.
 ///
-/// Computed rather than declared, so a document cannot claim to be a version of
-/// itself it is not.
+/// Computed from the bytes, so a document cannot misstate it.
 fn content_hash(bytes: &[u8]) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
     let mut hex = String::with_capacity(digest.as_ref().len() * 2);
@@ -1690,8 +1644,8 @@ fn content_hash(bytes: &[u8]) -> String {
 
 /// How many identifiers a summary spells out in its excerpt.
 ///
-/// Fewer than it carries as references: the excerpt is a sentence somebody
-/// reads, and a sentence listing twenty identifiers is not one.
+/// Fewer than it carries as references, so the excerpt stays a readable
+/// sentence.
 const MAX_NAMED_IN_EXCERPT: usize = 3;
 
 /// Turns the entries a document states into a pool and a list of indices.
@@ -1739,10 +1693,9 @@ impl Vulnerability<'_> {
     /// Whether this entry constrains the version at all, or names a product and
     /// leaves the version open.
     ///
-    /// Read off `affected` rather than stored beside it, so an entry cannot
-    /// claim to have checked something it did not. `*` is the grammar's own way
-    /// of saying "any version", which is what a feed carrying no version data
-    /// converts to.
+    /// Read off `affected`, so an entry cannot claim a check it did not make.
+    /// `*` is the grammar's "any version", which a feed carrying no version
+    /// data converts to.
     fn constrains_the_version(&self) -> bool {
         self.affected.trim() != "*"
     }
@@ -1790,9 +1743,8 @@ impl Cpe {
 
         // The 2.3 form puts a patch level in its own `update` field, where the
         // URI form and every service banner run it onto the version: OpenSSH is
-        // `9.6:p1` in one and `9.6p1` in the other. Joined here so the two
-        // spellings of one release compare equal, since a predicate is written
-        // against whichever the author happened to have.
+        // `9.6:p1` in one and `9.6p1` in the other. Joined so both spellings
+        // compare equal, whichever a predicate was written against.
         //
         // `*` is "any" and `-` is "not applicable" in this grammar, and neither
         // is a patch level.
@@ -1816,9 +1768,8 @@ impl Cpe {
 ///
 /// The 2.3 grammar quotes punctuation inside a field with a backslash, so a
 /// release NVD writes as `7.03hp3\+ftf` is `7.03hp3+ftf` and a colon inside a
-/// field is `\:` rather than a separator. Read literally, the escaped form
-/// equals no version any banner states, and a field holding an escaped colon
-/// splits in two.
+/// field is `\:`. Read literally, the escaped form matches no version a banner
+/// states, and a field holding an escaped colon splits in two.
 pub(crate) fn formatted_fields(body: &str) -> Vec<String> {
     let mut fields = Vec::new();
     let mut field = String::new();
@@ -1883,23 +1834,16 @@ mod tests {
     /// Every product a scan can put a version to either has entries here or is
     /// listed below with the reason it does not.
     ///
-    /// Regenerating the catalogue can give rows to names listed here, which is
-    /// what the second test below is for: a stale exemption is as quiet a
-    /// defect as the gap it records.
+    /// The join is `vendor:product`, and a mismatch is silent: a scan identifies
+    /// the software, the catalogue holds records for it, and nothing correlates
+    /// because the two spell it differently. A rule emitting `microsoft:iis` is
+    /// such a mismatch, since NVD has never used that spelling.
     ///
-    /// The join is `vendor:product` and a mismatch is silent in both directions:
-    /// a scan identifies the software, the catalogue holds records for it, and
-    /// nothing correlates because the two spell it differently. A rule emitting
-    /// `microsoft:iis` is such a mismatch, since that spelling belongs to a
-    /// vocabulary NVD has never used.
-    ///
-    /// The list is checked in both directions. An entry that gains rows has to
-    /// be removed from it, which is what turns a regeneration into a visible
-    /// event rather than something nobody notices.
+    /// The list is checked in both directions: an entry that gains rows after a
+    /// regeneration has to be removed, so a stale exemption fails a test.
     const UNCOVERED: &[(&str, &str)] = &[
         // Nothing has published a record against these names, under any spelling
-        // that could be found. The corpus identifies the software and there is
-        // no vulnerability data to join to.
+        // that could be found.
         ("avocent:dsview", "no records in NVD"),
         ("darkhttpd_project:darkhttpd", "no records in NVD"),
         ("mcafee:webshield", "no records in NVD"),
@@ -1931,15 +1875,11 @@ mod tests {
             .collect()
     }
 
-    /// A summary is a phrase, and an entry with no title of its own does not get
-    /// to put a paragraph on that line.
+    /// A summary is a phrase, so an entry whose title is a cut-down paragraph
+    /// gets a counted summary and the text moves to the excerpt.
     ///
     /// NVD publishes no title, so `import::nvd` cuts the description to fit and
-    /// almost every one comes out at the cap. IIS 8.5 is the case that showed
-    /// it: one match, and the summary read `The IP Security feature in Microsoft
-    /// Internet Information Services (IIS) 8.0 and 8.5 does not properly process
-    /// wildcard allow and deny rules for domains within`, cut mid-sentence, in a
-    /// column whose other rows are six words.
+    /// almost every one comes out at the cap, as IIS 8.5's does here.
     #[test]
     fn a_description_too_long_to_be_a_summary_becomes_one_and_moves_to_the_excerpt() {
         let long = "The IP Security feature in Microsoft Internet Information Services (IIS) \
@@ -1968,8 +1908,8 @@ mod tests {
         );
     }
 
-    /// And an entry that does have a title keeps it. This is what the shipped
-    /// seed and a converted KEV record produce.
+    /// An entry with a short title keeps it, as the shipped seed's and a
+    /// converted KEV record's do.
     #[test]
     fn a_title_short_enough_to_be_a_summary_is_used_as_one() {
         let document = "id = \"test:cve\"\nversion = \"1.0.0\"\n\n\
@@ -2005,7 +1945,7 @@ mod tests {
         );
     }
 
-    /// And the other direction, so the list cannot outlive what put it there.
+    /// The other direction: nothing on the list has gained rows.
     #[test]
     fn nothing_listed_as_uncovered_is_covered() {
         let covered = covered();
@@ -2023,9 +1963,8 @@ mod tests {
     }
 
     /// The 2.3 grammar puts a patch level in a field of its own and the URI
-    /// form runs it onto the version, so one release has two spellings. A
-    /// predicate is written against whichever the author had in front of them,
-    /// and the two have to compare equal.
+    /// form runs it onto the version, so one release has two spellings, and
+    /// they have to compare equal.
     #[test]
     fn the_two_cpe_forms_of_one_release_read_the_same_version() {
         let uri = Cpe::parse("cpe:/a:openbsd:openssh:9.6p1").expect("the URI form");
@@ -2038,7 +1977,7 @@ mod tests {
 
     /// The 2.3 grammar quotes punctuation in a field with a backslash, and a
     /// release NVD writes `7.03hp3\\+ftf` is the `7.03hp3+ftf` a banner
-    /// states. An escaped colon is part of its field, not a separator.
+    /// states. An escaped colon is part of its field.
     #[test]
     fn an_escaped_character_in_a_2_3_cpe_is_read_as_itself() {
         let cpe = Cpe::parse("cpe:2.3:a:acme:ftpd:7.03hp3\\+ftf:*:*:*:*:*:*:*").expect("parses");
@@ -2049,8 +1988,8 @@ mod tests {
         );
     }
 
-    /// `*` is "any" and `-` is "not applicable" in that grammar, and neither is
-    /// a patch level to run onto the end of a version.
+    /// `*` is "any" and `-` is "not applicable" in that grammar; neither is a
+    /// patch level.
     #[test]
     fn an_unset_update_field_is_not_appended() {
         for cpe in [
@@ -2062,15 +2001,15 @@ mod tests {
         }
     }
 
-    /// The correlator's end of T2: a pre-release is below the version it is a
-    /// candidate for, so a bound written `<1.0.0` catches it.
+    /// A pre-release is below the version it is a candidate for, so a bound
+    /// written `<1.0.0` catches it.
     #[test]
     fn a_pre_release_satisfies_a_bound_written_against_its_release() {
         assert!(version_matches("1.0.0-rc1", "<1.0.0"));
         assert!(version_matches("0.9.9", "<1.0.0"));
         assert!(!version_matches("1.0.0", "<1.0.0"));
 
-        // And a distribution rebuild is a later build, not an earlier one.
+        // A distribution rebuild is a later build.
         assert!(!version_matches("1.21.0-1ubuntu2", "<1.21.0"));
     }
     use super::*;
@@ -2091,19 +2030,8 @@ mod tests {
         assert!(!version_matches("-", ">= 1.0"));
     }
 
-    /// The rule that makes an unversioned feed safe to load, tested where it
-    /// lives rather than only where KEV exercises it.
-    ///
-    /// An entry whose `affected` is `*` matched on the software and checked no
-    /// version, so it describes a patched installation exactly as well as a
-    /// vulnerable one. Reporting it beside a version match, at the same
-    /// Many matches against one service become one finding, not many.
-    ///
-    /// A real feed gives a version-matched CPE dozens of entries. Recorded one by
-    /// one they crowd out everything else a scan found and, past
-    /// `MAX_FINDINGS_PER_SUBJECT`, the survivors are chosen by arrival order
-    /// rather than by severity. The summary says how many and how bad, and
-    /// carries the identifiers.
+    /// Many matches against one service become one finding that says how many
+    /// and how bad, and carries the identifiers.
     #[test]
     fn many_matches_become_one_finding_that_counts_them() {
         let mut document = String::from("id = \"acme:advisories\"\nversion = \"1.0.0\"\n");
@@ -2137,8 +2065,7 @@ mod tests {
         );
         assert!(summary.excerpt().as_str().contains("1 critical and 1 high"));
 
-        // Every entry is cited, so a reader can reconcile the count in the title
-        // against the references beside it.
+        // Every entry is cited, so the count in the title matches the references.
         let cves: Vec<&str> = summary
             .references()
             .filter_map(|reference| match reference {
@@ -2151,8 +2078,8 @@ mod tests {
         assert!(cves.contains(&"CVE-2024-0002"), "and the high one");
     }
 
-    /// The split survives summarising. A service matched by many entries of both
-    /// kinds gets one finding per kind, never one averaging them.
+    /// A service matched by many entries of both kinds gets one finding per
+    /// kind.
     #[test]
     fn a_summary_never_averages_the_two_kinds_of_claim() {
         let mut document = String::from("id = \"acme:advisories\"\nversion = \"1.0.0\"\n");
@@ -2190,8 +2117,10 @@ mod tests {
         );
     }
 
-    /// confidence, would put the two in the same row of a report with nothing to
-    /// separate them.
+    /// An entry whose `affected` is `*` matched on the software and checked no
+    /// version, so it describes a patched installation exactly as well as a
+    /// vulnerable one, and is reported at a lower confidence than a version
+    /// match. This is the rule that makes an unversioned feed safe to load.
     #[test]
     fn an_entry_that_names_no_version_is_weaker_than_one_that_does() {
         use crate::model::confidence::Confidence;
@@ -2218,8 +2147,8 @@ affected = "*"
 "#;
         let catalogue = Catalogue::read(&mut document.as_bytes()).expect("a valid document");
 
-        // The vulnerable build answers both entries, which is what makes the two
-        // comparable: same software, same version, different claims about it.
+        // The vulnerable build answers both entries: same software, same
+        // version, different claims about it.
         let hits = catalogue.findings_for("cpe:/a:apache:http_server:2.4.49");
         assert_eq!(hits.len(), 2);
 
@@ -2240,8 +2169,7 @@ affected = "*"
             "the excerpt has to say the version was never in question"
         );
 
-        // And the patched build answers only the unbounded one, which is the
-        // whole reason it cannot be reported as confidently.
+        // The patched build answers only the unbounded one.
         let patched = catalogue.findings_for("cpe:/a:apache:http_server:2.4.62");
         assert_eq!(patched.len(), 1);
         assert_eq!(patched[0].confidence(), Confidence::Weak);
@@ -2282,12 +2210,10 @@ affected = "*"
             .collect()
     }
 
-    /// A range match against a distribution's build says the upstream release
-    /// had these vulnerabilities and nothing about whether the build still
-    /// does: the distributor backports fixes without moving the version. So it
-    /// is reported, and never as surely as the same match against the
-    /// upstream release, which is what a patched Ubuntu server printed as
-    /// critical and probable looked like.
+    /// A range match against a distribution's build says only that the upstream
+    /// release had these vulnerabilities, since the distributor backports fixes
+    /// without moving the version. It is reported at a lower confidence than
+    /// the same match against the upstream release.
     #[test]
     fn a_distribution_builds_version_match_is_weak_and_says_why() {
         use crate::model::port::{Build, Distributor, Release, ReleaseBasis};
@@ -2342,9 +2268,8 @@ affected = "*"
         );
     }
 
-    /// A weakness and a remedy describe one vulnerability. A summary of three
-    /// carrying the worst one's would print it beside the count as if it
-    /// characterised all three; a single match keeps its own.
+    /// A weakness and a remedy describe one vulnerability, so a summary of
+    /// three carries neither; a single match keeps its own.
     #[test]
     fn a_summary_carries_no_single_entrys_weakness_or_remedy() {
         let catalogue = three_in_one_release();
@@ -2376,10 +2301,7 @@ affected = "*"
     }
 
     /// A claim is keyed on what it is about, so a catalogue refresh that adds a
-    /// vulnerability below the lowest one it cited leaves the claim where it
-    /// was: keyed on its lowest identifier, it would rename itself and a
-    /// comparison of two scans of an unchanged host would report one finding
-    /// gone and another arrived.
+    /// vulnerability below the lowest one it cited keeps the claim's subject.
     #[test]
     fn a_claim_survives_the_set_of_vulnerabilities_behind_it_changing() {
         let catalogue = three_in_one_release();
@@ -2395,9 +2317,8 @@ affected = "*"
         assert_eq!(before.subject(), after.subject());
     }
 
-    /// A correlation is recomputed, not observed again: correlating a second
-    /// time against data that no longer draws a claim withdraws it, where
-    /// adding would have left the stale claim beside the new one.
+    /// Correlating again against data that no longer draws a claim withdraws
+    /// it.
     #[test]
     fn correlating_again_replaces_what_the_same_catalogue_drew_before() {
         use crate::model::host::Host;
@@ -2418,7 +2339,7 @@ affected = "*"
             ["openbsd:openssh:6.6.1p1@upstream/affected"]
         );
 
-        // The same port, now known to be Ubuntu's build.
+        // The same port, identified as Ubuntu's build.
         let mut rescanned = host.clone();
         rescanned.add_port(
             Port::new(22, Protocol::Tcp, PortState::Open)
@@ -2432,12 +2353,10 @@ affected = "*"
         );
     }
 
-    /// A flaw in the client programs installed beside a daemon is not
-    /// something a scan of the daemon found. ssh-agent's CVE-2023-38408 is
-    /// reached through an agent somebody forwarded to a hostile machine, and a
-    /// listening sshd charged with it is a false finding; it is counted in the
-    /// excerpt so the identifiers still reconcile. A flaw that needs a setting
-    /// the service does not ship with is its own, weaker claim.
+    /// A flaw in the client programs installed beside a daemon, such as
+    /// ssh-agent's CVE-2023-38408, is withdrawn and counted in the excerpt. A
+    /// flaw that needs a setting the service does not ship with is its own,
+    /// weaker claim.
     #[test]
     fn a_client_side_flaw_is_withdrawn_and_a_configuration_one_is_its_own_claim() {
         let findings = Catalogue::embedded().findings_for("cpe:/a:openbsd:openssh:6.6.1p1");
@@ -2502,10 +2421,8 @@ affected = "*"
                 .contains(&"CVE-2021-41773".to_string())
         );
 
-        // 2.4.51 carries the fix for that one. It is not a clean build — a real
-        // catalogue knows plenty about it — so the claim is the narrow one the
-        // version range actually makes, and asserting emptiness here would hold
-        // only for a catalogue of a few hand-picked entries.
+        // 2.4.51 carries the fix for that one. A real catalogue holds other
+        // vulnerabilities for it, so only that one is checked.
         assert!(
             !embedded_cves("cpe:/a:apache:http_server:2.4.51")
                 .contains(&"CVE-2021-41773".to_string()),
@@ -2518,11 +2435,9 @@ affected = "*"
             "a vendor nothing is keyed under does not match: nginx is `f5:nginx`"
         );
 
-        // The curated identities fire against the shapes the corpus actually
-        // emits: OpenSSH banners carry a `p` suffix, and vsftpd is an exact match.
-        // regreSSHion is `>= 8.5, < 9.8`, so it is reported for 9.6p1 and not for
-        // 9.8p1. The `p` suffix is the shape the corpus emits and has to compare
-        // correctly against a range that carries none.
+        // OpenSSH banners carry a `p` suffix, which has to compare correctly
+        // against a range that carries none: regreSSHion is `>= 8.5, < 9.8`, so
+        // it is reported for 9.6p1 and not for 9.8p1.
         assert!(
             embedded_cves("cpe:/a:openbsd:openssh:9.6p1").contains(&"CVE-2024-6387".to_string())
         );
@@ -2531,8 +2446,7 @@ affected = "*"
             "the fixed OpenSSH release is outside the range"
         );
 
-        // The backdoored vsftpd tarball, which is an exact version rather than a
-        // range and is the one every CTF host runs.
+        // The backdoored vsftpd tarball, an exact version.
         assert!(
             embedded_cves("cpe:/a:vsftpd_project:vsftpd:2.3.4")
                 .contains(&"CVE-2011-2523".to_string())
@@ -2597,8 +2511,7 @@ affected = "== 2.4.49"
     }
 
     /// A report joined against a second catalogue keeps both sets of findings,
-    /// each naming the dataset that drew it. That is the whole reason the
-    /// identity travels: a report says which feed concluded what.
+    /// each naming the dataset that drew it.
     #[test]
     fn a_report_correlated_against_a_second_catalogue_carries_both_attributions() {
         use crate::model::host::Host;
@@ -2645,17 +2558,13 @@ affected = "== 2.4.49"
         );
     }
 
-    /// The one namespace a catalogue may not claim, refused where the document
-    /// is read because that is the authoring path."""
-    /// A catalogue is a feed, and `read` takes a reader so the bytes can come off
-    /// a socket. The ceiling has to refuse before the read rather than after it,
-    /// or a feed with no end is discovered to have none by running out of memory.
+    /// The ceiling refuses during the read, so a feed with no end is never held
+    /// in memory.
     #[test]
     fn a_catalogue_longer_than_the_ceiling_is_refused_without_being_held() {
         use std::io::Cursor;
 
-        // A document one byte over, which is the boundary the `+ 1` in `read` is
-        // there to make exact.
+        // A document one byte over, the boundary the `+ 1` in `read` makes exact.
         let mut over = String::from("id = \"oversize\"\nversion = \"1.0.0\"\n");
         let filler = MAX_DOCUMENT_BYTES as usize + 1 - over.len();
         over.push_str(&"#".repeat(filler));
@@ -2668,7 +2577,7 @@ affected = "== 2.4.49"
             "got {error:?}"
         );
 
-        // And one exactly at the ceiling still reads.
+        // One exactly at the ceiling still reads.
         let at = &over[..MAX_DOCUMENT_BYTES as usize];
         assert!(
             Catalogue::read(&mut Cursor::new(at)).is_ok(),
@@ -2676,6 +2585,8 @@ affected = "== 2.4.49"
         );
     }
 
+    /// The one namespace a catalogue may not claim, refused where the document
+    /// is read.
     #[test]
     fn a_catalogue_may_not_name_itself_in_this_engines_namespace() {
         use std::io::Cursor;
@@ -2690,8 +2601,8 @@ affected = "== 2.4.49"
         );
     }
 
-    /// A document that says nothing about itself cannot stamp a finding, so it
-    /// is refused rather than given a default nobody chose.
+    /// A document that does not name its id and version cannot stamp a
+    /// finding, so it is refused.
     #[test]
     fn a_catalogue_that_does_not_name_itself_is_refused() {
         use std::io::Cursor;
@@ -2723,15 +2634,14 @@ affected = "== 2.4.49"
         let first: Vec<Finding> = port.findings().cloned().collect();
         assert!(!first.is_empty(), "the vulnerable service got findings");
 
-        // A second pass reaches the same claims rather than adding more.
+        // A second pass reaches the same claims.
         correlate(&mut host);
         let port = host.ports().find(|p| p.number() == 80).unwrap();
         assert_eq!(port.findings().cloned().collect::<Vec<_>>(), first);
     }
 
-    /// A correlation says which identifier it matched, in a field and not only
-    /// in the excerpt, since the claim rests on it and a merge asks whether a
-    /// newer identification still backs it.
+    /// A correlation records the identifier it matched in a field, since a
+    /// merge asks whether a newer identification still backs the claim.
     #[test]
     fn a_correlation_names_the_identifier_it_was_drawn_from() {
         use crate::model::host::Host;
@@ -3130,7 +3040,7 @@ mod verdicts {
     }
 
     /// A list of exploited vulnerabilities marks what a correlation reports
-    /// and decides nothing: the marked are cited first, the severity and the
+    /// and changes nothing else: the marked are cited first, the severity and the
     /// confidence stay the verdict's, and what the distributor fixed or never
     /// shipped stays withdrawn however widely it is exploited elsewhere.
     #[test]

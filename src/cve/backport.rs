@@ -8,14 +8,14 @@
 
 //! # What a distributor says about its own build
 //!
-//! The catalogue says which vulnerabilities an upstream release has. For a
-//! distribution's build that is the wrong question: the distributor patches
-//! the release it ships and publishes new builds of it, and the version string
-//! never moves. What does answer it is the distributor's own record of each
-//! vulnerability in each of its releases, which [`Advisories`] holds: fixed
-//! from this package version on, never affected, or open.
+//! The catalogue says which vulnerabilities an upstream release has. That is the
+//! wrong question for a distribution's build: the distributor patches the release
+//! it ships and publishes new builds of it under the same version string. The
+//! answer is the distributor's own record of each vulnerability in each of its
+//! releases, which [`Advisories`] holds: fixed from this package version on, never
+//! affected, or open.
 //!
-//! Two steps, and this module is both.
+//! This module does it in two steps.
 //!
 //! **Placing the build.** A verdict is about one release's package, so the
 //! build has to be found among them first: the release (from the banner, or
@@ -24,8 +24,8 @@
 //! the full package version the host runs. The banner gives the revision and
 //! leaves out the epoch and the upstream version as the package spells them
 //! (`OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13` is package `1:6.6p1-2ubuntu2.13`), so
-//! the version is read off the release's own lineage. A build that cannot be
-//! placed is not guessed at; the correlator then says so.
+//! the version is read off the release's own lineage. When a build cannot be
+//! placed, the correlator says so.
 //!
 //! **Ruling on each vulnerability.** Against the placed build, in this order:
 //! never affected, in any channel, withdraws it; a fix at or below the
@@ -35,8 +35,8 @@
 //! a vulnerability the distributor has not fixed in the release is one, fixed
 //! nowhere; one it has not yet triaged, or has no record of, stays unsettled.
 //! Where the banner hides the patch level (`Apache/2.4.7 (Ubuntu)`), a
-//! vulnerability the distributor fixed is unsettled rather than either
-//! answer, because the installed build may predate the fix or not.
+//! vulnerability the distributor fixed is unsettled, because the installed build
+//! may or may not predate the fix.
 
 use std::cmp::Ordering;
 
@@ -60,8 +60,8 @@ pub(super) struct Placement<'a> {
     pub(super) installed: Option<String>,
 }
 
-/// Where a placed build's release came from, which the excerpt says where it
-/// was not the service's own banner.
+/// Where a placed build's release came from. The excerpt names it when it was
+/// not the service's own banner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ReleaseFrom {
     /// The service's own banner named it.
@@ -73,8 +73,7 @@ pub(super) enum ReleaseFrom {
     Host,
 }
 
-/// Why a build could not be placed, for the excerpt of what is reported
-/// instead.
+/// Why a build could not be placed, for the excerpt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Unplaced {
     /// No dataset for this distributor was given.
@@ -122,7 +121,7 @@ impl<'a> Placement<'a> {
     /// `Server: Apache/2.4.7 (Ubuntu)` does. A machine installs its packages
     /// from one release, so an SSH banner reading Ubuntu 14.04 says which
     /// release the Apache beside it came from. A container behind one port
-    /// can break that, and so it is used only where the service itself says
+    /// can break that, so it is used only where the service itself says
     /// nothing, and the excerpt says where the release came from.
     pub(super) fn of(
         build: &Build,
