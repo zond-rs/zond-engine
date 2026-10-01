@@ -8,57 +8,50 @@
 
 //! # Unicast DNS, as the host has it configured
 //!
-//! Which server a name is asked of, and whether any is. A host has a global
-//! resolver configuration, and on macOS it can also have *scoped* resolvers: a
-//! server that answers for one domain only, installed by a VPN's match domains,
-//! by Tailscale's MagicDNS, or by a file under `/etc/resolver`. A name under
-//! such a domain is resolved by the OS through that server and no other, so a
-//! scanner that read the global configuration alone would fail to resolve every
-//! host the VPN serves while the OS resolves it fine, and would send each of
-//! those names to a resolver outside the VPN on its way to failing.
+//! Which server a name is asked of, if any. A host has a global resolver
+//! configuration, and on macOS it can also have *scoped* resolvers: servers
+//! that answer for one domain only, installed by a VPN's match domains,
+//! Tailscale's MagicDNS, or a file under `/etc/resolver`. The OS resolves a
+//! name under such a domain through that server alone. Reading only the global
+//! configuration would fail to resolve every host the VPN serves, and would
+//! leak each of those names to a resolver outside the VPN.
 //!
-//! ## How far scoped resolvers are followed
+//! ## Scoped resolvers
 //!
-//! A scoped resolver here is a domain and the servers that answer for it,
-//! taken from `scutil --dns`, which reports the configuration the OS resolves
-//! with, `/etc/resolver` files and VPN match domains alike. A name under the
-//! longest such domain is asked of that domain's servers alone, as the OS asks
-//! it, never also of the global ones: the domain's owner is the only server
-//! that can answer, and any other would learn a name inside a private network
-//! for nothing.
+//! A scoped resolver is a domain and the servers that answer for it, taken
+//! from `scutil --dns`, which reports the configuration the OS resolves with,
+//! `/etc/resolver` files and VPN match domains alike. A name under the longest
+//! matching domain is asked of that domain's servers alone, as the OS asks it:
+//! only the domain's owner can answer, and any other server would learn a
+//! private name for nothing.
 //!
 //! A domain stays claimed when none of its servers can be asked. A link-local
-//! server is reached through the interface written after it, `fe80::53%utun4`,
-//! and is asked through that interface; when the interface is gone, or a server
-//! or port is written in a form that cannot be read, the domain's names fail to
-//! resolve, with a line saying why, rather than going to the global servers. A
-//! resolver the OS lists with no servers at all claims nothing: there is no
-//! server of the domain's own for a name to be kept for.
+//! server is reached through the interface written after it, `fe80::53%utun4`.
+//! When that interface is gone, or a server or port is unreadable, the
+//! domain's names fail to resolve, with a line saying why, and do not fall
+//! through to the global servers. A resolver the OS lists with no servers
+//! claims nothing.
 //!
-//! What is left out is what changes *where* the OS sends a query rather than
-//! *which* server it asks: per-interface resolvers (the "for scoped queries"
-//! half, which serves only a process that pinned itself to an interface),
-//! search-order weights, and reachability flags. The multicast entries the OS
-//! lists for `local` and the link-local reverse zones are left out too, since
-//! the engine speaks mDNS itself.
+//! Left out are the settings that change where the OS sends a query, not which
+//! server it asks: per-interface resolvers (the "for scoped queries" half,
+//! which serves only a process pinned to an interface), search-order weights,
+//! and reachability flags. The multicast entries for `local` and the link-local
+//! reverse zones are skipped too, since the engine speaks mDNS itself.
 //!
 //! The report comes from running `/usr/sbin/scutil`. The dynamic store behind
-//! it has no API short of linking the SystemConfiguration framework by hand,
-//! and `scutil --dns` is the interface Apple documents for reading it. A
-//! machine where it cannot run resolves through the global configuration
-//! alone.
+//! it has no API short of linking the SystemConfiguration framework, and
+//! `scutil --dns` is Apple's documented way to read it. A machine where it
+//! cannot run resolves through the global configuration alone.
 //!
-//! Elsewhere there is nothing to read: Linux's split DNS lives behind
-//! `systemd-resolved`'s stub, which the global configuration already names,
-//! so a name reaches the right server by asking the one listed.
+//! Other platforms have nothing to read: Linux's split DNS lives behind the
+//! `systemd-resolved` stub, which the global configuration already names.
 //!
 //! ## Read per pass
 //!
-//! A [`Unicast`] is built from the configuration as it is at one moment and
-//! lives for one resolution pass. A front end that runs for hours sees the VPN
-//! it connected in the meantime, and nothing it was told is kept past the pass:
-//! a name that did not resolve is asked again next time, rather than answered
-//! from a cache of failures while the box it names comes up.
+//! A [`Unicast`] is built from the configuration at one moment and lives for
+//! one resolution pass, so a long-running front end sees a VPN connected in the
+//! meantime. Nothing is cached past the pass: a name that did not resolve is
+//! asked again next time.
 
 use std::future::Future;
 use std::io;
@@ -88,15 +81,14 @@ pub(crate) struct DnsConfig {
 pub(crate) struct ScopedServers {
     /// Folded to lower case, without a root dot.
     pub(crate) domain: String,
-    /// The servers to ask, never empty, a link-local one carrying the scope id
-    /// of the interface it is reached through; or why none of those the
-    /// resolver lists can be asked, in which case the domain's names are asked
-    /// of nobody.
+    /// The servers to ask (never empty), a link-local one carrying the scope id
+    /// of its interface; or why none of the listed servers can be asked, in
+    /// which case the domain's names are asked of nobody.
     pub(crate) servers: Result<Vec<SocketAddr>, String>,
 }
 
 impl DnsConfig {
-    /// The host's configuration, as the OS resolves with it now.
+    /// The host's current configuration.
     pub(crate) fn read_system() -> Self {
         let global = hickory_resolver::system_conf::read_system_conf().map_err(|e| e.to_string());
         Self {
@@ -117,17 +109,17 @@ pub(crate) struct Unicast {
     /// The global configuration's own domain and search list, folded, which
     /// say what the global servers are expected to answer for.
     searched: Vec<String>,
-    /// Says once per pass that names needing DNS were not asked, rather than
-    /// once per name.
+    /// Says once per pass, not once per name, that names needing DNS were not
+    /// asked.
     unconfigured: Once,
 }
 
 impl Unicast {
     /// Builds a client per configured server set.
     ///
-    /// The hosts file is not given to any of them: the resolver answers from
-    /// it before a client is asked, so a client consulting it again could only
-    /// ask upstream for the family the file did not list.
+    /// The hosts file is withheld from the clients: the resolver answers from it
+    /// first, and a client consulting it again would ask upstream for the
+    /// family the file did not list.
     pub(crate) fn from_config(config: DnsConfig) -> Self {
         let base_opts = config
             .global
@@ -170,8 +162,8 @@ impl Unicast {
                 }
             })
             .collect();
-        // Stable, so of two resolvers for one domain the one listed first,
-        // which the OS orders first, is the one asked.
+        // Stable, so of two resolvers for one domain the one the OS lists first
+        // is asked.
         scoped.sort_by_key(|scope| std::cmp::Reverse(scope.domain.len()));
 
         Self {
@@ -186,12 +178,10 @@ impl Unicast {
     /// scoped resolver's domain covers it, or the global configuration's own
     /// domain or search list does.
     ///
-    /// What decides whether a `.local` name is asked of unicast DNS at all. An
+    /// Decides whether a `.local` name is asked of unicast DNS at all. An
     /// Active Directory domain named `corp.local` is served by its domain
     /// controller, and a host joined to it carries the domain in its search
-    /// list; a `.local` name nothing configured claims is a multicast name,
-    /// and asking a unicast server about it only tells that server what is on
-    /// the link.
+    /// list. A `.local` name nothing configured claims is a multicast name.
     pub(crate) fn claims(&self, name: &str) -> bool {
         let name = fold(name);
         self.scoped.iter().any(|scope| covers(&scope.domain, &name))
@@ -201,8 +191,8 @@ impl Unicast {
     /// Asks the server that answers for `name` for its A and AAAA records.
     ///
     /// Empty when the name has no records, when nothing answered, or when the
-    /// host has no server to ask; the last is said once per pass and domain,
-    /// because it is the one a user can act on.
+    /// host has no server to ask. The last is warned once per pass and domain,
+    /// since a user can act on it.
     pub(crate) async fn lookup(&self, name: &str) -> Vec<IpAddr> {
         let folded = fold(name);
         if let Some(scope) = self
@@ -234,12 +224,11 @@ impl Unicast {
     /// record.
     ///
     /// Routed as [`lookup`](Self::lookup) routes a name, by the name the
-    /// question carries: a VPN that serves the reverse zone of its own
-    /// addresses installs a scoped resolver for `16.172.in-addr.arpa` as it
-    /// does for its forward domain, and a PTR for one of those addresses asked
-    /// of the global servers both fails and tells them which private address
-    /// the scan found. A missing configuration is said as `lookup` says it,
-    /// once per pass for both directions.
+    /// question carries. A VPN that serves the reverse zone of its addresses
+    /// installs a scoped resolver for, say, `16.172.in-addr.arpa`, and a PTR
+    /// asked of the global servers would fail and tell them which private
+    /// address the scan found. A missing configuration is warned once per pass,
+    /// shared with `lookup`.
     pub(crate) async fn reverse(&self, ip: IpAddr) -> Reverse {
         if let Some(scope) = self.reverse_scope(ip).map(|index| &self.scoped[index]) {
             return match &scope.client {
@@ -306,8 +295,8 @@ async fn ask_reverse<P: ConnectionProvider>(client: &Resolver<P>, ip: IpAddr) ->
 
     let lookup = match client.reverse_lookup(ip).await {
         Ok(lookup) => lookup,
-        // An answer that there is nothing, or any other the server gave, is
-        // the server answering. A timeout or a transport failure is not.
+        // Any DNS-level error is still an answer from the server; a timeout or
+        // transport failure is not.
         Err(hickory_resolver::net::NetError::Dns(_)) => return Reverse::Unnamed,
         Err(_) => return Reverse::Unanswered,
     };
@@ -342,9 +331,7 @@ struct Scope {
 async fn ask<P: ConnectionProvider>(client: &Resolver<P>, name: &str) -> Vec<IpAddr> {
     match client.lookup_ip(name).await {
         Ok(lookup) => lookup.iter().collect(),
-        // A name with no records is an ordinary answer, not a failure worth
-        // surfacing: it resolves to nothing, which is what an empty vector
-        // says.
+        // No records and a failed lookup both resolve to nothing.
         Err(_) => Vec::new(),
     }
 }
@@ -365,11 +352,11 @@ fn build<P: ConnectionProvider>(
 /// The Tokio runtime, sending to each IPv6 server through the interface its
 /// scope id names.
 ///
-/// The resolver's server configuration holds a bare address and pairs it with
-/// a port into a socket address whose scope id is zero, which the kernel
-/// refuses to send a link-local address to. This puts the scope back on the
-/// way out, for UDP and TCP alike. A reply is matched to its server by address
-/// and port, so a reply arriving with its scope set still matches.
+/// The resolver's server configuration holds a bare address, which it pairs
+/// with a port into a socket address with scope id zero, and the kernel refuses
+/// to send to a link-local address without a scope. This restores the scope on
+/// the way out, for UDP and TCP. Replies are matched to servers by address and
+/// port, so a reply arriving with its scope set still matches.
 ///
 /// Keyed by address: of two servers at one link-local address on different
 /// interfaces, the first listed is the one reached.
@@ -518,8 +505,7 @@ fn read_scoped() -> Vec<ScopedServers> {
 #[cfg(target_vendor = "apple")]
 fn interface_index(name: &str) -> Option<u32> {
     let name = std::ffi::CString::new(name).ok()?;
-    // SAFETY: `name` is a valid NUL-terminated string for the length of the
-    // call.
+    // SAFETY: `name` is a valid NUL-terminated string for the whole call.
     let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
     (index != 0).then_some(index)
 }
@@ -536,13 +522,12 @@ fn read_scoped() -> Vec<ScopedServers> {
 /// The first section is the configuration every process resolves with; the
 /// second, "for scoped queries", serves only a process bound to one interface.
 ///
-/// A link-local server is written with the interface it is reached through,
-/// `fe80::53%utun4`, which `index_of` turns into the scope id it is asked
-/// with. A resolver keeps its domain whatever its servers turn out to be: a
-/// server whose interface `index_of` does not know, a server or port in a form
-/// that does not read, or a link-local server with no interface is not asked,
-/// and a resolver left with none to ask carries why, so that its names fail
-/// rather than reach the global servers.
+/// A link-local server is written with its interface, `fe80::53%utun4`, which
+/// `index_of` turns into a scope id. A resolver keeps its domain whatever its
+/// servers turn out to be. A server whose interface `index_of` does not know,
+/// an unreadable server or port, or a link-local server with no interface is
+/// not asked, and a resolver left with none to ask carries the reason, so its
+/// names fail and do not reach the global servers.
 #[cfg(any(target_vendor = "apple", test))]
 fn parse_scutil_dns(report: &str, index_of: impl Fn(&str) -> Option<u32>) -> Vec<ScopedServers> {
     /// The port DNS is asked on when a resolver names none.
@@ -708,9 +693,7 @@ resolver #1
 
     /// The report yields the domain-bound servers the OS asks, a link-local
     /// one with the scope id of its interface, and nothing that is multicast,
-    /// serverless, the default resolver, or bound to one interface. A resolver
-    /// taken from the wrong half, or an mDNS entry taken as unicast, would send
-    /// names to a server the OS never asks about them.
+    /// serverless, the default resolver, or bound to one interface.
     #[test]
     fn a_scutil_report_yields_the_domains_with_servers_of_their_own() {
         let at = |s: &str| s.parse::<SocketAddr>().expect("a socket address");
@@ -761,9 +744,9 @@ resolver #1
     /// A domain whose only server is link-local keeps that server, with the
     /// scope id of the interface it is reached through, and claims its names.
     ///
-    /// VPNs and Tailscale hand out DNS servers on their own interfaces; losing
-    /// the resolver because its server carries a zone would send every name
-    /// inside the private network to the resolver outside it.
+    /// VPNs and Tailscale hand out DNS servers on their own interfaces. Losing
+    /// the resolver because its server carries a zone would send every private
+    /// name to the resolver outside.
     #[test]
     fn a_domain_whose_only_server_is_link_local_keeps_it_with_its_scope() {
         let scoped = parse_scutil_dns(ZONED_REPORT, utun4_is_9);
@@ -786,9 +769,8 @@ resolver #1
     /// asked of nobody, and the global server never hears it; the user is told
     /// once per pass which domain went unasked and why.
     ///
-    /// A VPN that dropped its tunnel leaves its resolver behind for a moment;
-    /// sending its names to the global server then would leak exactly what the
-    /// scoped resolver keeps inside the private network.
+    /// A VPN that dropped its tunnel leaves its resolver behind for a moment,
+    /// and sending its names to the global server then would leak them.
     #[test]
     fn a_domain_whose_server_interface_is_gone_is_never_asked_of_the_global_server() {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -828,9 +810,9 @@ resolver #1
     /// why none of its servers can be asked, and one with a server that reads
     /// is asked through it alone.
     ///
-    /// Each unreadable form dropping the resolver instead would hand its
-    /// domain to the global servers; asking an unreadable port's server on 53
-    /// instead would ask a port the host never named.
+    /// Dropping the resolver would hand its domain to the global servers, and
+    /// asking an unreadable port's server on 53 would ask a port the host never
+    /// named.
     #[test]
     fn a_resolver_whose_servers_do_not_read_keeps_its_domain() {
         let report = "\
@@ -881,8 +863,7 @@ resolver #5
     /// leaves every other address as it was.
     ///
     /// The resolver hands the runtime a link-local server with a scope id of
-    /// zero, which the kernel will not send to; an address that kept one, or
-    /// belongs to no listed server, is not the runtime's to change.
+    /// zero, which the kernel will not send to.
     #[test]
     fn the_runtime_sends_to_a_link_local_server_through_its_interface() {
         let at = |s: &str| s.parse::<SocketAddr>().expect("a socket address");

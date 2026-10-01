@@ -9,21 +9,15 @@
 //! # Turning what a person wrote into links to listen on
 //!
 //! The counterpart to [`for_discovery`](super::for_discovery), for the phase
-//! that is aimed at a **link** rather than at addresses.
+//! aimed at a **link**.
 //!
-//! A listener has no target grammar. There are no ranges, no ports and no
-//! hostnames, only a wire that this machine is either on or not. So this
-//! resolves a much smaller vocabulary than a target expression does, and
-//! resolves it against one thing: the interface table of the machine the process
-//! is running on.
+//! A listener has no ranges, ports or hostnames, only wires this machine is on.
+//! The vocabulary is small and is resolved against the interface table of the
+//! machine the process runs on.
 //!
-//! ## Why this is not asynchronous
-//!
-//! [`for_discovery`](super::for_discovery) awaits because a target expression
-//! may contain a hostname, and resolving one means speaking to a resolver
-//! somebody else operates. Nothing here leaves the machine: a link is named and
-//! then found in a table the kernel already holds, or not found. Making the call
-//! `async` to match its sibling would promise a wait that never happens.
+//! Synchronous, unlike [`for_discovery`](super::for_discovery): nothing here
+//! leaves the machine, since a link is looked up in a table the kernel already
+//! holds.
 
 use crate::system::interface::Link;
 
@@ -31,12 +25,8 @@ use crate::model::ip::scoped::Zone;
 use crate::model::parse::ip::Keyword;
 use crate::system::interface;
 
-/// The sigil a target expression scopes an address with, accepted here so that
-/// `%en0` and `en0` name the same link.
-///
-/// A person who has written `[fe80::1%en0]` once should not have to remember
-/// that the sigil is wrong in the one place the whole argument *is* the
-/// interface.
+/// The sigil a target expression scopes an address with (`[fe80::1%en0]`),
+/// accepted here so that `%en0` and `en0` name the same link.
 const ZONE_SIGIL: char = '%';
 
 /// Why a link expression named nothing to listen on.
@@ -49,9 +39,8 @@ pub enum LinkError {
 
     /// No interface on this machine goes by that name.
     ///
-    /// Carries what this machine *does* have, because that is the whole of what
-    /// a person needs to correct it and the one thing they cannot see from the
-    /// message otherwise.
+    /// Carries the interfaces this machine has, which is what a person needs to
+    /// correct the expression.
     #[error("'{expression}' is not an interface on this machine (it has: {})", .available.join(", "))]
     Unknown {
         /// What the caller wrote.
@@ -80,10 +69,8 @@ pub enum LinkError {
 
 /// Resolves link expressions into the links a listening phase reads.
 ///
-/// The one call a front end makes, on the same terms
-/// [`for_discovery`](super::for_discovery) is: the vocabulary, this host's
-/// interface table and the empty case are answered together rather than being
-/// three things every consumer remembers differently.
+/// The link counterpart of [`for_discovery`](super::for_discovery): it handles
+/// the vocabulary, this host's interface table and the empty case in one call.
 ///
 /// Four things may be written:
 ///
@@ -98,10 +85,8 @@ pub enum LinkError {
 ///
 /// # The empty case is every link
 ///
-/// A scan given no targets has nothing to do. A listener given no links has
-/// something sensible to do, which is to listen to everything this machine is
-/// attached to, and refusing would make the commonest use of the phase the one
-/// that needs an argument.
+/// A listener given no links listens to every link this machine has up, which
+/// is the commonest use of the phase.
 ///
 /// ```no_run
 /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -122,17 +107,13 @@ pub fn for_listening<S: AsRef<str>>(exprs: &[S]) -> Result<Vec<Zone>, LinkError>
     for_listening_on(exprs, &links)
 }
 
-/// [`for_listening`], against an interface table supplied rather than read.
+/// [`for_listening`], against a supplied interface table.
 ///
-/// The same call with its one read of the local machine handed in, which is what
-/// makes the behaviour around `lan`, `%en0` and the empty case testable on a
-/// machine that has none of them, the seam
-/// [`for_discovery_with`](super::for_discovery_with) exists for.
-///
-/// Every branch reads `interfaces` and nothing else. A `lan` that reached past it
-/// to the running machine would have this function, handed an empty table,
-/// still answer with whichever interface held the default route, and the one
-/// case the seam is named for would be the one it did not cover.
+/// Makes the behaviour around `lan`, `%en0` and the empty case testable on a
+/// machine that has none of them, as
+/// [`for_discovery_with`](super::for_discovery_with) does for discovery. Every
+/// branch, `lan` included, reads `interfaces` and nothing from the running
+/// machine.
 pub fn for_listening_on<S: AsRef<str>>(
     exprs: &[S],
     interfaces: &[Link],
@@ -161,11 +142,8 @@ pub fn for_listening_on<S: AsRef<str>>(
         }
 
         let link = if Keyword::from_token(name) == Some(Keyword::Lan) {
-            // Asked of the table rather than matched by name: `lan` means the
-            // link carrying the default route, which is a routing question and
-            // not a naming one. Asked of the *table* rather than of the machine,
-            // because the table is what this function was given and the whole
-            // point of taking one.
+            // `lan` is the link carrying the default route, so it is a routing
+            // question, answered from the given table.
             interface::lan_link_with(interfaces.to_vec())
                 .map(|lan| lan.link.zone())
                 .ok_or(LinkError::NoLan)?
@@ -183,8 +161,7 @@ pub fn for_listening_on<S: AsRef<str>>(
                 })?
         };
 
-        // A link named twice is one link. Kept in the order written rather than
-        // sorted, since that is the order a person reads their own arguments in.
+        // A link named twice is one link. Kept in the order written.
         if !links.contains(&link) {
             links.push(link);
         }
@@ -207,14 +184,10 @@ mod tests {
     use super::*;
     use crate::system::interface::Link;
 
-    /// An interface table that exists nowhere, so the behaviour under test is
-    /// this function's rather than the machine's.
+    /// A made-up interface table, so the test does not depend on the machine.
     fn table() -> Vec<Link> {
         let up = |name: &str, index: u32, up: bool| Link::new(name, index).with_link_up(up);
 
-        // A link says whether it is up rather than carrying a flags word the
-        // reader has to know the bit positions of, a word nobody fills in on
-        // Windows.
         vec![
             up("en0", 4, true),
             up("en1", 5, true),
@@ -238,14 +211,11 @@ mod tests {
             .with_default_route(true)
     }
 
-    /// `lan` is answered from the table this was handed, like every other
-    /// expression it takes.
+    /// `lan` is answered from the given table, like every other expression.
     ///
-    /// A branch calling `interface::lan_link()`, which reads the running
-    /// machine, would leave the seam this function exists to provide covering
-    /// `%en0` and the empty case but not the one its own documentation names
-    /// first: an empty table would still answer with whichever interface held
-    /// the host's default route.
+    /// A branch calling `interface::lan_link()` would read the running machine,
+    /// and an empty table would still answer with the host's default-route
+    /// interface.
     #[test]
     fn lan_is_answered_from_the_table_this_was_given() {
         let table = vec![lan_capable("lab0", 42)];
@@ -259,8 +229,8 @@ mod tests {
         );
     }
 
-    /// And a table with nothing a LAN scan could run on says so, rather than
-    /// reaching past the caller to a machine that has one.
+    /// A table with nothing a LAN scan could run on gives `NoLan`, even on a
+    /// machine that has a LAN.
     #[test]
     fn a_table_with_no_lan_refuses_rather_than_asking_the_machine() {
         assert!(matches!(
@@ -286,9 +256,8 @@ mod tests {
         );
     }
 
-    /// `%en0` is how an address names its interface everywhere else in this
-    /// engine, and a person who has written it once should not have to remember
-    /// that it is wrong in the one place the argument *is* the interface.
+    /// `%en0` is how an address names its interface elsewhere in the engine,
+    /// so it is accepted here too.
     #[test]
     fn the_zone_sigil_names_the_same_link_as_the_bare_name() {
         let with = for_listening_on(&["%en0"], &table()).expect("the sigil is accepted");
@@ -298,8 +267,7 @@ mod tests {
     }
 
     /// Naming a link twice is naming one link. A capture opened twice on one
-    /// interface would read every frame twice, and every finding would arrive
-    /// in duplicate.
+    /// interface would report every finding twice.
     #[test]
     fn a_link_named_twice_is_one_link() {
         let links = for_listening_on(&["en0", "%en0", "en1"], &table()).expect("all are real");
@@ -311,9 +279,7 @@ mod tests {
         );
     }
 
-    /// A listener given no links has something sensible to do, unlike a scan
-    /// given no targets. Refusing would make the commonest use of the phase the
-    /// one that needs an argument.
+    /// No links means every link that is up.
     #[test]
     fn nothing_written_means_every_link_that_is_up() {
         let links = for_listening_on::<&str>(&[], &table()).expect("the machine has links");
@@ -325,9 +291,7 @@ mod tests {
         );
     }
 
-    /// The refusal carries what the machine does have, which is the whole of
-    /// what a person needs to correct it and the one thing the message would
-    /// otherwise leave them to guess.
+    /// The refusal lists the interfaces the machine has.
     #[test]
     fn an_unknown_link_names_what_the_machine_has_instead() {
         let error = for_listening_on(&["eth0"], &table()).expect_err("eth0 is not on this machine");

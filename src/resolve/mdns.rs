@@ -9,50 +9,38 @@
 //! # Multicast resolution over the wire
 //!
 //! Sends the forward query [`crate::protocols::mdns`] builds and reads the
-//! addresses out of whatever answers. This is the socket half of resolving a
-//! `.local` name; the packet half knows nothing about sockets.
+//! addresses out of whatever answers: the socket half of resolving a `.local`
+//! name.
 //!
-//! ## Why it joins the group, and not just listens on an ephemeral port
+//! ## Joining the group
 //!
-//! A `.local` name is resolved by asking the link, not a server: the query goes
-//! to the multicast group `224.0.0.251:5353` and every responder on the segment
-//! may answer. The tempting shortcut is to send from an ephemeral port and read
-//! the reply there, on the strength of RFC 6762 §6.7, which says a responder
-//! seeing a query from a port other than 5353 must answer it as unicast. In
-//! practice that reply does not reliably arrive. A responder that has an answer
-//! ready, above all the host's own responder answering for `mac.local`, sends it
-//! to the multicast group, and a socket listening only on its own ephemeral port
-//! never sees it.
+//! The query goes to the multicast group `224.0.0.251:5353`, and every responder
+//! on the segment may answer. RFC 6762 §6.7 says a responder seeing a query from
+//! a port other than 5353 must answer by unicast, but in practice that reply does
+//! not reliably arrive: a responder with an answer ready, above all the host's
+//! own responder answering for `mac.local`, sends it to the group, which a socket
+//! on an ephemeral port never sees.
 //!
-//! So this speaks mDNS the way the responders expect to be spoken to. It binds
-//! port 5353, joins the group, and reads the multicast answers directly.
-//! Port 5353 already belongs to the host's own responder (`mDNSResponder` on
+//! So this binds port 5353, joins the group, and reads the multicast answers.
+//! The port already belongs to the host's own responder (`mDNSResponder` on
 //! macOS, `avahi` on Linux), so the bind sets `SO_REUSEADDR` and `SO_REUSEPORT`
-//! to sit alongside it rather than displace it. Multicast datagrams are
-//! delivered to every socket joined to the group, so both receive them.
-//! Multicast loopback is left on, which is what lets the host hear its *own*
-//! responder: the `mac.local` case resolves for exactly this reason.
+//! to sit alongside it; multicast datagrams reach every socket joined to the
+//! group. Multicast loopback is left on so the host hears its own responder,
+//! which is how `mac.local` resolves.
 //!
-//! The query goes out over the IPv4 group only. That still learns a host's IPv6
-//! addresses: a responder answers with every address it holds for the name, so
-//! the AAAA records ride back in the same reply as the A records. The one host
-//! this cannot reach is one with no IPv4 address at all, which on a home or
-//! office segment is rare enough to leave to a later IPv6-group pass.
+//! The query goes out over the IPv4 group only. A responder answers with every
+//! address it holds for the name, so AAAA records come back in the same reply
+//! as A records. A host with no IPv4 address at all is out of reach until an
+//! IPv6-group pass exists.
 //!
-//! ## Every interface, because the default one is wrong
+//! ## Every interface
 //!
-//! A multicast group is joined on *an* interface, and the query egresses *an*
-//! interface, and leaving the host to pick which is the mistake this makes a
-//! point of not making. On a machine with a VPN up, the kernel's default
-//! multicast interface is routinely the tunnel, measured on the machine this was
-//! written on, where an unspecified-interface join bound to a `utun` and the
-//! LAN's own responder was never heard. So the query is put out, and the group
-//! joined, on *every* non-loopback interface holding an IPv4 address, one socket
-//! each, and every answer that comes back on any of them is gathered.
-//!
-//! An interface with no IPv4 address of its own is skipped, since it cannot
-//! carry a query to the v4 group. The one host that leaves unreachable is one on
-//! a v6-only segment, the same gap the v4-only query already has.
+//! On a machine with a VPN up, the kernel's default multicast interface is
+//! often the tunnel: a join with no interface given has been seen to bind to a
+//! `utun`, and the LAN's responders went unheard. So the query is sent, and the
+//! group joined, on every non-loopback interface holding an IPv4 address, one
+//! socket each, and answers from all of them are gathered. An interface with no
+//! IPv4 address is skipped, since it cannot reach the v4 group.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket as StdUdpSocket};
 use std::time::Duration;
@@ -69,25 +57,21 @@ use crate::warn;
 const GROUP_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 
 /// The IP TTL an mDNS message is sent with. Fixed at 255 by RFC 6762 §11 so a
-/// receiver can reject any mDNS packet that arrives with a lower one as having
-/// crossed a router it should never have crossed.
+/// receiver can reject a packet with a lower one as having crossed a router.
 const MULTICAST_TTL: u32 = 255;
 
-/// The largest reply worth reading. RFC 6762 permits an mDNS message up to
-/// roughly 9000 bytes when the path allows it, and a response carrying a host's
-/// A, AAAA and the service records it volunteers alongside them can approach
-/// that. A short buffer would truncate the answer into something unparseable
-/// rather than merely incomplete.
+/// The largest reply read. RFC 6762 permits an mDNS message up to roughly 9000
+/// bytes when the path allows it, and a response carrying a host's A, AAAA and
+/// volunteered service records can approach that. A truncated answer does not
+/// parse at all.
 const MAX_DATAGRAM: usize = 9000;
 
 /// Resolves the addresses of a `.local` `name`, listening for `timeout`.
 ///
-/// Every responder that answers within the window contributes; a name no
-/// responder claims comes back as an empty vector, which is not an error but the
-/// ordinary "nobody here answers to that" outcome. A socket that will not bind
-/// or a group that cannot be reached is logged and also yields nothing, on the
-/// principle that a name that could not be looked up and a name that resolved to
-/// nothing are the same missing target to the caller.
+/// Every responder that answers within the window contributes. A name no
+/// responder claims gives an empty vector. A socket that will not bind or a
+/// group that cannot be reached is logged and also gives an empty vector, since
+/// to the caller both are the same missing target.
 pub async fn resolve(name: &str, timeout_after: Duration) -> Vec<IpAddr> {
     match query(name, timeout_after).await {
         Ok(addresses) => addresses,
@@ -101,11 +85,10 @@ pub async fn resolve(name: &str, timeout_after: Duration) -> Vec<IpAddr> {
 /// Puts the query on every usable interface and gathers matching addresses from
 /// all of them until the window closes.
 ///
-/// Each interface gets its own socket, its own send, and its own listening task;
-/// the tasks run for the whole window and their finds are unioned. An interface
-/// whose socket will not open, or whose send fails, is logged and dropped rather
-/// than failing the lookup, since another interface may still carry it. Only a
-/// run in which no interface could be queried at all is an error.
+/// Each interface gets its own socket, send and listening task; the tasks run
+/// for the whole window and their finds are merged. An interface whose socket
+/// will not open, or whose send fails, is logged and dropped. It is an error
+/// only when no interface could be queried.
 async fn query(name: &str, timeout_after: Duration) -> std::io::Result<Vec<IpAddr>> {
     let interfaces = multicast_interfaces();
     if interfaces.is_empty() {
@@ -160,11 +143,8 @@ async fn query(name: &str, timeout_after: Duration) -> std::io::Result<Vec<IpAdd
 /// Reads `socket` until `deadline`, returning the addresses it hears for
 /// `wanted`.
 ///
-/// The window closing with replies still possibly in flight is the ordinary way
-/// this ends, not a failure: a responder is under no obligation to answer, and a
-/// name with no host answers exactly as a name whose host is slow to. A read
-/// error ends this interface's listening without ending the lookup, since the
-/// others are still going.
+/// Ends when the window closes, or on a read error, which stops only this
+/// interface's listener.
 async fn listen(socket: UdpSocket, wanted: String, deadline: Instant) -> Vec<IpAddr> {
     let mut found = Vec::new();
     let mut buf = [0u8; MAX_DATAGRAM];
@@ -186,21 +166,16 @@ async fn listen(socket: UdpSocket, wanted: String, deadline: Instant) -> Vec<IpA
 /// Opens one socket bound to port 5353 on `interface`, joined to the mDNS group
 /// there.
 ///
-/// The options that let this coexist with the host's own responder, meaning
-/// reusing the address and the port, have to be set before the bind, which `std`
-/// cannot express, so the socket is built through `socket2` and configured here.
-/// The
-/// multicast interface is pinned so the query egresses `interface` rather than
-/// whichever one the host would otherwise default to, and the group is joined on
-/// the same interface so the answers arriving there are delivered. Once bound and
-/// joined it is an ordinary UDP socket, handed to tokio for the send and receive.
+/// Address and port reuse, which let this coexist with the host's own
+/// responder, must be set before the bind, which `std` cannot express, so the
+/// socket is built through `socket2`. The multicast interface is pinned so the
+/// query leaves by `interface`, and the group is joined on the same interface so
+/// answers arriving there are delivered. The result is handed to tokio.
 fn open_group_socket(interface: Ipv4Addr) -> std::io::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
     socket.set_reuse_address(true)?;
-    // Unix only, and both supported platforms are: without it a second socket
-    // on 5353, the host's own responder being the first, is refused rather than
-    // bound alongside.
+    // Without it, binding 5353 next to the host's own responder is refused.
     #[cfg(unix)]
     socket.set_reuse_port(true)?;
     socket.set_multicast_ttl_v4(MULTICAST_TTL)?;
@@ -229,10 +204,8 @@ fn open_group_socket(interface: Ipv4Addr) -> std::io::Result<UdpSocket> {
 /// One IPv4 address per interface worth sending an mDNS query from: up, not
 /// loopback, and holding an address of its own to pin the send and the join to.
 ///
-/// One address per interface rather than all of them, since a second address on
-/// the same interface would only open a second socket onto the same segment. An
-/// interface with no IPv4 address is not here, because it cannot reach the v4
-/// group.
+/// One address per interface, since a second would only open a second socket
+/// onto the same segment.
 fn multicast_interfaces() -> Vec<Ipv4Addr> {
     crate::system::interface::interfaces_or_none()
         .into_iter()
@@ -243,12 +216,10 @@ fn multicast_interfaces() -> Vec<Ipv4Addr> {
 
 /// Reads one datagram and appends the addresses it gives for `wanted`.
 ///
-/// A datagram that will not parse is skipped in silence: the group carries every
-/// responder's traffic, including announcements and other queriers' answers, so
-/// a message about a different host, or about no host, is not this lookup's to
-/// complain about. Names are matched without regard to case, since a responder
-/// may echo the owner name in whatever case it stores it. Addresses already seen
-/// are not repeated, so two responders naming the same host do not double it.
+/// A datagram that will not parse is skipped silently, since the group carries
+/// every responder's traffic. Names are matched case-insensitively, since a
+/// responder may echo the owner name in whatever case it stores it. Addresses
+/// already in `found` are not added again.
 fn collect_matching(datagram: &[u8], wanted: &str, found: &mut Vec<IpAddr>) {
     let Ok(hosts) = mdns::extract_hosts(datagram) else {
         return;
@@ -279,10 +250,9 @@ fn collect_matching(datagram: &[u8], wanted: &str, found: &mut Vec<IpAddr>) {
 mod tests {
     use super::*;
 
-    /// Assembles an mDNS response the way the wire carries one, so a test drives
-    /// the matcher with bytes a responder would actually emit rather than with
-    /// whatever the parser happens to accept. Mirrors the builder the
-    /// `protocols::mdns` tests use for the same reason.
+    /// Assembles an mDNS response as the wire carries one, so the matcher is
+    /// driven with bytes a responder would emit. Mirrors the builder in the
+    /// `protocols::mdns` tests.
     fn response(records: &[(&str, IpAddr)]) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&0u16.to_be_bytes()); // ID
@@ -334,9 +304,8 @@ mod tests {
         assert_eq!(found.len(), 2);
     }
 
-    /// A responder volunteers what else it knows, so a reply routinely names
-    /// hosts the query did not ask about. Those addresses belong to other
-    /// machines and must not be handed back as this name's.
+    /// A responder volunteers what else it knows, so a reply often names hosts
+    /// the query did not ask about. Their addresses are not this name's.
     #[test]
     fn a_reply_naming_other_hosts_contributes_only_the_match() {
         let datagram = response(&[
@@ -351,8 +320,7 @@ mod tests {
         assert_eq!(found, vec![ip("192.0.2.150")]);
     }
 
-    /// A responder may store and echo the owner name in any case, so matching
-    /// has to ignore it or a host answers and is discarded.
+    /// A responder may echo the owner name in any case.
     #[test]
     fn the_name_is_matched_without_regard_to_case() {
         let datagram = response(&[("Raspberrypi.local", ip("192.0.2.150"))]);
@@ -363,8 +331,8 @@ mod tests {
         assert_eq!(found, vec![ip("192.0.2.150")]);
     }
 
-    /// The group carries every responder's traffic; a datagram that is not a DNS
-    /// message at all is background noise, not a lookup failure.
+    /// The group carries every responder's traffic, so a datagram that is not
+    /// DNS is ignored.
     #[test]
     fn a_datagram_that_is_not_dns_is_ignored() {
         let mut found = Vec::new();
@@ -372,8 +340,8 @@ mod tests {
         assert!(found.is_empty());
     }
 
-    /// Two responders naming the same host, such as a Pi that answers on two
-    /// interfaces, must not make it appear twice.
+    /// Two responders naming the same host, such as a Pi answering on two
+    /// interfaces, record it once.
     #[test]
     fn an_address_two_responders_agree_on_is_recorded_once() {
         let datagram = response(&[("nas.local", ip("192.0.2.5"))]);
