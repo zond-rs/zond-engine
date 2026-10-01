@@ -11,23 +11,14 @@
 //! One ARP request per IPv4 target and one neighbor solicitation per IPv6
 //! target, as a single stream in the order they should leave.
 //!
-//! This is the sweep's *first attempt* at every address. Repeats are the
-//! [`ProbeLedger`](crate::scanner::pacing::retry::ProbeLedger)'s business and
-//! leave through the same paced ticker; the all-nodes echo is on a schedule of
-//! its own and belongs to the scanner. What is decided here is only which probe
-//! is next.
+//! These are the first attempts only. Repeats belong to the
+//! [`ProbeLedger`](crate::scanner::pacing::retry::ProbeLedger) and leave through
+//! the same paced ticker; the all-nodes echo is the scanner's own.
 //!
-//! ## Why the order is a decision at all
-//!
-//! It lives beside the scanner rather than beside the packet builders because
-//! it is not a fact about ARP or about neighbor discovery. It is a measurement
-//! about a contended link, and the packets are only what the measurement is
-//! made of.
-//!
-//! Within each family the addresses leave in the walk a seeded scan names,
-//! the order every other phase of the scan asks in, rather than in address
-//! order, which is the signature a correlating sensor keys on. See
-//! [`WalkOrder`].
+//! The order comes from a measurement on a contended link, which is why it lives
+//! beside the scanner. Within each family, a seeded scan's addresses leave in its
+//! [`WalkOrder`], the order every other phase asks in; address order is the
+//! signature a correlating sensor keys on.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -48,23 +39,14 @@ pub(super) type PacketIter = Box<dyn Iterator<Item = (Bytes, IpAddr)> + Send>;
 /// Every first-attempt probe a sweep owes, in the order they should leave:
 /// each family in the order `walk` names, or in the set's own without one.
 ///
-/// The two families are **interleaved rather than concatenated**, and that is
-/// the whole point of the shape. Chained, all 254 ARP requests go out first and
-/// the neighbor solicitations follow as one unbroken block at the tail - which
-/// is exactly where they are least likely to be answered. Measured on a wifi
-/// segment: solicitations one millisecond apart
-/// under the broadcast the ARP half is generating had **1 of 27** first
-/// attempts answered, against 13 of 27 for the same addresses spaced out on a
-/// quiet link. Every one of those unanswered first attempts costs either a host
-/// or its round trip, because the retry that recovers it cannot be timed.
-///
-/// Spreading them evenly is what a scan can do about that without spending more
-/// time: the solicitations end up separated by however many ARP requests the
-/// ratio allows, at no cost in packets or duration to either family.
-///
-/// The all-nodes echo is not here. It is one probe on a schedule
-/// of its own, repeated on an interval and timed by the identifier it carries,
-/// which makes it the scanner's to own rather than an item in a queue.
+/// The two families are interleaved, not concatenated. Chained, the neighbor
+/// solicitations follow all the ARP requests as one block, under the broadcast
+/// the ARP half generates. Measured on a wifi segment, solicitations 1 ms apart
+/// there had 1 of 27 first attempts answered, against 13 of 27 for the same
+/// addresses spaced out on a quiet link. Each unanswered first attempt costs a
+/// host or its round trip, because the retry that recovers it cannot be timed.
+/// Interleaving spaces the solicitations by as many ARP requests as the ratio
+/// allows, at no cost in packets or duration.
 pub fn eth_packet_iter(
     local_mac: &MacAddr,
     src_v4: &Option<Ipv4Addr>,
@@ -78,11 +60,8 @@ pub fn eth_packet_iter(
         .into_iter()
         .flatten();
 
-    // One solicitation per IPv6 target, the direct counterpart of the ARP
-    // request above. Unlike the all-nodes echo this is not gated on sweeping:
-    // it asks about one address, so a targeted run can send it without waking
-    // the rest of the segment - which is what makes a targeted IPv6 scan
-    // possible at all.
+    // Not gated on sweeping, unlike the all-nodes echo: one solicitation asks
+    // about one address, which is what makes a targeted IPv6 scan possible.
     let ndp_iter = link_local
         .as_ref()
         .map(|v6| build_ndp_iter(local_mac, v6, ip_set, walk))
@@ -98,18 +77,16 @@ pub fn eth_packet_iter(
 }
 
 /// Draws from two probe streams in proportion to their lengths, so both are
-/// spread across the whole sequence instead of one following the other.
+/// spread across the whole sequence.
 ///
-/// The counts are the caller's because an iterator cannot be asked its length
-/// without consuming it, and they only steer the ratio: whichever stream runs
-/// out first, the other is drained in full, so no probe is ever dropped by a
-/// count that turned out to be wrong.
+/// The caller supplies the counts, and they only steer the ratio: whichever
+/// stream runs out first, the other is drained in full, so a wrong count never
+/// drops a probe.
 struct Interleave {
     left: PacketIter,
     right: PacketIter,
-    /// Positive when the left stream is ahead of its share, which is the
-    /// moment to take from the right. Scaled by both lengths so the comparison
-    /// is exact in integers rather than a drifting float ratio.
+    /// Positive when the left stream is ahead of its share, so the next probe
+    /// comes from the right. Scaled by both lengths to stay exact in integers.
     credit: i128,
     left_len: i128,
     right_len: i128,
@@ -131,7 +108,6 @@ impl Iterator for Interleave {
     type Item = (Bytes, IpAddr);
 
     fn next(&mut self) -> Option<Self::Item> {
-        // A stream with nothing left to spread against is simply drained.
         if self.left_len <= 0 || self.right_len <= 0 {
             return self.left.next().or_else(|| self.right.next());
         }
@@ -150,11 +126,8 @@ impl Iterator for Interleave {
 
 /// One neighbor solicitation per IPv6 address in `ip_set`.
 ///
-/// Ranges are expanded the same way ARP's are, and bounded the same way: a
-/// range too large to walk is withheld from the step's targets before a scanner
-/// is built from it, so an unbounded expansion is not reachable through the
-/// scan path. That happens in two places, because a range reaches this function
-/// by two routes: `map_ips_to_interfaces` refuses an off-link one, and
+/// Ranges are expanded as ARP's are. A range too large to walk never reaches
+/// this function: `map_ips_to_interfaces` refuses an off-link one and
 /// `DiscoveryPlan::build` withholds an on-link one.
 fn build_ndp_iter(
     local_mac: &MacAddr,
@@ -217,13 +190,11 @@ pub fn build_arp_iter(
 /// `targets`, `count` of them, in the order `walk` names, or as they come
 /// without one.
 ///
-/// A sweep that holds a large enough share of the walk is drawn along it (see
-/// [`WalkOrder::draws`]): the walk's addresses in turn, each kept where `owed`
-/// names it one of `targets`, and then those of `targets` the walk does not
-/// number, as they come, as the stream leaves them last. Neither half holds
-/// more than one address at a time. A sparser sweep is collected and sorted,
-/// at an entry per address it owes a first attempt, as its ledger holds one
-/// for each it has asked. Unseeded, the ranges are expanded as they are drawn.
+/// A sweep holding a large enough share of the walk is drawn along it (see
+/// [`WalkOrder::draws`]): the walk's addresses that `owed` keeps, then the
+/// targets the walk does not number, as they come. Neither half holds more than
+/// one address at a time. A sparser sweep is collected and sorted, one entry per
+/// address. Unseeded, the ranges are expanded as they are drawn.
 fn in_order<A>(
     targets: impl Iterator<Item = A> + Send + 'static,
     count: u128,
@@ -285,9 +256,8 @@ mod tests {
         .collect()
     }
 
-    /// Nothing may be dropped or duplicated, whatever the ratio. The counts
-    /// steer the spacing and nothing else: a probe lost to an arithmetic edge
-    /// is an address reported as empty that was never asked.
+    /// Nothing may be dropped or duplicated, whatever the ratio: a lost probe
+    /// is an address reported empty that was never asked.
     #[test]
     fn interleaving_emits_every_probe_exactly_once() {
         for (left, right) in [(254, 27), (27, 254), (1, 1), (0, 5), (5, 0), (0, 0), (7, 3)] {
@@ -302,15 +272,12 @@ mod tests {
         }
     }
 
-    /// The point of interleaving: the smaller stream is spread across the whole
-    /// sequence rather than bunched at either end.
+    /// The smaller stream is spread across the whole sequence.
     ///
-    /// The bound is what the measurement asks for. Solicitations emitted
-    /// back-to-back at the send interval had 1 of 27 first attempts answered on
-    /// a real wifi segment; spacing them out is worth an order of magnitude, and
-    /// spacing is exactly what a gap of one or two probes fails to buy. With 254
-    /// ARP requests against 27 solicitations the even spacing is one every 9.4,
-    /// so no gap should fall far below that.
+    /// Back-to-back solicitations had 1 of 27 first attempts answered on a wifi
+    /// segment, and a gap of one or two probes does not help. With 254 ARP
+    /// requests against 27 solicitations the even spacing is one every 9.4, so
+    /// no gap should fall far below that.
     #[test]
     fn interleaving_spreads_the_smaller_stream_across_the_whole_sweep() {
         let out = interleaved(254, 27);
@@ -338,9 +305,8 @@ mod tests {
         );
     }
 
-    /// A seeded sweep's addresses, `ips`, in the walk of a scan whose plan is
-    /// `plan`, and how many of them were drawn from their source to give the
-    /// first.
+    /// The sweep `ips` sorted by the walk of a scan over `plan`, the order
+    /// `in_order` gives, and how many addresses it drew before the first.
     fn walked(plan: &str, ips: &str) -> (Vec<Ipv4Addr>, Vec<Ipv4Addr>, usize) {
         use crate::model::ip::set::Positions;
         use crate::scanner::session::ScanSession;
@@ -385,14 +351,11 @@ mod tests {
         )
     }
 
-    /// A seeded sweep leaves in the walk its scan names, which is the order
-    /// the checkpoint counts along, and the addresses the walk does not
-    /// number follow the rest as they come, whether the sweep is drawn along
-    /// the walk or collected and sorted.
+    /// A seeded sweep leaves in its scan's walk, the order the checkpoint
+    /// counts along, with unnumbered addresses last, whether drawn or sorted.
     #[test]
     fn a_seeded_sweep_leaves_in_the_walk_however_it_is_arranged() {
-        // Dense enough to be drawn: the sweep holds most of the plan, beside
-        // an address the plan does not number.
+        // Dense enough to be drawn, plus an address the plan does not number.
         let (sorted, drawn, _) = walked("192.0.2.0/24", "192.0.2.0-192.0.2.200, 198.51.100.7");
         assert_eq!(drawn, sorted);
         assert_eq!(drawn.last(), Some(&Ipv4Addr::new(198, 51, 100, 7)));
@@ -402,10 +365,9 @@ mod tests {
         assert_eq!(collected, sorted);
     }
 
-    /// A sweep holding most of its walk sends its first probe without first
-    /// expanding every address it owes. Collected and sorted, a seeded sweep
-    /// of an on-link `/8` holds sixteen million entries and their keys, a third
-    /// of a gigabyte, and sorts them all before anything leaves.
+    /// A sweep holding most of its walk sends its first probe without
+    /// expanding every address. Sorted, an on-link `/8` would hold sixteen
+    /// million entries, a third of a gigabyte, before anything leaves.
     #[test]
     fn a_dense_seeded_sweep_draws_its_first_probe_without_expanding_the_rest() {
         let (_, order, before_first) = walked("10.0.0.0/16", "10.0.0.0/16");

@@ -8,33 +8,16 @@
 
 //! # What every raw strategy is built from
 //!
-//! The layer under the strategies that open a raw socket: how a probe reaches
-//! the wire, what identifies one attempt, and the timing profiles a probe over
-//! a routed path is held to. Nothing here scans anything. It is what
-//! [`routed`](super::routed), [`ports`](super::ports),
-//! [`identify`](super::identify) and [`topology`](super::topology) have in
-//! common, gathered so that none of them has to reach into another.
+//! What the raw-socket strategies ([`routed`](super::routed),
+//! [`ports`](super::ports), [`identify`](super::identify) and
+//! [`topology`](super::topology)) share: how a probe reaches the wire, what
+//! identifies one attempt, and the timing profiles of a probe over a routed
+//! path.
 //!
-//! ## Why it is a module rather than part of a scanner
-//!
-//! Kept in `routed`, beside the SYN sweep, it would make every other raw
-//! strategy, four port scanners and two operating-system probes and a trace and
-//! a filter probe, a submodule of the sweep, which is not what any of them is,
-//! and `routed` would mean both "reached through a gateway" and "opens a raw
-//! socket".
-//!
-//! ## What is shared and what is not
-//!
-//! The timings here are the ones a probe over a routed path shares whatever it
-//! is asking about: a SYN sweep and a TCP port scan cross the same links and
-//! wait on the same round trips. What each scan does with them is its own.
-//! [`ports`](super::ports) holds the profiles that belong to a port scan, and
-//! the UDP scanner keeps its own outright, because an ICMP rate limiter is not
-//! a property of the path.
-//!
-//! `neighbors` is the one piece every raw pass shares in full: how a probe
-//! waits for the hardware address of the neighbour it is framed to, rather
-//! than being sent where the send would wait on it or be lost behind it.
+//! [`ports`](super::ports) holds the profiles specific to a port scan, and the
+//! UDP scanner keeps its own, because an ICMP rate limiter is not a property of
+//! the path. `neighbors` holds a probe until the hardware address of the
+//! neighbour it is framed to is known.
 
 pub(super) mod neighbors;
 
@@ -55,33 +38,26 @@ use crate::{info, success};
 
 /// How long a routed sweep or port scan runs and how it adapts.
 ///
-/// Routed targets sit anywhere on the internet rather than on one segment, so a
-/// single scan spans a wide range of round trips and the extremes matter more
-/// than the average. Two of these values carry most of that weight:
+/// Routed targets span a wide range of round trips, so the extremes matter
+/// more than the average:
 ///
-/// - **Silence floor.** The silence tolerance is derived from observed round
-///   trips, which the fastest responders dominate - they answer first and pull
-///   the estimate toward their own latency, which would end the scan while
-///   slower targets are still legitimately in flight. The floor is what bounds
-///   that, so it is set against the tail of the round-trip distribution rather
-///   than its middle.
+/// - **Silence floor.** The silence tolerance follows observed round trips,
+///   which the fastest responders dominate. The floor is set against the tail
+///   of the distribution, so slower targets still in flight are waited for.
 /// - **Hard budget.** The base gives a distant target room for several round
 ///   trips; the per-target term covers the send burst and the spread of
-///   arrivals behind it. The ceiling bounds a scan whose pace nobody derived:
-///   it is *not* what bounds the port scanners or the routed sweep, which tell
-///   it their size and their pace and so cannot be clamped by it. Clamped, a
-///   65 535-port scan would be truncated at 60 seconds of the 104 it had
-///   earned, and a silent `/16` swept by default at 60 of the 246 its own
-///   pacing needs.
+///   arrivals. The ceiling only bounds a scan whose pace nobody derived. The
+///   port scanners and the routed sweep supply their size and pace and are not
+///   clamped by it: clamped, a 65 535-port scan would stop at 60 of its 104
+///   seconds, and a silent `/16` at 60 of 246.
 ///
-/// The minimum runtime exists so silence is never the reason a scan stops
-/// before an answer could plausibly have arrived at all.
+/// The minimum runtime keeps silence from stopping a scan before any answer
+/// could have arrived.
 ///
-/// A generous budget costs nothing when a scan succeeds, since both loops exit
-/// as soon as every target is resolved
-/// ([`RoutedScanner`](super::routed::RoutedScanner) once all targets have
-/// responded, [`TcpPortScanner`](super::ports::TcpPortScanner) once nothing is
-/// pending). It is spent only when something is still missing.
+/// A generous budget costs nothing when a scan succeeds, since
+/// [`RoutedScanner`](super::routed::RoutedScanner) and
+/// [`TcpPortScanner`](super::ports::TcpPortScanner) exit once nothing is
+/// pending.
 pub(super) const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
     ScanBudget::new(
         Duration::from_millis(2_000),
@@ -99,30 +75,17 @@ pub(super) const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfi
     20,
 );
 
-/// How a SYN probe is retransmitted, shared by both scanners here for the same
-/// reason they share a deadline profile: it is the same probe over the same kind
-/// of path.
+/// How a SYN probe is retransmitted, shared by the sweep and the TCP port scan.
 ///
-/// Three attempts is what a paced sweep needs and what an unpaced one cannot be
-/// rescued by. Two is the least that distinguishes a lost packet from a silent
-/// one, and the third still earns its place: on a large range it is the
-/// attempt that recovers the last few percent.
+/// Two attempts distinguish a lost packet from a silent host; on a large range
+/// the third recovers the last few percent. More would not help: loss from
+/// sending faster than a path absorbs hits every attempt alike, and on an empty
+/// range, the ordinary case, each attempt costs the whole range's packets. Pace
+/// with [`PROBE_RATE_PER_SEC`](super::routed::PROBE_RATE_PER_SEC) instead.
 ///
-/// The budget is bounded here rather than raised because the loss it would be
-/// compensating for is not the kind repetition fixes. Sending faster than a path
-/// absorbs costs coverage on every attempt alike, so a scan that answers it with
-/// more attempts pays the full budget on every dead address to buy back what
-/// [`PROBE_RATE_PER_SEC`](super::routed::PROBE_RATE_PER_SEC) gives away for
-/// nothing. On a range with nothing on it, which is the ordinary case, each
-/// attempt is the whole range's worth of packets and recovers no host at all.
-///
-/// The floor sits far below the starting timeout, and the gap between them is
-/// the point. Before anything has been measured the network is unknown rather
-/// than known to be fast, so 200 ms of patience is cheap insurance against
-/// tripling the traffic of a scan that crosses an ocean. Once a target has
-/// answered, its own round trip governs, and on a local path that collapses
-/// toward the floor - so silence is settled in a fraction of a second where a
-/// fixed timeout would have spent the whole budget waiting.
+/// The 200 ms starting timeout covers an unmeasured path, such as one across an
+/// ocean, without tripling its traffic. Once a target answers its own round
+/// trip governs, and on a local path that falls toward the 25 ms floor.
 pub(super) const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
     3,
     Duration::from_millis(200),
@@ -135,30 +98,20 @@ pub(super) const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 
 /// The shortest interval the send ticker is asked to keep.
 ///
-/// A tokio interval cannot be relied on much below a millisecond, so a rate
-/// faster than one probe per tick is expressed by releasing several per tick
-/// rather than by ticking faster. Below that the tick lengthens instead - see
-/// [`pacing_for`], where getting this wrong is silent.
+/// A tokio interval is unreliable much below a millisecond, so a faster rate
+/// releases several probes per tick and a slower one lengthens the tick; see
+/// [`pacing_for`].
 pub(super) const MIN_SEND_TICK: Duration = Duration::from_millis(1);
 
 /// The rate a scan runs at, given the bounds the caller asked for.
 ///
-/// A configured zero is a caller error rather than an instruction to stall, and
-/// falls back to the engine's own rate the same way an unset one does. Pacing at
-/// one probe a second would honour the number and not the intent.
+/// `default` applies when no `ceiling` is set. `floor` lifts the default, for a
+/// plan large enough that the budget runs out before the targets do, but never
+/// lifts a `ceiling` the caller set: that is a safety limit.
 ///
-/// `floor` lifts a scanner's own default, which is the case it exists for: a
-/// plan large enough that the scan's budget runs out before its targets do. It
-/// does not lift a `ceiling` the caller set. Those two are a throughput wish and
-/// a safety limit, and a floor that overrode the limit would push a target the
-/// operator had already said must not be pushed.
-///
-/// What the answer *means* is the strategy's own, and the four that ask differ:
-/// a sweep and a UDP scan are paced by this number, while a TCP scan reads it as
-/// a ceiling and paces itself on
+/// A sweep and a UDP scan are paced at this rate; a TCP scan reads it as a
+/// ceiling and paces itself on
 /// [`CongestionWindow`](crate::scanner::pacing::congestion::CongestionWindow).
-/// A floor therefore raises a pace in one place and a ceiling in another, and
-/// overrides the window in neither.
 pub(super) fn rate_within(
     ceiling: Option<NonZeroU32>,
     floor: Option<NonZeroU32>,
@@ -179,11 +132,8 @@ pub(super) fn rate_within(
 /// paced at `rate_per_sec`.
 ///
 /// The batch is chosen first and the interval derived from it, so the product
-/// is the rate that was asked for rather than something near it. Fixing the
-/// interval and rounding the batch instead is the obvious way to write this and
-/// it is wrong in a way nothing reports: a batch cannot be less than one probe,
-/// so every rate below one probe per tick collapses to the same value and a
-/// sweep configured for 500 probes a second quietly runs at 1000.
+/// is the requested rate. Fixing the interval would silently collapse every
+/// rate below one probe per tick onto 1000/s, since a batch cannot be below one.
 pub(super) fn pacing_for(rate_per_sec: NonZeroU32) -> (Duration, usize) {
     let rate = f64::from(rate_per_sec.get());
     let batch = (rate * MIN_SEND_TICK.as_secs_f64()).round().max(1.0);
@@ -191,37 +141,28 @@ pub(super) fn pacing_for(rate_per_sec: NonZeroU32) -> (Duration, usize) {
     (Duration::from_secs_f64(batch / rate), batch as usize)
 }
 
-/// A TCP sequence number, which is what a SYN attempt is recognised by when
-/// its answer echoes it back. See [`SynToken`].
+/// A TCP sequence number, echoed back in the answer to a SYN. See
+/// [`SynToken`].
 pub(super) type SeqNum = u32;
 
 /// What identifies one SYN attempt on the wire.
 ///
-/// Both halves earn their place. The sequence number comes back in the reply's
-/// acknowledgement, and the source port is where the reply is addressed, so
-/// together they establish that a segment answers *this probe* rather than
-/// merely that it came from the right port on the right host.
-///
-/// A fresh pair per attempt is also what makes a retried probe measurable. TCP
-/// itself must discard round-trip samples from retransmissions because it
-/// cannot tell which transmission an acknowledgement answers; a scanner picks a
-/// new sequence number every time, so the reply names the attempt it belongs to.
+/// The sequence number comes back in the reply's acknowledgement and the reply
+/// is addressed to the source port, so together they tie a segment to this
+/// probe. A fresh pair per attempt lets the reply name the attempt it answers,
+/// so a retried probe is still measurable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SynToken {
-    /// The sequence number this attempt carried, returned in the
-    /// acknowledgement of whatever answers it.
+    /// The sequence number this attempt carried, returned in the answer's
+    /// acknowledgement.
     pub seq: SeqNum,
-    /// The port this attempt left from, and so where its reply is addressed.
+    /// The port this attempt left from, where its reply is addressed.
     pub src_port: u16,
 }
 
 impl SynToken {
-    /// A token for a new attempt: a random sequence number, and `src_port`
-    /// where a caller pinned one or a fresh random high port where it did not.
-    ///
-    /// Fresh per attempt either way, which is what lets a reply name the
-    /// attempt it answers. A pinned port keeps the sequence number varying and
-    /// buys a port a filter is known to trust.
+    /// A token for a new attempt: a random sequence number, and `src_port` if
+    /// the caller pinned one (a port a filter trusts), else a random high port.
     pub(super) fn fresh(src_port: Option<u16>) -> Self {
         Self {
             seq: rand::random_range(0..=u32::MAX),
@@ -248,10 +189,9 @@ pub(super) struct EvasionParts<'a> {
 /// Sends the real probe among its already-built decoy probes, in random order,
 /// and returns the real probe's send outcome.
 ///
-/// The randomisation is of the wire order, so an observer cannot pick the real
-/// source out of the decoys by position. A decoy is sent and forgotten,
-/// nothing about it is recorded, which is what keeps a decoy's reply from ever
-/// resolving a port. With no decoys this is one ordinary send.
+/// The random order keeps an observer from picking the real source by
+/// position. Nothing about a decoy is recorded, so a decoy's reply never
+/// resolves a port. With no decoys this is one ordinary send.
 pub(super) fn emit_among_decoys(
     sender: &dyn ProbeSender,
     dst: IpAddr,
@@ -267,8 +207,7 @@ pub(super) fn emit_among_decoys(
 
     use rand::seq::SliceRandom;
 
-    // The real probe is flagged rather than found by address, so a caller that
-    // lists its own address among the decoys still gets its real send back.
+    // Flagged, not found by address, in case a decoy repeats the real source.
     let mut probes: Vec<(IpAddr, &[u8], bool)> = Vec::with_capacity(1 + decoy_packets.len());
     probes.push((real_src, real_packet, true));
     for (src, packet) in decoy_packets {
@@ -287,19 +226,14 @@ pub(super) fn emit_among_decoys(
 }
 
 /// Sends a single SCTP INIT from `src_addr` to `dst_addr:dst_port` through
-/// `sender` and logs the outcome. On success it returns the Initiate Tag the
-/// packet went out carrying, which a conformant peer echoes back in whatever it
-/// answers with, so a reply can be tied to this attempt.
+/// `sender` and logs the outcome. On success returns the Initiate Tag it
+/// carried, which a conformant peer echoes back, tying the reply to this
+/// attempt.
 ///
-/// The counterpart of [`send_syn`] for a sweep asking over SCTP, and it reports
-/// its failures the same way and for the same reason. What it does not carry is
-/// the segment shaping a SYN takes: an SCTP packet is covered by a CRC32c rather
-/// than a checksum worth perturbing, and padding a chunk changes what the
-/// receiver reads rather than only how the packet looks. Decoys still apply,
-/// being a property of the source address rather than of the packet.
-///
-/// Infallible in its building, unlike [`send_syn`]: an SCTP checksum covers no
-/// pseudo-header, so there are no addresses for the builder to reconcile.
+/// The SCTP counterpart of [`send_syn`], reporting failures the same way. No
+/// segment shaping: SCTP uses a CRC32c, and padding a chunk changes what the
+/// receiver reads. Decoys still apply. Building cannot fail, since the SCTP
+/// checksum covers no pseudo-header.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn send_init(
     sender: &dyn ProbeSender,
@@ -312,13 +246,12 @@ pub(super) fn send_init(
     emission: Emission,
     faults: &mut SendFaults,
 ) -> Option<u32> {
-    // Non-zero, which RFC 4960 §3.3.2 requires of an Initiate Tag and which the
-    // builder leaves to its caller.
+    // RFC 4960 §3.3.2: the Initiate Tag must be non-zero.
     let tag: u32 = rand::random_range(1..=u32::MAX);
     let packet = protocol::sctp::build_init_probe(src_port, dst_port, tag);
 
-    // A decoy from each address of the target's own family, carrying a port and
-    // a tag of its own so none of the probes is the odd one out.
+    // One decoy per address of the target's family, each with its own port and
+    // tag so none stands out.
     let decoy_packets: Vec<(IpAddr, Vec<u8>)> = decoys
         .iter()
         .filter(|decoy| decoy.is_ipv4() == dst_addr.is_ipv4())
@@ -356,18 +289,14 @@ pub(super) fn send_init(
 
 /// Sends a single TCP SYN packet from `src_addr` to `dst_addr:dst_port` through
 /// `sender`, carrying `token`'s sequence number and source port, and logs the
-/// outcome. Whether it reached the wire is what comes back.
+/// outcome. Returns whether it reached the wire.
 ///
-/// The token is the caller's to draw, with [`SynToken::fresh`], rather than
-/// drawn here, because one attempt may be several packets: a sweep asking one
-/// address on several ports sends them all under one token, so whichever port
-/// answers names the same attempt and the ledger needs one entry per address
-/// rather than one per port.
+/// The caller draws the token with [`SynToken::fresh`] because one attempt may
+/// be several packets: a sweep asking one address on several ports sends them
+/// under one token, so the ledger needs one entry per address.
 ///
-/// `reason` receives the failure when there is one, so a scan whose probes never
-/// reached the wire can say why in its report rather than only in a log line. A
-/// probe that was never sent and a probe nobody answered are indistinguishable
-/// in a host count and could hardly be more different in what they mean.
+/// A failure is filed in `faults`, so the report can say why probes never left;
+/// in a host count that looks the same as a probe nobody answered.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn send_syn(
     sender: &dyn ProbeSender,
@@ -409,9 +338,8 @@ pub(super) fn send_syn(
         }
     };
 
-    // A decoy from each address of the target's own family, built with its own
-    // port and sequence so it is a probe in its own right, and the same shaping
-    // so no decoy is the odd one out carrying a different-looking checksum.
+    // One decoy per address of the target's family, with its own port and
+    // sequence and the same shaping, so none stands out.
     let decoy_packets: Vec<(IpAddr, Vec<u8>)> = decoys
         .iter()
         .filter(|decoy| decoy.is_ipv4() == dst_addr.is_ipv4())
@@ -446,31 +374,17 @@ pub(super) fn send_syn(
         }
         Err(e) if faults.hold(dst_addr, &e).is_some() => false,
         Err(e) => {
-            // Which of the two this was decides how it is reported; see
-            // `SendFaults`. Either way it is said once per kind rather than once
-            // per probe: a dual-stack sweep of a range has one unroutable
-            // address per name in it, and sixteen identical lines bury
-            // everything else.
+            // Logged once per kind (see `SendFaults`): a dual-stack sweep has
+            // one unroutable address per name, and repeated lines bury the rest.
             if e.is_unroutable() {
-                // **Not an error, and not logged as one here at all.** An
-                // address this host has no route to is ordinary, the caller
-                // reports it once against the address, and an `error!` would
-                // print regardless of verbosity: errors are exempt from it,
-                // which is exactly right for a scan that broke and exactly
-                // wrong for a machine that has no IPv6.
-                //
-                // The operating system's own words go at verbosity 2, the level
-                // of a line about one target, where somebody is asking why
-                // rather than being told.
+                // Ordinary, so not an `error!`, which prints at any verbosity and
+                // would fire on every machine without IPv6.
                 if faults.unroutable.is_none() {
                     info!(verbosity = 2, "no route to {dst_addr}: {e:#}");
                 }
             } else if faults.broken.is_none() {
-                // `{e:#}` rather than `{e}`: the outer message says which probe
-                // failed, and the chained cause is the operating system's own
-                // explanation. "Permission denied" and a full send buffer call
-                // for completely different responses, and the bare wrapper
-                // distinguishes neither.
+                // `{e:#}` includes the OS cause: "Permission denied" and a full
+                // send buffer need different fixes.
                 error!(
                     verbosity = 2,
                     "failed to send SYN probe to {dst_addr}:{dst_port}: {e:#}"
@@ -485,16 +399,13 @@ pub(super) fn send_syn(
 /// Sends a single UDP probe from `src_port` to `dst_addr:dst_port` through
 /// `sender` and logs the outcome.
 ///
-/// Unlike [`send_syn`], which randomizes its source port per probe, every UDP
-/// probe in a scan leaves from the same `src_port`. That single port is the
-/// scan's identity on the wire: the capture filter narrows direct replies down
-/// to it, and the datagram quoted inside an ICMP error is checked against it.
-/// Randomizing per probe would leave no filter expressible but "all UDP".
+/// Every UDP probe in a scan leaves from the same `src_port`, unlike
+/// [`send_syn`]'s random one. The capture filter narrows replies to that port,
+/// and the datagram quoted in an ICMP error is checked against it.
 ///
-/// A failure comes back whole rather than logged here, so the port scan can
-/// sort it by whose fact it is and report it once. A UDP scan whose probes never
-/// left reports every port `OpenOrNoReply`, the same answer a filter dropping
-/// everything produces, and only the failure says otherwise. See
+/// A failure is returned unlogged for the port scan to classify and report
+/// once. Unsent probes would otherwise read as every port `OpenOrNoReply`, as
+/// if a filter dropped everything. See
 /// [`RawProbeScan::record_send`](super::ports::RawProbeScan::record_send).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn send_udp(
@@ -511,12 +422,11 @@ pub(super) fn send_udp(
         shaping,
         decoys,
     } = evasion;
-    // What makes an open port answer at all: UDP has no handshake, so the
-    // application itself has to recognize the request. See [`payload`].
+    // UDP has no handshake, so an open port answers only a request its
+    // application recognizes. See [`payload`].
     let payload = payload::for_port(dst_port).to_vec();
 
-    // A datagram this host could not build is this host's failure, in the words
-    // the link-layer sender uses for a frame it could not build.
+    // Worded as the link-layer sender words a frame it could not build.
     let packet = crate::protocols::udp::build_packet_shaped(
         src_addr,
         dst_addr,
@@ -527,9 +437,8 @@ pub(super) fn send_udp(
     )
     .map_err(|e| SendError::Refused(format!("the UDP probe could not be built: {e}")))?;
 
-    // A decoy datagram from each address of the target's own family, from its
-    // own source port so its reply falls outside this scan's capture filter, and
-    // the same payload so it asks the same question the real probe does.
+    // One decoy per address of the target's family, from its own source port so
+    // its reply falls outside the capture filter, with the same payload.
     let decoy_packets: Vec<(IpAddr, Vec<u8>)> = decoys
         .iter()
         .filter(|decoy| decoy.is_ipv4() == dst_addr.is_ipv4())
@@ -562,19 +471,13 @@ pub(super) fn send_udp(
 
 /// Why probes did not reach the wire, split by what that says.
 ///
-/// Two kinds, because they are not the same finding. A send path that will
-/// not work is a strategy that did not run, and a caller has to hear that the
-/// scan covered less than it was asked to. An address this host has no route to
-/// is ordinary, a dual-stack name on an IPv4-only network resolves to an AAAA
-/// nobody here can reach, and reporting it as a broken scan makes every such
-/// scan look partial, which trains a reader to ignore the one that is.
+/// A broken send path means the strategy did not run, and the caller must
+/// hear that coverage fell short. An address with no route is ordinary (a
+/// dual-stack name on an IPv4-only network), and reporting it as a broken scan
+/// would make every such scan look partial. Each kind keeps its first failure.
 ///
-/// Each keeps the first of its kind rather than all of them: sixteen identical
-/// "no route to host" lines say nothing the first does not.
-///
-/// A refusal for the kernel's hold-down on the address's neighbour is neither
-/// the first time: the address is held through it, and asked again after it;
-/// see [`hold`](Self::hold).
+/// A first refusal for the kernel's hold-down on the neighbour is neither: the
+/// address is held and asked again after; see [`hold`](Self::hold).
 #[derive(Debug, Default)]
 pub(super) struct SendFaults {
     /// The first failure that says this host's send path is the problem.
@@ -583,11 +486,8 @@ pub(super) struct SendFaults {
     pub(super) unroutable: Option<(IpAddr, String)>,
     /// How many addresses had no route.
     pub(super) unroutable_count: u64,
-    /// Which addresses those were, so the report can name them.
-    ///
-    /// The count above is what a message says; this is what a consumer reads. A
-    /// number cannot tell somebody *which* of their targets went uncovered, and
-    /// that is the only part they can act on.
+    /// Which addresses those were, so the report can name the uncovered
+    /// targets.
     pub(super) addresses: std::collections::BTreeSet<IpAddr>,
     /// The addresses held through the kernel's hold-down on their neighbour.
     pub(super) held_down: neighbors::HoldDowns,
@@ -599,9 +499,8 @@ impl SendFaults {
     /// verdict, and returns when the hold-down is over; `None` for any other
     /// refusal, which the caller [`record`](Self::record)s.
     ///
-    /// Said once per hold-down, at the level of a line about one target. The
-    /// caller sends the address nothing until then, and asks it again after:
-    /// see [`HoldDowns`](neighbors::HoldDowns).
+    /// Logged once per hold-down at verbosity 2. The caller sends the address
+    /// nothing until then; see [`HoldDowns`](neighbors::HoldDowns).
     pub(super) fn hold(&mut self, target: IpAddr, error: &SendError) -> Option<Instant> {
         if !matches!(error, SendError::HeldDown(_)) {
             return None;
@@ -637,19 +536,16 @@ impl SendFaults {
         }
     }
 
-    /// Files `target` as an address nothing reaches, on the pass's own
-    /// reading rather than a refused send: its neighbour did not answer while
-    /// the pass held its probe, so nothing was handed to the sender to refuse
-    /// and nothing is counted as a send. See [`neighbors`].
+    /// Files `target` as unreached because its neighbour did not answer while
+    /// the pass held its probe. Not counted as a send. See [`neighbors`].
     pub(super) fn record_unreached(&mut self, target: IpAddr, reason: String) {
         self.addresses.insert(target);
         self.unroutable.get_or_insert((target, reason));
     }
 
-    /// Says what a pass's refused sends came to, each kind where it belongs:
-    /// a failure of this host's send path as a failure, naming how many of
-    /// the pass's `attempted` sends of `probes` it refused out of `failed`,
-    /// and each address with no way to it against the address.
+    /// Reports a pass's refused sends: a broken send path as a failure naming
+    /// how many of `attempted` `probes` it refused, and each unreachable
+    /// address against the address.
     pub(super) fn file(
         &self,
         ctx: &crate::scanner::session::ScanContext,
@@ -718,8 +614,6 @@ mod tests {
             (IpAddr::V4(Ipv4Addr::new(198, 51, 100, 3)), vec![2u8, 2]),
         ];
 
-        // Every probe reaches the wire, the real one and both decoys, and the
-        // real source appears exactly once.
         let mock = MockSender::default();
         assert!(
             emit_among_decoys(
@@ -738,7 +632,6 @@ mod tests {
         assert_eq!(sent.iter().filter(|(_, src, _)| *src == real).count(), 1);
         drop(sent);
 
-        // With no decoys it is a single ordinary send.
         let mock = MockSender::default();
         emit_among_decoys(
             &mock,
@@ -752,9 +645,8 @@ mod tests {
         .unwrap();
         assert_eq!(mock.sent.lock().unwrap().len(), 1);
 
-        // The outcome returned is the real probe's own, never a decoy's, which
-        // is what lets a caller keep a token only when *its* probe was sent, the
-        // root of the invariant that a decoy resolves no port.
+        // The outcome is the real probe's, so a caller keeps a token only when
+        // its own probe was sent and a decoy resolves no port.
         let refusing_the_real = RefusesOneSource(real);
         assert!(
             emit_among_decoys(
@@ -784,14 +676,7 @@ mod tests {
     }
 
     /// The two kinds of send failure are kept apart, and each keeps only its
-    /// first.
-    ///
-    /// They are reported through different channels: a broken send path is a
-    /// strategy that did not run and reaches the report as a failure; an
-    /// address with no route is said once and changes nothing about the scan's
-    /// standing. Collapsed into one counter, a dual-stack name on an IPv4-only
-    /// network would make every scan of it report itself partial, which teaches
-    /// a reader to ignore the warning that matters.
+    /// first. A broken send path fails the scan; a missing route does not.
     #[test]
     fn a_missing_route_is_counted_apart_from_a_broken_send_path() {
         let unreachable = |address: &str| {
@@ -831,8 +716,7 @@ mod tests {
         assert_eq!(faults.unroutable_count, 2, "which is a separate tally");
     }
 
-    /// The rate a sweep actually paces itself at, which is what the pair has
-    /// to reproduce however it is split between the two.
+    /// The rate a sweep actually paces itself at.
     fn effective_rate(rate_per_sec: u32) -> f64 {
         let (tick, batch) = pacing_for(NonZeroU32::new(rate_per_sec).expect("a non-zero rate"));
         batch as f64 / tick.as_secs_f64()
@@ -850,10 +734,8 @@ mod tests {
         );
     }
 
-    /// The failure this pair exists to prevent. A batch cannot be less than one
-    /// probe, so holding the tick fixed collapses every rate below one probe
-    /// per tick onto the same value - and a sweep asked for 500 a second runs
-    /// at 1000 without saying so.
+    /// With a fixed tick, every rate below one probe per tick would collapse
+    /// onto 1000/s.
     #[test]
     fn a_slow_rate_lengthens_the_tick_rather_than_doubling_the_rate() {
         assert_eq!(
@@ -879,15 +761,8 @@ mod tests {
         }
     }
 
-    /// A rate of zero is a caller error, not an instruction to stall forever.
-    ///
-    /// It cannot be asked at any level. `pacing_for` takes a [`NonZeroU32`] and
-    /// so does the configuration above it, so the fallback this holds is only
-    /// the one a caller means: no ceiling at all.
-    ///
-    /// Were zero to arrive here as `Some(0)`, it would resolve to the engine's
-    /// own rate while the report recorded the ceiling the caller believed they
-    /// had set.
+    /// No ceiling falls back to the default; a set one is obeyed. Zero cannot
+    /// be asked, since the rate is a [`NonZeroU32`] at every level.
     #[test]
     fn an_unset_rate_falls_back_to_the_default_and_a_set_one_is_obeyed() {
         assert_eq!(
@@ -901,12 +776,8 @@ mod tests {
         );
     }
 
-    /// The floor lifts a default and stops at a ceiling.
-    ///
-    /// The second case is the one worth pinning. A floor above an explicit
-    /// ceiling is a contradiction the caller can express in a settings file, and
-    /// resolving it the other way would push a target the operator had said must
-    /// not be pushed, on the strength of a throughput preference.
+    /// The floor lifts a default and stops at a ceiling, which a settings file
+    /// can set below the floor.
     #[test]
     fn a_floor_raises_the_default_but_never_a_ceiling() {
         let default = PROBE_RATE_PER_SEC;

@@ -8,21 +8,17 @@
 
 //! # Local Area Network Scanner
 //!
-//! Discovers hosts on the same physical network segment by sending ARP requests
-//! (IPv4) and ICMPv6 all-nodes solicitations (IPv6), then listening for replies.
-//! Recognizing those replies is left to the `discovery` module, so adding a
-//! new discovery mechanism does not mean touching the receive loop.
+//! Discovers hosts on the same network segment by sending ARP requests (IPv4)
+//! and ICMPv6 all-nodes solicitations (IPv6), then listening for replies, which
+//! the `frames` module recognizes.
 //!
-//! The two probes are repeated on different terms, because they ask different
-//! questions. An ARP request is put to one address, answered once, and retired
-//! by that answer, so it is retransmitted through the shared
-//! `ProbeLedger` like every other
-//! probe in the engine. The solicitation is put to the whole segment and
-//! answered by whoever is listening, so it is simply repeated a few times and
-//! given a window to be answered in.
+//! An ARP request asks one address and is retired by its answer, so it is
+//! retransmitted through the shared `ProbeLedger`. The solicitation asks the
+//! whole segment, so it is repeated a few times and given a window to be
+//! answered in.
 //!
-//! This scanner requires root privileges. It builds and intercepts raw Ethernet
-//! frames directly, bypassing the operating system's own IP stack.
+//! Requires root privileges: it builds and captures raw Ethernet frames,
+//! bypassing the operating system's IP stack.
 
 mod ipv6;
 mod probes;
@@ -66,26 +62,17 @@ use ipv6::Ipv6Discovery;
 
 /// What a local sweep's capture admits, as a `libpcap` filter expression.
 ///
-/// The union of what every [`DiscoveryProtocol`] declares it reads, plus the one
-/// thing the sweep reads without one. Derived rather than written down, so that
-/// adding a protocol widens the capture by the same edit that adds the reader.
-/// see [`DiscoveryProtocol::capture_clause`] for why that is not a convenience.
+/// The union of every [`DiscoveryProtocol`]'s clause and the
+/// [`ABSORBED_CLAUSES`]; see [`DiscoveryProtocol::capture_clause`]. Filtering
+/// in the kernel spares copying every frame on a busy link to userspace.
 ///
-/// Receiving the whole segment and rejecting the surplus in userspace would, on
-/// a busy link, copy every frame on the wire to discard almost all of it.
+/// 802.1Q-tagged frames are not admitted; the frame reader takes the EtherType
+/// from its fixed offset and would reject them anyway.
 ///
-/// 802.1Q-tagged frames are not admitted, and that loses nothing: the frame
-/// reader below takes the EtherType from its fixed offset, so a tagged frame
-/// would read as an unsupported EtherType and be rejected a layer up anyway.
-///
-/// One expression, where a listener's filter is a set of alternatives each
-/// link takes what it can of. A listener reads whatever a link carries, so a
-/// tunnel that cannot express the Ethernet clauses still has TCP worth
-/// hearing. A sweep sends Ethernet frames and reads every answer from an
-/// Ethernet header, so a link without one would take the IP clauses, hear
-/// nothing it can read, and report an empty segment; as one expression the
-/// Ethernet clauses refuse such a link instead, which is what the sweep
-/// needs. See [`CaptureFilter`](crate::transport::capture::CaptureFilter).
+/// One expression, unlike a listener's set of per-link alternatives: the
+/// Ethernet clauses make a link without Ethernet headers refuse the filter,
+/// where it would otherwise hear nothing readable and report an empty segment.
+/// See [`CaptureFilter`](crate::transport::capture::CaptureFilter).
 fn sweep_filter() -> String {
     let mut clauses: Vec<&'static str> = frames::sweep_protocols()
         .iter()
@@ -94,37 +81,25 @@ fn sweep_filter() -> String {
 
     clauses.extend(ABSORBED_CLAUSES);
 
-    // Several protocols share a clause, the three IPv6 readers are all
-    // `icmp6`, and a filter repeating it would compile to the same program
-    // while reading as though it meant something.
+    // The three IPv6 readers share `icmp6`.
     clauses.sort_unstable();
     clauses.dedup();
 
     clauses.join(" or ")
 }
 
-/// The clauses for the readers that conclude no liveness, and so have no
-/// [`DiscoveryProtocol`] to declare them.
+/// The clauses for readers that conclude no liveness, and so have no
+/// [`DiscoveryProtocol`] to declare them:
 ///
-/// Every protocol in [`frames::sweep_protocols`] exists to conclude that a
-/// host is present. These three do not, and each declines for its
-/// own reason:
+/// - **mDNS** (`absorb_mdns`) reads names but credits nobody with being there,
+///   since the announcer is often not the machine announced.
+/// - **LLDP** and **CDP** (`absorb_announcement`) describe the equipment this
+///   machine is plugged into. See [`Attachment`].
 ///
-/// - **mDNS** (`absorb_mdns`) reads a name off the segment and credits nobody
-///   with being there for it, because every laptop and printer on a link
-///   answers mDNS and the announcer is often not the machine being announced.
-/// - **LLDP** and **CDP** (`absorb_announcement`) are equipment describing
-///   *itself*, and what they establish is where **this** machine is plugged in:
-///   a fact about the phase rather than about any host in it. See
-///   [`Attachment`].
+/// A new reader of this kind must add its clause here; nothing else will.
 ///
-/// A fourth reader of this kind needs a clause here, and nothing will say so:
-/// the derivation above covers only the protocols that conclude liveness.
-///
-/// The CDP clause matches the group address rather than the protocol, because
-/// CDP rides 802.3 framing and has no EtherType to match on. That address also
-/// carries VTP, DTP and PAgP, which the reader declines: a small surplus, and
-/// the alternative is reaching past a header whose length BPF cannot express.
+/// CDP rides 802.3 framing with no EtherType, so its clause matches the group
+/// address, which also carries VTP, DTP and PAgP that the reader declines.
 const ABSORBED_CLAUSES: [&str; 3] = [
     "(udp port 5353)",
     "(ether proto 0x88cc)",
@@ -134,42 +109,27 @@ const ABSORBED_CLAUSES: [&str; 3] = [
 /// Outstanding ARP requests and the schedule they are retried on.
 ///
 /// The attempt token is `()`: consecutive requests for one address are
-/// identical on the wire, so a reply cannot say which of them it answers. The
-/// ledger applies Karn's rule on that basis and declines to measure a round trip
-/// it cannot attribute.
-///
-/// The all-nodes solicitation is not in here. It is one multicast
-/// packet that every neighbour may answer, so it has no single outcome to
-/// resolve and nothing to retire; the scanner times it separately.
+/// identical on the wire, so under Karn's rule a retried one is not measured.
 type Ledger = ProbeLedger<IpAddr, ()>;
 
 /// How an ARP request is retransmitted.
 ///
-/// ARP is lost on a busy segment considerably more often than its reputation
-/// suggests - requests are broadcast, and a switch under load drops broadcast
-/// before anything else - and a sweep that never asks twice simply reports the
-/// hosts it missed as absent.
+/// ARP is lost on a busy segment more often than expected: requests are
+/// broadcast, and a loaded switch drops broadcast first.
 ///
-/// Until the segment has answered anything, an address is asked on the
-/// kernel's schedule: three requests a second apart, and silent only once the
-/// third has gone unanswered for a second, which is the evidence the kernel
-/// takes before it calls a neighbour failed, and the evidence the frame
-/// path's own address resolution takes before a port scan's probe gives up on
-/// one. Judged sooner, a neighbour the port scans would resolve is written off
-/// here, and one answering in more than the sweep's patience answers after the
-/// process that asked has gone, into the capture of whichever process asks
-/// next, so one run finds it and the next does not.
+/// Until the segment answers anything, an address is asked on the kernel's
+/// schedule: three requests a second apart, silent once the third has gone a
+/// second unanswered. That is the evidence the kernel and the frame path's
+/// address resolution take before giving up on a neighbour. Judged sooner, a
+/// neighbour the port scans would resolve is written off here, and a late
+/// answer lands in the next process's capture, so runs disagree.
 ///
-/// Once the segment has answered, the round trip it answered in governs: a
-/// wired neighbour answers in well under a millisecond, the floor takes over
-/// almost at once, and the silent addresses of a segment that answers are
-/// settled in a fraction of a second. So the second of patience is paid by a
-/// sweep that hears nothing, which is the sweep that has nothing faster to go
-/// on.
+/// Once the segment answers, its round trip governs; a wired neighbour answers
+/// in well under a millisecond, so silent addresses settle in a fraction of a
+/// second. Only a sweep that hears nothing pays the full second.
 ///
-/// No silent-host rule, because there would be nothing for it to do: each
-/// address here is probed once, so no host ever accumulates the exhausted
-/// probes that rule counts.
+/// No silent-host rule: each address is probed once, so no host accumulates
+/// the exhausted probes that rule counts.
 const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
     3,
     Duration::from_secs(1),
@@ -183,28 +143,18 @@ const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
 /// How many machines may declare what they are before this scanner knows which
 /// hosts they are.
 ///
-/// One bound on what the segment can make this process hold. A router
-/// advertisement and a DHCP reply are unsolicited traffic, so unlike every
-/// other record here this one grows from frames nobody asked for, and a
-/// neighbour sending them under a new hardware address each time would
-/// otherwise grow it without limit.
-///
-/// Sixty-four is past any segment that has this many routers and DHCP servers
-/// on it, and small enough that reaching the cap costs nothing worth measuring.
-/// Past it, a declaration from a machine still unknown is dropped like any other
-/// off-target frame: it is a claim about a host this scan has not found.
+/// Router advertisements and DHCP replies are unsolicited, so a neighbour
+/// sending them from a new hardware address each time could otherwise grow
+/// this record without limit. Sixty-four exceeds any real segment's routers and
+/// DHCP servers. Past it, a declaration from an unknown machine is dropped like
+/// any other off-target frame.
 const MAX_DECLARING_MACS: usize = 64;
 
 /// Why a captured frame is not a discovery finding.
 ///
-/// Not a failure of the scanner: a promiscuous capture sees the whole segment's
-/// traffic, so most of what arrives is somebody else's and rejecting it is the
-/// normal case rather than an error. These are named rather than lumped into one
-/// `None` because which check rejected a frame is the first thing worth knowing
-/// when a host that should have been found was not.
-///
-/// Kept apart from [`StrategyError`], which is about a strategy that could not
-/// run at all.
+/// A promiscuous capture sees the whole segment, so rejection is the normal
+/// case. Each check is named so a missing host can be traced to the one that
+/// dropped its frame. Unlike [`StrategyError`], not a failure.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum FrameRejected {
     #[error("unmapped RTT source: {0}")]
@@ -217,27 +167,19 @@ pub(crate) enum FrameRejected {
     UnreadableLink,
     /// The bytes did not hold the headers they were read for.
     ///
-    /// A promiscuous capture admits whatever the filter let through, so a frame
-    /// that stops mid-header is an ordinary arrival rather than a fault. Named
-    /// with the parser's own reason, since which header ran out is the thing
-    /// worth knowing.
+    /// An ordinary arrival on a promiscuous capture. Carries the parser's
+    /// reason, which names the header that ran out.
     #[error("{0}")]
     Malformed(#[from] crate::protocols::error::PacketError),
 }
 
-/// How long a discovery sweep runs and how it adapts. The base and per-target
-/// budgets scale with the number of targets, while the silence floor, silence
-/// ceiling, and jitter multiplier bound how far the tolerance for network
-/// silence can stretch in response to recent round-trip times. These starting
-/// values assume a local segment, where round trips are usually well under a
-/// millisecond.
+/// How long a discovery sweep runs and how it adapts, assuming a local segment
+/// with sub-millisecond round trips.
 ///
-/// The hard ceiling bounds only a range small enough that nothing else does.
-/// This scanner paces its own sends at [`SEND_INTERVAL`], so a sweep needs at
-/// least that interval per address per attempt simply to emit its probes, and
-/// a ceiling below that stops it mid-send, invisibly: an address never probed
-/// is indistinguishable from one with nothing on it. So the sweep raises the
-/// ceiling to what its range and its schedule need; see [`deadline_for`].
+/// The hard ceiling only bounds small ranges. Sends are paced at
+/// [`SEND_INTERVAL`] per address per attempt, and a ceiling below that would
+/// stop the sweep mid-send, leaving unprobed addresses indistinguishable from
+/// empty ones. [`deadline_for`] raises it to what the range needs.
 const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
     ScanBudget::new(
         Duration::from_millis(2_000),
@@ -257,20 +199,15 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 
 /// How long to leave between probes.
 ///
-/// Slowing this down measurably raises the share of *first* attempts that get
-/// answered on a wireless segment, where both of this scanner's first-attempt
-/// probes are group-addressed and group-addressed frames are the expensive
-/// case. It is not slowed down anyway: a first attempt that goes
-/// unanswered is recovered by [`RETRY_POLICY`], so the gain is a better
-/// *attributed* round trip on a few hosts rather than more hosts, and it is
-/// bought at several times the scan duration: the send phase drags the
-/// adaptive deadline along behind it, so the cost compounds rather than adds.
+/// A slower pace measurably raises the share of first attempts answered on
+/// wireless, where group-addressed frames are expensive. But [`RETRY_POLICY`]
+/// recovers unanswered first attempts, so the gain is a few more timed round
+/// trips, not more hosts, at several times the scan duration, since the send
+/// phase drags the adaptive deadline along.
 ///
-/// Two cautions from the last attempt, for whoever revisits it: the run-to-run
-/// variance on a segment of sleeping
-/// wireless devices is large enough to swamp small differences, so arms are
-/// only comparable within one block; and the number to judge it on is hosts
-/// found and hosts timed *per second of scan*, not first-attempt rate.
+/// When measuring changes here: run-to-run variance on a segment of sleeping
+/// wireless devices swamps small differences, so compare arms only within one
+/// block, and judge by hosts found and timed per second of scan.
 const SEND_INTERVAL: Duration = Duration::from_micros(1000);
 
 /// The deadline a sweep of `target_count` addresses runs under when its ARP
@@ -278,38 +215,25 @@ const SEND_INTERVAL: Duration = Duration::from_micros(1000);
 /// at one host (the longer of its two gaps, since every probe waits out both)
 /// and `scan_gap` between any two probes.
 ///
-/// It has to outlive two things the sweep commits to, and it is derived from
-/// both rather than left to [`DEADLINE_CONFIG`]'s ceiling, which a large
-/// enough range outgrows invisibly.
+/// It must outlive both the probe schedule and the send pacing, which a large
+/// range would push past [`DEADLINE_CONFIG`]'s ceiling.
 fn deadline_for(
     target_count: usize,
     retry: &RetryPolicy,
     gap: Option<Duration>,
     scan_gap: Option<Duration>,
 ) -> AdaptiveDeadlineConfig {
-    // The schedule it commits each probe to, or addresses are given up on
-    // having never been fully asked. The longer of the two schedules, because
-    // the sweep has to outlive whichever probe it commits to last. Sized from
-    // ARP alone, it ends while solicitations are still legitimately
-    // outstanding, which is the shape of the bug `ipv6::NDP_RETRY_POLICY`
-    // exists to fix, arriving one layer up. Each is taken at its longest,
-    // every attempt at its ceiling, since a segment that answered slowly times
-    // its silent addresses from what it heard, up to the ceiling on every
-    // attempt, the first included. And every attempt at the gap, where that
-    // is longer, since a repeat waits it out with its probe's clock stopped.
+    // The longer of the ARP and NDP schedules, each at its longest: every
+    // attempt at its ceiling (a slow segment can time silent addresses up to
+    // it) or at the gap where longer, since a repeat waits the gap out with
+    // its probe's clock stopped.
     let probe_lifetime = retry
         .longest_spaced_probe_lifetime(gap)
         .max(ipv6::NDP_RETRY_POLICY.longest_spaced_probe_lifetime(gap));
 
-    // And its own pacing, or it stops mid-send. Every frame leaves through one
-    // ticker at `SEND_INTERVAL`, a repeat as much as a first attempt, so an
-    // address nothing answers costs an interval per attempt, and a range costs
-    // that many times its size. Handed over as a pace per address, which
-    // raises the ceiling to cover the range rather than leave it to clamp it.
-    //
-    // A scan-wide gap is a slower ticker, and where it is the slower of the
-    // two it is the pace. The frames put to the whole segment spend it too,
-    // a fixed number however large the range, so they are added once.
+    // Pacing: every frame, repeats included, leaves through one ticker, so a
+    // silent address costs one tick per attempt. A scan-wide gap slows the
+    // ticker. The segment-wide frames are a fixed count, added once.
     let attempts = retry.max_attempts.max(ipv6::NDP_RETRY_POLICY.max_attempts);
     let tick = SEND_INTERVAL.max(scan_gap.unwrap_or_default());
     let group_frames = scan_gap.unwrap_or_default().saturating_mul(GROUP_FRAMES);
@@ -318,14 +242,12 @@ fn deadline_for(
         .allowing_pace_of(tick.saturating_mul(u32::from(attempts)), target_count)
 }
 
-/// How many frames a sweep puts to the whole segment rather than to an
-/// address: the two segment questions and every all-nodes echo.
+/// How many group-addressed frames a sweep sends: the two segment questions
+/// and every all-nodes echo.
 const GROUP_FRAMES: u32 = 2 + ipv6::SOLICITATION_ATTEMPTS as u32;
 
 /// How much of the segment a [`LocalScanner`] run touches.
 ///
-/// Non-exhaustive: "everything here" and "only what was named" are the two a scan
-/// needs today, and neither is an argument that there is no third.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
@@ -339,18 +261,14 @@ pub enum Scope {
     Targeted,
 }
 
-/// The addressing identity this scanner uses to speak on its interface,
-/// resolved once at construction time and never changed afterward.
+/// The addresses this scanner speaks from on its interface, resolved once at
+/// construction.
 struct SourceIdentity {
     mac: MacAddr,
     ipv4: Option<Ipv4Addr>,
     link_local_ipv6: Option<Ipv6Addr>,
-    /// The interface itself, which this scanner is the only kind that knows.
-    ///
-    /// Every neighbour it finds was reached across this one segment, so every
-    /// link-local address it records is valid on this interface and no other.
-    /// Recording that alongside the host is what makes those addresses usable
-    /// by the phases that come after discovery; see
+    /// The interface. Every link-local address this scanner records is valid
+    /// on it alone, and later phases need the zone to use them; see
     /// [`ScopedIp`](crate::model::ip::scoped::ScopedIp).
     zone: Zone,
 }
@@ -358,28 +276,22 @@ struct SourceIdentity {
 impl SourceIdentity {
     /// How the store keys a neighbour this scanner found.
     ///
-    /// The interface belongs in the key, not only on the record. Every
-    /// address here was read off one segment, and a link-local one is valid on
-    /// that segment alone: `fe80::1` on `en0` and `fe80::1` on `en1` are two
-    /// machines. Keyed by the bare address they would be one entry, and the
-    /// second sweep to find one would fold its neighbour's hardware address,
-    /// roles and round trips into the first's record.
+    /// The interface is part of the key: `fe80::1` on `en0` and `fe80::1` on
+    /// `en1` are two machines, and keyed by the bare address their records
+    /// would merge.
     ///
     /// [`ScopedIp::scoped`](crate::model::ip::scoped::ScopedIp::scoped) drops
-    /// the zone from every address that does not need one, so this is the plain
-    /// address for an IPv4 neighbour and for a global IPv6 one, which is right,
-    /// since a machine reachable at a global address is the same machine
-    /// through whichever interface it answered.
+    /// the zone where it is not needed, so IPv4 and global IPv6 neighbours are
+    /// keyed by the plain address.
     fn key_for(&self, addr: std::net::IpAddr) -> crate::model::ip::scoped::ScopedIp {
         crate::model::ip::scoped::ScopedIp::scoped(addr, self.zone.clone())
     }
     /// Picks the addresses this scanner will present as its own when probing
     /// `ip_set` from `intf`.
     ///
-    /// For IPv4, it prefers an address in the same subnet as the targets being
-    /// scanned and otherwise falls back to the interface's first non-loopback
-    /// address. For IPv6, it uses the interface's link-local address when it has
-    /// one, since that is what the ICMPv6 all-nodes probe is sent from.
+    /// For IPv4, an address in the targets' subnet, else the first non-loopback
+    /// one. For IPv6, the link-local address, which the all-nodes probe is sent
+    /// from.
     fn resolve(link: &Link, ip_set: &IpSet) -> Result<Self, StrategyError> {
         let mac = link.mac().ok_or_else(|| StrategyError::Interface {
             interface: link.name().to_owned(),
@@ -394,9 +306,7 @@ impl SourceIdentity {
             if ipv4.is_none() && !address.is_loopback() {
                 ipv4 = Some(address);
             }
-            // An address on the same segment as the targets beats one that
-            // merely exists: a probe sourced from the wrong subnet is answered
-            // to somewhere this scanner is not listening.
+            // A probe from the wrong subnet is answered where we do not listen.
             if ip_set
                 .v4()
                 .iter()
@@ -423,10 +333,9 @@ impl SourceIdentity {
 
 /// What a solicited reply proves about the probe it answers.
 ///
-/// The two are separate because either can be missing on its own. An address
-/// asked more than once names the send it settles but not the interval, and one
-/// answered through the single confirmation an overheard address gets is timed
-/// with no send of this scan's to retire.
+/// Either can be missing alone: a retried address names the send it settles
+/// but not the interval, and a confirmation is timed with no ledger send to
+/// retire.
 struct ProbeCorrelation {
     /// The round trip, where one can be attributed to this reply.
     rtt: Option<(Duration, RttSource)>,
@@ -436,32 +345,24 @@ struct ProbeCorrelation {
 }
 
 /// What one turn of the send ticker put on the wire.
-///
-/// Only whether the packet iterator is empty matters to the loop: everything
-/// else is a frame sent, whether a first attempt, a repeat, or a question put
-/// to the whole segment.
 enum Dispatched {
     /// A frame, of whichever kind was owed first.
     Sent,
-    /// The iterator is empty, so every address the sweep was handed has been
-    /// asked at least once.
+    /// The iterator is empty: every address has been asked at least once.
     Drained,
-    /// Nothing was due, which is what an already-drained iterator looks like
-    /// on a tick with no repeat behind it.
+    /// Nothing was due.
     Nothing,
 }
 
 /// Finds the hosts sharing one Ethernet segment, asking IPv4 addresses by ARP
 /// and the IPv6 half of the segment by all-nodes solicitation.
 ///
-/// Frames are built and read directly rather than through this host's IP
-/// stack, so a run takes root and reaches only the segment its [`Link`] is
-/// attached to. What a given reply proves is left to the `DiscoveryProtocol`
-/// implementations in `frames`, and [`Scope`] decides whether a run probes
-/// the whole segment or only the addresses it was handed.
+/// Frames bypass the IP stack, so a run needs root and reaches only its
+/// [`Link`]'s segment. The `DiscoveryProtocol` implementations in `frames`
+/// interpret replies, and [`Scope`] decides whether a run probes the whole
+/// segment or only the addresses it was handed.
 pub struct LocalScanner {
-    /// Shared state (host store, event channel, abort signal) for the scan
-    /// this explorer is part of.
+    /// Shared state (host store, event channel, abort signal) of the scan.
     ctx: ScanContext,
     /// The addresses being probed for aliveness.
     ip_set: IpSet,
@@ -478,83 +379,57 @@ pub struct LocalScanner {
     /// The outstanding ARP requests, the retry queue, what has answered and
     /// the run's counters, shared with the two routed sweeps.
     ///
-    /// The neighbour-discovery schedule is `ipv6`'s own and is serviced through
-    /// [`HostSweep::service_second_ledger`]: one link, two populations, and a
-    /// mains-powered router answers a solicitation in five milliseconds where a
-    /// phone asleep on wifi takes four hundred.
+    /// The NDP schedule is `ipv6`'s own, serviced through
+    /// [`HostSweep::service_second_ledger`]: a mains-powered router answers a
+    /// solicitation in 5 ms, a phone asleep on wifi in 400.
     sweep: HostSweep<()>,
     /// Where to forward newly discovered addresses for hostname
     /// resolution, if enabled.
     dns_tx: Option<UnboundedSender<IpAddr>>,
-    /// Maps each MAC seen back to the first address observed from it, so a
-    /// host reachable at more than one address is recorded once.
+    /// Each MAC seen, to the first address observed from it, so a host with
+    /// several addresses is recorded once.
     mac_to_ip: HashMap<MacAddr, IpAddr>,
-    /// What a machine said it is, held until this scanner knows which host that
-    /// machine is.
+    /// What a machine said it is, held by MAC until that MAC answers one of
+    /// our probes.
     ///
-    /// The two segment-wide questions are answered from an address the scan was
-    /// never asked about, a router advertises from its link-local, a DHCP
-    /// server may sit outside the range, so on a targeted run the answer
-    /// arrives before, and often instead of, anything that identifies its
-    /// sender. Held by MAC rather than dropped, and applied the moment that MAC
-    /// answers a probe of ours.
+    /// The segment-wide questions are answered from addresses the scan may not
+    /// target (a router's link-local, a DHCP server outside the range). A
+    /// declaration only lands on a record the scan built by asking, so a
+    /// targeted run never gains hosts from it.
     ///
-    /// This is what keeps a targeted run targeted. Nothing here creates a
-    /// host or adds an address: a declaration only ever lands on a record the
-    /// scan built by asking, so a run handed one address still reports one
-    /// host: with, if it happens to be the router, the fact that it routes.
-    ///
-    /// Bounded by [`MAX_DECLARING_MACS`], unlike `mac_to_ip`, which only ever
-    /// grows from replies to probes this scanner sent. This grows from traffic
-    /// nobody solicited.
+    /// Bounded by [`MAX_DECLARING_MACS`], since it grows from unsolicited
+    /// traffic.
     declared: HashMap<MacAddr, HashSet<NetworkRole>>,
     /// Whether to sweep the segment or probe only the given targets.
     scope: Scope,
     /// Why the first frame that could not be put on the wire failed, if any did.
     ///
-    /// The count alone cannot separate a link that refused every write from a
-    /// scanner that could not build a packet, and those call for opposite
-    /// responses. Kept as the first cause rather than all of them: a segment
-    /// that refuses one write refuses the next few hundred for the same reason,
-    /// and a report carrying that reason three hundred times says nothing the
-    /// first one did not.
+    /// Separates a link that refused writes from a scanner that could not
+    /// build a packet. Only the first is kept, since the rest repeat it.
     send_failure: Option<String>,
     /// What this sweep has asked the IPv6 half of the segment, and what it is
     /// still waiting to hear back.
     ///
-    /// A `/64` cannot be walked the way an IPv4 range can, so nothing about the
-    /// ARP half carries over: the probes are different, the retry schedule is
-    /// different, and an advertisement cannot say which attempt it answers. That
-    /// mechanism keeps its own state rather than sharing this struct's, and the
-    /// reasoning behind its timing lives with it.
     ipv6: Ipv6Discovery,
-    /// The prefixes the link holds, which say whether an overheard address is
-    /// one the routing table's refusal can be read for; see
-    /// [`confirm`](Self::confirm).
+    /// The link's prefixes, which say whether the routing table's refusal of
+    /// an overheard address means anything; see [`confirm`](Self::confirm).
     prefixes: interface::OnLinkTable,
-    /// How the routing table is asked whether it refuses an overheard
-    /// address: [`interface::refuses_neighbour`], or, in a test, a table
-    /// refusing as no host the test runs on does.
+    /// Whether the routing table refuses an overheard address:
+    /// [`interface::refuses_neighbour`], or a stub in tests.
     refuses: fn(IpAddr) -> bool,
     /// The questions put to the whole segment that have not left yet, in the
     /// order they are owed; see [`SegmentQuestion`].
     questions: VecDeque<SegmentQuestion>,
-    /// First attempts the gaps the scan keeps between probes turned away,
-    /// each sent once its address's slot is free.
-    ///
-    /// Held rather than dropped, because a probe that never left has asked
-    /// nothing: an address dropped here would never be armed, never settle,
-    /// and read as absent from a segment nobody asked about it. Nor put back
-    /// into the walk, which is a stream that cannot be pushed onto.
+    /// First attempts the scan's probe gaps turned away, each sent once its
+    /// address's slot is free. Dropped, an address would never be asked and
+    /// would read as absent; the walk is a stream and cannot take it back.
     held_first: VecDeque<(Vec<u8>, IpAddr)>,
 }
 
-/// A question a sweep puts to the whole segment rather than to an address,
-/// sent once at its head.
+/// A question a sweep puts to the whole segment, sent once at its head.
 ///
-/// Each is a frame to a group address that no one host was singled out by,
-/// so each spends the scan-wide gap between probes and no host's own; see
-/// [`ScanContext::claim_group_probe`].
+/// Each is a frame to a group address, so it spends the scan-wide gap between
+/// probes and no host's own; see [`ScanContext::claim_group_probe`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SegmentQuestion {
     /// Which machines route this segment; see
@@ -566,7 +441,7 @@ enum SegmentQuestion {
 }
 
 impl SegmentQuestion {
-    /// The group the frame is addressed to, which is what its claim names.
+    /// The group the frame is addressed to, which its claim names.
     fn group(self) -> IpAddr {
         match self {
             // All-routers, link-local scope.
@@ -584,8 +459,8 @@ impl SegmentQuestion {
     }
 }
 
-/// The group the all-nodes solicitation is addressed to, which is what its
-/// claim on the scan-wide gap names.
+/// The group the all-nodes solicitation is addressed to, which its claim on
+/// the scan-wide gap names.
 const ALL_NODES: IpAddr = IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1));
 
 #[async_trait]
@@ -595,15 +470,11 @@ impl HostScanner for LocalScanner {
     }
 
     async fn discover_hosts(&mut self) -> Result<(), StrategyError> {
-        // Every reply records its sender's hardware address, and the first
-        // loads the manufacturer database; see the call.
+        // Every reply records its sender's MAC vendor, so load the database now.
         crate::model::mac::load_vendors().await;
-        // The sweep's time runs from here. Loading that database takes
-        // hundreds of milliseconds, seconds on a loaded machine, and a caller
-        // may build the scanner well before it runs it; charged to the sweep,
-        // either spends its minimum runtime and its silence before the first
-        // frame is read, and whatever the segment says first is read as
-        // arriving after the sweep concluded nothing more would.
+        // Start the clock after the load, which can take seconds on a loaded
+        // machine, and after any delay between construction and running, or
+        // the sweep spends its minimum runtime before reading a frame.
         self.deadline.start();
         let mut packet_iter = probes::eth_packet_iter(
             &self.identity.mac,
@@ -613,55 +484,35 @@ impl HostScanner for LocalScanner {
             WalkOrder::of(&self.ip_set, &self.ctx).as_ref(),
         );
 
-        // The first all-nodes echo is owed immediately, so it goes out at the
-        // head of the sweep rather than behind every ARP request. It is the one
-        // probe that reaches an IPv6 neighbour holding no address anybody could
-        // have guessed, and the sooner it is asked the more of its response
-        // window falls inside the scan.
+        // The first all-nodes echo goes at the head of the sweep, so more of its
+        // response window falls inside the scan. It is the only probe that
+        // reaches an IPv6 neighbour at an unguessable address.
         if matches!(self.scope, Scope::Sweep) && self.identity.link_local_ipv6.is_some() {
             self.ipv6.arm_solicitation(Instant::now());
 
-            // Recorded where the probe is armed, because this is the one
-            // condition under which the phase covers the whole link rather than
-            // the addresses it was handed. A host found here holds an address
-            // no target set named, and without this the record cannot say it
-            // was looked for.
+            // Only here does the phase cover the whole link, and the record
+            // must say so for hosts no target set named.
             self.ctx.record_sweep(self.identity.zone.clone());
         }
 
-        // Asked on every local run, sweep or not, and answered by a class of
-        // machine rather than by an address: neither question can be put to a
-        // target, and a scan of a segment that does not ask them reports the
-        // segment without the two machines it is built around.
-        //
-        // This is not the sweep's reach in disguise. A sweep may *record* a
-        // host nobody named; a targeted run still may not, and does not: an
-        // answer from an address outside the target set is read for what its
-        // sender said it is and for nothing else. See
-        // [`note_declaration`](Self::note_declaration).
-        //
-        // Both at once where the scan-wide gap allows, as it always does for a
-        // scan that keeps none; one it turns away waits at the head of the
-        // ticker's queue, still owed.
+        // Asked on every run, sweep or not, to find the router and the DHCP
+        // server. A targeted run records nothing new from the answers, only
+        // what their senders declare; see
+        // [`note_declaration`](Self::note_declaration). A question the
+        // scan-wide gap turns away waits at the head of the ticker's queue.
         while let Some(true) = self.ask_next_question() {}
 
         let mut sending_finished = false;
         let mut send_interval: Interval = tokio::time::interval(SEND_INTERVAL);
-        // Without this, an interval that went unpolled while the loop waited on
-        // replies hands back every tick it missed at once, and the pacing this
-        // ticker exists to impose evaporates exactly when the queue is longest.
+        // Otherwise an unpolled interval fires every missed tick at once,
+        // bursting exactly when the queue is longest.
         send_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        // The loop yields why it stopped, so the audit cannot report a reason
-        // the code never actually took.
         let reason = loop {
             let now = Instant::now();
-            // Answers already waiting first, so one that arrived before its
-            // probe came due settles it before the timer can retire it; see
-            // the port scans' `read_waiting_replies`.
+            // Waiting answers first, so one that arrived before its timer fired
+            // settles the probe; see the port scans' `read_waiting_replies`.
             self.read_waiting_frames();
-            // Both schedules, and a sweep settles: it was asked whether an
-            // address is there and has asked as many times as it may.
             self.sweep.service_retries(&self.ctx, now);
             self.sweep
                 .service_second_ledger(&self.ctx, self.ipv6.ledger_mut(), now);
@@ -670,8 +521,7 @@ impl HostScanner for LocalScanner {
                 break reason;
             }
 
-            // Anything left to put on the wire, whether a first attempt or a
-            // repeat, goes through the same paced ticker.
+            // First attempts and repeats share one paced ticker.
             let sending = !sending_finished
                 || !self.questions.is_empty()
                 || !self.sweep.retries.is_empty()
@@ -684,8 +534,7 @@ impl HostScanner for LocalScanner {
                     match pkt {
                         Some(frame) => {
                             self.sweep.audit.record_segment();
-                            // The moment the capture took the frame, not the
-                            // moment this loop reached it. See
+                            // When the capture took it; see
                             // `CapturedFrame::received_at`.
                             _ = self.process_eth_packet(&frame, frame.received_at);
                         }
@@ -705,11 +554,8 @@ impl HostScanner for LocalScanner {
             }
         };
 
-        // What the iterator still holds was never asked. Built into frames to
-        // be read, which is work only a sweep cut short pays for, and the
-        // one reading that names the addresses rather than counting them.
-        // So are first attempts the gaps between probes held back: a probe
-        // never sent is unasked, not unanswered.
+        // Whatever the iterator and `held_first` still hold was never asked,
+        // which the report must tell apart from unanswered.
         let unasked: Vec<IpAddr> = if sending_finished {
             Vec::new()
         } else {
@@ -728,14 +574,14 @@ impl LocalScanner {
     /// A sweep for `ip_set` across the segment `link` is attached to, over a
     /// capture this constructor opens on that interface.
     ///
-    /// `scope` decides whether the whole segment is invited to answer or only
-    /// the addresses given are asked. Whatever is found is written to `ctx`,
-    /// and each address goes to `dns_tx` for a reverse lookup unless that is
-    /// `None`. `retry` scales how often an unanswered ARP request is repeated,
-    /// and with it how long the sweep is prepared to run.
+    /// `scope` decides whether the whole segment or only the given addresses
+    /// are asked. Findings go to `ctx`, and each address to `dns_tx` for a
+    /// reverse lookup if set. `retry` scales how often an unanswered ARP
+    /// request is repeated, and with it the sweep's deadline.
     ///
-    /// Fails when the capture cannot be opened, and when `link` has no MAC
-    /// address to send from.
+    /// # Errors
+    ///
+    /// When the capture cannot be opened, or `link` has no MAC address.
     pub fn new(
         link: Link,
         ip_set: IpSet,
@@ -759,17 +605,16 @@ impl LocalScanner {
     /// Builds a scanner around an already-opened Ethernet channel, so the caller
     /// decides how frames reach the wire and where replies come from.
     ///
-    /// The addressing identity is still resolved from `intf`, since a probe has
-    /// to be sent from some MAC and address, but nothing here touches the
-    /// interface itself.
+    /// The source MAC and addresses still come from `link`, but nothing here
+    /// touches the interface.
     ///
-    /// This is the constructor for a caller orchestrating their own scan, who
-    /// has opened a channel on the interface they mean rather than letting
-    /// [`new`](Self::new) choose. Paired with a synthetic channel
-    /// (`EthernetHandle::from_parts`, behind the `test-support` feature) and a
-    /// hand-built [`Link`], it is also the seam
-    /// that lets ARP and
-    /// NDP discovery be driven against a simulated segment with no privileges.
+    /// With a synthetic channel (`EthernetHandle::from_parts`, behind the
+    /// `test-support` feature) and a hand-built [`Link`], this drives ARP and
+    /// NDP discovery against a simulated segment without privileges.
+    ///
+    /// # Errors
+    ///
+    /// When `link` has no MAC address.
     pub fn with_handle(
         link: Link,
         ip_set: IpSet,
@@ -781,9 +626,8 @@ impl LocalScanner {
         Self::build(link, ip_set, ctx, dns_tx, scope, eth_handle, RETRY_POLICY)
     }
 
-    /// The common constructor, taking the retry schedule as an argument because
-    /// the sweep's own deadline is derived from it and so has to be settled
-    /// before anything is built.
+    /// The common constructor. Takes the retry schedule because the deadline
+    /// is derived from it.
     #[allow(clippy::too_many_arguments)]
     fn build(
         link: Link,
@@ -796,11 +640,8 @@ impl LocalScanner {
     ) -> Result<Self, StrategyError> {
         let identity = SourceIdentity::resolve(&link, &ip_set)?;
 
-        // Saturating, not truncating. An address count is a `u128` and a `/64`
-        // is exactly `usize::MAX + 1`, so the plain cast would turn the largest
-        // possible sweep into a target count of zero and hand it the smallest
-        // possible budget. `ScanBudget::unclamped` saturates its own cast for
-        // the same reason one layer down.
+        // Saturating: a `/64` is `usize::MAX + 1` addresses, which a plain
+        // cast would turn into zero targets and the smallest budget.
         let target_count = usize::try_from(ip_set.len()).unwrap_or(usize::MAX);
         let deadline = AdaptiveDeadline::new(
             deadline_for(
@@ -837,16 +678,13 @@ impl LocalScanner {
     /// waiting for more, bounded by what is queued on entry.
     ///
     /// A loop held up past a timeout wakes to the answer and the expired timer
-    /// at once. Read in the other order, an address's last attempt is spent
-    /// before the answer to it is seen, and the answer finds no probe to time:
-    /// the host is recorded unmeasured, and its address settled as asked and
-    /// unanswered by a sweep that holds its answer.
+    /// at once. Reading the answer first lets it settle and time the probe
+    /// before the timer spends the last attempt.
     fn read_waiting_frames(&mut self) {
         let waiting = self.eth_handle.rx.len();
         for _ in 0..waiting {
             let Ok(frame) = self.eth_handle.rx.try_recv() else {
-                // Empty after all, or closed, which the `select!` reads as
-                // the stream ending.
+                // Empty, or closed, which the `select!` handles.
                 return;
             };
             self.sweep.audit.record_segment();
@@ -856,19 +694,15 @@ impl LocalScanner {
 
     /// Why the loop should stop, if it should.
     ///
-    /// A run somebody aborted, or whose wall-clock budget ran out, is reported
-    /// as such whatever state the sweep was in, because the caller stopped it
-    /// rather than the sweep stopping itself. Otherwise the reason says
-    /// whether the sweep finished, which is the caller's next question.
+    /// An abort or an exhausted wall-clock budget is reported as such
+    /// whatever state the sweep was in.
     ///
-    /// A sweep that has sent every first attempt and holds nothing
-    /// outstanding has asked every address as often as its schedule allows,
-    /// and stops as [`AttemptsSpent`](StopReason::AttemptsSpent) once the
-    /// segment has been quiet for its silence tolerance, or its hard deadline
-    /// passes first. It goes on listening that long, where the routed sweep
-    /// stops at once, but no probe of its own is waiting any more. Only a
-    /// sweep stopped with something unsent or outstanding is cut short, and
-    /// only that one reads [`DeadlineExpired`](StopReason::DeadlineExpired).
+    /// A sweep with every first attempt sent and nothing outstanding stops as
+    /// [`AttemptsSpent`](StopReason::AttemptsSpent) once the segment has been
+    /// quiet for its silence tolerance or the hard deadline passes. Unlike the
+    /// routed sweep it keeps listening that long. Only a sweep stopped with
+    /// something unsent or outstanding reads
+    /// [`DeadlineExpired`](StopReason::DeadlineExpired).
     fn stop_reason(&self, now: Instant, sending_finished: bool) -> Option<StopReason> {
         if let Some(cause) = self.ctx.handle.stopped() {
             return Some(cause.into());
@@ -876,9 +710,7 @@ impl LocalScanner {
         if sending_finished && self.all_targets_responded() {
             return Some(StopReason::AllResponded);
         }
-        // Silence is only evidence once nothing is outstanding: with probes
-        // still waiting on their timers, quiet is what the retry schedule
-        // expects rather than a sign the segment has gone quiet.
+        // Silence means nothing while probes still wait on their timers.
         let spent = sending_finished && self.idle(now);
         if self.deadline.hard_deadline_passed() {
             return Some(if spent {
@@ -897,37 +729,29 @@ impl LocalScanner {
     /// Puts the next frame this sweep owes on the wire, and says which kind it
     /// was.
     ///
-    /// The segment questions a gap held back first, since they were owed
-    /// before anything else. Then repeats: an address already asked once is an
-    /// obligation this sweep owns, where the next new address is only work it
-    /// intends to do. The two IPv6 schedules are ahead of first attempts for
-    /// the same reason, each having a due time to keep.
+    /// Order: segment questions held back by a gap, then repeats, then the two
+    /// IPv6 schedules, which have due times to keep, then first attempts.
     ///
     /// # Pacing
     ///
-    /// Every frame this sweep sends is a probe the scan keeps its gaps
-    /// between. One asking about a single address, an ARP request or a
-    /// neighbour solicitation, is a probe at that address, although an ARP
-    /// request is broadcast: only the address named answers it, and a gap at
-    /// one host exists to spare that host. One put to a group, the all-nodes
-    /// echo and the two segment questions, singles out no host and spends the
-    /// scan-wide gap alone; see [`ScanContext::claim_group_probe`].
+    /// A frame about one address (an ARP request, though broadcast, or a
+    /// neighbour solicitation) is a probe at that address. One put to a group
+    /// (the all-nodes echo, the segment questions) spends only the scan-wide
+    /// gap; see [`ScanContext::claim_group_probe`].
     ///
-    /// A frame's slot is claimed immediately before it is sent, and a frame
-    /// turned away is kept where it was owed: a repeat stays queued with its
-    /// clock stopped, a confirmation stays queued, the all-nodes echo stays
-    /// due, and a first attempt is held (see
-    /// [`held_first`](Self::held_first)). The choice between them reads each
-    /// address's slot first, so one held address does not stop the ticker
-    /// sending to the next. A frame the link refused gives its slot back.
+    /// A slot is claimed just before sending. A frame turned away stays where
+    /// it was owed: a repeat stays queued with its clock stopped, a
+    /// confirmation stays queued, the all-nodes echo stays due, and a first
+    /// attempt is held (see [`held_first`](Self::held_first)). Each address's
+    /// slot is checked before choosing, so one held address does not stall the
+    /// ticker. A frame the link refused gives its slot back.
     fn send_next(
         &mut self,
         packet_iter: &mut probes::PacketIter,
         sending_finished: bool,
         now: Instant,
     ) -> Dispatched {
-        // Every frame spends the scan-wide gap, so while it is running there
-        // is nothing to choose between. Free for a scan that keeps none.
+        // Every frame spends the scan-wide gap.
         if self.ctx.group_probe_ready_at(now).is_some() {
             return Dispatched::Nothing;
         }
@@ -956,8 +780,7 @@ impl LocalScanner {
     /// Sends the next first attempt: a held one whose address's slot is now
     /// free, or else the walk's next.
     ///
-    /// Drained only once the walk is empty and nothing is held, since a held
-    /// first attempt is an address still to be asked.
+    /// Drained only once the walk is empty and nothing is held.
     fn send_first_attempt(
         &mut self,
         packet_iter: &mut probes::PacketIter,
@@ -979,15 +802,13 @@ impl LocalScanner {
             };
         };
 
-        // Turned away only where another pass probed the address since it
-        // was read, or where the walk's next was never read at all.
+        // Turned away if another pass probed the address since it was read,
+        // or for the walk's next, which was never checked.
         let Ok(claim) = self.ctx.claim_probe(ip) else {
             self.held_first.push_back((packet, ip));
             return Dispatched::Nothing;
         };
-        // Armed only if the frame left. A probe nobody sent must not run out
-        // of attempts and earn a verdict, and the failure the sweep reports on
-        // its way out is about exactly these addresses.
+        // Armed only if the frame left, so an unsent probe earns no verdict.
         if self.emit(&packet, "first attempt") {
             self.record_probe(ip, Instant::now());
         } else {
@@ -1002,21 +823,16 @@ impl LocalScanner {
     ///
     /// `unasked` is every address the sweep never sent a first attempt to.
     fn report_outcome(&mut self, reason: StopReason, unasked: &[IpAddr]) {
-        // What the sweep did not earn a verdict for, so a resumed one asks again
-        // rather than skipping it. None of these carries a position: a probe
-        // still mid-schedule was cut off rather than spent, and one the iterator
-        // still held was never sent.
+        // Addresses without a verdict, so a resumed sweep asks them again.
         let interrupted = self.sweep.ledger.drain_unresolved();
         self.ctx
             .record_address_outcomes(Outcome::Interrupted, interrupted.len() as u64);
         self.ctx
             .record_address_outcomes(Outcome::Unasked, unasked.len() as u64);
 
-        // Addresses never asked leave the result narrower than the caller asked
-        // for, which is what a failure says, and the number is the part a
-        // reader can act on. Only where the sweep stopped itself, as the routed
-        // sweep decides it: a caller who aborted the scan or set its budget
-        // knows why it ended.
+        // Unasked addresses narrow the result, so report a failure, unless the
+        // caller aborted or set the budget and so knows why, as the routed
+        // sweep decides.
         if !unasked.is_empty() && !matches!(reason, StopReason::Aborted | StopReason::TimedOut) {
             self.ctx.record_failure(
                 ScannerKind::Local,
@@ -1030,11 +846,7 @@ impl LocalScanner {
             );
         }
 
-        // What the confirmations bought, which is only visible from here. An
-        // entry still in the map is a solicitation that went out and was never
-        // answered, and the difference between "none were sent" and "none came
-        // back" is the difference between a bug here and a segment full of
-        // devices that decline to answer a direct question.
+        // Separates "none were sent" from "none came back".
         if self.ipv6.unanswered_confirmations() > 0 {
             info!(
                 verbosity = 2,
@@ -1043,14 +855,8 @@ impl LocalScanner {
             );
         }
 
-        // A sweep whose frames never left is not a sweep that found nothing, and
-        // the difference is invisible in every number a caller reads. Reported
-        // once with a count and the first cause rather than once per probe, as
-        // the routed paths do.
-        //
-        // This covers every frame the sweep emits, which is what makes it worth
-        // having: while the first attempts bypassed the audit, the one path that
-        // sends a frame per target could fail entirely and this stayed silent.
+        // Frames that never left look like hosts that found nothing in every
+        // other number. Reported once, with a count and the first cause.
         if self.sweep.audit.sends_failed > 0 {
             self.ctx.record_failure(
                 ScannerKind::Local,
@@ -1065,11 +871,8 @@ impl LocalScanner {
             );
         }
 
-        // What the kernel discarded before this scanner could read it. A frame
-        // lost there is indistinguishable from a host that never answered, so a
-        // sweep finding fewer hosts than the segment holds can be attributed to
-        // loss rather than guessed at. `None` only for a synthetic stream,
-        // which has no kernel buffer to have overflowed.
+        // Frames the kernel dropped, which otherwise look like hosts that never
+        // answered. `None` for a synthetic stream.
         let capture = self.eth_handle.capture_counts();
         let targets = self.ip_set.len();
         self.sweep.report(
@@ -1084,19 +887,10 @@ impl LocalScanner {
 
     /// Puts one frame on the segment and records what actually happened to it.
     ///
-    /// Every send in this scanner goes through here, and that is the point.
-    /// The audit's counters are only worth reading if they cover every frame,
-    /// and a second send path is how they stop doing that: were the sweep's own
-    /// first attempts to go out beside this one, uncounted, `sends_attempted`
-    /// would describe the retries and nothing else while reading like a total.
-    ///
+    /// Every send goes through here, so the audit's counters cover every frame.
+    /// Returns whether
     /// [`FrameSink::send_frame`](crate::transport::capture::FrameSink::send_frame)
-    /// reports whether the frame left, and an error is the only way it did not.
-    /// Every way a frame can fail to leave, no buffer to write into or a write
-    /// that failed, means the same thing to every caller, which is why this
-    /// says it once. Reading only whether the *packet built* would leave
-    /// `sends_failed` making a claim about this code where a caller reads it as
-    /// a claim about the link.
+    /// put the frame on the link.
     fn emit(&mut self, packet: &[u8], what: &str) -> bool {
         match self.eth_handle.tx.send_frame(packet) {
             Ok(()) => {
@@ -1114,10 +908,8 @@ impl LocalScanner {
 
     /// Notes that a probe for `ip` has just gone out.
     ///
-    /// Everything the packet iterator emits is one address's own probe, to be
-    /// repeated and eventually given up on. The all-nodes echo is not among
-    /// them: it belongs to [`Solicitation`](ipv6::Solicitation), which records
-    /// its own sends because it has to remember the token each one carried.
+    /// For per-address probes only. The all-nodes echo records its own sends in
+    /// [`Solicitation`](ipv6::Solicitation).
     fn record_probe(&mut self, ip: IpAddr, now: Instant) {
         if ip.is_ipv6() {
             self.ipv6.record_asked(ip, now);
@@ -1129,27 +921,15 @@ impl LocalScanner {
     /// Queues a solicitation for an IPv6 address that turned up without one
     /// having been sent.
     ///
-    /// Most IPv6 neighbours are found this way rather than by being asked. A
-    /// segment carries a constant traffic of advertisements - neighbours
-    /// resolving each other, announcing a new address, answering somebody else's
-    /// question - and a promiscuous capture sees all of it. That is real evidence
-    /// the host is there, and it is the mechanism behind most of what a sweep
-    /// reports, but it is evidence of a conversation we were not part of: there
-    /// is no probe of ours to measure against, so the host arrives with no round
-    /// trip and no proof it is answering *now* rather than having answered
-    /// somebody a moment ago.
-    ///
-    /// Asking directly costs one packet and settles both. The address came from
-    /// the wire seconds ago, so unlike a neighbour-table entry it is almost
-    /// certainly still live, and a solicitation to it is answered by the host
-    /// itself rather than overheard.
+    /// Most IPv6 neighbours are found by overhearing their advertisements,
+    /// which proves presence but yields no round trip. One direct solicitation
+    /// measures it and confirms the host answers now.
     ///
     /// Bounded by [`solicited`](ipv6::Ipv6Discovery::solicited), so an address
-    /// is asked about once however often it advertises itself.
+    /// is asked about once however often it advertises.
     ///
-    /// The one place a lead becomes a probe, and so where the exclusions are
-    /// asked about it. Every caller hands over an address the target list never
-    /// held, so withholding the list never reached it.
+    /// The one place a lead becomes a probe, so exclusions are checked here:
+    /// these addresses never passed through the target list's filtering.
     fn confirm(&mut self, address: IpAddr) {
         if !address.is_ipv6()
             || !matches!(self.scope, Scope::Sweep)
@@ -1165,21 +945,14 @@ impl LocalScanner {
             );
             return;
         }
-        // Nor one this host's routing table refuses, which the sweep's own
-        // targets were withheld for before it started; see
-        // `interface::refused_neighbours`. Only an address inside a prefix the
-        // link holds is put to the table, as only such targets of the sweep's
-        // own are. For one of those the table's answer is the connected route
-        // unless a route of the host's policy overrides it, so a refusal is
-        // that policy. For any other the table answers about a path through a
-        // router, which the solicitation does not take: a host with no route
-        // there, a machine with no IPv6 beyond its links among them, would
-        // read every neighbour announcing an address from another prefix as
-        // refused, and a phone named only by its mDNS announcements would not
-        // be found. A link-local address is on no prefix the table can
-        // answer for either: it is on this segment by definition, and without
-        // its zone Linux refuses the lookup as an invalid argument, the
-        // answer a blackhole route gives.
+        // Nor one the routing table refuses, as for the sweep's own targets
+        // (see `interface::refused_neighbours`). Only addresses on a prefix the
+        // link holds are checked: there a refusal is host policy overriding the
+        // connected route. Elsewhere the table answers about a path through a
+        // router the solicitation does not take, so a host without IPv6 routes
+        // would refuse every neighbour on another prefix. Link-local addresses
+        // are on no such prefix, and Linux refuses a zoneless lookup with the
+        // same error a blackhole route gives.
         let on_a_prefix = self.prefixes.source_for(address).is_some();
         if on_a_prefix && (self.refuses)(address) {
             info!(
@@ -1189,16 +962,14 @@ impl LocalScanner {
             return;
         }
 
-        // Queued rather than sent here, so a confirmation leaves on the same
-        // paced ticker every other probe does.
+        // Queued for the paced ticker.
         self.ipv6.note_overheard(address);
     }
 
     /// Sends the one solicitation an overheard address gets, and notes when.
     ///
-    /// A probe at that address, although the sweep was never handed it: it is
-    /// put to one host and only that host answers. One turned away by the gaps
-    /// between probes is queued again, still owed.
+    /// A probe at that address. One turned away by the probe gaps is queued
+    /// again.
     fn send_confirmation(&mut self, target: IpAddr, now: Instant) -> Dispatched {
         let (IpAddr::V6(target_v6), Some(source_v6)) = (target, self.identity.link_local_ipv6)
         else {
@@ -1225,11 +996,10 @@ impl LocalScanner {
     /// Puts the first segment question still owed on the wire, if the
     /// scan-wide gap allows it.
     ///
-    /// `None` when none is owed, `Some(false)` when the gap turned the next
-    /// away, which leaves it at the head of the queue, and `Some(true)` when
-    /// it was sent, or could not be built and so is not owed. A frame the link
-    /// refused is not asked again, as neither question is, and gives back its
-    /// slot.
+    /// `None` when none is owed, `Some(false)` when the gap turned it away
+    /// (it stays at the head of the queue), and `Some(true)` when it was sent
+    /// or could not be built. Neither question is repeated, even when the link
+    /// refused it; that gives its slot back.
     fn ask_next_question(&mut self) -> Option<bool> {
         let question = *self.questions.front()?;
         let packet = match question {
@@ -1253,26 +1023,18 @@ impl LocalScanner {
     /// Asks every router on the segment to say so, once, at the head of a
     /// sweep.
     ///
-    /// One packet for a question nothing else on the segment answers. A router
-    /// advertises itself unprompted on a timer measured in minutes, which
-    /// outlasts any sweep, so without asking the engine finds the segment's
-    /// routers only by luck. The reply is an ordinary advertisement claimed by
-    /// [`RouterAdvertProtocol`](frames::RouterAdvertProtocol), so the router
-    /// arrives as a host in the same breath as being named one.
+    /// Routers advertise unprompted every few minutes, longer than a sweep.
+    /// The reply is claimed by
+    /// [`RouterAdvertProtocol`](frames::RouterAdvertProtocol).
     ///
-    /// Sent on any local run, unlike the all-nodes echo. The rule that keeps a
-    /// targeted run targeted is about what may be *recorded*, and it is
-    /// enforced where records are made: an answer from an address nobody asked
-    /// about is read for the role its sender claims and never becomes a host.
-    /// The echo has no such reading, everything it draws is a new address,
-    /// which is why it stays behind the sweep.
+    /// Sent on any local run, unlike the all-nodes echo: an answer from an
+    /// address nobody asked about only contributes a role, never a host, while
+    /// everything the echo draws is a new address.
     ///
-    /// Not repeated. A lost solicitation costs the *unsolicited* route to this
-    /// finding, not the finding: a router that answers any of the scan's
-    /// ordinary neighbour solicitations declares itself in the R flag of the
-    /// reply, and every address the sweep asks about is asked more than once.
+    /// Not repeated: a router answering any neighbour solicitation also
+    /// declares itself in the reply's R flag.
     ///
-    /// `None` for an interface with no link-local address to ask from.
+    /// `None` for an interface with no link-local address.
     fn router_solicitation(&self) -> Option<Vec<u8>> {
         let link_local = self.identity.link_local_ipv6?;
         Some(protocol::ndp::build_router_solicitation(
@@ -1283,29 +1045,18 @@ impl LocalScanner {
 
     /// Asks the segment which machine configures it, once.
     ///
-    /// A `DHCPINFORM`, which asks for configuration without asking for an
-    /// address, so every server on the link answers and none of them reserves
-    /// anything for a client that will never appear. See
-    /// [`dhcp`](crate::protocols::dhcp) for why this is a broadcast rather than
-    /// a port probe.
+    /// A `DHCPINFORM` asks for configuration without asking for an address, so
+    /// every server answers and none reserves a lease. See
+    /// [`dhcp`](crate::protocols::dhcp) for why this is a broadcast.
     ///
-    /// Broadcast, and therefore seen by every device on the segment, which is
-    /// the same reach an ARP request has, and a scan of a range sends one of
-    /// those per address in it. Sent on any local run, on the same terms as the
-    /// router solicitation: what a targeted run may record is enforced where
-    /// records are made, not by declining to ask.
+    /// Sent on any local run, on the same terms as the router solicitation. For
+    /// a single-address scan the two questions triple the discovery phase's
+    /// frames, from one to three.
     ///
-    /// The one run this is disproportionate for is a scan of a single address,
-    /// where it triples a discovery phase that would otherwise put one ARP
-    /// request on the wire. It is still two frames, on a segment this machine
-    /// is already on.
+    /// The reply is read off the capture by
+    /// [`DhcpProtocol`](frames::DhcpProtocol), without binding UDP/68.
     ///
-    /// The answer comes back to this host's address, and is read off the
-    /// segment by [`DhcpProtocol`](frames::DhcpProtocol) rather than through a
-    /// socket: binding UDP/68 is a privilege this scanner already has a better
-    /// use for, and the capture sees the reply either way.
-    ///
-    /// `None` for an interface with no IPv4 address to ask from.
+    /// `None` for an interface with no IPv4 address.
     fn configuration_request(&self) -> Option<Vec<u8>> {
         let source = self.identity.ipv4?;
         Some(protocol::dhcp::build_inform(self.identity.mac, source))
@@ -1313,12 +1064,9 @@ impl LocalScanner {
 
     /// Sends the all-nodes solicitation again.
     ///
-    /// Unlike an ARP request this is never retired by an answer, so it is simply
-    /// repeated a fixed number of times: a neighbour that missed the last one,
-    /// or was asleep when it arrived, gets another chance to hear it.
-    ///
-    /// Put to a group, so it spends the scan-wide gap alone. One that gap
-    /// turns away stays due.
+    /// No answer retires it, so it is repeated a fixed number of times for
+    /// neighbours that missed or slept through the last. Spends only the
+    /// scan-wide gap; one that gap turns away stays due.
     fn send_solicitation(&mut self, now: Instant) -> Dispatched {
         let Some(link_local) = self.identity.link_local_ipv6 else {
             return Dispatched::Nothing;
@@ -1343,11 +1091,9 @@ impl LocalScanner {
     /// The first queued retry whose probe is still outstanding and whose
     /// address's slot is free, taken off the queue.
     ///
-    /// One whose probe has left its ledger was answered while it waited, and
-    /// is dropped: sending it asks a question nothing is waiting on, and
-    /// arming it would start its address a fresh schedule after its verdict.
-    /// One the gaps between probes hold back stays queued with its clock
-    /// stopped, and the ticker moves on to one that is ready.
+    /// One whose probe has left its ledger was answered while it waited and is
+    /// dropped. One the probe gaps hold back stays queued with its clock
+    /// stopped.
     fn next_live_retry(&mut self, now: Instant) -> Option<IpAddr> {
         let waiting = self.sweep.retries.len();
         for _ in 0..waiting {
@@ -1373,20 +1119,15 @@ impl LocalScanner {
     /// address calls for: an ARP request over IPv4, a neighbor solicitation
     /// over IPv6.
     ///
-    /// Nothing about either is kept between attempts, because nothing needs to
-    /// be: the frame is a function of this scanner's identity and the address
-    /// being asked about, and rebuilding it is cheaper than holding a copy per
-    /// outstanding probe.
+    /// Rebuilding is cheaper than keeping a copy per outstanding probe.
     ///
-    /// The probe's clock stopped while the retry was queued and restarts here
-    /// on the ledger that scheduled it: from the send, or from now for a frame
-    /// that did not leave, whose attempt stays charged so the address still
-    /// runs out of attempts on schedule. See
+    /// The probe's clock, stopped while queued, restarts on its ledger: from
+    /// the send, or from now for a frame that did not leave, whose attempt
+    /// stays charged so the address still runs out on schedule. See
     /// [`HostSweep::retries`](crate::scanner::strategy::sweep::HostSweep::retries).
     ///
-    /// One another pass took the slot from since it was chosen goes back to
-    /// the queue, its clock still stopped. One that did not leave gives its
-    /// slot back.
+    /// If another pass took the slot meanwhile, the retry goes back to the
+    /// queue. A frame that did not leave gives its slot back.
     fn send_probe(&mut self, target: IpAddr, now: Instant) -> Dispatched {
         let Ok(claim) = self.ctx.claim_probe(target) else {
             self.sweep.retries.push_back(target);
@@ -1417,61 +1158,18 @@ impl LocalScanner {
         Dispatched::Sent
     }
 
-    /// Takes the IPv6 addresses an overheard mDNS message names as leads,
-    /// returning whether the frame was one.
+    /// Reads a switch's LLDP or CDP announcement of itself, returning whether
+    /// the frame was one.
     ///
-    /// A segment announces itself constantly and this scanner's capture is
-    /// promiscuous, so these addresses already arrive here.
-    /// The hostname resolver caches mDNS records too, but applies them to hosts
-    /// *already in the store*: a record naming an address nothing has answered
-    /// for goes nowhere there.
+    /// Where this machine is plugged in is recorded unconditionally as an
+    /// [`Attachment`] on the phase, even on a targeted run, since it is not a
+    /// host. The roles the sender claims go through `note_declaration` and
+    /// usually land nowhere, as a switch rarely holds an address on the segment
+    /// it serves.
     ///
-    /// They arrive as candidates, never as hosts. An mDNS record is a claim
-    /// somebody else made, possibly some time ago and possibly about an address
-    /// that has since moved: the same standing as a neighbour-table entry, and
-    /// it earns its place in the report the same way, by answering a
-    /// solicitation now. [`confirm`](Self::confirm) is that mechanism and
-    /// already bounds itself to one solicitation per address.
-    ///
-    /// The sender is not credited either. A frame off the segment
-    /// does prove its sender exists, but crediting a host to "was chatty on
-    /// mDNS" attributes it to a mechanism that did not find it, which is the
-    /// distinction [`Icmpv6EchoProtocol`](frames::Icmpv6EchoProtocol) is
-    /// careful about for the same reason.
-    ///
-    /// Nothing is taken once the sweep has run its course. Each confirmation
-    /// holds the run open for a reply, so a segment that keeps talking could
-    /// otherwise keep extending it, and a lead that arrives after the sweep
-    /// would have ended belongs to the next scan.
-    /// Reads a switch's announcement of itself, where the frame is one.
-    ///
-    /// Returns whether the frame was an announcement, so the caller can stop
-    /// reading it as something else.
-    ///
-    /// # Two findings, and only one of them is about a host
-    ///
-    /// Where this machine is plugged in is recorded unconditionally, as an
-    /// [`Attachment`] on the phase. It is not a claim about a host in the
-    /// report, it is a relation between this machine and somebody else's
-    /// equipment, so the rule that keeps a targeted run targeted does not
-    /// apply to it. A run handed one address still reports one host, and also
-    /// says which switch port it was run from.
-    ///
-    /// What the sender is goes through `note_declaration` like any other
-    /// overheard claim: filed against the announcing hardware address and
-    /// applied only if that machine turns out to be one the scan found by
-    /// asking. A switch usually holds no address on the segment it serves, so
-    /// in the common case the claim is never applied to anything, and that is
-    /// the correct outcome, not a loss. The switch's identity is in the
-    /// attachment, where it belongs.
-    ///
-    /// # What an announcement is not evidence of
-    ///
-    /// That its sender is a switch. Anything on a link can emit one, and
-    /// nothing here authenticates it. What the group address buys is a
-    /// statement about *where*, conforming bridges constrain those addresses
-    /// rather than forwarding them, and never about truthfulness. The role
-    /// this files carries that caveat in its own documentation.
+    /// An announcement does not prove its sender is a switch: anything on a
+    /// link can emit one. The group address only shows it came from this link,
+    /// since conforming bridges do not forward it.
     fn absorb_announcement(
         &mut self,
         frame: &Frame<'_>,
@@ -1559,6 +1257,16 @@ impl LocalScanner {
         true
     }
 
+    /// Takes the IPv6 addresses an overheard mDNS message names as leads,
+    /// returning whether the frame was mDNS.
+    ///
+    /// The hostname resolver applies mDNS records only to hosts already in the
+    /// store. Here the addresses become candidates for [`confirm`](Self::confirm),
+    /// never hosts, since a record may be stale. The sender is not credited
+    /// either: being chatty on mDNS is not what found it.
+    ///
+    /// Nothing is taken once the deadline has expired, or a talkative segment
+    /// could extend the run indefinitely through confirmations.
     fn absorb_mdns(&mut self, frame: &Frame<'_>) -> bool {
         let Some(payload) = protocol::ip::udp_payload(frame, protocol::mdns::PORT) else {
             return false;
@@ -1602,24 +1310,14 @@ impl LocalScanner {
     /// Whether an ARP frame is a reply sent to this scanner, the one kind that
     /// can answer the request it put to the frame's sender.
     ///
-    /// A neighbour's own request, an announcement, and a reply to another
-    /// machine that a promiscuous capture overhears all prove the sender is
-    /// there, and none of them answers this scan's question. Taken as the
-    /// answer, each would retire the request and time it from the moment it
-    /// left to the moment somebody else's conversation happened to pass.
+    /// A neighbour's own request, an announcement, or an overheard reply to
+    /// another machine proves presence but would time the probe against an
+    /// unrelated conversation.
     ///
-    /// A reply to this machine's address is taken as the answer to this
-    /// scanner's request whoever on the machine asked. ARP carries no token,
-    /// so a reply to a request another process sent a moment earlier, one
-    /// that stopped waiting before its answer came, is indistinguishable on
-    /// the wire from a reply to this one. Accepting it costs nothing in what
-    /// the sweep reports, since the neighbour did answer for its address;
-    /// what it can cost is a round trip timed short, which seeds the passes
-    /// after this one short, and they retransmit early and measure the path
-    /// for themselves. Refusing every reply that could be another's would
-    /// refuse every reply. What keeps the case rare is the patience of
-    /// [`RETRY_POLICY`]: a neighbour answering within it answers the process
-    /// that asked.
+    /// ARP carries no token, so a reply to another process on this machine is
+    /// indistinguishable and accepted. The worst case is a round trip timed
+    /// short, which later passes correct by retransmitting early. The patience
+    /// of [`RETRY_POLICY`] keeps it rare.
     fn answers_our_request(&self, frame: &Frame<'_>) -> bool {
         frame.destination() == self.identity.mac
             && pnet_packet::arp::ArpPacket::new(frame.payload())
@@ -1632,9 +1330,8 @@ impl LocalScanner {
     }
 
     /// How long the loop may sleep once it has stopped sending: until the
-    /// sweep's next checkpoint, until the next address is due to be asked again,
-    /// or until the solicitation's schedule next needs attention - whichever
-    /// comes first.
+    /// sweep's next checkpoint, the next retry, or the next IPv6 deadline,
+    /// whichever comes first.
     fn tick_delay(&self, now: Instant) -> Duration {
         let mut delay = self.deadline.time_until_next_tick();
         for wakeup in [self.sweep.ledger.next_due(), self.ipv6.next_wakeup()]
@@ -1653,12 +1350,8 @@ impl LocalScanner {
         frame: &CapturedFrame,
         now: Instant,
     ) -> Result<(), FrameRejected> {
-        // Every probe this sweep sends is an Ethernet frame and every reading it
-        // takes starts from an Ethernet header, so a link that prepends
-        // something else carries nothing this can read. `start_capture` refuses
-        // such an interface outright; a synthetic stream is the only way one
-        // reaches here, and reading its bytes as Ethernet would invent a source
-        // address rather than fail.
+        // Only a synthetic stream can deliver this (`start_capture` refuses
+        // such links), and its bytes read as Ethernet would invent a source.
         if frame.link != LinkType::Ethernet {
             self.sweep.audit.record_off_target();
             return Err(FrameRejected::UnreadableLink);
@@ -1672,10 +1365,8 @@ impl LocalScanner {
             return Err(FrameRejected::SelfSourcedPacket);
         }
 
-        // Before the address is read, because neither of these frames has one.
-        // LLDP carries no IP header at all and CDP is not even an EtherType
-        // protocol, so `source_address` refuses both, which is correct, and is
-        // why they have to be taken out of the stream first.
+        // Before the address is read: LLDP and CDP carry no IP header, so
+        // `source_address` refuses them.
         if self.absorb_announcement(&eth_frame, source_mac, frame) {
             return Ok(());
         }
@@ -1687,17 +1378,14 @@ impl LocalScanner {
         }
 
         let Some((reading, protocol)) = self.interpret_response(&eth_frame) else {
-            // Common in promiscuous mode: traffic between other hosts, or
-            // forwarded through a router. Not this scan's, and not a fault.
+            // Other hosts' traffic, common in promiscuous mode.
             self.sweep.audit.record_off_target();
             return Ok(());
         };
 
-        // Which address this reply is *about*, which is not always where it came
-        // from. A neighbor advertisement names its subject, and a host with
-        // several addresses answers from whichever its stack prefers - so the
-        // claim has to be read before the frame is judged, or a reply to a probe
-        // this scan sent is discarded for naming an address nobody asked about.
+        // The address the reply is about, which a neighbor advertisement names
+        // and which may differ from its source. Read before the range check, or
+        // the reply is rejected for its source address.
         let subject = match reading.matched {
             ProtocolMatch::Solicited(Some(claimed)) => claimed,
             _ => source_addr,
@@ -1710,12 +1398,9 @@ impl LocalScanner {
             Scope::Sweep => subject.is_ipv4() && !self.ip_set.contains(&subject),
         };
         if out_of_range {
-            // Out of range and still worth reading, in the one case where the
-            // frame says something about a machine rather than about an
-            // address: a router advertising from its link-local, a DHCP server
-            // answering from outside the range. The claim is filed against the
-            // sender's hardware address and applied only if that machine turns
-            // out to be one this scan asked about.
+            // A declared role (a router's link-local advertisement, a DHCP
+            // server outside the range) is still filed by MAC, applied only if
+            // the scan finds that machine by asking.
             if let Some(role) = reading.declared
                 && self.note_declaration(source_mac, role)
             {
@@ -1726,11 +1411,8 @@ impl LocalScanner {
             return Err(FrameRejected::AddressOutOfRange(subject));
         }
 
-        // An ARP frame names its sender's address and comes from its hardware
-        // address, which is exactly what a sender framing a probe to that
-        // address has to know. Handed on, so the passes after this sweep frame
-        // their probes to the neighbour it heard rather than asking again by a
-        // broadcast the neighbour may not hear in time.
+        // Hand the IP-to-MAC pair to later passes so they need not resolve it
+        // again by a broadcast the neighbour may miss.
         if protocol == StatusProtocol::Arp && subject.is_ipv4() {
             neighbor::learn_neighbor(self.identity.zone.name(), subject, source_mac);
         }
@@ -1742,14 +1424,12 @@ impl LocalScanner {
             );
         }
 
-        // Which send the reply answered, where the wire can say. Set inside the
-        // one arm that can know it rather than threaded through the match: the
-        // all-nodes echo is timed against a request it names, but that request
-        // was put to the whole segment and answers no address's own probe.
+        // Which send the reply answered, where the wire can say; only a
+        // solicited reply retires an address's own probe.
         let mut answered_attempt = None;
 
-        // Every ARP frame proves its sender is there, and only a reply sent to
-        // this scanner can answer the request it put; see `answers_our_request`.
+        // Only an ARP reply to this scanner answers its request; see
+        // `answers_our_request`.
         let matched = match reading.matched {
             ProtocolMatch::Solicited(_)
                 if protocol == StatusProtocol::Arp && !self.answers_our_request(&eth_frame) =>
@@ -1760,24 +1440,16 @@ impl LocalScanner {
         };
 
         let rtt = match matched {
-            // `interpret_response` returns `None` rather than this, so the arm
-            // exists only to satisfy the match.
+            // `interpret_response` returns `None` for this.
             ProtocolMatch::Unhandled => return Ok(()),
             ProtocolMatch::Solicited(_) => {
                 let correlated = self.correlate_rtt(subject, &protocol, now);
                 answered_attempt = correlated.answered_attempt;
                 correlated.rtt
             }
-            // Proof of presence and of nothing else. A probe may well be
-            // outstanding for this address, and it stays outstanding: this
-            // message did not answer it, so retiring it here would credit our
-            // question with somebody else's answer and time it from the moment
-            // we asked.
-            //
-            // Asked directly instead, which is the same treatment an overheard
-            // address gets, and the only way one of these senders is ever
-            // measured. An IPv4 neighbour is not: its own request is still
-            // outstanding and is what measures it.
+            // Proof of presence only; any outstanding probe stays outstanding.
+            // An IPv6 sender is asked directly to be measured; an IPv4 one is
+            // measured by its own outstanding request.
             ProtocolMatch::Unsolicited => {
                 self.confirm(subject);
                 None
@@ -1800,15 +1472,10 @@ impl LocalScanner {
             reading.declared,
         );
 
-        // The address the reply came *from* belongs to the same host and is just
-        // as real, so it is recorded too - but only after the subject, which is
-        // what keys the host. Filing it under an address the scan never asked
-        // about is how a phone solicited at one address came back reported under
-        // another.
+        // The source address belongs to the same host, recorded after the
+        // subject, which keys the host. Both reach the same record by MAC, so
+        // the declaration went in once above.
         if subject != source_addr {
-            // The declaration went in with the subject above, and both calls
-            // reach the same record: a host is keyed by the MAC that answered,
-            // whichever of its addresses this frame was about.
             self.record_response(source_mac, source_addr, None, protocol, None, None);
         }
 
@@ -1818,16 +1485,12 @@ impl LocalScanner {
     /// What a solicited reply from `subject` says about the send it answers:
     /// the round trip, and which attempt it retires.
     ///
-    /// The two ways a round trip goes missing are worth telling apart out loud,
-    /// because from the outside they look identical - a host with no latency
-    /// beside it - and they call for opposite responses. One is a probe this
-    /// scan never had outstanding, which means the reply answered somebody
-    /// else's question or arrived after we gave up. The other is Karn's rule:
-    /// the address was asked more than once, consecutive probes are identical
-    /// on the wire, and the reply cannot say which it answers.
+    /// A missing round trip is logged with its cause, since the two look the
+    /// same in the report: no probe outstanding (the reply answered someone
+    /// else, or came after we gave up), or Karn's rule after a retry.
     ///
     /// An address with neither a probe nor a confirmation outstanding is asked
-    /// directly on the way out, so the next reply from it can be measured.
+    /// directly, so its next reply can be measured.
     fn correlate_rtt(
         &mut self,
         subject: IpAddr,
@@ -1849,10 +1512,8 @@ impl LocalScanner {
                     answered_attempt: resolution.answered_attempt,
                 }
             }
-            // Not in the ledger, so either it answers the one confirmation an
-            // overheard address gets - unambiguous, because there is only ever
-            // one - or it is a neighbour talking to somebody else, which is
-            // worth asking about directly.
+            // Either the answer to the address's single confirmation, or a
+            // neighbour talking to someone else, worth asking directly.
             None => {
                 let rtt = match self.ipv6.take_confirmation_rtt(&subject, now) {
                     Some(rtt) => Some((rtt, RttSource::Direct)),
@@ -1876,21 +1537,16 @@ impl LocalScanner {
 
     /// Which all-nodes echo request a reply answers, and how long that took.
     ///
-    /// The echoed identifier and sequence name the request outright. That is
-    /// what a neighbor advertisement can never do, and it is why this probe is
-    /// timed at all: a neighbour that wakes in time for the third request is
-    /// measured against the third rather than the first. Several neighbours
-    /// answering the same request each get their own measurement from it,
-    /// because a segment-wide question is not used up by whoever replies first.
+    /// The echoed identifier and sequence name the request, so a neighbour
+    /// that wakes for the third request is measured against the third. Every
+    /// neighbour answering a request gets its own measurement.
     ///
-    /// Reported as [`RttSource::SegmentWide`], because knowing *which* request
-    /// was answered does not make the interval a clean round trip: a node
-    /// answering the whole segment waits before it does, so this is an upper
-    /// bound and is reported only by a host that produced nothing better.
+    /// Reported as [`RttSource::SegmentWide`]: a node answering a multicast
+    /// waits before replying, so this is an upper bound, used only for a host
+    /// with nothing better.
     ///
-    /// A token this scan never sent belongs to somebody else's ping, so it is
-    /// not timed; a reply arriving when no request was ever sent is not an
-    /// answer to one of ours at all, and the frame is rejected.
+    /// A foreign token is not timed. A reply before any request was sent is
+    /// rejected.
     fn match_solicitation(
         &self,
         subject: IpAddr,
@@ -1919,36 +1575,24 @@ impl LocalScanner {
         Ok(rtt)
     }
 
-    /// Whether every target address has answered, which is a question only a
-    /// [`Scope::Targeted`] run can ask.
+    /// Whether every target address has answered. Only a [`Scope::Targeted`]
+    /// run can end this way.
     ///
-    /// A sweep counts only in-range IPv4 addresses as responders, an IPv6
-    /// neighbour found through the all-nodes echo was never in the range, so
-    /// comparing that count against the whole target set asks whether the IPv4
-    /// half is done and then stops the IPv6 half on the answer. On a wide range
-    /// it never trips and the bug stays hidden; on a handful of addresses that
-    /// all answer, the sweep exits with advertisements still in the receive
-    /// queue.
-    ///
-    /// It is also the difference between a sweep of a link with no IPv4 at all
-    /// and no sweep whatsoever: with an empty target set the comparison is
-    /// `0 >= 0`, true on the first iteration, so the run ends before the echo it
-    /// exists to send can be answered.
+    /// A sweep's responder count covers only in-range addresses, not the IPv6
+    /// neighbours the all-nodes echo finds, so ending on it would cut the IPv6
+    /// half short. With an empty target set it would end the sweep at once
+    /// (`0 >= 0`) before the echo could be answered.
     fn all_targets_responded(&self) -> bool {
         matches!(self.scope, Scope::Targeted) && self.sweep.all_responded(self.ip_set.len())
     }
 
     /// Tries each configured [`DiscoveryProtocol`] against `frame` in turn.
     ///
-    /// Returns the claiming protocol's verdict together with the evidence it
-    /// counts as, or `None` when no protocol recognized the frame as a discovery
-    /// response, or when one recognized it but failed to interpret it. Either
-    /// way the frame carries no reliable information about who sent it and must
-    /// not be attributed to any host. Seeing a frame that no protocol
-    /// claims is common in promiscuous mode: it may be LAN traffic between other
-    /// hosts, or traffic forwarded through a router rather than sent directly,
-    /// whose Ethernet source is the router itself and not the host the IP packet
-    /// originated from.
+    /// Returns the claiming protocol's reading and the evidence it counts as,
+    /// or `None` when no protocol claimed the frame or the claiming one failed
+    /// to parse it. Such a frame is attributed to no host. Unclaimed frames are
+    /// common in promiscuous mode: traffic between other hosts, or forwarded
+    /// traffic whose Ethernet source is a router.
     fn interpret_response(&mut self, frame: &Frame<'_>) -> Option<(Reading, StatusProtocol)> {
         for protocol in &self.protocols {
             match protocol.interpret(frame) {
@@ -1970,18 +1614,13 @@ impl LocalScanner {
     /// Files what a machine said it is, against the hardware address that said
     /// it.
     ///
-    /// Returns whether the claim was kept, which is the caller's answer to
-    /// whether the frame was worth receiving.
+    /// Returns whether the claim was kept.
     ///
-    /// Applied immediately where the MAC is already on the roster, and held
-    /// otherwise, because the order is not ours to choose: a router answers a
-    /// solicitation within half a second (RFC 4861 §6.2.6) and the ARP request
-    /// that will identify it leaves on a paced ticker some way into the sweep.
-    /// Dropping the early half of that race is dropping the common case.
+    /// Applied at once if the MAC is known, held otherwise: a router answers a
+    /// solicitation within half a second (RFC 4861 §6.2.6), usually before the
+    /// paced ARP request that identifies it leaves.
     ///
-    /// Never creates a host and never records an address. A declaration is a
-    /// claim about a machine, and the machine has to be one the scan found by
-    /// asking before there is anything for the claim to attach to.
+    /// Never creates a host or records an address.
     fn note_declaration(&mut self, source_mac: MacAddr, role: NetworkRole) -> bool {
         if let Some(ip) = self.mac_to_ip.get(&source_mac).copied() {
             self.ctx.write_host(self.identity.key_for(ip), |host| {
@@ -1999,28 +1638,20 @@ impl LocalScanner {
         true
     }
 
-    /// Applies a discovery response to shared scan state. It creates or updates
-    /// the responding host, records what the reply proves about its liveness,
-    /// feeds the adaptive deadline, and notifies both the scan's event channel
-    /// and the hostname resolver of anything new.
+    /// Applies a discovery response to shared scan state: creates or updates
+    /// the host, records liveness, feeds the adaptive deadline, and notifies
+    /// the event channel and hostname resolver of anything new.
     ///
-    /// `protocol` is the evidence the claiming [`DiscoveryProtocol`] stands
-    /// behind. Every frame reaching here came off the local segment with the
-    /// host's own MAC as its Ethernet source, which is the strongest liveness
-    /// evidence the engine can obtain: the host is provably present, so the
-    /// status is [`HostStatus::Up`] regardless of which protocol claimed it and
-    /// regardless of whether the reply could be timed.
+    /// `protocol` is the claiming [`DiscoveryProtocol`]'s evidence. Every frame
+    /// here came off the segment with the host's own MAC, so the status is
+    /// [`HostStatus::Up`] whatever the protocol and whether or not it was timed.
     ///
-    /// `rtt` carries what kind of question produced it, because the host is what
-    /// ranks the two: a reply to a segment-wide probe is an upper bound rather
-    /// than a round trip, and pooling it with a directed probe's answer is what
-    /// reported a router that answers in 5 ms as answering in 37.
+    /// `rtt` carries its source so the host can rank samples: a segment-wide
+    /// reply is an upper bound, and pooled with directed answers it can make a
+    /// 5 ms router read as 37 ms.
     ///
-    /// `declared` is what the sender said it *is*, where the frame carried such
-    /// a claim: the R flag on an advertisement, or an advertisement only a
-    /// router sends. It is the host's own word rather than an inference of
-    /// ours, which is why it is recorded here beside the liveness evidence and
-    /// not derived later from what the record ended up holding.
+    /// `declared` is the role the sender claimed in the frame, such as an
+    /// advertisement's R flag.
     fn record_response(
         &mut self,
         source_mac: MacAddr,
@@ -2030,59 +1661,31 @@ impl LocalScanner {
         answered_attempt: Option<u8>,
         declared: Option<NetworkRole>,
     ) {
-        // Whether *this scanner* has seen this device before, which is not the
-        // same question as whether the store has a host at this address. In a
-        // port-scan phase local discovery runs as enrichment beside the port
-        // scanner, so the host usually exists already and `write_host` reports
-        // nothing new - crediting the audit on that would report a sweep that
-        // found nothing while its own log said a neighbour answered.
-        //
-        // Keyed on the MAC rather than the address because a device answering
-        // at three addresses is one device found once, which is the unit the
-        // roster and the audit both count in.
+        // Whether this scanner has seen the device, by MAC: in a port-scan
+        // phase the store usually holds the host already, and a device at
+        // three addresses counts once.
         let first_sighting = !self.mac_to_ip.contains_key(&source_mac);
         let primary_ip = *self.mac_to_ip.entry(source_mac).or_insert(source_addr);
 
-        // Whatever this machine told the segment before this scan knew which
-        // host it was. Taken out of the roster rather than left in it: the MAC
-        // is on `mac_to_ip` from here on, so a later declaration is applied on
-        // the spot.
+        // Roles declared before the host was known. The MAC is now in
+        // `mac_to_ip`, so later declarations apply directly.
         let held = self.declared.remove(&source_mac);
 
-        // Host mutation only. `write_host` owns the guard, the drop-before-emit
-        // ordering, and the event. `is_new_ip` is returned for the DNS decision
-        // below, which runs after the guard is released, as does the deadline
-        // bookkeeping.
+        // `write_host` owns the guard and the event. The DNS and deadline work
+        // below runs after the guard is released.
         let mut is_new_ip = false;
         let zone = self.identity.zone.clone();
         let is_new_host = self
             .ctx
             .write_host(self.identity.key_for(primary_ip), |host| {
-                // Every frame this scanner reads came off the one link it is
-                // bound to, so a host it credits was observed through that
-                // interface: whichever of its addresses answered first.
-                //
-                // **Set here rather than left to the key.** A host is born with
-                // the zone its *key* carries, and a key carries one only where
-                // the address needs it: a machine whose IPv4 answers before its
-                // link-local is created unscoped, and left to the key its
-                // link-local would then be reported bare. `fe80::aa` names a
-                // different machine on every segment, so which of two addresses
-                // replied first would decide whether the record was usable.
-                // `set_zone` keeps the first it is given, so repeating this is
-                // free.
+                // Set explicitly: a host created from its IPv4 key is
+                // unscoped, and its link-local would then be reported bare.
+                // `set_zone` keeps the first value, so repeating is free.
                 host.set_zone(zone.clone());
 
-                // Recorded whether we just created the host or the port scanner
-                // created it first, so enrichment order doesn't decide whether a MAC
-                // is recorded. Repeating one already on record refreshes its
-                // last-seen time, which is what `HardwareInfo` keeps them for.
+                // Repeating a known MAC refreshes its last-seen time.
                 host.record_mac(source_mac);
 
-                // The protocol name is the whole of the evidence here - a reply came
-                // off the segment carrying this host's own MAC - so there is nothing
-                // a details string would add that `arp` or `ndp` does not already
-                // say.
                 let was_up = host.status().is_up();
                 host.record_evidence(HostStatus::Up, StatusReason::basic(protocol.clone()));
 
@@ -2091,10 +1694,7 @@ impl LocalScanner {
                     changed |= host.add_network_role(role);
                 }
                 if let Some(role) = declared {
-                    // A watcher told about this host before its sender said what it
-                    // is has to hear the correction, so a role it did not carry is
-                    // news in the same way a status change is. Repeating one is not:
-                    // a router advertises on a timer.
+                    // A new role is news to watchers; a repeated one is not.
                     changed |= host.add_network_role(role);
                 }
                 match rtt {
@@ -2111,18 +1711,13 @@ impl LocalScanner {
                 }
 
                 is_new_ip = !host.ips().contains(&source_addr);
-                // The rule for which address names a dual-stack host lives on the
-                // host, not here: this scanner is one of several that learn a new
-                // address for one, and a rule spread across their receive loops is
-                // one each of them can disagree about.
+                // The host decides which address names it, so every scanner
+                // agrees.
                 changed |= host.consider_primary_ip(source_addr) || is_new_ip;
 
                 changed
             });
-        // The address answered, which is a verdict this sweep earned however the
-        // reply was timed and whether it was solicited or overheard. It is the
-        // address that answered rather than the host's primary: a device
-        // reachable at three addresses answered at this one. Settled once the
+        // Settles the address that answered, not the host's primary, after the
         // answer is stored; see `ScanContext::record_outcome`.
         self.ctx.settle_address(source_addr, Settled::Answered);
 
@@ -2133,17 +1728,13 @@ impl LocalScanner {
             self.sweep.audit.record_host_found(answered_attempt);
         }
         if rtt.is_none() {
-            // Alive, and no round trip to show for it: a reply to a probe this
-            // scan no longer had outstanding, or one Karn's rule refuses to
-            // time. Both are worth counting separately from the finding itself.
+            // No probe outstanding, or Karn's rule refused the sample.
             self.sweep.audit.record_reply_without_rtt();
         }
 
         if let Some((rtt, source)) = rtt {
-            // Named in the log, because several neighbours reporting the same
-            // figure to the millisecond is a property of the probe rather than
-            // of the network, and a reader who cannot tell the two kinds of
-            // sample apart has no way to know that.
+            // Named, since many neighbours sharing one figure is a property of
+            // the probe, not the network.
             let asked = match source {
                 RttSource::Direct => "",
                 RttSource::SegmentWide => " to the all-nodes echo",
@@ -2155,11 +1746,8 @@ impl LocalScanner {
                 "{source_addr} responded in {}ms{asked}",
                 rtt.as_millis()
             );
-            // Both kinds steer the deadline, which is asking a different
-            // question from the one a reported latency answers: how long this
-            // sweep should keep listening. A neighbour that takes 200 ms to
-            // answer the segment is 200 ms this scan has to stay open for,
-            // whatever inflated it.
+            // Every kind steers the deadline: a slow answer is time the sweep
+            // must stay open, whatever inflated it.
             self.deadline.record_rtt(rtt);
         }
 
@@ -2190,11 +1778,9 @@ mod tests {
     };
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    /// A sweep of a segment is given at least the time its own ticker needs to
-    /// ask every address as often as its schedule says, however large the
-    /// range: an address never asked looks exactly like one with nothing on
-    /// it. The need is worked out from the numbers, a frame per address per
-    /// attempt at [`SEND_INTERVAL`], rather than read from the sweep.
+    /// A sweep is given at least the time its ticker needs to send every
+    /// attempt to every address: a frame per address per attempt at
+    /// [`SEND_INTERVAL`].
     #[test]
     fn a_segment_sweep_outlasts_the_time_its_ticker_needs_to_send_every_attempt() {
         const SLASH_16: usize = 1 << 16;
@@ -2218,10 +1804,8 @@ mod tests {
         }
     }
 
-    /// A sweep under a scan-wide gap outlasts every attempt at every address
-    /// and every frame put to the segment, all leaving that gap apart, which
-    /// on a range is far slower than its ticker. Sized from the ticker alone,
-    /// the deadline stops it with most of the range never asked.
+    /// Under a scan-wide gap, the sweep outlasts every attempt and every
+    /// segment-wide frame sent that gap apart.
     #[test]
     fn a_scan_wide_gap_is_the_pace_of_a_segment_sweep() {
         let gap = Duration::from_secs(1);
@@ -2240,14 +1824,9 @@ mod tests {
         );
     }
 
-    /// A segment sweep outlasts the schedule of the last address it asks, on
-    /// whichever of its two ledgers that schedule is longer, with every
-    /// attempt timed as long as measurement may make it.
-    ///
-    /// A segment that answered slowly, a wireless one of sleeping devices
-    /// say, times its silent addresses at up to the retry ceiling on every
-    /// attempt. Sized for an unmeasured schedule, the deadline stops a small
-    /// sweep of it while its last address still has attempts to spend.
+    /// A sweep outlasts the longer of its two ledgers' schedules with every
+    /// attempt at the retry ceiling, which a slow segment of sleeping wireless
+    /// devices can reach.
     #[test]
     fn a_segment_sweep_outlasts_a_probe_timed_at_the_ceiling_on_every_attempt() {
         let thorough = RetryConfig {
@@ -2273,10 +1852,8 @@ mod tests {
         }
     }
 
-    /// A segment whose first neighbour's answer arrives while the sweep is
-    /// asking the next one, and whose next send holds the sending thread for
-    /// `stall`: the sweep stopped in its tracks with the answer already
-    /// waiting for it.
+    /// A segment whose first neighbour's answer arrives while the sweep asks
+    /// the next, and whose next send then blocks for `stall`.
     struct StalledAfterAnswering {
         stall: Duration,
         frames: tokio::sync::mpsc::Sender<CapturedFrame>,
@@ -2315,21 +1892,14 @@ mod tests {
         }
     }
 
-    /// An answer that was waiting when its probe ran out of attempts still
-    /// times its host, however late the loop gets round to either.
-    ///
-    /// A loop held up for longer than a timeout wakes to find both the answer
-    /// and the expired timer. Serviced timer first, the address's one attempt
-    /// is spent and the answer behind it finds no probe to be timed against,
-    /// so the host is recorded unmeasured and its address settled as asked
-    /// and unanswered.
+    /// An answer waiting when its probe ran out of attempts still times its
+    /// host, however late the loop gets to either.
     #[tokio::test(flavor = "current_thread")]
     async fn an_answer_waiting_when_its_probe_runs_out_still_times_the_host() {
         use crate::system::interface::LinkAddress;
 
-        // Asked in address order, which a session told to walk no seed
-        // keeps, so the answer is the first one's and the stall comes on
-        // asking the second.
+        // Unseeded, so asked in address order: the first answers and the
+        // stall comes on asking the second.
         let target = Ipv4Addr::new(192, 0, 2, 10);
         let silent = Ipv4Addr::new(192, 0, 2, 11);
         let (session, ctx) = crate::scanner::session::ScanSession::builder()
@@ -2422,15 +1992,9 @@ mod tests {
         }
     }
 
-    /// A neighbour's own request, heard while the sweep's request to it is
-    /// outstanding, proves it is there and times nothing: the neighbour is
-    /// timed by its reply, where the sweep is still listening when it comes.
-    ///
-    /// Every ARP frame proves its sender present, and a neighbour that has
-    /// just been asked often asks something itself before it answers. Taken
-    /// as the answer, that request retires the sweep's and times the
-    /// neighbour at the gap between the two, a round trip the passes after
-    /// the sweep then time their own probes from.
+    /// A neighbour's own request, heard while the sweep's is outstanding,
+    /// proves it is there but times nothing; its reply does. A neighbour often
+    /// asks something itself before answering.
     #[tokio::test(flavor = "current_thread")]
     async fn a_neighbours_own_request_does_not_answer_the_sweeps() {
         use crate::system::interface::LinkAddress;
@@ -2511,15 +2075,12 @@ mod tests {
             .expect("a scanner over the simulated segment")
     }
 
-    /// **A link-local address the sweep overheard is asked about whatever the
-    /// routing table would say of it without its zone, and one on a prefix
-    /// the link holds that the table refuses is not.**
+    /// An overheard link-local address is asked about whatever the table says
+    /// without its zone; one on the link's prefix that the table refuses is
+    /// not.
     ///
-    /// Linux answers a route lookup for a link-local address with no zone
-    /// as an invalid argument, the answer a blackhole route gives, so putting
-    /// one to the table there reads every link-local neighbour as refused by
-    /// policy. A phone that ignores the all-nodes echo and is named only by
-    /// its mDNS announcements is then never asked, and never found.
+    /// Linux refuses a zoneless link-local lookup as a blackhole route would,
+    /// so a phone found only through mDNS would never be asked.
     #[tokio::test(flavor = "current_thread")]
     async fn an_overheard_link_local_address_is_asked_whatever_the_table_says_without_a_zone() {
         let link_local: IpAddr = "fe80::2".parse().expect("an address");
@@ -2543,14 +2104,9 @@ mod tests {
         );
     }
 
-    /// **An overheard address on no prefix the link holds is asked about
-    /// whatever the routing table says of it.**
-    ///
-    /// The table answers for such an address about a path through a router,
-    /// which a solicitation on the segment does not take. A host with no
-    /// route there, as a machine with no IPv6 beyond its links has none,
-    /// would otherwise read every neighbour announcing an address from a
-    /// prefix it does not hold as refused by policy, and never ask it.
+    /// An overheard address on no prefix the link holds is asked about
+    /// whatever the table says: the table answers about a path through a
+    /// router, which a solicitation does not take.
     #[tokio::test(flavor = "current_thread")]
     async fn an_overheard_address_off_the_links_prefixes_is_asked_whatever_the_table_says() {
         let elsewhere: IpAddr = "2001:db8:1::2".parse().expect("an address");
@@ -2583,13 +2139,9 @@ mod tests {
         }
     }
 
-    /// A seeded sweep asks the segment in the order the scan's seed names, the
-    /// order a dispatched sweep streams the same plan in, rather than walking
-    /// the range.
-    ///
-    /// A sweep across an address range in address order is the most
-    /// recognisable thing a scanner puts on the wire, and the one a
-    /// correlating sensor keys on.
+    /// A seeded sweep asks in the order the seed names, the order a dispatched
+    /// sweep streams the same plan in. Address order is what a correlating
+    /// sensor keys on.
     #[tokio::test(flavor = "current_thread")]
     async fn a_seeded_sweep_asks_in_the_order_the_seed_names() {
         use crate::model::ip::set::Positions;
@@ -2640,16 +2192,12 @@ mod tests {
         assert_eq!(*asked.lock().expect("the log"), expected);
     }
 
-    /// The sweep's capture narrows in the kernel, so a frame the filter does not
-    /// admit is one no [`DiscoveryProtocol`] is ever offered, and it fails
-    /// silently, because a protocol that is never called looks exactly like one
-    /// that recognised nothing.
+    /// A frame the filter drops never reaches a [`DiscoveryProtocol`], and
+    /// fails silently.
     ///
-    /// Nothing else can catch it. The fake-LAN fixtures inject frames straight
-    /// into the scanner through `EthernetHandle::from_parts`, so they bypass the
-    /// capture entirely and would stay green against a filter that admitted
-    /// nothing at all. This compiles the real expression with `libpcap` and runs
-    /// it against real frames, which needs no interface and no privileges.
+    /// The fake-LAN fixtures inject frames past the capture, so only this test
+    /// catches it: it compiles the real expression with `libpcap` and runs it
+    /// against real frames, with no interface or privileges.
     #[test]
     fn the_sweep_filter_admits_every_frame_the_sweep_can_read() {
         let filter = super::sweep_filter();
@@ -2658,9 +2206,7 @@ mod tests {
             .compile(&filter, true)
             .unwrap_or_else(|e| panic!("the sweep filter `{filter}` does not compile: {e}"));
 
-        // The two announcement frames need only their framing: the filter reads
-        // the EtherType and the destination address, and what the sender put
-        // behind them is the reader's business rather than the kernel's.
+        // The filter reads only the EtherType and destination of these.
         let lldp = ethernet::build_header(
             PEER_MAC,
             MacAddr::new(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E),
@@ -2670,8 +2216,7 @@ mod tests {
             let group = crate::protocols::cdp::GROUP_ADDRESS;
             let mut bytes = group.octets().to_vec();
             bytes.extend_from_slice(&PEER_MAC.octets());
-            // 802.3: a length rather than an EtherType, which is the whole
-            // reason this clause matches the address instead.
+            // 802.3: a length, not an EtherType.
             bytes.extend_from_slice(&[0x00, 0x20]);
             bytes.resize(60, 0);
             bytes
@@ -2710,11 +2255,8 @@ mod tests {
         }
     }
 
-    /// A link with no Ethernet header refuses the sweep's filter whole rather
-    /// than taking the part of it that it can express. The sweep reads every
-    /// answer from an Ethernet header, so a capture opened there on the IP
-    /// clauses alone would hear nothing it can read and report the segment
-    /// empty; refused, the sweep says it cannot run on that link.
+    /// A link with no Ethernet header refuses the sweep's filter whole, so the
+    /// sweep reports it cannot run there instead of an empty segment.
     #[test]
     fn a_link_without_ethernet_refuses_the_sweep_filter_whole() {
         /// `DLT_RAW`, how a WireGuard or IP-in-IP tunnel comes up.
@@ -2729,9 +2271,8 @@ mod tests {
         );
     }
 
-    /// The other half of the same rule. A filter that admitted everything would
-    /// pass the test above while undoing the reason for having one: the sweep
-    /// would go back to copying the whole segment into this process.
+    /// A filter admitting everything would pass the tests above and copy the
+    /// whole segment into this process.
     #[test]
     fn the_sweep_filter_rejects_traffic_no_reader_asked_for() {
         let filter = super::sweep_filter();

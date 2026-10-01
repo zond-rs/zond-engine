@@ -8,12 +8,9 @@
 
 //! # Discovery Response Protocols
 //!
-//! [`LocalScanner`](super::local::LocalScanner) sends more than one kind of probe onto
-//! the wire and has to recognize more than one kind of reply. Rather than
-//! growing a single function that understands every wire format, each format is
-//! its own [`DiscoveryProtocol`] implementation, and the scanner tries each one
-//! against every frame it receives. Supporting a new discovery mechanism means
-//! writing one more implementation here instead of touching the receive loop.
+//! Each reply format [`LocalScanner`](super::local::LocalScanner) recognizes is
+//! a [`DiscoveryProtocol`] implementation, tried in turn against every received
+//! frame. A new discovery mechanism is one more implementation here.
 
 use std::net::IpAddr;
 
@@ -27,11 +24,8 @@ use crate::protocols::{dhcp, ip, ndp};
 
 /// What a [`DiscoveryProtocol`] found when asked to interpret one received frame.
 ///
-/// The two "handled" answers differ in what they entitle the scanner to
-/// conclude about the probe that provoked them, which is why they are separate
-/// variants rather than one carrying a round-trip time. A protocol reads bytes;
-/// deciding which outstanding probe a frame retires is the scanner's job, since
-/// only the scanner knows what it sent and when.
+/// A protocol only reads bytes; the scanner, which knows what it sent and
+/// when, decides which outstanding probe a frame retires.
 #[non_exhaustive]
 pub enum ProtocolMatch {
     /// The protocol does not recognize this frame. Another protocol may still
@@ -40,46 +34,33 @@ pub enum ProtocolMatch {
     /// A reply to a probe aimed at one address, so it answers exactly one
     /// outstanding probe and retires it.
     ///
-    /// The address is carried because the frame's source is not always it. A
-    /// neighbor advertisement names the address it is about in its own target
-    /// field, and a host with several addresses answers from whichever its stack
-    /// prefers rather than from the one that was asked about: measured on a
-    /// real segment, a phone solicited at one global address answered from
-    /// another of its own. Keyed on the source, that reply retires no
-    /// probe, yields no round trip, and files the host under an address nobody
-    /// asked about.
+    /// Carries the address asked about, since the frame's source may differ:
+    /// a neighbor advertisement names it in its target field, and a host with
+    /// several addresses answers from whichever its stack prefers. On a real
+    /// segment a phone solicited at one global address answered from another.
     ///
-    /// `None` where the frame's source *is* the address, which is ARP's case:
-    /// the sender protocol address is the whole content of the reply.
+    /// `None` where the frame's source is the address, as with ARP.
     Solicited(Option<IpAddr>),
     /// A message that proves its sender is present and answers nothing this
     /// scan sent.
     ///
-    /// A router advertising itself on its own timer, a DHCP server answering
-    /// the segment. The distinction from [`Solicited`](Self::Solicited) is not
-    /// bookkeeping: a probe may well be outstanding for the same address, and
-    /// retiring it here would credit our question with somebody else's answer
-    /// and time it from the moment we asked: a round trip that measures the
-    /// gap between two unrelated messages. The probe is left to be answered or
-    /// to expire on its own schedule.
+    /// A router advertising on its own timer, or a DHCP server answering the
+    /// segment. A probe outstanding for the same address is left alone:
+    /// retiring it would time the gap between two unrelated messages.
     ///
-    /// The sender is asked directly afterwards, which is what turns an
-    /// overheard neighbour into a measured one. See
+    /// The sender is then asked directly, to measure it. See
     /// `LocalScanner::confirm`.
     Unsolicited,
     /// A reply to the all-nodes echo request, carrying the identifier and
     /// sequence number it echoed back.
     ///
-    /// That probe is not consumed by any one reply, because every neighbour on
-    /// the segment may answer the same packet, but unlike a neighbor
-    /// solicitation it is still *attributable*. RFC 4443 requires the reply to
-    /// return the request's identifier and sequence unchanged, so the token
-    /// names exactly which of the scan's echo requests was answered, and the
-    /// round trip follows. Karn's rule costs NDP its measurement because two
-    /// solicitations are identical on the wire; two echo requests are not.
+    /// No single reply consumes that probe, since every neighbour may answer
+    /// it. RFC 4443 requires the reply to return the request's identifier and
+    /// sequence unchanged, so it names which echo request was answered and
+    /// yields a round trip, which a repeated neighbor solicitation cannot.
     AllNodes {
-        /// The identifier echoed back, which is one value for a whole run, so a
-        /// stranger's ping is not read as an answer to ours.
+        /// The identifier echoed back; one value per run, which separates our
+        /// pings from others'.
         identifier: u16,
         /// The sequence number echoed back, which names the attempt.
         sequence: u16,
@@ -88,16 +69,10 @@ pub enum ProtocolMatch {
 
 /// Everything one frame turned out to say.
 ///
-/// Two questions, kept apart because they have different answers and different
-/// consequences. [`matched`](field@Reading::matched) is what the frame does to the scan's
-/// ledger of outstanding probes; [`declared`](field@Reading::declared) is what its sender
-/// said about *itself* in the same message, which no probe was outstanding for
-/// and which no round trip depends on.
-///
-/// They arrive together because they are read from the same bytes. A neighbour
-/// advertisement answers the solicitation this scan sent and sets the R flag in
-/// the same message; parsing it twice to ask the second question separately
-/// would let the two answers come from different readings of one frame.
+/// [`matched`](field@Reading::matched) is what the frame does to the ledger of
+/// outstanding probes; [`declared`](field@Reading::declared) is what its sender
+/// said about itself in the same message, such as a neighbour advertisement's
+/// R flag. Both come from one parse of the frame.
 pub struct Reading {
     /// What the frame answers, and what it therefore retires.
     pub matched: ProtocolMatch,
@@ -134,73 +109,54 @@ impl Reading {
 
 /// A wire-level protocol capable of recognizing discovery responses.
 ///
-/// [`LocalScanner`](super::local::LocalScanner) tries each configured protocol against
-/// every received frame in turn, and the first one to claim a frame decides what
-/// kind of answer it is. The scanner has already identified the frame's source
-/// address and ruled out obvious noise (packets from itself, addresses outside
-/// the scan) before a protocol ever sees the frame, so an implementation is a
-/// pure function of the bytes in front of it.
+/// [`LocalScanner`](super::local::LocalScanner) tries each protocol against
+/// every received frame in turn, and the first to claim it decides what kind of
+/// answer it is. The scanner has already identified the source and dropped
+/// noise (its own packets, addresses outside the scan), so an implementation is
+/// a pure function of the bytes.
 pub trait DiscoveryProtocol: Send {
     /// Reads one frame: what it answers, and what its sender claimed about
     /// itself while answering.
     ///
-    /// Return [`ProtocolMatch::Unhandled`] for a frame that belongs to some
-    /// other protocol, and the sweep offers it to the next reader. An error is
-    /// for a frame this protocol owns and could not parse, which ends the
-    /// reading: the frame is credited to nobody.
+    /// Return [`ProtocolMatch::Unhandled`] for another protocol's frame, and the
+    /// sweep offers it to the next reader.
     ///
     /// # Errors
     ///
-    /// [`PacketError`], the same type the parsers in
-    /// [`protocols`](crate::protocols) return, since reading a frame is the
-    /// whole of what an implementation does.
+    /// [`PacketError`], as the parsers in [`protocols`](crate::protocols)
+    /// return, for a frame this protocol owns and could not parse. The frame is
+    /// then credited to nobody.
     fn interpret(&self, frame: &Frame<'_>) -> Result<Reading, PacketError>;
 
     /// Reads one IP packet that arrived with no link-layer header, off a
     /// tunnel or a PPP link, as [`interpret`](Self::interpret) reads a frame.
     ///
-    /// Unhandled unless a protocol says otherwise: most of these readers read
-    /// something only a link with hardware addresses carries, ARP or a DHCP
-    /// broadcast, and one whose message is plain IP reads it here as well,
-    /// so a listener on such a link hears it.
+    /// Unhandled by default, since ARP and DHCP broadcasts need hardware
+    /// addresses. A protocol whose message is plain IP reads it here too.
     fn interpret_packet(&self, _packet: &[u8]) -> Reading {
         Reading::unhandled()
     }
 
     /// The evidence this protocol produces, for the liveness record of whichever
     /// host it claims a frame from.
-    ///
-    /// Each implementation names its own evidence rather than the receive loop
-    /// inferring it from the frame, so a new discovery mechanism stays one more
-    /// implementation in this module: the same reason `interpret` lives here.
     fn status_protocol(&self) -> StatusProtocol;
 
     /// The `libpcap` filter clause admitting the frames this protocol reads.
     ///
-    /// The sweep's capture narrows in the kernel, so a protocol whose traffic no
-    /// clause admits is never given a frame to interpret, and it fails that way
-    /// silently, since a protocol that is never called and a protocol that
-    /// recognises nothing look identical from the receive loop.
+    /// The sweep's filter is the union of these, so a protocol widens the
+    /// capture beside its [`interpret`](Self::interpret). Traffic no clause
+    /// admits never reaches a protocol, and that failure is silent.
     ///
-    /// Declared here, beside [`interpret`](Self::interpret), so that the two
-    /// cannot disagree: the sweep's whole filter is the union of these, so
-    /// adding an implementation widens the capture by the same edit that adds
-    /// the reader. Written the other way round, one filter maintained beside
-    /// the list, this module's promise that a new mechanism is one more
-    /// implementation *here* would quietly stop being true.
-    ///
-    /// A clause is a complete expression, combined with the others by `or`, so
-    /// it must parenthesise anything that would not survive that.
+    /// Clauses are joined with `or`, so each must parenthesise anything that
+    /// would not survive that.
     fn capture_clause(&self) -> &'static str;
 }
 
 /// Every protocol a local sweep reads, in the order it tries them against a
 /// frame.
 ///
-/// The single list. It is read twice, once to build the scanner's own
-/// interpreters, and once to work out what its capture must admit, and both
-/// readings have to see the same protocols or the sweep listens for something
-/// other than what it can understand.
+/// Read both to build the scanner's interpreters and to build its capture
+/// filter, so the two always agree.
 pub fn sweep_protocols() -> Vec<Box<dyn DiscoveryProtocol>> {
     vec![
         Box::new(ArpProtocol),
@@ -213,11 +169,9 @@ pub fn sweep_protocols() -> Vec<Box<dyn DiscoveryProtocol>> {
 
 /// Recognizes ARP replies as discovery responses.
 ///
-/// Every ARP frame from an in-range address counts, whether or not it answers an
-/// outstanding request: other hosts' requests and gratuitous announcements are
-/// common on a shared segment and are just as good a proof that someone is
-/// there. Whether one also yields a round-trip time depends on there being a
-/// probe outstanding to measure against, which the scanner determines.
+/// Every ARP frame from an in-range address counts, including other hosts'
+/// requests and gratuitous announcements: each proves its sender is there.
+/// The scanner decides whether a probe was outstanding to yield a round trip.
 pub struct ArpProtocol;
 
 impl DiscoveryProtocol for ArpProtocol {
@@ -233,9 +187,7 @@ impl DiscoveryProtocol for ArpProtocol {
         StatusProtocol::Arp
     }
 
-    /// Every ARP frame on the segment, requests included: an unsolicited request
-    /// or a gratuitous announcement proves its sender is there just as well as a
-    /// reply to this scan does.
+    /// Every ARP frame on the segment, requests included.
     fn capture_clause(&self) -> &'static str {
         "arp"
     }
@@ -244,16 +196,10 @@ impl DiscoveryProtocol for ArpProtocol {
 /// Recognizes neighbor advertisements as answers to the solicitation sent for
 /// one address.
 ///
-/// The IPv6 counterpart of [`ArpProtocol`], and conclusive in the same way: the
-/// reply came off this segment carrying the neighbour's own MAC. Unlike the
-/// all-nodes echo, this answers a probe put to a single address, so it retires
-/// that address's outstanding probe and the retry ledger owns it exactly as it
-/// owns an ARP request.
-///
-/// Every advertisement from an in-range address counts, whether or not it
-/// answers an outstanding solicitation, for the reason [`ArpProtocol`] accepts
-/// every ARP frame: neighbours advertise to each other constantly, and an
-/// advertisement is proof its sender is present however it was provoked.
+/// The IPv6 counterpart of [`ArpProtocol`]: the reply carries the neighbour's
+/// own MAC, and it retires that address's outstanding probe in the retry
+/// ledger. As with ARP, every advertisement from an in-range address counts,
+/// however it was provoked.
 pub struct NdpProtocol;
 
 impl NdpProtocol {
@@ -267,10 +213,8 @@ impl NdpProtocol {
                     false => Reading::matched(matched),
                 }
             }
-            // An advertisement naming an address nothing can hold proves its
-            // sender exists and says nothing about *which* address that is, so
-            // the frame is left for another protocol to claim rather than
-            // crediting a host with an address it cannot have.
+            // An address nothing can hold says nothing about which address the
+            // sender has, so the frame is left for another protocol.
             Some(_) | None => Reading::unhandled(),
         }
     }
@@ -289,8 +233,9 @@ impl DiscoveryProtocol for NdpProtocol {
         StatusProtocol::Ndp
     }
 
-    /// See [`NdpProtocol::capture_clause`]: a router advertisement is ICMPv6,
-    /// and the clause that admits one admits all of them.
+    /// All of ICMPv6: BPF cannot select the neighbour-discovery types without
+    /// reading past a variable-length header. ICMPv6 on a segment is nearly all
+    /// neighbour discovery, and the other IPv6 readers share this clause.
     fn capture_clause(&self) -> &'static str {
         "icmp6"
     }
@@ -298,16 +243,13 @@ impl DiscoveryProtocol for NdpProtocol {
 
 /// Whether an address is one an interface can actually hold.
 ///
-/// A neighbour advertisement carries whatever its sender put in it, and devices
-/// on real segments send ones naming addresses that are not addresses. Two are
-/// worth refusing by name because both would otherwise be recorded as an address
-/// of the host that sent them, and then reported as an address it *gained* the
-/// next time the segment was swept:
+/// Devices on real segments send advertisements naming addresses that are not
+/// addresses. Recorded, these would be reported as addresses the host gained on
+/// the next sweep. Refused:
 ///
-/// - **The unspecified address.** `::` names nothing by definition.
-/// - **A link-local with a zero interface identifier.** `fe80::` is the prefix,
-///   not an address in it; RFC 4291 gives every link-local unicast address a
-///   64-bit interface identifier, and one made entirely of zeros is reserved.
+/// - **The unspecified address** `::`.
+/// - **A link-local with a zero interface identifier.** `fe80::` is the prefix;
+///   RFC 4291 reserves the all-zeros 64-bit interface identifier.
 fn is_assignable(address: std::net::Ipv6Addr) -> bool {
     if address.is_unspecified() {
         return false;
@@ -322,19 +264,14 @@ fn is_assignable(address: std::net::Ipv6Addr) -> bool {
 
 /// Recognizes router advertisements, the message only a router sends.
 ///
-/// The one piece of evidence this scanner does not have to provoke. Routers
-/// advertise themselves unprompted every few minutes, and the sweep's capture is
-/// promiscuous, so an advertisement that crosses the segment while a scan is
-/// running arrives here for free. A sweep also asks for one outright, see
-/// [`LocalScanner`](super::local::LocalScanner), because the unprompted timer is
-/// measured in minutes and a sweep is measured in seconds.
+/// Routers advertise unprompted every few minutes, and the capture is
+/// promiscuous, so these arrive for free. A sweep also solicits one (see
+/// [`LocalScanner`](super::local::LocalScanner)), since it lasts seconds.
 ///
-/// Claimed as [`Unsolicited`](ProtocolMatch::Unsolicited), and filed under the
-/// frame's source: an advertisement names no target of its own, and its source
-/// is required to be the sending interface's link-local address (RFC 4861
-/// §4.2). Unsolicited rather than solicited even when the sweep asked for it,
-/// because the sweep's solicitation goes to every router at once and no reply
-/// to it belongs to any one address's probe.
+/// Claimed as [`Unsolicited`](ProtocolMatch::Unsolicited) and filed under the
+/// frame's source, which RFC 4861 §4.2 requires to be the sender's link-local
+/// address. Unsolicited even when the sweep asked, because its solicitation goes
+/// to every router at once and no reply belongs to one address's probe.
 pub struct RouterAdvertProtocol;
 
 impl RouterAdvertProtocol {
@@ -360,10 +297,7 @@ impl DiscoveryProtocol for RouterAdvertProtocol {
         StatusProtocol::Ndp
     }
 
-    /// All of ICMPv6 rather than the two neighbour-discovery types, which BPF
-    /// cannot select without reading past a header whose length is not fixed.
-    /// The surplus is small, ICMPv6 on a segment is nearly all neighbour
-    /// discovery, and it is the same clause the other two IPv6 readers need.
+    /// See [`NdpProtocol::capture_clause`].
     fn capture_clause(&self) -> &'static str {
         "icmp6"
     }
@@ -371,19 +305,14 @@ impl DiscoveryProtocol for RouterAdvertProtocol {
 
 /// Recognizes a DHCP server answering the segment.
 ///
-/// The counterpart of [`RouterAdvertProtocol`] over IPv4, and the only way a
-/// DHCP server can be found at all: the protocol is built on broadcast, so the
-/// server is discovered rather than addressed. See
-/// [`dhcp`] for why a port scan cannot ask this
-/// question.
+/// The IPv4 counterpart of [`RouterAdvertProtocol`]. DHCP runs on broadcast,
+/// so this is the only way to find a server; see [`dhcp`] for why a port scan
+/// cannot.
 ///
-/// The role goes on the address the server named for itself, and only when the
-/// message came from that address. A relay agent forwarding for a server
-/// on another segment sends the reply from its own address while the message
-/// inside names the server; marking the sender would name the relay a DHCP
-/// server, and marking the named address would attach the role to a machine
-/// this frame is no evidence about. Where they disagree the reply still proves
-/// its sender is there, which is all it proves.
+/// The role is declared only when the message came from the address the server
+/// named for itself. A relay agent sends the reply from its own address while
+/// the message names a server on another segment; then the reply only proves
+/// the relay is there.
 pub struct DhcpProtocol;
 
 impl DiscoveryProtocol for DhcpProtocol {
@@ -409,9 +338,6 @@ impl DiscoveryProtocol for DhcpProtocol {
 
     /// Both DHCP ports, though only a server's reply is read.
     ///
-    /// Matching either direction rather than `src port 67` alone costs nothing
-    /// and leaves a reader that wants to see the request as well as the answer
-    /// something to work with, rather than a silence to debug.
     fn capture_clause(&self) -> &'static str {
         "(udp port 67 or udp port 68)"
     }
@@ -420,40 +346,28 @@ impl DiscoveryProtocol for DhcpProtocol {
 /// Recognizes ICMPv6 echo replies as answers to the all-nodes echo request sent
 /// at the start of a sweep.
 ///
-/// Unlike ARP, that probe is not sent per target: it is one multicast echo
-/// request any IPv6 neighbour may answer, so it is measured against every
-/// qualifying reply rather than being consumed by the first.
+/// One multicast request any neighbour may answer, so every qualifying reply
+/// is measured against it.
 ///
-/// The reply has to be an echo reply, and the check is not a formality. An
-/// Ethernet frame from a neighbour proves the neighbour exists whatever it
-/// carries, but the *evidence* recorded for it has to name what was actually
-/// observed: crediting a segment of unrelated IPv6 traffic to the echo probe
-/// attributes a host to a mechanism that had nothing to do with finding it, and
-/// a coverage measurement built on that cannot tell a working probe from a
-/// chatty network. Traffic this does not recognize is left for another
-/// [`DiscoveryProtocol`] to claim - a neighbor advertisement being handled by
-/// [`NdpProtocol`].
+/// Only echo replies count. Crediting unrelated IPv6 traffic to the echo probe
+/// would make coverage measurements unable to tell a working probe from a
+/// chatty network. Anything else is left for another [`DiscoveryProtocol`],
+/// such as [`NdpProtocol`].
 ///
-/// The identifier and sequence come back with the match rather than being
-/// checked here, because this trait sees bytes and not the scan that sent them.
-/// Deciding whether those values name one of *our* requests, and which, is the
-/// scanner's job for the same reason attribution always is.
+/// The identifier and sequence are returned unchecked; the scanner decides
+/// whether they name one of its requests.
 ///
-/// Read alike off a link with no Ethernet header, a tunnel or a PPP link, where
-/// the reply is the same packet with nothing in front of it: one rule for both
-/// kinds of link, as the neighbour and router advertisements have. A sweep
-/// never runs there, but a listener does, and an echo reply to a link-local
-/// address proves its sender is on the link however the link delivers it.
+/// Also read off links with no Ethernet header (tunnels, PPP), where a
+/// listener runs though a sweep does not.
 pub struct Icmpv6EchoProtocol;
 
 impl Icmpv6EchoProtocol {
     /// What an IPv6 packet sent to `destination` answers, `token` being the
     /// identifier and sequence it carries back where it is an echo reply.
     fn read(destination: std::net::Ipv6Addr, token: Option<(u16, u16)>) -> Reading {
-        // The probe leaves from this host's link-local address, so an answer to
-        // it comes back to one. Not proof the packet is addressed to *us* -
-        // that needs an address this trait does not have - but it rules out the
-        // multicast and global traffic a promiscuous capture also sees.
+        // The probe leaves from a link-local address, so its answer comes back
+        // to one. This trait cannot check it is ours, but it rules out the
+        // multicast and global traffic a promiscuous capture sees.
         if !destination.is_unicast_link_local() {
             return Reading::unhandled();
         }
@@ -489,8 +403,7 @@ impl DiscoveryProtocol for Icmpv6EchoProtocol {
         StatusProtocol::IcmpEcho
     }
 
-    /// See [`NdpProtocol::capture_clause`]. The all-nodes echo is answered over
-    /// ICMPv6 and needs no clause of its own.
+    /// See [`NdpProtocol::capture_clause`].
     fn capture_clause(&self) -> &'static str {
         "icmp6"
     }
@@ -606,9 +519,8 @@ pub(crate) mod tests {
         body
     }
 
-    /// Real segments carry advertisements naming `fe80::`, and the host that
-    /// sent one would be credited with an address nothing can hold, which reads
-    /// as an address it has *gained* when the segment is swept again.
+    /// Real segments carry advertisements naming `fe80::`, which no host can
+    /// hold.
     #[test]
     fn an_advertisement_naming_an_address_nothing_can_hold_is_left_alone() {
         assert!(!is_assignable(Ipv6Addr::UNSPECIFIED));
@@ -638,8 +550,7 @@ pub(crate) mod tests {
         assert!(matches!(result.unwrap().matched, ProtocolMatch::Unhandled));
     }
 
-    /// An ARP frame answers a probe aimed at the address that sent it, which is
-    /// what entitles the scanner to retire exactly that probe.
+    /// An ARP frame answers the probe aimed at the address that sent it.
     #[test]
     fn arp_protocol_claims_arp_frames_as_solicited() {
         let frame_bytes = arp_reply_frame(Ipv4Addr::new(192, 0, 2, 50));
@@ -670,9 +581,8 @@ pub(crate) mod tests {
         assert!(matches!(result.unwrap().matched, ProtocolMatch::Unhandled));
     }
 
-    /// An echo reply aimed at this host answers the all-nodes echo request, and
-    /// every neighbour may answer the same one - so the match must not imply
-    /// that any single probe has been used up.
+    /// Every neighbour may answer the same all-nodes echo request, so a match
+    /// consumes no probe.
     #[test]
     fn icmpv6_protocol_claims_an_echo_reply_for_the_all_nodes_probe() {
         let frame_bytes = echo_reply_frame(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
@@ -688,10 +598,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// The identifier and sequence have to survive interpretation, because they
-    /// are the whole of what makes an echo reply measurable: they name which
-    /// request was answered, where two neighbor solicitations never can.
-    /// Dropping them here is what left every IPv6 neighbour with no round trip.
+    /// The identifier and sequence survive interpretation; they name which
+    /// request was answered, which makes the reply measurable.
     #[test]
     fn icmpv6_protocol_carries_the_echoed_token_back() {
         let frame_bytes =
@@ -709,28 +617,22 @@ pub(crate) mod tests {
         ));
     }
 
-    /// A scanner must not credit its echo probe with finding a host that never
-    /// answered it.
-    ///
-    /// A promiscuous capture on a live segment sees a great deal of IPv6 between
-    /// other hosts, and a bare header with no ICMPv6 message behind it is not an
-    /// answer to anything. Claiming either as a reply attributes a host to a
-    /// mechanism that did not find it, which is invisible in a host count and
-    /// fatal to any measurement of what the IPv6 probe contributes.
+    /// The echo probe is not credited with hosts that never answered it: a
+    /// promiscuous capture sees plenty of other IPv6, and a bare header answers
+    /// nothing.
     #[test]
     fn icmpv6_protocol_ignores_ipv6_traffic_that_is_not_an_echo_reply() {
         let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
 
         for frame_bytes in [
-            // A TCP segment between two neighbours.
             ipv6_frame(link_local, IpNextHeaderProtocols::Tcp, &[0u8; 20]),
-            // ICMPv6, but a neighbor solicitation rather than an echo reply.
+            // ICMPv6, but a neighbor solicitation.
             ipv6_frame(
                 link_local,
                 IpNextHeaderProtocols::Icmpv6,
                 &neighbor_solicitation_body(),
             ),
-            // An IPv6 header with nothing behind it at all.
+            // A bare IPv6 header.
             ipv6_frame(link_local, IpNextHeaderProtocols::Icmpv6, &[]),
         ] {
             let frame = crate::protocols::ethernet::parse(&frame_bytes).unwrap();
@@ -742,10 +644,8 @@ pub(crate) mod tests {
     }
 
     /// Off a link with no Ethernet header the echo reader applies the same
-    /// test as on one: an echo reply to a link-local address is claimed with
-    /// its token, and one to a multicast group, or anything that is not IPv6,
-    /// is left alone. The version nibble is all such a link says about the
-    /// family, so an IPv4 packet must not be read as an IPv6 header.
+    /// test. The version nibble is all such a link says about the family, so
+    /// an IPv4 packet must not be read as an IPv6 header.
     #[test]
     fn icmpv6_protocol_reads_a_bare_packet_as_it_reads_a_frame() {
         let answered = echo_reply_frame_with(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), 7, 3);
@@ -772,8 +672,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// A frame carrying a neighbour discovery message, which is the one kind of
-    /// traffic that must arrive with a hop limit of 255 to be believed.
+    /// A frame carrying a neighbour discovery message, with the hop limit of
+    /// 255 such a message needs to be believed.
     pub(crate) fn ndp_frame(body: &[u8]) -> Vec<u8> {
         let source = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
         let eth_header = ethernet::build_header(
@@ -806,11 +706,8 @@ pub(crate) mod tests {
         body
     }
 
-    /// The declaration has to survive the trip from the wire to the scanner. A
-    /// neighbour that answers our solicitation and sets the R flag is a router
-    /// found for free, in a reply the sweep was already going to receive, and
-    /// the same reply without the flag claims nothing, which is what keeps the
-    /// role off every host that merely answered.
+    /// An advertisement with the R flag declares a router; without it, the
+    /// same reply declares nothing.
     #[test]
     fn an_advertisement_declares_a_router_only_when_its_sender_said_so() {
         let target = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
@@ -829,9 +726,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// An advertisement only a router sends: claimed for its source, because
-    /// unlike a neighbour advertisement it names no target of its own, and
-    /// declaring what its sender is is the whole of why it is read.
+    /// A router advertisement is claimed for its source, which it declares a
+    /// router.
     #[test]
     fn a_router_advertisement_names_its_sender_a_router() {
         let mut body = vec![0u8; 16];
@@ -845,7 +741,6 @@ pub(crate) mod tests {
         assert_eq!(reading.declared, Some(NetworkRole::Router));
         assert_eq!(RouterAdvertProtocol.status_protocol(), StatusProtocol::Ndp);
 
-        // Everything else on the segment stays with whichever protocol owns it.
         let neighbour = ndp_frame(&advertisement_body(
             Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA),
             0b1000_0000,
@@ -857,15 +752,8 @@ pub(crate) mod tests {
         ));
     }
 
-    /// A server's answer names the server, and a relay's forwarding does not
-    /// name the relay.
-    ///
-    /// The second half is the one worth pinning. On a network with a relay
-    /// agent the reply arrives from the relay's address carrying a server
-    /// identifier for a machine on another segment, and both of the obvious
-    /// readings are wrong: marking the sender names a relay a DHCP server, and
-    /// marking the named address attaches a role to a machine this frame says
-    /// nothing about. It proves the relay is there, and that is all.
+    /// A server's answer names the server, and a relay's forwarding names
+    /// nobody: it only proves the relay is there.
     #[test]
     fn a_dhcp_answer_names_a_server_only_where_the_server_answered() {
         let server = Ipv4Addr::new(192, 0, 2, 1);
@@ -876,8 +764,7 @@ pub(crate) mod tests {
         assert!(matches!(reading.matched, ProtocolMatch::Unsolicited));
         assert_eq!(reading.declared, Some(NetworkRole::DhcpServer));
 
-        // The same message forwarded by a relay, which is where the address in
-        // the packet and the address in the message part company.
+        // Forwarded by a relay: the packet's source differs from the message's.
         let relayed = dhcp_reply_frame(server, Some(Ipv4Addr::new(198, 51, 100, 254)));
         let frame = crate::protocols::ethernet::parse(&relayed).unwrap();
         let reading = DhcpProtocol.interpret(&frame).unwrap();
@@ -887,7 +774,7 @@ pub(crate) mod tests {
             "the sender is a relay, not a server"
         );
 
-        // A client's own broadcast, which every machine on the segment sends.
+        // Not DHCP at all.
         let frame_bytes = arp_reply_frame(Ipv4Addr::new(192, 0, 2, 20));
         let frame = crate::protocols::ethernet::parse(&frame_bytes).unwrap();
         assert!(matches!(
