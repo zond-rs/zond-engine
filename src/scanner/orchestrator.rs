@@ -166,7 +166,10 @@ impl ScanCapabilities {
             caps.announce(
                 probing,
                 by_raw_socket(mode, privilege::can_send_raw()),
-                reasons.as_deref(),
+                reasons.as_deref().map(|why| ByConnect {
+                    why,
+                    fallback: beyond.is_a_fallback(),
+                }),
             );
         }
         caps
@@ -175,17 +178,21 @@ impl ScanCapabilities {
     /// Says what the privilege this run holds lets it probe with.
     ///
     /// `raw_sockets` is which of the two routes to raw probing carries the
-    /// probes; see [`by_raw_socket`]. `unframed` is why no frame reaches any
-    /// target, where none does; the run then probes by connect alone, and the
-    /// line says so.
+    /// probes; see [`by_raw_socket`]. `unframed` is set where no frame reaches
+    /// any target; the run then probes by connect alone, and the line says so,
+    /// as a warning where connect is a fallback.
     ///
     /// Without raw sockets the line carries what root would add, in brackets.
     /// This is the only place a run says so.
-    fn announce(self, probing: Probing, raw_sockets: bool, unframed: Option<&str>) {
-        if let (true, None, Some(why)) = (self.privilege.is_raw(), probing.zombie, unframed) {
-            match probing.udp {
-                true => success!("probing by TCP connect and plain UDP ({why})"),
-                false => success!("probing by TCP connect ({why})"),
+    fn announce(self, probing: Probing, raw_sockets: bool, unframed: Option<ByConnect<'_>>) {
+        if let (true, None, Some(ByConnect { why, fallback })) =
+            (self.privilege.is_raw(), probing.zombie, unframed)
+        {
+            match (probing.udp, fallback) {
+                (true, true) => warn!("probing by TCP connect and plain UDP ({why})"),
+                (true, false) => success!("probing by TCP connect and plain UDP ({why})"),
+                (false, true) => warn!("probing by TCP connect ({why})"),
+                (false, false) => success!("probing by TCP connect ({why})"),
             }
         } else if self.privilege.is_raw() {
             let route = if raw_sockets {
@@ -227,6 +234,17 @@ impl ScanCapabilities {
         }
         interface::beyond_frames(targets.clone(), forced, sender)
     }
+}
+
+/// Why a raw run whose frames reach none of its targets probes them by
+/// connect, for the line that opens it.
+#[derive(Clone, Copy, Debug)]
+struct ByConnect<'a> {
+    /// Each reason no frame reaches them, joined, for the brackets.
+    why: &'a str,
+    /// Whether connect is a fallback here rather than the targets' route; see
+    /// [`BeyondFrames::is_a_fallback`](interface::BeyondFrames::is_a_fallback).
+    fallback: bool,
 }
 
 /// Whether a raw run's probes leave by raw socket or as frames it builds itself,
@@ -3390,8 +3408,10 @@ mod tests {
         }
     }
 
-    /// A frames-only run whose every target is beyond a frame's reach, such as
-    /// loopback, announces the connect it probes by and why.
+    /// A frames-only run whose every target is beyond a frame's reach announces
+    /// the connect it probes by and why: as a success for loopback, where
+    /// connect is the route, and as a warning behind a tunnel, where it stands
+    /// in for the probes root would send.
     #[test]
     fn a_run_whose_every_target_is_beyond_frames_announces_the_connect() {
         let frames = ScanCapabilities {
@@ -3413,23 +3433,52 @@ mod tests {
             map
         };
         let cfg = ZondConfig::default();
-        for (probing, expected) in [
-            (Probing::sweep(), "probing by TCP connect (loopback)"),
+        let loopback = ByConnect {
+            why: "loopback",
+            fallback: false,
+        };
+        let tunnelled = ByConnect {
+            why: "via utun9",
+            fallback: true,
+        };
+        for (probing, by_connect, expected, level) in [
+            (
+                Probing::sweep(),
+                loopback,
+                "probing by TCP connect (loopback)",
+                tracing::Level::INFO,
+            ),
             (
                 Probing::ports(&cfg, &tcp_only),
+                loopback,
                 "probing by TCP connect (loopback)",
+                tracing::Level::INFO,
             ),
             (
                 Probing::ports(&cfg, &map),
+                loopback,
                 "probing by TCP connect and plain UDP (loopback)",
+                tracing::Level::INFO,
+            ),
+            (
+                Probing::sweep(),
+                tunnelled,
+                "probing by TCP connect (via utun9)",
+                tracing::Level::WARN,
+            ),
+            (
+                Probing::ports(&cfg, &map),
+                tunnelled,
+                "probing by TCP connect and plain UDP (via utun9)",
+                tracing::Level::WARN,
             ),
         ] {
-            let heard = Heard::default();
-            tracing::subscriber::with_default(heard.clone(), || {
-                frames.announce(probing, false, Some("loopback"));
-            });
-            let said = heard.0.lock().expect("an unpoisoned log").clone();
-            assert_eq!(said, [expected], "{probing:?}");
+            let said = crate::logging::logged(|| frames.announce(probing, false, Some(by_connect)));
+            let said: Vec<_> = said
+                .iter()
+                .map(|line| (line.message.as_str(), line.level))
+                .collect();
+            assert_eq!(said, [(expected, level)], "{probing:?}");
         }
 
         let beyond = frames.beyond_frames(

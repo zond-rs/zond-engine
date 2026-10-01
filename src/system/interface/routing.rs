@@ -481,6 +481,23 @@ impl BeyondFrames {
             .collect()
     }
 
+    /// Whether a connect to these targets is a fallback rather than their
+    /// route: some lie behind a tunnel, are IPv6 neighbours the sender cannot
+    /// resolve, or have no route at all.
+    ///
+    /// Root reaches the first two by raw socket, and nothing reaches the third,
+    /// so a run probing them by connect is weaker than one that could frame
+    /// them. Loopback, this host's own addresses and IPv4-mapped targets are
+    /// reached by a socket at any privilege, so connect loses nothing there.
+    pub(crate) fn is_a_fallback(&self) -> bool {
+        self.reasons.iter().any(|(reason, _)| {
+            matches!(
+                reason,
+                Unframed::Tunnel(_) | Unframed::Neighbour(_) | Unframed::NoRoute
+            )
+        })
+    }
+
     /// Each reason that applied, in order, joined for the brackets after a
     /// message line.
     pub(crate) fn reasons(&self) -> String {
@@ -1213,6 +1230,7 @@ mod tests {
             beyond.summary(),
             vec![(Unframed::Tunnel("utun9".into()), ip("203.0.113.23"), 1)]
         );
+        assert!(beyond.is_a_fallback(), "a raw socket reaches it");
     }
 
     /// A tunnel's own subnet is not a segment. Its subnet and a target routed
@@ -1412,6 +1430,21 @@ mod tests {
                 (Unframed::Ours, ip("192.0.2.10"), 1),
             ]
         );
+        assert!(!beyond.is_a_fallback(), "connect is their route");
+    }
+
+    /// One address behind a tunnel makes the whole set a fallback, however
+    /// many others are this host's own: a segment routed into a VPN holds the
+    /// host's address and every other address through the tunnel.
+    #[test]
+    fn one_tunnelled_target_makes_a_connect_a_fallback() {
+        let mut beyond = BeyondFrames::default();
+        beyond.note(Unframed::Ours, set_of(&["192.0.2.10"]));
+        assert!(!beyond.is_a_fallback());
+
+        beyond.note(Unframed::Tunnel("utun9".into()), set_of(&["192.0.2.11"]));
+        assert!(beyond.is_a_fallback());
+        assert_eq!(beyond.reasons(), "own address, via utun9");
     }
 
     /// A routed target the kernel would send from the tunnel is sent from the
