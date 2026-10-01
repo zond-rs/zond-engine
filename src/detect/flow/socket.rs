@@ -28,15 +28,13 @@ use super::{Probe, ProbeRefusal};
 /// A blocking [`Probe`] over a fresh connection to one port, holding a budget
 /// and debiting it as it goes.
 ///
-/// Each [`speak`](Probe::speak) is one request and its reply, which is what the
-/// corpus's stateless exchanges need. It is bound to the address it was built
-/// for and reaches nothing else, and an HTTP request whose `Host` stands for
-/// that address, as `localhost` or the address itself, is sent naming the port
-/// the way a browser would.
+/// Each [`speak`](Probe::speak) is one request and its reply. It reaches only
+/// the address it was built for, and an HTTP request whose `Host` stands for
+/// that address (`localhost` or the address itself) is sent naming the port as
+/// a browser would.
 ///
-/// The budget is enforced here, which is what makes a detection's declaration
-/// mean something: an exchange the budget cannot pay for is refused before a
-/// packet leaves, and a reply is capped at the bytes still available.
+/// An exchange the budget cannot pay for is refused before a packet leaves,
+/// and a reply is capped at the bytes still available.
 ///
 /// ```no_run
 /// use std::time::Duration;
@@ -69,12 +67,11 @@ pub struct SocketProbe {
     deadline: Instant,
     /// Connections still available to this flow.
     connections_left: u32,
-    /// Why the last `speak` refused, if a budget did rather than the port going
-    /// silent.
+    /// Why the last `speak` was refused, if it was.
     last_refusal: Option<ProbeRefusal>,
     /// Whether the last `speak` read its reply to a self-terminating end: the
     /// peer closing, or an HTTP message reaching the length it declared. False
-    /// after a `speak` that returned nothing, which left no reply to be whole.
+    /// after a `speak` that returned nothing.
     last_complete: bool,
     /// The exchanges the flow may still make, this probe's own included, once
     /// the flow has said how many it plans. See [`Probe::plan`].
@@ -86,13 +83,9 @@ pub struct SocketProbe {
 /// The least a datagram is waited on for its reply, however many the flow
 /// still plans to send.
 ///
-/// Sharing the flow's time among its datagrams could otherwise leave each too
-/// little for any reply to arrive, and a guess given no time to be answered is
-/// a guess silently not tried. Half a second holds an intercontinental round
-/// trip and an agent's work on the request with room to spare. A flow planning
-/// more datagrams than its budget holds at this pace is refused the rest on its
-/// deadline, which its report then shows, rather than trying every one too
-/// briefly to hear any.
+/// Half a second holds an intercontinental round trip and the agent's work.
+/// A flow planning more datagrams than its budget holds at this pace is
+/// refused the rest on its deadline.
 const DATAGRAM_WAIT_FLOOR: Duration = Duration::from_millis(500);
 
 impl SocketProbe {
@@ -100,17 +93,13 @@ impl SocketProbe {
     ///
     /// `tunnel` is the transport the port answered inside, so a flow reaches an
     /// `ssl/*` service through a handshake and every other port in the clear.
-    /// The clock starts here rather than at the first exchange, so time spent
-    /// waiting to build one does not come out of the flow's budget.
+    /// The clock starts here.
     ///
-    /// Of the five ceilings a [`Budget`] carries, a flow spends the three that
-    /// reach the network: bytes, wall clock, and connections. `fuel` and
-    /// `max_memory` bound a compute module's execution and a flow executes
-    /// nothing, so they are ignored here as they are in
+    /// A flow spends three of a [`Budget`]'s ceilings: bytes, wall clock, and
+    /// connections. `fuel` and `max_memory` are ignored, as in
     /// [`LiveCapabilities`](crate::detect::compute::LiveCapabilities).
     ///
-    /// Its connections go where the routing table sends them. A scan forced to
-    /// a source builds its own with every connection pinned there.
+    /// Connections go where the routing table sends them.
     pub fn new(
         addr: SocketAddr,
         protocol: Protocol,
@@ -132,9 +121,8 @@ impl SocketProbe {
         }
     }
 
-    /// The same probe, with every connection leaving by `egress`: the way the
-    /// scan reached the port, so a detection speaks to it from where the probe
-    /// did.
+    /// The same probe, with every connection leaving by `egress`, the way the
+    /// scan reached the port.
     pub(crate) fn via(mut self, egress: Egress) -> Self {
         self.egress = egress;
         self
@@ -143,14 +131,12 @@ impl SocketProbe {
     /// The same probe, asking for the port by `name`, the host name its
     /// address was reached by.
     ///
-    /// A server holding several sites at one address routes by the name a
-    /// client asks for, so without one it answers with its default site or
-    /// refuses the handshake. Named, the port is asked for that site: the
+    /// A server holding several sites at one address routes by name. The
     /// handshake with an `ssl/*` service carries it as its server name, and an
-    /// HTTP request whose `Host` stands for the port, as `localhost` or the
-    /// address itself, is sent naming it. A `Host` naming some other site is
-    /// sent as written. A name a handshake cannot carry, an address among
-    /// them, leaves the handshake without a server name.
+    /// HTTP request whose `Host` stands for the port (`localhost` or the
+    /// address) is sent naming it. A `Host` naming another site is sent as
+    /// written. A name a handshake cannot carry, such as an address, leaves the
+    /// handshake without a server name.
     pub fn named(mut self, name: impl Into<Arc<str>>) -> Self {
         self.peer = self.peer.named(Some(name.into()));
         self
@@ -160,13 +146,9 @@ impl SocketProbe {
     /// left, split evenly among the exchanges the flow still plans, and never
     /// less than [`DATAGRAM_WAIT_FLOOR`] or past the flow's deadline.
     ///
-    /// Silence is an ordinary answer over UDP, and every datagram of a flow may
-    /// draw one. Given the whole of what is left, the first unanswered one
-    /// would spend it and the rest would never be sent; given an even share,
-    /// each is heard out and the last still has its turn. A caller speaking
-    /// without a plan has told this probe nothing of what follows, so its
-    /// datagram gets all the time there is, and silence at the deadline is a
-    /// question the clock closed rather than one heard out.
+    /// Silence is an ordinary answer over UDP, so an even share lets every
+    /// datagram be heard out. Without a plan, a datagram gets all the time
+    /// left, and silence at the deadline counts as the clock's.
     fn datagram_wait(&self, left: Duration) -> DatagramWait {
         let Some(planned) = self.exchanges_left else {
             return DatagramWait {
@@ -193,14 +175,13 @@ struct DatagramWait {
 
 impl Probe for SocketProbe {
     fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
-        // Addressed before the budget is asked, which pays for what is sent.
+        // Addressed first: the budget pays for what is sent.
         let bytes = match self.protocol {
             Protocol::Tcp => self.peer.readdressed(bytes),
             _ => std::borrow::Cow::Borrowed(bytes),
         };
         let bytes = &*bytes;
-        // Refuse the exchange the budget cannot pay for, before any packet leaves,
-        // recording which budget so a silent port and a spent one stay distinct.
+        // Refuse what the budget cannot pay for, before any packet leaves.
         self.last_refusal = None;
         self.last_complete = false;
         if self.connections_left == 0 {
@@ -216,16 +197,11 @@ impl Probe for SocketProbe {
             self.last_refusal = Some(ProbeRefusal::Bytes);
             return None;
         }
-        // An SCTP port is scanned without a client stack, so there is nothing
-        // here for a detection to hold a conversation over, and no probe to
-        // pace.
+        // SCTP has no client stack to converse over.
         if self.protocol == Protocol::Sctp {
             return None;
         }
-        // The exchange's slot under the scan's pacing, once every budget has
-        // said it may go. The wait is the scan's, and moves the flow's
-        // deadline by as much, so the time the flow has for the port is what
-        // it was given.
+        // The pacing wait is the scan's, so it moves the flow's deadline.
         let slot = match exchange::slot(&self.egress, self.peer.socket().ip()) {
             Ok((slot, waited)) => {
                 self.deadline += waited;
@@ -246,10 +222,8 @@ impl Probe for SocketProbe {
         let datagram = self.datagram_wait(left);
         self.exchanges_left = self.exchanges_left.map(|planned| planned.saturating_sub(1));
 
-        // The reply may consume at most what the byte budget has left. A silent or
-        // unreachable port is not a refusal, so `last_refusal` stays clear, unless
-        // it was the flow's clock that ended the wait, or the process that had
-        // no socket to make the exchange with.
+        // A silent or unreachable port is not a refusal, unless the flow's clock
+        // ended the wait or the process had no socket.
         let reply = match self.protocol {
             Protocol::Tcp => exchange::tcp(
                 &self.peer,
@@ -278,15 +252,9 @@ impl Probe for SocketProbe {
         let reply = reply.ok().filter(|reply| !reply.bytes.is_empty());
 
         let Some(reply) = reply else {
-            // Every wait in an exchange is drawn from what is left of the flow's
-            // time, so one that came back empty with none of it left was ended
-            // by the budget, not by the port: the question was still open when
-            // the clock stopped it. Refused, so the flow's report says a budget
-            // left it unanswered rather than that the port had nothing to say.
-            // A port that refused the connection or reset it did so with time
-            // to spare, and stays silence. So does a datagram that was waited
-            // on for its whole share: its silence was heard out, and is the
-            // answer, even when that share was the last of the flow's time.
+            // Empty with no time left means the clock ended it: a refusal. A
+            // refused or reset connection had time to spare and stays silence,
+            // as does a datagram heard out for its whole share.
             let heard_out = self.protocol == Protocol::Udp && datagram.full_share;
             if exchange::remaining(self.deadline).is_none() && !heard_out {
                 self.last_refusal = Some(ProbeRefusal::Deadline);
@@ -312,8 +280,7 @@ impl Probe for SocketProbe {
     }
 
     fn reads_until(&mut self, pattern: Option<&str>) {
-        // A pattern is compiled once for the process, so a `for_each` sending
-        // the same step looks it up again rather than compiling it again.
+        // Compiled once per process.
         self.reply_end = pattern.and_then(exchange::ReplyEnd::compile);
     }
 }
@@ -324,19 +291,15 @@ mod tests {
     use crate::testing::loopback::from_this_process;
     use std::time::Duration;
 
-    /// A budget with the ceilings this file is about, and nothing spent on the
-    /// two a flow never touches.
+    /// A budget with the three ceilings a flow spends.
     fn budget(max_bytes: u64, millis: u64, max_connections: u32) -> Budget {
         Budget::new(0, Duration::from_millis(millis))
             .with_max_bytes(max_bytes)
             .with_max_connections(max_connections)
     }
 
-    /// An exchange the process had no socket for is refused on the process's
-    /// account, once the flow's own time has gone on waiting for one, rather
-    /// than coming back as a port that said nothing: a flow reads silence as
-    /// an answer and clears the port, and the finding a reply would have drawn
-    /// is lost with nothing said.
+    /// An exchange the process had no socket for is refused as
+    /// [`ProbeRefusal::Descriptors`], not read as silence.
     #[cfg(unix)]
     #[test]
     fn an_exchange_with_no_socket_to_give_is_refused_rather_than_read_as_silence() {
@@ -438,11 +401,8 @@ mod tests {
         assert_eq!(probe.last_refusal(), Some(ProbeRefusal::Bytes));
     }
 
-    /// A web server that keeps the connection open after its reply, whatever
-    /// `Connection: close` asked, as some embedded servers do. The reply says
-    /// how long it is, so the exchange is over when that much has arrived: a
-    /// flow asking three questions of such a server gets three whole answers
-    /// inside a budget one idle connection would otherwise have spent.
+    /// A web server that ignores `Connection: close`, as some embedded servers
+    /// do. The exchange ends when the declared length has arrived.
     #[test]
     fn a_reply_that_says_how_long_it_is_ends_there_rather_than_when_the_server_hangs_up() {
         use std::io::{Read as _, Write as _};
@@ -455,15 +415,13 @@ mod tests {
                     let _ = sock.read(&mut [0u8; 512]);
                     let _ = sock
                         .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nnot found");
-                    // Held until the client lets go, which is what a server
-                    // ignoring `Connection: close` looks like from this side.
+                    // Held until the client lets go.
                     let _ = sock.read(&mut [0u8; 1]);
                 });
             }
         });
 
-        // A reply taken as whole ended where its length said: the server never
-        // closes, and one ended by the port going quiet is not whole.
+        // Whole only because of the length: the server never closes.
         let mut probe = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, 1_500, 3));
         for path in ["/a", "/b", "/c"] {
             let request = format!("GET {path} HTTP/1.1\r\nConnection: close\r\n\r\n");
@@ -482,12 +440,9 @@ mod tests {
         }
     }
 
-    /// A service that answers and then keeps the connection open for the next
-    /// command, as redis and memcached do, and whose replies carry no length a
-    /// generic reader could follow. Each exchange ends once the reply has
-    /// arrived and the port has gone quiet, so a flow's second question is
-    /// asked inside the budget the first would otherwise have spent waiting for
-    /// a close that never comes.
+    /// A service that keeps the connection open for the next command, as redis
+    /// and memcached do, with no length to follow. Each exchange ends once the
+    /// port goes quiet.
     #[test]
     fn a_reply_the_service_holds_the_connection_open_after_ends_once_the_port_goes_quiet() {
         use std::io::{Read as _, Write as _};
@@ -521,21 +476,17 @@ mod tests {
         );
     }
 
-    /// A service that greets on connect and then pauses, longer than the idle
-    /// gap, before answering the pipelined command. Without a stated end the
-    /// read takes the pause for the end and keeps only the greeting; told where
-    /// the reply ends, it waits through the pause and reads the answer whole.
+    /// A service that greets and then pauses longer than the idle gap before
+    /// answering. Only a probe told where the reply ends reads the answer.
     #[test]
     fn a_reply_named_end_waits_through_a_pause_the_idle_gap_would_end_it_at() {
         use std::io::{Read as _, Write as _};
 
-        // Twice the idle gap the untold probe allows a port that answered at
-        // once, a quarter of its budget, and half the told probe's budget, so
-        // each side has a pause's margin whatever the machine's load.
+        // Twice the untold probe's idle gap and half the told probe's budget,
+        // a margin either way under load.
         const PAUSE: Duration = Duration::from_millis(3_000);
 
-        // Two connections: one probe told where its reply ends, one not. Each
-        // gets a fresh listener slot so the pause is the port's, not a queue.
+        // One connection each for the told and the untold probe.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -552,8 +503,7 @@ mod tests {
             }
         });
 
-        // Told where the reply ends: the read waits through the pause and the
-        // verdict line arrives.
+        // Told: the verdict arrives.
         let mut told = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, 6_000, 1));
         told.reads_until(Some("(?m)^230[ -]"));
         let reply = told.speak(b"USER anonymous\r\n").unwrap_or_default();
@@ -563,8 +513,7 @@ mod tests {
             String::from_utf8_lossy(&reply)
         );
 
-        // Not told: the idle gap ends the reply at the greeting, before the
-        // verdict, which is the shortfall the named end exists to close.
+        // Not told: the reply ends at the greeting.
         let mut untold = SocketProbe::new(addr, Protocol::Tcp, None, &budget(4096, 6_000, 1));
         let greeting = untold.speak(b"USER anonymous\r\n").unwrap_or_default();
         assert!(
@@ -573,13 +522,9 @@ mod tests {
         );
     }
 
-    /// A flow that guesses over UDP, one datagram per guess, where a wrong
-    /// guess draws no reply at all, as an SNMP agent treats a community it does
-    /// not know. Silence is the answer to each wrong guess, so each may wait
-    /// only its share of the flow's time: an agent that accepts only the second
-    /// guess is found, rather than the first guess's silence spending the whole
-    /// budget and leaving the rest untried, and the last guess heard out to the
-    /// end of the budget is answered by its silence rather than cut short.
+    /// A flow guessing over UDP, where a wrong guess draws no reply, as with an
+    /// SNMP community. Each guess waits only its share, so the accepted second
+    /// guess is found, and the last guess's silence is an answer.
     #[test]
     fn a_udp_flow_tries_every_guess_when_the_first_goes_unanswered() {
         use crate::detect::flow::{FlowSeed, run, schema::FlowDetection};
@@ -636,14 +581,12 @@ mod tests {
             "the accepted guess was never tried; last refusal {:?}",
             probe.last_refusal()
         );
-        // The last guess's silence was heard out for its whole share, so it is
-        // the agent's answer, not a question the budget left open.
+        // The last guess's silence was heard out for its whole share.
         assert_eq!(probe.last_refusal(), None);
     }
 
-    /// What the probe says about a reply's completeness describes its last
-    /// exchange, and an exchange that drew nothing has no whole reply to
-    /// describe, whatever the one before it read.
+    /// An exchange that drew nothing is not reported whole, whatever the one
+    /// before it read.
     #[test]
     fn an_exchange_that_drew_nothing_is_not_reported_whole() {
         use std::io::{Read as _, Write as _};
@@ -651,9 +594,8 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
-            // Answers the one connection and closes it, then stops listening.
-            // The request is read first, so the close is a clean one rather
-            // than a reset over unread bytes.
+            // Reads the request first, so the close is clean, then stops
+            // listening.
             if let Some(mut sock) = from_this_process(&listener).next() {
                 let _ = sock.read(&mut [0u8; 16]);
                 let _ = sock.write_all(b"ok");
@@ -675,9 +617,7 @@ mod tests {
         );
     }
 
-    /// An exchange the flow's clock ran out on is a question the budget left
-    /// unanswered, and says so: a flow whose last request was still waiting
-    /// when its time was up must not read the same as one the port declined.
+    /// An exchange the flow's clock ran out on is refused on the deadline.
     #[test]
     fn an_exchange_its_time_budget_ran_out_on_is_refused_rather_than_unanswered() {
         use std::io::Read as _;
@@ -697,8 +637,7 @@ mod tests {
         assert_eq!(probe.last_refusal(), Some(ProbeRefusal::Deadline));
     }
 
-    /// A port that turns the connection away has answered, with a refusal of
-    /// its own, before the budget had any say: that is silence, not a cut.
+    /// A port that refuses the connection is silence, not a budget refusal.
     #[test]
     fn a_port_that_refuses_the_connection_is_unanswered_rather_than_refused() {
         // Closed, so the kernel resets.
@@ -712,10 +651,7 @@ mod tests {
     /// **A flow's exchanges with one port keep the scan's gap between them,
     /// and the gap does not come out of the flow's own time.**
     ///
-    /// The flow is given a third of a second and the host a gap of twice
-    /// that between probes, so the second exchange waits longer for its turn
-    /// than the flow has in all. Its reply still comes, since the wait is the
-    /// scan's, and the two connections arrive a whole gap apart.
+    /// The gap is twice the flow's whole budget, yet the second reply comes.
     #[test]
     fn a_flow_keeps_the_scan_gap_without_spending_its_own_time_on_it() {
         let gap = Duration::from_millis(600);
@@ -756,8 +692,7 @@ mod tests {
         );
     }
 
-    /// An SCTP port has no client stack behind it here, so a flow aimed at one
-    /// goes unanswered rather than refused: nothing about the budget stopped it.
+    /// An SCTP port goes unanswered, not refused.
     #[test]
     fn an_sctp_port_is_unanswered_rather_than_refused() {
         let addr: SocketAddr = "192.0.2.1:9".parse().unwrap();

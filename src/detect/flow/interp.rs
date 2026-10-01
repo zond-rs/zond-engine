@@ -8,29 +8,23 @@
 
 //! # Running a flow
 //!
-//! Walks a [`FlowDetection`]'s steps front to back,
-//! once, there is no instruction that revisits a step, exchanging bytes with a
-//! [`Probe`], matching replies, binding variables, and emitting the
-//! [`Finding`]s its findings imply. The bound total probe count and the absence
-//! of any jump are what let it run without a fuel meter: it cannot loop forever
-//! and cannot exceed its declared budget by construction.
+//! Walks a [`FlowDetection`]'s steps once, front to back, exchanging bytes with
+//! a [`Probe`], matching replies, binding variables, and emitting
+//! [`Finding`]s. With a bounded probe count and no jumps, it needs no fuel
+//! meter.
 //!
 //! ## The variable environment is forward-only
 //!
-//! A step sees what earlier steps bound, never what a later one will. An ordinary
-//! step's binds propagate to the steps after it; a `for_each` step runs each item
-//! in an environment of its own, so one iteration's binds never leak into the
-//! next.
+//! A step sees what earlier steps bound. A `for_each` step runs each item in an
+//! environment of its own, so one iteration's binds do not leak into the next.
 //!
 //! ## Guards decide the branches
 //!
-//! Two kinds of `when` clause steer a flow, both written in the [guard
-//! grammar](super::expr) and answered by [`eval`]. A step's `when`
-//! is checked against the environment before the step runs, a false guard
-//! skips the step and moves on, so a step may be made conditional on what an
-//! earlier one bound. A finding's `when` is checked against the environment and
-//! its step's match result, so a finding fires only in the case it names. An
-//! absent guard always holds; an unparseable one never does.
+//! Both kinds of `when` are written in the [guard grammar](super::expr) and
+//! answered by [`eval`]. A step's `when` is checked against the environment
+//! before the step runs; false skips it. A finding's `when` also sees its
+//! step's match result. An absent guard always holds; an unparseable one never
+//! does.
 
 use std::net::IpAddr;
 
@@ -47,11 +41,8 @@ use super::schema::{FindingSpec, FlowDetection, MatchSpec, OnNoMatch, Step};
 use super::schema::{MAX_FLOW_STEPS, MAX_LOOP_ITEMS, SEED_VAR_HOST, SEED_VAR_PORT};
 use super::{Env, eval};
 
-/// Why an exchange a flow asked for was refused before it happened, rather than
-/// simply going unanswered: a budget the detection declared, now spent, or a
-/// socket the process had none left to give. A silent port and a refused
-/// exchange both leave a step without a reply, and a report needs to tell them
-/// apart.
+/// Why an exchange was refused before it happened: a declared budget spent, or
+/// no socket left to give. Kept apart from a silent port in reports.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeRefusal {
@@ -61,15 +52,11 @@ pub enum ProbeRefusal {
     Connections,
     /// The wall-clock budget is spent.
     Deadline,
-    /// The process had no file descriptor to give the exchange's socket for as
-    /// long as the flow's time allowed. Neither the port's doing nor the
-    /// detection's: the process's descriptor limit is too small for what it
-    /// has open, and raising it is the remedy.
+    /// The process had no file descriptor for the exchange's socket within the
+    /// flow's time. Raise the process's descriptor limit.
     Descriptors,
-    /// The scan stopped, or the host ran out of the time the scan gave it,
-    /// while the exchange waited for its turn under the scan's pacing, so
-    /// nothing was sent. The scan's record says which: the pass it left, or
-    /// the host it left early.
+    /// The scan stopped, or the host's time ran out, while the exchange waited
+    /// for its pacing slot, so nothing was sent.
     Withheld,
 }
 
@@ -77,21 +64,17 @@ pub enum ProbeRefusal {
 /// socket and read its reply. A test supplies a canned one; a scan supplies the
 /// real socket.
 ///
-/// [`Send`], because a port's flows are run several at a time and each holds a
-/// probe of its own. An HTTP port attracts dozens of flows, every one of them a
-/// separate conversation with the same socket address, and run one after another
-/// they cost that many round trips in a row.
+/// [`Send`], because a port's flows run several at a time, each with its own
+/// probe.
 pub trait Probe: Send {
     /// Sends `bytes` and returns the reply, or [`None`] if the socket said
     /// nothing.
     fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>>;
 
     /// Whether the most recent [`speak`](Self::speak) reply was read to a clean,
-    /// self-terminating end, a TCP peer that closed the connection or a UDP
-    /// datagram, rather than cut short by a byte or time budget. A reply cut
-    /// short cannot stand in for one a larger budget would have read in full, so
-    /// only a complete one is safe to share between flows. The default is `true`:
-    /// a canned probe hands back a whole reply.
+    /// self-terminating end (a TCP close or a UDP datagram) and not cut short by
+    /// a budget. Only a complete reply is shared between flows. Defaults to
+    /// `true`.
     fn reply_complete(&self) -> bool {
         true
     }
@@ -99,13 +82,9 @@ pub trait Probe: Send {
     /// Told, before a flow's first exchange, the most exchanges the flow will
     /// make: one for each step that sends, and one per item for a `for_each`.
     ///
-    /// For a probe that waits on silence. Over a datagram protocol no reply is
-    /// often the whole answer, an agent ignoring a guess it does not accept, and
-    /// a probe that gave each such wait everything left of the flow's time would
-    /// spend it all on the first unanswered question. Knowing how many questions
-    /// may follow, it can share the time among them instead. An upper bound, not
-    /// a promise: a step whose guard is false sends nothing. The default ignores
-    /// it, as a probe that never waits on silence can.
+    /// Over UDP no reply is often the answer, so a probe that waits on silence
+    /// can share the flow's time among the exchanges. An upper bound: a step
+    /// whose guard is false sends nothing. The default ignores it.
     fn plan(&mut self, exchanges: u32) {
         let _ = exchanges;
     }
@@ -113,23 +92,16 @@ pub trait Probe: Send {
     /// The pattern marking where the next [`speak`](Self::speak)'s reply ends,
     /// or [`None`] to let it end at a close or the port falling silent.
     ///
-    /// For a probe reading a reply off a live socket. A service that greets on
-    /// connect and then pauses before answering a pipelined command, an FTP
-    /// server holding its reply for a failed-login delay among them, falls
-    /// silent with its answer still to come, and a reader taking that pause for
-    /// the end keeps only the greeting. A flow that knows the line its reply
-    /// closes with names it here, and the read waits through the pause for it.
-    /// Set before each `speak`; the default ignores it, as a canned probe whose
-    /// reply is whole in hand can.
+    /// For a service that greets and then pauses before answering a pipelined
+    /// command, such as an FTP server delaying a failed login: the read waits
+    /// through the pause for this line. Set before each `speak`; the default
+    /// ignores it.
     fn reads_until(&mut self, pattern: Option<&str>) {
         let _ = pattern;
     }
 
-    /// Why the most recent [`speak`](Self::speak) returned [`None`], if a budget
-    /// refused the exchange rather than the port merely going silent. The default
-    /// is [`None`]: a probe with no budget of its own never refuses, it only goes
-    /// unanswered. The live socket probe overrides this, so a flow cut short by its
-    /// own budget is recorded rather than mistaken for a silent port.
+    /// Why the most recent [`speak`](Self::speak) returned [`None`], if it was
+    /// refused. [`None`] for a silent port, and by default.
     fn last_refusal(&self) -> Option<ProbeRefusal> {
         None
     }
@@ -142,26 +114,16 @@ enum Flow {
     Halt,
 }
 
-/// The facts about the port under probe that a flow may name in a `send` or a
-/// `{var}` but has no other way to know: the address it reached and the number it
-/// reached it on, seeded into the environment as `host` and `port` before the
-/// first step.
+/// The port under probe, seeded into the environment as `host` and `port`
+/// before the first step, for a flow to name in a `send` or a `{var}`.
 ///
-/// A flow that sends HTTP names the host it is talking to, in a `Host:` header or
-/// a redirect it follows. These two variables are the host it reached, not one
-/// it chose: the address the scan resolved and connected to, so a flow still
-/// cannot address a machine the scan never looked at. A scan sends a `Host`
-/// naming that address, or `localhost`, as the site the target named where it
-/// reached the address by a name, since a server routing by name answers any
-/// other with the wrong site or a redirect away.
+/// `host` is the address the scan connected to, so a flow cannot address a
+/// machine the scan never looked at. A scan sends a `Host` naming that address,
+/// or `localhost`, as the name the target was reached by, since a server
+/// routing by name would otherwise answer with the wrong site.
 ///
-/// The environment otherwise holds only what a `bind` captured off the wire,
-/// which is what lets a flow's matching stay a pure function of the bytes it was
-/// answered with. `host` and `port` do not weaken that: they are the fixed
-/// identity of the endpoint, recorded on the run like every reply, not ambient
-/// state that could differ on a re-run, which is the line that still keeps a
-/// clock out. A `bind` may shadow either name, and doing so only rebinds a
-/// template variable.
+/// Both are fixed for the endpoint, so matching stays a pure function of the
+/// replies. A `bind` may shadow either name.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct FlowSeed {
@@ -170,27 +132,19 @@ pub struct FlowSeed {
     pub host: String,
     /// The port the flow reached it on, seeded as `{port}`.
     pub port: u16,
-    /// Who else can reach [`host`](Self::host), which is what a finding's
-    /// severity is graded against where the flow stated one per rung.
-    ///
-    /// Read rather than set: [`new`](Self::new) derives it from `host`, so the
-    /// exposure and the address it describes cannot be made to disagree. That is
-    /// the reason it is not a constructor argument. A caller holding both would
-    /// be a caller able to pass a private address rated as the internet, and the
-    /// rating would be wrong in the one direction that matters without anything
-    /// being able to notice.
+    /// Who else can reach [`host`](Self::host), which a per-rung severity is
+    /// graded against. Derived from `host` by [`new`](Self::new), so the two
+    /// cannot disagree.
     pub exposure: Exposure,
 }
 
 impl FlowSeed {
     /// A seed for the endpoint at `host` on `port`.
     ///
-    /// `host` is an address as text, which is what the scan path hands over, and
-    /// the [`exposure`](Self::exposure) is read off it. A `host` that is not an
-    /// address, which a caller naming a target by hostname would pass, is
-    /// [`Internet`](Exposure::Internet): the widest audience is what a severity
-    /// means when nothing narrower has been established, so an unparsed host
-    /// leaves every finding rated exactly as its detection wrote it.
+    /// `host` is an address as text, and the [`exposure`](Self::exposure) is
+    /// read off it. A `host` that is not an address is
+    /// [`Internet`](Exposure::Internet), so every finding is rated as its
+    /// detection wrote it.
     pub fn new(host: impl Into<String>, port: u16) -> Self {
         let host = host.into();
         let exposure = host
@@ -203,9 +157,8 @@ impl FlowSeed {
         }
     }
 
-    /// Writes the seeded identity into a fresh environment, under the same names
-    /// the validator reserves in [`SEED_VARS`](super::schema::SEED_VARS), so what
-    /// a flow may reference and what it is handed cannot disagree.
+    /// Writes the seed into a fresh environment, under the names the validator
+    /// reserves in [`SEED_VARS`](super::schema::SEED_VARS).
     fn seed(&self, env: &mut Env) {
         env.insert(SEED_VAR_HOST.to_string(), self.host.clone());
         env.insert(SEED_VAR_PORT.to_string(), self.port.to_string());
@@ -215,10 +168,8 @@ impl FlowSeed {
 /// Runs `flow` against `probe`, returning the findings it produced.
 ///
 /// `content_hash` is the flow body's content address, stamped on every finding's
-/// [`DetectionId`] as provenance, the loader that sourced the flow computes it
-/// from the flow's bytes. Everything else, the id, version, severity and
-/// references, is the flow's own. `seed` supplies the `{host}` and `{port}` a
-/// probe template may name; see [`FlowSeed`].
+/// [`DetectionId`] as provenance. `seed` supplies `{host}` and `{port}`; see
+/// [`FlowSeed`].
 pub fn run(
     flow: &FlowDetection,
     content_hash: &str,
@@ -230,11 +181,7 @@ pub fn run(
     let mut findings = Vec::new();
     probe.plan(exchanges(flow));
 
-    // The step ceiling is enforced here, not only in the build-time validator, so
-    // a flow handed straight to `run` by a caller that never validated it cannot
-    // probe past the bound the corpus is held to. The validator rejects a longer
-    // flow outright; this clamps one, the same way the loop below clamps a
-    // `for_each` at `MAX_LOOP_ITEMS`.
+    // Clamped here too, for a flow that never went through the validator.
     for step in flow.step.iter().take(MAX_FLOW_STEPS) {
         match &step.for_each {
             Some(for_each) => {
@@ -277,8 +224,7 @@ pub fn run(
 /// How many exchanges `flow` makes when every step runs: one for each step that
 /// sends, and one per item for a `for_each`, clamped where [`run`] clamps them.
 ///
-/// An upper bound rather than a prediction, because a step whose guard is false
-/// sends nothing, and which guards hold is not known until the replies are in.
+/// An upper bound: a step whose guard is false sends nothing.
 pub(crate) fn exchanges(flow: &FlowDetection) -> u32 {
     let sends: usize = flow
         .step
@@ -311,24 +257,17 @@ fn run_step(
     probe: &mut dyn Probe,
     findings: &mut Vec<Finding>,
 ) -> Flow {
-    // A step's guard is checked before it runs: a false guard skips the step,
-    // its probe, its binds, its findings, and the flow proceeds to the next.
-    // `matched` is out of scope here, nothing having matched yet, so the guard
-    // reads only what earlier steps bound.
+    // `matched` is out of scope in a step's guard.
     if !eval::holds(step.when.as_deref(), env, None) {
         return Flow::Continue;
     }
 
-    // The probe exchange. A step with no `send` reads nothing new, so it has
-    // no reply to match against.
+    // A step with no `send` has no reply to match against.
     let response = match &step.send {
         Some(send) => match interpolate(send, env) {
             // Decoded byte-for-byte, so a binary pattern such as `\xa2` matches
-            // the byte it names rather than a lossy replacement character.
+            // the byte it names.
             Some(text) => {
-                // Where this step's reply ends, so the probe waits through a
-                // pause the port takes before answering rather than taking it
-                // for the end. `None` for a step that named none.
                 probe.reads_until(step.until.as_deref());
                 probe.speak(&unescape(&text)).map(|reply| latin1(&reply))
             }
@@ -338,9 +277,8 @@ fn run_step(
         None => None,
     };
 
-    // `bind` is best-effort: a capture that does not match leaves its variable
-    // unbound. Run it before the gate so a finding may read a value even from a
-    // step that then only continues.
+    // Best-effort, and before the gate, so a finding may read a value even from
+    // a step that does not match.
     if let Some(response) = &response {
         for (name, spec) in &step.bind {
             if let Some(value) = capture(spec, response, name) {
@@ -371,9 +309,7 @@ fn run_step(
     Flow::Continue
 }
 
-/// The flow's fate, halt or continue, that a step's `on_no_match` names for when
-/// the step ends without a match, such as a `send` whose template names an unbound
-/// variable and so cannot run.
+/// What a step's `on_no_match` says to do when it ends without a match.
 fn on_no_match(step: &Step) -> Flow {
     match step.on_no_match {
         OnNoMatch::Halt => Flow::Halt,
@@ -394,11 +330,9 @@ fn matches(spec: &MatchSpec, text: &str) -> bool {
 /// Compiles every pattern a flow will match on, refusing one that will not
 /// compile or that a bind can never capture from.
 ///
-/// The runtime reads an uncompilable pattern as a clean negative, so a shipped
-/// flow's patterns are compiled at build by `validate_flow_patterns`. `check` cannot
-/// do the same: it is a pure structural pass that holds no pattern engine. So the
-/// builder runs this over a caller's flow, mirroring that build check, rather than
-/// letting a bad pattern read as "no match" against a live target.
+/// The runtime reads an uncompilable pattern as no match. Shipped flows are
+/// checked at build by `validate_flow_patterns`; the builder runs this over a
+/// caller's flow, since `check` holds no pattern engine.
 pub(crate) fn check_patterns(flow: &FlowDetection) -> Result<(), String> {
     for (index, step) in flow.step.iter().enumerate() {
         for spec in &step.expect {
@@ -447,9 +381,8 @@ fn capture(spec: &MatchSpec, text: &str, name: &str) -> Option<String> {
 }
 
 /// Builds the finding a [`FindingSpec`] describes, resolving its `{var}`
-/// templates against the environment. [`None`] if a template names a variable
-/// nothing bound, a finding that would lie about what it found is dropped, not
-/// emitted half-built.
+/// templates against the environment. [`None`] if a template names an unbound
+/// variable.
 fn build_finding(
     flow: &FlowDetection,
     content_hash: &str,
@@ -465,12 +398,8 @@ fn build_finding(
         .unwrap_or(Version::new(0, 0, 0));
     let detection = DetectionId::new(flow.detection.id.clone(), version, content_hash).ok()?;
 
-    // The finding's one-line title is its own `title`, or its `summary` when it
-    // names none.
     let title = interpolate(spec.title.as_deref().unwrap_or(spec.summary.as_str()), env)?;
-    // The severity is graded against who can reach the endpoint, which the seed
-    // holds. A flow that stated one rating reads the same at every rung; see
-    // `SeveritySpec`.
+    // Graded by the seed's exposure; see `SeveritySpec`.
     let severity = spec.severity.into_model_at(seed.exposure);
     let confidence = spec
         .confidence
@@ -481,9 +410,7 @@ fn build_finding(
 
     let mut finding = Finding::new(detection, title, severity, confidence, class).ok()?;
 
-    // From the manifest rather than the finding spec: a group is a fact about
-    // which detections cover a weakness together, which one step of one of them
-    // is not in a position to state.
+    // A group comes from the manifest: it spans detections.
     if let Some(group) = flow.detection.group.as_ref().and_then(GroupSpec::to_model) {
         finding = finding.with_group(group);
     }
@@ -514,10 +441,9 @@ fn build_finding(
 }
 
 /// Substitutes each `{ident}` in `template` for the variable's value. `{{` and
-/// `}}` stand for a literal `{` and `}`, so a body carrying braces of its own, a
-/// JSON payload for one, survives the pass intact. [`None`] if a name is unbound
-/// or a `{` opens no `{ident}`, the caller dropping the field rather than emit a
-/// half-built one. A lone `}` is literal; only `{` can open a name.
+/// `}}` stand for a literal `{` and `}`, for a body such as a JSON payload.
+/// [`None`] if a name is unbound or a `{` opens no `{ident}`. A lone `}` is
+/// literal.
 fn interpolate(template: &str, env: &Env) -> Option<String> {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
@@ -541,9 +467,8 @@ fn interpolate(template: &str, env: &Env) -> Option<String> {
     Some(out)
 }
 
-/// Decodes bytes as Latin-1, each byte its own code point, so a probe reply is
-/// a string a byte-oriented pattern can match without a lossy conversion eating
-/// the bytes it looks for.
+/// Decodes bytes as Latin-1, each byte its own code point, so a byte-oriented
+/// pattern can match the reply losslessly.
 fn latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|&byte| byte as char).collect()
 }
@@ -585,10 +510,7 @@ mod tests {
     }
 
     /// **A flow matches its `expect` and its `bind` on the patterns kept for
-    /// the process.** A call site that compiled its pattern at each match
-    /// would match the same, and cost a compile per reply and a search cache
-    /// per thread that ever matched with it, which no finding shows; the
-    /// kept copies are asked whether they were the ones matched with.
+    /// the process**, not on fresh compiles per reply.
     #[test]
     fn a_flow_matches_its_expect_and_bind_on_the_kept_patterns() {
         const EXPECT: &str = "^KEPT-EXPECT ok";
@@ -629,9 +551,7 @@ mod tests {
 
     #[test]
     fn a_send_template_resolves_the_seeded_host_and_port() {
-        // A one-step flow whose probe interpolates both seeded variables. The
-        // reply confirms the version bind, so the flow reaches its finding; the
-        // point of the test is the bytes the probe was handed, not the finding.
+        // The test is about the bytes the probe was handed.
         let toml = r#"
             [detection]
             id = "seed-echo"
@@ -661,11 +581,8 @@ mod tests {
         );
     }
 
-    /// The Phase-1 corpus, each flow against a reply that should confirm it. It
-    /// loads the shipped file rather than a fixture, so the assertion is about the
-    /// detection that ships, and it drives the interpreter directly with a canned
-    /// reply, so a service that is awkward to stand up (memcached, CouchDB,
-    /// Elasticsearch) is covered the same way a web one is.
+    /// The shipped Phase-1 flows, each against a canned reply that should
+    /// confirm it.
     #[test]
     fn the_phase_one_flows_fire_on_a_confirming_reply() {
         let cases: &[(&str, &[u8], Severity)] = &[
@@ -701,8 +618,7 @@ mod tests {
             ),
             (
                 "mongodb-unauth",
-                // The bytes of an OP_MSG listDatabases reply matter only in that
-                // they carry the field the flow matches.
+                // Only the field the flow matches matters.
                 b"\x00\x00\x00\x00...sizeOnDisk\x00...admin\x00",
                 Severity::High,
             ),
@@ -840,12 +756,8 @@ mod tests {
         }
     }
 
-    /// No shipped flow may fire on a bare 404: a nothing-page confirms nothing,
-    /// and a flow whose `expect` fails halts with nothing. Checked over the whole
-    /// corpus rather than a named list, so the property holds for every flow and a
-    /// new one is covered without editing this test. The tailored per-service
-    /// denials, a 530 or a rejected bind or a 403, are their own tests below,
-    /// because each needs a reply shaped like the service it denies.
+    /// No shipped flow fires on a bare 404. Per-service denials are tested
+    /// below.
     #[test]
     fn no_flow_fires_on_a_generic_404() {
         let quiet = b"HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\n\r\n<html><body>not found</body></html>";
@@ -859,11 +771,8 @@ mod tests {
         }
     }
 
-    /// The two panel checks that turn on a 200 against a server that authenticates
-    /// instead: a Jenkins that redirects anonymous reads to a 403 still stamps its
-    /// X-Jenkins header, and a Kubernetes API that denies system:anonymous answers
-    /// 403 with a Status body that still names the kind. Neither may fire, because
-    /// the finding is anonymous *access*, not the mere presence of the software.
+    /// A Jenkins or Kubernetes API that answers anonymous reads with a 403 still
+    /// identifies itself, and must not fire: the finding is anonymous *access*.
     #[test]
     fn a_panel_that_requires_authentication_does_not_fire() {
         let cases: &[(&str, &[u8])] = &[
@@ -886,12 +795,9 @@ mod tests {
         }
     }
 
-    /// The four request-response enumeration flows against a same-protocol reply
-    /// that denies rather than a bare 404: a server that refuses anonymous FTP, an
-    /// LDAP bind rejected, a VNC server offering only a password, and a DNS server
-    /// that returns no answer. None may fire, because a password-guarded service
-    /// read as open is the false positive that would make the set unsafe by
-    /// default.
+    /// The four enumeration flows against a same-protocol denial: FTP refusing
+    /// anonymous, a rejected LDAP bind, VNC offering only a password, and DNS
+    /// returning no answer. None may fire.
     #[test]
     fn the_enumeration_flows_stay_quiet_when_the_service_denies_access() {
         let cases: &[(&str, &[u8])] = &[
@@ -960,12 +866,9 @@ mod tests {
         assert!(run(&redis, "", &seed(), &mut probe).is_empty());
     }
 
-    /// A probe standing in for an SNMP agent that accepts only the `public`
-    /// community. It answers a well-formed GetRequest carrying the sysDescr OID and
-    /// the `public` community with a GetResponse (PDU tag `\xa2`); every other
-    /// probe gets a report PDU (`\xa3`), which the `\xa2` gate rejects. The check
-    /// is on the packet decoding, not on a substring, so a malformed probe that
-    /// merely mentioned a community would not be answered.
+    /// An SNMP agent that accepts only the `public` community: a well-formed
+    /// GetRequest for sysDescr with it draws a GetResponse (`\xa2`), anything
+    /// else a report PDU (`\xa3`).
     struct Snmp;
     impl Probe for Snmp {
         fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
@@ -1072,17 +975,14 @@ mod tests {
     fn a_patched_or_unrelated_server_never_reaches_the_exploit_step() {
         let grafana = flow("grafana-path-traversal");
 
-        // 8.10.0 is newer than 8.3.1, a lexical `<` would misread it as
-        // affected (10 < 3 as strings) and probe a patched server; the
-        // version-compare guard skips the step, so no finding and no traversal.
+        // 8.10.0 is newer than 8.3.1, which a lexical `<` would misread.
         let mut patched = Grafana {
             banner: b"HTTP/1.1 200 OK\r\nX-Grafana: Grafana v8.10.0\r\n\r\n",
             leak: b"root:x:0:0:should-never-be-sent",
         };
         assert!(run(&grafana, "", &seed(), &mut patched).is_empty());
 
-        // Not Grafana at all: `bound(version)` is false, so the guard skips the
-        // step before the version comparison is even reached.
+        // Not Grafana: `bound(version)` is false.
         let mut other = Grafana {
             banner: b"HTTP/1.1 200 OK\r\nServer: nginx\r\n\r\n",
             leak: b"root:x:0:0:should-never-be-sent",
@@ -1092,10 +992,8 @@ mod tests {
 
     /// **A flow's severity is graded against who can reach the endpoint.**
     ///
-    /// The seed carries the exposure, read off the address it holds, so one flow
-    /// run against a private address and a public one reports the same claim at
-    /// two ratings. This is the whole mechanism: the flow states both readings and
-    /// the engine picks, rather than a detection guessing at its audience.
+    /// One flow run against a private and a public address reports the same
+    /// claim at two ratings.
     #[test]
     fn a_severity_stated_per_rung_is_graded_by_the_seeds_exposure() {
         let toml = r#"
@@ -1136,10 +1034,8 @@ mod tests {
         assert_eq!(graded("127.0.0.1"), Severity::Info, "unstated `local`");
     }
 
-    /// A flow stating one severity reports it at every rung, which is what nearly
-    /// every shipped flow does: an unauthenticated database is handed over to
-    /// whoever opened the socket, and a network whose own machines can do that is
-    /// how an intruder moves sideways.
+    /// A flow stating one severity reports it at every rung, as nearly every
+    /// shipped flow does.
     #[test]
     fn a_flat_severity_is_the_same_rating_wherever_the_endpoint_is() {
         let redis = flow("redis-unauth-access");
@@ -1161,10 +1057,7 @@ mod tests {
         }
     }
 
-    /// A seed whose host is not an address rates at the widest audience, so a
-    /// caller naming a target by hostname reports every finding exactly as its
-    /// detection wrote it. The one thing an unreadable host may not do is reduce a
-    /// rating.
+    /// A seed whose host is not an address rates at the widest audience.
     #[test]
     fn a_host_that_is_not_an_address_rates_at_the_widest_audience() {
         assert_eq!(
@@ -1174,10 +1067,6 @@ mod tests {
     }
 
     /// **A flow's group reaches every finding it produces.**
-    ///
-    /// Declared on the detection rather than on a step's finding, because which
-    /// detections cover a weakness between them is not a thing one step of one
-    /// of them is in a position to state.
     #[test]
     fn a_flow_stamps_its_group_on_what_it_finds() {
         let toml = r#"
@@ -1222,8 +1111,7 @@ mod tests {
         assert_eq!(group.summary(), "weak SSH algorithms offered");
     }
 
-    /// A detection that declares no group produces findings that belong to
-    /// none, which is most of them.
+    /// A detection that declares no group produces findings that belong to none.
     #[test]
     fn a_flow_without_a_group_stamps_none() {
         let toml = r#"
@@ -1267,9 +1155,7 @@ mod tests {
 
     #[test]
     fn run_does_not_probe_past_the_step_ceiling() {
-        // The validator rejects a flow over the ceiling at build, but `run` is
-        // public and a caller can hand it one that never went through the
-        // validator. It must still refuse to probe past the bound.
+        // `run` is public, so it must clamp an unvalidated flow too.
         let mut probes = 0usize;
         struct Counting<'a>(&'a mut usize);
         impl Probe for Counting<'_> {
