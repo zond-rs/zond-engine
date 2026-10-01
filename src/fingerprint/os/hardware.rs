@@ -8,56 +8,32 @@
 
 //! # What the hardware address says about the software
 //!
-//! Usually nothing, and saying so is most of this module's job.
+//! Usually nothing.
 //!
-//! ## Only a vendor whose hardware implies something says anything
+//! ## Only some vendors imply a system
 //!
-//! A hardware address names whoever registered the address block. For a machine
-//! whose maker also writes what runs on it, that is a real signal: an address
-//! belonging to Apple is on Apple hardware, and Apple hardware runs Apple's
-//! operating system unless somebody went out of their way. For a commodity
-//! network adapter it is no signal at all, an Intel or Realtek chip is in
-//! machines running every operating system there is, and a laptop vendor's
-//! block says who assembled the case.
+//! An address block names whoever registered it. Apple hardware almost always
+//! runs Apple's systems, so that is a signal. An Intel or Realtek adapter, or a
+//! PC maker's block, says nothing about the software, and is declined.
 //!
-//! So this maps the first kind and **declines the second**, rather than reaching
-//! for the nearest plausible answer. Declining is the whole value: an OUI source
-//! that guessed would be wrong on the commonest hardware there is, and wrong in a
-//! way nothing downstream could see.
+//! ## Network equipment implies a class
 //!
-//! ## What a network equipment vendor implies is a class, not a family
+//! Cisco, Ubiquiti and similar vendors' boxes often run Linux, so their blocks
+//! establish only that the machine is infrastructure. As a family,
+//! `Network device` would cancel a router's correct `Debian 12` SSH reading in
+//! [`resolve`](super::resolve)'s vote; they state a device class instead
+//! ([`OsEvidence::device`]).
 //!
-//! Cisco, Ubiquiti and the rest write their own systems too, so it is tempting to
-//! read their blocks the same way. It is the wrong reading, because a great many
-//! of their boxes run Linux and announce it: the address establishes that the
-//! machine is infrastructure and says nothing about what is on it.
+//! ## Randomised addresses
 //!
-//! Written as a family, `Network device` runs against `Linux` on the ballot
-//! [`resolve`](super::resolve) settles by vote, and a router that correctly names
-//! itself `Debian 12` over SSH would be reported as nothing at all once the scan
-//! looked up its address. Those vendors state a device class and abstain from the
-//! family, which is what [`OsEvidence::device`] exists for.
+//! On a labelled segment five of eight hosts answered from a
+//! locally-administered (randomised) address. [`HardwareInfo`] names no vendor
+//! for one, so this source stays quiet rather than matching a random block.
 //!
-//! ## Randomised addresses have no vendor at all
+//! ## Worth
 //!
-//! Measured on a labelled segment: **five of eight hosts answered from a
-//! locally-administered address**, one made up by the device rather than
-//! assigned from a registered block. Address randomisation is a privacy default
-//! on modern mobile platforms, and a vendor lookup against such an address
-//! returns nothing, or worse, a coincidental match against whoever holds the
-//! block those random bits happen to land in.
-//!
-//! [`HardwareInfo`] already declines to name a vendor for one, so that guard is
-//! upstream of here. It is restated because it is the difference between this
-//! source being quiet on a phone and being confidently wrong about one.
-//!
-//! ## What it is worth
-//!
-//! Little on its own, and that is correct. Apple hardware running Linux is a real
-//! thing; so is a Raspberry Pi running something other than Linux. This is a
-//! prior, not an identification, and [`CONFIDENCE`] is set where a lone hit stays
-//! below the floor that reports anything at all. It earns its place by *agreeing*
-//! with a stack reading and pushing a verdict past what one packet could support.
+//! A prior, not an identification: Apple hardware can run Linux. [`CONFIDENCE`]
+//! keeps a lone hit below the reporting floor.
 
 use crate::model::host::HardwareInfo;
 
@@ -66,28 +42,22 @@ use crate::model::host::OsSource;
 
 /// What a vendor match contributes on its own.
 ///
-/// Deliberately below the floor [`resolve`](super::resolve) reports at, so this
-/// source can never name a host by itself. Hardware and software are separable,
-/// the address says who made the machine, and somebody may have installed
-/// anything on it. What it is good for is confirming a reading taken from the
-/// wire, and for that it does not need to be large.
+/// Below the floor [`resolve`](super::resolve) reports at, so this source never
+/// names a host by itself.
 pub const CONFIDENCE: f32 = 0.3;
 
 /// Vendors who ship the operating system on their own hardware, and the family
 /// that implies.
 ///
-/// Matched case-insensitively on a prefix of the registered company name, which
-/// is how these appear in the OUI registry, where "Apple, Inc." and "Apple" are
-/// the same organisation across decades of registrations.
+/// Matched case-insensitively on a prefix of the registered company name, since
+/// the OUI registry spells one organisation several ways ("Apple, Inc.",
+/// "Apple").
 ///
-/// The list is short on purpose. Every entry is a vendor who makes both the
-/// machine and what runs on it; the moment that stops being true the entry is a
-/// guess wearing the clothes of a measurement. Commodity adapter and PC makers,
-/// Intel, Realtek, Broadcom, Dell, Lenovo, HP, are absent, because
-/// their silicon is in machines running everything.
+/// Only vendors who make both the machine and its system. Commodity makers
+/// (Intel, Realtek, Broadcom, Dell, Lenovo, HP) are absent.
 const VENDOR_FAMILIES: &[(&str, &str)] = &[
-    // Apple hardware runs Apple's systems. Which one, macOS, iOS, iPadOS, the
-    // address cannot say, and the stack cannot either: they share a kernel.
+    // Which Apple system (macOS, iOS, iPadOS) neither the address nor the stack
+    // can say.
     ("apple", "macOS"),
     // The Foundation's boards are sold to run Linux and overwhelmingly do.
     ("raspberry pi", "Linux"),
@@ -96,21 +66,10 @@ const VENDOR_FAMILIES: &[(&str, &str)] = &[
 /// Vendors whose blocks are attached to network equipment, and the class that
 /// implies.
 ///
-/// A class, not a family, and the difference is the whole reason this table is
-/// separate from the one above. These vendors ship an operating system too,
-/// but a great many of their boxes run Linux and say so out loud over SSH. Read
-/// as a family, `Network device` runs against `Linux` on the ballot
-/// [`resolve`](super::resolve) settles by vote and both lose.
-///
-/// That is measured rather than argued. With the class read as a family, a
-/// Linux-based router announcing `Debian 12` resolves to `Linux 55, version 12`
-/// on its banner alone, and to nothing at all once the same scan looks up the
-/// address it answered from. Adding a true observation removes the answer, for
-/// eight of the ten vendors this module knows.
-///
-/// So these abstain from the family and state what they actually establish,
-/// which is that the box is infrastructure. Both answers then survive: a
-/// `Network device` running `Linux 12`, which is what the machine is.
+/// A class, not a family: many of these boxes run Linux and say so over SSH. As
+/// a family, `Network device` and `Linux` would cancel in
+/// [`resolve`](super::resolve)'s vote. As a class, both survive: a
+/// `Network device` running `Linux 12`.
 const VENDOR_DEVICES: &[(&str, &str)] = &[
     ("cisco", "Network device"),
     ("juniper", "Network device"),
@@ -126,23 +85,12 @@ const VENDOR_DEVICES: &[(&str, &str)] = &[
 /// who ships the system on its own machines, a device class for one whose blocks
 /// are attached to network equipment.
 ///
-/// `None`, which is the common answer, when the address was randomised and has
-/// no vendor, when the vendor is in neither table, or when no hardware was
-/// recorded at all.
-///
-/// Declining is the point rather than a shortfall. A hardware address names
-/// whoever registered the block: for a maker who also writes the operating
-/// system that is a real signal, and for a commodity adapter it is none at all,
-/// since the same silicon sits in machines running everything. A source that
-/// guessed here would be wrong on the commonest hardware there is, in a way
-/// nothing downstream could see.
+/// `None`, the common answer, when the address was randomised, the vendor is in
+/// neither table, or no hardware was recorded.
 pub fn evidence_from(hardware: &HardwareInfo) -> Option<OsEvidence> {
-    // The address's own vendor, and not the record's best answer. A vendor a
-    // service stated is already that service's evidence, filed under its own
-    // source; read back from here it would be one reply counted as two
-    // witnesses, enough to carry a single SNMP description past the confidence
-    // at which the active probe is skipped. `None` covers the randomised
-    // address and the host with no address behind it at all.
+    // The address's registered vendor only: a vendor a service stated is that
+    // service's evidence already, and counting it again would let one SNMP
+    // reply skip the active probe.
     let vendor = hardware.registered_vendor()?;
     let lowered = vendor.to_ascii_lowercase();
 
@@ -153,10 +101,7 @@ pub fn evidence_from(hardware: &HardwareInfo) -> Option<OsEvidence> {
             .map(|(_, value)| (*value).to_string())
     };
 
-    // One or the other, never both: a vendor is either one whose hardware
-    // implies what runs on it, or one whose hardware implies what kind of box it
-    // is. Claiming both from one address block would be counting a single
-    // observation twice.
+    // A family or a class, never both from one address.
     let (family, device) = match matches(VENDOR_FAMILIES) {
         Some(family) => (Some(family), None),
         None => (None, Some(matches(VENDOR_DEVICES)?)),
@@ -166,25 +111,10 @@ pub fn evidence_from(hardware: &HardwareInfo) -> Option<OsEvidence> {
         source: OsSource::HardwareVendor,
         family,
         device,
-        // **Not the registered company**, though it reads like the obvious
-        // value for this field.
-        //
-        // `vendor` here means whoever publishes the *operating system*, and an
-        // address block establishes whoever built the *hardware*. Those
-        // coincide for Apple and come apart the moment they do not: a Raspberry
-        // Pi runs Debian, so the address says `Raspberry Pi Trading Ltd`, the
-        // SSH banner says `Debian`, and a resolver handed both would, correctly,
-        // given what it was told, treat two answers to two different questions
-        // as a contradiction and keep neither. The host would be reported as
-        // `Linux 12.0`: a version number no Linux has, because the name that
-        // belonged with it had been thrown away.
-        //
-        // What an address block genuinely supports is one broad claim, which is
-        // what this evidence makes and all it makes: a family for a vendor who
-        // ships the system, a device class for one whose boxes are
-        // infrastructure. The company is not lost, it is recorded on the host's
-        // hardware, where it describes the thing it is actually about, and this
-        // evidence line still names it.
+        // **Not the registered company.** `vendor` is the operating system's
+        // publisher; the address names the hardware maker. A Raspberry Pi
+        // running Debian would otherwise contradict its own SSH banner. The
+        // company stays on the host's hardware record and in the evidence line.
         vendor: None,
         product: None,
         version: None,
@@ -216,9 +146,7 @@ mod tests {
         evidence_from(&HardwareInfo::new(mac))
     }
 
-    /// A banner from a Linux-based appliance, worth enough to name a host on its
-    /// own. It is the thing every entry in the device table would destroy if
-    /// read as a family.
+    /// A banner from a Linux-based appliance, enough to name a host alone.
     fn a_debian_banner() -> OsEvidence {
         OsEvidence {
             source: OsSource::ServiceBanner,
@@ -235,13 +163,8 @@ mod tests {
         }
     }
 
-    /// The failure this split exists for.
-    ///
-    /// A Linux-based router, switch or access point announces `Debian 12` over
-    /// SSH and answers from a registered infrastructure block. Both observations
-    /// are true. Read as rival families they annihilate: the banner alone
-    /// resolves the host and the banner plus its own hardware address resolves
-    /// to nothing, so looking up the address destroys the answer.
+    /// A Linux-based router announcing `Debian 12` from an infrastructure block
+    /// keeps its answer when the address is added.
     #[test]
     fn an_infrastructure_vendor_does_not_destroy_what_the_banner_established() {
         for mac in [
@@ -268,8 +191,7 @@ mod tests {
         }
     }
 
-    /// A vendor who ships the system on its own machines still claims a family,
-    /// which is the case the whole table was built for.
+    /// A vendor who ships the system on its own machines claims a family.
     #[test]
     fn a_vendor_who_ships_the_system_names_a_family() {
         let apple = evidence_for("a4:83:e7:00:00:01").expect("a registered Apple block");
@@ -284,8 +206,7 @@ mod tests {
         assert_eq!(pi.device, None);
     }
 
-    /// One claim per address, never both. Claiming a family and a class from one
-    /// block would count a single observation twice.
+    /// One claim per address, never both.
     #[test]
     fn no_address_claims_a_family_and_a_class_at_once() {
         for (prefix, _) in VENDOR_FAMILIES {
@@ -296,9 +217,7 @@ mod tests {
         }
     }
 
-    /// A lone hit still names nothing, which is what lets this be consulted on
-    /// every host. Hardware and software are separable, and the address only ever
-    /// corroborates something read off the wire.
+    /// A lone hit names nothing.
     #[test]
     fn one_hardware_reading_alone_never_names_a_host() {
         for mac in ["a4:83:e7:00:00:01", "50:c7:bf:00:00:01"] {
@@ -313,11 +232,8 @@ mod tests {
     /// A vendor a service stated is that service's evidence, and never this
     /// module's, whichever vendor the tables know.
     ///
-    /// Every vendor either table maps, described by a service about a host with
-    /// no address behind it, yields nothing here. Read back out of the record it
-    /// would count the reply that stated it a second time, and a single SNMP
-    /// description reached 86 that way. The address is the witness, and where
-    /// one stands behind the record it is still read: the last assertion.
+    /// A mapped vendor stated by a service, on a host with no address, yields
+    /// nothing. Where an address exists it is still read (the last assertion).
     #[test]
     fn a_described_vendor_is_never_counted_as_the_address_reading() {
         use crate::model::host::HardwareDescription;
@@ -335,8 +251,7 @@ mod tests {
             );
         }
 
-        // An Apple address behind a record a service then described as something
-        // else still reads as Apple: the address was seen, whatever was said.
+        // An Apple address still reads as Apple whatever a service said.
         let mut seen = HardwareInfo::new("a4:83:e7:00:00:01".parse().expect("an address"));
         seen.merge(
             HardwareInfo::described(HardwareDescription {
@@ -359,11 +274,10 @@ mod tests {
         );
     }
 
-    /// A commodity adapter and a randomised address both say nothing, which is
-    /// most of this module's job.
+    /// A commodity adapter and a randomised address both say nothing.
     #[test]
     fn an_address_that_implies_nothing_is_declined() {
-        // Intel: silicon in machines running everything.
+        // Intel.
         assert!(evidence_for("00:1b:21:00:00:01").is_none());
         // Locally administered, so `HardwareInfo` names no vendor at all.
         assert!(evidence_for("02:00:00:00:00:01").is_none());

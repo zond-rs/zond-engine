@@ -10,90 +10,56 @@
 //!
 //! Sometimes a family, and nothing more.
 //!
-//! ## A default name is a decision by the operating system, not by its owner
+//! ## Default names
 //!
-//! Most hostnames on a network are things somebody typed, and say nothing about
-//! the machine they name. A *default* hostname is different: it is a naming
-//! convention the operating system chose, applied when nobody overrode it, and
-//! it is a fact about the system in the same way a TCP option order is. Windows
-//! names every fresh installation `DESKTOP-` plus eight characters; Android
-//! prefixes `android-`; a Mac answers as whatever its owner called it, but an
-//! unconfigured one says `MacBook-Pro` or `iPhone`.
+//! A *default* hostname is a naming convention the operating system applies
+//! when nobody overrides it. Windows names a fresh installation `DESKTOP-` plus
+//! a generated token; Android prefixes `android-`; an unconfigured Mac answers
+//! as `MacBook-Pro` or `iPhone`.
 //!
-//! This is the **only** signal a large class of host ever emits. Measured, on a
-//! labelled segment: a stock Windows desktop drops every TCP probe and every
-//! ICMP echo, its firewall declines rather than refuses, so no stack rule and
-//! no echo rule can reach it. It still announces its name over mDNS, and the
-//! name carries the `DESKTOP-` prefix. For that host there is no other route.
+//! For some hosts it is the only signal: a stock Windows desktop on a labelled
+//! segment dropped every TCP probe and ICMP echo but announced its `DESKTOP-`
+//! name over mDNS.
 //!
-//! ## What it is not
+//! ## Limits
 //!
-//! It is not a version, not a vendor, and never a product. The prefixes are
-//! family-level facts at best. And it is weak: a hostname is a label, and
-//! whoever set the machine up could have typed anything. [`CONFIDENCE`] is set
-//! where a lone hit stays below the floor [`resolve`](super::resolve) reports
-//! at, so this can never name a host by itself, it earns its place by agreeing
-//! with a stack reading, or with the hardware vendor, and pushing a verdict
-//! past what one source could support.
+//! Family-level at best, and weak, since anyone can type any name.
+//! [`CONFIDENCE`] keeps a lone hit below the floor [`resolve`](super::resolve)
+//! reports at, so it only adds weight to other sources.
 //!
 //! ## Who said it
 //!
-//! A name reaches a host by one of two kinds of route, and they are different
-//! witnesses. A resolver answering a reverse lookup, or the DHCP request a host
-//! broadcast, is a channel of its own, and a default name heard that way stands
-//! beside anything else the host says, as [`OsSource::Hostname`].
+//! A name from a reverse lookup or a DHCP request is its own witness,
+//! [`OsSource::Hostname`].
 //!
-//! A name in `.local` is not that. Multicast DNS answers for the zone and
-//! nothing else does (RFC 6762 §3), so the name is the host's own Bonjour
-//! responder announcing itself, and the device-info record a scan asks for is
-//! asked for under that very name, of that same responder. Filed beside the
-//! record as a second source, one daemon would count as two witnesses, and a
-//! default name and a model identifier would settle a Mac between them past
-//! the confidence at which the active probe is skipped. So a `.local` name is
-//! filed as [`OsSource::MdnsResponder`], where it counts once with whatever
-//! else the responder says.
+//! A name in `.local` comes from the host's own Bonjour responder (RFC 6762 §3),
+//! the same responder that serves the device-info record. It is filed as
+//! [`OsSource::MdnsResponder`] so one daemon counts once.
 //!
-//! The zone is read rather than the route, because the zone is what survives:
-//! a name carried in from an imported report, a merge or a resumed journal has
-//! no route left to ask about, and the zone is the protocol's own statement of
-//! who answers for a name. What it misfiles is a unicast resolver answering in
-//! `.local`, which the same RFC advises against in its Appendix G and which
-//! home routers do anyway. The error there runs the safe way: a name counted
-//! once where it could have counted twice, and an active probe sent that could
-//! have been skipped. Reading the route instead would err the other way on
-//! every name whose route was lost.
+//! The zone decides, not the route, since names from an imported report or a
+//! resumed journal have no route. A unicast resolver answering in `.local`
+//! (against RFC 6762 Appendix G, but home routers do) is then counted once
+//! where it could count twice, which errs on the safe side.
 //!
-//! ## The table declines more than it answers
+//! ## Only generated shapes
 //!
-//! Only patterns an operating system *generates by default* are listed, because
-//! only those are authored by the system rather than by a person. `DESKTOP-`
-//! qualifies; `web01` does not, and neither does a hostname that happens to
-//! start with `linux`, that was a choice, and treating choices as defaults
-//! would make this source confidently wrong about every carefully-named machine
-//! on the network.
+//! Only patterns an operating system generates are listed; `web01` or a name
+//! starting with `linux` is a person's choice.
 //!
-//! A prefix is not a convention. Matched with `starts_with`, `DESKTOP-` takes
-//! `desktop-alice` and `sm-` takes `sm-prod-db01`: against a table of bare
-//! prefixes, ten of twelve ordinary hand-typed names match something. The cost
-//! is not the wrong family on its own, since a lone hit stays under the
-//! reporting floor by design. It is what a wrong vote does to a reading that
-//! was right, because [`resolve`](super::resolve) reduces a leader by whatever
-//! dissents from it: a Linux stack reading falls from 65 to 42 on a `desktop-`
-//! hostname, and to nothing at all with a second mistaken source beside it.
-//!
-//! So an entry states the shape of the tail its convention generates, and a
-//! convention whose shape nobody can state is left out of the table. See
-//! [`Token`], and `WITHDRAWN` for what is left out.
+//! A bare prefix is not enough: `starts_with("desktop-")` takes
+//! `desktop-alice`, and ten of twelve hand-typed names matched some prefix in a
+//! bare-prefix table. A wrong vote is costly, since [`resolve`](super::resolve)
+//! reduces the leader by dissent: a Linux stack reading fell from 65 to 42 on a
+//! `desktop-` hostname. So each entry states the shape of its generated tail;
+//! see [`Token`], and `WITHDRAWN` for conventions left out.
 
 use crate::model::host::OsEvidence;
 use crate::model::host::OsSource;
 
 /// What a hostname match contributes on its own.
 ///
-/// Deliberately below the floor [`resolve`](super::resolve) reports at, so this
-/// source can never name a host by itself. A hostname is a label somebody may
-/// have typed, and even a default can survive onto a machine running something
-/// else. It earns its place by agreeing with the wire.
+/// Below the floor [`resolve`](super::resolve) reports at, so this source never
+/// names a host by itself.
 pub const CONFIDENCE: f32 = 0.35;
 
 /// The zone multicast DNS answers for, and the mark of a name a host's own
@@ -103,10 +69,8 @@ const MDNS_ZONE: &str = ".local";
 /// Naming conventions an operating system applies when nobody overrides them,
 /// and the family each implies.
 ///
-/// Matched case-insensitively against the whole hostname, on a prefix for the
-/// generated ones. Every entry is a pattern the system itself produces; the
-/// moment a pattern can also come from a person typing a name, it stops being
-/// evidence and starts being a coincidence.
+/// Matched case-insensitively against the whole hostname. Every entry is a
+/// pattern the system itself produces.
 const DEFAULT_NAMES: &[(Pattern, &str)] = &[
     // --- Windows ---
     // Setup generates the model name plus a seven-character token: the
@@ -120,8 +84,7 @@ const DEFAULT_NAMES: &[(Pattern, &str)] = &[
         generated("laptop-", Token::Random { min: 7, max: 7 }),
         "Windows",
     ),
-    // Windows Server, whose token is longer and whose width this engine has not
-    // confirmed, so it is bounded rather than pinned.
+    // Windows Server: token width unconfirmed, so a range.
     (
         generated("win-", Token::Random { min: 8, max: 15 }),
         "Windows",
@@ -180,12 +143,10 @@ const DEFAULT_NAMES: &[(Pattern, &str)] = &[
 /// Conventions this table leaves out, so that adding one is a decision rather
 /// than a rediscovery.
 ///
-/// Each is a bare prefix, and matched with `starts_with` each fires on names a
-/// person has typed: `sm-prod-db01`, `galaxy-cluster-01`, `amazon-connector`,
-/// `echo-service`, `rokuro-pc`, `chromebook-loaner`. They are out because
-/// nobody can state the shape the system actually generates, which is the one
-/// thing that separates a default from a coincidence. A convention somebody can
-/// write down as a [`Token`] is welcome in the table.
+/// Each bare prefix fires on hand-typed names (`sm-prod-db01`,
+/// `galaxy-cluster-01`, `amazon-connector`, `echo-service`, `rokuro-pc`,
+/// `chromebook-loaner`), and nobody has stated its generated shape. One that
+/// can be written as a [`Token`] may be added.
 #[cfg(test)]
 const WITHDRAWN: &[&str] = &[
     "sm-",
@@ -200,27 +161,16 @@ const WITHDRAWN: &[&str] = &[
 
 /// The token a naming convention appends to its prefix.
 ///
-/// This is what makes a generated name evidence. A system that names a
-/// machine draws the tail from an alphabet at a fixed width; a person types a
-/// word. Without a shape to check, `DESKTOP-` matched `desktop-alice` and the
-/// table said Windows about somebody's Linux workstation.
+/// A system draws the tail from an alphabet at a fixed width; a person types a
+/// word.
 #[derive(Debug, Clone, Copy)]
 enum Token {
     /// Between `min` and `max` alphanumerics, at least one of them a digit.
     ///
-    /// The digit is the discriminator and it is not free. Windows draws its
-    /// characters from letters and digits alike, so a small share of genuine
-    /// `DESKTOP-` names are all letters and are declined here. That is the trade
-    /// this module makes everywhere: declining costs a name the row would have
-    /// liked, and guessing costs a name that is wrong. `desktop-` followed by
-    /// seven letters is `desktop-manager` at least as often as it is a fresh
-    /// installation.
+    /// Requiring a digit declines the few genuine all-letter `DESKTOP-` names,
+    /// but `desktop-` plus seven letters is as often `desktop-manager`.
     ///
-    /// A width is a range rather than a number wherever the convention is not
-    /// pinned. Seven characters after `DESKTOP-` is well established; the length
-    /// Windows Server uses after `WIN-` is not, and writing down a number nobody
-    /// confirmed would make the source fail by matching nothing while looking
-    /// perfectly correct.
+    /// A range where the width is unconfirmed, as after `WIN-`.
     Random { min: usize, max: usize },
     /// Exactly `len` hexadecimal digits, as Android appends its install
     /// identifier and Sonos its hardware address.
@@ -246,21 +196,17 @@ enum Pattern {
     /// The hostname is the model name, optionally followed by a small
     /// enumeration.
     ///
-    /// Apple's mDNS names are `MacBook-Pro`, `MacBook-Pro-3`, `iPhone-2`: the
-    /// model, then digits. Restricting the tail to a short number is what
-    /// separates that from `macbook-of-alice`, which a prefix alone cannot. The
-    /// suffix is bounded because an owner's name can be numeric too; two digits
-    /// is Apple's own longest default, and the same shape fits the distributions
-    /// that set a bare default of their own: `openwrt`, `pfsense`, `freebsd`.
+    /// Apple's mDNS names are `MacBook-Pro`, `MacBook-Pro-3`, `iPhone-2`. The
+    /// tail is at most two digits, which excludes `macbook-of-alice`. The same
+    /// shape fits `openwrt`, `pfsense`, `freebsd`.
     Model(&'static str),
     /// The hostname is the prefix and then a token the system generated.
     ///
-    /// The token's shape is checked; see [`Token`] for why that is the whole
-    /// point of the variant.
+    /// The token's shape is checked; see [`Token`].
     Generated(&'static str, Token),
 }
 
-/// A [`Pattern::Model`] in one word, so the table below reads as a table.
+/// A [`Pattern::Model`].
 const fn model(text: &'static str) -> Pattern {
     Pattern::Model(text)
 }
@@ -296,26 +242,15 @@ impl Pattern {
 
 /// What a host's name suggests it runs, if anything.
 ///
-/// `None`, the common answer, when there is no hostname, or when the name is
-/// not one an operating system generates by default. Declining is the point: a
-/// person's hostname says what the person chose, not what the machine runs, and
-/// a source that treated choice as evidence would be wrong about every
-/// deliberately-named host on the network.
+/// `None`, the common answer, when there is no hostname or it is not a
+/// generated default.
 ///
-/// # Filed under whoever stated it
-///
-/// A name in `.local` is one the host's own Bonjour responder announced, since
-/// multicast DNS answers for that zone and nothing else does, and it is filed
-/// as [`OsSource::MdnsResponder`]. The device-info record that responder serves
-/// is filed there too, so the two count as the one witness they are rather than
-/// settling a host between them. Any other name was given by something apart
-/// from that responder, a resolver or the host's DHCP request, and is filed as
-/// [`OsSource::Hostname`].
+/// A `.local` name is filed as [`OsSource::MdnsResponder`]; any other as
+/// [`OsSource::Hostname`]. See the module documentation.
 pub fn evidence_from(hostname: Option<&str>) -> Option<OsEvidence> {
     let hostname = hostname?;
     let lowered = hostname.to_ascii_lowercase();
-    // A bare trailing dot is FQDN form, and the zone says who stated the name;
-    // neither is part of the name the operating system generated.
+    // Strip the FQDN dot; the zone is not part of the generated name.
     let name = lowered.strip_suffix('.').unwrap_or(&lowered);
     let (name, source) = match name.strip_suffix(MDNS_ZONE) {
         Some(label) => (label, OsSource::MdnsResponder),
@@ -358,9 +293,8 @@ mod tests {
         evidence_from(hostname).and_then(|evidence| evidence.family)
     }
 
-    /// The case this whole source exists for: the stock Windows desktop that
-    /// drops every probe, measured on the labelled segment, announcing the one
-    /// default name its operating system gave it.
+    /// A stock Windows desktop that dropped every probe but announced its
+    /// default name.
     #[test]
     fn a_windows_default_name_says_windows() {
         assert_eq!(
@@ -373,10 +307,9 @@ mod tests {
         );
     }
 
-    /// The model names the platform, and this is the one source that can tell
-    /// them apart, the hardware address and the Darwin stack rules cannot,
-    /// since macOS, iOS, iPadOS and tvOS share a kernel. The `.local` suffix
-    /// mDNS appends is tolerated, not matched.
+    /// The model names the platform, which the hardware address and Darwin stack
+    /// rules cannot (macOS, iOS, iPadOS and tvOS share a kernel). `.local` is
+    /// tolerated.
     #[test]
     fn an_apple_device_name_names_its_platform() {
         let cases = [
@@ -395,10 +328,7 @@ mod tests {
         }
     }
 
-    /// The discipline of this source: a name a person chose is not evidence,
-    /// however much it looks like it should be. Treating `web01` or
-    /// `linux-server` as a signal would make this wrong about every
-    /// deliberately-named machine on the network.
+    /// A chosen name (`web01`, `linux-server`) is not evidence.
     #[test]
     fn a_persons_own_name_says_nothing() {
         for name in [
@@ -415,8 +345,7 @@ mod tests {
         }
     }
 
-    /// Below the reporting floor on its own, so agreement is what it is for,
-    /// the same reasoning as the hardware vendor, and pinned the same way.
+    /// Below the reporting floor on its own.
     #[test]
     fn a_hostname_alone_never_reaches_the_reporting_floor() {
         let evidence = evidence_from(Some("DESKTOP-FKV0V2O")).expect("a default name matches");
@@ -430,10 +359,7 @@ mod tests {
     /// A name in `.local` is its responder's to count, in any spelling DNS
     /// allows for it, and a name without the zone is a witness of its own.
     ///
-    /// The zone is the whole of the decision, so it is pinned in both
-    /// directions: filed the other way, a responder's name and its device-info
-    /// record are one daemon counted twice, and a resolver's name loses the
-    /// corroboration it is genuinely worth.
+    /// Pinned in both directions.
     #[test]
     fn a_name_is_filed_under_whoever_stated_it() {
         let source = |name: &str| evidence_from(Some(name)).map(|evidence| evidence.source);
@@ -459,11 +385,8 @@ mod tests {
         }
     }
 
-    /// Constructed fixtures rather than observations, unlike the `DESKTOP-` name
-    /// above. The webOS one is `lgwebostv-2` rather than `lgwebostv-1234`: a
-    /// four-digit tail is past the enumeration [`Pattern::Model`] accepts, and
-    /// loosening the bound to admit an unverified fixture would weaken the
-    /// Apple case the bound was written for.
+    /// Constructed fixtures. The webOS one has a two-digit tail, the most
+    /// [`Pattern::Model`] accepts.
     #[test]
     fn additional_oem_defaults_resolve_correctly() {
         let cases = [
@@ -490,11 +413,7 @@ mod tests {
         }
     }
 
-    /// The failure the token shapes exist for.
-    ///
-    /// Every one of these matches a prefix when the tail goes unchecked, and
-    /// every one is a name somebody typed. Ten of the twelve names this was
-    /// measured against fire on a bare-prefix table.
+    /// Hand-typed names that a bare prefix would match.
     #[test]
     fn a_name_a_person_typed_does_not_wear_a_generated_prefix() {
         for name in [
@@ -515,7 +434,7 @@ mod tests {
         }
     }
 
-    /// And the conventions themselves still match, which is the other half.
+    /// The conventions themselves still match.
     #[test]
     fn a_generated_tail_is_still_recognised() {
         let cases = [
@@ -530,9 +449,7 @@ mod tests {
         }
     }
 
-    /// A withdrawn prefix names nothing, whatever follows it. The list is here
-    /// so that re-adding one is a decision somebody made rather than a bare
-    /// `starts_with` creeping back in.
+    /// A withdrawn prefix names nothing.
     #[test]
     fn a_withdrawn_convention_matches_nothing() {
         for prefix in WITHDRAWN {
@@ -547,9 +464,7 @@ mod tests {
         }
     }
 
-    /// A wrong vote is not free, which is why the shapes are checked at all.
-    /// Pinned with the arithmetic rather than described, because the number is
-    /// the argument.
+    /// What a wrong vote costs a correct reading.
     #[test]
     fn a_mistaken_hostname_would_have_cost_a_correct_reading() {
         use crate::model::host::OsSource;
@@ -570,9 +485,7 @@ mod tests {
         let alone = super::super::resolve(vec![stack.clone()]).expect("names the host");
         assert_eq!(alone.accuracy, 65);
 
-        // What a bare `DESKTOP-` prefix would make of `desktop-alice`, stated
-        // directly so the cost is visible without the table having to produce
-        // it.
+        // What a bare `DESKTOP-` prefix would make of `desktop-alice`.
         let mistaken = crate::model::host::OsEvidence {
             source: OsSource::Hostname,
             family: Some("Windows".to_string()),
@@ -588,7 +501,7 @@ mod tests {
             alone.accuracy
         );
 
-        // And the table does not produce it.
+        // The table does not produce it.
         assert_eq!(family_of(Some("desktop-alice")), None);
     }
 }
