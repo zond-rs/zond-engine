@@ -8,25 +8,19 @@
 
 //! # Who a web port is asked for
 //!
-//! An HTTP request names the site it wants in its `Host` header, and a
-//! redirect names where to look next as a URL. Both are written in the
-//! authority form of RFC 3986 section 3.2: a host, and a port where it is not
-//! the scheme's default. [`Authority`] is the one place a port being
-//! identified is written in that form and read back out of it, so a request
-//! and the check on where its redirect leads cannot disagree about what the
-//! port is called.
+//! An HTTP request names its site in the `Host` header, and a redirect names
+//! where to look next as a URL. Both use the authority form of RFC 3986 section
+//! 3.2: a host, and a port where it is not the scheme's default. [`Authority`]
+//! writes a port in that form and reads it back, so a request and the check on
+//! its redirect agree on what the port is called.
 //!
 //! ## Named where a target named it
 //!
-//! A server holding several sites at one address routes a request by the name
-//! in it: the `Host` header, and before that the server name of a TLS
-//! handshake. Asked with neither, it serves its default site, or refuses the
-//! handshake outright where it keeps no certificate for a nameless client. So
-//! where a target reached the address by a name, the port is asked for by that
-//! name and the site identified is the one the target named. Elsewhere it is
-//! asked for by its address, as a browser pointed at the address asks; a
-//! placeholder such as `localhost` is a site no server was asked to hold, and
-//! a request naming it is one no visitor sends.
+//! A server holding several sites at one address routes by the `Host` header
+//! and, before that, the TLS server name. Without either it serves its default
+//! site, or refuses the handshake if it keeps no certificate for a nameless
+//! client. Where a target reached the address by a name, the port is asked for
+//! by that name; otherwise by its address, as a browser would.
 
 use std::borrow::Cow;
 use std::net::{IpAddr, SocketAddr};
@@ -41,8 +35,8 @@ pub(crate) struct Authority {
     socket: SocketAddr,
     /// The name a target reached the address by, where it named a host.
     name: Option<Arc<str>>,
-    /// Whether it is spoken to through TLS, which makes the scheme `https`
-    /// and its default port 443 rather than `http`'s 80.
+    /// Whether it is spoken to through TLS, making the scheme `https` with
+    /// default port 443.
     tls: bool,
 }
 
@@ -87,9 +81,8 @@ impl Authority {
         self.tls
     }
 
-    /// The server name a TLS handshake with this port carries: the name, where
-    /// it is one a handshake can carry, and otherwise the address, which puts
-    /// no server name on the wire at all.
+    /// The server name for a TLS handshake: the name where a handshake can
+    /// carry it, otherwise the address, which sends no server name.
     pub(crate) fn server_name(&self) -> ServerName<'static> {
         self.name
             .as_deref()
@@ -110,11 +103,8 @@ impl Authority {
     /// `payload` with the `Host` header of the HTTP request it carries set to
     /// this port's; see [`header`](Self::header).
     ///
-    /// An authored probe is written once for every host, so the host it
-    /// writes is a placeholder, and this is where the port being asked is put
-    /// in its place. A payload that is not an HTTP/1 request, or that carries
-    /// no `Host`, is sent as written, which leaves a probe for another protocol
-    /// and a deliberate HTTP/1.0 request without one untouched.
+    /// An authored probe's `Host` is a placeholder, replaced here. A payload
+    /// that is not an HTTP/1 request, or carries no `Host`, is sent as written.
     pub(crate) fn addressed<'a>(&self, payload: &'a [u8]) -> Cow<'a, [u8]> {
         self.with_host(payload, |_| true)
     }
@@ -123,13 +113,10 @@ impl Authority {
     /// port's, where that `Host` stands for the port rather than naming a site
     /// of its own.
     ///
-    /// A detection is written once for every host, as a probe is, so the host
-    /// it writes is ordinarily a stand-in: `localhost`, the address the
-    /// detection was handed, or nothing. Each is replaced as
-    /// [`addressed`](Self::addressed) replaces a probe's, so a detection asks
-    /// for the site the target named. A `Host` naming any other site is the
-    /// detection's question, how the server treats a name it may not hold, and
-    /// is sent as written.
+    /// A detection's `Host` is ordinarily a stand-in: `localhost`, the address
+    /// the detection was handed, or empty. Each is replaced as
+    /// [`addressed`](Self::addressed) does. A `Host` naming any other site is
+    /// part of the detection's question and is sent as written.
     pub(crate) fn readdressed<'a>(&self, payload: &'a [u8]) -> Cow<'a, [u8]> {
         self.with_host(payload, |value| self.stands_for_this_port(value))
     }
@@ -148,7 +135,6 @@ impl Authority {
             return Cow::Borrowed(payload);
         }
 
-        // Each header line starts after a CRLF and runs to the next one.
         let mut at = line_end + 2;
         while at < head {
             let end = find(&payload[at..head], b"\r\n").map_or(head, |n| at + n);
@@ -194,10 +180,8 @@ impl Authority {
 
     /// The host half, as a URL or a `Host` header writes it.
     ///
-    /// An IPv6 address goes in brackets, since the colons in it would
-    /// otherwise read as the separator before a port. Its zone does not: RFC
-    /// 6874 allows one only in a URI and not in a request, and it names an
-    /// interface of this machine, which is nothing to the server.
+    /// An IPv6 address goes in brackets. Its zone is dropped: RFC 6874 allows
+    /// one only in a URI, and it names a local interface.
     fn host(&self) -> String {
         if let Some(name) = &self.name {
             return name.to_string();
@@ -220,16 +204,12 @@ impl Authority {
     /// The path of an absolute `url`, when it leads back to this port.
     ///
     /// A URL leads back when its scheme is the one this port is spoken in and
-    /// its authority names this address and this port, the port written out
-    /// or implied by the scheme. A different port is a different service, and
-    /// a different scheme is another conversation with this one, `https` from
-    /// a port spoken to in the clear or `http` from one spoken to through TLS,
-    /// so either is declined rather than guessed at. A scheme-relative
-    /// reference, `//host/path`, takes the scheme it was served over.
+    /// its authority names this address (or name) and port, written out or
+    /// implied by the scheme. A scheme-relative reference, `//host/path`, takes
+    /// the scheme it was served over.
     ///
-    /// Compared as addresses rather than as text, so the two spellings of one
-    /// IPv6 address are one address. Credentials in the authority are
-    /// declined: a redirect carrying them is not one to replay.
+    /// Addresses are compared as addresses, so two spellings of one IPv6
+    /// address match. An authority carrying credentials is declined.
     pub(crate) fn path_of(&self, url: &str) -> Option<String> {
         let rest = match url.split_once("://") {
             Some((scheme, rest)) if scheme.eq_ignore_ascii_case(self.scheme()) => rest,
@@ -269,9 +249,7 @@ impl Authority {
             return false;
         };
         let value = value.trim();
-        // A bare IPv6 address, as a template seeded with one writes it, reads
-        // as a host and a port split at its last colon; it is taken whole
-        // first.
+        // A bare IPv6 address would split at its last colon; try it whole first.
         if value.is_empty()
             || value
                 .parse::<IpAddr>()
@@ -353,8 +331,7 @@ mod tests {
         Authority::new(socket.parse().expect("a literal socket address"))
     }
 
-    /// The port is left off where the scheme implies it, which is how a
-    /// browser writes it and what a virtual host is configured to expect.
+    /// The port is left off where the scheme implies it.
     #[test]
     fn a_host_header_names_the_port_only_where_the_scheme_does_not() {
         assert_eq!(at("192.0.2.1:80").header(), "192.0.2.1");
@@ -363,8 +340,7 @@ mod tests {
         assert_eq!(at("[2001:db8::1]:8080").header(), "[2001:db8::1]:8080");
     }
 
-    /// A named port is asked for by its name, which is what a virtual host
-    /// is configured under, and through TLS the default port is 443.
+    /// A named port is asked for by its name; through TLS the default is 443.
     #[test]
     fn a_named_port_is_asked_for_by_its_name() {
         let named = at("192.0.2.1:8443").named(Some(Arc::from("box.example")));
@@ -375,8 +351,7 @@ mod tests {
         assert_eq!(https.header(), "box.example:443");
     }
 
-    /// A handshake carries the name, and an address carries none, since an
-    /// address in the server name extension is not allowed.
+    /// A handshake carries the name; an address is not allowed in SNI.
     #[test]
     fn a_handshake_carries_the_name_and_never_an_address() {
         let named = at("192.0.2.1:443").named(Some(Arc::from("box.example")));
@@ -391,8 +366,7 @@ mod tests {
         assert_eq!(at("192.0.2.1:443").sni(), None);
     }
 
-    /// The placeholder an authored probe carries becomes the port asked, and
-    /// nothing else in the request moves.
+    /// A probe's placeholder `Host` becomes the port; nothing else changes.
     #[test]
     fn an_authored_request_is_addressed_to_the_port_asked() {
         let named = at("192.0.2.1:80").named(Some(Arc::from("box.example")));
@@ -418,9 +392,7 @@ mod tests {
         }
     }
 
-    /// A detection's stand-in for the port it asks is replaced whatever form
-    /// it takes, and a `Host` naming another site is the detection's own
-    /// question and goes as written.
+    /// Every form of stand-in is replaced; a `Host` naming another site is not.
     #[test]
     fn a_detection_request_is_addressed_only_where_it_stands_for_the_port() {
         let named = at("[2001:db8::1]:8080").named(Some(Arc::from("box.example")));
@@ -448,8 +420,7 @@ mod tests {
         }
     }
 
-    /// A redirect naming the name the port is asked for by leads back, which
-    /// is how a virtual host sends a visitor to its own login page.
+    /// A redirect to the name the port is asked for by leads back.
     #[test]
     fn a_url_naming_the_name_asked_for_leads_back() {
         let named = at("192.0.2.1:80").named(Some(Arc::from("box.example")));

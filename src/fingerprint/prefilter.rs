@@ -8,10 +8,8 @@
 
 //! # Global-match prefilter
 //!
-//! Selecting matching signatures on a non-standard port means matching against
-//! the *whole* set. Running every regex would be O(number of signatures) per
-//! response, which is fine at a few thousand and not as the set grows. A
-//! [`Prefilter`] narrows the field to a small candidate set first, so global
+//! On a non-standard port a response is matched against the whole signature
+//! set. A [`Prefilter`] narrows that to a small candidate set first, so global
 //! matching stays sublinear in the size of the database.
 //!
 //! ## The literal engine
@@ -25,41 +23,32 @@
 //!
 //! ### Soundness
 //!
-//! Only required literals are used, extracted from a pattern's prefix (handling
-//! alternations), the guaranteed inner runs of its mandatory parts (handling
-//! alternations too), or its suffix. Each is a substring every match must
-//! contain, so a signature is never wrongly excluded. This is checked against
-//! the recorded-example corpus (`corpus.rs`): every example that matches its
-//! pattern must select that pattern as a candidate.
+//! Only required literals are used, taken from a pattern's prefix, the
+//! guaranteed inner runs of its mandatory parts, or its suffix (alternations
+//! included). Each is a substring every match contains, so no signature is
+//! wrongly excluded. The recorded-example corpus (`corpus.rs`) checks this:
+//! every example that matches its pattern must select that pattern.
 //!
 //! ### Case-insensitive patterns
 //!
-//! A pattern under `(?i)` reaches the extractor with every letter a class of
-//! its cases, `[Ll][Ii][Nn][Uu][Xx]`, and a class is no literal. So before
-//! extraction each class that holds exactly one ASCII letter's two cases is
-//! read as that letter in lower case, and the automaton, which ignores ASCII
-//! case, finds it in either. Every match holds one of the class's two
-//! members there, so the literal is still one every match contains. `k` and
-//! `s` are not folded to one letter: Unicode case folding adds the Kelvin
-//! sign and the long s to their classes, which a match may hold and an
-//! ASCII-insensitive literal would miss. Each is read instead as the two
-//! spellings a match may hold, the letter and that third member, and a run of
-//! letters around it as every spelling of the run, so `bsd` is indexed as
-//! `bsd` and `bſd` and found in `FreeBSD`. The spellings multiply with each
-//! such letter, and a run is cut where they would pass
-//! [`MAX_ALTERNATION_LITERALS`].
+//! Under `(?i)` every letter reaches the extractor as a class of its cases,
+//! `[Ll][Ii][Nn][Uu][Xx]`. Before extraction, each class holding exactly one
+//! ASCII letter's two cases is read as the lower-case letter, which the
+//! ASCII-case-insensitive automaton finds in either case.
+//!
+//! `k` and `s` are exceptions: Unicode case folding adds the Kelvin sign and the
+//! long s to their classes, which an ASCII-insensitive literal would miss. Each
+//! is read as both spellings, and a run of letters around it as every spelling
+//! of the run, so `bsd` is indexed as `bsd` and `bſd` and found in `FreeBSD`. A
+//! run is cut where its spellings would pass [`MAX_ALTERNATION_LITERALS`].
 //!
 //! ### Cost per response
 //!
-//! Selection runs once per response, and a scan fingerprints every open port on
-//! every host, so this is a hot path. A signature contributes several literals
-//! and a response can hit any of them repeatedly, so hits are deduplicated as
-//! they arrive, through a bitset indexed by *signature*. Both halves of that
-//! are load-bearing. Indexing the bitset by literal instead makes it eight
-//! times wider to allocate and zero without filtering anything more, and
-//! dropping it to let the closing sort absorb the duplicates is slower still:
-//! a response at the 4 KiB read cap can carry over a hundred thousand literal
-//! hits, and the sort would see every one.
+//! Selection runs once per response and is a hot path. Hits are deduplicated
+//! as they arrive through a bitset indexed by signature. Indexed by literal it
+//! would be eight times wider for no gain, and without it the final sort would
+//! see every hit: a response at the 4 KiB read cap can carry over a hundred
+//! thousand.
 //!
 //! [`Prefilter`] is a trait so a faster backend (e.g. `hyperscan`/`vectorscan`)
 //! can replace the engine without touching callers.
@@ -71,13 +60,12 @@ use regex_syntax::parse;
 
 use super::matcher::Signature;
 
-/// Shortest literal worth indexing; below this, a literal is too common to
-/// narrow anything and the signature is better left always-run.
+/// Shortest literal worth indexing; anything shorter is too common to narrow
+/// the set.
 const MIN_LITERAL_LEN: usize = 3;
 
-/// The most literals an alternation contributes to a signature's set, past
-/// which it guarantees nothing worth indexing. The corpus's widest guarded
-/// alternation, a list of RPC program names, is a dozen.
+/// The most literals an alternation contributes to a signature's set. The
+/// corpus's widest guarded alternation, a list of RPC program names, is a dozen.
 const MAX_ALTERNATION_LITERALS: usize = 32;
 
 /// Narrows the whole signature set to a candidate list for a response.
@@ -95,8 +83,8 @@ pub struct LiteralPrefilter {
     literal_owner: Vec<usize>,
     /// Signatures with no usable required literal; always candidates.
     always_run: Vec<usize>,
-    /// How many signatures were indexed, which is the width of the dedup
-    /// bitset [`LiteralPrefilter::candidates`] allocates.
+    /// How many signatures were indexed: the width of the dedup bitset
+    /// [`LiteralPrefilter::candidates`] allocates.
     signature_count: usize,
 }
 
@@ -119,9 +107,7 @@ impl LiteralPrefilter {
             }
         }
 
-        // Ascii-case-insensitive so a literal indexed in one case still matches
-        // a response in another; correctness (never dropping a match) is the
-        // point, and the candidate's own regex makes the final decision.
+        // ASCII-case-insensitive; the candidate's own regex makes the final call.
         let automaton = AhoCorasick::builder()
             .ascii_case_insensitive(true)
             .build(&literals)
@@ -189,8 +175,7 @@ fn required_literals(pattern: &str) -> Option<Vec<Vec<u8>>> {
 }
 
 /// `hir` with each class holding exactly one ASCII letter's two cases read as
-/// that letter in lower case, which every match of `hir` holds in one case or
-/// the other, and the automaton finds in either.
+/// that letter in lower case.
 fn folded(hir: &Hir) -> Hir {
     match hir.kind() {
         HirKind::Class(class) => match case_pair(class) {
@@ -326,13 +311,11 @@ fn literal_set(hir: &Hir, kind: ExtractKind) -> Option<Vec<Vec<u8>>> {
 /// HIR. `None` where none is guaranteed: a class, an optional repetition, or
 /// an alternation with a branch that guarantees none.
 ///
-/// Of a concatenation's parts, and of its runs of parts each matching one of
-/// a few exact strings, joined into every spelling of the run (see
-/// [`exact_set`]), the one whose shortest literal is longest is taken, and of
-/// those the one with fewest literals: a longer literal is rarer in a
-/// response, and every literal is one more way to be selected. An alternation
-/// guarantees one of its branches' literals, so its set is theirs together,
-/// up to [`MAX_ALTERNATION_LITERALS`].
+/// For a concatenation, its parts and its runs of exact parts (see
+/// [`exact_set`]) are candidates; the one whose shortest literal is longest
+/// wins, then the one with fewest literals, since longer literals are rarer in
+/// responses. An alternation's set is the union of its branches' sets, up to
+/// [`MAX_ALTERNATION_LITERALS`].
 fn required_set(hir: &Hir) -> Option<Vec<Vec<u8>>> {
     match hir.kind() {
         HirKind::Literal(literal) => {
@@ -449,8 +432,8 @@ mod tests {
         assert!(pf.candidates("anything at all").contains(&0));
     }
 
-    /// The claim the dedup bitset makes: a signature is listed once, however
-    /// many of its literals the response carries and however often.
+    /// A signature is listed once, however many of its literals the response
+    /// carries.
     #[test]
     fn a_signature_is_listed_once_however_many_of_its_literals_hit() {
         let sigs = [
@@ -472,9 +455,7 @@ mod tests {
         assert!(pf.candidates("server: NGINX/1.25").contains(&0));
     }
 
-    /// A case-insensitive pattern is narrowed by its letters like any other,
-    /// in whichever case a response writes them, rather than matched against
-    /// every response.
+    /// A case-insensitive pattern is narrowed by its letters, in either case.
     #[test]
     fn a_case_insensitive_pattern_is_narrowed_by_its_letters() {
         let sigs = [sig(r"(?i)^(.{0,64}) Linux ([\w.-]*)$")];
@@ -486,8 +467,7 @@ mod tests {
         assert!(pf.candidates("host FreeBSD 14.1").is_empty());
     }
 
-    /// A `k` under `(?i)` also matches the Kelvin sign, which no ASCII-folded
-    /// literal finds, so it is not read as a literal and a response spelling
+    /// A `k` under `(?i)` also matches the Kelvin sign, and a response spelling
     /// it that way is still selected.
     #[test]
     fn a_letter_whose_class_is_wider_than_its_two_cases_is_not_read_as_a_literal() {
@@ -505,12 +485,8 @@ mod tests {
     }
 
     /// **A case-insensitive word with a `k` or an `s` in it is narrowed by
-    /// every way a match can spell it.** Unicode case folding gives each of
-    /// the two a third member, the Kelvin sign and the long s, so neither is a
-    /// letter an ASCII-folded literal stands for alone; spelled out as the
-    /// letter or that third member, and joined to the letters around it, the
-    /// word is still a set every match holds one of. A rule matching `BSD`
-    /// anywhere in a reply was otherwise run against every reply.
+    /// every way a match can spell it**, including the Kelvin sign and the
+    /// long s, so a rule matching `BSD` is not always-run.
     #[test]
     fn a_word_split_by_a_k_or_an_s_is_narrowed_by_each_spelling_of_it() {
         let pattern = r"(?i)^(.{0,256}?BSD)[ /-]([\d.]+)";
@@ -557,9 +533,8 @@ mod tests {
     }
 
     proptest! {
-        /// Candidate selection scans arbitrary response text through the
-        /// Aho-Corasick automaton; it must never panic on any input, including
-        /// non-ASCII and control characters.
+        /// Candidate selection must not panic on any input, including non-ASCII
+        /// and control characters.
         #[test]
         fn candidates_never_panics_on_arbitrary_input(response in "(?s).*") {
             let sigs = [sig(r"^HTTP/\d"), sig(r"Server: (\w+)"), sig(r"^\d{3} ")];

@@ -9,15 +9,12 @@
 //! # Collected responses
 //!
 //! [`ResponseSet`] is everything the transport gathered from a port, handed to
-//! the analyzers as one value. It is a struct rather than a bare `Vec<String>`
-//! so that non-banner evidence, such as a TLS certificate, has a typed home
-//! instead of being squeezed through a lossy `String`.
+//! the analyzers as one value, with typed fields for evidence that is not a
+//! banner, such as a TLS certificate.
 //!
-//! The transport owns collection (I/O); analyzers own interpretation (CPU). So
-//! the TLS certificate lives here as **raw DER bytes**, not a parsed structure:
-//! parsing is x509 work that belongs in [`TlsCertAnalyzer`], off the reactor,
-//! and keeping rustls/x509 types out of this model stops them leaking into every
-//! analyzer.
+//! The transport collects (I/O) and analyzers interpret (CPU), so the
+//! certificate is kept as raw DER bytes and parsed in [`TlsCertAnalyzer`], off
+//! the reactor.
 //!
 //! [`TlsCertAnalyzer`]: super::tls_cert::TlsCertAnalyzer
 
@@ -26,18 +23,15 @@ use crate::model::host::HostName;
 /// What a TLS handshake yielded: what was negotiated, and the certificate chain
 /// the peer presented as raw DER, leaf first.
 ///
-/// Empty `certificates` still means "this port completed a TLS handshake", a
-/// signal in itself, but the analyzers here need a leaf cert to say anything.
+/// Empty `certificates` still means the port completed a TLS handshake, but the
+/// analyzers here need a leaf certificate to say anything.
 ///
-/// The negotiated parameters are captured here rather than re-derived later
-/// because they exist only on the live connection: once the tunnel is dropped,
-/// what version and cipher were agreed is unrecoverable without handshaking
-/// again.
+/// The negotiated parameters exist only on the live connection, so they are
+/// captured here before it is dropped.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default)]
 pub struct TlsInfo {
-    /// The presented chain in DER form, leaf first. Owned so nothing borrows the
-    /// live connection.
+    /// The presented chain in DER form, leaf first.
     pub certificates: Vec<Vec<u8>>,
     /// The protocol version agreed, as the RFCs write it: `"TLSv1.3"`.
     ///
@@ -48,9 +42,8 @@ pub struct TlsInfo {
     pub cipher_suite: Option<&'static str>,
     /// The protocol agreed over ALPN, if the server chose one.
     ///
-    /// A single value rather than a list: ALPN negotiation *selects*, so this is
-    /// what the server picked and not what it would have accepted. Nothing short
-    /// of one handshake per candidate reveals the latter.
+    /// ALPN selects one protocol, so this is what the server picked, not the
+    /// full set it would accept.
     pub alpn: Option<String>,
 }
 
@@ -95,8 +88,8 @@ impl TlsInfo {
 /// Every response the transport collected from a single port.
 ///
 /// Analyzers read only the fields they understand: [`BannerRegexAnalyzer`] reads
-/// [`banners`](Self::banners); [`TlsCertAnalyzer`] reads [`tls`](Self::tls). A
-/// field being empty simply means that source produced nothing.
+/// [`banners`](Self::banners); [`TlsCertAnalyzer`] reads [`tls`](Self::tls). An
+/// empty field means that source produced nothing.
 ///
 /// [`BannerRegexAnalyzer`]: super::analyzer::BannerRegexAnalyzer
 /// [`TlsCertAnalyzer`]: super::tls_cert::TlsCertAnalyzer
@@ -110,10 +103,9 @@ pub struct ResponseSet {
     /// The names the responses gave for the machine, read from their
     /// structure: the realm a Kerberos KDC names, for one.
     ///
-    /// Kept out of [`banners`](Self::banners) because a banner is matched,
-    /// and what a rule captures from it becomes a service's description,
-    /// which no report masks. A name is the host's, and a report masks it
-    /// where it masks a hostname.
+    /// Kept apart from [`banners`](Self::banners) because what a rule captures
+    /// from a banner becomes a service description, which reports do not mask;
+    /// a report masks these where it masks a hostname.
     pub names: Vec<HostName>,
 }
 
@@ -129,9 +121,8 @@ impl ResponseSet {
 
     /// Adds what `other` collected after what this one did.
     ///
-    /// For responses gathered in the clear, which carry no handshake: a
-    /// handshake belongs to the one connection it completed on, and the
-    /// caller holding it is the one to record it.
+    /// For responses gathered in the clear. A handshake belongs to the
+    /// connection it completed on, and the caller holding it records it.
     pub(crate) fn extend(&mut self, other: ResponseSet) {
         debug_assert!(other.tls.is_none(), "a handshake is not merged");
         self.banners.extend(other.banners);
@@ -151,15 +142,13 @@ impl ResponseSet {
     }
 }
 
-/// The raw frames an [`Analyzer`] gathered from its *own* probes during the
-/// collect phase, kept separate from the shared first-contact data in
+/// The raw frames an [`Analyzer`] gathered from its own probes during the
+/// collect phase, separate from the shared first-contact data in
 /// [`ResponseSet`].
 ///
-/// Bytes, not text: an active analyzer speaks a specific protocol (a JARM
-/// ClientHello sweep, an SSH `KEXINIT`, a Modbus request) and parses the reply
-/// byte-for-byte, so there is no lossy `String` in the way. A passive analyzer,
-/// one that reads only the shared [`ResponseSet`], never overrides `collect`,
-/// so its `Collected` is simply empty.
+/// An active analyzer (a JARM ClientHello sweep, an SSH `KEXINIT`, a Modbus
+/// request) parses its replies byte for byte. A passive analyzer does not
+/// override `collect`, so its `Collected` is empty.
 ///
 /// [`Analyzer`]: super::analyzer::Analyzer
 #[non_exhaustive]

@@ -8,21 +8,10 @@
 
 //! # Property tests for pattern compilation
 //!
-//! Apart from [`pattern`](super::pattern) itself, and only because of where that
-//! file has to live.
-//!
-//! `build.rs` loads `pattern.rs` with `#[path]`, so the build script compiles
-//! the very same source the library does, which is what stops the patterns the
-//! build validates from drifting away from the patterns the engine can match.
-//! The build script's dependency set is its own, though, and `proptest` is a
-//! dev-dependency that is not in it. Cargo strips `#[cfg(test)]` before the
-//! build script is compiled so nothing breaks, but any tool reading that file
-//! in the build script's context sees an import it cannot resolve, and reports
-//! it.
-//!
-//! Keeping the property tests here rather than there costs nothing and removes
-//! that: this module is declared only by the library, so the build script never
-//! sees it at all.
+//! Kept apart from [`pattern`](super::pattern) because `build.rs` loads
+//! `pattern.rs` with `#[path]`, and `proptest` is not a build dependency. Tools
+//! reading that file in the build script's context would report the import as
+//! unresolved; this module is declared only by the library.
 
 use super::pattern::compile;
 use proptest::prelude::*;
@@ -31,18 +20,17 @@ use proptest::prelude::*;
 const LIMIT: usize = 32 * 1024 * 1024;
 
 proptest! {
-    /// The backtracking engine must *terminate* on any input, the
-    /// backtrack-step limit is what guarantees it. This drives a backref
-    /// pattern (which forces the fancy engine) against arbitrary strings; the
-    /// test completing at all is the evidence that no input hangs or panics.
+    /// The backtrack-step limit makes the backtracking engine terminate on any
+    /// input. A backref pattern forces that engine; the test completing shows
+    /// no input hangs or panics.
     #[test]
     fn fancy_engine_matching_terminates_on_any_input(input in "(?s).*") {
         let compiled = compile(r"^(\w+)\s+\1$", LIMIT).unwrap();
         let _ = compiled.identify(&input, None);
 }
 
-    /// Even a pattern built for catastrophic backtracking stays bounded: fed
-    /// adversarial all-`a` inputs of growing length, each match still returns.
+    /// A pattern built for catastrophic backtracking stays bounded on all-`a`
+    /// inputs of growing length.
     #[test]
     fn catastrophic_pattern_stays_bounded(len in 0usize..64) {
         let compiled = compile(r"(a+)+\1c", LIMIT).unwrap();

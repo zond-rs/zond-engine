@@ -8,33 +8,23 @@
 
 //! # TLS certificate analyzer
 //!
-//! The first non-regex [`Analyzer`]: it turns a captured certificate chain into
-//! [`Evidence`], proving out the extension point on a source that is structured
-//! binary rather than a text banner.
-//!
-//! What a certificate reliably says about what a port runs is
-//! modest, and this analyzer claims only that much:
+//! An [`Analyzer`] that turns a captured certificate chain into [`Evidence`].
+//! It claims three things:
 //!
 //! * **The port speaks TLS**, reported as service `ssl` at [`Probable`]
-//!   confidence. That is a real, useful label (far better than a raw handshake
-//!   blob) but shallow: it does not name the application protocol inside the
-//!   tunnel. A later phase re-probes *through* the tunnel and will override this
-//!   with a stronger, more specific verdict.
-//! * **A self-signed cert's organization names its operator/vendor.** When the
-//!   subject equals the issuer, which is typical of appliances and internal
-//!   services, the subject `O=` reliably names who stood the service up, so it is
-//!   surfaced as `vendor`. For CA-signed certs `O=` names the CA or the cert
-//!   owner, neither of which is the product vendor, so we do not guess.
-//! * **A name the corpus recognises identifies the product outright.** Both the
-//!   subject and the issuer are rendered and matched against the signature set,
-//!   which carries rules for the names appliances present. Those devices are
-//!   often reachable on no other identifying port, so the certificate is the
-//!   only place they say what they are. See [`distinguished_name`] for why the
-//!   rendering is this module's own.
+//!   confidence. This does not name the protocol inside the tunnel; a later
+//!   phase probes through the tunnel and overrides it.
+//! * **A self-signed certificate's organization names the vendor.** When the
+//!   subject equals the issuer, typical of appliances and internal services,
+//!   the subject `O=` is surfaced as `vendor`. For a CA-signed certificate `O=`
+//!   names the CA or the owner, so nothing is claimed.
+//! * **A name the corpus recognises identifies the product.** The subject and
+//!   issuer are rendered and matched against the signature set, which has rules
+//!   for appliances that often identify themselves on no other port. See
+//!   [`distinguished_name`] for the rendering.
 //!
-//! Host attribution (subject CN / SAN hostnames) is intentionally *not* produced
-//! here: it describes the host, not the service, and has no home on
-//! [`Evidence`].
+//! Host names (subject CN, SAN) describe the host, not the service, and are not
+//! produced here.
 //!
 //! [`Analyzer`]: super::analyzer::Analyzer
 //! [`Probable`]: crate::model::confidence::Confidence::Probable
@@ -53,20 +43,17 @@ use crate::model::confidence::Confidence;
 /// Renders a certificate name the way the signature corpus writes it: RFC 4514,
 /// most specific relative name first, joined by a comma with no space after it.
 ///
-/// The rendering matters as much as the parsing, because a corpus rule anchors
-/// on the whole string. Measured against the 166 shipped `x509.subject`
-/// examples: 160 lead with `CN=`, 126 close with `C=`, and 30 carry an escaped
-/// comma inside a value. `X509Name`'s own `Display` agrees with none of that. It
-/// walks the sequence in encoding order, separates with `", "`, and escapes
-/// nothing, so a rule held against it would match no certificate ever issued.
+/// A corpus rule anchors on the whole string. Of the 166 shipped `x509.subject`
+/// examples, 160 lead with `CN=`, 126 close with `C=`, and 30 carry an escaped
+/// comma inside a value. `X509Name`'s own `Display` uses encoding order, `", "`
+/// and no escaping, so no rule would match it.
 fn distinguished_name(name: &X509Name<'_>) -> String {
     let registry = x509_parser::objects::oid_registry();
 
     let mut names: Vec<String> = name
         .iter()
         .map(|rdn| {
-            // A multi-valued relative name is one component, and RFC 4514 §2.2
-            // joins its parts with `+` rather than promoting them to siblings.
+            // RFC 4514 §2.2: a multi-valued relative name joins its parts with `+`.
             rdn.iter()
                 .map(|attr| {
                     let key = oid2abbrev(attr.attr_type(), registry)
@@ -86,8 +73,8 @@ fn distinguished_name(name: &X509Name<'_>) -> String {
     names.join(",")
 }
 
-/// An attribute type nothing has a short name for, as dotted decimal. Three of
-/// the shipped examples end in one.
+/// An attribute type with no short name, as dotted decimal. Three of the shipped
+/// examples end in one.
 fn id_string(oid: &Oid<'_>) -> String {
     oid.iter()
         .map(|arcs| {
@@ -100,8 +87,8 @@ fn id_string(oid: &Oid<'_>) -> String {
 
 /// Escapes one attribute value per RFC 4514 §2.4.
 ///
-/// The characters that would otherwise be read as structure, plus a leading `#`
-/// or space and a trailing space, which are positional rather than literal.
+/// Escapes the structural characters, a leading `#` or space, and a trailing
+/// space.
 fn escape_value(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let last = value.chars().count().saturating_sub(1);
@@ -117,7 +104,7 @@ fn escape_value(value: &str) -> String {
 }
 
 /// Identifies TLS-bearing ports from the certificate captured during the
-/// handshake. See the module docs for what it does and does not claim.
+/// handshake. See the module docs for what it claims.
 pub struct TlsCertAnalyzer;
 
 #[async_trait]
@@ -127,14 +114,12 @@ impl Analyzer for TlsCertAnalyzer {
     }
 
     fn interested(&self, _ctx: &PortContext) -> bool {
-        // Interest depends on whether a certificate was actually captured, which
-        // is a fact about the response, not the port. `analyze` gates on that;
-        // when no TLS was collected it does no work and returns nothing.
+        // Whether a certificate was captured is a fact about the response;
+        // `analyze` returns nothing when no TLS was collected.
         true
     }
 
-    // Passive: the certificate was captured by the transport's handshake and
-    // lives in the shared `ResponseSet`, so the default `collect` no-op applies.
+    // Passive: the certificate is in the shared `ResponseSet`.
     fn analyze(
         &self,
         _ctx: &PortContext,
@@ -145,18 +130,16 @@ impl Analyzer for TlsCertAnalyzer {
             return Vec::new();
         };
 
-        // A completed handshake alone establishes TLS. If the cert fails to
-        // parse (truncated/adversarial), we still know the port speaks TLS, so
-        // emit the base evidence without vendor detail rather than nothing.
+        // A completed handshake alone establishes TLS, so an unparsable
+        // certificate still yields the base evidence.
         let mut evidence =
             Evidence::new(SourceId::TlsCert, Confidence::Probable).with_service("ssl");
 
         if let Ok((_, cert)) = parse_x509_certificate(leaf) {
             let tbs = &cert.tbs_certificate;
 
-            // The corpus has rules written against a certificate name directly,
-            // for appliances that identify themselves nowhere else. They match
-            // the whole rendered name, so each is offered as its own text.
+            // Corpus rules match the whole rendered name, so each name is
+            // offered as its own text.
             let db = super::db::SignatureDb::global();
             let names = [
                 distinguished_name(&tbs.subject),
@@ -196,9 +179,7 @@ mod names {
         parse_x509_certificate(CERT).expect("the fixture parses").1
     }
 
-    /// The rendering the corpus is written against, and the one this type's own
-    /// `Display` produces, are different strings. A rule held against the second
-    /// matches no certificate, which is why the renderer exists.
+    /// The corpus rendering differs from `X509Name`'s `Display`.
     #[test]
     fn a_name_renders_the_way_the_corpus_writes_one() {
         let cert = fixture();
@@ -214,16 +195,15 @@ mod names {
         );
     }
 
-    /// Thirty of the shipped subject examples carry one of these, and an
-    /// unescaped comma would split one relative name into two.
+    /// An unescaped comma would split one relative name into two; thirty
+    /// shipped subject examples carry one.
     #[test]
     fn a_comma_inside_a_value_is_escaped_rather_than_read_as_structure() {
         assert_eq!(escape_value("Cisco-Linksys, LLC"), r"Cisco-Linksys\, LLC");
         assert_eq!(escape_value("VMware, Inc."), r"VMware\, Inc.");
     }
 
-    /// RFC 4514 §2.4. The positional ones are escaped only where they are
-    /// positional, so an interior space or hash stays as it was written.
+    /// RFC 4514 §2.4. An interior space or `#` is left as written.
     #[test]
     fn the_remaining_rfc_4514_escapes_are_applied() {
         assert_eq!(escape_value(r"a+b;c<d>e"), r"a\+b\;c\<d\>e");
@@ -234,8 +214,7 @@ mod names {
         assert_eq!(escape_value("mid dle#in"), "mid dle#in");
     }
 
-    /// The whole path, on the string a real appliance presents: rendered name in,
-    /// corpus verdict out.
+    /// Rendered name in, corpus verdict out, on a real appliance's name.
     #[test]
     fn a_certificate_name_the_corpus_knows_names_its_product() {
         let db = crate::fingerprint::SignatureDb::global();
@@ -245,7 +224,7 @@ mod names {
         assert_eq!(evidence.product.as_deref(), Some("Site Recovery Manager"));
     }
 
-    /// A name nothing has a rule for is not forced into a verdict.
+    /// A name with no rule yields no verdict.
     #[test]
     fn an_unremarkable_name_yields_nothing() {
         let db = crate::fingerprint::SignatureDb::global();

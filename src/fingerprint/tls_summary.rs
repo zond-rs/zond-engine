@@ -11,27 +11,20 @@
 //! Turns a completed handshake ([`TlsInfo`]) into the [`Security`] a port
 //! carries in the report.
 //!
-//! Distinct from [`TlsCertAnalyzer`](super::tls_cert::TlsCertAnalyzer), which
-//! reads the same certificate to answer a different question. That analyzer
-//! asks *what is this service* and emits `Evidence` competing with every other
-//! analyzer's; this asks *what did the handshake establish* and emits a record
-//! nothing competes with. One port can want both, `ssl` as its service name and
-//! a certificate expiring in nine days, and folding them together would make
-//! the certificate's existence contingent on winning a confidence contest it is
-//! not part of.
+//! [`TlsCertAnalyzer`](super::tls_cert::TlsCertAnalyzer) reads the same
+//! certificate to decide what the service is, as `Evidence` competing with other
+//! analyzers. This module records what the handshake established, which nothing
+//! competes with, so the certificate is reported whichever service name wins.
 //!
 //! ## What is kept
 //!
-//! A summary, not the chain. See [`security`](crate::model::port::security) for
-//! why. The fields chosen are the ones a reader acts on: who the certificate
-//! claims to be, who vouched for it, when it stops being valid, and a
-//! fingerprint to compare two sightings by.
+//! A summary of the leaf (see [`security`](crate::model::port::security)): who
+//! the certificate claims to be, who issued it, its validity window, and a
+//! fingerprint to compare sightings by.
 //!
-//! Nothing here is a trust decision. The handshake ran with a verifier that
-//! accepts any certificate, precisely so that expired, self-signed and
-//! wrong-host certificates are seen rather than rejected, those being the ones
-//! worth reporting. Validity is recorded as two instants and left for the reader
-//! to compare against whatever time they care about.
+//! Nothing here is a trust decision. The handshake accepts any certificate so
+//! that expired, self-signed and wrong-host ones are seen. Validity is recorded
+//! as two instants for the reader to compare.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -44,10 +37,8 @@ use crate::model::port::{CertificateInfo, Security};
 
 /// The security record for a port that completed a handshake.
 ///
-/// Always produced when there was a handshake, even if the certificate is
-/// missing or unparseable: that the port speaks TLS 1.3 with a given cipher is
-/// worth recording on its own, and a chain this cannot read is a finding rather
-/// than a reason to report nothing.
+/// Produced for every handshake, even if the certificate is missing or
+/// unparseable, since the negotiated version and cipher stand on their own.
 pub fn security(tls: &TlsInfo) -> Security {
     let mut record = Security::new();
 
@@ -69,10 +60,8 @@ pub fn security(tls: &TlsInfo) -> Security {
 
 /// Summarizes a leaf certificate, or `None` if the DER does not parse.
 ///
-/// A certificate that fails to parse is not an error to propagate. The peer
-/// presented whatever it presented, and a scanner meets truncated and
-/// deliberately malformed chains as a matter of course; the handshake still
-/// happened and the rest of the record still stands.
+/// A scanner meets truncated and malformed chains routinely, so a parse failure
+/// is not an error; the rest of the record still stands.
 fn certificate_info(der: &[u8]) -> Option<CertificateInfo> {
     let (_, cert) = parse_x509_certificate(der).ok()?;
 
@@ -94,11 +83,8 @@ fn certificate_info(der: &[u8]) -> Option<CertificateInfo> {
 
 /// The first `CN=` in a distinguished name.
 ///
-/// A DN can carry several; the first is the one every other tool prints, and a
-/// certificate with two common names is malformed in a way this does not need
-/// to have an opinion about. Non-UTF-8 attributes are skipped rather than
-/// rendered lossily, a mangled name compares unequal to itself across two
-/// scans, which is worse than an absent one.
+/// The first is the one other tools print. Non-UTF-8 attributes are skipped,
+/// since a lossily rendered name would not compare equal across scans.
 fn first_common_name(name: &X509Name<'_>) -> Option<Arc<str>> {
     name.iter_common_name()
         .next()
@@ -109,13 +95,8 @@ fn first_common_name(name: &X509Name<'_>) -> Option<Arc<str>> {
 /// Every name the certificate claims, from its Subject Alternative Name
 /// extension.
 ///
-/// DNS names and IP addresses both, because a scanner reaches services by
-/// address at least as often as by name, and an `IP:10.0.0.5` SAN is what says
-/// a certificate was meant for the address just probed. Rendered the way each is
-/// written in a certificate viewer so the two are distinguishable in a report.
-///
-/// An absent extension yields an empty list, which is what it means: modern
-/// certificates put every name here, and one with none claims only its `CN`.
+/// DNS names and IP addresses, rendered as a certificate viewer writes them
+/// (`DNS:...`, `IP:10.0.0.5`). An absent extension yields an empty list.
 fn subject_alt_names(cert: &X509Certificate<'_>) -> Vec<Arc<str>> {
     let Ok(Some(extension)) = cert.subject_alternative_name() else {
         return Vec::new();
@@ -151,14 +132,11 @@ fn render_ip_san(bytes: &[u8]) -> Option<Arc<str>> {
 
 /// The public key's algorithm and size in bits.
 ///
-/// The size is what a reader judges: a 1024-bit RSA key is a finding whatever
-/// else the certificate says. For an elliptic curve it is the field size, which
-/// is how every other tool reports P-256 as 256 bits.
+/// For an elliptic curve the size is the field size, as other tools report
+/// P-256 as 256 bits.
 ///
-/// A key this cannot parse is reported as `unknown` with zero bits rather than
-/// omitted, so a consumer never has to tell "no key" apart from "a key we could
-/// not read", and zero bits is not a size any real key has, so it cannot be
-/// mistaken for a measurement.
+/// A key that cannot be parsed is reported as `unknown` with zero bits, a size
+/// no real key has.
 fn public_key_summary(cert: &X509Certificate<'_>) -> (&'static str, u32) {
     let Ok(key) = cert.public_key().parsed() else {
         return ("unknown", 0);
@@ -177,10 +155,8 @@ fn public_key_summary(cert: &X509Certificate<'_>) -> (&'static str, u32) {
 
 /// The SHA-256 of the raw DER, lowercase hex.
 ///
-/// Over the certificate exactly as it arrived, which is what makes it comparable
-/// with `openssl x509 -fingerprint -sha256` and with every other scanner's. Hex
-/// without separators, because a fingerprint is compared and grepped far more
-/// often than it is read aloud.
+/// Over the certificate as it arrived, so it matches
+/// `openssl x509 -fingerprint -sha256` without the colons.
 fn fingerprint_sha256(der: &[u8]) -> Arc<str> {
     let digest = ring::digest::digest(&ring::digest::SHA256, der);
     let mut hex = String::with_capacity(digest.as_ref().len() * 2);
@@ -193,10 +169,7 @@ fn fingerprint_sha256(der: &[u8]) -> Arc<str> {
 
 /// An ASN.1 time as a [`SystemTime`].
 ///
-/// Certificates predating the Unix epoch are not a thing that occurs, and one
-/// claiming to would be describing a validity window no scan can be inside, so a
-/// negative timestamp is clamped to the epoch rather than given a representation
-/// of its own.
+/// A timestamp before the Unix epoch is clamped to the epoch.
 fn asn1_to_system_time(time: ASN1Time) -> SystemTime {
     let seconds = time.timestamp();
     if seconds < 0 {
@@ -227,10 +200,7 @@ mod tests {
         certificate_info(SELF_SIGNED).expect("the fixture parses")
     }
 
-    /// The fingerprint has to match what every other tool computes for the same
-    /// file, or it cannot be used to compare a sighting here against one
-    /// elsewhere. This is `openssl x509 -fingerprint -sha256` on the fixture,
-    /// with the colons removed.
+    /// `openssl x509 -fingerprint -sha256` on the fixture, colons removed.
     #[test]
     fn the_fingerprint_is_the_one_openssl_computes() {
         assert_eq!(
@@ -249,9 +219,7 @@ mod tests {
         assert_eq!(cert.pubkey_bits(), 2048);
     }
 
-    /// Both kinds of name a certificate can claim, because a scanner reaches a
-    /// service by address as often as by name and an IP SAN is what says the
-    /// certificate was meant for the address just probed.
+    /// DNS and IP SANs both.
     #[test]
     fn every_name_the_certificate_claims_is_recorded() {
         let cert = info();
@@ -263,9 +231,7 @@ mod tests {
         assert!(names.contains(&"10.0.0.5"), "the IP SAN too");
     }
 
-    /// Recorded as two instants, so a report read years later reports the
-    /// window the certificate actually had rather than one relative to whenever
-    /// it is opened.
+    /// Validity is two absolute instants.
     #[test]
     fn validity_is_recorded_as_the_window_the_certificate_names() {
         let cert = info();
@@ -278,9 +244,7 @@ mod tests {
         assert_eq!(cert.validity_end(), not_after);
     }
 
-    /// A handshake that produced no readable certificate still established that
-    /// the port speaks TLS, and at what version, which is the whole reason the
-    /// negotiated parameters are captured separately from the chain.
+    /// A handshake with no readable certificate still records the version.
     #[test]
     fn a_handshake_without_a_usable_certificate_still_records_what_was_negotiated() {
         let tls = TlsInfo {

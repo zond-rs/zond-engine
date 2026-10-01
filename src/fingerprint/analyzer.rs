@@ -11,24 +11,20 @@
 //! The extension point of the fingerprinting engine.
 //!
 //! An [`Analyzer`] turns response data into zero or more [`Evidence`] records,
-//! independently of every other analyzer. Adding TLS-certificate, HTTP-header,
-//! JARM, SNMP, or nerva-derived binary detection means adding an `Analyzer` and
-//! registering it, not touching the orchestration or the other analyzers.
+//! independently of every other analyzer. A new source of detection is a new
+//! `Analyzer`, registered with the orchestrator.
 //!
 //! ## Two phases
 //!
-//! An analyzer runs in two clearly separated phases so the concurrency rule
-//! ("network I/O on the reactor, CPU on the blocking pool") is enforced by the
-//! orchestrator in [`super`] rather than trusted to each analyzer:
+//! The orchestrator in [`super`] runs network I/O on the reactor and CPU work
+//! on the blocking pool, in two phases:
 //!
-//! 1. [`collect`](Analyzer::collect), async and on the reactor. An analyzer
-//!    that needs its own probe exchange (beyond the shared first-contact the
-//!    transport already did) runs it here and returns raw [`Collected`] frames.
-//!    The default does no I/O, which is exactly right for *passive* analyzers
-//!    that read only the shared [`ResponseSet`].
-//! 2. [`analyze`](Analyzer::analyze), sync and off the reactor. Pure CPU: turn
-//!    the shared responses and this analyzer's own collected frames into
-//!    evidence. No network here, ever.
+//! 1. [`collect`](Analyzer::collect), async, on the reactor. An analyzer that
+//!    needs its own probe exchange beyond the shared first contact runs it here
+//!    and returns raw [`Collected`] frames. The default does no I/O, which suits
+//!    *passive* analyzers that read only the shared [`ResponseSet`].
+//! 2. [`analyze`](Analyzer::analyze), sync, off the reactor. Turns the shared
+//!    responses and the analyzer's own frames into evidence. No network I/O.
 //!
 //! `BannerRegexAnalyzer` and `TlsCertAnalyzer` are passive (phase 1 is the
 //! default no-op); an active analyzer such as JARM or a Modbus handler overrides
@@ -44,74 +40,57 @@ use crate::model::port::Protocol;
 
 /// What an [`Analyzer`] is told about the port it is examining.
 ///
-/// Deliberately small; it grows as analyzers need more context (prior evidence,
-/// transport hints) without changing the trait. `#[non_exhaustive]` is what
-/// makes that true outside this crate: with every field public and the type
-/// open, the growth its own documentation anticipates would break every caller
-/// that had built one. Construct it through [`new`](Self::new).
+/// Non-exhaustive so it can grow without changing the trait. Construct it
+/// through [`new`](Self::new).
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct PortContext {
     /// The port being examined. It selects the signatures registered for that
-    /// port, and it is what an analyzer bound to particular ports (SSH on 22)
-    /// gates on in [`interested`](Analyzer::interested).
+    /// port, and port-bound analyzers (SSH on 22) gate on it in
+    /// [`interested`](Analyzer::interested).
     pub port: u16,
     /// The transport the responses were read over.
     ///
-    /// Load-bearing for an **active** analyzer: one gated on a port number alone
-    /// would dial TCP 22 because UDP 22 was scanned, probing a service nobody
-    /// asked about at an address that never offered one. Passive analyzers
-    /// mostly ignore it, since what they read is already in the responses.
+    /// An **active** analyzer must gate on it: on the port alone it would dial
+    /// TCP 22 because UDP 22 was scanned.
     pub protocol: Protocol,
-    /// The address of the peer being fingerprinted, when known. An *active*
-    /// analyzer whose [`collect`](Analyzer::collect) opens its own connection
-    /// (SSH, JARM, a binary/ICS handler) dials this; it is `None` in contexts
-    /// with no live socket (unit tests, a passive-only path), and passive
-    /// analyzers ignore it.
+    /// The address of the peer, when known. An *active* analyzer whose
+    /// [`collect`](Analyzer::collect) opens its own connection dials this. `None`
+    /// where there is no live socket (unit tests, passive-only paths).
     pub addr: Option<std::net::SocketAddr>,
-    /// The tunnel the responses were read through, if any. Set when the
-    /// transport handed the analyzers data decrypted from a tunnel, so evidence
-    /// drawn from it can be marked accordingly.
+    /// The tunnel the responses were read through, if any, so evidence drawn
+    /// from them can be marked as tunnelled.
     pub tunnel: Option<Tunnel>,
     /// Whether first contact drew an HTTP response.
     ///
-    /// The cheap gate for an *active* analyzer that only makes sense against a
-    /// web server. [`interested`](Analyzer::interested) is asked before either
-    /// phase and is handed no responses, so this is what it reads;
-    /// [`collect`](Analyzer::collect) gets the responses themselves and can look
-    /// closer. Gating on the port number instead would miss the long tail, which
-    /// is where a favicon earns its keep.
+    /// The gate for an *active* analyzer that only makes sense against a web
+    /// server. [`interested`](Analyzer::interested) is asked before either phase
+    /// and sees no responses, so it reads this. Gating on the port number would
+    /// miss web servers on unusual ports.
     ///
-    /// `false` wherever nothing was read, which is every passive-only path and
-    /// every unit test that builds a context by hand.
+    /// `false` wherever nothing was read, including passive-only paths and
+    /// hand-built contexts.
     pub speaks_http: bool,
     /// How far the caller asked this scan to go.
     ///
-    /// What an *expensive* active analyzer gates on. The two phases already
-    /// separate I/O from CPU, but nothing in them says what a probe exchange
-    /// costs, and a JARM fingerprint is ten connections where a favicon is one.
-    /// Reading the level here is what lets the expensive ones stay out of a
-    /// default scan without a flag of their own.
+    /// Expensive active analyzers gate on it: a JARM fingerprint is ten
+    /// connections where a favicon is one.
     ///
-    /// [`ServiceDetection::default()`] wherever a context is built by hand,
-    /// which is the level a caller who said nothing asked for.
+    /// [`ServiceDetection::default()`] wherever a context is built by hand.
     pub detection: ServiceDetection,
-    /// The name the peer was reached by, where a target named a host rather
-    /// than an address.
+    /// The name the peer was reached by, where the target was a host name.
     ///
-    /// What an active analyzer speaking HTTP or TLS asks for: a server holding
-    /// several sites at one address routes a request by the name in it, and
-    /// answers one naming none with its default site. `None` where the address
-    /// was named, and wherever a context is built by hand.
+    /// An active analyzer speaking HTTP or TLS sends it, since a server with
+    /// several sites at one address routes by name and otherwise answers with its
+    /// default site. `None` where an address was given, and in hand-built
+    /// contexts.
     pub host_name: Option<String>,
 }
 
 impl PortContext {
     /// A context for `port` over `protocol`, with no live socket and no tunnel.
     ///
-    /// The two required facts, because they are the two an analyzer gates on:
-    /// a port number alone would have an SSH probe dial TCP 22 because UDP 22
-    /// was scanned.
+    /// Both are required because analyzers gate on both.
     #[must_use]
     pub fn new(port: u16, protocol: Protocol) -> Self {
         Self {
@@ -170,32 +149,26 @@ pub trait Analyzer: Send + Sync {
     /// Stable identity of this analyzer, recorded on the evidence it produces.
     fn id(&self) -> SourceId;
 
-    /// Cheap gate deciding whether this analyzer should run for `ctx` at all,
-    /// so irrelevant analyzers cost nothing (e.g. a TLS analyzer on a plaintext
-    /// port). Applies to both phases.
+    /// Cheap gate deciding whether this analyzer runs for `ctx` at all. Applies
+    /// to both phases.
     fn interested(&self, ctx: &PortContext) -> bool;
 
-    /// I/O phase, on the reactor. Runs this analyzer's own probe exchange,
-    /// beyond the shared first-contact the transport already performed, and
+    /// I/O phase, on the reactor. Runs this analyzer's own probe exchange and
     /// returns the raw frames it read.
     ///
-    /// The default does no I/O and returns nothing: *passive* analyzers (banner
-    /// regex, TLS certificate) draw entirely on the shared [`ResponseSet`] and
-    /// leave this alone. An *active* analyzer (JARM, SSH, a binary/ICS handler)
-    /// overrides it to speak its protocol.
+    /// The default does no I/O. *Passive* analyzers (banner regex, TLS
+    /// certificate) read only the shared [`ResponseSet`]; an *active* analyzer
+    /// (JARM, SSH, a binary/ICS handler) overrides this to speak its protocol.
     ///
-    /// `responses` is what first contact already read, so an analyzer can build
-    /// on it rather than asking again. The favicon analyzer needs the page the
-    /// scan already fetched in order to find where the icon is declared, and
-    /// without this it would spend a request re-reading it.
+    /// `responses` is what first contact already read. The favicon analyzer, for
+    /// one, finds the icon's location in the page already fetched.
     async fn collect(&self, _ctx: &PortContext, _responses: &ResponseSet) -> Collected {
         Collected::default()
     }
 
-    /// CPU phase, off the reactor. Turns the shared first-contact
-    /// `responses` and this analyzer's own `collected` frames into evidence. An
-    /// analyzer reads only the inputs it understands and ignores the rest; this
-    /// method must not perform network I/O.
+    /// CPU phase, off the reactor. Turns the shared first-contact `responses` and
+    /// this analyzer's own `collected` frames into evidence. Must not perform
+    /// network I/O.
     fn analyze(
         &self,
         ctx: &PortContext,
@@ -208,15 +181,12 @@ pub trait Analyzer: Send + Sync {
 /// active-probe responses. One analyzer among several.
 ///
 /// Matching is tiered: each response is checked first against the signatures
-/// linked to its port, and only if none match is it checked against the global
-/// set, narrowed by the prefilter, so a service on a non-standard port is
-/// still identified without scanning every signature. The prefilter is built
-/// lazily; most responses match on their port and never trigger it.
+/// linked to its port, and only if none match against the global set, narrowed
+/// by the prefilter. The prefilter is built lazily.
 ///
-/// Within a tier the analyzer picks the **most specific** match, not the first
-/// one to fire (see `best_match`), so a generic `HTTP/1.1` signature does not
-/// shadow the `Server: nginx/1.25.3` signature that names a product and
-/// version.
+/// Within a tier the analyzer picks the **most specific** match (see
+/// `best_match`), so a generic `HTTP/1.1` signature does not shadow one that
+/// names a product and version.
 pub struct BannerRegexAnalyzer;
 
 #[async_trait]
@@ -229,8 +199,7 @@ impl Analyzer for BannerRegexAnalyzer {
         true
     }
 
-    // Passive: reads the shared banners and runs no probes of its own, so the
-    // default `collect` stands.
+    // Passive: reads the shared banners only.
     fn analyze(
         &self,
         ctx: &PortContext,
@@ -250,10 +219,7 @@ impl Analyzer for BannerRegexAnalyzer {
 /// Marks `evidence` with the tunnel its response was read through, so a banner
 /// matched inside TLS is labelled as tunnelled.
 ///
-/// The tunnel is the one thing the signature set cannot know: it is a fact about
-/// how the bytes arrived rather than about what they say, and only the transport
-/// that opened it can supply it. Port confirmation comes back on the evidence
-/// already, from the tier that matched.
+/// The signature set cannot know how the bytes arrived; only the transport can.
 fn stamp(mut evidence: Evidence, ctx: &PortContext) -> Evidence {
     evidence.tunnel = ctx.tunnel;
     evidence
@@ -273,9 +239,7 @@ mod tests {
     use super::*;
     use crate::model::confidence::Confidence;
 
-    /// An active analyzer: its `collect` produces raw frames that its `analyze`
-    /// turns into evidence. Proves the two-phase wiring end to end: the frames
-    /// gathered in the I/O phase reach the CPU phase intact, as raw bytes.
+    /// An active analyzer whose frames must reach `analyze` intact, as raw bytes.
     struct EchoAnalyzer;
 
     #[async_trait]
@@ -289,8 +253,7 @@ mod tests {
         }
 
         async fn collect(&self, ctx: &PortContext, _responses: &ResponseSet) -> Collected {
-            // Stand in for a real probe exchange: emit a frame derived from the
-            // context, including a non-UTF-8 byte to prove the channel is binary.
+            // Includes a non-UTF-8 byte to show the channel is binary.
             Collected {
                 frames: vec![vec![0xff, ctx.port as u8]],
             }
@@ -324,7 +287,6 @@ mod tests {
             detection: crate::config::ServiceDetection::default(),
             host_name: None,
         };
-        // Drive the two phases exactly as the orchestrator does.
         let collected = EchoAnalyzer.collect(&ctx, &ResponseSet::default()).await;
         assert_eq!(collected.frames, vec![vec![0xff, 7]]);
 
@@ -335,7 +297,6 @@ mod tests {
 
     #[tokio::test]
     async fn default_collect_is_a_silent_no_op() {
-        // A passive analyzer that never overrides `collect` gathers nothing.
         let ctx = PortContext {
             port: 80,
             protocol: crate::model::port::Protocol::Tcp,

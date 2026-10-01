@@ -8,16 +8,14 @@
 
 //! # Operating system fingerprinting
 //!
-//! What machine is behind an address, as distinct from what service is behind a
-//! port. The sibling modules answer the second question; this one answers the
-//! first, from the same replies.
+//! What machine is behind an address, read from the same replies the service
+//! modules use.
 //!
 //! ## Usable on its own
 //!
-//! Nothing here opens a socket, spawns a task, holds a runtime or touches the
-//! scanner. A [`StackObservation`] is built by a function from bytes to a
-//! value, so a caller who already has packets, a saved capture, their own raw
-//! socket, a fixture, can use this without going anywhere near
+//! Nothing here opens a socket, spawns a task or needs a runtime. A
+//! [`StackObservation`] is built from bytes, so a caller with packets from a
+//! capture, their own raw socket or a fixture can use it without
 //! [`scanner`](crate::scanner):
 //!
 //! ```
@@ -40,15 +38,9 @@
 //! # }
 //! ```
 //!
-//! That decoupling is a design constraint rather than an accident, and it is
-//! kept honest by the imports: this module reaches for the vocabulary in
-//! [`model`](crate::model) and the header parsing in
-//! [`protocols`](crate::protocols) and for nothing else. What it does *not* yet
-//! buy is a smaller build, the crate still compiles its capture and its runtime
-//! whatever a consumer imports, because those are unconditional dependencies.
-//! Turning this into a feature that costs nothing to leave out is a change to
-//! the dependency set rather than to this module, and the module is written so
-//! that change is mechanical when someone wants it.
+//! The module depends only on [`model`](crate::model) and
+//! [`protocols`](crate::protocols). The crate still compiles its capture and
+//! runtime dependencies whatever a consumer imports.
 //!
 //! ## Shape
 //!
@@ -63,54 +55,42 @@
 //!                                        [OsEvidence] ─▶ resolve ─▶ OsFingerprint
 //! ```
 //!
-//! [`identify()`] is the door: it takes whatever a caller read off the wire,
-//! adds the two sources a host carries about itself, resolves the combination
-//! and merges the result. Every scanner in this crate goes through it.
+//! [`identify()`] is the entry point: it takes what a caller read off the wire,
+//! adds what the host says about itself, resolves the combination and merges
+//! the result. Every scanner in this crate goes through it.
 //!
 //! ## Two axes: what it runs, and what it is
 //!
-//! A verdict answers two questions, and a source may answer either without the
-//! other. [`OsEvidence::family`](crate::model::host::OsEvidence::family) is
-//! what the machine *runs*,
-//! [`OsEvidence::device`](crate::model::host::OsEvidence::device) is what it
-//! *is*, printer, switch, camera, and neither stands in for the other. A hop
-//! counter of 255 reaches the first and never the second; an SNMP agent reading
-//! `Brother NC-8700w` reaches the second and genuinely does not know the first.
+//! A source may answer either question without the other.
+//! [`OsEvidence::family`](crate::model::host::OsEvidence::family) is what the
+//! machine *runs*; [`OsEvidence::device`](crate::model::host::OsEvidence::device)
+//! is what it *is* (printer, switch, camera). A TTL of 255 informs the first
+//! only; an SNMP agent reading `Brother NC-8700w` informs the second only.
 //!
 //! [`resolve`] settles the family by vote and everything else by agreement, so a
-//! source with nothing to say about the family says nothing there rather than
-//! being made to guess. That distinction is load-bearing: read as a family, a
-//! model number runs against the real families on the ballot and both lose.
+//! source with nothing to say about the family casts no vote. A model number
+//! counted as a family would split the vote.
 //!
 //! ## One reply, or several
 //!
-//! The two entry points differ in what evidence they have, not in how they
-//! score it. [`classify`] reads a single reply, which is what a scan already
-//! drew for another reason and therefore costs nothing. [`classify_series`]
-//! reads several replies from one host together with what their series turned
-//! out to be, which costs probes and is what
-//! [`OsDetection::Active`](crate::config::OsDetection) buys.
+//! Both entry points score the same way. [`classify`] reads a single reply the
+//! scan already drew, at no extra cost. [`classify_series`] reads several
+//! replies from one host plus their series classes, which costs probes and is
+//! what [`OsDetection::Active`](crate::config::OsDetection) enables.
 //!
-//! What the second one buys is **specificity, not confidence**. A series is
-//! still one stack, so it is still one piece of evidence and still bounded by
-//! [`MAX_STACK_ACCURACY`]; what it adds is the three features a single reply
-//! cannot carry, the identifier policy, the sequence generator and the clock,
-//! and those are what a rule naming a *release* rather than a family has to
-//! predicate on.
+//! A series adds **specificity, not confidence**. It is still one stack, so
+//! still one piece of evidence bounded by [`MAX_STACK_ACCURACY`]. It adds the
+//! three features a single reply cannot carry (the IP identifier policy, the
+//! sequence generator and the clock), which rules naming a release need.
 //!
-//! ## What one observation can and cannot settle
+//! ## What one observation can settle
 //!
-//! It describes **one reply**, and several of the most tempting features need
-//! more than one. Whether a stack's IP identifier counts, stays at zero or is
-//! random is a policy visible only across several replies; so is a clock
-//! frequency, which needs two timestamps and the interval between them. Neither
-//! belongs on this type, and putting either here would mean inventing a value
-//! from a single sample.
+//! A [`StackObservation`] describes **one reply**. The IP identifier policy and
+//! the clock frequency need several replies and are not on it.
 //!
-//! It is also **not comparable across probes**. The option layout and the
-//! advertised window both depend on what the probe offered, which is measured
-//! and explained on [`StackObservation`]. Two may be compared when the
-//! same question was asked of both.
+//! Observations are **not comparable across probes**: the option layout and the
+//! advertised window depend on what the probe offered (see
+//! [`StackObservation`]). Compare two only when the same probe drew both.
 
 mod db;
 mod evidence;
@@ -130,10 +110,8 @@ mod corpus;
 pub use observation::{
     EchoObservation, Quirks, StackObservation, StackReply, TcpOptionKind, Timestamps,
 };
-// The schema an `assets/fingerprinting/os` rule is authored against. Exported so
-// a consumer writing rules of their own is held to the same shape rather than
-// discovering it when one is silently dropped, exactly as the service signature
-// schema is.
+// The schema an `assets/fingerprinting/os` rule is authored against, exported for
+// callers writing their own rules.
 pub use db::{InvalidRule, RuleDb};
 pub use evidence::{MAX_FUSED_ACCURACY, resolve};
 pub use hardware::evidence_from as hardware_evidence;
@@ -152,10 +130,8 @@ pub use text::{
     AGENT_CEILING, BANNER_CEILING, OsMetadata, canonicalise, ceiling,
     evidence_from as banner_evidence, hardware_from,
 };
-// The capture resolver, for the service reading rather than the host one: a
-// rule's `service.component.*` fields take the same `{capture:N}` templates its
-// `os.*` fields do, and two resolvers would eventually disagree about one
-// syntax.
+// A rule's `service.component.*` fields use the same `{capture:N}` templates as
+// its `os.*` fields, so they share one resolver.
 pub(crate) use text::fill;
 pub use verdict::{
     MAX_STACK_ACCURACY, MIN_REPORTABLE_ACCURACY, OsVerdict, classify, classify_echo_reply,

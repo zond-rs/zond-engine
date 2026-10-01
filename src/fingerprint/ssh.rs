@@ -8,35 +8,27 @@
 
 //! # SSH analyzer
 //!
-//! The first **active** analyzer: where the banner-regex and TLS-cert analyzers
-//! read data the transport already captured, this one speaks the protocol
-//! itself. Its [`collect`](Analyzer::collect) opens its own connection, performs
-//! the SSH identification-string exchange, and reads the server's
-//! `SSH_MSG_KEXINIT`; its [`analyze`](Analyzer::analyze) parses that packet's
-//! algorithm name-lists. It is the reference for every active analyzer to come
-//! (JARM, the nerva binary/ICS handlers): probe on the reactor, parse off it.
+//! An **active** analyzer. Its [`collect`](Analyzer::collect) opens its own
+//! connection, performs the SSH identification-string exchange and reads the
+//! server's `SSH_MSG_KEXINIT`; its [`analyze`](Analyzer::analyze) parses that
+//! packet's algorithm name-lists.
 //!
 //! ## What it adds over the banner
 //!
-//! The version banner (`SSH-2.0-OpenSSH_9.6p1 …`) is already grabbed on first
-//! contact and matched by the banner analyzer, which supplies product/version.
-//! Completing the exchange adds two things the banner cannot:
+//! The banner analyzer already supplies product and version from the
+//! first-contact banner (`SSH-2.0-OpenSSH_9.6p1 …`). Completing the exchange
+//! adds:
 //!
-//! * **Protocol confirmation.** A completed version + `KEXINIT` exchange is
-//!   strong proof the port really speaks SSH, not merely that it emitted a line
-//!   beginning `SSH-`. Reported as service `ssh` at [`Strong`] confidence.
+//! * **Protocol confirmation.** A completed version and `KEXINIT` exchange shows
+//!   the port speaks SSH, beyond emitting a line beginning `SSH-`. Reported as
+//!   service `ssh` at [`Strong`] confidence.
 //! * **Host-key algorithms.** The server's offered host-key algorithm list
-//!   (`ssh-ed25519,rsa-sha2-512,…`) is surfaced as `extrainfo`. It is useful in
-//!   its own right, and it is what HASSH-style identification of servers whose
-//!   banner is generic or spoofed would be built on.
+//!   (`ssh-ed25519,rsa-sha2-512,…`), surfaced as `extrainfo`.
 //!
 //! ## Scope
 //!
-//! Active probing is gated to the well-known SSH ports (a fresh connection is
-//! not free, so we do not dial every port). SSH on a non-standard port is still
-//! identified from its banner by the banner analyzer; driving the active probe
-//! from an accumulating service guess belongs to whatever plans probes, not to a
-//! port list here.
+//! Active probing is limited to the well-known SSH ports. SSH elsewhere is still
+//! identified from its banner.
 //!
 //! [`Strong`]: crate::model::confidence::Confidence::Strong
 
@@ -59,34 +51,22 @@ const SSH_PORTS: &[u16] = &[22, 2222];
 /// line is not one.
 ///
 /// RFC 4253 §4.2 defines the line as `SSH-protoversion-softwareversion SP
-/// comments`, and **the fingerprint corpus is written against the part after
-/// the protocol version**, `OpenSSH_9.2p1 Debian-2+deb12u10`, because that is
-/// what a stack actually chose. Its patterns anchor on it: `^OpenSSH_...$`.
+/// comments`. **The fingerprint corpus is written against the part after the
+/// protocol version**, `OpenSSH_9.2p1 Debian-2+deb12u10`, and its patterns
+/// anchor on it (`^OpenSSH_...$`). Fed the whole line, every version-bearing
+/// Debian rule fails and the host is reported only as `Linux`.
 ///
-/// So a rule naming a release can never match the whole line, and that is not a
-/// hypothetical. Fed the complete banner, every version-bearing Debian rule
-/// fails and only a loose rule naming the family fires: a host announcing
-/// `SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u10` is reported as `Linux` although
-/// the corpus holds a rule mapping that exact string to Debian 12 with a CPE.
-///
-/// This is the SSH counterpart of what `HttpHeadersAnalyzer` does for a `Server`
-/// header: the corpus matches a *field*, so something has to extract the field.
-///
-/// The protocol version cannot itself contain a hyphen, so the first one after
-/// the prefix ends it; the comment part may, and is kept, because the corpus
-/// matches on it.
+/// The protocol version cannot contain a hyphen, so the first one after the
+/// prefix ends it. The comment part is kept, because the corpus matches on it.
 ///
 /// ```text
 /// SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u10
 ///         └───────────── this ───────────┘
 /// ```
 ///
-/// Only the identification line, which ends at its line break. A server does
-/// not wait for the client's line before sending its key exchange, and OpenSSH
-/// sends it at once, so a banner read off the wire commonly runs on into
-/// binary. Taken whole, the field would end in that binary, and every rule
-/// anchored at the end of the comment, which is every rule naming a release,
-/// would miss the banner it was written for.
+/// The field ends at the line break. OpenSSH sends its key exchange without
+/// waiting for the client, so a banner read off the wire often runs on into
+/// binary, which would defeat every rule anchored at the end.
 pub(crate) fn software_version(line: &str) -> Option<&str> {
     let (_protocol_version, software) = line
         .split(['\r', '\n'])
@@ -101,14 +81,13 @@ pub(crate) fn software_version(line: &str) -> Option<&str> {
 /// §4.2); the software name is ours.
 const CLIENT_ID: &[u8] = b"SSH-2.0-Zond_1.0\r\n";
 
-/// Whole-exchange budget: connect, read the banner, read one packet. Kept
-/// tight, a reachable SSH server completes this well under a second, on a
-/// path that costs nothing; a scan allows for the path it measured on top
-/// (see [`on_path`](super::on_path)).
+/// Whole-exchange budget: connect, read the banner, read one packet. A
+/// reachable server completes this well under a second; a scan adds the path
+/// delay it measured (see [`on_path`](super::on_path)).
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// RFC 4253 caps an (uncompressed) packet at 35 000 bytes; we never accept a
-/// length header larger, so a hostile server cannot make us allocate unbounded.
+/// RFC 4253 caps an uncompressed packet at 35 000 bytes. A larger length header
+/// is refused before allocating.
 const MAX_PACKET_LEN: usize = 35_000;
 
 /// The SSH identification line cannot exceed 255 bytes including CRLF (RFC 4253
@@ -117,14 +96,9 @@ const MAX_ID_LINE: usize = 255;
 
 /// How many lines a server may send before its identification string.
 ///
-/// RFC 4253 §4.2 permits a server to send other lines first and requires a
-/// client to skip them, and it sets no limit on how many. A login banner is the
-/// usual reason and runs to a few dozen lines at most; the bound is here because
-/// these lines come from a peer that has not identified itself yet, and a
-/// preamble with no end is a peer holding the exchange open for free.
-///
-/// The whole exchange is already under [`EXCHANGE_TIMEOUT`], so this bounds the
-/// work rather than the wait.
+/// RFC 4253 §4.2 lets a server send other lines first and sets no limit. A login
+/// banner runs to a few dozen lines at most. [`EXCHANGE_TIMEOUT`] bounds the
+/// wait; this bounds the work.
 const MAX_PREAMBLE_LINES: usize = 64;
 
 /// `SSH_MSG_KEXINIT` message number (RFC 4253 §12).
@@ -141,13 +115,8 @@ impl Analyzer for SshAnalyzer {
     }
 
     fn interested(&self, ctx: &PortContext) -> bool {
-        // Active probe: only where SSH is expected, only over the transport it
-        // speaks, only with a socket to dial, and never inside a tunnel (SSH is
-        // not carried over TLS here).
-        //
-        // The protocol test is not redundant with the port test. Without it a
-        // scan that found UDP 22 open would have this dial *TCP* 22, a service
-        // nobody asked about, at an address that never offered one.
+        // TCP only: otherwise an open UDP 22 would have this dial TCP 22. Never
+        // inside a tunnel.
         ctx.protocol == crate::model::port::Protocol::Tcp
             && ctx.tunnel.is_none()
             && ctx.addr.is_some()
@@ -160,8 +129,8 @@ impl Analyzer for SshAnalyzer {
         let Some(addr) = ctx.addr else {
             return Collected::default();
         };
-        // The scan's gap before the connection is not the exchange's time;
-        // see `dial::pacing`.
+        // The scan's pacing gap is not counted against the exchange; see
+        // `dial::pacing`.
         match pacing::timeout(super::on_path(EXCHANGE_TIMEOUT), || kexinit_exchange(addr)).await {
             Ok(Some(packet)) => Collected::from_frames(vec![packet]),
             _ => Collected::default(),
@@ -183,8 +152,7 @@ impl Analyzer for SshAnalyzer {
             return Vec::new();
         };
 
-        // A completed exchange confirms SSH; the host-key list rides along as
-        // extrainfo. Product/version come from the banner analyzer.
+        // Product and version come from the banner analyzer.
         let mut evidence = Evidence::new(SourceId::Ssh, Confidence::Strong).with_service("ssh");
         if !host_key_algorithms.is_empty() {
             evidence = evidence.with_extrainfo(format!("hostkey {host_key_algorithms}"));
@@ -196,37 +164,26 @@ impl Analyzer for SshAnalyzer {
 /// Performs the exchange against `addr`: connect, send our identification
 /// string, read the server's, then read one binary packet (its `KEXINIT`).
 /// Returns the raw packet payload (message byte onward), or `None` on any I/O
-/// or protocol error, the caller treats that as "not SSH here".
+/// or protocol error.
 async fn kexinit_exchange(addr: SocketAddr) -> Option<Vec<u8>> {
     let stream = super::analyzer_connect(addr).await.ok()?;
     let mut reader = BufReader::new(stream);
 
-    // Send our identification string first; the server needs it to proceed.
     reader.write_all(CLIENT_ID).await.ok()?;
     reader.flush().await.ok()?;
 
-    // Read the server's identification line, skipping whatever it sends first.
     read_identification(&mut reader).await?;
 
-    // Read one binary packet. The server sends its KEXINIT immediately after the
-    // identification exchange, so this is it.
+    // The first binary packet after the identification exchange is the KEXINIT.
     read_packet_payload(&mut reader).await
 }
 
 /// Reads the server's `SSH-…` identification string, skipping whatever it sends
 /// before one.
 ///
-/// RFC 4253 §4.2 permits a server to send other lines first, and requires a
-/// client to be able to skip them. A login banner ahead of the identifier is
-/// near-universal on hardened and enterprise hosts, which is to say on exactly
-/// the fleet an operator most wants a scanner to work against. Reading one line
-/// and giving up if it did not begin `SSH-` left this analyzer silent on every
-/// one of them, and silent invisibly: the passive banner grab still named the
-/// service, so only the corroboration went missing.
-///
-/// Bounded twice, because a peer that has not identified itself is sending
-/// these: [`MAX_ID_LINE`] per line, [`MAX_PREAMBLE_LINES`] lines before the
-/// identifier.
+/// RFC 4253 §4.2 lets a server send other lines first and requires a client to
+/// skip them; hardened hosts commonly send a login banner. Bounded to
+/// [`MAX_ID_LINE`] per line and [`MAX_PREAMBLE_LINES`] lines.
 async fn read_identification<R>(reader: &mut R) -> Option<Vec<u8>>
 where
     R: AsyncReadExt + Unpin,
@@ -253,7 +210,6 @@ where
             return None; // connection closed before a full line
         }
         if byte[0] == b'\n' {
-            // Strip a trailing CR; done.
             if line.last() == Some(&b'\r') {
                 line.pop();
             }
@@ -278,8 +234,7 @@ where
     reader.read_exact(&mut length).await.ok()?;
     let packet_length = u32::from_be_bytes(length) as usize;
 
-    // A valid packet has at least a padding-length byte and one payload byte,
-    // and never exceeds the RFC cap, which also bounds the allocation below.
+    // At least a padding-length byte and one payload byte, at most the RFC cap.
     if !(2..=MAX_PACKET_LEN).contains(&packet_length) {
         return None;
     }
@@ -287,8 +242,7 @@ where
     let mut packet = vec![0u8; packet_length];
     reader.read_exact(&mut packet).await.ok()?;
 
-    // packet = [padding_length: u8][payload][padding]; payload length is what
-    // remains after removing the padding-length byte and the trailing padding.
+    // packet = [padding_length: u8][payload][padding]
     let padding_length = packet[0] as usize;
     let payload_end = packet_length.checked_sub(padding_length)?;
     if payload_end < 1 {
@@ -300,16 +254,15 @@ where
 /// Extracts the `server_host_key_algorithms` name-list from a `KEXINIT` payload.
 ///
 /// Payload layout (RFC 4253 §7.1): `byte msg | byte[16] cookie | name-list
-/// kex_algorithms | name-list server_host_key_algorithms | …`. Every field is
-/// bounds-checked against untrusted input; a malformed packet yields `None`.
+/// kex_algorithms | name-list server_host_key_algorithms | …`. A malformed
+/// packet yields `None`.
 fn server_host_key_algorithms(payload: &[u8]) -> Option<String> {
-    // msg byte + 16-byte cookie precede the name-lists.
+    // A msg byte and a 16-byte cookie precede the name-lists.
     if payload.first().copied()? != SSH_MSG_KEXINIT {
         return None;
     }
     let mut cursor = 1 + 16;
 
-    // Skip the first name-list (kex_algorithms); return the second.
     skip_name_list(payload, &mut cursor)?;
     read_name_list(payload, &mut cursor)
 }
@@ -323,7 +276,7 @@ fn read_name_list(buf: &[u8], cursor: &mut usize) -> Option<String> {
     let data_end = len_end.checked_add(len)?;
     let data = buf.get(len_end..data_end)?;
     *cursor = data_end;
-    // Name-lists are ASCII by spec; lossy is a safe floor for hostile input.
+    // ASCII by spec; lossy for hostile input.
     Some(String::from_utf8_lossy(data).into_owned())
 }
 
@@ -333,7 +286,6 @@ fn skip_name_list(buf: &[u8], cursor: &mut usize) -> Option<()> {
     let len_end = cursor.checked_add(4)?;
     let len = u32::from_be_bytes(buf.get(*cursor..len_end)?.try_into().ok()?) as usize;
     *cursor = len_end.checked_add(len)?;
-    // Confirm the skipped range is actually within the buffer.
     (*cursor <= buf.len()).then_some(())
 }
 
@@ -412,7 +364,7 @@ mod tests {
 
     #[test]
     fn truncated_name_list_is_rejected_not_panicked() {
-        // A length field that overruns the buffer must be refused, not read OOB.
+        // A length field that overruns the buffer is refused.
         let mut payload = vec![SSH_MSG_KEXINIT];
         payload.extend_from_slice(&[0u8; 16]);
         payload.extend_from_slice(&name_list("kex"));
@@ -434,8 +386,7 @@ mod tests {
 
     #[tokio::test]
     async fn collect_drives_the_exchange_against_a_mock_server_end_to_end() {
-        // A loopback "SSH server": sends an identifier, reads ours, sends a
-        // KEXINIT. Proves the active collect→analyze path over a real socket.
+        // A loopback SSH server: sends an identifier, reads ours, sends a KEXINIT.
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -465,10 +416,8 @@ mod tests {
     }
 
     proptest! {
-        /// The `KEXINIT` parser runs on bytes straight off an untrusted socket,
-        /// so on *any* input it must return cleanly, never panic, never read
-        /// out of bounds, never allocate on a hostile length. If this completes
-        /// for every generated buffer, parsing is both safe and bounded.
+        /// The `KEXINIT` parser reads untrusted bytes and must return cleanly on
+        /// any input.
         #[test]
         fn kexinit_parser_never_panics_on_arbitrary_bytes(
             bytes in proptest::collection::vec(any::<u8>(), 0..4096)
@@ -476,9 +425,8 @@ mod tests {
             let _ = server_host_key_algorithms(&bytes);
         }
 
-        /// A well-formed message byte + cookie followed by fuzzed bytes drives
-        /// the name-list cursor itself under adversarial lengths, past the early
-        /// message-type rejection.
+        /// A valid message byte and cookie followed by fuzzed bytes, to reach the
+        /// name-list cursor.
         #[test]
         fn kexinit_name_list_cursor_survives_fuzzed_lengths(
             tail in proptest::collection::vec(any::<u8>(), 0..512)
@@ -492,11 +440,7 @@ mod tests {
 
     /// A server with a login banner is still an SSH server.
     ///
-    /// RFC 4253 §4.2 lets a server send lines before its identification string
-    /// and requires a client to skip them; a legal notice ahead of the
-    /// identifier is near-universal on hardened hosts. Reading exactly one line
-    /// would leave this analyzer silent on all of them, and silent invisibly,
-    /// since the passive banner grab still names the service.
+    /// RFC 4253 §4.2 lets a server send lines before its identification string.
     #[tokio::test]
     async fn a_server_that_greets_before_identifying_is_still_read() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -526,8 +470,7 @@ mod tests {
         assert_eq!(evidence[0].service.as_deref(), Some("ssh"));
     }
 
-    /// A preamble that never ends is a peer holding the exchange open, and is
-    /// given up on rather than followed.
+    /// A preamble that never ends is given up on.
     #[tokio::test]
     async fn a_preamble_with_no_identifier_is_given_up_on() {
         let (client, mut server) = tokio::io::duplex(8192);
@@ -547,9 +490,8 @@ mod tests {
         assert!(read_identification(&mut reader).await.is_none());
     }
 
-    /// The active probe dials the ports the corpus registers SSH on, and the two
-    /// lists are written in different places: this one in code, the other in
-    /// `assets/fingerprinting`. Nothing but this holds them together.
+    /// The active probe's ports match the ports the corpus in
+    /// `assets/fingerprinting` registers SSH on.
     #[test]
     fn the_probed_ports_are_the_ports_the_corpus_claims() {
         use crate::fingerprint::SignatureDb;

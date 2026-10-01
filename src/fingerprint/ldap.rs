@@ -9,11 +9,10 @@
 //! # LDAP root DSE analyzer
 //!
 //! A **passive** analyzer for the root entry of an LDAP directory, which the
-//! corpus's probe for the port asks for and which RFC 4512 §5.1 makes readable
-//! without credentials. The corpus matches the answer as text, and names the
-//! directory and the release of the controller that serves it. What it cannot
-//! do is lift a value out, and three of the entry's values are the names a
-//! domain controller goes by:
+//! corpus's probe asks for and RFC 4512 §5.1 makes readable without
+//! credentials. The corpus matches the answer as text to name the directory and
+//! release; this analyzer lifts out the three values that name a domain
+//! controller:
 //!
 //! | attribute | kind |
 //! |---|---|
@@ -21,23 +20,18 @@
 //! | `defaultNamingContext` | [`Domain`](NameKind::Domain), the domain it serves |
 //! | `rootDomainNamingContext` | [`Forest`](NameKind::Forest), the forest's root domain |
 //!
-//! The two naming contexts are distinguished names, `DC=corp,DC=example`, and
-//! Active Directory names a domain's partition after the domain's DNS name one
-//! label per component, so each is read back into the DNS name it spells. A
-//! context written with any other component is a directory that does not name
-//! its partitions that way, OpenLDAP's `o=example` among them, and says nothing
-//! about a domain.
+//! The naming contexts are distinguished names such as `DC=corp,DC=example`.
+//! Active Directory names a partition after the domain's DNS name, one label per
+//! component, so each is read back into that DNS name. A context with any other
+//! component (OpenLDAP's `o=example`) names no domain.
 //!
-//! These are recorded on the host as [`HostName`]s rather than matched, for
-//! the reason [`name`](crate::model::host::name) gives: a report masks a name,
-//! and does not mask a service's description.
+//! These are recorded on the host as [`HostName`]s, which reports mask (see
+//! [`name`](crate::model::host::name)).
 //!
-//! ## Passive, by design
+//! ## Passive
 //!
-//! The entry is already in the responses the probe drew, so asking again would
-//! double the traffic to every directory for an answer already read. What that
-//! costs is reading the entry back out of text: see
-//! [`reply_bytes`](super::extract::reply_bytes) for how exact that is.
+//! The entry is already in the responses the probe drew. It is read back out of
+//! text; see [`reply_bytes`](super::extract::reply_bytes) for how exact that is.
 
 use async_trait::async_trait;
 
@@ -72,17 +66,16 @@ impl Analyzer for LdapAnalyzer {
         SourceId::Ldap
     }
 
-    /// Any TCP port, since a directory on an unusual one answers the same
-    /// entry; `analyze` gates on the reply itself.
+    /// Any TCP port; `analyze` gates on the reply itself.
     fn interested(&self, ctx: &PortContext) -> bool {
         ctx.protocol == crate::model::port::Protocol::Tcp
     }
 
-    // Passive, so the default no-op `collect` stands. See the module docs.
+    // Passive. See the module docs.
 
     /// The names in the first root entry among the responses, as one
-    /// observation at the lowest confidence: they identify the machine and say
-    /// nothing about the service, which the corpus has already named.
+    /// observation at the lowest confidence, since they identify the machine and
+    /// not the service.
     fn analyze(
         &self,
         _ctx: &PortContext,
@@ -92,8 +85,8 @@ impl Analyzer for LdapAnalyzer {
         let names = responses
             .banners
             .iter()
-            // An LDAPMessage opens with SEQUENCE, which as text is `0`; checked
-            // before anything is copied, since this runs on every banner.
+            // An LDAPMessage opens with SEQUENCE (`0` as text). Cheap check on
+            // every banner before copying.
             .filter(|banner| banner.as_bytes().first() == Some(&SEQUENCE))
             .map(|banner| root_dse_names(&super::extract::reply_bytes(banner)))
             .find(|names| !names.is_empty());
@@ -109,15 +102,14 @@ impl Analyzer for LdapAnalyzer {
 /// in the order the entry lists them.
 ///
 /// `reply` is what the search drew: an LDAPMessage holding a SearchResultEntry
-/// (RFC 4511 §4.5.2) whose `objectName` is empty, which is what makes it the
-/// root entry, and usually a SearchResultDone behind it. An entry for any
-/// other object names nothing here.
+/// (RFC 4511 §4.5.2) with an empty `objectName`, which marks the root entry,
+/// usually followed by a SearchResultDone. An entry for any other object yields
+/// nothing.
 ///
-/// Read attribute by attribute, and stopped at the first the bytes do not hold
-/// whole, so a reply cut short by a read limit still gives up the names ahead
-/// of the cut. An Active Directory root entry runs to several kilobytes, and
-/// `dnsHostName` sits past most of them. The first value of each attribute is
-/// taken, which is the only one any of the three has.
+/// Reading stops at the first attribute the bytes do not hold whole, so a reply
+/// cut short by a read limit still yields the names before the cut. An Active
+/// Directory root entry runs to several kilobytes, with `dnsHostName` near the
+/// end. Each of the three attributes has one value.
 #[must_use]
 pub(super) fn root_dse_names(reply: &[u8]) -> Vec<HostName> {
     let Some(attributes) = root_entry_attributes(reply) else {
@@ -149,9 +141,8 @@ pub(super) fn root_dse_names(reply: &[u8]) -> Vec<HostName> {
 /// The attribute list of the root entry at the start of `reply`, as far as the
 /// reply holds it.
 ///
-/// Every enclosing element is allowed to run past the end of the reply, since
-/// that is what a truncated one looks like; what is inside is read only where
-/// it is whole.
+/// Enclosing elements may run past the end of a truncated reply; their contents
+/// are read only where whole.
 fn root_entry_attributes(reply: &[u8]) -> Option<&[u8]> {
     let message = open(reply, SEQUENCE)?;
     let (tag, _, rest) = element(message)?;
@@ -173,8 +164,7 @@ fn named_value(attribute: &[u8]) -> Option<(NameKind, &str)> {
     if tag != OCTET_STRING {
         return None;
     }
-    // An attribute description is matched without regard to case (RFC 4512
-    // §2.5), and a directory may write it however it likes.
+    // Attribute descriptions are case-insensitive (RFC 4512 §2.5).
     let description = std::str::from_utf8(description).ok()?;
     let kind = [
         ("dnsHostName", NameKind::Host),
@@ -199,9 +189,8 @@ fn named_value(attribute: &[u8]) -> Option<(NameKind, &str)> {
 /// `DC=corp,DC=example`, or `None` for one with any component that is not a
 /// domain component.
 ///
-/// A component escaped or joined with another (RFC 4514 §2.4, §2.2) is refused
-/// with the rest, since neither can be a DNS label and reading one as a label
-/// would report a domain the directory never named.
+/// An escaped or multi-valued component (RFC 4514 §2.4, §2.2) cannot be a DNS
+/// label, so the context is refused.
 fn dns_name_of(context: &str) -> Option<String> {
     let labels = context
         .split(',')
@@ -239,10 +228,9 @@ fn element(bytes: &[u8]) -> Option<(u8, &[u8], &[u8])> {
 /// The tag of the element at the start of `bytes`, the length its header
 /// states, and how many bytes the header takes.
 ///
-/// The length in either definite form (X.690 §8.1.3), the long one in up to
-/// four bytes, which is what Active Directory writes everywhere. The
-/// indefinite form is refused, as RFC 4511 §5.1 has every LDAP encoder refuse
-/// it.
+/// Either definite length form (X.690 §8.1.3), the long one in up to four bytes,
+/// which Active Directory uses everywhere. The indefinite form is refused, as
+/// RFC 4511 §5.1 forbids it.
 fn header(bytes: &[u8]) -> Option<(u8, usize, usize)> {
     let tag = *bytes.first()?;
     let first = *bytes.get(1)?;
@@ -275,8 +263,7 @@ mod tests {
     use crate::testing::loopback::accept_from_this_process;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    /// A BER element with its length in the four-byte form Active Directory
-    /// writes every length in.
+    /// A BER element with a four-byte length, as Active Directory writes them.
     fn ad(tag: u8, content: &[u8]) -> Vec<u8> {
         let mut out = vec![tag, 0x84];
         out.extend_from_slice(&(content.len() as u32).to_be_bytes());
@@ -297,7 +284,7 @@ mod tests {
     }
 
     /// A SearchResultEntry for `object`, holding `attributes`, answering
-    /// message 2, which is the corpus's search.
+    /// message 2 (the corpus's search).
     fn entry(object: &str, attributes: &[Vec<u8>]) -> Vec<u8> {
         let body = [
             ad(OCTET_STRING, object.as_bytes()),
@@ -322,8 +309,7 @@ mod tests {
         )
     }
 
-    /// A domain controller's root entry: the attributes that name it among
-    /// ones that do not, in the order Active Directory lists them.
+    /// A domain controller's root entry, attributes in Active Directory's order.
     fn controller() -> Vec<u8> {
         [
             entry(
@@ -353,8 +339,7 @@ mod tests {
             .collect()
     }
 
-    /// The root entry names the controller, its domain and its forest, the
-    /// two naming contexts read back into the DNS names they spell.
+    /// The root entry names the controller, its domain and its forest.
     #[test]
     fn a_root_entry_names_the_controller_its_domain_and_its_forest() {
         assert_eq!(
@@ -367,17 +352,15 @@ mod tests {
         );
     }
 
-    /// What the analyzer reads is the reply after it became the text the
-    /// corpus matches, and a controller's four-byte lengths are the high bytes
-    /// that reading has to give back exactly.
+    /// The reply is read back from the corpus's text form, and the four-byte
+    /// lengths' high bytes must survive that.
     #[test]
     fn the_names_survive_the_reply_becoming_text() {
         let text = super::super::extract::reply_text(&controller());
         assert_eq!(super::super::extract::reply_bytes(&text), controller());
     }
 
-    /// A reply cut short by a read limit gives up every name ahead of the cut
-    /// and nothing past it; and no cut anywhere makes the reader fail.
+    /// A truncated reply yields every name before the cut, and no cut panics.
     #[test]
     fn a_truncated_entry_gives_up_the_names_ahead_of_the_cut() {
         let reply = controller();
@@ -397,9 +380,7 @@ mod tests {
         }
     }
 
-    /// Only the root entry speaks for the server. An entry for any other
-    /// object describes that object, and a directory that names its
-    /// partitions some other way names no domain.
+    /// Only the root entry counts, and a non-`DC` naming context names no domain.
     #[test]
     fn only_the_root_entry_and_only_a_domain_shaped_context_name_anything() {
         let other = entry(
@@ -448,17 +429,14 @@ mod tests {
         addr
     }
 
-    /// A directory's names are the machine's whether or not any rule names
-    /// the service that gave them. A root entry under a message id of two
-    /// bytes, as the three hundredth message on a connection has, is one no
-    /// rule reads as LDAP, and its names still reach the host.
+    /// The names reach the host even when no rule names the service: here a
+    /// two-byte message id, which no rule reads as LDAP.
     #[tokio::test]
     async fn a_directory_no_rule_names_still_names_its_host() {
         use crate::model::port::{PortState, Protocol};
 
         let mut entry = controller();
-        // The message id `02 01 02` becomes `02 02 01 2c`, and the envelope's
-        // four-byte length one longer for it.
+        // The message id `02 01 02` becomes `02 02 01 2c`, one byte longer.
         assert_eq!(&entry[6..9], [INTEGER, 1, 2]);
         entry.splice(6..9, [INTEGER, 2, 0x01, 0x2c]);
         let length = u32::from_be_bytes(entry[2..6].try_into().expect("four bytes")) + 1;
@@ -494,9 +472,7 @@ mod tests {
         );
     }
 
-    /// **A controller's names reach its host, over sockets end to end**: the
-    /// corpus's bind and root DSE search, the reply read as text, and the
-    /// names read back out of it.
+    /// A controller's names reach its host over sockets, end to end.
     #[tokio::test]
     async fn a_controller_s_names_reach_its_host() {
         use crate::model::port::{PortState, Protocol};

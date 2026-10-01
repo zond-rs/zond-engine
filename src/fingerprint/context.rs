@@ -8,16 +8,14 @@
 
 //! # The fields a signature may be written against
 //!
-//! A signature rule names the `context` it reads, and the matcher runs it
-//! against every text a response yields rather than selecting on that name. A
-//! rule therefore fires only where this engine produces the field its pattern is
-//! anchored on, and [`CONTEXTS`] is the register of which fields those are and
-//! what state each is in.
+//! A signature rule names the `context` it reads, but the matcher runs it
+//! against every text a response yields without selecting on that name. A rule
+//! therefore fires only where this engine produces the field its pattern is
+//! anchored on. [`CONTEXTS`] records which fields those are.
 //!
 //! Consult it before authoring a signature. A rule reading a field whose
-//! [`Reach`] is not [`Produced`](Reach::Produced) never fires, and nothing about
-//! the rule shows it: the pattern compiles, its example matches, and no scan
-//! hands it the string it was written for.
+//! [`Reach`] is not [`Produced`](Reach::Produced) never fires, and nothing shows
+//! it: the pattern compiles and its example matches.
 //!
 //! ```
 //! use zond_engine::fingerprint::{Reach, reach_of};
@@ -38,9 +36,8 @@
 //! ```
 //!
 //! `build.rs` reads this file with `#[path]` and refuses to compile a corpus
-//! naming a field no entry classifies, so the register and the shipped
-//! signatures stay in step. Each entry's `note` names the function responsible,
-//! which is what makes a state checkable rather than merely asserted.
+//! naming a field no entry classifies. Each entry's `note` names the function
+//! responsible, so its state can be checked.
 
 /// Whether the collection path produces the field a context names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -49,17 +46,17 @@ pub enum Reach {
     /// what.
     Produced,
 
-    /// Reached inside a wider field rather than on its own, so a rule fires only
-    /// where that wider field happens to carry it. Apache states its module list
-    /// and its platform inside the `Server` value.
+    /// Reached only inside a wider field, so a rule fires where that field
+    /// carries it. Apache states its module list and platform inside the
+    /// `Server` value.
     Contained,
 
     /// Nothing produces it, so every rule reading it is inert. The `note` says
     /// what producing it would take.
     Unproduced,
 
-    /// Needs a vantage a scanner does not have, so no decoder would help. A DHCP
-    /// vendor class is what a client tells a server, and this engine is neither.
+    /// Needs a vantage point a scanner lacks. A DHCP vendor class is what a
+    /// client tells a server, and this engine is neither.
     OutOfScope,
 }
 
@@ -91,16 +88,15 @@ pub struct Context {
     pub name: &'static str,
     /// Whether anything produces it.
     pub reach: Reach,
-    /// What produces it, or what producing it would take. Names a function
-    /// wherever one is responsible, so the claim can be checked.
+    /// What produces it, or what producing it would take. Names the responsible
+    /// function where there is one.
     pub note: &'static str,
 }
 
 /// Every field the shipped corpus reads, sorted by name.
 ///
-/// A rule stating no context at all is not represented here and needs no entry:
-/// it is matched against the banner whole, which every TCP port yields, so it is
-/// reached by construction.
+/// A rule stating no context needs no entry: it is matched against the whole
+/// banner, which every TCP port yields.
 pub const CONTEXTS: &[Context] = &[
     Context {
         name: "a2s.info",
@@ -377,9 +373,8 @@ pub const CONTEXTS: &[Context] = &[
 /// What the register says about `name`, or [`None`] for a field nobody has
 /// classified.
 ///
-/// A linear walk over thirty-six entries. Callers are the build, which runs once,
-/// and an index generator, which runs when somebody asks; neither is on a scan's
-/// path, so a map would cost more to build than the walk costs to take.
+/// A linear walk; the callers (the build and an index generator) are off the
+/// scan path.
 pub fn lookup(name: &str) -> Option<&'static Context> {
     CONTEXTS.iter().find(|context| context.name == name)
 }
@@ -392,9 +387,8 @@ pub fn context_note(context: Option<&str>) -> Option<&'static str> {
     lookup(context?).map(|context| context.note)
 }
 
-/// What the collection path does with the field `context` names, where a rule
-/// stating no context reads the banner whole and so is always
-/// [`Produced`](Reach::Produced).
+/// What the collection path does with the field `context` names. A rule stating
+/// no context reads the whole banner and is always [`Produced`](Reach::Produced).
 ///
 /// [`None`] for a context no entry classifies, which the build refuses.
 pub fn reach_of(context: Option<&str>) -> Option<Reach> {
@@ -408,8 +402,7 @@ pub fn reach_of(context: Option<&str>) -> Option<Reach> {
 mod tests {
     use super::*;
 
-    /// Two entries for one field would make `lookup` depend on their order, and
-    /// the second would be unreachable.
+    /// A duplicate entry would be unreachable from `lookup`.
     #[test]
     fn no_field_is_registered_twice() {
         let mut names: Vec<_> = CONTEXTS.iter().map(|c| c.name).collect();
@@ -423,8 +416,7 @@ mod tests {
         );
     }
 
-    /// The register is read by hand as often as by the build, and an unsorted
-    /// list of thirty-six strings is one nobody checks against the corpus.
+    /// Sorted, because the register is read by hand.
     #[test]
     fn the_register_is_sorted_by_name() {
         let names: Vec<_> = CONTEXTS.iter().map(|c| c.name).collect();
@@ -433,8 +425,7 @@ mod tests {
         assert_eq!(names, sorted, "CONTEXTS is not in name order");
     }
 
-    /// A note is what makes a claim checkable. An entry without one asserts a
-    /// state and offers no way to confirm it.
+    /// Every entry has a note, so its state can be checked.
     #[test]
     fn every_entry_says_what_it_rests_on() {
         for context in CONTEXTS {

@@ -8,24 +8,20 @@
 
 //! # What a SIP endpoint says about itself
 //!
-//! RFC 3261 gives a response the same shape HTTP has: a status line, then
-//! headers. Two of them name the software, and the signature corpus is written
-//! against their values rather than against the response carrying them, so a
-//! rule reads `Cisco-SIPGateway/IOS-12.x` and never matches the reply it arrived
-//! in.
+//! RFC 3261 gives a response the same shape as HTTP: a status line, then
+//! headers. Two headers name the software, and the signature corpus is written
+//! against their values, so a rule reads `Cisco-SIPGateway/IOS-12.x`.
 //!
-//! Most of what answers here is embedded: the corpus names TP-Link, D-Link,
-//! Technicolor and a long tail of consumer gateways, which is hardware that
-//! identifies itself nowhere else a scan can reach.
+//! Most SIP endpoints are embedded: TP-Link, D-Link, Technicolor and a long tail
+//! of consumer gateways that identify themselves on no other port.
 
 /// The header values the corpus is written against.
 ///
 /// `Server` and `User-Agent` both name the software, and RFC 3261 §20 gives
 /// neither precedence: a gateway sets one, a phone the other, and a few set
-/// both with different strings. So both are offered and the matcher ranks them.
+/// both with different strings. Both are returned and the matcher ranks them.
 ///
-/// Empty for anything that is not a SIP response, which costs one prefix
-/// comparison.
+/// Empty for anything that is not a SIP response.
 pub(crate) fn corpus_fields(response: &str) -> Vec<&str> {
     if !response.starts_with("SIP/2.0") {
         return Vec::new();
@@ -39,10 +35,8 @@ pub(crate) fn corpus_fields(response: &str) -> Vec<&str> {
 
 /// The value of the first header named `name`, which must be lowercase.
 ///
-/// Stops at the blank line, so a body that happens to contain a header-shaped
-/// line is not read as one. A continuation line is not joined: RFC 3261 §7.3
-/// permits folding, no deployed endpoint folds these two, and a value spliced
-/// across lines would match no rule in the corpus either way.
+/// Stops at the blank line. Continuation lines (RFC 3261 §7.3 folding) are not
+/// joined; no deployed endpoint folds these two headers.
 fn header<'a>(response: &'a str, name: &str) -> Option<&'a str> {
     response
         .lines()
@@ -62,8 +56,7 @@ fn header<'a>(response: &'a str, name: &str) -> Option<&'a str> {
 mod tests {
     use super::*;
 
-    /// A gateway naming itself in `Server`, which is the commonest shape and the
-    /// one the Cisco rules are written against.
+    /// A gateway naming itself in `Server`, the commonest shape.
     #[test]
     fn a_server_header_is_offered_as_its_own_text() {
         let response = "SIP/2.0 200 OK\r\n\
@@ -73,8 +66,7 @@ mod tests {
         assert_eq!(corpus_fields(response), vec!["Cisco-SIPGateway/IOS-12.x"]);
     }
 
-    /// A phone naming itself in `User-Agent` instead. Neither header has
-    /// precedence, so a rule may be written against either.
+    /// A phone naming itself in `User-Agent`.
     #[test]
     fn a_user_agent_header_is_offered_too() {
         let response = "SIP/2.0 200 OK\r\n\
@@ -82,8 +74,7 @@ mod tests {
         assert_eq!(corpus_fields(response), vec!["TP-Link SIP Stack V1.0.0"]);
     }
 
-    /// Both, where an endpoint sets both, and in the order they are asked for
-    /// rather than the order they arrived.
+    /// Both headers, in the order asked for, whatever order they arrived in.
     #[test]
     fn both_are_offered_where_both_are_present() {
         let response = "SIP/2.0 200 OK\r\n\
@@ -95,16 +86,14 @@ mod tests {
         );
     }
 
-    /// The header name is case-insensitive, which deployed endpoints are not
-    /// consistent about.
+    /// Header names match case-insensitively; endpoints vary.
     #[test]
     fn the_header_name_is_matched_whatever_case_it_arrived_in() {
         let response = "SIP/2.0 200 OK\r\nSERVER: Vendor/1.0\r\n\r\n";
         assert_eq!(corpus_fields(response), vec!["Vendor/1.0"]);
     }
 
-    /// A body is not headers. Reading past the blank line would let a message
-    /// body state whatever it liked about the machine serving it.
+    /// Lines after the blank line belong to the body and are not read.
     #[test]
     fn a_header_shaped_line_in_the_body_is_not_read() {
         let response = "SIP/2.0 200 OK\r\n\
@@ -120,8 +109,7 @@ mod tests {
         assert!(corpus_fields("").is_empty());
     }
 
-    /// An endpoint that answers without naming itself is the ordinary case, and
-    /// an empty value says no more than an absent one.
+    /// An empty header value is treated as absent.
     #[test]
     fn an_empty_value_is_not_offered() {
         let response = "SIP/2.0 200 OK\r\nServer: \r\nUser-Agent:\r\n\r\n";
