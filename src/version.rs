@@ -8,37 +8,29 @@
 
 //! # Ordering version strings
 //!
-//! One definition of how zond compares two dotted version strings, shared by
-//! everything that needs to. Two callers need the same answer today: the [CVE
-//! correlator](crate::cve), deciding whether a service version falls in an
-//! affected range, and a Tier-1 [detection guard](crate::detect::flow), deciding
-//! whether a bound version satisfies a `<`/`>` comparison, and a version that
-//! sorted one way for one and another way for the other would be a quiet source
-//! of disagreement between two features that are meant to agree.
+//! One definition of how dotted version strings compare, shared by the [CVE
+//! correlator](crate::cve) (is a service version in an affected range?) and Tier-1
+//! [detection guards](crate::detect::flow) (does a version satisfy `<` or `>`?), so the
+//! two agree.
 //!
 //! ## The order it imposes
 //!
 //! Versions are compared component by component. A component's leading run of
-//! digits decides first, so `9.10` outranks `9.9` (numerically, 10 > 9) rather
-//! than sorting lexically (where `"10" < "9"`); a trailing non-numeric suffix
+//! digits decides first, so `9.10` outranks `9.9`; a trailing non-numeric suffix
 //! breaks a tie, so OpenSSH's `9.6p1` sorts after a bare `9.6` and before
 //! `9.7`. A missing trailing component reads as zero, so `2.14` and `2.14.0`
 //! compare equal.
 //!
 //! ## What a hyphen means
 //!
-//! Two opposite things, and both are read. `1.0.0-rc1` is a candidate for
-//! `1.0.0` and comes **before** it; `1.21.0-1ubuntu2` is nginx 1.21.0 rebuilt
-//! by a distribution and comes **after**. A revision starts with a digit and a
-//! pre-release identifier does not, which is the rule both ecosystems follow
-//! and the only thing available to separate them. See [`split_pre_release`].
+//! Two opposite things. `1.0.0-rc1` is a candidate for `1.0.0` and comes **before** it;
+//! `1.21.0-1ubuntu2` is nginx 1.21.0 rebuilt by a distribution and comes **after**. A
+//! revision starts with a digit and a pre-release identifier does not. See
+//! [`split_pre_release`].
 //!
-//! It is a lax order, enough to rank the version strings services actually
-//! emit rather than a full semver grammar. What it is not is *inverted*:
-//! reading a hyphen as a dot throughout would sort every pre-release after its
-//! own release, and a host running `1.0.0-rc1` against a vulnerability fixed in
-//! `1.0.0` would be reported not affected. A missing vulnerability is the wrong
-//! direction for a scanner to be wrong in, because nobody argues with it.
+//! A lax order for the version strings services emit, not full semver. Reading a hyphen
+//! as a dot would sort pre-releases after their release and report a host running
+//! `1.0.0-rc1` as unaffected by a vulnerability fixed in `1.0.0`.
 //!
 //! ## Package versions, a second order
 //!
@@ -48,16 +40,10 @@
 //! the end of the string, so `1.0~rc1` precedes `1.0`, and where a letter
 //! sorts before any other punctuation.
 //!
-//! The two orders answer different questions about different strings and are
-//! never mixed. [`version_cmp`] reads what a service says about itself, an
-//! upstream version with whatever a banner appends, and has to guess at a
-//! hyphen; [`dpkg_cmp`] reads a version a package manager assigned, where
-//! the grammar is exact and a guess would be wrong. They disagree on real
-//! strings: to the lax order `1.0-rc1` is a pre-release that precedes `1.0`,
-//! to dpkg's it is upstream `1.0` with revision `rc1` and follows it; `1.0~1`
-//! is below `1.0` to dpkg and above it to the lax order. A comparison that
-//! crossed them would put a fix on the wrong side of the build it is
-//! compared with.
+//! The two orders are never mixed. [`version_cmp`] reads what a service says about
+//! itself and has to guess at a hyphen; [`dpkg_cmp`] reads a package manager's version,
+//! where the grammar is exact. They disagree on real strings: `1.0-rc1` precedes `1.0`
+//! in the lax order and follows it in dpkg's, and `1.0~1` goes the other way.
 
 use std::cmp::Ordering;
 
@@ -76,8 +62,7 @@ pub(crate) fn version_cmp(a: &str, b: &str) -> Ordering {
         return release;
     }
 
-    // Equal releases, so the suffix decides. Something is less than nothing
-    // here: `1.0.0-rc1` is a candidate for `1.0.0` and comes before it.
+    // Equal releases, so the suffix decides, and a pre-release comes first.
     match (a_pre, b_pre) {
         (None, None) => Ordering::Equal,
         (Some(_), None) => Ordering::Less,
@@ -89,22 +74,9 @@ pub(crate) fn version_cmp(a: &str, b: &str) -> Ordering {
 /// A version split into what it releases and what it is a pre-release of, if
 /// anything.
 ///
-/// A hyphen means two opposite things and the digit after it is what tells them
-/// apart. Debian and Ubuntu put a package revision there, which is a
-/// later build of the same source and sorts after the bare version:
-/// `1.21.0-1ubuntu2` is nginx 1.21.0 rebuilt, and service banners carry these
-/// constantly. Every version grammar that has a pre-release puts it in the same
-/// place, and it sorts before: `1.0.0-rc1` precedes `1.0.0`.
-///
-/// A revision starts with a digit and a pre-release identifier does not, which
-/// is the rule both ecosystems already follow and the only thing available to
-/// separate them here.
-///
-/// Without this split `-` is treated as `.` throughout, so a non-numeric
-/// component sorts after a numeric one and every pre-release reads as *later*
-/// than its own release. The [CVE correlator](crate::cve) reads this ordering
-/// directly, so a host running `1.0.0-rc1` against a vulnerability fixed in
-/// `1.0.0` would be reported not affected.
+/// After a hyphen, a digit starts a package revision (a later build, as in
+/// `1.21.0-1ubuntu2`) and anything else a pre-release (an earlier one, as in
+/// `1.0.0-rc1`). See the module documentation.
 fn split_pre_release(version: &str) -> (&str, Option<&str>) {
     let mut from = 0;
     while let Some(at) = version[from..].find('-') {
@@ -141,23 +113,9 @@ fn components(a: &str, b: &str) -> Ordering {
 
 /// Compares one component, digit runs numerically and the rest lexically.
 ///
-/// Not the component's *leading* number and then the whole component
-/// lexically as a tie-break, which is wrong twice for one reason: a lexical
-/// comparison of text that is partly a number.
-///
-/// `1.02` and `1.2` are one version. Their leading numbers agree, so such a tie
-/// break would run and put `"02" < "2"` on the first character. That makes them
-/// different versions, which loses an exact match and lets a `<` bound hold
-/// against the very release that fixed the thing. Date-shaped versions carry
-/// leading zeros constantly.
-///
-/// `rc10` follows `rc9`. Neither has a *leading* number, so both would read as
-/// zero and the tie-break would put `rc10` first on `'1' < '9'`. Inside a
-/// pre-release identifier the number is what counts and it sits at the end.
-///
-/// Walking the runs answers both: `02` and `2` are the same number, `rc` equals
-/// `rc` and then `10 > 9`. A component that runs out first is the smaller, which
-/// is what keeps `9.6` below `9.6p1` and `1.2.3` below `1.2.3a`.
+/// Walking the runs makes `1.02` equal `1.2` (date-shaped versions carry leading zeros)
+/// and `rc10` follow `rc9`. A component that runs out first is the smaller, keeping
+/// `9.6` below `9.6p1` and `1.2.3` below `1.2.3a`.
 fn component_cmp(a: &str, b: &str) -> Ordering {
     fn digits(s: &str) -> bool {
         s.starts_with(|c: char| c.is_ascii_digit())
@@ -172,8 +130,7 @@ fn component_cmp(a: &str, b: &str) -> Ordering {
     let (mut a, mut b) = (a, b);
     loop {
         if a.is_empty() || b.is_empty() {
-            // The shorter is the smaller: a bare release precedes the same
-            // release carrying a suffix.
+            // The shorter is the smaller.
             return a.len().cmp(&b.len());
         }
 
@@ -182,9 +139,8 @@ fn component_cmp(a: &str, b: &str) -> Ordering {
                 let (x, rest_a) = take(a, true);
                 let (y, rest_b) = take(b, true);
                 (a, b) = (rest_a, rest_b);
-                // Parsed rather than compared as text, so a leading zero does
-                // not decide. Past `u64` the run is longer than any real
-                // version, and its length is then the honest comparison.
+                // Parsed, so a leading zero does not decide. Past `u64`, compare
+                // lengths.
                 match (x.parse::<u64>(), y.parse::<u64>()) {
                     (Ok(x), Ok(y)) => x.cmp(&y),
                     _ => x.len().cmp(&y.len()).then_with(|| x.cmp(y)),
@@ -196,9 +152,8 @@ fn component_cmp(a: &str, b: &str) -> Ordering {
                 (a, b) = (rest_a, rest_b);
                 x.cmp(y)
             }
-            // Digits against letters at the same position: the digits are the
-            // version and the letters a suffix on an earlier one, so `9.6p1`
-            // sits above `9.6` and below `9.7` whichever way round it is asked.
+            // Digits beat letters at the same position, so `9.6p1` sits between
+            // `9.6` and `9.7`.
             (true, false) => Ordering::Greater,
             (false, true) => Ordering::Less,
         };
@@ -224,10 +179,8 @@ fn component_cmp(a: &str, b: &str) -> Ordering {
 /// numbers. That is what puts `1.0~rc1` before `1.0`, `1.0~~` before `1.0~`,
 /// and `2ubuntu2.13` before `2ubuntu2.13+esm1`.
 ///
-/// A prefix before the first colon that is not a number is not an epoch, and
-/// the colon is then read as part of the upstream version; dpkg would refuse
-/// such a string, and reading it this way keeps the order total on anything a
-/// feed publishes.
+/// A non-numeric prefix before the first colon is not an epoch, and the colon is read
+/// as part of the upstream version. dpkg would refuse it; this keeps the order total.
 pub(crate) fn dpkg_cmp(a: &str, b: &str) -> Ordering {
     let (a_epoch, a_upstream, a_revision) = dpkg_parts(a);
     let (b_epoch, b_upstream, b_revision) = dpkg_parts(b);
@@ -327,10 +280,7 @@ mod tests {
 
     /// A hyphen means two opposite things, and both readings have to survive.
     ///
-    /// A pre-release comes before the version it is a candidate for; a package
-    /// revision is a later build of the same source and comes after. Both are
-    /// written `x.y.z-something` and the digit after the hyphen is all there is
-    /// to tell them apart.
+    /// A pre-release comes before its release; a package revision after.
     #[test]
     fn a_pre_release_precedes_its_version_and_a_revision_follows_it() {
         for pre in ["1.0.0-alpha", "1.0.0-rc1", "1.0.0-beta.2", "2.4.1-dev"] {
@@ -342,8 +292,7 @@ mod tests {
             );
         }
 
-        // Debian and Ubuntu put a package revision here, and it is a later
-        // build of the same source.
+        // A package revision is a later build.
         assert_eq!(version_cmp("1.21.0-1ubuntu2", "1.21.0"), Ordering::Greater);
         assert_eq!(version_cmp("1.21.0-3", "1.21.0-2"), Ordering::Greater);
     }
@@ -364,10 +313,8 @@ mod tests {
         assert_eq!(version_cmp("1.0.0-alpha", "1.0.1"), Ordering::Less);
     }
 
-    /// What an inversion costs, stated as the thing that reads it: the
-    /// [CVE correlator](crate::cve) asks whether a version satisfies `<bound`,
-    /// so a pre-release sorting after its own release would report a vulnerable
-    /// host as not affected.
+    /// A pre-release satisfies `<bound` for its own release, as the
+    /// [CVE correlator](crate::cve) needs.
     #[test]
     fn a_pre_release_satisfies_a_bound_its_release_does_not() {
         let below = |v: &str| version_cmp(v, "1.0.0") == Ordering::Less;
@@ -382,8 +329,7 @@ mod tests {
         assert!(!below("1.0.1"));
     }
 
-    /// A component too long for a `u64` reads as larger than every real one
-    /// rather than as zero, which is what a failed parse would give it.
+    /// A component too long for a `u64` reads as larger than every real one.
     #[test]
     fn an_absurd_component_sorts_above_a_real_one_rather_than_below() {
         assert_eq!(version_cmp("18446744073709551616", "2"), Ordering::Greater);
@@ -407,26 +353,22 @@ mod tests {
 
     /// **A leading zero is not a different version.**
     ///
-    /// `1.02` and `1.2` are one release, and date-shaped versions carry zeros
-    /// like this constantly. Reading them apart costs an exact match, and worse:
-    /// a `<1.2` bound holds against `1.02`, so the release that fixed a
-    /// vulnerability reads as still carrying it.
+    /// `1.02` and `1.2` are one release; otherwise a `<1.2` bound would hold against
+    /// `1.02`.
     #[test]
     fn a_leading_zero_does_not_make_a_different_version() {
         assert_eq!(version_cmp("1.02", "1.2"), Ordering::Equal);
         assert_eq!(version_cmp("2024.01.15", "2024.1.15"), Ordering::Equal);
         assert_eq!(version_cmp("1.0002.3", "1.2.3"), Ordering::Equal);
 
-        // And a zero that is doing real work still counts.
+        // A significant zero still counts.
         assert_eq!(version_cmp("1.20", "1.2"), Ordering::Greater);
         assert_eq!(version_cmp("1.02", "1.3"), Ordering::Less);
     }
 
     /// **A number inside a pre-release identifier counts as a number.**
     ///
-    /// `rc10` follows `rc9`. Neither carries a leading digit, so a comparison
-    /// on leading numbers reads both as zero and a lexical tie-break decides on
-    /// `'1' < '9'`.
+    /// `rc10` follows `rc9`.
     #[test]
     fn a_pre_release_counts_its_number_rather_than_spelling_it() {
         assert_eq!(version_cmp("1.0.0-rc10", "1.0.0-rc9"), Ordering::Greater);
@@ -438,7 +380,7 @@ mod tests {
             version_cmp("2.0.0-beta1", "2.0.0-alpha9"),
             Ordering::Greater
         );
-        // And every pre-release still precedes its own release.
+        // Every pre-release still precedes its release.
         assert_eq!(version_cmp("1.0.0-rc10", "1.0.0"), Ordering::Less);
     }
 
@@ -455,10 +397,7 @@ mod tests {
         assert_eq!(version_cmp("9.6p2", "9.6p10"), Ordering::Less);
     }
 
-    /// The order is a total order: whatever two versions are handed to it, the
-    /// answer one way is the reverse of the answer the other, and equality is
-    /// mutual. A comparison that is not gets a caller a bound that holds in one
-    /// direction and not the other.
+    /// The order is total: reversing the arguments reverses the answer.
     #[test]
     fn the_order_is_antisymmetric() {
         let versions = [

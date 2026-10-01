@@ -10,23 +10,16 @@
 //!
 //! Two things in this crate are worth signing, and they are signed the same way.
 //!
-//! A **report** is evidence in a way most scanner output is not: it records the
-//! ranges a scan was forbidden and how many addresses they withheld, what each
-//! phase covered, and which hosts it ran out of time on. What it cannot do on its
-//! own is survive being handed to somebody. An ASV report, a SOC 2 artifact and a
-//! client-facing pentest appendix are all, today, a file anyone can edit.
+//! A **report** records scope, exclusions and coverage, which makes it evidence (an ASV
+//! report, a SOC 2 artifact, a pentest appendix), but a file anyone can edit.
 //!
-//! A **detection bundle** is the other direction: bytes arriving from a stranger
-//! that this process is about to compile and run. See
-//! [`detect::bundle`](crate::detect::bundle), which is what makes a signature
-//! there load-bearing rather than decorative.
+//! A **detection bundle** is bytes from a stranger that this process will compile and
+//! run; see [`detect::bundle`](crate::detect::bundle).
 //!
-//! Either way the caller supplies a key, the document is written through
-//! [`Signing`], and what comes back is a [`Signature`] to keep beside it.
+//! The caller supplies a key, writes the document through [`Signing`], and keeps the
+//! returned [`Signature`] beside it.
 //!
-//! Not to be confused with the signatures [`fingerprint`](crate::fingerprint)
-//! deals in, which is the older sense of the word: the match rules that name a
-//! service. Nothing here is about those.
+//! Unrelated to the match rules [`fingerprint`](crate::fingerprint) calls signatures.
 //!
 //! ```no_run
 //! use zond_engine::export::{ExportFormat, ExportOptions};
@@ -48,34 +41,24 @@
 //! # }
 //! ```
 //!
-//! ## Detached, because the alternative is a canonicalisation problem
+//! ## Detached
 //!
-//! A signature inside the document it signs cannot cover itself, so every format
-//! that tries needs a rule for which bytes to leave out and a canonical ordering
-//! for the rest, and every such rule has been a source of verification bypasses.
-//! This signs the exact bytes written and keeps the result in a file of its own.
-//! There is nothing to canonicalise and nothing to exclude: verification hashes
-//! the document as it sits on disk.
+//! An embedded signature needs rules for which bytes to exclude and how to canonicalise
+//! the rest, a common source of verification bypasses. This signs the exact bytes
+//! written and keeps the signature in its own file; verification hashes the document as
+//! it sits on disk.
 //!
-//! ## What a signature here does and does not establish
+//! ## What a signature establishes
 //!
-//! It establishes that the holder of a key produced this document and that not a
-//! byte of it has changed since. That is what a recipient needs and it is the
-//! whole of it.
+//! That the key holder produced this document and not a byte has changed since.
 //!
-//! It does not make a *scan* tamper-evident. Whoever holds the key can sign
-//! anything, including a report they edited first, so this attests to the
-//! document and never to the honesty of the run behind it. It is worth being
-//! exact about that, because "signed scan report" invites the stronger reading
-//! and the stronger reading is not true.
+//! It does not make a *scan* tamper-evident: the key holder can sign a report they
+//! edited first.
 //!
 //! ## Keys belong to the caller
 //!
-//! Nothing here generates, stores, loads or rotates a key. [`SigningKey`] takes
-//! a PKCS#8 document the caller already has, and [`Signature::verify`] takes the
-//! public key the caller already trusts. A library that managed keys would be
-//! making an operator's decision for them, and doing it in a process that also
-//! opens raw sockets.
+//! Nothing here stores, loads or rotates keys. [`SigningKey`] takes a PKCS#8 document
+//! the caller has, and [`Signature::verify`] takes the public key the caller trusts.
 
 use std::io::{BufRead, Write};
 
@@ -84,31 +67,22 @@ use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
 
 /// The largest signature document [`Signature::read`] will take.
 ///
-/// One this crate writes is five lines of a few hundred bytes. The ceiling is
-/// for the file that did not come from here.
+/// One this crate writes is five short lines; the ceiling is for files from elsewhere.
 const MAX_DOCUMENT_BYTES: u64 = 64 * 1024;
 
 /// The one signature algorithm, named so a document says which produced it.
 ///
-/// Ed25519 (RFC 8032). One algorithm rather than a choice: a verifier that reads
-/// the algorithm out of the document it is checking is a verifier an attacker
-/// can talk down to a weaker one, and there is no second algorithm here worth
-/// the risk of that shape.
+/// Ed25519 (RFC 8032). One algorithm, so a document cannot talk a verifier down to a
+/// weaker one.
 pub const ALGORITHM: &str = "ed25519";
 
 /// What the signed bytes are a signature *of*.
 ///
-/// Prefixed to the digest before signing, so a signature over one kind of
-/// document cannot be presented as a signature over another kind the same key
-/// ever signed. Domain separation costs one constant per kind and closes a class
-/// of attack that is otherwise entirely outside this crate's control.
+/// Prefixed to the digest before signing, so a signature over one kind of document
+/// cannot be presented as one over another kind the same key signed.
 ///
-/// A caller states the domain at both ends, the way they state the trusted key,
-/// and for the same reason: a verifier that read the domain out of the document
-/// it is checking could be talked into checking the wrong one. There is no way
-/// to construct a domain this crate did not define, so the only mistake
-/// available is naming the wrong one of the two, which the types below make
-/// visible at the call site rather than silent.
+/// The caller states the domain at both ends, like the trusted key, so a document cannot
+/// pick it. Only the domains defined here exist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Domain(&'static [u8]);
 
@@ -146,8 +120,7 @@ pub enum SignatureError {
 
     /// The signature is by a key other than the one the caller trusts.
     ///
-    /// The check that makes verification mean anything; see
-    /// [`Signature::verify`].
+    /// See [`Signature::verify`].
     #[error("the signature is by a key the caller did not name as trusted")]
     UntrustedKey,
 
@@ -167,9 +140,8 @@ pub enum SignatureError {
 
 /// A key that signs exported documents.
 ///
-/// Built from a PKCS#8 v2 document, which is what `ring`, `openssl genpkey
-/// -algorithm ed25519` and every other tool emit for an Ed25519 private key.
-/// Nothing here generates one; see the [module documentation](self).
+/// Built from a PKCS#8 v2 document, as `ring` and `openssl genpkey -algorithm ed25519`
+/// emit for an Ed25519 private key.
 pub struct SigningKey {
     pair: Ed25519KeyPair,
 }
@@ -179,10 +151,9 @@ impl SigningKey {
     ///
     /// # Errors
     ///
-    /// [`SignatureError::UnreadableKey`] where the bytes are not an Ed25519
-    /// private key in that encoding. The error says no more than that on
-    /// purpose: a parser that reports *how* a key failed to parse is a parser
-    /// that answers questions about key material.
+    /// [`SignatureError::UnreadableKey`] where the bytes are not an Ed25519 private key
+    /// in that encoding. The error does not say how parsing failed, so it reveals
+    /// nothing about key material.
     pub fn from_pkcs8(document: &[u8]) -> Result<Self, SignatureError> {
         Ed25519KeyPair::from_pkcs8_maybe_unchecked(document)
             .map(|pair| Self { pair })
@@ -192,9 +163,8 @@ impl SigningKey {
     /// Generates a key, returning the PKCS#8 document to keep and the key to
     /// sign with.
     ///
-    /// Here for a test and for a caller with nowhere else to turn, not as a key
-    /// management story: the document is returned rather than written anywhere,
-    /// and what happens to it afterwards is the caller's whole responsibility.
+    /// For tests and simple callers. The document is returned, not stored; keeping it
+    /// safe is the caller's responsibility.
     ///
     /// # Errors
     ///
@@ -211,8 +181,7 @@ impl SigningKey {
 
     /// The public half, as the raw thirty-two bytes.
     ///
-    /// What a recipient needs, and what they have to obtain from somewhere other
-    /// than the signature they are checking.
+    /// A recipient must obtain this from somewhere other than the signature.
     pub fn public_key(&self) -> Vec<u8> {
         self.pair.public_key().as_ref().to_vec()
     }
@@ -221,10 +190,8 @@ impl SigningKey {
 impl std::fmt::Debug for SigningKey {
     /// Prints nothing about the key.
     ///
-    /// A private key that reaches a log through a `{:?}` on some struct that
-    /// happens to hold one is a key that has to be rotated. The public half is
-    /// available through [`public_key`](SigningKey::public_key) for anybody who
-    /// meant to print something.
+    /// So a key cannot leak into a log through `{:?}`. Use
+    /// [`public_key`](SigningKey::public_key) to print the public half.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("SigningKey(..)")
     }
@@ -249,8 +216,8 @@ impl Signature {
 
     /// The public key that made it, hex-encoded.
     ///
-    /// Present so a recipient can tell *which* key to go and look up, and never
-    /// so they can verify against it; see [`verify`](Self::verify).
+    /// Says *which* key to look up; never verify against it. See
+    /// [`verify`](Self::verify).
     pub fn public_key(&self) -> &str {
         &self.public_key
     }
@@ -262,12 +229,9 @@ impl Signature {
 
     /// Checks `document` against this signature, under a key the caller trusts.
     ///
-    /// `trusted_key` is the raw public key, and it is a parameter rather than
-    /// something read out of the signature because the alternative is the
-    /// classic verification bypass: a checker that trusts the key printed in the
-    /// document it is checking accepts anything an attacker re-signed with a key
-    /// of their own. A caller with nothing to compare against has not verified a
-    /// signature, whatever the function returned.
+    /// `trusted_key` is the raw public key. It is a parameter because trusting the key
+    /// printed in the document would accept anything an attacker re-signed with their
+    /// own key.
     ///
     /// # Errors
     ///
@@ -287,8 +251,7 @@ impl Signature {
 
     /// [`verify`](Self::verify) for a document already hashed, as SHA-256.
     ///
-    /// For a document hashed as it streamed past, such as a download, which
-    /// would otherwise have to be held whole or read twice to be checked.
+    /// For a document hashed as it streamed past, such as a download.
     pub(crate) fn verify_digest(
         &self,
         digest: &[u8],
@@ -310,9 +273,7 @@ impl Signature {
 
         let named_key = decode_hex(&self.public_key)
             .ok_or_else(|| SignatureError::Malformed("the public key is not hex".to_string()))?;
-        // Compared before anything else is checked. A signature by a key the
-        // caller never trusted is not a signature they should spend any further
-        // reasoning on.
+        // Checked first: an untrusted key ends the matter.
         if named_key != trusted_key {
             return Err(SignatureError::UntrustedKey);
         }
@@ -334,8 +295,8 @@ impl Signature {
     /// The document to write beside the report, conventionally under the
     /// report's own name with `.sig` appended.
     ///
-    /// TOML rather than JSON, so a signature can be written by a build with the
-    /// JSON exporter compiled out, and so a person opening one can read it.
+    /// TOML, so a build without the JSON exporter can write it and a person can read
+    /// it.
     pub fn to_document(&self) -> String {
         format!(
             "# A detached signature over the report beside this file.\n\
@@ -357,12 +318,8 @@ impl Signature {
     pub fn read(input: &mut dyn BufRead) -> Result<Self, SignatureError> {
         use std::io::Read as _;
 
-        // Bounded, because this is the one file in the pair that arrives from
-        // somewhere else: a report is handed over with its signature beside it,
-        // and a reader that sizes its allocation from the sender is taking the
-        // sender's word for it. `journal::store` reads its manifest the same way
-        // and for the same reason. A signature this crate writes is five short
-        // lines; the ceiling is generous against that and still a ceiling.
+        // Bounded, since the file arrives from elsewhere (as `journal::store`
+        // bounds its manifest).
         let mut source = String::new();
         let read = (&mut *input)
             .take(MAX_DOCUMENT_BYTES + 1)
@@ -398,9 +355,7 @@ struct SignatureDocument {
 
 /// A writer that signs everything written through it.
 ///
-/// Wraps the writer an export is already going to, so the bytes are hashed as
-/// they stream and nothing is buffered: an export that costs the memory of one
-/// host costs the same signed.
+/// Wraps the export's writer and hashes bytes as they stream, buffering nothing.
 pub struct Signing<'a> {
     inner: &'a mut dyn Write,
     digest: ring::digest::Context,
@@ -417,8 +372,7 @@ impl<'a> Signing<'a> {
 
     /// Signs what was written and returns the detached signature.
     ///
-    /// Consumes the wrapper, so a document cannot gain bytes after the signature
-    /// over it was produced.
+    /// Consumes the wrapper, so no bytes can follow the signature.
     pub fn finish(self, key: &SigningKey, domain: Domain) -> Signature {
         let digest = self.digest.finish().as_ref().to_vec();
         let signature = key.pair.sign(&signed_payload(domain, &digest));
@@ -435,9 +389,8 @@ impl<'a> Signing<'a> {
 
 impl Write for Signing<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        // The inner writer decides how much it took, and only that much is
-        // hashed. Hashing the whole buffer on a short write would sign bytes the
-        // document does not contain.
+        // Hash only what the inner writer took; a short write takes less than
+        // `buf`.
         let written = self.inner.write(buf)?;
         self.digest.update(&buf[..written]);
         Ok(written)
@@ -456,9 +409,8 @@ impl std::fmt::Debug for Signing<'_> {
 
 /// What is actually signed: the context, then the digest.
 ///
-/// Never the document itself, which may be gigabytes, and never the digest
-/// alone, which a signature could then be lifted from and presented as a
-/// signature over something else this key signed.
+/// The digest alone could be lifted and presented as a signature over something else
+/// this key signed.
 fn signed_payload(domain: Domain, digest: &[u8]) -> Vec<u8> {
     let mut payload = Vec::with_capacity(domain.0.len() + digest.len());
     payload.extend_from_slice(domain.0);
@@ -486,19 +438,10 @@ fn encode_hex(bytes: &[u8]) -> String {
 /// [`encode_hex`] read back, or `None` for anything that is not an even run of
 /// lowercase hex digits.
 ///
-/// Exactly `[0-9a-f]`, which is narrower than it looks like it needs to be and
-/// is the point. `u8::from_str_radix(_, 16)` accepts a leading `+`: `"+f"`
-/// decodes to `0x0f`, so decoding through it would give `public_key`, `digest`
-/// and `signature` each many valid spellings, and a re-spelled document would
-/// verify.
-///
-/// That would not be a bypass — every decision in [`Signature::verify`] is made
-/// on decoded bytes against a key the caller supplied, and the length is
-/// preserved either way — but it would make the document non-canonical, and
-/// [`Signature::public_key`] is documented as the field a recipient uses to tell
-/// *which* key to go and look up. A key that verifies while printing a string
-/// nobody's keyring matches is the wrong kind of correct. Accepting only what
-/// [`encode_hex`] emits makes the two one-to-one.
+/// Exactly `[0-9a-f]`. `u8::from_str_radix(_, 16)` accepts a leading `+`, which would
+/// give each field many spellings. Not a bypass, since [`Signature::verify`] decides on
+/// decoded bytes, but [`Signature::public_key`] is what a recipient looks a key up by,
+/// so encoding and decoding are kept one-to-one.
 fn decode_hex(text: &str) -> Option<Vec<u8>> {
     if !text.len().is_multiple_of(2) {
         return None;
@@ -539,8 +482,7 @@ mod tests {
         (key, signature)
     }
 
-    /// The ordinary path: a document signed and then verified against the key
-    /// that signed it.
+    /// A document verifies against the key that signed it.
     #[test]
     fn a_signed_document_verifies_under_the_key_that_signed_it() {
         let document = b"{\"schema_version\":1}";
@@ -554,8 +496,7 @@ mod tests {
         );
     }
 
-    /// One byte changed and the document no longer matches what was signed.
-    /// This is the whole of what a signature buys a recipient.
+    /// One changed byte and the document no longer matches.
     #[test]
     fn a_document_altered_by_one_byte_does_not_verify() {
         let document = b"{\"open_ports\":1}".to_vec();
@@ -571,20 +512,14 @@ mod tests {
         ));
     }
 
-    /// The bypass this API is shaped to prevent.
-    ///
-    /// An attacker who edits a report can sign the result perfectly well with a
-    /// key of their own, and the signature document beside it will be internally
-    /// consistent. Only comparing against a key obtained from somewhere else
-    /// catches it, which is why the trusted key is a parameter and not read out
-    /// of the document being checked.
+    /// A document re-signed with another key is internally consistent, and only the
+    /// caller's trusted key catches it.
     #[test]
     fn a_document_resigned_by_another_key_is_refused() {
         let original = b"nine hosts, no findings".to_vec();
         let (trusted, _) = signed(&original);
 
-        // The attacker's version, signed with their own key. Everything about it
-        // is self-consistent.
+        // Edited and re-signed with another key.
         let forged = b"nine hosts, one finding removed".to_vec();
         let (attacker, forged_signature) = signed(&forged);
         assert!(
@@ -594,22 +529,14 @@ mod tests {
             "the forgery is internally consistent, which is the point"
         );
 
-        // And it is refused the moment it is held to the key the recipient
-        // actually trusts.
+        // Refused against the trusted key.
         assert!(matches!(
             forged_signature.verify(&forged, &trusted.public_key(), Domain::REPORT),
             Err(SignatureError::UntrustedKey)
         ));
     }
 
-    /// The attack domain separation exists to stop, across the two domains
-    /// there are to separate.
-    ///
-    /// A publisher who signs reports for a client and detection bundles for the
-    /// same client, with one key, must not have a signature over one presented as
-    /// a signature over the other. The bytes could even be the same bytes: a
-    /// detection manifest is a TOML document and so is nothing else here, but the
-    /// point is that the key holder never has to think about it.
+    /// A signature in one domain does not verify in the other, under the same key.
     #[test]
     fn a_signature_in_one_domain_does_not_verify_in_the_other() {
         let document = b"the same bytes either way".to_vec();
@@ -648,8 +575,7 @@ mod tests {
         ));
     }
 
-    /// The document round-trips, because a signature that cannot be written
-    /// beside a report and read back is not a detached signature.
+    /// The signature document round-trips.
     #[test]
     fn a_signature_document_round_trips() {
         let document = b"a report".to_vec();
@@ -676,16 +602,14 @@ mod tests {
         let mut forged = signature.clone();
         forged.digest = encode_hex(&sha256(&doctored));
 
-        // The digest now matches the document, and the signature covers the old
-        // one, so this is where it comes apart.
+        // The digest matches the document, but the signature covers the old one.
         assert!(matches!(
             forged.verify(&doctored, &key.public_key(), Domain::REPORT),
             Err(SignatureError::Invalid)
         ));
     }
 
-    /// An algorithm this build does not implement is refused by name rather than
-    /// ignored, so a document cannot talk a verifier down to something weaker.
+    /// An unknown algorithm is refused by name.
     #[test]
     fn an_algorithm_this_build_does_not_implement_is_refused() {
         let (key, signature) = signed(b"a report");
@@ -705,9 +629,7 @@ mod tests {
         ));
     }
 
-    /// The wrapper signs what the writer accepted, not what it was offered. A
-    /// short write that hashed the whole buffer would sign bytes the document
-    /// does not contain, and the signature would then never verify.
+    /// The wrapper signs what the writer accepted, not what it was offered.
     #[test]
     fn a_short_write_signs_only_what_was_written() {
         /// A writer that takes four bytes at a time, as a pipe or a socket will.
@@ -729,8 +651,7 @@ mod tests {
         let mut trickle = Trickle(Vec::new());
         {
             let mut writer = Signing::new(&mut trickle);
-            // `write_all` loops on the short writes, which is what puts the
-            // whole document through in pieces.
+            // `write_all` loops on the short writes.
             writer.write_all(&document).expect("writes");
             let signature = writer.finish(&key, Domain::REPORT);
             assert!(
@@ -742,13 +663,8 @@ mod tests {
         assert_eq!(trickle.0, document, "every byte reached the inner writer");
     }
 
-    /// The whole of it over a real report, through the exporter a caller would
-    /// actually use.
-    ///
-    /// The unit tests above sign byte slices, which proves the cryptography and
-    /// not the seam: an exporter streams through `dyn Write` in as many pieces
-    /// as it likes, and what has to hold is that the signature covers exactly
-    /// the file that ends up on disk.
+    /// A real report through the exporter: the signature covers exactly the file on
+    /// disk, however the exporter streams it.
     #[test]
     fn a_real_exported_report_signs_and_verifies_as_written() {
         use crate::export::{ExportFormat, ExportOptions};
@@ -778,8 +694,7 @@ mod tests {
                 .is_ok()
         );
 
-        // And the document beside it verifies the same file, which is the pair
-        // a recipient is handed.
+        // The sidecar document verifies the same file.
         let sidecar = Signature::read(&mut signature.to_document().as_bytes()).expect("reads");
         assert!(
             sidecar
@@ -787,8 +702,7 @@ mod tests {
                 .is_ok()
         );
 
-        // A report re-exported with a different policy is a different document,
-        // and the signature must not follow it across.
+        // A re-export with a different policy is a different document.
         let mut redacted = Vec::new();
         ExportFormat::Json
             .exporter(ExportOptions::new().with_redaction(crate::export::Redaction::Standard))
@@ -800,8 +714,7 @@ mod tests {
         ));
     }
 
-    /// Anything that is not a signature document is refused rather than read as
-    /// an empty one.
+    /// Anything that is not a signature document is refused.
     #[test]
     fn what_is_not_a_signature_document_is_refused() {
         for text in ["", "not toml", "algorithm = \"ed25519\""] {
@@ -812,9 +725,7 @@ mod tests {
         }
     }
 
-    /// A malformed field is refused rather than treated as absent, since a
-    /// verifier that shrugged at unreadable hex would accept a signature it
-    /// never checked.
+    /// A malformed field is refused, not treated as absent.
     #[test]
     fn a_field_that_is_not_hex_is_refused() {
         let (key, signature) = signed(b"a report");
@@ -844,8 +755,7 @@ mod tests {
         ));
     }
 
-    /// A key must not print itself. One reaching a log through a `{:?}` on some
-    /// struct that happens to hold it is a key that has to be rotated.
+    /// A key does not print itself.
     #[test]
     fn a_signing_key_prints_nothing_about_itself() {
         let (document, key) = SigningKey::generate().expect("a key");
@@ -856,8 +766,7 @@ mod tests {
         assert!(!printed.contains(&encode_hex(&key.public_key())));
     }
 
-    /// Hex round-trips, and anything that is not hex reads as nothing rather
-    /// than as a shorter value.
+    /// Hex round-trips, and non-hex reads as nothing.
     #[test]
     fn hex_round_trips_and_refuses_what_is_not_hex() {
         let bytes = vec![0x00, 0x0f, 0xa5, 0xff];
@@ -871,12 +780,7 @@ mod tests {
 
     /// **A signature document has one spelling.**
     ///
-    /// `u8::from_str_radix` accepts a leading `+`, so `"+f"` decoded to `0x0f`
-    /// and every hex field had many encodings that all verified. Not a bypass —
-    /// the length is preserved and every decision is made on decoded bytes — but
-    /// `public_key` is what a recipient looks a key up by, and a document that
-    /// verifies while printing a string no keyring matches is the wrong kind of
-    /// correct.
+    /// A leading `+` is refused, so each hex field has one encoding.
     #[test]
     fn only_lowercase_hex_decodes() {
         assert_eq!(decode_hex("0f"), Some(vec![0x0f]));
@@ -893,8 +797,7 @@ mod tests {
         }
     }
 
-    /// And the round trip is exact, so nothing this crate writes is refused by
-    /// the narrowing above.
+    /// Everything this crate writes still reads back.
     #[test]
     fn every_byte_survives_the_round_trip() {
         let all: Vec<u8> = (0..=255u8).collect();
@@ -926,7 +829,7 @@ mod tests {
         ));
     }
 
-    /// A document larger than the ceiling is refused rather than allocated.
+    /// A document larger than the ceiling is refused.
     #[test]
     fn an_oversized_document_is_refused() {
         let padding = "#".repeat(MAX_DOCUMENT_BYTES as usize + 1);
