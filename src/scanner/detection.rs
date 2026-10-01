@@ -388,9 +388,8 @@ async fn detect_one(
     let tunnel = service.as_deref().and_then(Tunnel::from_service_label);
     let host = addr.ip().to_string();
 
-    // Both tiers hold a blocking socket. `spawn_blocking` fails only if the
-    // runtime is shutting down.
-    let produced = tokio::task::spawn_blocking(move || {
+    // Both tiers hold a blocking socket.
+    let produced = off_the_runtime(move || {
         let flows = detections.flows();
         let modules = detections.modules();
         let (mut findings, shortfalls) = stage::detect_port(
@@ -489,12 +488,28 @@ async fn detect_one(
 
         (findings, unfinished)
     })
-    .await
-    .ok()?;
+    .await?;
 
     let (findings, unfinished) = produced;
     (!findings.is_empty() || !unfinished.is_empty())
         .then_some((address, number, protocol, findings, unfinished))
+}
+
+/// Runs a port's detections on the blocking pool.
+///
+/// A panic carries on into the calling task, so the phase's pool counts and
+/// reports it as it does any probe's. [`None`] only if the runtime is shutting
+/// down.
+async fn off_the_runtime<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(output) => Some(output),
+        Err(error) => match error.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            Err(_cancelled) => None,
+        },
+    }
 }
 
 /// Why a compute run did not finish, phrased for the report: which bound or
@@ -838,6 +853,32 @@ mod tests {
             max_millis,
             max_connections,
         }
+    }
+
+    /// A detection that panics is counted among the phase's failures, not
+    /// dropped as a port that found nothing.
+    #[tokio::test]
+    async fn a_panicking_detection_is_reported_as_a_failure() {
+        let (_session, ctx) = ScanSession::new();
+        let mut pool = ProbePool::new(
+            1,
+            ctx.clone(),
+            ScannerKind::Detection,
+            |_: Option<()>, _| {},
+        );
+
+        pool.admit(off_the_runtime(|| panic!("a defect in a detection")))
+            .await;
+        pool.drain().await;
+
+        let failures = ctx.failures_snapshot();
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.scanner() == ScannerKind::Detection
+                    && failure.reason().contains("panicked")),
+            "the panic left no failure: {failures:?}"
+        );
     }
 
     #[tokio::test]
