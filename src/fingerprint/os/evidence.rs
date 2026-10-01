@@ -8,49 +8,32 @@
 
 //! # Combining what several sources say about one host
 //!
-//! A stack's shape is one way to learn what a machine runs. A banner it
-//! volunteered is another, and the hardware address it answered from is a third.
-//! They are read from different places, fail in different ways, and this is where
-//! they are put together.
+//! A stack's shape, a banner and a hardware address are read from different
+//! places and fail in different ways. This module combines them.
 //!
-//! ## The independence claim, and where it stops
+//! ## Independence
 //!
-//! Combining evidence means assuming the pieces are independent, and that
-//! assumption is *false* within a single reply: the hop counter, the window and
-//! the option layout of one packet are consequences of one stack build and agree
-//! with each other by construction. Scoring them separately would triple-count
-//! one observation.
+//! Within one reply the fields are not independent, so
+//! [`classify`](super::classify) collapses a reply into one item. A host files
+//! one banner item per port, so [`resolve`] also counts each source once.
+//! Independence is assumed only between sources (stack, banner, hardware
+//! address).
 //!
-//! So [`classify`](super::classify) already collapses a whole reply into one
-//! item. What arrives here does not hold to that by itself, because a host is
-//! asked for a banner once per port and files one item each time. [`resolve`]
-//! therefore counts each source once, and independence is claimed only between
-//! them, a stack, a banner, a hardware address, where it is close enough to true
-//! to build on.
-//!
-//! That is also why the arithmetic below is [noisy-OR] rather than a sum. Two
-//! sources agreeing raise confidence without either being trusted more than it
-//! deserves, and no amount of agreement reaches certainty.
+//! The arithmetic is [noisy-OR]: agreeing sources raise confidence, and no
+//! amount of agreement reaches certainty.
 //!
 //! [noisy-OR]: https://en.wikipedia.org/wiki/Noisy-or_model
 //!
-//! ## Two axes, because they are two questions
+//! ## Two axes
 //!
-//! What a machine *runs* and what it *is* are independent, and a source may
-//! know either without the other. A hop counter says infrastructure and never a
-//! vendor; an SNMP agent names a printer down to its firmware and never its
-//! kernel. So the family is one axis, the device class another, and a source
-//! with nothing to say on either simply says nothing there; see
-//! [`OsEvidence::family`].
+//! What a machine *runs* (family) and what it *is* (device class) are separate.
+//! A hop counter says infrastructure and never a vendor; an SNMP agent may name
+//! a printer's firmware and never its kernel. See [`OsEvidence::family`].
 //!
-//! ## Disagreement lowers the answer rather than picking a winner
+//! ## Disagreement lowers the answer
 //!
-//! When sources name different families, the leader is reduced by whatever the
-//! runner-up carries. Two sources at odds are a worse position than one source
-//! alone, and a resolver that took the larger and reported it at full strength
-//! would be hiding the conflict at exactly the moment it matters. Below the floor
-//! the result is no answer, which is the honest outcome for a host two techniques
-//! disagree about.
+//! When sources name different families, the leader is reduced by what the
+//! dissenters carry. Below the floor there is no answer.
 
 use crate::model::host::{OsEvidence, OsSource};
 use std::collections::BTreeMap;
@@ -59,16 +42,9 @@ use super::verdict::{MIN_REPORTABLE_ACCURACY, OsVerdict};
 
 /// The most any combination of sources may claim.
 ///
-/// Noisy-OR approaches certainty without reaching it, which is the right shape
-/// and not enough on its own: at twenty agreeing sources the arithmetic lands
-/// close enough that rounding to a percentage produces 100, and a scan reporting
-/// an operating system as certain on accumulated inference would be claiming
-/// something none of its sources said.
-///
-/// Above the 85 that marks high confidence, so agreement between genuinely
-/// independent sources can still get there, that is the whole point of having
-/// more than one. Below 100, which stays reserved for a host that identified
-/// itself rather than one that was worked out.
+/// Noisy-OR alone rounds to 100 at enough agreeing sources. Above the 85 that
+/// marks high confidence, so independent sources can reach it; 100 is left for
+/// a host that identified itself.
 pub const MAX_FUSED_ACCURACY: u8 = 95;
 
 /// Folds every source's opinion into one answer, or none.
@@ -79,21 +55,14 @@ pub const MAX_FUSED_ACCURACY: u8 = 95;
 ///
 /// # Abstention is not dissent
 ///
-/// Only the sources that [name a family](OsEvidence::family) vote on it. The
-/// rest fold their finer parts into whichever family wins and never count
-/// against it, which is the difference between a second opinion and a second
-/// question. A hop counter of 255 says *network device*; an SNMP agent saying
-/// `Brother NC-8700w` says which one. Scored as rival families those two
-/// readings annihilate each other and the host is reported as nothing, as
-/// measured on real hardware, with both answers sitting in the record.
+/// Only sources that [name a family](OsEvidence::family) vote on it; the rest
+/// add their finer parts to the winner and never count against it. A hop
+/// counter of 255 (*network device*) and an SNMP agent (`Brother NC-8700w`)
+/// would otherwise cancel each other out.
 ///
-/// Where nobody names a family the abstentions are the whole answer, and it is
-/// reported without one.
+/// Where nobody names a family, the abstentions are the answer.
 pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
-    // Grouped by family, because that is the level a source that has one can
-    // speak to. A `BTreeMap` so two runs over the same evidence resolve the same
-    // way: with scores this close together, iteration order would otherwise
-    // decide ties.
+    // A `BTreeMap` so ties resolve the same way on every run.
     let mut by_family: BTreeMap<&str, Vec<&OsEvidence>> = BTreeMap::new();
     let mut abstained: Vec<&OsEvidence> = Vec::new();
     for item in &evidence {
@@ -110,17 +79,14 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
             (family, score, items)
         })
         .collect();
-    // Descending by score, and by family name where scores tie, so the answer
-    // does not depend on which source happened to be added first.
+    // By score, then family name, independent of insertion order.
     scored.sort_by(|a, b| {
         b.1.partial_cmp(&a.1)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.0.cmp(b.0))
     });
 
-    // Everything naming a *different* family, combined, is what the leader has to
-    // survive. One dissenting source is a doubt; several agreeing with each other
-    // against the leader is close to a refutation.
+    // The leader is reduced by every dissenting family, combined.
     let mut answer = scored.first().map(|(family, score, items)| {
         let against = combine(scored.iter().skip(1).map(|(_, score, _)| *score));
         (
@@ -131,13 +97,8 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
         )
     });
 
-    // A family that cannot clear the floor is not an answer, but it is also not
-    // the only thing on the table. What abstained never competed for it, was
-    // never reduced by the dissent that sank it, and can still be worth
-    // reporting on its own, an agent naming a make and model outright while two
-    // stack rules argue about what class of box it is. Dropping the whole
-    // verdict there would discard the best-attested thing the scan learned
-    // because of a quarrel it took no part in.
+    // A family below the floor drops only itself; the abstentions, unaffected
+    // by the dissent, may still be reported.
     if answer
         .as_ref()
         .is_none_or(|(_, survived, ..)| percent(*survived) < MIN_REPORTABLE_ACCURACY)
@@ -160,25 +121,13 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
         return None;
     }
 
-    // The finer parts of the path are kept where every source that *spoke to*
-    // them agrees. A source saying nothing about a version abstains rather than
-    // dissenting: a stack rule can name a family and never a release, so
-    // counting its silence as disagreement would mean a banner that read
-    // "Ubuntu 22.04" off the wire loses it the moment a stack rule corroborates
-    // the family, which is more evidence producing a less specific answer. Two
-    // sources naming different values still yield nothing.
+    // Finer parts are kept where every source that stated them agrees; silence
+    // abstains, and differing values yield nothing.
     //
-    //
-    // In a release, a version or a kernel, a value that only stops short of
-    // another is not a different one either. A domain controller's functional
-    // level can say `Windows Server` and no more, since three releases share
-    // it, while the build its SMB service states says `Windows Server 2022`;
-    // the second is the first carried further, and both are true. The most
-    // specific value stands where every other stated is a reading of it cut
-    // short at a word or a component; see `stops_short_of`. Any two that part
-    // ways still yield nothing. The other parts are names rather than readings
-    // taken to some depth, and `x86` is not `x86-64` cut short, so they agree
-    // only where they are equal.
+    // For product, version and kernel, a value that stops short of another
+    // agrees with it (`Windows Server` and `Windows Server 2022`), and the most
+    // specific stands; see `stops_short_of`. Other parts must be equal: `x86` is
+    // not `x86-64` cut short.
     let stated = |part: fn(&OsEvidence) -> &Option<String>| -> Vec<&str> {
         items
             .iter()
@@ -202,8 +151,7 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
             .then(|| most.to_owned())
     };
 
-    // Attributed to whichever source contributed most, since that is the one a
-    // reader would want to argue with first.
+    // Attributed to the strongest contributing source.
     let strongest = items
         .iter()
         .max_by(|a, b| {
@@ -226,17 +174,10 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
         agreed(|item| &item.device),
     );
 
-    // The CPE names what was concluded, so only the sources that stated what
-    // was concluded speak to it. A CPE is an identifier for a product at a
-    // version, and a source whose product or version stops short of the
-    // merged one carries the identifier of that shorter reading: a functional
-    // level naming `Windows Server` carries the family's `windows`, beside an
-    // SMB build naming `Windows Server 2022` and carrying that release's. The
-    // two identifiers differ because the readings go to different depths, not
-    // because the sources disagree, and taking the shorter one's would put an
-    // identifier beside a name it does not describe. So the CPE is the one the
-    // sources stating exactly the merged product and version agree on, and
-    // none where they part ways or none of them carries one.
+    // The CPE comes only from sources stating exactly the merged product and
+    // version; a shorter reading's CPE (`windows` beside `Windows Server 2022`)
+    // describes something coarser. None where those sources disagree or carry
+    // none.
     let cpe = {
         let concluded: Vec<&OsEvidence> = items
             .iter()
@@ -253,31 +194,16 @@ pub fn resolve(evidence: Vec<OsEvidence>) -> Option<OsVerdict> {
             .map(|candidate| (*candidate).to_owned())
     };
 
-    // Something has to have been established. Every one of these is a real
-    // answer on its own: a device class says the box is infrastructure, which is
-    // the most a hop counter of 255 can support and is worth reporting about a
-    // host nothing else describes.
-    //
-    // A device class counts here although it identifies no software. A text
-    // rule states one beside a product, but the rules that read a hop counter
-    // state a class and nothing else, so a guard that wanted more than a class
-    // would discard the whole of what those sources establish.
+    // Any one of these is an answer; a device class alone is all a hop-counter
+    // rule establishes.
     if family.is_none() && device.is_none() && vendor.is_none() && product.is_none() {
         return None;
     }
 
-    // What the finer parts are worth, as distinct from the family.
-    //
-    // Every source can speak to a family, and `accuracy` above is their
-    // agreement about it. A release is usually named by exactly one of them, so
-    // reporting it under that figure launders one weaker claim through the
-    // agreement of several stronger ones, measured, on a real host: two sources
-    // agreeing on Linux scored 84 while the release rested on a single banner
-    // worth 55.
-    //
-    // Combined over the sources that actually stated something finer, and
-    // reduced by the same dissent the family had to survive: a contested family
-    // does not leave its release uncontested.
+    // The finer parts' own accuracy: often one source names the release while
+    // several agree on the family (on one host, 84 for Linux, 55 for the
+    // release). Combined over the sources that stated finer parts, reduced by
+    // the same dissent as the family.
     let refined = vendor.is_some()
         || product.is_some()
         || version.is_some()
@@ -339,9 +265,8 @@ fn percent(probability: f32) -> u8 {
 /// Combines independent probabilities for one hypothesis: the chance that *at
 /// least one* of them is right.
 ///
-/// `1 - Π(1 - p)`. Two sources at 0.5 give 0.75 rather than 1.0, and nothing
-/// short of a certain source ever reaches 1, which is the property that
-/// matters, because a stack of agreeing guesses must not become a fact.
+/// `1 - Π(1 - p)`. Two sources at 0.5 give 0.75; only a certain source
+/// reaches 1.
 fn combine(confidences: impl Iterator<Item = f32>) -> f32 {
     let doubt = confidences
         .map(|confidence| 1.0 - confidence.clamp(0.0, 1.0))
@@ -351,18 +276,9 @@ fn combine(confidences: impl Iterator<Item = f32>) -> f32 {
 
 /// The same arithmetic over evidence, counting each source once.
 ///
-/// The module's independence claim is between sources, and the input does not
-/// arrive holding to it: a host is asked for a banner once per port, so a
-/// machine describing itself differently on three of them files three items
-/// under [`OsSource::ServiceBanner`]. Combined item by item those read as three
-/// witnesses agreeing, and the arithmetic rewarded exactly the host that
-/// contradicted itself: two services naming one Debian release are deduplicated
-/// to one claim and score 55, while the same two naming different releases score
-/// 80.
-///
-/// So only the strongest reading from each source enters the product. A host
-/// that answers ten times is worth what its best answer is worth, and reaching
-/// past that still takes a second source.
+/// A host files one [`OsSource::ServiceBanner`] item per port; counted item by
+/// item, a host contradicting itself across ports would score higher than one
+/// that agrees. Only the strongest reading from each source counts.
 fn combine_sources(items: &[&OsEvidence]) -> f32 {
     let mut strongest: BTreeMap<OsSource, f32> = BTreeMap::new();
     for item in items {
@@ -388,9 +304,8 @@ mod tests {
     use super::*;
     use crate::model::host::OsSource;
 
-    /// The Brother print server this behaviour was found on, as its agent
-    /// answered on 2026-08-26: a make, a model and a firmware, and not one word
-    /// about an operating system.
+    /// A Brother print server's agent answer from 2026-08-26: make, model and
+    /// firmware, no operating system.
     fn a_named_appliance() -> OsEvidence {
         OsEvidence {
             source: OsSource::SnmpAgent,
@@ -426,17 +341,9 @@ mod tests {
     /// Every source this build knows, each at the most anything filing under it
     /// may claim.
     ///
-    /// The rows are the arms of one exhaustive match, and the list is built from
-    /// the same arms, so a source added to [`OsSource`] without a row stops the
-    /// build, and every source with a row is one the tests below run. A list
-    /// kept beside a match holds neither: the match forces an arm for a new
-    /// source, nothing forces the list to name it, and the source is priced and
-    /// never run.
-    ///
-    /// Every price is read from where production sets it, so a ceiling raised
-    /// there is a ceiling tested here. Where two producers file under one
-    /// source the row takes the higher, since a source counts only its
-    /// strongest claim.
+    /// Built from one exhaustive match, so a new [`OsSource`] must get a row.
+    /// Prices are read from where production sets them; where two producers
+    /// share a source the higher is taken.
     fn every_source_at_its_ceiling() -> Vec<(OsSource, f32)> {
         use super::super::{MAX_STACK_ACCURACY, ceiling, hardware, hostname};
 
@@ -452,21 +359,17 @@ mod tests {
         rows![
             TcpStack => f32::from(MAX_STACK_ACCURACY) / 100.0,
             HardwareVendor => hardware::CONFIDENCE,
-            // The kinds of text a rule is matched against, priced by the one
-            // function every text match goes through.
+            // Text kinds, priced by `ceiling`.
             ServiceBanner => ceiling(OsSource::ServiceBanner),
             SnmpAgent => ceiling(OsSource::SnmpAgent),
-            // A responder's device-info record, and the `.local` name it
-            // announced, which is filed as the responder's word too.
+            // The device-info record and the announced `.local` name.
             MdnsResponder => ceiling(OsSource::MdnsResponder).max(hostname::CONFIDENCE),
             Hostname => hostname::CONFIDENCE,
         ]
     }
 
-    /// The point of a second source. A stack reading alone is capped below the
-    /// threshold that stops further probing, because one packet's fields are one
-    /// observation; a second, genuinely independent source agreeing with it is
-    /// what may legitimately carry the answer past that.
+    /// A second independent source can carry a stack reading past the
+    /// high-confidence threshold.
     #[test]
     fn two_agreeing_sources_are_worth_more_than_either() {
         let stack = evidence("Linux", 0.65, OsSource::TcpStack);
@@ -479,14 +382,7 @@ mod tests {
         assert_eq!(together.accuracy, 76, "1 - (0.35 x 0.70)");
     }
 
-    /// Agreement must not become certainty. Noisy-OR is chosen over anything that
-    /// sums precisely because a stack of agreeing guesses has to stay a stack of
-    /// guesses however many of them there are.
-    ///
-    /// Every source there is, which is as far as the arithmetic can be pushed,
-    /// since a source counts once. Twenty items from one source are one source
-    /// twenty times, and a test built on them would pin the double count rather
-    /// than the ceiling.
+    /// Agreement of every source stays under [`MAX_FUSED_ACCURACY`].
     #[test]
     fn no_amount_of_agreement_reaches_certainty() {
         let many: Vec<OsEvidence> = every_source_at_its_ceiling()
@@ -505,44 +401,21 @@ mod tests {
         );
     }
 
-    /// Every source's ceiling in one place, because no single place held them.
-    ///
-    /// The threshold a caller reads to decide whether to stop probing is 85, and
-    /// each source is priced below it on purpose: a banner because the software
-    /// is not always the host, a stack reading because one packet's fields are
-    /// one observation, a hostname because somebody typed it. What none of those
-    /// arguments said is that they have to hold *together*, and the price list
-    /// lives in four modules that do not read each other.
-    ///
-    /// So the rule is stated here: whatever one source says, however often it
-    /// says it, a second source is still needed to settle a host. It is stated
-    /// for every source there is, which [`every_source_at_its_ceiling`] holds
-    /// to, and against the same predicate the scanner reads to decide whether
-    /// to probe further.
-    ///
-    /// And down both of the routes [`resolve`] takes. Claims naming a family
-    /// are voted on; claims naming only what the box is abstain, and where
-    /// nothing names a family they are the answer on their own, combined along
-    /// a path of their own that a census of family-naming claims never takes.
-    /// Each source is run naming a family, naming only a device class, and
-    /// mixing the two.
+    /// No single source, however often it repeats, settles a host (the 85 the
+    /// scanner reads). Every source in [`every_source_at_its_ceiling`] is run
+    /// naming a family, naming only a device class, and mixing the two, down
+    /// both of [`resolve`]'s routes.
     ///
     /// # What it cannot see
     ///
-    /// It prices sources, not the producers that file under them. One
-    /// observation filed under two sources arrives here as two witnesses, and
-    /// this passes it. A vendor a service described, read back as its
-    /// address's own, is that shape, and so is a Bonjour responder's name filed
-    /// apart from the record it serves under that name. The first kind, one
-    /// reply producing a second source, is swept across every shipped rule by
-    /// `one_reply_is_one_witness` in the fingerprint corpus tests. The second
-    /// is a join the scanner makes across two exchanges, which no sweep of
-    /// single replies reaches, and each such join is pinned where it is made,
-    /// as this one is in `identify`'s tests.
+    /// One observation filed under two sources arrives as two witnesses. Single
+    /// replies are swept by `one_reply_is_one_witness` in the fingerprint corpus
+    /// tests; joins across exchanges are pinned where they are made, as in
+    /// `identify`'s tests.
     #[test]
     fn no_single_source_settles_a_host() {
         for (source, ceiling) in every_source_at_its_ceiling() {
-            // More claims than a host will retain, all from this one source.
+            // More claims than a host retains, all from one source.
             let naming = |nth: usize| OsEvidence {
                 version: Some(nth.to_string()),
                 ..evidence("Linux", ceiling, source)
@@ -570,9 +443,7 @@ mod tests {
             ];
 
             for (shape, many) in shapes {
-                // Two sources price themselves under the reporting floor and
-                // name nothing at all alone, which is the same answer more
-                // emphatically.
+                // Two sources sit under the reporting floor and name nothing alone.
                 if let Some(resolved) = resolve(many) {
                     assert!(
                         !resolved.to_fingerprint().is_highly_confident(),
@@ -584,23 +455,15 @@ mod tests {
         }
     }
 
-    /// A host answering the same question many ways is one witness, whatever it
-    /// says. This is the property the ceilings rest on: a banner is held to
-    /// [`BANNER_CEILING`](super::super::BANNER_CEILING) and a stack reading to
-    /// [`MAX_STACK_ACCURACY`](super::super::MAX_STACK_ACCURACY) because neither
-    /// settles a host alone, and a source that could be counted twice would walk
-    /// past both.
-    ///
-    /// Measured on loopback without it: three SSH banners naming Debian 11, 12
-    /// and 13 resolve to Linux at 91, and eight of them to 95, the most any
-    /// combination of sources may claim.
+    /// A host answering many ways is one witness, so it cannot pass
+    /// [`BANNER_CEILING`](super::super::BANNER_CEILING) or
+    /// [`MAX_STACK_ACCURACY`](super::super::MAX_STACK_ACCURACY) by repetition.
     #[test]
     fn one_source_counts_once_however_many_claims_it_files() {
         let alone = resolve(vec![evidence("Linux", 0.55, OsSource::ServiceBanner)])
             .expect("a banner names a host");
 
-        // The same source, differing in the detail that keys them apart on the
-        // host: three releases no machine can be at once.
+        // Three releases no machine can be at once.
         let contradicting: Vec<OsEvidence> = ["11", "12", "13"]
             .into_iter()
             .map(|release| OsEvidence {
@@ -620,8 +483,7 @@ mod tests {
         );
     }
 
-    /// The other half, which counting a source once must not cost: two
-    /// genuinely different sources agreeing still beat either alone.
+    /// Two different sources agreeing still beat either alone.
     #[test]
     fn distinct_sources_still_corroborate() {
         let banner = evidence("Linux", 0.55, OsSource::ServiceBanner);
@@ -636,9 +498,7 @@ mod tests {
         );
     }
 
-    /// Sources at odds are a worse position than one source alone, and the
-    /// resolver has to say so rather than take the larger and report it at full
-    /// strength. Hiding a conflict is worst exactly where it matters most.
+    /// Disagreeing sources lower the answer.
     #[test]
     fn disagreement_lowers_the_answer_rather_than_picking_a_winner() {
         let uncontested = resolve(vec![evidence("Linux", 0.65, OsSource::TcpStack)])
@@ -658,9 +518,7 @@ mod tests {
         );
     }
 
-    /// And a conflict bad enough leaves nothing worth reporting. A host two
-    /// techniques flatly disagree about is a host this engine cannot name, and
-    /// saying so beats naming it at reduced confidence.
+    /// A strong enough conflict leaves no answer.
     #[test]
     fn an_even_conflict_names_nothing() {
         assert!(
@@ -675,16 +533,8 @@ mod tests {
     /// A source that says nothing about a product **abstains**; it does not
     /// dissent.
     ///
-    /// A hardware vendor is read out of an address registration and has no way
-    /// to hold an opinion about a distribution. Counting its silence as
-    /// disagreement would mean the only source capable of naming one loses the
-    /// name the moment anything else corroborates the family, which is more
-    /// evidence producing a less specific answer and the wrong direction for
-    /// evidence to move.
-    ///
-    /// This is the same rule the matcher already applies one layer down, where a
-    /// predicate a rule does not state is "do not care" rather than "must be
-    /// absent".
+    /// A hardware vendor from an address registration says nothing about the
+    /// distribution and must not erase it.
     #[test]
     fn a_source_with_nothing_to_say_about_a_product_does_not_veto_one() {
         let mut precise = evidence("Linux", 0.65, OsSource::TcpStack);
@@ -700,10 +550,8 @@ mod tests {
         );
     }
 
-    /// Abstention is not agreement with anything, though. Two sources naming
-    /// *different* products cannot both be right, and nothing here can say
-    /// which is, so the answer keeps the family they share and drops the part
-    /// they contest.
+    /// Two sources naming different products keep the shared family and drop the
+    /// product.
     #[test]
     fn two_sources_naming_different_products_keep_neither() {
         let mut stack = evidence("Linux", 0.65, OsSource::TcpStack);
@@ -716,11 +564,9 @@ mod tests {
         assert_eq!(resolved.product, None);
     }
 
-    /// A reading that stops short of another agrees with it, and the more
-    /// specific one stands. Measured on a domain controller: its functional
-    /// level is shared by three releases and names `Windows Server`, its SMB
-    /// build names `Windows Server 2022`, and the two together were reported
-    /// as `Windows`, less than the SMB service said alone.
+    /// A reading that stops short of another agrees with it; the more specific
+    /// stands. A domain controller's functional level says `Windows Server` and
+    /// its SMB build `Windows Server 2022`.
     #[test]
     fn a_reading_cut_short_of_another_keeps_the_more_specific_one() {
         let named = |product: &str, kernel: Option<&str>| {
@@ -743,7 +589,7 @@ mod tests {
             assert_eq!(resolved.kernel.as_deref(), Some("10.0.20348"));
         }
 
-        // Cut short mid-word is no reading of it, and two releases part ways.
+        // Cut mid-word, or a different release: no agreement.
         for other in ["Windows Server 20", "Windows Server 2019"] {
             let resolved = resolve(vec![named("Windows Server 2022", None), named(other, None)])
                 .expect("the family is agreed");
@@ -751,11 +597,8 @@ mod tests {
         }
     }
 
-    /// The CPE is the one carried by what was concluded. A reading that stops
-    /// short of the merged product or version carries the identifier of that
-    /// shorter reading, which describes something coarser than the answer;
-    /// two sources stating the concluded release with different identifiers
-    /// still leave none, since nothing here can say which is right.
+    /// The CPE is the concluded reading's. Two sources stating the concluded
+    /// release with different CPEs leave none.
     #[test]
     fn the_cpe_is_the_one_the_concluded_release_carries() {
         let named = |product: &str, version: Option<&str>, cpe: &str| {
@@ -802,10 +645,7 @@ mod tests {
         assert_eq!(resolved.cpe, None, "two identifiers for one release");
     }
 
-    /// Two runs over the same evidence must resolve the same way. With scores
-    /// this close together an unordered fold would let whichever source happened
-    /// to be pushed first decide a tie, and a scan would report differently on
-    /// alternate runs for no reason in the data.
+    /// Resolution is deterministic regardless of input order.
     #[test]
     fn the_answer_does_not_depend_on_the_order_evidence_arrived_in() {
         let a = evidence("Linux", 0.5, OsSource::TcpStack);
@@ -823,13 +663,9 @@ mod tests {
         assert!(resolve(Vec::new()).is_none());
     }
 
-    /// The finding this file is built around.
-    ///
-    /// A hop counter of 255 says *network device*; an SNMP agent says *Brother
-    /// NC-8700w*. Those are answers to two questions and the second is by far
-    /// the better one, but scored as rival families they cancel: 0.4 reduced by
-    /// 0.385 leaves 25, under the floor, and a printer that answered ARP, ICMP,
-    /// TCP and SNMP would be reported as unidentified.
+    /// A hop counter of 255 (*network device*) and an SNMP agent
+    /// (*Brother NC-8700w*) combine; as rival families, 0.4 reduced by 0.385
+    /// would leave 25, under the floor.
     #[test]
     fn a_source_that_names_no_family_does_not_argue_with_one_that_does() {
         let stack = evidence("Network device", 0.4, OsSource::TcpStack);
@@ -846,8 +682,7 @@ mod tests {
         assert_eq!(resolved.device.as_deref(), Some("Printer"));
     }
 
-    /// And the abstention carries the answer where nothing else can name a
-    /// family at all, a device on a segment whose stack said nothing.
+    /// With no family named, the abstention is the answer.
     #[test]
     fn an_abstention_alone_is_still_an_answer() {
         let resolved = resolve(vec![a_named_appliance()]).expect("named");
@@ -857,8 +692,7 @@ mod tests {
         assert_eq!(resolved.accuracy, percent(0.56));
     }
 
-    /// A family that cannot clear the floor takes only itself down. What
-    /// abstained never entered the quarrel and is not reduced by it.
+    /// A family below the floor takes only itself down.
     #[test]
     fn a_family_too_contested_to_report_does_not_take_the_rest_with_it() {
         let one = evidence("Linux", 0.5, OsSource::TcpStack);
@@ -879,11 +713,8 @@ mod tests {
     /// A class of box on its own **is** a verdict, although something knowing
     /// only what the hardware is has identified no software.
     ///
-    /// A rule reading text states a class beside a product, but the rules that
-    /// read a hop counter of 255 state a class and nothing else: "this host is
-    /// infrastructure" is then the whole of what a real observation
-    /// established, and it is the only thing anything will ever say about a
-    /// switch with no port open and no name.
+    /// Hop-counter rules state only a class, which may be all that is known about
+    /// a switch with no open port and no name.
     #[test]
     fn a_device_class_on_its_own_is_a_verdict() {
         let class_only = OsEvidence {
