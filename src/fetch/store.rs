@@ -22,39 +22,34 @@
 //!
 //! ## A reader sees one whole copy or none
 //!
-//! A download is written beside `data` and renamed over it only once it has
-//! arrived whole and passed its checks, so a crash, a refused download or a
-//! full disk leaves the previous copy where it was. The metadata is removed
-//! before the renames and written after them, so whenever `metadata.toml`
-//! exists it describes the `data` and the `signature` beside it; an update that dies between the two
-//! leaves no metadata, which reads as nothing stored and costs one full
-//! download on the next update, never a copy described by another copy's
-//! metadata.
+//! A download is written beside `data` and renamed over it only once it has arrived
+//! whole and passed its checks, so a crash, a refused download or a full disk leaves the
+//! previous copy in place. The metadata is removed before the renames and written after
+//! them, so whenever `metadata.toml` exists it describes the `data` and `signature` beside
+//! it. An update that dies in between leaves no metadata, which reads as nothing stored
+//! and costs one full download on the next update.
 //!
 //! ## Two locks, so a long download does not stall a reader
 //!
-//! An update holds `update.lock` from before it asks the server until it is
-//! done, so two updaters never interleave: the second waits, then asks with
-//! what the first stored and is told nothing changed. The swap itself takes
-//! `read.lock` exclusively for the few calls it lasts, and a reader takes it
-//! shared while it opens the metadata and the data, so a reader never pairs
-//! one copy's metadata with another's data and never waits for a download.
-//! Both are advisory locks on the files' descriptors, released when the
-//! holder exits however it exits.
+//! An update holds `update.lock` from before it asks the server until it is done, so two
+//! updaters never interleave: the second waits, then asks with what the first stored and
+//! is told nothing changed. The swap takes `read.lock` exclusively for the few calls it
+//! lasts, and a reader takes it shared while it opens the metadata and the data, so a
+//! reader never pairs one copy's metadata with another's data and never waits for a
+//! download. Both are advisory locks on the file descriptors, released when the holder
+//! exits, however it exits.
 //!
 //! ## Data made from fetched data
 //!
-//! What a caller makes out of stored resources, a converted dataset say, is
-//! kept in the same store by the same rules, under `derived/`; see
-//! [`Store::derive`].
+//! What a caller makes from stored resources, such as a converted dataset, is kept in the
+//! same store by the same rules under `derived/`; see [`Store::derive`].
 //!
 //! ## Under `sudo`
 //!
-//! What an elevated run creates in the invoking user's home is given back to
-//! them, and every name there is reached without following a link out of the
-//! home, exactly as a journal's files are; see
-//! [`ownership`]. An update run as the user and a
-//! scan run with `sudo` then share one copy that both can read and replace.
+//! What an elevated run creates in the invoking user's home is chowned to them, and every
+//! name there is reached without following a link out of the home, as for a journal's
+//! files; see [`ownership`]. An update run as the user and a scan run with `sudo` then
+//! share one copy both can read and replace.
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -83,23 +78,21 @@ const SIGNATURE: &str = "signature";
 /// A signature on its way to being `signature`.
 const SIGNATURE_PARTIAL: &str = "signature.partial";
 
-/// The largest metadata file read back. One this writes is a dozen short
-/// lines; the ceiling is for a file somebody else put there.
+/// The largest metadata file read back. One this module writes is a dozen short lines.
 const MAX_METADATA_BYTES: u64 = 64 * 1024;
 
 /// The version of the metadata layout, so a later one can be told apart.
 const FORMAT: u32 = 1;
 
-/// The first segment every derived file's directory is under, which no
-/// resource id may start with, so a fetch and a derivation never share one;
-/// see [`derived`].
+/// The top-level directory of derived data, which no resource id may start with; see
+/// [`derived`].
 pub(super) const DERIVED: &str = "derived";
 
-/// The directory a caller's notes are kept in, which no resource id may start
-/// with either; see [`Store::note`].
+/// The top-level directory of a caller's notes, which no resource id may start with; see
+/// [`Store::note`].
 pub(super) const NOTES: &str = "notes";
 
-/// The longest note kept: a word or a line, never a document.
+/// The longest note kept, in bytes.
 const MAX_NOTE_BYTES: u64 = 4096;
 
 mod derived;
@@ -108,9 +101,8 @@ pub use derived::{Derivation, DeriveError, Derived, DerivedCopy, DerivedMetadata
 
 /// A directory holding fetched resources, one subdirectory each.
 ///
-/// Naming a store touches nothing on disk. A store's directories are created
-/// by the first update that needs them, and reading a resource never
-/// creates anything.
+/// Naming a store touches nothing on disk. Directories are created by the first update
+/// that needs them; reading creates nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Store {
     root: PathBuf,
@@ -136,11 +128,9 @@ impl Store {
 
     /// The note the caller left under `name`, where there is one.
     ///
-    /// For a front end's own small records about what it fetches, such as a
-    /// person having declined a dataset when asked, so they are not asked
-    /// again. Kept in the store beside the data it is about, so clearing the
-    /// cache clears the choice with it, and written as the store's files are:
-    /// never through a link, and under `sudo` for the invoking user.
+    /// For a front end's small records about what it fetches, such as a person having
+    /// declined a dataset, so they are not asked again. Kept beside the data, so clearing
+    /// the cache clears the choice too, and written as the store's other files are.
     ///
     /// # Errors
     ///
@@ -198,9 +188,8 @@ impl Store {
     /// The stored copy of `resource`, opened, with what is known about it;
     /// `None` when nothing has been stored.
     ///
-    /// The file is opened before this returns, so it stays the copy the
-    /// metadata describes even if an update replaces the resource while the
-    /// caller is still reading it.
+    /// The file is opened before this returns, so it stays the copy the metadata describes
+    /// even if an update replaces the resource while the caller reads it.
     ///
     /// # Errors
     ///
@@ -230,8 +219,8 @@ impl Store {
     /// Takes `resource`'s update lock, creating its directory, and returns
     /// once no other update holds it.
     ///
-    /// Blocks while another update runs, so an async caller takes it off the
-    /// runtime's workers.
+    /// Blocks while another update runs; an async caller should call it off the runtime's
+    /// workers.
     pub(super) fn lock_for_update(&self, resource: &Resource) -> Result<Update, FetchError> {
         lock_directory(self.directory(resource))
     }
@@ -306,9 +295,9 @@ pub struct Stored {
 impl Stored {
     /// Where the data is.
     ///
-    /// For showing a person, or for a tool that takes a path. Opened by that
-    /// path again later, it may name a newer copy than [`Stored::metadata`]
-    /// describes; [`Stored::into_file`] is the copy that was opened.
+    /// For display or for a tool that takes a path. Reopened later, the path may name a
+    /// newer copy than [`Stored::metadata`] describes; [`Stored::into_file`] is the copy
+    /// that was opened.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -322,10 +311,10 @@ impl Stored {
     /// The detached signature the copy was checked against when it arrived,
     /// for a resource checked by one.
     ///
-    /// Kept so a consumer that checks again when it loads the data, as
-    /// [`Bundle::verified`](crate::detect::bundle::Bundle::verified) does
-    /// with a bundle's manifest, has the very document the fetch accepted,
-    /// replaced with the data and never apart from it.
+    /// Kept so a consumer that checks again on load, as
+    /// [`Bundle::verified`](crate::detect::bundle::Bundle::verified) does with a bundle's
+    /// manifest, has the document the fetch accepted. It is replaced together with the
+    /// data.
     pub fn signature(&self) -> Option<&Signature> {
         self.signature.as_ref()
     }
@@ -341,8 +330,7 @@ impl Stored {
     ///
     /// Whatever reading the file fails with.
     pub fn read(mut self) -> io::Result<Vec<u8>> {
-        // A hint, never a bound: the size was checked against the metadata when
-        // the file was opened.
+        // A capacity hint only; the size was checked against the metadata on open.
         let mut bytes = Vec::with_capacity(usize::try_from(self.metadata.size).unwrap_or(0));
         self.file.read_to_end(&mut bytes)?;
         Ok(bytes)
@@ -355,17 +343,15 @@ impl Stored {
 pub struct Metadata {
     /// Where it was fetched from.
     pub url: String,
-    /// The entity tag the server sent with it, which the next update asks
-    /// with.
+    /// The entity tag the server sent with it, sent back by the next update.
     pub etag: Option<String>,
-    /// The modification time the server sent with it, as sent, which the next
-    /// update asks with where there is no entity tag.
+    /// The modification time the server sent with it, verbatim, sent back by the next
+    /// update when there is no entity tag.
     pub last_modified: Option<String>,
     /// When this copy was downloaded.
     pub fetched_at: SystemTime,
-    /// When the server last confirmed this copy is current: its download, or
-    /// a later update that found nothing new. How old the data is, as far as
-    /// anyone can tell.
+    /// When the server last confirmed this copy is current, by its download or a later
+    /// update that found nothing new. The best measure of how old the data is.
     pub checked_at: SystemTime,
     /// Its size in bytes.
     pub size: u64,
@@ -393,10 +379,9 @@ impl Metadata {
 
     /// Whether a copy checked as this one was is enough for `verify`.
     ///
-    /// A copy is only kept as current, and only asked about conditionally,
-    /// while it satisfies what the resource asks today: a digest pinned
-    /// afresh, or a key rotated, makes the stored copy one that has to be
-    /// fetched and checked again, whatever the server would say about it.
+    /// A copy is kept as current, and asked about conditionally, only while it satisfies
+    /// the resource's present checks: a newly pinned digest or a rotated key forces a fresh
+    /// fetch and check.
     pub(super) fn satisfies(&self, verify: &Verify) -> bool {
         match verify {
             Verify::Transport => true,
@@ -426,8 +411,8 @@ pub(super) struct Update {
 }
 
 impl Update {
-    /// The copy stored now, if there is one and its data is there at the
-    /// size the metadata records. What a conditional request is made with.
+    /// The stored copy, if its data is there at the size the metadata records. The
+    /// conditional request is based on it.
     pub(super) fn current(&self) -> Result<Option<Metadata>, FetchError> {
         let Some(metadata) = read_metadata(&self.directory)? else {
             return Ok(None);
@@ -440,8 +425,8 @@ impl Update {
         })
     }
 
-    /// The file a download is written to, empty. Where an earlier update
-    /// left one behind, it is discarded first.
+    /// The empty file a download is written to. One left by an earlier update is discarded
+    /// first.
     pub(super) fn stage(&self) -> Result<(File, PathBuf), FetchError> {
         let path = self.directory.join(DATA_PARTIAL);
         let file = create(&path).map_err(|e| storage(&path, e))?;
@@ -482,8 +467,7 @@ impl Update {
                 Some(staged) => {
                     rename(staged, &signature_path).map_err(|e| storage(&signature_path, e))?
                 }
-                // A signature left from when the resource was checked by one
-                // describes nothing any more.
+                // A signature from when the resource was checked by one is stale.
                 None => remove_if_there(&signature_path)?,
             }
             rename(&staged, &metadata_path).map_err(|e| storage(&metadata_path, e))
@@ -585,9 +569,9 @@ fn read_metadata_as<M>(
 
 /// The metadata file, as it is written and read.
 ///
-/// Its own type rather than a derive on [`Metadata`], so the file's layout
-/// is not whatever the public struct's fields happen to be. Times are whole
-/// seconds since the Unix epoch, and the digest and key lowercase hex.
+/// Separate from [`Metadata`] so the file layout does not follow the public struct's
+/// fields. Times are whole seconds since the Unix epoch; the digest and key are lowercase
+/// hex.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct MetadataFile {
     format: u32,
@@ -716,8 +700,8 @@ fn open(path: &Path, how: Access) -> io::Result<File> {
 /// Creates `path` empty for writing, removing a file an earlier run left
 /// there first, and refusing one that appears between the two.
 ///
-/// Removed rather than truncated, so a link at the name loses the link and
-/// never the file it points to.
+/// Removed, not truncated, so a symlink at the name is replaced and the file it points to
+/// is left alone.
 fn create(path: &Path) -> io::Result<File> {
     match remove(path) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
@@ -743,14 +727,13 @@ fn create_new(path: &Path) -> io::Result<File> {
         .open(Place::of(path)?.path())
 }
 
-/// Removes the name `path`, a link at it rather than what it points to.
+/// Removes the name `path`; a symlink there is removed, not its target.
 fn remove(path: &Path) -> io::Result<()> {
     Place::of(path)?.remove()
 }
 
-/// Renames `from` over `to`, two names in one directory reached through one
-/// walk, so nothing rearranged above them between the two lookups can send
-/// the rename elsewhere.
+/// Renames `from` over `to`, two names in one directory reached through one walk, so
+/// nothing rearranged above them between the lookups can redirect the rename.
 fn rename(from: &Path, to: &Path) -> io::Result<()> {
     let destination = Place::of(to)?;
     let name = from
@@ -790,12 +773,10 @@ pub(crate) mod testing {
 mod tests {
     use super::*;
 
-    /// What an update writes is what the next one reads, every field of it,
-    /// or a conditional request would be made with a validator the server
-    /// never sent.
-    /// A note is the one thing a front end keeps in the store about its own
-    /// choices, so it has to read back as written, be absent until written,
-    /// and never reach outside the notes directory by its name.
+    /// Every field an update writes reads back unchanged, or a conditional request would
+    /// carry a validator the server never sent.
+    /// A note reads back as written, is absent until written, and cannot reach outside the
+    /// notes directory by its name.
     #[test]
     fn a_note_reads_back_and_its_name_stays_inside_the_store() {
         let root = std::env::temp_dir().join(format!("zond-notes-{}", std::process::id()));
@@ -839,8 +820,8 @@ mod tests {
         assert_eq!(decode(&encode(&metadata)), Ok(metadata));
     }
 
-    /// A file this did not write is refused rather than half read, so a
-    /// damaged one costs a download rather than a copy described wrongly.
+    /// A metadata file this module did not write is refused whole, so a damaged one costs a
+    /// download and never describes a copy wrongly.
     #[test]
     fn metadata_this_did_not_write_is_refused() {
         let written = encode(&Metadata::new(

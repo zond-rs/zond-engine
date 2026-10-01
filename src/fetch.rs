@@ -8,50 +8,40 @@
 
 //! # Fetching data the engine does not ship
 //!
-//! Some of what the engine reasons with changes faster than it is released:
-//! which distribution build fixed which vulnerability, above all, and later
-//! the detections somebody else publishes. This module downloads such data on
-//! request and keeps it in a directory the caller names, so that a command
-//! line, a web front end and a scheduled job all fetch it the same way and
-//! read the same copy back.
+//! Some of what the engine reasons with changes faster than it is released, above all
+//! which distribution build fixed which vulnerability. This module downloads such data on
+//! request and keeps it in a directory the caller names, so a command line, a web front
+//! end and a scheduled job fetch it the same way and read the same copy back.
 //!
-//! It is a small general layer rather than a downloader for one feed. A
-//! [`Resource`] says what to fetch, how large it may be and how it is checked;
-//! a [`Store`] says where it is kept; a [`Client`] does the fetching. The
-//! feeds the engine knows today are declared in [`advisory`], and
-//! [`registry`] lists every resource there is, so a caller that means
-//! "update everything" does not need to know what that is.
+//! A [`Resource`] says what to fetch, how large it may be and how it is checked; a
+//! [`Store`] says where it is kept; a [`Client`] does the fetching. The feeds the engine
+//! knows are declared in [`advisory`], and [`registry`] lists every resource, so a caller
+//! that means "update everything" need not know what that is.
 //!
 //! ## Nothing happens unless asked
 //!
-//! The whole module is behind the `fetch` feature, and nothing in it runs
-//! except when a caller calls it: no scan fetches anything, and nothing here
-//! picks a directory on its own. [`default_cache_dir`] says where the
-//! conventional one is, and creates nothing.
+//! The module is behind the `fetch` feature and runs only when called: no scan fetches
+//! anything, and nothing here picks a directory on its own. [`default_cache_dir`] says
+//! where the conventional one is and creates nothing.
 //!
-//! ## What is checked, and by what
+//! ## What is checked
 //!
-//! Every fetch is over HTTPS, redirects included, verified against the
-//! operating system's trust store, so a corporate network that inspects TLS
-//! and installs its own authority there works as every other program on the
-//! machine does. A resource can ask for more, a pinned SHA-256 or a detached
-//! Ed25519 signature by a key the caller trusts; see [`Verify`]. Whatever
-//! fails a check is discarded and the copy already stored is kept.
+//! Every fetch is over HTTPS, redirects included, verified against the operating system's
+//! trust store, so a corporate network that inspects TLS with its own installed authority
+//! works as it does for every other program. A resource can also require a pinned SHA-256
+//! or a detached Ed25519 signature by a key the caller trusts; see [`Verify`]. A download
+//! that fails a check is discarded and the stored copy is kept.
 //!
 //! ## The TLS stack
 //!
-//! The HTTP client is `reqwest`, built without its default TLS provider,
-//! because that provider is `aws-lc-rs` and needs a C toolchain with CMake
-//! that the Windows cross-build and some users lack. The engine already
-//! carries `rustls` with the `ring` provider for its own TLS probes, so the
-//! client is handed a `rustls` configuration built on that provider and on
-//! `rustls-platform-verifier`, the verifier `reqwest` itself would have
-//! chosen. The configuration is passed whole rather than by installing `ring`
-//! as the process's default provider, since a library that installs a
-//! process-wide default makes the choice for every other crate in the
-//! program. A configuration `reqwest` cannot take, which a mismatch of
-//! `rustls` versions would produce, fails [`Client::new`] rather than a
-//! download.
+//! The HTTP client is `reqwest`, built without its default TLS provider, because that
+//! provider is `aws-lc-rs` and needs a C toolchain with CMake that the Windows cross-build
+//! and some users lack. The client is handed a `rustls` configuration built on the `ring`
+//! provider the engine already carries for its TLS probes, with `rustls-platform-verifier`
+//! as the verifier. The configuration is passed to the client directly; installing `ring`
+//! as the process-wide default provider would make that choice for every other crate in
+//! the program. If `reqwest` cannot take the configuration (a `rustls` version mismatch),
+//! [`Client::new`] fails.
 
 use std::path::PathBuf;
 
@@ -87,12 +77,10 @@ pub fn registry() -> Vec<Resource> {
 /// | Unix (incl. macOS) | `$XDG_CACHE_HOME/zond`, else `$HOME/.cache/zond` |
 /// | Windows | `%LOCALAPPDATA%\zond\cache` |
 ///
-/// The cache directory rather than the state one the journal uses: what is
-/// here can be fetched again at any time, and a user clearing caches to free
-/// space should be free to remove it. Under `sudo` it is the invoking user's
-/// directory, by the same rule the journal and the settings follow, so an
-/// update run as the user and a scan run with `sudo` read one copy; see
-/// [`journal::paths`](crate::journal::paths).
+/// A cache directory because everything here can be fetched again, so a user clearing
+/// caches may remove it. Under `sudo` it is the invoking user's directory, by the rule
+/// the journal and the settings follow, so an update run as the user and a scan run with
+/// `sudo` read one copy; see [`journal::paths`](crate::journal::paths).
 ///
 /// `None` when the environment names no home at all. Nothing is created.
 #[cfg(not(windows))]
@@ -128,19 +116,17 @@ impl Resource {
     /// The resource `id`, fetched from `url`, refused beyond `max_bytes` and
     /// checked as `verify` says.
     ///
-    /// The id names the resource in a [`Store`] and is kept stable across
-    /// releases, since a copy is found by it: one or more segments of lowercase
-    /// letters, digits, `-`, `_` and `.`, joined by `/`, such as
-    /// `advisories/ubuntu-osv`. A segment is never `.` or `..` and never
-    /// starts with a dot, so an id is always a path inside the store. The
-    /// first segment is never `derived`, which is where [`Derived`] data is
-    /// kept.
+    /// The id names the resource in a [`Store`] and must stay stable across releases,
+    /// since a stored copy is found by it: one or more segments of lowercase letters,
+    /// digits, `-`, `_` and `.`, joined by `/`, such as `advisories/ubuntu-osv`. No segment
+    /// starts with a dot, so an id is always a path inside the store. The first segment
+    /// may not be `derived` or `notes`, where [`Derived`] data and notes are kept.
     ///
     /// # Errors
     ///
-    /// [`InvalidResource`] for an id outside that shape, and for a URL, the
-    /// resource's or a signature's, that is not an absolute `http` or `https`
-    /// URL. Whether plain `http` may be fetched is the [`Client`]'s to decide.
+    /// [`InvalidResource`] for an id outside that shape, and for a resource or signature
+    /// URL that is not an absolute `http` or `https` URL. Whether plain `http` may be
+    /// fetched is up to the [`Client`].
     pub fn new(
         id: impl Into<String>,
         url: impl Into<String>,
@@ -149,9 +135,7 @@ impl Resource {
     ) -> Result<Self, InvalidResource> {
         let id = id.into();
         let url = url.into();
-        // The first segments `derived` and `notes` are where derived data and
-        // notes are kept, so a resource there would share a directory with
-        // them.
+        // `derived` and `notes` are the store's own top-level directories.
         if !is_valid_id(&id) || matches!(id.split('/').next(), Some(store::DERIVED | store::NOTES))
         {
             return Err(InvalidResource::Id(id));
@@ -178,8 +162,8 @@ impl Resource {
         &self.url
     }
 
-    /// The most it may be. A download that passes this is abandoned as the
-    /// byte past it arrives, and nothing of it is kept.
+    /// The largest download accepted, in bytes. A download is abandoned as soon as it
+    /// exceeds this, and nothing of it is kept.
     pub fn max_bytes(&self) -> u64 {
         self.max_bytes
     }
@@ -194,10 +178,9 @@ impl Resource {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verify {
-    /// Only by the transport: HTTPS to the named host, verified against the
-    /// system's trust store. What the distributions' own security feeds
-    /// offer, since they publish neither a digest nor a signature beside the
-    /// file.
+    /// Only by the transport: HTTPS to the named host, verified against the system's trust
+    /// store. The distributions' security feeds publish no digest or signature, so this is
+    /// all they allow.
     Transport,
 
     /// The download must hash to this SHA-256, for a resource whose exact
@@ -207,10 +190,9 @@ pub enum Verify {
     /// The download must carry a detached signature, fetched from
     /// `signature_url`, by `public_key` under `domain`.
     ///
-    /// The signature is the document [`signature`](crate::signature) writes
-    /// and reads, so something published here is signed with the same tool
-    /// that signs a report or a detection bundle. The key is the caller's to
-    /// trust and never read from the signature; see
+    /// The signature is the document [`signature`](crate::signature) writes and reads, the
+    /// same one that signs a report or a detection bundle. The key comes from the caller,
+    /// never from the signature; see
     /// [`Signature::verify`](crate::signature::Signature::verify).
     Ed25519 {
         /// The raw 32-byte Ed25519 public key the signature must be by.
@@ -255,9 +237,8 @@ fn is_valid_id(id: &str) -> bool {
 
 /// Refuses a URL that is not absolute `http` or `https` with a host.
 ///
-/// A check of the shape only: the client parses it again when it fetches, and
-/// that parse is the one that decides. What this saves is a resource that
-/// could never be fetched being described without complaint.
+/// A shape check only, so a resource that could never be fetched is refused when it is
+/// described. The client's parse at fetch time is the one that decides.
 fn check_url(url: &str) -> Result<(), InvalidResource> {
     let rest = url
         .strip_prefix("https://")
@@ -315,8 +296,7 @@ mod tests {
         }
     }
 
-    /// A resource that could never be fetched is refused when it is described,
-    /// rather than when somebody runs an update and finds out.
+    /// A resource that could never be fetched is refused when it is described.
     #[test]
     fn a_url_that_is_not_http_is_refused_when_the_resource_is_described() {
         for bad in [

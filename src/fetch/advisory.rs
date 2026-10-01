@@ -8,27 +8,22 @@
 
 //! # The security feeds a correlation reads
 //!
-//! A distribution fixes a vulnerability by backporting the patch into the
-//! version it already ships, so the upstream version a banner shows says
-//! little about what the host still has. Each distribution publishes which of
-//! its package builds fixed what, and these are the feeds the engine reads
-//! that from. Beside them, CISA's catalogue of vulnerabilities known to be
-//! exploited, which marks what a correlation reports rather than deciding it.
+//! A distribution fixes a vulnerability by backporting the patch into the version it
+//! already ships, so the upstream version in a banner says little about what the host
+//! still has. Each distribution publishes which of its package builds fixed what, and
+//! these are the feeds the engine reads that from. CISA's catalogue of vulnerabilities
+//! known to be exploited sits beside them; it marks what a correlation reports and does
+//! not change what is reported.
 //!
-//! Declared here, beside the fetching, rather than beside the correlator:
-//! what a feed *is* to the engine is where it lives, how large it may grow and
-//! how it is checked, which is this module's vocabulary, and the correlator
-//! takes the dataset converted from it and never a download. Each [`Feed`]
-//! is one format, so turning a stored copy into the correlator's dataset is a
-//! match on the feed, written where the converters are, and
-//! [`Feed::of`] is how an update walking [`registry`](super::registry) finds
-//! which feed a resource it just fetched is.
+//! The correlator takes the dataset converted from a feed, never a download, so a feed is
+//! described here by where it lives, how large it may grow and how it is checked. Each
+//! [`Feed`] is one format, and [`Feed::of`] tells an update walking
+//! [`registry`](super::registry) which feed a resource it just fetched is.
 //!
-//! None of the distributions' data is shipped with the crate. The Ubuntu feeds
-//! are licensed CC BY-SA 4.0 and are fetched by whoever runs the engine, from
-//! the publisher, when they ask for it. CISA's catalogue is in the public
-//! domain, and the crate ships the list it held at release, which a fetched
-//! copy replaces.
+//! None of the distributions' data ships with the crate. The Ubuntu feeds are licensed
+//! CC BY-SA 4.0 and are fetched from the publisher by whoever runs the engine. CISA's
+//! catalogue is in the public domain; the crate ships the list as of release, and a
+//! fetched copy replaces it.
 
 use super::{Resource, Verify};
 
@@ -39,9 +34,9 @@ pub enum Feed {
     /// Canonical's Ubuntu security notices and CVE records in OSV, one JSON
     /// document per record, as one `.tar.xz` archive.
     UbuntuOsv,
-    /// Canonical's per-release package status for each CVE in OpenVEX, as one
-    /// `.tar.xz` archive. What says a package is not affected, or has no fix
-    /// yet, which the OSV records leave unsaid.
+    /// Canonical's per-release package status for each CVE in OpenVEX, as one `.tar.xz`
+    /// archive. It says when a package is not affected or has no fix yet, which the OSV
+    /// records leave out.
     UbuntuVex,
     /// The Debian security tracker's whole database as one JSON document:
     /// every source package, every CVE, and the fixed version per release.
@@ -61,10 +56,10 @@ impl Feed {
 
     /// The resource this feed is fetched as.
     ///
-    /// Each ceiling is several times the feed's size when it was set, so a
-    /// feed that keeps growing is not refused for years, and still bounds what
-    /// a publisher gone wrong could fill a disk with. None is signed or
-    /// published with a digest, so each is checked by the transport alone.
+    /// Each size ceiling is several times the feed's size when it was set, so a growing
+    /// feed is not refused for years while a misbehaving publisher still cannot fill a
+    /// disk. None is signed or published with a digest, so each is checked by the
+    /// transport alone.
     pub fn resource(self) -> Resource {
         let (id, url, max_bytes) = match self {
             // About 46 MB in 2026.
@@ -109,11 +104,10 @@ impl Feed {
 
 /// A distributor's advisory dataset, converted from its stored feeds.
 ///
-/// What a scan consumes: a [`cve::Advisories`](crate::cve::Advisories), which
-/// the correlator reads to judge a distribution's build. Converting one takes
-/// a minute and a hundred megabytes for Ubuntu's archives, so it is done once
-/// per change of feed, beside the feeds in the [`Store`](super::Store), and a
-/// scan reads the converted copy.
+/// What a scan consumes: a [`cve::Advisories`](crate::cve::Advisories), which the
+/// correlator reads to judge a distribution's build. Converting Ubuntu's archives takes a
+/// minute and a hundred megabytes, so it is done once per feed change and kept beside the
+/// feeds in the [`Store`](super::Store).
 #[cfg(feature = "import-distro")]
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -131,10 +125,8 @@ impl Dataset {
 
     /// The stored feeds it is made from, and the name it is kept under.
     ///
-    /// Versioned by this engine's own version, so a copy made by another
-    /// build of the converter, or one reading another byte format, is never
-    /// taken for current: every release reconverts once, from the feeds
-    /// already stored.
+    /// Versioned by the engine's version, so a copy made by another build of the converter
+    /// is never taken for current: every release reconverts once from the stored feeds.
     pub fn derived(self) -> super::Derived {
         let (id, feeds): (&str, &[Feed]) = match self {
             Dataset::Ubuntu => ("advisories/ubuntu", &[Feed::UbuntuOsv, Feed::UbuntuVex]),
@@ -151,8 +143,8 @@ impl Dataset {
     /// Converts the stored feeds into the dataset and keeps it in `store`,
     /// unless the copy there was already made from these feeds by this build.
     ///
-    /// Blocks, for as long as the conversion takes, so an async caller runs
-    /// it with `spawn_blocking`.
+    /// Blocks for as long as the conversion takes; an async caller runs it with
+    /// `spawn_blocking`.
     ///
     /// # Errors
     ///
@@ -187,10 +179,9 @@ impl Dataset {
     /// [`None`] where none has been made or the copy is not one this build
     /// can read.
     ///
-    /// A copy that is not current, because a feed changed after it was made,
-    /// is still returned: it is what the last conversion concluded, and a
-    /// scan is better judged against it than against nothing. The caller
-    /// says so.
+    /// A copy that is not current, because a feed changed after it was made, is still
+    /// returned: a scan is better judged against it than against nothing. The caller
+    /// should say it is stale.
     ///
     /// # Errors
     ///
@@ -233,8 +224,8 @@ pub struct Loaded {
 /// The list of exploited vulnerabilities read from the copy of CISA's
 /// catalogue `store` holds, or [`None`] where none has been fetched.
 ///
-/// Read from the feed itself on every call rather than converted once: it is
-/// a couple of megabytes of JSON and reads in milliseconds.
+/// Read from the feed on every call; it is a couple of megabytes of JSON and reads in
+/// milliseconds.
 ///
 /// # Errors
 ///
@@ -277,9 +268,8 @@ const MIB: u64 = 1024 * 1024;
 mod tests {
     use super::*;
 
-    /// Every feed describes, and each is fetched over HTTPS: they are checked
-    /// by the transport alone, so a feed named over plain HTTP would be
-    /// checked by nothing.
+    /// Every feed is fetched over HTTPS: they are checked by the transport alone, so a
+    /// feed over plain HTTP would be checked by nothing.
     #[test]
     fn every_feed_is_fetched_over_https() {
         for feed in Feed::ALL {
@@ -289,9 +279,8 @@ mod tests {
         }
     }
 
-    /// An update walks resources and a conversion dispatches on feeds, so
-    /// every feed's resource has to lead back to that feed, and nothing else
-    /// to one.
+    /// An update walks resources and a conversion dispatches on feeds, so every feed's
+    /// resource leads back to that feed, and nothing else leads to one.
     #[test]
     fn every_feed_is_found_again_from_its_resource() {
         for feed in Feed::ALL {
@@ -307,9 +296,9 @@ mod tests {
         assert_eq!(Feed::of(&other), None);
     }
 
-    /// The feeds as stored convert into the datasets a scan loads, and a
-    /// second conversion from the same copies does no work: an update calls
-    /// it after every fetch, and Ubuntu's takes a minute.
+    /// Stored feeds convert into the datasets a scan loads, and a second conversion from
+    /// the same copies does no work: an update calls it after every fetch, and Ubuntu's
+    /// takes a minute.
     #[cfg(feature = "import-distro")]
     #[test]
     fn stored_feeds_convert_once_into_the_datasets_a_scan_loads() {
@@ -360,8 +349,7 @@ mod tests {
                 .distributor(),
             "ubuntu"
         );
-        // Debian's feed carries no date, so its dataset is dated by the copy's
-        // fetch rather than left at 0.0.0.
+        // Debian's feed carries no date, so its dataset is dated by the copy's fetch.
         assert_ne!(
             Dataset::Debian
                 .load(&store)
@@ -374,9 +362,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A stored copy of CISA's feed reads as the list a scan marks by, dated
-    /// by when it was fetched; a store without one has none, and a copy that
-    /// is not the feed is an error rather than an empty list.
+    /// A stored copy of CISA's feed reads as the list, dated by its catalogue version; a
+    /// store without one has none, and a copy that is not the feed is an error, not an
+    /// empty list.
     #[cfg(feature = "import-kev")]
     #[test]
     fn a_stored_copy_of_the_kev_feed_reads_as_the_list() {

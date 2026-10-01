@@ -8,11 +8,10 @@
 
 //! # Downloading a resource into a store
 //!
-//! One [`Client`] per program, one [`Client::fetch`] per resource. A fetch
-//! asks with what the store already holds, so a feed that has not changed
-//! since the last update costs one request and no download; streams what
-//! does arrive to disk, refusing it the moment it passes the resource's
-//! ceiling; checks it; and only then puts it in place of the old copy.
+//! One [`Client`] per program, one [`Client::fetch`] per resource. A fetch sends a
+//! conditional request based on the stored copy, so an unchanged feed costs one request
+//! and no download. A new body is streamed to disk, abandoned as soon as it passes the
+//! resource's size ceiling, checked, and only then put in place of the old copy.
 
 use std::error::Error as StdError;
 use std::path::PathBuf;
@@ -28,23 +27,19 @@ use crate::signature::{Signature, SignatureError};
 use super::store::{Metadata, Update, Verified};
 use super::{Resource, Store, Verify};
 
-/// How long a connection may take to open. Long enough for a slow proxy and
-/// a distant mirror, short enough that an update on a machine with no route
-/// out says so within a minute rather than hanging.
+/// How long a connection may take to open: enough for a slow proxy and a distant mirror,
+/// short enough that a machine with no route out reports it within a minute.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// How long a transfer may go without a byte arriving.
 ///
-/// A limit on silence rather than on the whole transfer, because a feed of
-/// eighty megabytes over a slow link legitimately takes many minutes, and a
-/// total limit short enough to catch a stalled server would cut that off.
-/// Five minutes, because some publishers build the document as they send it:
-/// the Debian security tracker sends its headers and then goes silent for
-/// more than a minute at a time while it writes the rest.
+/// A limit on silence, since an eighty-megabyte feed over a slow link can take many
+/// minutes in total. Five minutes because some publishers build the document as they
+/// send it: the Debian security tracker sends its headers and then goes silent for more
+/// than a minute at a time.
 const READ_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// How many redirects a fetch follows. Mirrors and CDNs use one or two; more
-/// than this is a loop or somebody else's problem.
+/// How many redirects a fetch follows. Mirrors and CDNs use one or two.
 const MAX_REDIRECTS: usize = 5;
 
 /// The largest detached signature a fetch will take. One the
@@ -53,10 +48,9 @@ const MAX_SIGNATURE_BYTES: u64 = 64 * 1024;
 
 /// Downloads resources over HTTPS.
 ///
-/// Built once and shared: it holds a connection pool and the TLS
-/// configuration, and cloning it is cheap. Requests carry the user agent
-/// `zond-engine/<version>`, and honour the system's proxy settings and the
-/// `HTTPS_PROXY` family of variables.
+/// Build one and share it: it holds a connection pool and the TLS configuration, and
+/// cloning is cheap. Requests carry the user agent `zond-engine/<version>` and honour the
+/// system's proxy settings and the `HTTPS_PROXY` family of variables.
 #[derive(Debug, Clone)]
 pub struct Client {
     http: reqwest::Client,
@@ -69,15 +63,14 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// [`FetchError::Setup`] where the TLS configuration cannot be built,
-    /// which on a supported platform is a defect in this build rather than
-    /// anything about the machine.
+    /// [`FetchError::Setup`] if the TLS configuration cannot be built, which on a
+    /// supported platform is a defect in this build.
     pub fn new() -> Result<Self, FetchError> {
         Self::build(false)
     }
 
-    /// A client that also fetches plain `http`, and ignores any proxy, for a
-    /// test serving on loopback. Never for anything that crosses a network.
+    /// A client that also fetches plain `http` and ignores any proxy, for a test server
+    /// on loopback.
     #[cfg(test)]
     pub(crate) fn plain_http_for_tests() -> Result<Self, FetchError> {
         Self::build(true)
@@ -86,8 +79,7 @@ impl Client {
     fn build(plain_http: bool) -> Result<Self, FetchError> {
         let setup = |e: &dyn std::fmt::Display| FetchError::Setup(e.to_string());
 
-        // The ring provider the engine already carries, passed in rather than
-        // installed as the process default; see the module documentation.
+        // Passed in, not installed as the process default; see the module documentation.
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let verifier =
             rustls_platform_verifier::Verifier::new(provider.clone()).map_err(|e| setup(&e))?;
@@ -97,7 +89,7 @@ impl Client {
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(verifier))
             .with_no_client_auth();
-        // HTTP/1.1 is all this client is built to speak, so it is all it offers.
+        // The client is built for HTTP/1.1 only, so offer only that.
         tls.alpn_protocols = vec![b"http/1.1".to_vec()];
 
         let mut builder = reqwest::Client::builder()
@@ -122,18 +114,15 @@ impl Client {
 
     /// Brings `resource`'s copy in `store` up to date.
     ///
-    /// Asks with the entity tag and modification time of the copy already
-    /// stored, where it still meets what the resource asks, so a resource that
-    /// has not changed downloads nothing. What does arrive is written beside
-    /// the stored copy, refused the moment it passes
-    /// [`max_bytes`](Resource::max_bytes), checked as
-    /// [`verify`](Resource::verify) says, and only then renamed over it;
-    /// whatever fails leaves the stored copy as it was. Two fetches of one
-    /// resource into one store, from this process or another, run one after
+    /// Sends the stored copy's entity tag and modification time, if the copy still meets
+    /// the resource's checks, so an unchanged resource downloads nothing. A new body is
+    /// written beside the stored copy, abandoned once it passes
+    /// [`max_bytes`](Resource::max_bytes), checked as [`verify`](Resource::verify) says,
+    /// and only then renamed over it; any failure leaves the stored copy as it was. Two
+    /// fetches of one resource into one store, from this process or another, run one after
     /// the other.
     ///
-    /// `progress` hears of every chunk as it is written; pass `()` for
-    /// nothing.
+    /// `progress` is called for every chunk written; pass `()` to ignore it.
     ///
     /// # Errors
     ///
@@ -170,8 +159,7 @@ impl Client {
         if status == StatusCode::NOT_MODIFIED
             && let Some(mut stored) = current
         {
-            // A server may send fresh validators with a 304; those are the
-            // ones to ask with next time.
+            // A 304 may carry fresh validators; keep them for next time.
             let (etag, modified) = validators(response.headers());
             stored.etag = etag.or(stored.etag);
             stored.last_modified = modified.or(stored.last_modified);
@@ -212,8 +200,8 @@ impl Client {
         metadata.etag = etag;
         metadata.last_modified = modified;
 
-        // The same bytes again, from a server that could not say so: the
-        // stored copy stays, and only what is known about it changes.
+        // Same bytes from a server that ignored the conditional request: keep the copy,
+        // update its metadata.
         if let Some(stored) = current.filter(|stored| stored.sha256 == sha256) {
             update.discard();
             metadata.fetched_at = stored.fetched_at;
@@ -241,9 +229,8 @@ impl Client {
         }
     }
 
-    /// Checks a download that hashed to `sha256` as `verify` says, and says
-    /// what it was checked by, with the signature document where that was
-    /// one.
+    /// Checks a download that hashed to `sha256` as `verify` says, and returns what it was
+    /// checked by, with the signature document if there was one.
     async fn check(
         &self,
         verify: &Verify,
@@ -302,9 +289,8 @@ impl Client {
 /// Streams `response` into the update's staged file, and returns its size and
 /// SHA-256.
 ///
-/// The ceiling is checked as each chunk arrives, before it is written, so a
-/// download that would pass it is abandoned with no more of it on disk than
-/// fits under it, however much more the server was going to send.
+/// The ceiling is checked before each chunk is written, so an oversized download leaves
+/// no more than the ceiling on disk, however much the server meant to send.
 async fn download(
     update: &Update,
     response: &mut reqwest::Response,
@@ -330,8 +316,7 @@ async fn download(
         file.write_all(&chunk).await.map_err(storage)?;
         progress.advanced(received, total);
     }
-    // On disk before it is renamed into place, so a crash after the rename
-    // cannot leave a copy that is shorter than its metadata says.
+    // Synced before the rename, so a crash cannot leave a copy shorter than its metadata.
     file.sync_all().await.map_err(storage)?;
 
     let sha256 = digest
@@ -362,10 +347,9 @@ async fn blocking<T: Send + 'static>(
 
 /// What a task that ran blocking work hands back, as the fetch's own result.
 ///
-/// A panic in the work is the work's, and carries on unwinding here. A task
-/// that never finished was cancelled, which for blocking work only happens as
-/// the runtime shuts down, and that is said as itself: the store was never
-/// reached, so it is not a storage failure.
+/// A panic in the work resumes unwinding here. A task that never finished was cancelled,
+/// which for blocking work only happens as the runtime shuts down; that is reported as
+/// [`FetchError::Cancelled`], since the store was never reached.
 fn joined<T>(
     result: Result<Result<T, FetchError>, tokio::task::JoinError>,
 ) -> Result<T, FetchError> {
@@ -434,9 +418,8 @@ fn network(error: reqwest::Error) -> FetchError {
 /// Whether TLS is why `error` happened, and whether because of the
 /// certificate.
 ///
-/// The TLS error arrives wrapped in an I/O error, whose `source` is not the
-/// error it wraps but that error's own source, so each I/O error on the way
-/// is opened as well.
+/// The TLS error arrives wrapped in an I/O error whose `source` skips the wrapped error
+/// and returns that error's own source, so each I/O error on the way is opened too.
 fn tls_failure(error: &(dyn StdError + 'static)) -> Option<NetworkFailure> {
     let mut cause = Some(error);
     while let Some(current) = cause {
@@ -510,9 +493,8 @@ impl Outcome {
 
 /// Why a fetch stopped.
 ///
-/// Each message is a few words, without the resource's name or URL, since
-/// the caller asked for the resource and knows which it was: a line saying
-/// which resource and then this is the whole report a person needs.
+/// Each message is a few words without the resource's name or URL; the caller knows which
+/// resource it asked for and prefixes it.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {
@@ -570,8 +552,7 @@ pub enum FetchError {
 
 /// What went wrong below HTTP, in a few words.
 ///
-/// A reason rather than an error of its own: the error is the
-/// [`FetchError::Network`] that carries it, with the underlying cause.
+/// Carried by [`FetchError::Network`] alongside the underlying cause.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkFailure {
@@ -643,11 +624,10 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::AsyncReadExt;
 
-    /// How long any one fetch in these tests may take before it counts as
-    /// hung. Far beyond what a loopback transfer of a few hundred kilobytes
-    /// needs on the slowest runner, and far short of forever, which is what a
-    /// check made after the transfer rather than during it would take against
-    /// a server that never finishes.
+    /// How long any one fetch in these tests may take before it counts as hung: far beyond
+    /// what a loopback transfer of a few hundred kilobytes needs on the slowest runner. A
+    /// size check made only after the transfer would hit this against a server that never
+    /// finishes.
     const HUNG: Duration = Duration::from_secs(60);
 
     /// What the test server sends for one path.
@@ -788,15 +768,13 @@ mod tests {
             }
         }
         if reply.endless {
-            // Never finishes: a client that waits for the end before checking
-            // the size waits here.
+            // Never finishes, so a client that checks the size only at the end hangs here.
             let _ = socket.flush().await;
             tokio::time::sleep(Duration::from_secs(3600)).await;
         }
     }
 
-    /// A store in a directory of its own, removed first if a run before left
-    /// it, and removed again when the test is done with it.
+    /// A store in its own directory, removed before and after the test.
     fn store(name: &str) -> Scratch {
         let root = std::env::temp_dir().join(format!("zond-fetch-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -845,9 +823,8 @@ mod tests {
             .unwrap()
     }
 
-    /// Updating a feed that has not changed must cost a request and nothing
-    /// more: the feeds are tens of megabytes, and an update that fetched them
-    /// whole every time would be one nobody runs as often as they should.
+    /// Updating an unchanged feed costs one request and no download; the feeds are tens of
+    /// megabytes.
     #[tokio::test]
     async fn a_resource_that_has_not_changed_is_not_downloaded_again() {
         let server = Server::start().await;
@@ -886,10 +863,9 @@ mod tests {
         assert!(metadata.checked_at >= metadata.fetched_at);
     }
 
-    /// A server sending more than the ceiling is refused as the byte past it
-    /// arrives, not after the whole thing has been written to disk, and the
-    /// copy already stored is untouched. The server here never finishes, so
-    /// a check made at the end would never be made.
+    /// A body past the ceiling is refused as the byte past it arrives, and the stored copy
+    /// is untouched. The server never finishes, so a check made at the end would never
+    /// run.
     #[tokio::test]
     async fn a_download_past_its_ceiling_is_refused_as_it_streams_and_the_old_copy_survives() {
         let server = Server::start().await;
@@ -1025,9 +1001,8 @@ mod tests {
         );
     }
 
-    /// Two updates of one resource at once run one after the other: the
-    /// second asks with what the first stored and downloads nothing, rather
-    /// than both writing one staging file at the same time.
+    /// Two concurrent updates of one resource run one after the other: the second asks
+    /// with what the first stored and downloads nothing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn two_fetches_of_one_resource_do_not_interleave() {
         let server = Server::start().await;
@@ -1050,9 +1025,8 @@ mod tests {
         assert_eq!(stored(&store, &resource), body);
     }
 
-    /// The same bytes sent again by a server that ignored the conditional
-    /// request are recognised, and the copy stays rather than being written
-    /// again.
+    /// The same bytes sent again by a server that ignored the conditional request are
+    /// recognised, and the stored copy is not rewritten.
     #[tokio::test]
     async fn the_same_bytes_sent_again_are_reported_unchanged() {
         let server = Server::start().await;
@@ -1081,10 +1055,8 @@ mod tests {
         assert!(matches!(refused, Err(FetchError::Insecure)), "{refused:?}");
     }
 
-    /// Blocking work whose task was cancelled, as a runtime shutting down
-    /// cancels it, is reported as cancelled rather than as a storage failure
-    /// at no path, which would send somebody looking at a disk that was never
-    /// touched.
+    /// Blocking work whose task was cancelled by a runtime shutting down is reported as
+    /// cancelled, not as a storage failure at no path.
     #[tokio::test]
     async fn a_cancelled_task_is_reported_as_cancelled() {
         let task = tokio::spawn(std::future::pending::<Result<(), FetchError>>());
@@ -1121,9 +1093,8 @@ mod tests {
         ));
     }
 
-    /// A certificate the system does not trust is said to be that, the case
-    /// a network that inspects TLS produces, rather than a failure to
-    /// connect: the fix is the trust store, not the network.
+    /// An untrusted certificate, as a TLS-inspecting network produces, is reported as such
+    /// and not as a failure to connect: the fix is the trust store, not the network.
     #[test]
     fn an_untrusted_certificate_is_told_apart_from_other_failures() {
         let wrapped = std::io::Error::other(rustls::Error::InvalidCertificate(

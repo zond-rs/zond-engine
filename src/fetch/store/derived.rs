@@ -8,49 +8,31 @@
 
 //! # Data made from fetched data
 //!
-//! A fetched feed is rarely what the engine reads: tens of megabytes of
-//! archive or JSON are converted once into the compact dataset a scan loads,
-//! and a signed bundle's sources are checked and compiled before they run.
-//! What is made is kept beside what it was made from, and has to answer the
-//! question a reader asks of it: is this still what those sources say?
+//! A fetched feed is rarely what the engine reads: tens of megabytes of archive or JSON
+//! are converted once into the compact dataset a scan loads. The result is kept beside
+//! its sources and records which copies of them it was made from, so a reader can tell
+//! whether it is still current.
 //!
-//! ## One call that decides, converts and stores
-//!
-//! [`Store::derive`] takes a description of the derived data, a [`Derived`]
-//! naming its sources and the version of the conversion, and a closure that
-//! makes it. It opens each source's stored copy, and when the derived copy
-//! already on disk was made by the same version from exactly those copies it
-//! returns without running the closure; otherwise it runs it and puts what it
-//! returned in place. An update can therefore call it after every fetch and
-//! pay for a conversion only when a source changed or the converter did.
-//!
-//! A closure rather than a call that takes finished bytes, because the check
-//! that makes skipping safe has to see the same source copies the conversion
-//! reads. Handed bytes, the store could only record whatever the caller said
-//! they were made from, and a caller that read a source, lost a race to an
-//! update and then recorded the newer copy's digest would store a dataset
-//! that claims to be current and is not. Here the sources are opened files,
-//! which stay the copies their metadata describes whatever an update does
-//! meanwhile, and their digests are what is recorded.
+//! [`Store::derive`] takes a [`Derived`], naming the sources and the conversion's version,
+//! and a closure that does the conversion. If the stored derived copy was made by the
+//! same version from exactly the stored source copies, the closure does not run. An
+//! update can therefore call it after every fetch and pay for a conversion only when a
+//! source or the converter changed.
 //!
 //! ## Locking
 //!
-//! The derived entry has the two locks every entry has. Its update lock is
-//! held from before the sources are opened until the result is in place, so
-//! two derivations of one entry run one after the other and the second finds
-//! the first's result current. The sources' own update locks are not taken:
-//! an update of a source may replace it during a long conversion, and the
-//! conversion carries on with the copy it opened and records that copy, which
-//! the next derivation then finds stale. A fetch never waits on a conversion,
-//! and a conversion never waits on a download.
+//! The derived entry has the same two locks as every entry. Its update lock is held from
+//! before the sources are opened until the result is in place, so two derivations of one
+//! entry run one after the other and the second finds the first's result current. The
+//! sources' update locks are not taken: an update may replace a source during a long
+//! conversion, which carries on with the copy it opened and records that copy, and the
+//! next derivation finds it stale. A fetch never waits on a conversion, nor a conversion
+//! on a download.
 //!
 //! ## Where it is kept
 //!
-//! Under `<root>/derived/<id>/`, with the same `data`, `metadata.toml` and
-//! locks as a fetched resource, written the same way: staged, on disk, and
-//! renamed into place, with every name reached under `sudo` as a journal's
-//! are. No resource id may start with `derived`, so the two never share a
-//! directory.
+//! Under `<root>/derived/<id>/`, with the same `data`, `metadata.toml` and locks as a
+//! fetched resource, written the same way. No resource id may start with `derived`.
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -79,12 +61,10 @@ impl Derived {
     /// The derived data `id`, made by `version` of its conversion from
     /// `sources`.
     ///
-    /// The id follows the rule for a resource's, and is its own namespace:
-    /// `advisories/ubuntu` names derived data and a resource alike without
-    /// the two meeting. The version is whatever tells one conversion from the
-    /// next, such as the dataset's format version: a copy made by another
-    /// version is never current, so changing the converter rebuilds every copy
-    /// the old one made.
+    /// The id follows the resource id rule in its own namespace, so `advisories/ubuntu`
+    /// can name both derived data and a resource. The version identifies the conversion,
+    /// such as the dataset's format version: a copy made by another version is never
+    /// current, so changing the converter rebuilds every copy.
     ///
     /// # Errors
     ///
@@ -149,10 +129,9 @@ pub struct DerivedMetadata {
 pub struct Source {
     /// The resource's id.
     pub id: String,
-    /// That copy's SHA-256, which is what identifies it.
+    /// That copy's SHA-256, which identifies it.
     pub sha256: [u8; 32],
-    /// When that copy was downloaded, for saying how old the data behind the
-    /// derived copy is.
+    /// When that copy was downloaded, which dates the data behind the derived copy.
     pub fetched_at: SystemTime,
 }
 
@@ -166,8 +145,8 @@ impl Source {
         }
     }
 
-    /// Whether this names the same copy as `other`. Times are left out: a
-    /// copy is its bytes, and a download of identical bytes keeps its time.
+    /// Whether this names the same copy as `other`, compared by bytes only; a download of
+    /// identical bytes keeps its old time.
     fn same_copy(&self, other: &Source) -> bool {
         self.id == other.id && self.sha256 == other.sha256
     }
@@ -251,9 +230,8 @@ impl DerivedCopy {
     /// Whether, when it was opened, it was made by the version asked for from
     /// the source copies stored then.
     ///
-    /// A copy that is not is still what the last conversion made, and a
-    /// reader may well use it rather than nothing, saying it is behind its
-    /// sources; [`Store::derive`] is what brings it up to date.
+    /// A stale copy is still what the last conversion made, and a reader may use it while
+    /// saying it is behind its sources; [`Store::derive`] brings it up to date.
     pub fn is_current(&self) -> bool {
         self.current
     }
@@ -285,22 +263,18 @@ impl Store {
     /// when the stored copy was not made by this version from the source
     /// copies stored now.
     ///
-    /// `convert` is handed the sources' stored copies, in the order
-    /// [`Derived::sources`] lists them, and returns the derived data. What it
-    /// returns is written beside the stored copy and renamed over it; a
-    /// conversion that fails, or a write that does, leaves the stored copy as
-    /// it was. Two derivations of one entry, from this process or another,
-    /// run one after the other.
+    /// `convert` is handed the sources' stored copies in the order [`Derived::sources`]
+    /// lists them and returns the derived data, which is written beside the stored copy and
+    /// renamed over it. A failed conversion or write leaves the stored copy as it was. Two
+    /// derivations of one entry, from this process or another, run one after the other.
     ///
-    /// A closure rather than finished bytes, so that what is recorded as the
-    /// sources is the copies the conversion actually read: they are opened
-    /// files, which stay those copies whatever an update does meanwhile. The
-    /// sources' own update locks are not taken, so a fetch never waits on a
-    /// conversion; a source replaced during one leaves the result recording
-    /// the copy it was made from, and the next derivation rebuilds it.
+    /// It takes a closure so that the source copies recorded are the ones the conversion
+    /// read: they are open files and stay those copies whatever an update does meanwhile.
+    /// A source replaced mid-conversion leaves the result recording the copy it was made
+    /// from, and the next derivation rebuilds it.
     ///
-    /// It blocks, on the lock and on the conversion, so an async caller runs
-    /// it with `spawn_blocking`.
+    /// Blocks on the lock and the conversion; an async caller runs it with
+    /// `spawn_blocking`.
     ///
     /// ```no_run
     /// use zond_engine::fetch::{Derived, Store, advisory::Feed};
@@ -394,8 +368,8 @@ impl Store {
             (path, file, metadata)
         };
 
-        // Asked after the derived copy's read lock is let go, so a reader
-        // never holds two entries' locks at once.
+        // After the derived copy's read lock is released, so a reader never holds two
+        // entries' locks at once.
         let mut sources = Vec::with_capacity(derived.sources.len());
         for resource in &derived.sources {
             match self.current_metadata(resource)? {
@@ -541,8 +515,8 @@ mod tests {
 
     use super::super::testing::put;
 
-    /// The conversion these tests run: the sources joined, upper-cased, and
-    /// counted so a test can tell whether it ran.
+    /// The sources joined and upper-cased, counting calls so a test can tell whether it
+    /// ran.
     fn upper(runs: &AtomicUsize) -> impl FnOnce(Vec<Stored>) -> Result<Vec<u8>, io::Error> + '_ {
         move |sources| {
             runs.fetch_add(1, Ordering::SeqCst);
@@ -554,8 +528,8 @@ mod tests {
         }
     }
 
-    /// What a conversion made is kept with the copies it was made from, and
-    /// read back as current while those copies are the ones stored.
+    /// A conversion's result records its source copies and reads back as current while
+    /// those copies are the ones stored.
     #[test]
     fn a_derived_copy_records_its_sources_and_reads_back_current() {
         let store = Scratch::new("records");
@@ -589,8 +563,7 @@ mod tests {
         );
     }
 
-    /// An update calls the derivation after every fetch, so one whose sources
-    /// have not changed must not pay for the conversion again.
+    /// A derivation whose sources have not changed does not convert again.
     #[test]
     fn a_derivation_whose_sources_have_not_changed_does_not_convert_again() {
         let store = Scratch::new("current");
@@ -605,9 +578,8 @@ mod tests {
         assert_eq!(runs.load(Ordering::SeqCst), 1, "the conversion ran twice");
     }
 
-    /// A source replaced since the conversion makes the derived copy stale to
-    /// a reader, and the next derivation rebuilds it; so does a new version
-    /// of the conversion, with the sources unchanged.
+    /// A replaced source or a new conversion version makes the derived copy stale, and the
+    /// next derivation rebuilds it.
     #[test]
     fn a_changed_source_or_version_makes_the_derived_copy_stale() {
         let store = Scratch::new("stale");
@@ -640,8 +612,7 @@ mod tests {
         assert_eq!(runs.load(Ordering::SeqCst), 3);
     }
 
-    /// A conversion that fails leaves the copy it would have replaced, and
-    /// nothing of its own behind.
+    /// A failed conversion leaves the existing copy and nothing of its own.
     #[test]
     fn a_failed_conversion_keeps_the_old_copy() {
         let store = Scratch::new("failed");
@@ -680,9 +651,8 @@ mod tests {
         assert!(store.open_derived(&derived).unwrap().is_none());
     }
 
-    /// Two derivations of one entry at once run one after the other, so the
-    /// second finds the first's result current rather than converting again
-    /// and racing it to the rename.
+    /// Two concurrent derivations of one entry run one after the other, and the second
+    /// finds the first's result current.
     #[test]
     fn two_derivations_of_one_entry_do_not_interleave() {
         let store = Scratch::new("concurrent");
