@@ -703,6 +703,49 @@ JSEncryptRSAKey.prototype.getPrivateKey = function () {
         }
     }
 
+    /// **A cookie being withdrawn has no token to guess.** A logout sets a
+    /// placeholder and an expiry already past; a live session with a short,
+    /// guessable value is still the finding.
+    #[test]
+    fn session_token_low_entropy_skips_a_withdrawn_cookie_and_grades_a_live_one() {
+        let set = |cookie: &str| {
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nDate: Thu, 01 Oct 2026 09:00:00 GMT\r\n\
+                 Set-Cookie: {cookie}\r\nContent-Length: 0\r\n\r\n"
+            );
+            shipped("session-token-low-entropy", response.as_bytes())
+        };
+
+        for withdrawn in [
+            // PHP's session_destroy, Django's logout, and a hand-written one.
+            "PHPSESSID=deleted; expires=Thu, 01-Jan-1970 00:00:01 GMT; Max-Age=0; path=/",
+            "sessionid=\"\"; expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; Path=/",
+            "sessionid=deleted; Path=/",
+            "sid=0; Path=/",
+            // An expiry before the response's own date, in this year.
+            "auth_token=x1; Expires=Wed, 30 Sep 2026 09:00:00 GMT; Path=/",
+            "sid=1001; Max-Age=-1",
+        ] {
+            assert!(
+                set(withdrawn).is_none(),
+                "a cookie being withdrawn was graded as a weak session: {withdrawn}"
+            );
+        }
+
+        for live in [
+            "sessionid=12345; Max-Age=3600; Path=/",
+            "sid=1001; Expires=Fri, 01 Oct 2027 09:00:00 GMT; Path=/",
+        ] {
+            let finding =
+                set(live).unwrap_or_else(|| panic!("a guessable session was missed: {live}"));
+            assert_eq!(finding.severity(), Severity::Medium);
+        }
+        assert!(
+            set("residency=EU; Path=/").is_none(),
+            "an ordinary cookie was read as a session identifier"
+        );
+    }
+
     #[test]
     fn a_journalled_run_of_a_shipped_detection_replays() {
         use crate::detect::compute::{CapTape, CapTapeRecord, DetectionRunRecord};
