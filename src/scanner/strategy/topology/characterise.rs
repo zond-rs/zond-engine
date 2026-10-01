@@ -9,31 +9,26 @@
 //! # Characterising the filter in front of a host
 //!
 //! A diagnostic pass, run after the ports are known and only against hosts that
-//! answered. It sends a few deliberately-shaped probes to a host's ports and
-//! reads what the filter in front of it let through, as
-//! [`Filtering`] conclusions:
+//! answered. It sends a few specially shaped probes to a host's ports and reads
+//! what the filter in front of it let through, as [`Filtering`] conclusions:
 //!
-//! - **An inline middlebox**, from a reply to a bad-checksum probe to an *open*
-//!   port. A conformant host drops the corrupt segment unread, so a reply was
-//!   sent by something inline that answered without validating. One probe.
-//! - **A stateful filter**, from an ACK probe reaching a *silent or blocked*
-//!   port, a reset, which is reachable, where the scan's plain SYN did not.
-//! - **A port-trusting ACL**, from a SYN out of a trusted source port reaching a
-//!   *silent or blocked* port where an ordinary SYN did not.
-//! - **A stateless filter**, from a *fragmented* SYN reaching a *silent or
-//!   blocked* port where a whole one did not. A filter that reassembled would
-//!   have judged the same segment either way; one that lets the fragments
-//!   through judged only the first, where the ports are and the flags are not
-//!   yet. The one probe a raw socket cannot place, so it goes over the
-//!   self-built Ethernet path, and a host that path cannot route to goes
-//!   without this conclusion rather than against it.
+//! - **An inline middlebox**: a reply to a bad-checksum probe to an *open* port.
+//!   A conformant host drops the corrupt segment unread, so something inline
+//!   answered without validating.
+//! - **A stateful filter**: an ACK probe draws a reset from a *silent or
+//!   blocked* port the scan's plain SYN did not reach.
+//! - **A port-trusting ACL**: a SYN from a trusted source port reaches a
+//!   *silent or blocked* port an ordinary SYN did not.
+//! - **A stateless filter**: a *fragmented* SYN reaches a *silent or blocked*
+//!   port a whole one did not, so the filter judged only the first fragment
+//!   (ports, no flags). A raw socket cannot place this probe, so it goes over
+//!   the self-built Ethernet path; a host that path cannot route to gets no
+//!   conclusion.
 //!
-//! The comparative three read the plain SYN's fate off the port state the scan
-//! already recorded, so only the alternative shape is sent here. Every one is a
-//! positive claim: silence proves nothing and records nothing. Correlation is by
-//! the nonce a reply echoes, so a segment we never provoked names no host, and
-//! a filter that answers without acknowledging the probe is missed rather than
-//! guessed at, the safe direction for a claim made only when it is proven.
+//! The comparative three read the plain SYN's fate off the recorded port state,
+//! so only the alternative shape is sent. Every conclusion is positive: silence
+//! records nothing. Replies are matched by the nonce they echo, so a filter that
+//! answers without acknowledging the probe is missed.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
@@ -53,9 +48,8 @@ use crate::transport::probe::{
 };
 use crate::{counted, info};
 
-/// How long to listen for replies once the last diagnostic probe has left. A
-/// filter answers as promptly as any host; this is the tail for a slow path, not
-/// a retry schedule, because the pass sends each probe once.
+/// How long to listen for replies once the last diagnostic probe has left: the
+/// tail for a slow path. Each probe is sent once.
 const REPLY_WINDOW: Duration = Duration::from_secs(2);
 
 /// The source port a port-trusting ACL is most likely to hold a door open for:
@@ -66,28 +60,22 @@ const TRUSTED_SOURCE_PORT: u16 = 53;
 ///
 /// Twenty-eight is an IP header (20) plus one eight-byte fragment, the smallest
 /// a conformant path carries. It puts the ports in the first fragment and the
-/// flags in a later one, so a filter that judges only the first sees a segment
-/// to nowhere in particular and lets the rest through, which is the thing this
-/// probe is built to catch.
+/// flags in a later one.
 const STATELESS_FRAGMENT_MTU: u16 = 28;
 
 /// One host and the ports the pass aims its diagnostic probes at.
 pub(crate) struct Subject {
     /// The host to characterise.
     pub(crate) host: IpAddr,
-    /// An open TCP port, for the bad-checksum middlebox probe. `None` skips it:
-    /// a probe whose whole point is that a listener answers has nowhere to land.
+    /// An open TCP port, for the bad-checksum middlebox probe. `None` skips it.
     pub(crate) open_port: Option<u16>,
-    /// A TCP port the scan's plain SYN did not reach, `NoReply` or `Blocked`,
-    /// for the comparative probes: each tests whether a differently-shaped
-    /// probe reaches where a plain SYN did not. `None` skips them: a port that
-    /// answered a SYN shows no filter doing anything.
+    /// A TCP port the scan's plain SYN did not reach (`NoReply` or `Blocked`),
+    /// for the comparative probes. `None` skips them.
     pub(crate) unreached_port: Option<u16>,
 }
 
-/// The probes still outstanding. Each nonce names the host its probe went to
-/// and the conclusion a reply echoing it would prove, so a reply that echoes
-/// none of them is somebody else's traffic and settles nothing.
+/// The probes still outstanding: each nonce names the host its probe went to
+/// and the conclusion a reply echoing it would prove.
 type Awaiting = HashMap<u32, (IpAddr, Filtering)>;
 
 /// Sends each host's diagnostic probes and records what the filter in front of
@@ -112,12 +100,9 @@ pub(crate) async fn characterise(ctx: &ScanContext, subjects: Vec<Subject>) {
         }
     };
 
-    // A self-built Ethernet sender for the one probe that needs one: the
-    // fragmented stateless probe, which a raw socket cannot place. `None` where
-    // this host has no Ethernet path at all, and even when it is `Some` a send
-    // is refused for any host that path cannot route to; either way the
-    // stateless conclusion simply goes undrawn there, while the raw probes below
-    // still reach every host.
+    // For the fragmented stateless probe, which a raw socket cannot place.
+    // `None` without an Ethernet path, and a send is refused for any host that
+    // path cannot route to; either way only the stateless conclusion is lost.
     let ethernet = EthernetSender::from_system(ProbeKind::TcpSyn.ip_protocols());
     let fragmenting = ethernet.as_ref().map(|sender| Fragmenting {
         sender,
@@ -139,9 +124,8 @@ pub(crate) async fn characterise(ctx: &ScanContext, subjects: Vec<Subject>) {
     .await;
 }
 
-/// The sender the fragmented stateless probe leaves on, which frames it
-/// itself because a raw socket cannot place it, and where that sender's
-/// address resolutions stand.
+/// The frame sender the fragmented stateless probe leaves on, and where its
+/// neighbour resolutions stand.
 struct Fragmenting<'a> {
     sender: &'a dyn ProbeSender,
     neighbors: NeighborWatch,
@@ -150,16 +134,14 @@ struct Fragmenting<'a> {
 /// Sends every subject its probes, once the neighbour each is framed to has
 /// been asked for, and folds in what the replies prove.
 ///
-/// Every neighbour is asked for at once and waited for before the first probe,
-/// on the transport's resolution and then on the fragmenting sender's, which
-/// runs its own: probes sent host by host through a sender that met each new
-/// neighbour inside the send would wait out a resolution per host in turn. A
-/// host whose neighbour never answered is sent nothing on that sender.
+/// Every neighbour is resolved at once before the first probe, on the
+/// transport and then on the fragmenting sender, which resolves its own, so
+/// the pass does not wait out one resolution per host in turn. A host whose
+/// neighbour never answered is sent nothing on that sender.
 ///
-/// The transport's probes are then admitted one by one, as every pass's are,
-/// since through the kernel nothing is asked before a probe is written: the
-/// first to a neighbour the kernel does not hold is the write that asks, and
-/// the ones behind it wait on the verdict. See [`send_when_admitted`].
+/// The transport's probes are then admitted one by one, since through the
+/// kernel nothing is asked before a probe is written. See
+/// [`send_when_admitted`].
 async fn run(
     ctx: &ScanContext,
     transport: &mut ProbeTransport,
@@ -220,8 +202,7 @@ async fn run(
         )
         .await;
     }
-    // From the last send, so no gap between probes can spend the time an
-    // answer is given.
+    // Timed from the last send, so pacing gaps do not eat the reply window.
     collect_replies(ctx, transport, &awaiting).await;
 }
 
@@ -252,7 +233,7 @@ impl Diagnostic {
             Filtering::PortTrustingAcl => {
                 probe_port_trusting_acl(sender, awaiting, source, host, port)
             }
-            // Sent on the fragmenting sender instead; see `send_fragmented`.
+            // Sent on the fragmenting sender; see `send_fragmented`.
             _ => false,
         }
     }
@@ -262,8 +243,7 @@ impl Diagnostic {
 /// are sent: the middlebox probe to an open port, and the two comparative
 /// probes to one a plain SYN did not reach.
 ///
-/// A host with no source address to send from is passed over: a probe that
-/// never left proves nothing about the filter in front of it.
+/// A host with no source address to send from is skipped.
 fn plan_diagnostics(
     subjects: &[Subject],
     resolver: &mut SourceResolver,
@@ -294,14 +274,11 @@ fn plan_diagnostics(
     planned
 }
 
-/// Sends the fragmented stateless-filter probe to every subject with a
-/// port a plain SYN did not reach, on the frame sender that can place it,
-/// except where that sender's neighbour did not answer, `unframed`, whose
-/// hosts go without this one conclusion.
+/// Sends the fragmented stateless-filter probe, on the frame sender, to every
+/// subject with a port a plain SYN did not reach, except the `unframed` hosts
+/// whose neighbour did not answer.
 ///
-/// Each is one probe at its host, sent as the gaps the scan keeps between
-/// probes allow. The neighbours were resolved ahead, so no neighbour is asked
-/// about here.
+/// Paced by the scan's probe gaps. Neighbours were resolved ahead.
 async fn send_fragmented(
     ctx: &ScanContext,
     subjects: &[Subject],
@@ -367,9 +344,8 @@ fn probe_inline_middlebox(
     )
 }
 
-/// Sends an ACK to a port the scan's plain SYN did not reach. A reset back is
-/// a port an ACK reaches and a SYN does not, which is a filter judging a
-/// segment by where it sits in a connection.
+/// Sends an ACK to a port the scan's plain SYN did not reach. A reset back
+/// means a filter judges a segment by its place in a connection.
 fn probe_stateful_filter(
     sender: &dyn ProbeSender,
     awaiting: &mut Awaiting,
@@ -391,9 +367,8 @@ fn probe_stateful_filter(
     )
 }
 
-/// Sends a SYN out of the trusted source port to a port an ordinary SYN did
-/// not reach. A reply is a rule admitting the segment on the port it claims to
-/// come from rather than on what it is.
+/// Sends a SYN from the trusted source port to a port an ordinary SYN did not
+/// reach. A reply means a rule admits segments by their source port.
 fn probe_port_trusting_acl(
     sender: &dyn ProbeSender,
     awaiting: &mut Awaiting,
@@ -421,13 +396,9 @@ fn probe_port_trusting_acl(
     )
 }
 
-/// Sends a whole SYN fragmented small enough that its flags fall past the first
-/// fragment. A reply is a filter that judged the first fragment alone and
-/// passed the rest.
-///
-/// The one probe a raw socket cannot place, so it goes over the self-built
-/// Ethernet path, and a host that path cannot route to goes without this one
-/// conclusion.
+/// Sends a SYN fragmented small enough that its flags fall past the first
+/// fragment. A reply means a filter judged the first fragment alone. Goes over
+/// the self-built Ethernet path.
 fn probe_stateless_filter(
     sender: &dyn ProbeSender,
     awaiting: &mut Awaiting,
@@ -476,9 +447,7 @@ fn send_diagnostic(
             return false;
         }
     };
-    // A refused send files nothing: the fragmented stateless probe reaches only
-    // a host the Ethernet path can route to, and one it cannot simply goes
-    // uncharacterised rather than credited a conclusion no probe proved.
+    // A refused send files nothing, so no conclusion is credited unprobed.
     let sent = sender.send(&packet, source, host, None, emission).is_ok();
     if sent {
         awaiting.insert(nonce, (host, conclusion));
@@ -506,8 +475,7 @@ async fn collect_replies(ctx: &ScanContext, transport: &mut ProbeTransport, awai
                     });
                 }
             }
-            // The stream closed, or the window elapsed. Either way there is
-            // nothing more to hear.
+            // The stream closed or the window elapsed.
             Ok(None) | Err(_) => return,
         }
     }
@@ -517,11 +485,9 @@ async fn collect_replies(ctx: &ScanContext, transport: &mut ProbeTransport, awai
 /// we sent.
 ///
 /// A nonce comes back in the acknowledgement field of a reply to a SYN and the
-/// sequence field of a reply to an ACK, so both readings are tried; a random
-/// 32-bit nonce collides with neither by accident. A reply matching nothing here
-/// is somebody else's traffic on a promiscuous capture and names no host, which
-/// is what keeps the pass from crediting a conclusion to a segment it never
-/// provoked.
+/// sequence field of a reply to an ACK, so both are tried; a random 32-bit
+/// nonce collides with neither by accident. A reply matching nothing is someone
+/// else's traffic and names no host.
 fn matched_conclusion(reply: &[u8], awaiting: &Awaiting) -> Option<(IpAddr, Filtering)> {
     let tcp = tcp::parse(reply).ok()?;
     let as_syn = tcp::echoed_nonce(TcpScanTechnique::Syn, &tcp, 0);
@@ -580,8 +546,7 @@ mod tests {
         ]);
 
         // A SYN reply is read through the acknowledgement field, an ACK reply
-        // through the sequence field, and each names the conclusion its own
-        // probe was sent to prove.
+        // through the sequence field.
         assert_eq!(
             matched_conclusion(&syn_ack_echoing(syn_nonce), &awaiting),
             Some((HOST, Filtering::PortTrustingAcl))
@@ -591,26 +556,18 @@ mod tests {
             Some((HOST, Filtering::StatefulFilter))
         );
 
-        // A reply echoing a nonce we never sent settles nothing: a mutant that
-        // credited it would report a filter in front of a host that answered
-        // nothing of ours.
+        // A nonce we never sent settles nothing.
         assert_eq!(
             matched_conclusion(&syn_ack_echoing(0x1234_5678), &awaiting),
             None
         );
-        // Bytes too short to be a TCP header name no host rather than panicking.
+        // Bytes too short for a TCP header name no host, without panicking.
         assert_eq!(matched_conclusion(&[0u8; 4], &awaiting), None);
     }
 
-    /// The fragmented probe, which goes out on a frame sender of its own
-    /// whatever the transport, is sent to no neighbour that sender is still
-    /// asking for: every one is asked for at once, before the first probe, and
-    /// one that never answers is sent none.
-    ///
-    /// A frame sender resolves a neighbour nobody asked for ahead inside the
-    /// send and holds the pass for the whole wait, which for a neighbour that
-    /// never answers is the resolution's whole budget, paid again for each one
-    /// in turn.
+    /// The fragmenting sender's neighbours are resolved at once before the first
+    /// probe, and a dead one is sent no fragmented probe. Resolved inside each
+    /// send, every dead neighbour would cost the whole budget in turn.
     #[tokio::test]
     async fn neighbours_behind_the_fragmenting_sender_are_asked_for_before_the_first_probe() {
         use crate::scanner::session::ScanSession;
@@ -674,10 +631,8 @@ mod tests {
         );
     }
 
-    /// Under the gaps a scan keeps between probes, every filter probe is still
-    /// sent, each host's no nearer its last than the per-host gap and none
-    /// nearer any other than the scan-wide one, and the pass takes the time
-    /// that costs rather than dropping what the gaps held.
+    /// Under the per-host and scan-wide gaps every filter probe is still sent,
+    /// and the pass takes the time that costs.
     #[tokio::test]
     async fn the_filter_probes_keep_the_gaps_between_probes() {
         use crate::scanner::session::ScanSession;
@@ -691,8 +646,8 @@ mod tests {
             .host_probe_interval(Some(HOST_GAP))
             .probe_interval(Some(SCAN_GAP))
             .build();
-        // Nothing to hear, and a stream that says so, so the listening window
-        // ends at once and the time taken is the sending's.
+        // A closed stream, so the listening window ends at once and the time
+        // taken is the sending's.
         let (_, rx) = tokio::sync::mpsc::channel(1);
         let sender = MockSender::default();
         let sent = sender.sent.clone();
@@ -727,15 +682,10 @@ mod tests {
         );
     }
 
-    /// Through the kernel, which asks for a neighbour only once a probe is
-    /// written to it, the first filter probe to a host whose neighbour it does
-    /// not hold is the one write that asks, and the probes behind it wait on
-    /// the verdict: a neighbour that never answers is sent nothing more, while
-    /// a live one, and one the kernel already held, is sent every probe.
-    ///
-    /// Written freely, every probe to a dead neighbour queues in the kernel
-    /// and is thrown away, where each was meant to prove something about the
-    /// filter in front of a host nothing reached.
+    /// Through the kernel, the first filter probe to an uncached neighbour is
+    /// the write that asks, and the probes behind it wait on the verdict: a
+    /// dead neighbour is sent nothing more; a live or cached one gets every
+    /// probe.
     #[tokio::test]
     async fn probes_behind_the_kernel_asking_for_a_neighbour_wait_on_its_verdict() {
         use crate::scanner::session::ScanSession;

@@ -8,102 +8,63 @@
 
 //! # The active operating-system series probe
 //!
-//! One host, asked the same question several times, so that the *policies*
-//! behind its counters become visible.
+//! Asks one host the same question several times, so that the *policies* behind
+//! its counters become visible.
 //!
-//! ## What one reply cannot say
+//! A single reply cannot show three of the features that separate one release of
+//! a stack from the next. An IP identifier of `0` fits a stack that always writes
+//! zero, a per-socket counter that happened to start there, and a randomiser. An
+//! initial sequence number is one number; the *generator* (fixed step, multiples,
+//! hashed per RFC 6528) shows only across several. A timestamp clock's rate needs
+//! two readings and the interval between them. These are the features a
+//! release-level rule ("Linux 6.x", not just "Linux") turns on.
 //!
-//! Everything the passive path knows comes from a single reply, and three of the
-//! features that separate one build of a stack from the next are not in a single
-//! reply at all. An IP identifier of `0` is consistent with a stack that always
-//! writes zero, one that runs a per-socket counter which happened to start
-//! there, and one that randomises. An initial sequence number is a number; a
-//! *generator*, fixed step, multiples, hashed per RFC 6528, is what several of
-//! them are. A timestamp clock's rate needs two readings and the interval
-//! between them.
+//! Every probe is [`crate::protocols::tcp::build_probe`] for
+//! [`TcpScanTechnique::Syn`], the segment an ordinary SYN scan sends; each target
+//! is just asked more than once. That is extra traffic at hosts the caller may
+//! only have meant to enumerate, so it sits behind
+//! [`OsDetection::Active`](crate::config::OsDetection).
 //!
-//! Those three are exactly the axis a release-level rule turns on, because they
-//! are decisions a stack's authors made and changed between releases, where the
-//! option layout and the initial hop counter have been stable for decades. A
-//! corpus that wants to say "Linux 6.x" rather than "Linux" is a corpus that
-//! needs this scanner's readings to say it with.
+//! ## Fresh source port per sweep
 //!
-//! ## The probe is the one the scanner already sends
+//! Two SYNs from one source port are the same 4-tuple: the first has put the
+//! peer in `SYN-RECEIVED`, and the second's answer describes that state, not the
+//! stack. An initial sequence number is chosen per connection, so each sample
+//! must be a new one. This also means no settle period is needed between
+//! samples.
 //!
-//! There is no new packet shape here: every probe is
-//! [`crate::protocols::tcp::build_probe`] for
-//! [`TcpScanTechnique::Syn`], the same segment an ordinary SYN scan sends. What
-//! differs is only that each target is asked more than once.
+//! ## Two ports per host
 //!
-//! That decides what this costs. A repeated SYN carries nothing malformed and is
-//! indistinguishable from a client retrying a connection; it is *extra* traffic
-//! aimed at hosts the caller may only have meant to enumerate, which is why it
-//! sits behind [`OsDetection::Active`](crate::config::OsDetection) rather than
-//! being on by default, but it is not traffic of an unusual shape.
-//!
-//! ## Every sample leaves from a fresh source port
-//!
-//! Two SYNs to one host and port from one source port are the same 4-tuple, so
-//! the second is not a second connection attempt: the first has already put the
-//! peer in `SYN-RECEIVED`, and what comes back describes that state rather than
-//! the stack holding it. A fresh source port per sweep makes each sample a
-//! genuine new connection, which is what the sequence-number question needs: an
-//! initial sequence number is chosen per connection, and sampling one connection
-//! repeatedly measures nothing.
-//!
-//! It is also why no settle period is needed between samples, and that matters,
-//! because the spacing here is a **measurement parameter** rather than hygiene.
-//!
-//! ## Two ports per host, and the reason is a measurement
-//!
-//! An earlier sampling run followed one port per host, preferring an open one,
-//! and reported "identifiers zero throughout" for every host that answered: no
-//! discrimination at all. The same run's *closed* ports, on the same hosts in
-//! the same sweep, separated three of them three ways: one counting, one
-//! scattered, one zero.
-//!
-//! The two answers live in different replies. A SYN+ACK is an atomic datagram
-//! with don't-fragment set, and RFC 6864 §4.1 releases its sender from putting
-//! anything meaningful in the identification field; a reset from the same host
-//! is where the identifier policy shows. Meanwhile a reset opens no connection
-//! and carries no options, so the sequence generator and the peer's clock are
-//! readable only from the SYN+ACK. Following one port answers half the question
-//! and reports the other half as "nothing here", which is not the same as having
-//! measured it.
+//! A SYN+ACK is an atomic datagram with don't-fragment set, and RFC 6864 §4.1
+//! frees its sender from putting anything meaningful in the identification
+//! field; a reset from the same host is where the identifier policy shows. A
+//! reset carries no options and opens no connection, so the sequence generator
+//! and the peer's clock are readable only from the SYN+ACK. Sampling with one
+//! port per host (preferring open) once reported identifiers zero for every
+//! host, while the same hosts' closed ports separated three of them three ways.
 //!
 //! So a host is followed on both where the port scan found both, and the two
-//! series are kept **apart**: a stack's reset path and its handshake path are
-//! different code that can disagree about the same field, so a series mixing
-//! them would compare a host against itself under two policies. See
+//! series are kept **apart**: a stack's reset path and handshake path are
+//! different code that can disagree about the same field. See
 //! [`series`](crate::fingerprint::os::SeriesClasses) and
 //! [`classify_series`](crate::fingerprint::os::classify_series).
 //!
-//! ## Why the spacing is short, and what bounds a run
+//! ## Spacing and batches
 //!
-//! A 16-bit identifier counter wraps every 65 536 packets. Sampled across a gap
-//! long enough for a busy host to wrap it, a counter and a random number are the
-//! same observation, and the classifier refuses to read one rather than guess:
-//! half a second between samples is the bound
-//! [`read_identifiers`](crate::fingerprint::os::read_identifiers) holds a
-//! series to.
+//! A 16-bit identifier counter wraps every 65 536 packets, so across a long
+//! enough gap a counter and a random number look the same.
+//! [`read_identifiers`](crate::fingerprint::os::read_identifiers) refuses a series
+//! spaced more than half a second apart. **One sweep has to finish inside the
+//! spacing**, or every host in it reads as unclear. Hosts are therefore followed
+//! in batches small enough for a sweep to fit, each its own timing window;
+//! `BATCH` carries the arithmetic.
 //!
-//! That is a constraint on this scanner, not just on its rules: **one sweep has
-//! to finish inside the spacing**, or every host in it is reported as unclear
-//! and the traffic bought nothing. Hosts are therefore followed in batches small
-//! enough for a sweep to fit, and each batch is its own timing window rather
-//! than a slice of one long one. `BATCH` is that size, and carries the
-//! arithmetic behind it.
+//! ## No retransmission
 //!
-//! ## Why there is no retransmission
-//!
-//! Every other scanner here resends what went unanswered. This one does not, and
-//! it is the same fact read again: a retry arrives at a moment nothing planned,
-//! and the interval between two readings *is* the measurement. A sample that
-//! goes missing costs one sample; a sample that arrives at an unintended time
-//! costs the reading. The classifiers already report a short series as
-//! [`TooFew`](crate::fingerprint::os::IdClass::TooFew) rather than straining to
-//! answer, which is the correct outcome for a host that answered four times out
-//! of six.
+//! The interval between two readings is the measurement, and a retry arrives at
+//! an unplanned moment. A missing sample costs one sample; a mistimed one costs
+//! the reading. A short series is reported as
+//! [`TooFew`](crate::fingerprint::os::IdClass::TooFew).
 //!
 //! [`TcpScanTechnique::Syn`]: crate::model::technique::TcpScanTechnique::Syn
 
@@ -137,12 +98,10 @@ use crate::{counted, info, success};
 /// How many times each host is asked, at [`OsDetection::Active`].
 ///
 /// Six is the smallest number that answers the three questions. An identifier
-/// policy needs at least three values before "constant" and "counting" are
-/// different observations; a clock rate wants a span rather than a pair, so that
-/// one late reply cannot set it; and a generator's step is a property of several
-/// differences rather than one. Past six the marginal sample buys precision on a
-/// rate rather than a class, and every one of them is a packet per port per
-/// host.
+/// policy needs at least three values to tell "constant" from "counting"; a clock
+/// rate wants a span, so one late reply cannot set it; and a generator's step is
+/// a property of several differences. Past six an extra sample buys precision on
+/// a rate, not a class, at a packet per port per host.
 ///
 /// [`OsDetection::Active`]: crate::config::OsDetection::Active
 pub const ACTIVE_SAMPLES: usize = 6;
@@ -150,10 +109,9 @@ pub const ACTIVE_SAMPLES: usize = 6;
 /// How many times each host is asked at
 /// [`OsDetection::Aggressive`](crate::config::OsDetection::Aggressive).
 ///
-/// Twice the traffic for a reading that refuses less often: the classifiers
-/// decline a series whose values do not settle, and the commonest reason a run
-/// declines is that too few of its samples came back. It buys no new *kind* of
-/// answer, which is why it is a level rather than the default.
+/// Twice the traffic for a reading that refuses less often: the commonest reason
+/// a classifier declines is that too few samples came back. It buys no new kind
+/// of answer.
 pub const AGGRESSIVE_SAMPLES: usize = 12;
 
 /// The source port after `port` in [`SOURCE_PORTS`], back to its start past
@@ -166,68 +124,59 @@ fn following(port: u16) -> u16 {
     }
 }
 
-/// The range a sweep's source port is taken from, clear of the well-known
-/// and most registered ports a reply could otherwise be mistaken for.
+/// The range a sweep's source port is taken from, clear of the well-known and
+/// most registered ports a reply could be mistaken for.
 const SOURCE_PORTS: std::ops::Range<u16> = 50_000..u16::MAX;
 
 /// The gap between one sweep and the next.
 ///
-/// A measurement parameter, not politeness. Too long and the identifier question
-/// stops having an answer, because a counter can wrap inside the gap and become
-/// indistinguishable from a random value; the classifier's own ceiling is 500 ms
-/// and this leaves room beneath it for a sweep that runs late.
+/// A measurement parameter: too long and a counter can wrap inside the gap and
+/// look random. The classifier's ceiling is 500 ms; this leaves room for a sweep
+/// that runs late.
 const SPACING: Duration = Duration::from_millis(100);
 
 /// The most hosts followed in one timing window.
 ///
-/// A sweep has to finish inside [`SPACING`], and a sweep is up to two probes per
-/// host. At [`SEND_TICK`] that is 256 probes in 64 ms of a 100 ms interval,
-/// leaving the remainder for replies to arrive and be stamped. Beyond this the
-/// window is missed and every reading in it degrades to "sampled too slowly", so
-/// a larger set is followed as several windows rather than one long one, which
-/// costs wall-clock time and keeps the readings.
+/// A sweep has to finish inside [`SPACING`], and is up to two probes per host. At
+/// [`SEND_TICK`] that is 256 probes in 64 ms of a 100 ms interval, leaving the
+/// rest for replies to arrive and be stamped. A larger set is followed as several
+/// windows, costing wall-clock time but keeping the readings.
 ///
-/// A host keeps its position in the sweep across every sample, so the interval
-/// *each host* is measured over is the spacing regardless of where in the batch
-/// it sits. What the batch size bounds is the spread between the first host and
-/// the last, not the consistency of any one series.
+/// A host keeps its position in the sweep across samples, so each host is
+/// measured over exactly the spacing; the batch size bounds only the spread
+/// between the first host and the last.
 const BATCH: usize = 128;
 
 /// How fast probes leave within one sweep.
 ///
-/// Fast, and it has to be: the whole sweep is one sample of a series, and time
-/// spent sending is time subtracted from the interval the classifiers read. This
-/// is not the rate a scan is paced at: a batch is at most 256 probes and then
-/// the scanner is silent for the rest of the spacing.
+/// Fast, because time spent sending is subtracted from the interval the
+/// classifiers read. A batch is at most 256 probes, then silence for the rest of
+/// the spacing.
 const SEND_TICK: Duration = Duration::from_micros(250);
 
 /// How long to keep reading after the last sweep of a batch.
 ///
-/// Generous: a slow answer carries the same counters as a fast one, and dropping
-/// it costs a sample the series cannot get back.
+/// Generous: a slow answer carries the same counters as a fast one.
 const LISTEN_AFTER_LAST: Duration = Duration::from_secs(2);
 
 /// How long to block on the receive channel before checking the clock again.
 ///
-/// Short, because this loop also paces the gap between samples, and a coarse
-/// tick would smear the interval a clock rate is computed over.
+/// Short, because this loop also paces the gap between samples and a coarse tick
+/// would smear the interval a clock rate is computed over.
 const RECV_TICK: Duration = Duration::from_millis(5);
 
 /// One host and the ports it will be followed on.
 ///
-/// Built from what the port scan already found, never from a guess: this
-/// scanner revisits ports whose state is settled and asks a different question
-/// about them, and probing a port nobody established anything about would be a
-/// port scan wearing another name.
+/// Built only from ports the port scan already settled.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeriesTarget {
     /// The host to follow, as the store keys it.
     ///
-    /// The key rather than a bare address, because this is both what the probe
-    /// is aimed at, through [`addr`](crate::model::ip::scoped::ScopedIp::addr),
-    /// and what the reading is written back under. A link-local host written
-    /// back under a bare address would fork its record into a second entry.
+    /// The probe is aimed at its
+    /// [`addr`](crate::model::ip::scoped::ScopedIp::addr), and the reading is
+    /// written back under the full key: a link-local host written back under a
+    /// bare address would fork its record into a second entry.
     pub address: ScopedIp,
     /// A port that answered with a SYN+ACK: where the sequence generator and
     /// the peer's clock are readable.
@@ -239,18 +188,14 @@ pub struct SeriesTarget {
 impl SeriesTarget {
     /// What a host offers to follow, or `None` if it offers nothing.
     ///
-    /// A host that answered no TCP probe at all is not a target here however
-    /// little is known about it: there is no port to ask again. That host is
-    /// the echo prober's, which is the only route left to it.
+    /// A host with no open or closed TCP port is left to the echo prober.
     ///
-    /// `address` is given rather than read off the host because a dual-stack
-    /// machine is one record under several addresses, and the one to probe is
-    /// the one the caller looked it up by: probing its primary instead would
-    /// silently ask a different question over a different protocol.
+    /// `address` is passed in because a dual-stack machine is one record under
+    /// several addresses, and the one to probe is the one the caller looked it
+    /// up by, not its primary.
     pub fn for_host(address: ScopedIp, host: &Host) -> Option<Self> {
         let tcp = || host.ports().filter(|port| port.protocol() == Protocol::Tcp);
-        // Lowest-numbered of each, so two runs against one host follow the same
-        // ports and their readings are comparable.
+        // Lowest-numbered of each, so two runs follow the same ports.
         let open = tcp()
             .find(|port| port.state() == PortState::Open)
             .map(|port| port.number());
@@ -282,8 +227,8 @@ struct Owed {
     closed: usize,
 }
 
-/// One probe, recorded when it reached the wire and not before. A probe the
-/// kernel refused is not a host that stayed silent.
+/// One probe, recorded once it reached the wire, so a probe the kernel refused
+/// is not counted as a silent host.
 #[derive(Debug, Clone, Copy)]
 struct Sent {
     address: IpAddr,
@@ -301,9 +246,8 @@ struct Collected {
 /// One series: the readings, and the first reply whole.
 #[derive(Debug, Default)]
 struct Track {
-    /// The first reply of this kind, entire. A rule's per-reply predicates,
-    /// the option layout, the window, the hop counter, read this, and the
-    /// series classes are matched beside it.
+    /// The first reply of this kind, entire: a rule's per-reply predicates
+    /// (option layout, window, hop counter) read this.
     first: Option<StackObservation>,
     /// The readings, in arrival order.
     samples: Vec<SeriesSample>,
@@ -326,16 +270,14 @@ impl Track {
 /// Asks each host the same question several times and reads the policies behind
 /// its counters.
 ///
-/// Targets come from the store rather than from the plan, because "this host
-/// answered a TCP probe" and "the passive sources could not name it" are both
-/// facts about the store and only become true once the port scan has finished.
+/// Targets come from the store, since which hosts answered TCP and which the
+/// passive sources could not name are known only after the port scan.
 pub struct OsSeriesScanner {
     ctx: ScanContext,
     transport: ProbeTransport,
     /// The IP-header state every sample carries. Only the hop limit is taken
-    /// from an evasion profile: a sample's answer is the measurement, so it must
-    /// not be reshaped, and its source port is varied per sample
-    /// (see [`send_one`](Self::send_one)) rather than pinned. See
+    /// from an evasion profile, since the sample's answer is the measurement; the
+    /// source port varies per sample (see [`send_one`](Self::send_one)). See
     /// [`EvasionProfile::hop_limited_emission`](crate::evasion::EvasionProfile::hop_limited_emission).
     emission: Emission,
     resolver: SourceResolver,
@@ -343,22 +285,19 @@ pub struct OsSeriesScanner {
     batches: VecDeque<Vec<SeriesTarget>>,
     /// How many times each host is asked.
     samples: usize,
-    /// Which probe each nonce belongs to, since a reply names its attempt
-    /// rather than its target.
+    /// Which probe each nonce belongs to; a reply names its attempt, not its
+    /// target.
     sent: HashMap<u32, Sent>,
-    /// Nonces already answered, so a duplicate is counted as the path repeating
-    /// itself rather than filed as a second reading.
+    /// Nonces already answered, so a duplicate is not filed as a second reading.
     answered: HashSet<u32>,
     /// What has been read, per host.
     collected: HashMap<IpAddr, Collected>,
     audit: ProbeAudit,
-    /// Why probes did not leave, split by whose fact it was: this host's send
-    /// path, or an address nothing reaches from here; and the hosts held
-    /// through the kernel's hold-down on their neighbour, sent no sample
-    /// while it lasts (see [`SendFaults::hold`]). A held host's samples are
-    /// dropped, as those held for a neighbour's resolution are: the spacing
-    /// of the series is the measurement, and a sample sent a hold-down late
-    /// would read as one taken then.
+    /// Why probes did not leave: this host's send path, or an address nothing
+    /// reaches from here; and the hosts held through the kernel's hold-down on
+    /// their neighbour (see [`SendFaults::hold`]). A held host's samples are
+    /// dropped, since a sample sent a hold-down late would read as one taken
+    /// then.
     faults: SendFaults,
     /// How far the current batch has read the resolution of each host's
     /// neighbour, which every sample is admitted through. See
@@ -374,21 +313,18 @@ pub struct OsSeriesScanner {
     named: usize,
     /// The source port the next sweep sends from.
     ///
-    /// Drawn once and then counted up, rather than drawn per sweep: a sample
-    /// has to be a new connection attempt, and a second sweep drawing the
-    /// port an earlier one used repeats that sample's 4-tuple, so its SYN
-    /// describes the `SYN-RECEIVED` state the first left rather than the
-    /// stack. Counting gives every sweep of a run a port of its own, since a
-    /// run takes at most [`AGGRESSIVE_SAMPLES`] sweeps per batch against a
-    /// range of fifteen thousand; drawing the start keeps runs apart from each
-    /// other and from a fixed guess.
+    /// Drawn once and then counted up. Random draws per sweep could repeat an
+    /// earlier sweep's 4-tuple, whose SYN would then describe the
+    /// `SYN-RECEIVED` state the first left. A run takes at most
+    /// [`AGGRESSIVE_SAMPLES`] sweeps per batch against a range of fifteen
+    /// thousand; the random start keeps runs apart from each other.
     next_source_port: u16,
 }
 
 impl OsSeriesScanner {
-    /// Opens the TCP transport this scanner needs and takes the hosts to
-    /// follow. Fails where the raw socket cannot be had, which is the caller's
-    /// signal that this level of detection is unavailable rather than silent.
+    /// Opens the TCP transport and takes the hosts to follow. Fails where the
+    /// raw socket cannot be had, telling the caller this level of detection is
+    /// unavailable.
     pub fn new(
         ctx: ScanContext,
         targets: Vec<SeriesTarget>,
@@ -409,8 +345,8 @@ impl OsSeriesScanner {
         ))
     }
 
-    /// Builds the scanner around a transport the caller opened, which is the
-    /// seam a test or a custom orchestration drives it through.
+    /// Builds the scanner around a transport the caller opened, for tests and
+    /// custom orchestration.
     pub fn with_transport(
         ctx: ScanContext,
         mut targets: Vec<SeriesTarget>,
@@ -418,8 +354,8 @@ impl OsSeriesScanner {
         transport: ProbeTransport,
         emission: Emission,
     ) -> Self {
-        // Sorted so a run is reproducible and two runs over one network follow
-        // the same hosts in the same windows.
+        // Sorted so two runs over one network follow the same hosts in the same
+        // windows.
         targets.sort_unstable_by(|a, b| a.address.cmp(&b.address));
         targets.dedup_by(|a, b| a.address == b.address);
 
@@ -434,9 +370,7 @@ impl OsSeriesScanner {
             emission,
             resolver: SourceResolver::from_system(),
             batches,
-            // Two is the floor below which none of the three questions has an
-            // answer, and a caller asking for one sample has asked for the
-            // passive path with extra packets.
+            // None of the three questions has an answer below two samples.
             samples: samples.max(2),
             sent: HashMap::new(),
             answered: HashSet::new(),
@@ -451,34 +385,28 @@ impl OsSeriesScanner {
         }
     }
 
-    /// Sends one probe per port of every host in `batch`, from a source port of
-    /// this sweep's own.
-    ///
-    /// Each sample is admitted through the batch's neighbour gates, as every
-    /// pass's probes are (see [`NeighborGates::admit`]), and one held while a
-    /// host's neighbour is asked for is dropped from the sweep rather than
-    /// sent late: the spacing is the measurement, and a sample at an
-    /// unplanned moment costs the reading. It is owed instead, and a sweep
-    /// after the last sends it at the spacing; see [`make_up`](Self::make_up).
-    /// Its tick passes all the same, so every other host keeps its place in
-    /// the sweep. A host whose neighbour is given up on is sent nothing more.
-    ///
-    /// Returns once the last probe is away. Replies are filed *while* it sends
-    /// rather than afterwards, which keeps the capture's queue drained. A
-    /// reading carries the moment the capture took delivery of it, so filing
-    /// late does not move its stamp, but a queue left to fill holds the capture
-    /// thread, and a reply waiting behind it in the kernel is stamped when the
-    /// thread gets to it rather than when it arrived. The filter admits more
-    /// than this scan's own replies, so how soon that happens is the network's
-    /// to decide.
-    /// The source port for one sweep, and the next one's after it, wrapping
-    /// within [`SOURCE_PORTS`].
+    /// The source port for one sweep, advancing the next one's within
+    /// [`SOURCE_PORTS`].
     fn take_source_port(&mut self) -> u16 {
         let port = self.next_source_port;
         self.next_source_port = following(port);
         port
     }
 
+    /// Sends one probe per port of every host in `batch`, from a source port of
+    /// this sweep's own.
+    ///
+    /// Each sample is admitted through the batch's neighbour gates (see
+    /// [`NeighborGates::admit`]). One held while a host's neighbour is asked for
+    /// is dropped from the sweep, since a late sample costs the reading, and
+    /// owed to a later sweep at the spacing; see [`make_up`](Self::make_up). Its
+    /// tick still passes, so every other host keeps its place. A host whose
+    /// neighbour is given up on is sent nothing more.
+    ///
+    /// Returns once the last probe is away. Replies are filed *while* it sends to
+    /// keep the capture's queue drained: a full queue holds the capture thread,
+    /// and a reply waiting behind it in the kernel is stamped when the thread
+    /// gets to it, not when it arrived.
     async fn sweep(&mut self, batch: &[SeriesTarget]) {
         let source_port = self.take_source_port();
         let mut tick = tokio::time::interval(SEND_TICK);
@@ -532,21 +460,16 @@ impl OsSeriesScanner {
         }
     }
 
-    /// Sends the samples the batch's sweeps held for a neighbour, one sweep
-    /// at a time at the spacing, so each port the neighbour cost a sample
-    /// ends its series with as many as every other.
+    /// Sends the samples the batch's sweeps held for a neighbour, one sweep at a
+    /// time at the spacing, so each port ends its series with as many samples as
+    /// every other.
     ///
-    /// Through the kernel, the first sample of a host whose neighbour it does
-    /// not hold is the write that asks for it, and a sample right behind it
-    /// in the same sweep is sent a tick later, before a neighbour on a real
-    /// link has answered: that one is held, and dropped from the sweep so the
-    /// spacing holds. The neighbour has answered long before the next sweep,
-    /// so what is missing is one sample at the start of that port's series,
-    /// and a sweep after the last makes it up at the same spacing. A
-    /// neighbour slower than a spacing costs a sample in each sweep until it
-    /// answers or is given up on, and is made up in as many; the make-up
-    /// sweeps are held to as many as the batch's own, so a table that never
-    /// settles cannot keep the batch running.
+    /// Through the kernel, the first sample to a host whose neighbour is not
+    /// cached is the write that asks for it, and the sample right behind it is
+    /// held and dropped. Typically one sample at the start of a series is
+    /// missing; a neighbour slower than the spacing costs one per sweep until it
+    /// answers. Make-up sweeps are capped at the batch's own count, so a table
+    /// that never settles cannot keep the batch running.
     async fn make_up(&mut self) -> Option<StopReason> {
         for _ in 0..self.samples {
             let due: Vec<SeriesTarget> = self
@@ -580,9 +503,8 @@ impl OsSeriesScanner {
     /// Files every host of the batch whose neighbour was still unresolved when
     /// its sampling ended: the kernel still asking, or given up.
     ///
-    /// The one write that started the asking is all that host was sent, and it
-    /// never left while the kernel asked, so the address is one nothing
-    /// reached rather than a host that stayed silent.
+    /// The write that started the asking never left, so the address is filed as
+    /// unreached, not as a silent host.
     fn conclude_pending_neighbors(&mut self) {
         for host in self.neighbors.waiting() {
             if self.unreached.contains(&host) {
@@ -611,14 +533,11 @@ impl OsSeriesScanner {
     /// `batch`, less the hosts nothing reaches, once the neighbour of every
     /// host in it has answered or been given up.
     ///
-    /// Asked for all at once and waited for before the first sample, rather
-    /// than met one at a time by the sends: a sweep that waited inside a send
-    /// for a neighbour to answer would overrun the spacing the samples are
-    /// read across, for every host in the batch. A host whose neighbour never
-    /// answered is filed unreached and sent nothing. Through the kernel, which
-    /// asks only once a probe is written, a host whose neighbour it does not
-    /// already hold is left to the sweeps' admission instead. See
-    /// [`resolve_ahead`].
+    /// Resolved all at once before the first sample, since a sweep waiting
+    /// inside a send would overrun the spacing for every host in the batch. A
+    /// host whose neighbour never answered is filed unreached. Through the
+    /// kernel, which asks only once a probe is written, an uncached neighbour is
+    /// left to the sweeps' admission. See [`resolve_ahead`].
     async fn resolve_neighbors(&mut self, batch: Vec<SeriesTarget>) -> Vec<SeriesTarget> {
         let (gates, unreached) = resolve_ahead(
             &self.ctx,
@@ -641,10 +560,7 @@ impl OsSeriesScanner {
     /// Puts one probe on the wire and records the nonce it went out under.
     fn send_one(&mut self, source: IpAddr, address: IpAddr, source_port: u16, port: u16) {
         let nonce: u32 = rand::random();
-        // The engine's own probe, not a reproduction of it. If the shipped SYN
-        // changes, these readings change with it rather than quietly describing
-        // a packet the scanner no longer sends, and the rules, which are
-        // authored against that same segment, stay applicable.
+        // The engine's own probe, so readings and rules track the shipped SYN.
         let segment = match tcp::build_probe(
             TcpScanTechnique::Syn,
             source,
@@ -670,22 +586,17 @@ impl OsSeriesScanner {
             .send(&segment, source, address, None, self.emission)
         {
             Ok(()) => {
-                // Recorded after a successful send, which is the point of
-                // recording it there: a probe the kernel refused is not a host
-                // that stayed silent.
                 self.sent.insert(nonce, Sent { address });
                 self.audit.record_send(true);
             }
             Err(e) => {
-                // The kernel's first hold-down on the host's neighbour is no
-                // fact about the address, and nothing was sent: the host's
-                // samples are dropped while it lasts. See `faults`.
+                // The kernel's hold-down on the neighbour: nothing was sent, and
+                // the host's samples are dropped while it lasts. See `faults`.
                 if self.faults.hold(address, &e).is_some() {
                     return;
                 }
-                // An address nothing reaches is the address's fact and is
-                // reported against it; only this host's own refusals are the
-                // pass failing. Each said once. See `SendFaults`.
+                // Unroutable is the address's fact; only this host's own
+                // refusals are the pass failing. Each said once. See `SendFaults`.
                 if e.is_unroutable() {
                     if self.faults.unroutable.is_none() {
                         info!(verbosity = 2, "{address} unreachable ({e:#})");
@@ -712,11 +623,9 @@ impl OsSeriesScanner {
 
     /// Reads replies until `until`.
     ///
-    /// `until_quiet` ends the wait early once every probe sent has been
-    /// answered. Correct only *after* the last sweep of a batch: between two
-    /// samples the wait is the measurement, and cutting it short because the
-    /// replies arrived promptly would start the next sweep early and shrink the
-    /// very interval the classifiers read.
+    /// `until_quiet` ends the wait early once every probe has been answered.
+    /// Use it only *after* the last sweep of a batch: between samples the wait
+    /// is the interval the classifiers read.
     async fn drain_until(&mut self, until: Instant, until_quiet: bool) {
         while Instant::now() < until {
             if self.ctx.handle.should_stop() {
@@ -743,41 +652,35 @@ impl OsSeriesScanner {
             self.audit.record_off_target();
             return;
         }
-        // When the capture took delivery, not when this got round to filing it.
-        // Every interval the classifiers read is a difference of two of these,
-        // and replies leave the capture's queue in bursts: stamped here, two
-        // that arrived a sweep apart would read as having arrived together.
+        // When the capture took delivery: replies leave the capture's queue in
+        // bursts, and stamping here would collapse intervals.
         let at = reply.received_at;
 
         let Ok(segment) = tcp::parse(&reply.bytes) else {
             self.audit.record_off_target();
             return;
         };
-        // A reply is one of ours only if it echoes a nonce we sent. Without the
-        // check every segment the filter admits is read as an answer, and on a
-        // busy host that is a table of other people's connections.
-        // The OS-detection series does not carry an evasion profile, so its
-        // probes are never padded and the reset acknowledges the control span
-        // alone.
+        // Ours only if it echoes a nonce we sent; the filter admits other
+        // connections too. Series probes are never padded, so a reset
+        // acknowledges the control span alone.
         let nonce = tcp::echoed_nonce(TcpScanTechnique::Syn, &segment, 0);
         let Some(&Sent { address }) = self.sent.get(&nonce) else {
             self.audit.record_off_target();
             return;
         };
         if !self.answered.insert(nonce) {
-            // A duplicate: the path repeating itself, not a second reading.
+            // A duplicate, not a second reading.
             self.audit.record_reply_without_rtt();
             return;
         }
 
-        // `None` means no IP header was ever kept, a synthetic receive stream,
-        // rather than that nothing notable was in one.
+        // `None` means no IP header was kept (a synthetic receive stream).
         let Some(observation) = reply.observation else {
             return;
         };
         if observation.is_fragment() {
-            // A fragment's header describes the fragment. Its identifier
-            // belongs to a datagram the path split, not to a counter policy.
+            // A fragment's identifier belongs to a datagram the path split, not
+            // to a counter policy.
             return;
         }
         let Some(observed) = StackObservation::from_tcp(observation, &reply.bytes) else {
@@ -795,10 +698,8 @@ impl OsSeriesScanner {
             tsval: observed.timestamps.map(|stamps| stamps.value),
         };
 
-        // Filed by what the reply *is* rather than by which port drew it. A
-        // stack's handshake path and its reset path disagree about these fields,
-        // and a port whose state changed since the scan classified it would
-        // otherwise put a reset into the series read as handshakes.
+        // Filed by what the reply *is*, not which port drew it, so a port whose
+        // state changed since the scan cannot put a reset among the handshakes.
         let host = self.collected.entry(address).or_default();
         let track = if sample.is_syn_ack() {
             &mut host.open
@@ -811,10 +712,9 @@ impl OsSeriesScanner {
     /// Reads what a batch's replies added up to, and records it against each
     /// host.
     ///
-    /// One verdict per host however many replies it gave: they all came from one
-    /// stack, so passing them to [`os::identify`] separately would put a machine
-    /// agreeing with itself through the same arithmetic as two independent
-    /// sources agreeing with each other.
+    /// One verdict per host however many replies it gave: passing them to
+    /// [`os::identify`] separately would count a machine agreeing with itself as
+    /// independent sources agreeing.
     fn conclude(&mut self, batch: &[SeriesTarget]) {
         for target in batch {
             let Some(collected) = self.collected.remove(&target.address.addr()) else {
@@ -828,14 +728,8 @@ impl OsSeriesScanner {
             if readings.is_empty() {
                 continue;
             }
-            // Once per host and not once per reply: this run's targets are
-            // hosts, so the ratio the audit reports has to be hosts too. How
-            // many probes it took is `sends_attempted`, which is counted
-            // separately and is the other half of the picture.
-            //
-            // `None` because there are no retries here: every probe is a first
-            // attempt, and claiming otherwise would put readings in a bucket
-            // that exists to say whether retransmission earned its traffic.
+            // Once per host, since the audit's ratio is over hosts; probes are
+            // `sends_attempted`. `None`: there are no retries here.
             self.audit.record_host_found(None);
 
             let Some(verdict) = os::classify_series(os::RuleDb::global(), &readings) else {
@@ -853,8 +747,7 @@ impl OsSeriesScanner {
             });
         }
 
-        // Anything left belongs to a host that answered from an address nobody
-        // asked, and nothing here can attribute it.
+        // Anything left answered from an address nobody asked.
         self.collected.clear();
         self.sent.clear();
         self.answered.clear();
@@ -865,30 +758,16 @@ impl OsSeriesScanner {
     /// The scan-wide gap between probes this pass cannot honour, or `None`
     /// when it can run.
     ///
-    /// The series is a measurement, and its spacing is what it measures: a
-    /// host is sampled across a [`SPACING`] window, and within one sweep the
-    /// probes leave as close as [`SEND_TICK`] apart. A gap the scan keeps
-    /// between probes that is no wider than that cadence is one the pass
-    /// already satisfies by sending as it always does, so it runs unchanged
-    /// and claims no slot: waiting on the gate between two samples is the one
-    /// thing it must not do, since a sample taken late reads as one taken at a
-    /// time nothing planned, and the interval a clock rate is computed over is
-    /// the reading itself.
-    ///
-    /// A gap wider than the cadence cannot be honoured without spreading the
-    /// samples of one series across it, which is not a slower version of the
-    /// measurement but a different, unreadable one. The pass steps aside there
-    /// rather than send at full speed and break the scan-wide bound the caller
-    /// set. Only the scan-wide gap is weighed: the per-host gap exempts this
-    /// pass by design, since repeatedly probing one host is the whole of what
-    /// it does. See
+    /// Within one sweep probes leave [`SEND_TICK`] apart. A scan-wide gap no
+    /// wider than that is already satisfied, so the pass runs unchanged and
+    /// claims no probe slot: waiting on the gate between samples would skew the
+    /// intervals it measures. A wider gap would spread one series across it
+    /// and make it unreadable, so the pass is skipped. The per-host gap does
+    /// not apply to this pass. See
     /// [`ZondConfig::probe_interval`](crate::config::ZondConfig::probe_interval).
     ///
-    /// Stepping aside is not a failure, and is not recorded as one. The gap is
-    /// a setting the caller chose, the report records it, and the operating
-    /// system is still identified by every other means the level allows; what
-    /// is withheld is one technique the chosen pace rules out, which is the
-    /// shape of a pass a setting skips rather than of ground left uncovered.
+    /// Skipping is not recorded as a failure: the caller chose the pace, and
+    /// the other identification sources still run.
     pub(crate) fn gap_it_cannot_keep(ctx: &ScanContext) -> Option<Duration> {
         ctx.scan_probe_interval().filter(|gap| *gap > SEND_TICK)
     }
@@ -896,19 +775,11 @@ impl OsSeriesScanner {
     /// Asks each target the same question several times and reads the
     /// policies behind the answers.
     ///
-    /// Not `discover_hosts`, for the reason
-    /// [`echo`](super::echo::OsEchoScanner::probe) gives: every host here has
-    /// already been found, and this revisits a port whose state is already
-    /// settled.
-    ///
     /// `Ok` once the run reached its end, including an end forced by
     /// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort), and
     /// `Err` only where the probe itself could not do its job.
     pub async fn probe(&mut self) -> Result<(), StrategyError> {
-        // A scan-wide gap this pass's own cadence cannot fit steps the pass
-        // aside rather than either slowing down or ignoring the bound; see
-        // `honours_scan_gap`. Nothing is sent and every target keeps the
-        // answer the passive sources gave it.
+        // See `gap_it_cannot_keep`. Every target keeps the passive answer.
         if Self::gap_it_cannot_keep(&self.ctx).is_some() {
             return Ok(());
         }
@@ -927,9 +798,8 @@ impl OsSeriesScanner {
             for _ in 0..self.samples {
                 let began = Instant::now();
                 self.sweep(&batch).await;
-                // Paced from the moment the sweep *began*, so a sweep that ran
-                // long eats into its own quiet time rather than pushing the next
-                // sample out and widening every interval behind it.
+                // Paced from when the sweep *began*, so a sweep that ran long
+                // eats into its own quiet time and the next starts on schedule.
                 self.drain_until(began + SPACING, false).await;
                 if let Some(cause) = self.ctx.handle.stopped() {
                     reason = cause.into();
@@ -1010,9 +880,8 @@ mod tests {
     const OPEN: u16 = 22;
     const CLOSED: u16 = 81;
 
-    /// The reply a stack sends, assembled from RFC 793's offsets rather than
-    /// through this crate's own builder, so a shared misreading of what a TCP
-    /// header is cannot pass for agreement between the two.
+    /// The reply a stack sends, assembled from RFC 793's offsets by hand so a
+    /// misreading shared with this crate's builder cannot pass as agreement.
     struct Reply {
         source_port: u16,
         destination_port: u16,
@@ -1076,16 +945,14 @@ mod tests {
     /// A host that accepts on [`OPEN`] and refuses on [`CLOSED`], answering the
     /// way a current Linux kernel does.
     ///
-    /// The two answers differ in more than their flags, and that difference is
-    /// the whole point of following two ports: the handshake answer writes
-    /// identifier zero: RFC 6864 §4.1 permits it on a datagram that cannot be
-    /// fragmented, while the refusal runs a counter the whole host shares.
+    /// The handshake answer writes identifier zero (RFC 6864 §4.1 permits it on
+    /// a datagram that cannot be fragmented); the refusal runs a counter the
+    /// whole host shares.
     struct Linux {
         replies: mpsc::Sender<CapturedSegment>,
         /// The host's shared identifier counter, read by its reset path.
         identifier: Arc<AtomicU16>,
-        /// When this host booted, so its timestamp clock can tick at a rate
-        /// rather than jump.
+        /// When this host booted, so its timestamp clock ticks at a rate.
         booted: Instant,
         /// Whether the refusing port answers at all, so a test can have a host
         /// that offers only a handshake.
@@ -1106,9 +973,9 @@ mod tests {
             let nonce = u32::from_be_bytes([segment[4], segment[5], segment[6], segment[7]]);
 
             let reply = if destination_port == OPEN {
-                // A 1000 Hz clock, which is what a modern Linux build runs, and
-                // an initial sequence number with no common step: RFC 6528's
-                // hashed generator.
+                // A 1000 Hz clock, as modern Linux runs, and an initial
+                // sequence number with no common step (RFC 6528's hashed
+                // generator).
                 let ticks = self.booted.elapsed().as_millis() as u32;
                 Reply {
                     source_port: destination_port,
@@ -1179,9 +1046,8 @@ mod tests {
         }
     }
 
-    /// A host offers whichever of the two answers the port scan already drew
-    /// from it, and the *lowest* port of each kind, so two runs against one
-    /// machine follow the same ports and their readings can be compared.
+    /// A host offers the *lowest* port of each kind the port scan found, so two
+    /// runs follow the same ports.
     #[test]
     fn a_host_offers_the_lowest_port_of_each_kind_it_answered_on() {
         use crate::model::port::Port;
@@ -1198,10 +1064,7 @@ mod tests {
         assert_eq!(target.closed, Some(81));
     }
 
-    /// A host that answered no TCP probe offers nothing, whatever else is known
-    /// about it. There is no port to ask again, and probing one nothing
-    /// established anything about would be a port scan wearing another name,
-    /// that host belongs to the echo prober.
+    /// A host with no TCP answer offers nothing; it belongs to the echo prober.
     #[test]
     fn a_host_with_no_tcp_answer_is_not_a_target() {
         use crate::model::port::Port;
@@ -1209,8 +1072,7 @@ mod tests {
         let mut nothing = Host::new(TARGET);
         assert!(SeriesTarget::for_host(ScopedIp::unscoped(TARGET), &nothing).is_none());
 
-        // A `NoReply` port is silence with a name on it, not an answer: nothing
-        // came back, so there is no reply to ask for a second one of.
+        // A `NoReply` port gave no reply to repeat.
         nothing.add_port(Port::new(80, Protocol::Tcp, PortState::NoReply));
         assert!(SeriesTarget::for_host(ScopedIp::unscoped(TARGET), &nothing).is_none());
 
@@ -1220,9 +1082,8 @@ mod tests {
         assert!(SeriesTarget::for_host(ScopedIp::unscoped(TARGET), &udp).is_none());
     }
 
-    /// The whole path this scanner exists for, end to end: probes go out, the
-    /// replies are collected into series, the series are classified, and the
-    /// shipped corpus names the host from them.
+    /// End to end: probes go out, replies form series, the series are
+    /// classified, and the shipped corpus names the host.
     #[tokio::test(flavor = "current_thread")]
     async fn a_followed_host_is_named_from_what_its_replies_added_up_to() {
         let (session, ctx) = ScanSession::new();
@@ -1235,9 +1096,8 @@ mod tests {
         assert_eq!(found.family(), Some("Linux"));
     }
 
-    /// The reading a rule is offered says what the *series* found, not only what
-    /// one packet held, which is the entire difference between this scanner and
-    /// the passive path, and has to survive into what a report shows a person.
+    /// The finding's evidence carries what the *series* found, not only one
+    /// packet's fields.
     #[tokio::test(flavor = "current_thread")]
     async fn the_finding_carries_the_series_readings_and_not_just_one_reply() {
         let (session, ctx) = ScanSession::new();
@@ -1261,11 +1121,8 @@ mod tests {
         );
     }
 
-    /// A stack's reset path and its handshake path are different code that
-    /// disagrees about the same field: this host writes identifier zero on the
-    /// one and runs a counter on the other. The two series are kept apart, so
-    /// each is read under its own policy rather than the pair being averaged
-    /// into a reading neither supports.
+    /// This host writes identifier zero on the handshake path and runs a counter
+    /// on the reset path; each series is read under its own policy.
     #[tokio::test(flavor = "current_thread")]
     async fn the_two_reply_kinds_are_read_as_two_series() {
         let (session, ctx) = ScanSession::new();
@@ -1289,8 +1146,7 @@ mod tests {
         );
     }
 
-    /// A host offering only a handshake is read from the one series it gave,
-    /// rather than being declined for want of the other.
+    /// A host offering only a handshake is read from the one series it gave.
     #[tokio::test(flavor = "current_thread")]
     async fn a_host_with_only_an_open_port_is_still_read() {
         let (session, ctx) = ScanSession::new();
@@ -1307,10 +1163,8 @@ mod tests {
         assert_eq!(host.os().and_then(|os| os.family()), Some("Linux"));
     }
 
-    /// Every sample has to be a genuine new connection attempt, or the sequence
-    /// question measures nothing: two SYNs to one host and port from one source
-    /// port are the same 4-tuple, and the second describes the `SYN-RECEIVED`
-    /// state the first created rather than the stack holding it.
+    /// Every sample has to be a new connection attempt: a repeated 4-tuple
+    /// describes the `SYN-RECEIVED` state the first SYN created.
     #[tokio::test(flavor = "current_thread")]
     async fn each_sample_leaves_from_a_source_port_of_its_own() {
         use crate::transport::probe::MockSender;
@@ -1351,13 +1205,8 @@ mod tests {
         );
     }
 
-    /// A scan-wide gap slower than the series' own cadence steps the pass
-    /// aside: nothing is sent, and the reason is recorded so the reader knows
-    /// the measurement was declined rather than found nothing.
-    ///
-    /// Sending at that gap would spread one host's samples across it and read
-    /// as a counter that never advances, and sending at full speed would break
-    /// the bound the caller set; the pass does neither.
+    /// A scan-wide gap slower than the series' cadence skips the pass: nothing
+    /// is sent and nothing is recorded as failed.
     #[tokio::test(flavor = "current_thread")]
     async fn a_scan_wide_gap_slower_than_the_cadence_steps_the_series_aside() {
         use crate::transport::probe::MockSender;
@@ -1390,7 +1239,7 @@ mod tests {
     }
 
     /// A scan-wide gap the series' cadence already satisfies leaves the pass
-    /// running as it always does, every sample sent.
+    /// running, every sample sent.
     #[tokio::test(flavor = "current_thread")]
     async fn a_scan_wide_gap_within_the_cadence_leaves_the_series_running() {
         use crate::transport::probe::MockSender;
@@ -1419,9 +1268,9 @@ mod tests {
         );
     }
 
-    /// Every sweep of a run takes a source port no other sweep of it took,
-    /// wherever in the range the run starts: drawn per sweep instead, two of
-    /// a dozen samples share a 4-tuple about once in two hundred and fifty runs.
+    /// Every sweep of a run takes its own source port, wherever in the range the
+    /// run starts. (Drawn per sweep, two of a dozen samples would share a
+    /// 4-tuple about once in 250 runs.)
     #[test]
     fn the_sweeps_of_a_run_never_share_a_source_port() {
         for start in [
@@ -1442,15 +1291,11 @@ mod tests {
         }
     }
 
-    /// A reply is timed by the capture that took it, not by when this scanner
-    /// got round to filing it.
+    /// A reply is timed by the capture that took it, not by when it was filed.
     ///
-    /// Replies come off the capture's queue in bursts, so the moment one is
-    /// filed says how the queue was drained rather than when the reply arrived,
-    /// and every interval the classifiers read is a difference of two stamps.
-    /// Here a counter the host's other traffic advances by fifty a tenth of a
-    /// second apart, three refusals filed in one burst: stamped as filed, it
-    /// jumps fifty at a time in no time at all, which no counter does.
+    /// Here a counter advances by fifty a tenth of a second apart, and three
+    /// refusals are filed in one burst: stamped as filed, it would jump fifty at
+    /// a time in no time at all.
     #[test]
     fn a_reply_is_timed_by_the_capture_that_took_it() {
         use crate::fingerprint::os::{IdClass, read_identifiers};
@@ -1492,12 +1337,8 @@ mod tests {
         assert_eq!(reading.class, IdClass::Counting, "{}", reading.line);
     }
 
-    /// A host the sender cannot reach is reported unreached, and only a
-    /// refusal of this host's own is the pass failing.
-    ///
-    /// A dead neighbour's every probe is refused with the same answer, and
-    /// read as a failure it would report the pass broken for a fact about the
-    /// address, the way the port scanners and the sweeps do not.
+    /// A host the sender cannot reach is reported unreached; only a refusal of
+    /// this host's own fails the pass.
     #[tokio::test(flavor = "current_thread")]
     async fn an_address_that_cannot_be_reached_is_not_a_failed_pass() {
         struct Refusing(fn() -> SendError);
@@ -1543,13 +1384,9 @@ mod tests {
         }
     }
 
-    /// A sample the kernel refused for a hold-down on the host's neighbour,
-    /// `EHOSTDOWN` on macOS, is dropped and the host sampled again once the
-    /// hold-down is over, not filed unreached on it; refused for a second
-    /// hold-down after waiting one out, the host is.
-    ///
-    /// Filed on the first, a host whose neighbour slept through one
-    /// resolution, whoever asked for it, lost every sample of its series.
+    /// A sample refused for a hold-down on the host's neighbour (`EHOSTDOWN` on
+    /// macOS) is dropped and the host sampled again once it is over. Refused for
+    /// a second hold-down after waiting one out, the host is filed unreached.
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn a_sample_refused_for_a_hold_down_is_not_the_host_s_verdict() {
@@ -1619,9 +1456,8 @@ mod tests {
         }
     }
 
-    /// Somebody else's segment carries a nonce this scan never sent. It must
-    /// resolve nothing, not name the host, not record it at all, because the
-    /// filter this transport uses admits far more than this scan's own replies.
+    /// A segment carrying a nonce this scan never sent must not name or record
+    /// the host; the filter admits far more than this scan's replies.
     #[tokio::test(flavor = "current_thread")]
     async fn a_segment_this_scan_never_drew_is_not_a_reading() {
         struct Silent;
@@ -1650,8 +1486,7 @@ mod tests {
             Emission::routed(),
         );
 
-        // A perfectly Linux-shaped handshake answer, acknowledging a sequence
-        // number nothing here ever sent.
+        // A Linux-shaped handshake answer acknowledging a nonce never sent.
         let theirs = Reply {
             source_port: OPEN,
             destination_port: 40_000,
@@ -1674,14 +1509,9 @@ mod tests {
         );
     }
 
-    /// A batch through a frame sender waits for every new neighbour in it
-    /// before its first sample, all of them asked for at once: the ones that
-    /// never answer are reported unreached with nothing sent them, and a live
-    /// one among them has every sample leave.
-    ///
-    /// A frame sender resolves a neighbour nobody asked for ahead inside the
-    /// send, and a sweep held there for the resolution's budget overruns the
-    /// spacing the samples are read across, for every host in the batch.
+    /// A batch through a frame sender resolves every new neighbour at once
+    /// before its first sample: dead ones are reported unreached with nothing
+    /// sent, and a live one has every sample leave.
     #[tokio::test]
     async fn neighbours_behind_a_frame_sender_are_asked_for_before_the_first_sample() {
         use crate::system::interface::{Link, LinkAddress};
@@ -1742,16 +1572,11 @@ mod tests {
             "and nothing failed here"
         );
     }
-    /// Through the kernel, which asks for a neighbour only once a probe is
-    /// written to it, the first sample to a host whose neighbour it does not
-    /// hold is the one write that asks, and every sample behind it waits on
-    /// the verdict: a neighbour that never answers is sent nothing more and
-    /// reported unreached, while a live one, and one the kernel already held,
-    /// has every sample leave.
-    ///
-    /// Written freely, every sample to a dead neighbour queues in the kernel,
-    /// charged to the socket, and is thrown away, and the host reads as one
-    /// that stayed silent rather than one nothing reached.
+
+    /// Through the kernel, the first sample to an uncached neighbour is the
+    /// write that asks for it, and the samples behind it wait on the verdict:
+    /// a dead neighbour is sent nothing more and reported unreached; a live or
+    /// already cached one has every sample leave.
     #[tokio::test]
     async fn samples_behind_the_kernel_asking_for_a_neighbour_wait_on_its_verdict() {
         use crate::system::interface::{Link, LinkAddress};
@@ -1814,13 +1639,9 @@ mod tests {
         );
     }
 
-    /// A neighbour the kernel takes longer to resolve than a sweep's tick,
-    /// as one on a real link does, costs the sample right behind the write
-    /// that asked for it, and a sweep after the last makes that sample up:
-    /// both ports end with every sample the run takes.
-    ///
-    /// Left unmade, the port whose first sample was held has one fewer in its
-    /// series than it was sent for, on every host the kernel had to ask for.
+    /// A neighbour slower to resolve than a sweep's tick costs the sample behind
+    /// the asking write, and a make-up sweep sends it: both ports end with every
+    /// sample.
     #[tokio::test]
     async fn a_sample_held_behind_the_asking_write_is_made_up_after_the_last_sweep() {
         use crate::system::interface::{Link, LinkAddress};

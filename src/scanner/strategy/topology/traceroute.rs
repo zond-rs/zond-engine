@@ -9,64 +9,36 @@
 //! # Measuring the path to a host
 //!
 //! Which routers sit between this machine and a target, and how far away each
-//! one is. The one thing this engine measures that is about neither end of a
-//! scan but the space between them.
+//! one is.
 //!
-//! ## How a router is made to identify itself
+//! A router discarding a packet whose hop limit it decremented to zero must
+//! report that to the sender (RFC 792, RFC 4443 §3.3). A probe built to run out
+//! of hops at a chosen distance therefore makes the router at that distance
+//! announce itself from its own address. Silence at one distance says nothing
+//! about the next, so a [`Hop`] with no address is recorded.
 //!
-//! A router forwarding a packet is under no obligation to say it did. A router
-//! *discarding* one is: when it decrements a hop limit to zero it must report
-//! that back to the sender (RFC 792, RFC 4443 §3.3). So a probe built to run out
-//! of hops at a chosen distance makes exactly the router at that distance
-//! announce itself, and the announcement arrives from its own address.
+//! A trace to a host with an open TCP port is made of SYNs to that port; to any
+//! other host, of ICMP echoes. The probe that reached a host is the one its
+//! network permits, and a SYN to :443 crosses filters that discard pings and
+//! unsolicited UDP.
 //!
-//! Nothing about this is a request a router can decline politely. It either
-//! answers or it is silent, and silence at one distance says nothing about the
-//! next, which is why a [`Hop`] with no address is recorded rather than
-//! skipped.
+//! ## Walking backwards
 //!
-//! ## The probe matches the scan
-//!
-//! A trace to a host with an open TCP port is made of SYNs to that port; a trace
-//! to any other host is made of ICMP echoes. That is not a detail. The probe
-//! that reached a host is by definition the probe its network permits, and a
-//! trace made of something else measures the path to wherever that something
-//! else is dropped. A SYN to :443 crosses filters that discard every ping and
-//! every unsolicited UDP datagram, and on the public internet that is most of
-//! the interesting ones.
-//!
-//! ## Backwards, and why
-//!
-//! A trace starts at the target and walks *towards* this machine rather than
-//! away from it. Walking outward is the obvious direction and it makes the cache
-//! below worthless: by the time a shared router is recognised, every hop before
-//! it has already been probed.
-//!
-//! Walking inward, the first hop recognised as one another trace already found
-//! is the point at which the rest of the work can be skipped, which on a scan
-//! of many hosts behind one gateway is nearly all of it.
-//!
-//! Starting at the target requires knowing how far away it is, which is why
-//! only hosts that answered are traced. The distance is read out of the
-//! reply: a hop counter arrives having been decremented once per router, so the
-//! gap between what arrived and the value it plausibly started at is the
-//! distance. See `distance_from`.
+//! A trace starts at the target and walks *towards* this machine, so the first
+//! hop recognised from another trace lets the rest be skipped; on a scan of many
+//! hosts behind one gateway that is nearly all of the work. Starting at the
+//! target needs its distance, so only hosts that answered are traced. The
+//! distance is the gap between the reply's hop counter and the value it
+//! plausibly started at; see `distance_from`.
 //!
 //! ## What the cache assumes
 //!
 //! [`PathCache`] holds, for each router seen at each distance, the path from
-//! here to it. When a trace meets a router another trace already recorded at the
-//! same distance, the hops before it are taken from that earlier trace instead
-//! of being measured again.
-//!
-//! That is an assumption, and it is worth stating plainly: it takes two
-//! paths that pass through one router at one distance to have been identical up
-//! to that point. Routing does not promise this, a load balancer can send two
-//! flows over different upstreams that rejoin, and it is nonetheless true of
-//! very nearly every network anyone traces. The engine's answer is not to
-//! pretend otherwise but to mark what it did: every spliced hop is
-//! [`Hop::inferred`], so a reader can tell a measurement from an inheritance
-//! without knowing this module exists.
+//! here to it. When a trace meets a router already recorded at the same
+//! distance, the hops before it are copied from the earlier trace. This assumes
+//! two paths through one router at one distance are identical up to it. Routing
+//! does not promise that (a load balancer can split and rejoin flows), so every
+//! spliced hop is marked [`Hop::inferred`].
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
@@ -97,44 +69,29 @@ use crate::scanner::strategy::icmp_error;
 
 /// How far a trace will look before giving up on reaching the target.
 ///
-/// Thirty, which is what every traceroute has used since the first one. Paths
-/// longer than this exist and are pathological; the number is a bound on wasted
-/// probes rather than a claim about the internet.
+/// Thirty, the traditional traceroute default; a bound on wasted probes.
 pub const MAX_HOPS: u8 = 30;
 
 /// How long one round of probes is given to be answered.
 ///
-/// Generous compared with a port probe's budget. A Time
-/// Exceeded is the lowest-priority work a router does: it is generated on the
-/// control plane, by software, usually after every packet that could be
-/// forwarded has been, and commonly rate-limited to a handful per second. A
-/// timeout tuned for a host's TCP stack would report most of the internet's
-/// routers as silent.
+/// Generous compared with a port probe's budget: a Time Exceeded is generated
+/// by the router's control plane at low priority and commonly rate-limited to a
+/// handful per second.
 const ROUND_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// How many probes are sent before a distance is called silent.
 ///
-/// Three, which is what every traceroute has sent per hop since the first one,
-/// and for two reasons that both still hold.
-///
-/// Routers rate-limit the error this depends on. A single unanswered probe
-/// is weak evidence of silence: the router may simply have spent its budget on
-/// somebody else that second. Reporting a hop as silent on one miss fills a path
-/// with holes that are an artefact of the scan.
-///
-/// And the capture is not ready the instant a transport opens. Opening a
-/// `libpcap` handle on every interface takes real time, and the first probe of a
-/// run can leave before the handles are live, so its reply is not missed on the
-/// network but here. Every other strategy in this engine survives that by
-/// retrying, and this one is not special.
+/// Three, the traditional traceroute default. Routers rate-limit the error this
+/// depends on, so one miss is weak evidence of silence. And opening a `libpcap`
+/// handle on every interface takes real time, so the first probe of a run can
+/// leave before the capture is live.
 const ATTEMPTS: u8 = 3;
 
 /// How many probes are in the air at once, across all targets.
 ///
-/// A ceiling on burst rather than a rate. Routers rate-limit the errors this
-/// depends on, so probes sent faster than they can be answered are not merely
-/// wasted: they push the answers to *other* probes out of the same budget, and
-/// the path comes back full of holes that are an artefact of the scan.
+/// A ceiling on burst, not a rate. Routers rate-limit the errors this depends
+/// on, and probes sent too fast push the answers to other probes out of the
+/// same budget.
 const MAX_IN_FLIGHT: usize = 16;
 
 /// The paths already measured, shared by every trace in one scan.
@@ -142,10 +99,10 @@ const MAX_IN_FLIGHT: usize = 16;
 /// See the module documentation for what a hit assumes and how a spliced hop is
 /// marked. Cheap to clone: it is a handle to one shared map.
 ///
-/// It holds routers as they answered, one the scan's exclusions name included.
-/// It is working state rather than a finding, and nothing leaves it except into
-/// a traced host's record, through [`ScanContext::write_host`], which withholds
-/// such a router's address on a spliced path as it does on a measured one.
+/// It holds routers as they answered, including excluded ones. Nothing leaves
+/// it except into a traced host's record through [`ScanContext::write_host`],
+/// which withholds an excluded router's address on spliced and measured paths
+/// alike.
 #[derive(Debug, Clone, Default)]
 pub struct PathCache {
     /// A router, at a distance, and everything known to be in front of it.
@@ -154,8 +111,8 @@ pub struct PathCache {
 
 /// A router recognised at a distance: the key a splice matches on.
 ///
-/// Both halves, because a router met at a different distance is a different
-/// point in a path. see `a_router_at_another_distance_is_not_the_same_point_in_a_path`.
+/// A router met at a different distance is a different point in a path; see
+/// `a_router_at_another_distance_is_not_the_same_point_in_a_path`.
 type Waypoint = (u8, IpAddr);
 
 impl PathCache {
@@ -165,10 +122,7 @@ impl PathCache {
     }
 
     /// The path in front of `address` if some earlier trace found it at
-    /// `distance`, as hops to be adopted rather than measured.
-    ///
-    /// Already marked [`Hop::inferred`], so a caller cannot record them as its
-    /// own measurements by forgetting to.
+    /// `distance`, already marked [`Hop::inferred`].
     fn prefix_of(&self, distance: u8, address: IpAddr) -> Option<Vec<Hop>> {
         let prefix = self.known.get(&(distance, address))?;
         Some(prefix.iter().map(|hop| hop.as_inferred()).collect())
@@ -176,17 +130,14 @@ impl PathCache {
 
     /// Files a completed trace, so later ones can splice from it.
     ///
-    /// Only hops that answered are filed as keys, a silent distance names no
-    /// router and could not be recognised again, but silent hops are kept
-    /// *inside* the stored prefixes, because a path that quietly closed its own
-    /// gaps would be spliced into later traces as a shorter path than it was.
+    /// Only hops that answered are keys, but silent hops are kept *inside* the
+    /// stored prefixes, so a spliced path is not shorter than it was.
     fn remember(&self, hops: &[Hop]) {
         for (index, hop) in hops.iter().enumerate() {
             let Some(address) = hop.address() else {
                 continue;
             };
-            // Everything strictly nearer than this router. The router itself is
-            // the key, so including it would have a splice record it twice.
+            // Strictly nearer than this router, which is the key itself.
             let prefix: Arc<[Hop]> = hops[..index].into();
             self.known.insert((hop.distance(), address), prefix);
         }
@@ -205,10 +156,8 @@ enum TraceProbe {
 impl TraceProbe {
     /// The transport a group of these needs.
     ///
-    /// Both admit ICMP errors, because both depend on them entirely: a trace
-    /// hears from a router only through the error it is obliged to send, and a
-    /// capture narrowed to the probe's own protocol would hear nothing but the
-    /// final hop.
+    /// Both admit ICMP errors: a router is heard only through the error it
+    /// sends.
     fn probe_kind(self, marker: u16) -> ProbeKind {
         match self {
             TraceProbe::Syn { .. } => ProbeKind::TcpProbe {
@@ -237,11 +186,10 @@ struct Tracer {
     probe: TraceProbe,
     cache: PathCache,
     /// The ICMP identifier, or the TCP source port, every probe in this run
-    /// carries, and so the value its replies come back to.
+    /// carries, and its replies come back to.
     marker: u16,
-    /// Which of this host's addresses to send from, per target. Owned rather
-    /// than consulted through the caller, because resolving is a cached lookup
-    /// that mutates and every strategy here keeps its own.
+    /// Which of this host's addresses to send from, per target. A mutating
+    /// cached lookup, so each strategy keeps its own.
     resolver: SourceResolver,
     /// How far this run has read the resolution of each target's neighbour,
     /// which every probe is admitted through. See
@@ -250,10 +198,8 @@ struct Tracer {
     /// When each outstanding probe left, so a reply can be timed against it.
     in_flight: HashMap<Sent, Instant>,
     sent: u64,
-    /// Probes the transport refused, counted apart from the ones it took.
-    ///
-    /// A probe that never reached the wire and a probe nobody answered look
-    /// identical in an empty path, and only one of them is about the network.
+    /// Probes the transport refused. In an empty path these look the same as
+    /// probes nobody answered, but only the latter are about the network.
     failed: u64,
     answered: u64,
 }
@@ -284,14 +230,11 @@ impl Tracer {
     /// Waits until a probe to `target` may be handed to the transport, and
     /// says whether one may be at all.
     ///
-    /// Every probe is admitted, as every pass's are (see
-    /// [`NeighborGates::admit`]): the first to a neighbour the kernel does not
-    /// hold is the write that asks for it, and the ones behind it wait on the
-    /// verdict rather than queue behind it. Waiting costs a trace nothing it
-    /// measures, since a round trip is timed from the probe's own send. A
-    /// target whose neighbour is given up on is not traced: every round of
-    /// its walk would be written into a queue the kernel throws away, and
-    /// read as a distance where nothing answered.
+    /// See [`NeighborGates::admit`]: the first probe to an uncached neighbour is
+    /// the write that asks for it, and the rest wait on the verdict. Waiting
+    /// costs nothing measured, since a round trip is timed from its own send. A
+    /// target whose neighbour is given up on is not traced, since every probe
+    /// would be discarded and read as silence.
     async fn admitted(&mut self, target: IpAddr) -> bool {
         let watch = self.transport.neighbors();
         match admit_waiting(
@@ -318,11 +261,9 @@ impl Tracer {
     fn send(&mut self, target: IpAddr, distance: u8, source: IpAddr) -> bool {
         let segment = match self.probe {
             TraceProbe::Syn { port } => {
-                // The distance rides in the sequence number's low byte. An ICMP
+                // The distance rides in the sequence number's low byte: an ICMP
                 // error is only guaranteed to quote eight bytes past the IP
-                // header, which for TCP is the two ports and the sequence, so
-                // this is the last field a router can be relied on to hand back,
-                // and the only one with room to spare.
+                // header, which for TCP is the two ports and the sequence.
                 let sequence = (u32::from(self.marker) << 8) | u32::from(distance);
                 match tcp::build_probe(
                     crate::model::technique::TcpScanTechnique::Syn,
@@ -343,8 +284,7 @@ impl Tracer {
                 }
             }
             TraceProbe::Echo => {
-                // The echo sequence field, for the same reason: it sits inside
-                // the eight bytes a quotation guarantees.
+                // The echo sequence field sits inside the eight quoted bytes.
                 match icmp::build_echo_request_message(
                     source,
                     target,
@@ -377,13 +317,8 @@ impl Tracer {
                 true
             }
             Err(error) => {
-                // At verbosity 2, as a line per probe is. A probe that never
-                // reached the wire and a probe nobody answered look identical
-                // in an empty path, and only one of them is about the network,
-                // but that difference is not left to this line: the end of the
-                // trace counts the refusals and says aloud when no probe left
-                // at all, which is the question a reader with an empty path is
-                // asking.
+                // Per-probe, so verbosity 2; the end of the trace counts the
+                // refusals and says so when no probe left at all.
                 warn!(
                     verbosity = 2,
                     "trace probe to {target} was not sent: {error:#}"
@@ -398,19 +333,15 @@ impl Tracer {
     /// between probes, then [sends](Self::send) one built to expire `distance`
     /// hops away, and says whether it reached the wire.
     ///
-    /// A trace probe carries the target's address and draws its answers from
-    /// the routers on the way to it, so it is a probe at the target and spends
-    /// both the per-host and the scan-wide gap on that address. The slot is
-    /// taken immediately before the send and given back where the transport
-    /// refused it, on the same reasoning `send` counts a refused probe apart
-    /// from the ones that left. Waiting costs a trace nothing it measures: a
-    /// round trip is timed from the probe's own send, and each round's reply
-    /// window opens once its probes are out.
+    /// A trace probe counts as a probe at the target, spending both the
+    /// per-host and the scan-wide gap on that address. The slot is taken just
+    /// before the send and refunded if the transport refused it. Waiting costs
+    /// nothing measured: a round trip is timed from the probe's own send, and
+    /// each round's reply window opens once its probes are out.
     ///
-    /// `false` where the probe did not leave, whether the transport refused it
-    /// or the scan stopped while it waited for a slot; the caller reads the
-    /// stop from [`should_stop`](crate::scanner::handle::ScanHandle::should_stop)
-    /// as it does for any other probe it did not send.
+    /// `false` where the probe did not leave, because the transport refused it
+    /// or the scan stopped while it waited; the caller reads the stop from
+    /// [`should_stop`](crate::scanner::handle::ScanHandle::should_stop).
     async fn send_paced(&mut self, target: IpAddr, distance: u8, source: IpAddr) -> bool {
         loop {
             match self.ctx.claim_probe(target) {
@@ -433,8 +364,8 @@ impl Tracer {
 
     /// Reads replies until `deadline`, handing each to `on_reply`.
     ///
-    /// Stops early once nothing is outstanding, so a round that is fully
-    /// answered costs its round trip rather than its timeout.
+    /// Stops early once nothing is outstanding, so a fully answered round costs
+    /// its round trip, not its timeout.
     async fn collect(&mut self, deadline: Instant, mut on_reply: impl FnMut(&mut Self, Reply)) {
         while !self.in_flight.is_empty() {
             let now = Instant::now();
@@ -456,8 +387,8 @@ impl Tracer {
 
     /// What a captured segment says, if it says anything about this run.
     fn classify(&mut self, segment: &CapturedSegment) -> Option<Reply> {
-        // A router reporting a probe it discarded. The quotation is the only
-        // thing tying it to one of ours.
+        // A router reporting a probe it discarded; only the quotation ties it
+        // to one of ours.
         if let Some(expired) = icmp_error::parse_expired(segment) {
             let sent = self.attribute(&expired.quoted)?;
             let rtt = self.in_flight.remove(&sent).map(|at| at.elapsed());
@@ -468,18 +399,13 @@ impl Tracer {
             });
         }
 
-        // The target itself, having been reached. Its own hop counter is what
-        // says how far away it is.
+        // The target itself; its hop counter says how far away it is.
         let arrived = segment.observation.as_ref()?.remaining_hops();
 
-        // **Attributed to the probe it answers, not merely to its sender.** A
-        // trace sends several probes per distance and moves on when the first is
-        // answered, so the later ones are still in the air when the next
-        // distance is being probed. Matched on the source address alone, one of
-        // those stragglers clears the outstanding entry for a distance it says
-        // nothing about, and that distance is then recorded as silent. It is
-        // the same discipline `attribute` applies to an error, for the same
-        // reason, and a run against a real host needs both.
+        // **Attributed to the probe it answers, not merely to its sender.**
+        // Stragglers from an earlier distance are still in the air; matched by
+        // source alone, one would clear the entry for a distance it says
+        // nothing about, which would then be recorded as silent.
         let answered = self.answered_distance(segment)?;
         self.in_flight.remove(&Sent {
             target: segment.source,
@@ -495,21 +421,15 @@ impl Tracer {
 
     /// Which of this run's probes a direct answer is answering.
     ///
-    /// The counterpart of [`attribute`] for the replies that come back from the
-    /// target rather than from a router. Neither kind may be taken on trust: an
-    /// answer names the probe it answers, and reading only its sender confuses
-    /// two probes to one host.
+    /// The counterpart of [`attribute`] for replies from the target itself.
     ///
-    /// A SYN draws a segment acknowledging the sequence it carried, so the
-    /// marker written into that sequence comes back one higher. An echo request
-    /// draws a reply required to carry its identifier and sequence back
-    /// unchanged (RFC 792 §Echo, RFC 4443 §4.2), which is simpler and exact.
+    /// A SYN draws a segment acknowledging its sequence, so the marker comes
+    /// back one higher. An echo reply carries its identifier and sequence back
+    /// unchanged (RFC 792 §Echo, RFC 4443 §4.2).
     ///
-    /// **The answer's kind is checked before its fields.** The capture admits
-    /// ICMP whatever the probe is, and sees both directions, so an echo trace's
-    /// own requests come back up it carrying the marker and the distance exactly
-    /// where a reply carries them. Only the type byte tells the two apart, and
-    /// read without it every request the trace sends answers itself.
+    /// **The answer's kind is checked before its fields.** The capture sees both
+    /// directions, so an echo trace's own requests come back carrying the marker
+    /// and distance where a reply does; only the type byte tells them apart.
     fn answered_distance(&self, segment: &CapturedSegment) -> Option<u8> {
         match self.probe {
             TraceProbe::Syn { .. } => {
@@ -527,8 +447,7 @@ impl Tracer {
                 Some((echoed & 0xff) as u8)
             }
             TraceProbe::Echo => {
-                // The protocol the message arrived under says which family's
-                // numbering its type is in; the message itself cannot.
+                // The ICMP numbering family comes from the IP protocol.
                 let over_ipv6 = match IpNextHeaderProtocol(segment.protocol) {
                     IpNextHeaderProtocols::Icmp => false,
                     IpNextHeaderProtocols::Icmpv6 => true,
@@ -552,27 +471,24 @@ impl Tracer {
 /// `None` if it is quoting somebody else's packet.
 ///
 /// The quoted destination names the host and the marker inside the transport
-/// header names the distance. see [`Tracer::send`] for where each is written.
+/// header names the distance; see [`Tracer::send`] for where each is written.
 ///
-/// Both halves are checked, and the marker twice for TCP. An ICMP error
-/// carries no ports of its own, so the capture that admits them admits *every*
-/// ICMP error on every captured interface: a busy host produces a steady
-/// background of errors about packets this engine never sent, and one of those
-/// attributed to a probe puts a router into a path it is not on. A wrong hop is
-/// worse than a missing one, because nothing downstream can tell it is wrong.
+/// Both are checked, and the marker twice for TCP. The capture admits *every*
+/// ICMP error on every captured interface, and a foreign error attributed to a
+/// probe puts a router into a path it is not on, which nothing downstream can
+/// detect.
 ///
-/// Only the first eight bytes past the quoted IP header are read, because only
-/// those are guaranteed to be there (RFC 792). For TCP that reaches exactly to
-/// the end of the sequence number; for ICMP, to the end of the echo sequence.
+/// Only the first eight bytes past the quoted IP header are read, since only
+/// those are guaranteed (RFC 792): for TCP up to the end of the sequence
+/// number, for ICMP the end of the echo sequence.
 fn attribute(probe: TraceProbe, marker: u16, quoted: &IpSegment<'_>) -> Option<Sent> {
     let head: [u8; 8] = quoted.payload.get(..8)?.try_into().ok()?;
 
     let distance = match (probe, IpNextHeaderProtocol(quoted.protocol)) {
         (TraceProbe::Syn { .. }, IpNextHeaderProtocols::Tcp) => {
-            // The source port, then the sequence number's high bytes. Two
-            // independent checks of the same value, because a router quoting a
-            // truncated or mangled probe is common enough that one field
-            // matching by chance is not a theory.
+            // The source port, then the sequence number's high bytes: routers
+            // quoting mangled probes are common enough that one field can match
+            // by chance.
             if u16::from_be_bytes([head[0], head[1]]) != marker {
                 return None;
             }
@@ -599,9 +515,8 @@ fn attribute(probe: TraceProbe, marker: u16, quoted: &IpSegment<'_>) -> Option<S
 
 /// What a probe at one distance found there.
 ///
-/// Three outcomes and not two: a distance where nothing answered is not the
-/// same as one where the target did, and collapsing them would let a trace stop
-/// short of its own target.
+/// Silence and the target answering are separate outcomes, or a trace could
+/// stop short of its target.
 enum Landing {
     /// A router discarded the probe and named itself.
     Router(IpAddr, Option<Duration>),
@@ -626,12 +541,9 @@ enum Reply {
         /// Which of this run's probes it answers, by the distance that probe
         /// was built to expire at.
         ///
-        /// Carried for the same reason [`Sent::distance`] is: a trace sends
-        /// several probes per distance and moves on at the first answer, so the
-        /// rest arrive while the next distance is being probed. Without this a
-        /// straggler is read as "the target is reachable *here*", and on a path
-        /// whose routers stay quiet it walks the far end one hop nearer per
-        /// round until the whole path is discarded.
+        /// Without it a straggler from an earlier distance reads as "the target
+        /// is reachable *here*", and on a quiet path walks the far end one hop
+        /// nearer per round until the whole path is discarded.
         probed: u8,
         /// How far away the reply's own hop counter says the target is, which
         /// is a statement about the path *back*. See [`distance_from`].
@@ -641,17 +553,12 @@ enum Reply {
 
 /// How many routers a reply crossed, from the hop counter it arrived with.
 ///
-/// A hop counter is decremented once per router, so the distance is the gap
-/// between what arrived and the value it started at. The starting value is not
-/// carried in the packet and is a property of the sender's stack, so it is
-/// inferred from the usual ones, 32, 64, 128, 255, by taking the smallest that
-/// could have produced what arrived.
+/// The starting value is not in the packet, so it is taken as the smallest of
+/// the usual ones (32, 64, 128, 255) that could have produced what arrived.
 ///
-/// A bound rather than a measurement, and it can be wrong in one direction:
-/// a host more than 64 hops away is read against 128 and reported nearer than it
-/// is. Paths that long do not occur outside a laboratory, and the alternative,
-/// refusing to trace anything whose stack is not already fingerprinted, would
-/// decline nearly every host to avoid an error nobody has met.
+/// A bound, wrong in one direction: a host more than 64 hops away is read
+/// against 128 and reported nearer than it is. Such paths do not occur outside
+/// a laboratory.
 fn distance_from(arrived: u8) -> u8 {
     const COMMON: [u8; 4] = [32, 64, 128, 255];
     let started = COMMON
@@ -663,9 +570,8 @@ fn distance_from(arrived: u8) -> u8 {
 
 /// What will reach `target`, given what the scan already found on it.
 ///
-/// An open TCP port if there is one, since a probe that reached a port is proof
-/// the path permits that probe. The lowest-numbered open port rather than an
-/// arbitrary one, so two runs against an unchanged host produce the same trace.
+/// An open TCP port if there is one, since the path is known to permit it. The
+/// lowest-numbered one, so two runs against an unchanged host trace alike.
 fn probe_for(ctx: &ScanContext, target: &IpAddr) -> TraceProbe {
     let port = ctx.read_host(target, |host| {
         host.ports()
@@ -682,15 +588,13 @@ fn probe_for(ctx: &ScanContext, target: &IpAddr) -> TraceProbe {
 
 /// Measures the path to every host in `targets` that answered something.
 ///
-/// The entry point, and the whole of this module's public surface. Hosts are
-/// grouped by what will reach them and each group is traced with a transport of
-/// its own; the [`PathCache`] is shared across the groups, so a TCP trace and an
-/// ICMP trace through the same gateway still only measure it once.
+/// Hosts are grouped by what will reach them and each group is traced with its
+/// own transport; the [`PathCache`] is shared, so TCP and ICMP traces through
+/// one gateway measure it once.
 ///
-/// Records what it finds through [`ScanContext::update_host`], so an excluded
-/// address cannot acquire a path any more than it can acquire a port, and an
-/// excluded router on a permitted host's path keeps its distance and loses its
-/// address: see [`Hop::withheld`].
+/// Records through [`ScanContext::update_host`], so an excluded address gets no
+/// path, and an excluded router on a permitted host's path keeps its distance
+/// but loses its address: see [`Hop::withheld`].
 pub async fn trace(ctx: &ScanContext, targets: Vec<IpAddr>) {
     if targets.is_empty() {
         return;
@@ -734,13 +638,11 @@ pub async fn trace(ctx: &ScanContext, targets: Vec<IpAddr>) {
 impl Tracer {
     /// Traces every host in `group`.
     ///
-    /// The neighbour of every host is asked for first, all at once, and waited
-    /// for before the first probe: a trace is a walk, a round per distance,
-    /// and one that met each new neighbour inside a send would wait out a
-    /// resolution per host in turn. A host whose neighbour never answered is
-    /// not traced. Through the kernel, which asks only once a probe is
-    /// written, the asking is done once the distances are known; see
-    /// [`ask_together`](Self::ask_together).
+    /// Every host's neighbour is resolved at once before the first probe, so
+    /// the walks do not wait out one resolution per host in turn. A host whose
+    /// neighbour never answered is not traced. Through the kernel, which asks
+    /// only once a probe is written, this happens once the distances are known;
+    /// see [`ask_together`](Self::ask_together).
     async fn run(&mut self, group: Vec<IpAddr>) {
         let (gates, unreached) = resolve_ahead(
             &self.ctx,
@@ -769,26 +671,16 @@ impl Tracer {
             if self.ctx.handle.should_stop() {
                 break;
             }
-            // A trace is a probe per router and answers a question about the
-            // path rather than about the host, so a host that has already
-            // spent its budget does not spend more of it here.
+            // A host that has spent its time budget is not traced.
             if self.ctx.host_expired(target) {
                 continue;
             }
             self.walk(target, distance).await;
         }
 
-        // A run that drew nothing at all is reported rather than left to look
-        // like a network with no routers in it. It is the difference between
-        // "nothing answered" and "nothing was heard", and only one of those is
-        // about the network: a scan whose capture or send path is wrong looks
-        // exactly like a quiet internet, and would pass for one silently.
-        // Three ways a trace comes back with nothing, and they call for
-        // completely different responses: probes that would not leave this host,
-        // probes that left and drew no answer, and a network with nothing to
-        // say. Reported apart, because collapsed into one empty path they are
-        // indistinguishable, and a broken trace would look like a quiet
-        // internet.
+        // Probes that never left and probes nobody answered are reported
+        // apart, so a broken send or capture path is not mistaken for a quiet
+        // network.
         if self.sent == 0 && self.failed > 0 {
             warn!(
                 "traceroute could not put any of its {} probes on the wire; no path was measured",
@@ -815,18 +707,13 @@ impl Tracer {
     /// answered or been given up on. Returns the hosts given up on, each with
     /// why.
     ///
-    /// The kernel asks for a neighbour only once a probe is written to it,
-    /// and the walks go one host at a time, so a neighbour left to a walk's
-    /// first probe is asked only when that walk begins. A host whose distance
-    /// the scan read from a hop counter is sent nothing before its walk, and
-    /// a wave of neighbours that stopped answering since would cost a whole
-    /// resolution's wait each, in turn. Asked here, they are given up on
-    /// together. The probe written is the distance round's, at full distance,
-    /// and its answer is not read: the walk asks every distance it needs.
+    /// The kernel asks for a neighbour only once a probe is written, and walks
+    /// go one host at a time, so a wave of dead neighbours would otherwise cost
+    /// a resolution's wait each, in turn. The probe written is at full distance
+    /// and its answer is not read.
     ///
-    /// A frame sender's neighbours were asked for before the distances were
-    /// measured, and every gate is open or given up by now, so nothing is
-    /// written for them.
+    /// A frame sender's neighbours were resolved before the distances were
+    /// measured, so nothing is written for them.
     async fn ask_together(&mut self, targets: &[IpAddr]) -> BTreeMap<IpAddr, String> {
         let mut unreached = BTreeMap::new();
         let now = Instant::now();
@@ -840,9 +727,8 @@ impl Tracer {
                 sources.insert(target, source);
             }
         }
-        // A gate the admission above left asking is one whose neighbour the
-        // kernel did not hold, and the probe written now is the write that
-        // asks. An open one is written nothing.
+        // A gate left asking has an uncached neighbour; the probe written now
+        // is the write that asks. An open one is written nothing.
         let mut waiting: Vec<IpAddr> = self
             .neighbors
             .waiting()
@@ -861,8 +747,8 @@ impl Tracer {
             let (gates, resolver) = (&mut self.neighbors, &mut self.resolver);
             let mut asking_again = Vec::new();
             waiting.retain(|&target| match gates.admit(watch, resolver, target, now) {
-                // Let through to a neighbour the kernel gave up on once, to
-                // have it ask again: written now, and waited on as before.
+                // A neighbour the kernel gave up on once: write again so it
+                // asks again, and keep waiting.
                 Admission::Send if gates.is_waiting(target) => {
                     asking_again.push(target);
                     true
@@ -884,21 +770,12 @@ impl Tracer {
 
     /// How far away each host is.
     ///
-    /// Read from what the scan already saw wherever possible. Every reply a
-    /// host sent arrived with a hop counter, the scan recorded the most recent
-    /// one, and the distance falls straight out of it, so for a host the port
-    /// scan reached, this costs no probe, no round trip and no waiting.
+    /// Read from the hop counter the scan recorded for the host's latest reply
+    /// wherever possible, which costs no probe and does not depend on a second
+    /// exchange succeeding.
     ///
-    /// That is not only cheaper, it is sturdier. Sending a probe purely to be
-    /// answered would make every trace depend on a second exchange succeeding
-    /// after the first already had; were that exchange to produce nothing, the
-    /// whole trace would silently produce nothing, and no part of the output
-    /// would say why.
-    ///
-    /// A host with no recorded counter still gets the probe. That is the honest
-    /// fallback rather than the normal path, and a host that answers neither is
-    /// skipped: a path is measured backwards from its far end, and there is no
-    /// far end to start from.
+    /// A host with no recorded counter gets a probe. A host that answers
+    /// neither is skipped, since the walk needs a far end to start from.
     async fn measure_distances(&mut self, group: &[IpAddr]) -> Vec<(IpAddr, u8)> {
         let mut found: Vec<(IpAddr, u8)> = Vec::new();
         let mut unknown: Vec<IpAddr> = Vec::new();
@@ -931,18 +808,14 @@ impl Tracer {
     /// this scan never read a hop counter from.
     ///
     /// **An answer is kept only from a host the round asked, and only once.**
-    /// Whatever this returns is walked, a probe per router, and the capture
-    /// brings up every answer carrying the marker, which rides in every probe
-    /// for anyone who sees one to copy under an address of their choosing.
+    /// Whatever this returns is walked, and the marker rides in every probe for
+    /// anyone who sees one to copy under an address of their choosing. A host
+    /// answers each probe the round sends it, and a second answer kept would
+    /// be a second walk of the same path.
     ///
-    /// Held to the hosts it was handed, a trace never learns an address to send
-    /// to, which is why it asks [`ScanContext::may_probe`] nothing. Every
-    /// address it probes is one a caller of [`trace`] named, and a scan names
-    /// the hosts its store holds, which the exclusions keep clean. A gate here
-    /// would stand in front of a round that can only return what it was given.
-    ///
-    /// A host answers each of the probes the round sends it, too, and a second
-    /// answer kept would be a second walk of the same path.
+    /// Since a trace only probes addresses a caller of [`trace`] named (from
+    /// the store, which the exclusions keep clean), it does not consult
+    /// [`ScanContext::may_probe`].
     async fn probe_for_distances(&mut self, group: &[IpAddr]) -> Vec<(IpAddr, u8)> {
         let mut found: Vec<(IpAddr, u8)> = Vec::new();
 
@@ -961,11 +834,8 @@ impl Tracer {
                 };
                 asked.push((*target, source));
             }
-            // A round of attempts across the window at a time, rather than every
-            // attempt to one host before the next: the first round's writes
-            // start the resolution of every new neighbour in the window
-            // together, so the probes held behind them wait out one
-            // resolution between them rather than one per host in turn.
+            // One attempt per host per round, so the first round starts every
+            // new neighbour's resolution together and they cost one wait.
             for _ in 0..ATTEMPTS {
                 let mut admitted = Vec::with_capacity(asked.len());
                 for (target, source) in asked {
@@ -1002,16 +872,12 @@ impl Tracer {
 
     /// Asks what is at one distance from here, and reports what answered.
     ///
-    /// The unit the walk is built from: [`walk`](Self::walk) chooses which
-    /// distances to ask about and this asks about one of them. Three outcomes
-    /// come back rather than two, because a distance nothing answered and one
-    /// the target answered are different facts. See [`Landing`]. `None` where
-    /// nothing could be asked, the target's neighbour given up on or the scan
-    /// stopped, which is no fact about the distance at all.
+    /// [`walk`](Self::walk) chooses the distances; see [`Landing`] for the
+    /// outcomes. `None` where nothing could be asked (the target's neighbour
+    /// given up on, or the scan stopped).
     async fn probe_distance(&mut self, target: IpAddr, at: u8, source: IpAddr) -> Option<Landing> {
-        // A burst rather than one probe waited out three times: the answers are
-        // independent, so sending them together costs one round trip instead of
-        // three and the first to arrive settles the distance.
+        // All attempts in one burst: one round trip, and the first answer
+        // settles the distance.
         for _ in 0..ATTEMPTS {
             if !self.admitted(target).await {
                 self.in_flight.clear();
@@ -1031,10 +897,8 @@ impl Tracer {
             } if sent.target == target && sent.distance == at => {
                 landing = Landing::Router(from, rtt);
             }
-            // The target answering *this* probe means the probe was never
-            // discarded, so the target is at or nearer than this distance. The
-            // distance is checked as strictly as it is for an expiry: an answer
-            // to an earlier round says nothing about this one.
+            // The target answering *this* probe puts it at or nearer than this
+            // distance. An answer to an earlier round says nothing here.
             Reply::Arrived {
                 target: who,
                 probed,
@@ -1047,10 +911,7 @@ impl Tracer {
         .await;
         self.in_flight.clear();
 
-        // One line per distance, which is what makes a wrong path readable
-        // afterwards. A trace that stops short, or names the target at the wrong
-        // distance, looks entirely plausible in its finished form; the round it
-        // went wrong in does not.
+        // One line per distance, so a wrong path can be debugged afterwards.
         info!(
             verbosity = 2,
             "trace {target} at hop {at}: {} ({} sent)",
@@ -1067,19 +928,14 @@ impl Tracer {
 
     /// Measures the path to `target`, starting from `estimate` and correcting it.
     ///
-    /// `estimate` is a starting point, not the answer. It is read from the
-    /// hop counter of a reply the host sent, which measures the path *back* from
-    /// the host, and internet routing is asymmetric, so the two differ
-    /// routinely and by more than a hop. An anycast address can easily answer
-    /// from two hops nearer than it can be reached. Trusting the estimate
-    /// outright reports the target closer than it is and silently drops every
-    /// router beyond it, which is a confidently wrong path rather than a short
-    /// one.
+    /// `estimate` comes from the reply's hop counter, which measures the path
+    /// *back*; routing is asymmetric, so it routinely differs by more than a hop
+    /// (an anycast address can answer from two hops nearer than it is reached).
+    /// Trusted outright, it would drop every router beyond it.
     ///
-    /// So the walk goes outward first, until the target actually answers, and
-    /// only then inward. Both directions correct the estimate: outward when the
-    /// return path was shorter, and inward, where the target answering at a
-    /// nearer distance moves the far end in, when it was longer.
+    /// So the walk goes outward until the target answers, then inward. Outward
+    /// corrects a shorter return path; inward, the target answering nearer moves
+    /// the far end in.
     async fn walk(&mut self, target: IpAddr, estimate: u8) {
         let Some(source) = self.resolver.resolve(target) else {
             return;
@@ -1099,9 +955,7 @@ impl Tracer {
             };
             match landing {
                 Landing::Target => break,
-                // A router still stands here, so the target is further out. The
-                // router is a genuine hop and is kept: walking outward is
-                // measuring the path, not merely searching for its end.
+                // The target is further out; the router is a genuine hop.
                 Landing::Router(address, rtt) => {
                     measured.push(Hop::answered(reached, address, rtt));
                 }
@@ -1110,9 +964,8 @@ impl Tracer {
             reached += 1;
         }
 
-        // Nothing answered anywhere out to the ceiling. Reporting the target at
-        // `MAX_HOPS` would invent a distance, so the far end is left unstated
-        // and only the routers that did answer are kept.
+        // Nothing answered out to the ceiling: the far end is left unstated
+        // and only the routers that answered are kept.
         let target_hop = (reached <= MAX_HOPS).then_some(reached);
 
         // ─── Inward, to the first router ─────────────────────────────────────
@@ -1134,9 +987,7 @@ impl Tracer {
                 return;
             };
             match landing {
-                // The target answers nearer than the outward walk settled on,
-                // so the outward walk overshot: the far end moves in, and this
-                // distance holds the target rather than a router.
+                // The outward walk overshot: the far end moves in.
                 Landing::Target => far_end = Some(at),
                 Landing::Router(address, rtt) => {
                     measured.push(Hop::answered(at, address, rtt));
@@ -1153,16 +1004,13 @@ impl Tracer {
 
         let mut hops: Vec<Hop> = Vec::new();
         if let Some(distance) = far_end {
-            // The far end of its own path, and the one hop whose address needed
-            // no error to learn.
+            // The target itself, as the far end.
             hops.push(Hop::answered(distance, target, None));
         }
         if let Some(prefix) = spliced {
             hops.extend(prefix);
         }
-        // Anything the outward walk recorded beyond where the far end settled
-        // describes a distance the target is not at and the path does not
-        // reach.
+        // Drop outward hops recorded beyond the settled far end.
         hops.extend(
             measured
                 .into_iter()
@@ -1212,23 +1060,17 @@ mod tests {
 
     /// A fake internet: routers that expire probes and a target that answers.
     ///
-    /// Built around the hop limit rather than ignoring it, which is the whole
-    /// point: [`Emission`] is what a real router acts on, so a fake that
-    /// discards it would test the loop against a network that does not behave
-    /// like one. A probe with a hop limit below `distance` comes back as a Time
-    /// Exceeded from the router at that distance; one that reaches the target
-    /// comes back as an answer from the target.
+    /// It honours the [`Emission`] hop limit: a probe with a hop limit below
+    /// `distance` comes back as a Time Exceeded from the router at that
+    /// distance; one that reaches the target comes back as its answer.
     struct Network {
         /// How many routers away the target is, going out.
         distance: u8,
         /// The hop counter the target's own answers arrive with.
         ///
-        /// Independent of [`distance`](Self::distance) on purpose. A reply's
-        /// counter measures the path *back*, and internet routing is asymmetric,
-        /// so the number a trace estimates its starting point from routinely
-        /// disagrees with the number of routers it then has to walk. A fake
-        /// where the two always agreed would never exercise the correction, and
-        /// that disagreement is exactly the case real hosts present.
+        /// Independent of [`distance`](Self::distance), since asymmetric
+        /// routing makes the return path differ, and the walk must correct for
+        /// it.
         reply_ttl: u8,
         /// Distances whose router refuses to identify itself.
         silent: Vec<u8>,
@@ -1237,9 +1079,8 @@ mod tests {
 
     /// The SYN+ACK a listening port answers `probe` with.
     ///
-    /// Ports swapped, and the acknowledgement one past the sequence that
-    /// arrived, which is what every TCP stack does and what the trace reads to
-    /// tell one of its own probes from another.
+    /// Ports swapped and the acknowledgement one past the sequence, which the
+    /// trace reads to tell its probes apart.
     fn syn_ack_to(probe: &[u8]) -> Vec<u8> {
         use pnet_packet::tcp::{MutableTcpPacket, TcpFlags};
 
@@ -1261,9 +1102,7 @@ mod tests {
     }
 
     impl Network {
-        /// A reply carrying an IP observation, which a synthetic segment
-        /// otherwise has none of, and which the loop needs, since the hop
-        /// counter is what says how far away the target is.
+        /// A reply carrying an IP observation, whose hop counter the loop needs.
         fn observed(
             source: IpAddr,
             protocol: pnet_packet::ip::IpNextHeaderProtocol,
@@ -1299,11 +1138,8 @@ mod tests {
             emission: Emission,
         ) -> Result<(), SendError> {
             if emission.hop_limit >= self.distance {
-                // Far enough: the target itself answers, and its hop counter is
-                // what the trace reads the distance out of. A real SYN+ACK, not
-                // the probe echoed back: the acknowledgement is what names the
-                // probe being answered, so a fake that omitted it would be
-                // testing the loop against a stack that does not exist.
+                // The target answers with a real SYN+ACK, whose acknowledgement
+                // names the probe being answered.
                 let reply = Network::observed(
                     dst,
                     IpNextHeaderProtocols::Tcp,
@@ -1318,8 +1154,7 @@ mod tests {
                 return Ok(());
             }
 
-            // A router discarding the probe, quoting it back the way RFC 792
-            // requires.
+            // A router discarding the probe, quoting it per RFC 792.
             let quoted = {
                 let (IpAddr::V4(s), IpAddr::V4(d)) = (src, dst) else {
                     unreachable!("the fixture is IPv4")
@@ -1376,23 +1211,10 @@ mod tests {
         (ctx, tracer)
     }
 
-    /// The whole loop, against a network that behaves like one.
+    /// The whole loop: probes, replies and attribution fit together.
     ///
-    /// This is the test the unit tests around it cannot be: they check that a
-    /// quotation is read correctly and that a cache splices correctly, and a
-    /// trace can still record nothing at all with both of those working. What
-    /// this asserts is that the probes, the replies and the attribution fit
-    /// together, which is what a run against a real host depends on and the
-    /// unit tests cannot show.
-    ///
-    /// It also covers stragglers: several probes go out per distance and the
-    /// trace moves on when the first is answered, so the rest are still in the
-    /// air during the next distance, and matched on sender alone, one of them
-    /// would clear the outstanding entry for a distance it says nothing about,
-    /// which would then be recorded as silent. The silent router at distance
-    /// two is in the fixture for that reason: it is the case where the loop has
-    /// to wait rather than being handed an answer, and it is where a straggler
-    /// lands.
+    /// The silent router at distance two is where a straggler from distance one
+    /// lands; matched on sender alone it would clear distance two's entry.
     #[tokio::test(flavor = "current_thread")]
     async fn a_trace_records_every_router_between_here_and_the_target() {
         let target = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
@@ -1457,13 +1279,8 @@ mod tests {
         }
     }
 
-    /// Under a gap the scan keeps between probes, no two of a trace's probes
-    /// leave nearer than the gap, and every one is still sent.
-    ///
-    /// A trace probe carries the target's address and is a probe at it, so
-    /// the per-host gap spaces a single target's whole walk. The fixture
-    /// answers every probe, so what is left to measure is the spacing the gate
-    /// imposed on the sends.
+    /// Under a per-host gap, no two of a trace's probes leave nearer than the
+    /// gap, and every one is still sent.
     #[tokio::test(flavor = "current_thread")]
     async fn a_gap_spaces_a_traces_probes() {
         let gap = Duration::from_millis(40);
@@ -1503,11 +1320,8 @@ mod tests {
     /// A router the scan may not report is withheld on every path through it,
     /// the one measured and the one spliced from it alike.
     ///
-    /// The splice is the case worth driving the whole loop for. The cache
-    /// holds routers as they answered, and the second trace takes the first
-    /// one's hops from it rather than from the store, so a withholding applied
-    /// anywhere short of the store would let the second path carry the
-    /// address the first one lost.
+    /// The cache holds routers as they answered, and the second trace splices
+    /// from it, so withholding must happen at the store.
     #[tokio::test(flavor = "current_thread")]
     async fn an_excluded_router_is_withheld_whether_measured_or_spliced() {
         let first = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
@@ -1557,7 +1371,7 @@ mod tests {
         let seed = network.reply_ttl;
         let (ctx, mut tracer) = tracer_against(network);
 
-        // What the port scan leaves behind, and what the trace starts from.
+        // As the port scan would leave it.
         ctx.update_host(target, |host| host.record_hop_counter(seed));
 
         tracer.run(vec![target]).await;
@@ -1574,12 +1388,8 @@ mod tests {
 
     /// The estimate reads short, and the trace walks out past it.
     ///
-    /// A reply's hop counter measures the path back from the host, and
-    /// traceroute measures the path out to it; an anycast address answers from
-    /// nearer than it can be reached. Trusted as the answer, the estimate puts
-    /// such a target closer than it is, two routers closer for one real host,
-    /// and drops the hops beyond it: a confidently wrong path, which is worse
-    /// than a short one because nothing in it looks wrong.
+    /// A reply's hop counter measures the path back; an anycast address answers
+    /// from nearer than it can be reached.
     #[tokio::test(flavor = "current_thread")]
     async fn a_target_further_out_than_its_replies_suggest_is_still_reached() {
         let target = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
@@ -1612,9 +1422,8 @@ mod tests {
 
     /// The estimate reads long, and the far end moves back in.
     ///
-    /// The other direction of the same asymmetry, and the one that would
-    /// otherwise leave a path with the target recorded beyond its own last
-    /// router and phantom distances in between.
+    /// Otherwise the target would be recorded beyond its last router, with
+    /// phantom distances in between.
     #[tokio::test(flavor = "current_thread")]
     async fn a_target_nearer_than_its_replies_suggest_is_not_reported_far_away() {
         let target = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
@@ -1637,15 +1446,10 @@ mod tests {
 
     /// A path whose routers all stay quiet still reports its own length.
     ///
-    /// The reason the distance on an answer is checked. Where every router
-    /// answers, a straggler read as "the target is here" is overwritten by the
-    /// genuine expiry arriving in the same round, and the mistake stays hidden.
-    /// Where none of them answer, which is ordinary, since large networks
-    /// rate-limit these errors to nothing, a straggler is the *only* reply a
-    /// round sees, so unchecked the far end would walk one hop nearer per round
-    /// until it reached the first, and the filter that drops hops beyond the far
-    /// end would then discard the entire path, leaving a single line claiming
-    /// the target is one hop away.
+    /// Why the distance on an answer is checked. Where no router answers (large
+    /// networks often rate-limit these errors to nothing), a straggler is the
+    /// only reply a round sees; unchecked, the far end would walk one hop nearer
+    /// per round and the whole path would be discarded.
     #[tokio::test(flavor = "current_thread")]
     async fn a_path_of_silent_routers_keeps_its_length() {
         let target = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
@@ -1678,8 +1482,8 @@ mod tests {
 
     /// The address an echo trace's probes leave from.
     const LOCAL: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 50);
-    /// Two hosts an echo trace is asked about, on [`LOCAL`]'s own /24 so a
-    /// source resolves without asking the kernel for a route.
+    /// Two hosts an echo trace is asked about, on [`LOCAL`]'s /24 so a source
+    /// resolves without a kernel route lookup.
     const TARGET: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 9);
     const OTHER_TARGET: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 10);
     /// An address nobody asked the trace about.
@@ -1714,10 +1518,8 @@ mod tests {
 
     /// An echo request carrying the trace's own marker is not an answer to it.
     ///
-    /// The capture sees both directions, so every request a trace sends comes
-    /// back up it with the marker and a distance in place, and an echo reply
-    /// differs from it only in its type byte. Taken for an answer, the request
-    /// names its own sender a host reached at the distance it was built for.
+    /// The capture sees both directions, and a request differs from a reply only
+    /// in its type byte.
     #[test]
     fn an_echo_request_is_not_an_answer_to_an_echo_trace() {
         let (mut tracer, _replies) = echo_tracer();
@@ -1744,12 +1546,10 @@ mod tests {
     /// The round that measures distances keeps an answer only from a host it
     /// asked, and only once.
     ///
-    /// Whatever it keeps, the walk sends a probe per router to. The marker rides
-    /// in every probe, so anyone who can see one can answer under an address
-    /// nobody named, and the capture brings that up beside the trace's own
-    /// requests; either, kept, is an address traced with no exclusion ever
-    /// consulted. A host answers each of the probes the round sends it, too,
-    /// and every answer kept is another walk of the same path.
+    /// Anyone who sees a probe can copy its marker under an address nobody
+    /// named, and the trace's own requests come back up the capture; either,
+    /// kept, would be traced with no exclusion consulted. A duplicate kept
+    /// would be another walk of the same path.
     #[tokio::test(flavor = "current_thread")]
     async fn the_distance_round_keeps_one_answer_from_each_host_it_asked() {
         let (mut tracer, replies) = echo_tracer();
@@ -1778,7 +1578,7 @@ mod tests {
     }
 
     /// A probe as a router would quote it: the IP header plus the transport
-    /// header, built by the same writers that build a real one.
+    /// header, built by the real writers.
     fn quoted_probe(probe: TraceProbe, marker: u16, target: IpAddr, distance: u8) -> Vec<u8> {
         let source = ip(200);
         let (segment, protocol) = match probe {
@@ -1826,10 +1626,8 @@ mod tests {
     /// A quoted probe is matched back to the host and distance it was built
     /// for, under both probe types.
     ///
-    /// The pairing the whole trace rests on. The distance rides in a field
-    /// chosen because it falls inside the eight bytes a quotation guarantees,
-    /// and if that arithmetic is wrong the failure is not a crash: it is a path
-    /// whose hops are all at the wrong distance, which looks like a real answer.
+    /// If the distance field's placement inside the eight guaranteed bytes were
+    /// wrong, every hop would land at the wrong distance and still look real.
     #[test]
     fn a_quoted_probe_names_the_host_and_the_distance_it_was_built_for() {
         for probe in [TraceProbe::Syn { port: 443 }, TraceProbe::Echo] {
@@ -1849,11 +1647,9 @@ mod tests {
 
     /// Somebody else's packet is not attributed to a probe of ours.
     ///
-    /// The capture admits every ICMP error on the host, because an error names
-    /// no ports of its own and cannot be narrowed in a kernel filter. A busy
-    /// machine produces a steady background of them, and one accepted here puts
-    /// a router into a path it is not on: a wrong hop, which nothing
-    /// downstream can tell from a right one.
+    /// The capture admits every ICMP error on the host, since an error cannot be
+    /// narrowed in a kernel filter; one accepted here puts a router into a path
+    /// it is not on.
     #[test]
     fn an_error_about_somebody_elses_packet_is_refused() {
         let probe = TraceProbe::Syn { port: 443 };
@@ -1873,9 +1669,8 @@ mod tests {
 
     /// A quotation cut short of the transport header settles nothing.
     ///
-    /// Eight bytes past the IP header is all RFC 792 guarantees and some routers
-    /// give exactly that or less. Guessing at what is missing would attribute a
-    /// hop on partial evidence.
+    /// Eight bytes past the IP header is all RFC 792 guarantees, and some routers
+    /// give less.
     #[test]
     fn a_truncated_quotation_is_refused() {
         let probe = TraceProbe::Syn { port: 443 };
@@ -1892,9 +1687,8 @@ mod tests {
     /// The distance a hop counter implies, against the four starting values
     /// stacks actually use.
     ///
-    /// The arithmetic is one subtraction; what is worth pinning is the *choice*
-    /// of starting value, since reading a Linux reply against 128 would report
-    /// every host as sixty-four hops further away than it is.
+    /// Pins the *choice* of starting value: a Linux reply read against 128 would
+    /// put every host sixty-four hops further away.
     #[test]
     fn a_hop_counter_says_how_far_a_reply_travelled() {
         assert_eq!(distance_from(64), 0, "a host on this segment");
@@ -1906,11 +1700,8 @@ mod tests {
 
     /// A cached path is handed out as inference, never as measurement.
     ///
-    /// The property the whole cache rests on: a spliced hop is a claim about a
-    /// router this host's probes never met, and a report that presented it as a
-    /// measurement would be overstating what the scan did. Marked at the point
-    /// it leaves the cache rather than by whoever adopts it, so no caller can
-    /// forget.
+    /// A spliced hop is a router this host's probes never met. Marked as it
+    /// leaves the cache, so no caller can forget.
     #[test]
     fn a_spliced_path_is_marked_as_inherited() {
         let cache = PathCache::new();
@@ -1936,8 +1727,8 @@ mod tests {
     /// A router recognised at a *different* distance is not a match.
     ///
     /// Two paths meeting the same router at different distances have not
-    /// converged, one of them went somewhere else first, so splicing on the
-    /// address alone would graft a path that was never travelled.
+    /// converged; splicing on the address alone would graft a path never
+    /// travelled.
     #[test]
     fn a_router_at_another_distance_is_not_the_same_point_in_a_path() {
         let cache = PathCache::new();
@@ -1956,8 +1747,8 @@ mod tests {
 
     /// A gap in a remembered path stays a gap when it is spliced into another.
     ///
-    /// A cache that quietly closed its own holes would hand later traces a path
-    /// shorter than the one measured, renumbering every hop past the hole.
+    /// Otherwise later traces would get a shorter path, with every hop past the
+    /// hole renumbered.
     #[test]
     fn a_silent_hop_survives_being_cached() {
         let cache = PathCache::new();
@@ -1973,14 +1764,10 @@ mod tests {
         assert_eq!(prefix[1].address(), None, "the hole is still a hole");
     }
 
-    /// A trace through a frame sender asks for the neighbour of every host it
-    /// was handed at once, before its first probe, and sends nothing towards a
-    /// neighbour that never answers.
-    ///
-    /// A frame sender resolves a neighbour nobody asked for ahead inside the
-    /// send and holds the trace for the whole wait, which for a neighbour that
-    /// never answers is the resolution's whole budget, paid again for each one
-    /// in turn.
+    /// A trace through a frame sender resolves every host's neighbour at once
+    /// before its first probe, and sends nothing towards a dead one. Resolved
+    /// inside each send, every dead neighbour would cost the whole budget in
+    /// turn.
     #[tokio::test]
     async fn neighbours_behind_a_frame_sender_are_asked_for_before_the_trace() {
         use crate::system::interface::{Link, LinkAddress};
@@ -2018,17 +1805,11 @@ mod tests {
         );
     }
 
-    /// Through the kernel, which asks for a neighbour only once a probe is
-    /// written to it, the first probe to a host whose neighbour it does not
-    /// hold is the one write that asks, and the attempts behind it wait on the
-    /// verdict: a neighbour that never answers is sent nothing more and not
-    /// traced, while a live one, and one the kernel already held, is sent
-    /// every attempt.
-    ///
-    /// Written freely, every attempt to a dead neighbour queues in the kernel
-    /// and is thrown away, and the target reads as one whose path stayed
-    /// silent rather than one nothing reached. Waited on host by host, a wave
-    /// of dead neighbours costs a resolution's wait each.
+    /// Through the kernel, the first probe to an uncached neighbour is the write
+    /// that asks, and the attempts behind it wait on the verdict: a dead
+    /// neighbour is sent nothing more and not traced; a live or cached one gets
+    /// every attempt. New neighbours are all asked for before any second
+    /// attempt, so their resolutions overlap.
     #[tokio::test]
     async fn attempts_behind_the_kernel_asking_for_a_neighbour_wait_on_its_verdict() {
         use crate::system::interface::{Link, LinkAddress};
@@ -2100,17 +1881,11 @@ mod tests {
         );
     }
 
-    /// Hosts whose distance the scan already read from a hop counter go
-    /// straight to their walks, one host at a time, and through the kernel a
-    /// walk's first probe is the write that asks for the host's neighbour.
-    /// Neighbours that stopped answering since the port scan are asked for
-    /// together before the first walk, so a wave of them is given up on
-    /// within one resolution's wait, not a wait apiece in turn.
-    ///
-    /// Asked walk by walk instead, each dead neighbour held the trace for the
-    /// whole wait before the next was asked: four of them, measured in a
-    /// namespace, took a quarter of a minute. The bound is two waits, against
-    /// the four a trace asking in turn takes at the least.
+    /// Hosts with a known distance skip the distance round, so their
+    /// neighbours are asked for together before the first walk and a wave of
+    /// dead ones is given up within one resolution's wait. (Asked walk by walk,
+    /// four took a quarter of a minute in a namespace.) The bound is two waits
+    /// against the four a sequential trace needs.
     #[tokio::test]
     async fn neighbours_of_hosts_with_a_known_distance_are_given_up_together() {
         use crate::scanner::strategy::raw::neighbors::RESOLUTION_WAIT_LIMIT;

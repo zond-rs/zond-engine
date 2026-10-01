@@ -9,38 +9,26 @@
 //! # The active operating-system echo probe
 //!
 //! One ICMP echo request per host, sent where the passive sources concluded
-//! nothing, and read for what the reply says about the stack that sent it.
+//! nothing, and read for what the reply says about the sending stack.
 //!
-//! ## Why this scanner exists
+//! Passive identification needs a host that answered something. A stock Windows
+//! firewall *drops* unsolicited TCP, so a desktop with no service exposed emits
+//! nothing a TCP rule could read (measured on two independent installations).
+//! Many such machines still answer a ping, and the reply (a hop counter of 128,
+//! the request's code echoed or zeroed) is a property of the same stack. This is
+//! the only route to those hosts, under
+//! [`OsDetection::Active`](crate::config::OsDetection).
 //!
-//! Passive identification reads a reply the scan already drew, so it starts
-//! from a host that answered something. The hosts that answer nothing are not
-//! a rare case: a stock Windows firewall *drops* rather than refuses, so a
-//! desktop with no service exposed emits no packet any TCP rule could read:
-//! measured, twice, on two independent installations. A great many of those
-//! machines still answer a ping, and what they put in the reply (a hop counter
-//! of 128, the request's code echoed or zeroed) is a property of the same
-//! stack. This is the only route to those hosts, and it is why
-//! [`OsDetection::Active`](crate::config::OsDetection) exists as a level.
+//! The request carries a non-zero
+//! [`ECHO_PROBE_CODE`](crate::protocols::icmp::ECHO_PROBE_CODE), because stacks
+//! disagree on whether to echo it or write zero. The identifier marks the scan's
+//! replies (filtered in userspace; no kernel filter can express it), and the
+//! sequence names the attempt, so a round trip is timed against its own send.
 //!
-//! ## The probe asks a question, or it is not worth sending
-//!
-//! The request carries [`ECHO_PROBE_CODE`](crate::protocols::icmp::ECHO_PROBE_CODE)
-//! rather than a conformant zero,
-//! because whether a responder echoes a non-zero code or writes zero is a
-//! documented disagreement between stacks: invisible to a probe that never
-//! asked. The identifier is the scan's identity (every other ping on the host
-//! is filtered out by it, in userspace, since no kernel filter can express it),
-//! and the sequence names the attempt, which is what makes a round trip real.
-//!
-//! ## What one reply may claim
-//!
-//! An echo reply carries no options, no window, no sequence number: an
-//! initial hop counter of 64 names *nothing*, because Linux, macOS and the BSDs
-//! all start there. The rule corpus is authored under that constraint, and
-//! [`classify`](crate::fingerprint::os) reports nothing rather than the
-//! least bad guess. A host this scanner cannot name is a host it says nothing
-//! about, which is the same honesty the passive path holds itself to.
+//! An echo reply carries no options, window or sequence number, and an initial
+//! hop counter of 64 names nothing, since Linux, macOS and the BSDs all start
+//! there. The rule corpus is authored under that constraint, and
+//! [`classify`](crate::fingerprint::os) reports nothing when no rule fits.
 
 use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
@@ -68,14 +56,13 @@ use crate::transport::probe::{Emission, ProbeKind, ProbeTransport};
 use crate::{info, success};
 
 /// The payload every echo request carries, so a reply can be checked against
-/// what was sent rather than trusted to have come back whole.
+/// what was sent.
 const PAYLOAD: &[u8] = b"zond-os-probe";
 
 /// How an echo is retransmitted.
 ///
-/// Two attempts rather than three: this phase runs only where the caller opted
-/// in, over hosts the passive sources already found thin, and its verdicts are
-/// family-level. A third attempt buys coverage a ping is unlikely to return.
+/// Two attempts: this phase runs only where the caller opted in, over hosts the
+/// passive sources found thin, and a third attempt rarely draws a ping reply.
 const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
     2,
     Duration::from_millis(200),
@@ -86,10 +73,8 @@ const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
     None,
 );
 
-/// How fast echoes leave the wire. One per millisecond is far slower than the
-/// port scanners: a scan that opted into active detection pays
-/// for its hosts one packet at a time, and this phase is never the thing being
-/// timed.
+/// How fast echoes leave the wire: one per millisecond, far slower than the port
+/// scanners, since this phase covers few hosts.
 const SEND_TICK: Duration = Duration::from_millis(1);
 
 /// Patience after the last probe resolves or exhausts, so a reply from a slow
@@ -99,14 +84,13 @@ const QUIET_FLOOR: Duration = Duration::from_secs(1);
 /// This host's own milliseconds since midnight UT, which is the scale RFC 792
 /// puts a timestamp on.
 ///
-/// The reference an offset is measured against. Read at the moment a reply is
-/// folded rather than when the probe went out, so it includes the return path;
-/// see [`TimestampReply::offset_from`](crate::protocols::icmp::TimestampReply::offset_from)
-/// for why a millisecond or two does not matter to what this is for.
+/// The reference an offset is measured against. Read when a reply is folded,
+/// so it includes the return path; see
+/// [`TimestampReply::offset_from`](crate::protocols::icmp::TimestampReply::offset_from)
+/// for why a millisecond or two does not matter.
 ///
-/// Zero where the clock is before the Unix epoch, which is a machine with no
-/// clock rather than a case worth a signature of its own: the offset it produces
-/// is then plainly wrong rather than quietly plausible.
+/// Zero where the clock is before the Unix epoch, so the offset is plainly
+/// wrong, not plausible.
 fn local_millis_since_midnight() -> u32 {
     const MILLIS_PER_DAY: u128 = 86_400_000;
     std::time::SystemTime::now()
@@ -118,50 +102,43 @@ fn local_millis_since_midnight() -> u32 {
 /// Sends one ICMP echo per host where passive evidence named nothing, and files
 /// what the replies say.
 ///
-/// Targets are chosen by the caller from the host store, because "the passive
-/// sources concluded nothing" is a fact about the store rather than about the
-/// plan, and it only becomes true once those sources have finished.
+/// The caller chooses targets from the host store once the passive sources have
+/// finished.
 pub struct OsEchoScanner {
     ctx: ScanContext,
     transport: ProbeTransport,
     /// The IP-header state every echo carries. An evasion profile contributes
-    /// only its hop limit: an echo has no port to pin, and reshaping it would
-    /// change the very reply this scanner reads a stack's shape from. See
+    /// only its hop limit, since reshaping the echo would change the reply read.
+    /// See
     /// [`EvasionProfile::hop_limited_emission`](crate::evasion::EvasionProfile::hop_limited_emission).
     emission: Emission,
     resolver: SourceResolver,
-    /// The identifier every request carries, and the only thing separating this
-    /// scan's replies from every other ping on the host.
+    /// The identifier every request carries, separating this scan's replies from
+    /// every other ping on the host.
     identifier: u16,
     /// How many requests have left, which is also the next sequence number.
-    /// Sequence numbers name attempts, and the ledger arms with them, so a
-    /// round trip is measured against the send it answers.
     next_sequence: u16,
     /// Targets not yet asked.
     pending: VecDeque<IpAddr>,
     /// How far this pass has read the resolution of each target's neighbour,
-    /// so no request is handed to a transport whose send would wait on one
-    /// or be lost behind it. See [`NeighborGates`].
+    /// so no send waits on one or is lost behind it. See [`NeighborGates`].
     neighbors: NeighborGates,
     /// The outstanding probes, the retry queue and the run's counters, shared
-    /// with the two discovery sweeps. The ledger carries the sequence of the
-    /// attempt, so a round trip is measured against the send it answers.
+    /// with the two discovery sweeps. The ledger carries each attempt's
+    /// sequence, so a round trip is measured against the send it answers.
     sweep: HostSweep<u16>,
     /// Which host each sequence went to, since a reply names its attempt, not
     /// its target.
     by_sequence: HashMap<u16, IpAddr>,
-    /// The hard ceiling on this run, derived from the longest a probe's
-    /// schedule can take: every attempt at the retry ceiling, which is where
-    /// hosts that answered slowly time the rest, or at the gap the scan keeps
-    /// between two probes at one host where that is longer, behind the
-    /// longest its first attempt can be held while its neighbour is asked for.
+    /// The hard ceiling on this run: every attempt at the retry ceiling (or the
+    /// per-host gap where longer), plus the longest a first attempt can be held
+    /// while its neighbour is resolved.
     deadline: Instant,
-    /// How much of the time hold-downs keep requests back the deadline has
-    /// been given.
+    /// How much hold-down time the deadline has already been extended by.
     held_allowed: HeldAllowance,
-    /// Why requests did not leave, split by whose fact it was: this host's
-    /// send path, or an address nothing reaches from here; and the targets
-    /// held through the kernel's hold-down on their neighbour.
+    /// Why requests did not leave: this host's send path, or an address nothing
+    /// reaches from here; and the targets held through the kernel's hold-down on
+    /// their neighbour.
     faults: SendFaults,
 }
 
@@ -177,9 +154,9 @@ enum Attempt {
 }
 
 impl OsEchoScanner {
-    /// Opens the ICMP transport this scanner needs and takes the targets to
-    /// ask. Fails where the raw socket cannot be had, which is the caller's
-    /// signal that this level of detection is unavailable rather than silent.
+    /// Opens the ICMP transport and takes the targets to ask. Fails where the
+    /// raw socket cannot be had, telling the caller this level of detection is
+    /// unavailable.
     pub fn new(
         ctx: ScanContext,
         targets: Vec<IpAddr>,
@@ -200,10 +177,8 @@ impl OsEchoScanner {
         ))
     }
 
-    /// Builds the scanner around a transport the caller opened, which is the
-    /// seam a test or a custom orchestration drives it through. The identifier
-    /// is drawn here, since the transport came from somewhere that could not
-    /// have known it.
+    /// Builds the scanner around a transport the caller opened, for tests and
+    /// custom orchestration. The identifier is drawn here.
     pub fn with_transport(
         ctx: ScanContext,
         targets: Vec<IpAddr>,
@@ -219,9 +194,8 @@ impl OsEchoScanner {
         identifier: u16,
         emission: Emission,
     ) -> Self {
-        // A scan-wide gap is a slower ticker, and every attempt at every
-        // target waits it out; where it is the slower of the two it is how
-        // long sending takes.
+        // Where a scan-wide gap is slower than the tick, it sets how long
+        // sending takes.
         let spaced = ctx
             .scan_probe_interval()
             .unwrap_or_default()
@@ -237,11 +211,9 @@ impl OsEchoScanner {
             Duration::ZERO
         };
 
-        // Timed from what the phases before this one measured, since every
-        // target is a host the scan already found and most were timed finding
-        // it. From first principles, a host behind a path slower than the
-        // first timeout has every attempt given up on before it can answer.
-        // As the port scans' `seed_timing` is, for the reasons it gives.
+        // Seeded from what earlier phases measured, as the port scans'
+        // `seed_timing` is: from first principles, a host behind a path slower
+        // than the first timeout has every attempt given up on.
         let mut ledger = ProbeLedger::new(RETRY_POLICY, 256);
         let wanted: std::collections::HashSet<IpAddr> = targets.iter().copied().collect();
         for host in ctx.store.iter() {
@@ -271,26 +243,15 @@ impl OsEchoScanner {
 
     /// Releases one probe: a retry first, then a target not yet asked.
     ///
-    /// Retries first for the same reason the routed sweep puts them first: a
-    /// retry is an obligation the scan already owns, and queueing it behind
-    /// every first attempt would send it long after the moment it was scheduled
-    /// for.
+    /// Retries go first so they leave near their scheduled moment.
     fn send_one(&mut self, now: Instant) {
-        // A queued retry first, then a fresh target, and either may be turned
-        // away by the gap the scan keeps between probes at one host. Both queues
-        // are asked, because unlike a sweep this pass revisits addresses it has
-        // already probed.
+        // Either queue may be turned away by the per-host gap; this pass
+        // revisits addresses already probed. The gap spaces the echo and
+        // timestamp *pair*, which travel back to back (see `send_timestamp` and
+        // `ZondConfig::host_probe_interval`).
         //
-        // What the gap spaces here is the *pair* below: an IPv4 target gets an
-        // echo and a timestamp back to back, and splitting them would mean
-        // deferring half a probe. See `send_timestamp` for why they travel
-        // together, and `ZondConfig::host_probe_interval` for the two-packet
-        // consequence, which is written down there rather than left to be
-        // measured.
-        //
-        // A retry's probe has its clock stopped while it is queued (see
-        // `HostSweep::retries`), and one whose probe was answered meanwhile is
-        // dropped unsent.
+        // A queued retry's clock is stopped (see `HostSweep::retries`); one
+        // answered meanwhile is dropped unsent.
         self.sweep
             .retries
             .retain(|target| self.sweep.ledger.contains(target));
@@ -301,28 +262,24 @@ impl OsEchoScanner {
                 None => return,
             },
         };
-        // Taken last, once nothing else holds the target back, so a target
-        // held for its neighbour spends no slot. Turned away only where
-        // another pass took the slot since the target was chosen.
+        // Claimed last, so a target held for its neighbour spends no slot.
+        // Fails only where another pass took the slot since the target was
+        // chosen.
         let Ok(claim) = self.ctx.claim_probe(target) else {
             self.queue(retry).push_back(target);
             return;
         };
         let sent = self.send_pair(target, now);
-        // A pair that got nowhere gives its slot back, on the same reasoning
-        // `record_send` gives for keeping a refused probe out of the congestion
-        // window. The timestamp is not consulted: it is the smaller half of
-        // the probe and IPv4-only, so a target that answered neither question
-        // would otherwise have its slot decided by which family it is in.
+        // A pair that got nowhere gives its slot back (see `record_send`). Only
+        // the echo counts: the timestamp is IPv4-only, and the refund should
+        // not depend on the address family.
         if !matches!(sent, Attempt::Sent(_)) {
             self.ctx.refund_probe(claim);
         }
-        // A retry restarts its probe's clock whatever became of it: from the
-        // send, which re-arms it, or from now for one that did not leave, whose
-        // attempt stays charged so an unroutable target exhausts on schedule
-        // rather than waiting outstanding forever. One held for a hold-down
-        // goes back to its queue, a retry's clock still stopped, to be sent
-        // once the hold-down is over.
+        // A retry restarts its clock: from the send, or from now if it did not
+        // leave, with the attempt still charged so an unroutable target
+        // exhausts on schedule. One held for a hold-down goes back to its queue,
+        // clock still stopped.
         match sent {
             Attempt::Sent(sequence) if retry => {
                 self.sweep.ledger.rearm(target, target, sequence, now);
@@ -338,20 +295,14 @@ impl OsEchoScanner {
     /// queue of targets not yet asked, whose host may be probed now, rotating
     /// past the ones that may not.
     ///
-    /// Three things may turn one away: the gap the scan keeps between probes
-    /// at one host, a neighbour still being asked for (see
-    /// [`NeighborGates::admit`]), and a kernel's hold-down on it (see
-    /// [`SendFaults::hold`]). Either sends it to the back rather than out,
-    /// because a probe dropped on that answer is a host the pass silently
-    /// stops asking about. A target whose neighbour never answered is taken
-    /// out and filed unreached, with nothing sent it.
+    /// Three things send a target to the back of the queue: the per-host gap, a
+    /// neighbour still being resolved (see [`NeighborGates::admit`]), and a
+    /// kernel hold-down (see [`SendFaults::hold`]). A target whose neighbour
+    /// never answered is taken out and filed unreached, with nothing sent.
     ///
-    /// The walk is bounded by the queue's length at entry, so a queue in which
-    /// nothing is ready costs one pass over it rather than being walked until
-    /// something becomes ready. Walked past the targets held for their
-    /// neighbour rather than stopping at the first, so every new neighbour in
-    /// the queue is asked for on one call and a wave of them costs one wait,
-    /// and a held retry does not keep the targets behind it unasked.
+    /// The walk is bounded by the queue's length at entry and does not stop at
+    /// the first held target, so every new neighbour in the queue is asked for
+    /// in one call and a wave of them costs one wait.
     fn take_ready(&mut self, retries: bool, now: Instant) -> Option<IpAddr> {
         let waiting = self.queue(retries).len();
         for _ in 0..waiting {
@@ -385,9 +336,8 @@ impl OsEchoScanner {
     }
 
     /// Files `target` as an address nothing reaches: its neighbour did not
-    /// answer, or its resolution never concluded, so no request was sent it. A retry's probe restarts its clock
-    /// from now, with the attempt it was charged still counted, so it runs
-    /// out on schedule rather than waiting outstanding.
+    /// answer or never resolved, so nothing was sent. A retry's clock restarts
+    /// from now, the attempt still charged, so it runs out on schedule.
     fn unreached(&mut self, target: IpAddr, retry: bool, now: Instant) {
         let why = self.neighbors.refusal(target);
         if self.faults.unroutable.is_none() {
@@ -433,17 +383,15 @@ impl OsEchoScanner {
                 true
             }
             Err(e) => {
-                // The kernel's first hold-down on the target's neighbour is
-                // no fact about the address: nothing was sent, and the target
-                // is asked again after it. The deadline is given the time,
-                // once for holds that overlap.
+                // A hold-down on the neighbour: nothing was sent and the target
+                // is asked again after it. The deadline is extended once for
+                // overlapping holds.
                 if let Some(until) = self.faults.hold(target, &e) {
                     self.deadline += self.held_allowed.take(now, until);
                     return Attempt::Held;
                 }
-                // An address nothing reaches is the address's fact and is
-                // reported against it; only this host's own refusals are the
-                // pass failing. Each said once. See `SendFaults`.
+                // Unroutable is the address's fact; only this host's own
+                // refusals are the pass failing. Each said once. See `SendFaults`.
                 if e.is_unroutable() {
                     if self.faults.unroutable.is_none() {
                         info!(verbosity = 2, "{target} unreachable ({e:#})");
@@ -476,20 +424,15 @@ impl OsEchoScanner {
     /// Asks the same target what time it thinks it is, where the family has a
     /// message for the question.
     ///
-    /// A second packet per IPv4 target, which is the cost, and it buys the two
-    /// things an echo cannot. A filter written against ping frequently passes
-    /// type 13, so a host that answers nothing here still answers this; and the
-    /// reply carries the target's own clock, which no other probe in this engine
-    /// obtains. The pass this runs in covers only hosts nothing else could name,
-    /// so the doubling is of a small number.
+    /// A second packet per IPv4 target. Filters written against ping often pass
+    /// type 13, so a host silent to the echo may answer this, and the reply
+    /// carries the target's own clock, which no other probe here obtains.
     ///
-    /// IPv4 only. RFC 4443 defines no timestamp message, so an IPv6 target has
-    /// nothing to be asked and is left with the echo alone.
+    /// IPv4 only: RFC 4443 defines no timestamp message.
     ///
-    /// The ledger is not armed a second time. It is keyed by target and already
-    /// holds the echo's attempt; a timestamp reply resolves that entry without
-    /// claiming its round trip, since the two probes are not the same question
-    /// and timing one against the other would report a measurement nobody made.
+    /// The ledger is not armed a second time. It already holds the echo's
+    /// attempt under the target; a timestamp reply resolves that entry without
+    /// claiming a round trip, since it would be timed against the echo's send.
     fn send_timestamp(&mut self, source: IpAddr, target: IpAddr) {
         if !target.is_ipv4() {
             return;
@@ -509,11 +452,8 @@ impl OsEchoScanner {
                 self.by_sequence.insert(sequence, target);
             }
             Err(e) => {
-                // Not recorded as a send failure of its own: the echo beside it
-                // is what this pass is counted in, and a host whose timestamp
-                // could not be sent is still being asked. Nor logged as an
-                // error where the echo beside it already said the address
-                // cannot be reached.
+                // Not counted as a send failure: the pass is counted in echoes.
+                // Not logged when unroutable, since the echo already said so.
                 if !e.is_unroutable() {
                     error!(
                         verbosity = 2,
@@ -532,20 +472,16 @@ impl OsEchoScanner {
             self.sweep.audit.record_off_target();
             return;
         }
-        // An ICMP message does not say which family's numbering it belongs to;
-        // the address it arrived from does.
+        // The ICMP numbering family comes from the source address.
         let over_ipv6 = reply.source.is_ipv6();
         let sequence = match icmp::classify_echo_reply(&reply.bytes, self.identifier, over_ipv6) {
             icmp::EchoReply::Ours { sequence } => sequence,
-            // Not an echo reply. It may still be the answer to the timestamp
-            // sent beside it, which is the whole reason that probe goes out: a
-            // host behind a filter that drops ping answers here and nowhere
-            // else.
+            // Not an echo reply; it may answer the timestamp sent beside it.
             icmp::EchoReply::Other { .. } if !over_ipv6 => {
                 return self.handle_timestamp_reply(reply, now);
             }
-            // Every other ping on the host arrives here: the identifier cannot
-            // be expressed in a kernel filter, so this is where it is enforced.
+            // Every other ping on the host lands here; no kernel filter can
+            // express the identifier.
             _ => {
                 self.sweep.audit.record_off_target();
                 return;
@@ -558,8 +494,7 @@ impl OsEchoScanner {
 
         let resolution = self.sweep.ledger.resolve(&target, Some(sequence), now);
         if resolution.is_none() {
-            // A duplicate, or an answer to a probe already written off. It
-            // proved the host alive but yields no sample.
+            // A duplicate, or an answer to a probe already written off.
             self.sweep.audit.record_reply_without_rtt();
             return;
         }
@@ -586,8 +521,7 @@ impl OsEchoScanner {
     /// Reads one ICMP message as an answer to the timestamp probe.
     ///
     /// The host is recorded as up and its clock offset noted. No round trip is
-    /// credited: the ledger timed the echo, and a reply to a different probe is
-    /// not a measurement of that one.
+    /// credited, since the ledger timed the echo.
     fn handle_timestamp_reply(&mut self, reply: CapturedSegment, now: Instant) {
         let icmp::TimestampAnswer::Ours {
             sequence,
@@ -602,13 +536,11 @@ impl OsEchoScanner {
             return;
         };
 
-        // Resolved without a token, so the entry retires and no attempt is
-        // credited with a round trip it did not measure.
+        // No token, so the entry retires without crediting a round trip.
         let resolution = self.sweep.ledger.resolve(&target, None, now);
         if resolution.is_none() {
-            // The echo beside it already answered, or the probe was written
-            // off. The host is alive either way and the clock is still worth
-            // recording.
+            // The echo already answered, or the probe was written off; the
+            // clock is still worth recording.
             self.sweep.audit.record_reply_without_rtt();
         } else {
             self.sweep.audit.record_host_found(None);
@@ -616,8 +548,7 @@ impl OsEchoScanner {
 
         let detail = match readings.offset_from(local_millis_since_midnight()) {
             Some(offset) => format!("timestamp reply to an OS probe, clock {offset} ms from ours"),
-            // A target whose readings are not times of day still answered, which
-            // is the half of this that finds hosts a ping cannot.
+            // Still an answer, from a host a ping may not reach.
             None => {
                 "timestamp reply to an OS probe, on a clock that is not a time of day".to_string()
             }
@@ -636,13 +567,10 @@ impl OsEchoScanner {
     /// Reads the operating system off the reply that just resolved, and folds
     /// it into whatever the host already carries.
     ///
-    /// The same shape as the port scanner's passive reading: a whole reply is
-    /// one item of evidence, combined with the other sources on the host
-    /// through [`os::resolve`], merged by accuracy so nothing is overwritten so
-    /// much as outranked.
+    /// A whole reply is one item of evidence, combined with the host's other
+    /// sources through [`os::resolve`] and merged by accuracy.
     fn identify(&self, target: IpAddr, reply: &CapturedSegment) {
-        // `None` means no IP header was ever there to read, a synthetic
-        // receive stream, rather than that nothing notable was in one.
+        // `None` means no IP header was kept (a synthetic receive stream).
         let Some(observation) = reply.observation else {
             return;
         };
@@ -664,9 +592,8 @@ impl OsEchoScanner {
     /// waiting for more, bounded by what is queued on entry.
     ///
     /// A loop held up past a timeout wakes to the answer and the expired timer
-    /// at once, and read in the other order a host's last attempt is written
-    /// off before its answer is seen: the answer finds no probe, and the
-    /// reply this pass exists to read is dropped unread.
+    /// at once; replies must be read first, or the last attempt is written off
+    /// and its answer dropped.
     fn read_waiting_replies(&mut self) {
         let waiting = self.transport.rx.len();
         for _ in 0..waiting {
@@ -684,12 +611,6 @@ impl OsEchoScanner {
     /// Sends one echo request per target and reads what answers for the shape
     /// of the stack behind it.
     ///
-    /// Not `discover_hosts`, and not a [`HostScanner`](super::super::HostScanner).
-    /// The trait says a strategy that finds which hosts are reachable, and every
-    /// address here came out of the store because something else already found
-    /// it. Nothing dispatches this dynamically, so an impl would buy a method
-    /// name and the method name would be untrue.
-    ///
     /// `Ok` once the run reached its end, including an end forced by
     /// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort), and
     /// `Err` only where the probe itself could not do its job.
@@ -699,13 +620,10 @@ impl OsEchoScanner {
 
         let reason = loop {
             let now = Instant::now();
-            // Answers already waiting first, so one that arrived before its
-            // probe came due settles it before the timer can retire it; see
-            // the port scans' `read_waiting_replies`.
+            // Waiting answers first, so the timer cannot retire their probes.
             self.read_waiting_replies();
-            // An exhausted probe settles nothing: this asks hosts the scan
-            // already found what they run, and a scan not counted in addresses
-            // has no position to settle against.
+            // Exhausted probes settle nothing: this pass is not counted in
+            // addresses.
             self.sweep.service_retries_without_settling(&self.ctx, now);
 
             if let Some(cause) = self.ctx.handle.stopped() {
@@ -801,9 +719,8 @@ mod tests {
     /// Builds the ICMP echo reply a stack sends, from the request's own
     /// identifier and sequence, under an IP header starting at `hops`.
     ///
-    /// Assembled from the RFCs rather than through the engine's own builders,
-    /// so a shared misreading of what an echo reply is cannot pass for
-    /// agreement.
+    /// Assembled from the RFCs by hand, so a misreading shared with the engine's
+    /// builders cannot pass as agreement.
     fn echo_reply(request: &[u8], hops: u8) -> CapturedSegment {
         let identifier = u16::from_be_bytes([request[4], request[5]]);
         let sequence = u16::from_be_bytes([request[6], request[7]]);
@@ -866,13 +783,8 @@ mod tests {
         )
     }
 
-    /// The pass outlasts the schedule of the last host it asks, with every
-    /// attempt timed as long as measurement may make it.
-    ///
-    /// Hosts that answered slowly time the rest from what they showed, at up
-    /// to the retry ceiling on every attempt, the first included. A deadline
-    /// sized for an unmeasured schedule stops the pass while its last host
-    /// still has attempts to spend, and that host goes unidentified.
+    /// The pass outlasts the last host's schedule with every attempt timed at
+    /// the retry ceiling, which slow hosts can push every attempt to.
     #[tokio::test(flavor = "current_thread")]
     async fn the_pass_outlasts_a_probe_timed_at_the_ceiling_on_every_attempt() {
         let (_session, ctx) = ScanSession::new();
@@ -888,9 +800,8 @@ mod tests {
         );
     }
 
-    /// A pass keeping a gap between two probes at one host outlasts the
-    /// schedule of the last host it asks with every attempt waiting out that
-    /// gap, since a retry held for the gap waits with its clock stopped.
+    /// With a per-host gap, the pass outlasts the last host's schedule with
+    /// every attempt waiting out the gap (a held retry's clock is stopped).
     #[tokio::test(flavor = "current_thread")]
     async fn a_spaced_pass_outlasts_every_attempt_waiting_out_the_gap() {
         let gap = Duration::from_secs(60);
@@ -909,13 +820,8 @@ mod tests {
         );
     }
 
-    /// A host an earlier phase timed is asked on that timing, not on the
-    /// guess an unmeasured path starts from.
-    ///
-    /// This pass revisits hosts the scan has already found, and most of them
-    /// were timed finding them. Started from first principles instead, a host
-    /// behind a path slower than the first timeout has every attempt given up
-    /// on before its answer can arrive, and goes unidentified.
+    /// A host an earlier phase timed is asked on that timing, so a path slower
+    /// than the default first timeout is still answered.
     #[tokio::test(flavor = "current_thread")]
     async fn a_host_already_timed_is_asked_on_its_own_timing() {
         let path = Duration::from_millis(1_900);
@@ -937,11 +843,8 @@ mod tests {
         );
     }
 
-    /// The whole path this scanner exists for: a host that answered nothing a
-    /// TCP probe could read, named from the one reply it does give. A stock
-    /// Windows firewall drops rather than refuses, and 128 is the NT-family
-    /// hop counter, that one field is what the corpus's Windows echo rule
-    /// keys on.
+    /// A host silent to TCP is named from its echo reply: 128 is the NT-family
+    /// hop counter the corpus's Windows echo rule keys on.
     #[tokio::test(flavor = "current_thread")]
     async fn a_windows_hop_counter_in_an_echo_reply_names_windows() {
         let (session, ctx) = ScanSession::new();
@@ -962,8 +865,7 @@ mod tests {
     }
 
     /// A host whose first echo is lost and whose answer to the second arrives
-    /// while the sending thread is held for `stall`: the pass stopped in its
-    /// tracks with the answer already waiting for it.
+    /// while the sending thread is held for `stall`.
     struct StalledAfterAnswering {
         stall: Duration,
         replies: mpsc::Sender<CapturedSegment>,
@@ -996,13 +898,8 @@ mod tests {
         }
     }
 
-    /// An answer that was waiting when its probe ran out of attempts is still
-    /// read as the answer, however late the loop gets round to either.
-    ///
-    /// A loop held up for longer than a timeout wakes to find both the answer
-    /// and the expired timer. Serviced timer first, the host's last attempt is
-    /// written off and the answer behind it finds no probe, so the one reply
-    /// this pass exists to read is dropped and the host goes unidentified.
+    /// An answer waiting when its probe ran out of attempts is still read: the
+    /// stalled loop wakes to the answer and the expired timer at once.
     #[tokio::test(flavor = "current_thread")]
     async fn an_answer_waiting_when_its_probe_runs_out_is_still_read() {
         let (session, ctx) = ScanSession::new();
@@ -1033,10 +930,8 @@ mod tests {
         );
     }
 
-    /// A Unix-alike hop counter names nothing, on purpose, and this is the
-    /// record of why: Linux, macOS and the BSDs all start at 64 and an echo
-    /// reply carries nothing else to separate them. The corpus refuses that
-    /// rule; this test holds the scanner to the same refusal.
+    /// A hop counter of 64 names nothing: Linux, macOS and the BSDs all start
+    /// there and an echo reply carries nothing else to separate them.
     #[tokio::test(flavor = "current_thread")]
     async fn a_unix_hop_counter_in_an_echo_reply_names_nothing() {
         let (session, ctx) = ScanSession::new();
@@ -1053,12 +948,8 @@ mod tests {
         assert_eq!(host.status(), HostStatus::Up);
     }
 
-    /// A host the sender cannot reach is reported unreached, and only a
-    /// refusal of this host's own is the pass failing.
-    ///
-    /// A dead neighbour's every request is refused with the same answer, and
-    /// read as a failure it would report the pass broken for a fact about the
-    /// address, the way the port scanners and the sweeps do not.
+    /// A host the sender cannot reach is reported unreached; only a refusal of
+    /// this host's own fails the pass.
     #[tokio::test(flavor = "current_thread")]
     async fn an_address_that_cannot_be_reached_is_not_a_failed_pass() {
         struct Refusing(fn() -> SendError);
@@ -1097,13 +988,9 @@ mod tests {
         }
     }
 
-    /// A request the kernel refused for a hold-down on the target's
-    /// neighbour, `EHOSTDOWN` on macOS, is sent again once the hold-down is
-    /// over, and the target is not filed unreached on it; refused for a second
-    /// hold-down after waiting one out, the target is.
-    ///
-    /// Filed on the first, a host whose neighbour slept through one
-    /// resolution, whoever asked for it, was never asked what it runs.
+    /// A request refused for a hold-down on the target's neighbour (`EHOSTDOWN`
+    /// on macOS) is sent again once it is over. Refused for a second hold-down
+    /// after waiting one out, the target is filed unreached.
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn a_request_refused_for_a_hold_down_is_sent_after_it() {
@@ -1127,7 +1014,7 @@ mod tests {
                 _zone: Option<u32>,
                 _emission: Emission,
             ) -> Result<(), SendError> {
-                // An echo request, not the timestamp beside it.
+                // Echo requests only.
                 if segment.first() != Some(&8) {
                     return Ok(());
                 }
@@ -1174,15 +1061,10 @@ mod tests {
         }
     }
 
-    /// Every other ping on the host is filtered out by the identifier, in
-    /// userspace, because no kernel filter can express it. A reply carrying a
-    /// different identifier is not this scan's answer and must resolve nothing:
-    /// not name the host, not even mark it up.
+    /// A reply carrying a different identifier must neither name the host nor
+    /// mark it up.
     #[tokio::test(flavor = "current_thread")]
     async fn somebody_elses_ping_is_not_our_answer() {
-        // A link that answers nothing: this host's own probe goes unanswered,
-        // and the only reply that arrives is another ping's, carrying an
-        // identifier this scan never sent.
         struct Silent;
 
         impl ProbeSender for Silent {
@@ -1203,8 +1085,7 @@ mod tests {
         let transport = ProbeTransport::from_parts(Box::new(Silent), rx);
         let mut scanner = OsEchoScanner::with_transport(ctx.clone(), vec![TARGET], transport);
 
-        // The reply to somebody else's ping, with a Windows hop counter that
-        // would name the host were it read.
+        // Somebody else's ping reply, with a Windows hop counter.
         let mut message = Vec::with_capacity(8 + PAYLOAD.len());
         message.extend_from_slice(&[0, 0, 0, 0]);
         message.extend_from_slice(&0xBEEFu16.to_be_bytes()); // not our identifier
@@ -1233,10 +1114,6 @@ mod tests {
 
         scanner.probe().await.expect("the phase runs");
 
-        // The foreign reply was declined before anything was written: no
-        // host record exists, because nothing this scan drew said anything
-        // about the address. A reply it did not draw must not even prove it
-        // alive.
         assert!(
             session.hosts().get(TARGET).is_none(),
             "a foreign identifier resolves nothing, records nothing"
@@ -1263,7 +1140,7 @@ mod tests {
         }
     }
 
-    /// A scanner over `target` whose link records rather than answers.
+    /// A scanner over `target` whose link records and never answers.
     fn recording(ctx: &ScanContext, target: IpAddr) -> (OsEchoScanner, Recording) {
         use crate::system::interface::{Link, LinkAddress, SourceResolver};
         use std::net::{Ipv4Addr, Ipv6Addr};
@@ -1273,9 +1150,8 @@ mod tests {
         let transport = ProbeTransport::from_parts(Box::new(link.clone()), rx as CaptureStream);
         let mut scanner = OsEchoScanner::with_transport(ctx.clone(), vec![target], transport);
 
-        // A fixed resolver, not the host's: `from_system` can find no route to a
-        // documentation target under the suite's parallel load. Both families
-        // on-link so every target these tests use resolves.
+        // A fixed resolver: `from_system` can find no route to a documentation
+        // target under the suite's parallel load. Both families on-link.
         scanner.resolver =
             SourceResolver::from_links(&[Link::new("test0", 0).with_addresses(vec![
                 LinkAddress::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24),
@@ -1288,12 +1164,10 @@ mod tests {
         (scanner, link)
     }
 
-    /// A timestamp reply to `request`, built from the RFC 792 layout rather than
-    /// from this crate's own reader.
+    /// A timestamp reply to `request`, built by hand from the RFC 792 layout.
     fn timestamp_reply(request: &[u8], readings: [u32; 3]) -> CapturedSegment {
         let mut bytes = vec![14u8, 0, 0, 0];
-        // The identifier and sequence sit where an echo puts them, and a reply
-        // carries both back unchanged.
+        // Identifier and sequence, carried back unchanged.
         bytes.extend_from_slice(&request[4..8]);
         for value in readings {
             bytes.extend_from_slice(&value.to_be_bytes());
@@ -1310,8 +1184,7 @@ mod tests {
         }
     }
 
-    /// An IPv4 target is asked twice, and the second question is the one a ping
-    /// filter is least likely to have been written against.
+    /// An IPv4 target is sent an echo and a timestamp request.
     #[tokio::test(flavor = "current_thread")]
     async fn an_ipv4_target_is_asked_for_a_timestamp_as_well() {
         let (_session, ctx) = ScanSession::new();
@@ -1335,8 +1208,7 @@ mod tests {
         );
     }
 
-    /// The whole point of the probe: a host that answers no ping is still found
-    /// when it answers a timestamp, which is the filter case type 13 gets past.
+    /// A host that answers no ping is still found when it answers a timestamp.
     #[tokio::test(flavor = "current_thread")]
     async fn a_host_that_answers_only_a_timestamp_is_still_found() {
         let (session, ctx) = ScanSession::new();
@@ -1345,7 +1217,7 @@ mod tests {
         scanner.send_one(Instant::now());
         let timestamp_request = link.0.lock().expect("the log")[1].clone();
 
-        // The echo goes unanswered; only the timestamp comes back.
+        // Only the timestamp comes back.
         scanner.handle_reply(
             timestamp_reply(&timestamp_request, [0, 1_000, 1_000]),
             Instant::now(),
@@ -1361,8 +1233,7 @@ mod tests {
         );
     }
 
-    /// The offset is what the probe adds beyond liveness, and it reaches the
-    /// report in words rather than being computed and dropped.
+    /// The clock reading reaches the host record's evidence.
     #[tokio::test(flavor = "current_thread")]
     async fn the_targets_clock_offset_reaches_the_host_record() {
         let (session, ctx) = ScanSession::new();
@@ -1371,8 +1242,7 @@ mod tests {
         scanner.send_one(Instant::now());
         let request = link.0.lock().expect("the log")[1].clone();
 
-        // A clock that is not a time of day at all, which is reported as such
-        // rather than folded into a plausible-looking offset.
+        // A clock that is not a time of day is reported as such.
         scanner.handle_reply(
             timestamp_reply(&request, [0, 0x8000_0000, 0x8000_0000]),
             Instant::now(),
@@ -1394,9 +1264,7 @@ mod tests {
         );
     }
 
-    /// An IPv6 target is asked nothing of the kind, because RFC 4443 defines no
-    /// timestamp message and a probe of that shape would be bytes no stack has
-    /// ever been asked to parse.
+    /// An IPv6 target is sent no timestamp: RFC 4443 defines no such message.
     #[tokio::test(flavor = "current_thread")]
     async fn an_ipv6_target_is_sent_no_timestamp() {
         let (_session, ctx) = ScanSession::new();
@@ -1410,9 +1278,7 @@ mod tests {
         assert_eq!(sent[0][0], 128, "an ICMPv6 echo request");
     }
 
-    /// Somebody else's timestamp exchange is not this scan's answer. The capture
-    /// admits every ICMP message on the host, so this is where the identifier is
-    /// enforced.
+    /// A timestamp reply with another identifier finds nothing.
     #[tokio::test(flavor = "current_thread")]
     async fn another_scans_timestamp_reply_finds_nothing() {
         let (session, ctx) = ScanSession::new();
@@ -1431,15 +1297,10 @@ mod tests {
         );
     }
 
-    /// Echo requests through a frame sender go to no neighbour still being
-    /// asked for: every new neighbour is asked for at once, the ones that never
-    /// answer are reported unreached with nothing sent them, and a live one
-    /// among them is asked.
-    ///
-    /// A frame sender resolves a neighbour nobody asked for ahead inside the
-    /// send and holds the pass for the whole wait, which for a neighbour that
-    /// never answers is the resolution's whole budget, paid again for each one
-    /// in turn.
+    /// Through a frame sender every new neighbour is resolved at once: dead ones
+    /// are reported unreached with nothing sent, and a live one is asked.
+    /// Resolved one at a time inside the send, each dead neighbour would cost
+    /// the whole resolution budget.
     #[tokio::test]
     async fn neighbours_behind_a_frame_sender_are_asked_for_together() {
         use crate::system::interface::{Link, LinkAddress};
