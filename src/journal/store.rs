@@ -66,6 +66,7 @@ use super::format::JournalError;
 use super::lock::{Lock, LockRefused, LockState};
 use super::manifest::{JobOptions, JournalManifest, Plan, PlanChanged};
 use super::ownership::Kind;
+use super::paths::{ID_ALPHABET, ID_CHARS};
 use super::settle::Settlements;
 use crate::detect::compute::{DetectionLine, DetectionRunRecord, PortRunsRecord};
 use crate::model::host::Host;
@@ -1651,21 +1652,6 @@ fn read_checkpoint(directory: &Path) -> Result<Checkpoint, JournalError> {
     }
 }
 
-/// The characters an id is written in: Crockford base32, which has no letters a
-/// reader can mistake for digits.
-const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-/// How many characters an id is.
-///
-/// Sixteen: the millisecond the scan started, then randomness. Shorter than a
-/// ULID's twenty-six so a listing of ids fits a terminal and an id can be typed.
-///
-/// The ten characters saved all come off the random half. Millisecond timing keeps ids
-/// sorted in run order and distinguishes scans close together in time. That leaves 32
-/// random bits for scans started in the same millisecond, and a collision just mints
-/// another id; see [`claim_directory`].
-const ID_CHARS: usize = 16;
-
 /// Milliseconds, as a ULID counts them, reaching the year 10 889.
 const ID_TIME_BITS: u32 = 48;
 
@@ -1686,11 +1672,11 @@ fn mint_id() -> String {
 
     let mut out = [b'0'; ID_CHARS];
     for slot in out.iter_mut().rev() {
-        *slot = ALPHABET[(value & 0x1F) as usize];
+        *slot = ID_ALPHABET[(value & 0x1F) as usize];
         value >>= 5;
     }
 
-    // Every byte came from `ALPHABET`, which is ASCII.
+    // Every byte came from `ID_ALPHABET`, which is ASCII.
     String::from_utf8(out.to_vec()).expect("base32 alphabet is ASCII")
 }
 

@@ -8291,6 +8291,27 @@ impl core::marker::UnsafeUnpin for zond_engine::journal::manifest::PlanFingerpri
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::manifest::PlanFingerprint
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::manifest::PlanFingerprint
 pub mod zond_engine::journal::paths
+#[non_exhaustive] pub enum zond_engine::journal::paths::ScanPathError
+pub zond_engine::journal::paths::ScanPathError::NoRoot
+pub zond_engine::journal::paths::ScanPathError::NotAnId(alloc::string::String)
+impl core::clone::Clone for zond_engine::journal::paths::ScanPathError
+pub fn zond_engine::journal::paths::ScanPathError::clone(&self) -> zond_engine::journal::paths::ScanPathError
+impl core::cmp::Eq for zond_engine::journal::paths::ScanPathError
+impl core::cmp::PartialEq for zond_engine::journal::paths::ScanPathError
+pub fn zond_engine::journal::paths::ScanPathError::eq(&self, &zond_engine::journal::paths::ScanPathError) -> bool
+impl core::error::Error for zond_engine::journal::paths::ScanPathError
+impl core::fmt::Debug for zond_engine::journal::paths::ScanPathError
+pub fn zond_engine::journal::paths::ScanPathError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for zond_engine::journal::paths::ScanPathError
+pub fn zond_engine::journal::paths::ScanPathError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for zond_engine::journal::paths::ScanPathError
+impl core::marker::Freeze for zond_engine::journal::paths::ScanPathError
+impl core::marker::Send for zond_engine::journal::paths::ScanPathError
+impl core::marker::Sync for zond_engine::journal::paths::ScanPathError
+impl core::marker::Unpin for zond_engine::journal::paths::ScanPathError
+impl core::marker::UnsafeUnpin for zond_engine::journal::paths::ScanPathError
+impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::paths::ScanPathError
+impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::paths::ScanPathError
 #[non_exhaustive] pub struct zond_engine::journal::paths::InvokingUser
 pub zond_engine::journal::paths::InvokingUser::gid: u32
 pub zond_engine::journal::paths::InvokingUser::home: std::path::PathBuf
@@ -8313,8 +8334,9 @@ impl core::marker::UnsafeUnpin for zond_engine::journal::paths::InvokingUser
 impl core::panic::unwind_safe::RefUnwindSafe for zond_engine::journal::paths::InvokingUser
 impl core::panic::unwind_safe::UnwindSafe for zond_engine::journal::paths::InvokingUser
 pub fn zond_engine::journal::paths::invoking_user() -> core::option::Option<zond_engine::journal::paths::InvokingUser>
+pub fn zond_engine::journal::paths::is_scan_id(&str) -> bool
 pub fn zond_engine::journal::paths::root() -> core::option::Option<std::path::PathBuf>
-pub fn zond_engine::journal::paths::scan(&str) -> core::option::Option<std::path::PathBuf>
+pub fn zond_engine::journal::paths::scan(&str) -> core::result::Result<std::path::PathBuf, zond_engine::journal::paths::ScanPathError>
 pub mod zond_engine::journal::settle
 #[non_exhaustive] pub enum zond_engine::journal::settle::Outcome
 pub zond_engine::journal::settle::Outcome::Answered

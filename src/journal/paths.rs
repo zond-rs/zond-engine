@@ -92,11 +92,50 @@ pub fn root() -> Option<PathBuf> {
 
 /// Where one scan's directory would be, given its id.
 ///
-/// The id is joined as a single component and is expected to be one, a ULID as the
-/// journal writes. Validating it is the job of whoever mints or parses the id.
-pub fn scan(id: &str) -> Option<PathBuf> {
-    root().map(|root| root.join(id))
+/// The id must be one the journal mints (see [`is_scan_id`]), so it is one name under
+/// the root. Anything else, `..` or an absolute path say, would name a directory
+/// elsewhere, which an elevated run would then read and write as a journal.
+pub fn scan(id: &str) -> Result<PathBuf, ScanPathError> {
+    if !is_scan_id(id) {
+        return Err(ScanPathError::NotAnId(id.to_owned()));
+    }
+    root()
+        .map(|root| root.join(id))
+        .ok_or(ScanPathError::NoRoot)
 }
+
+/// Whether `id` has the shape of a scan id as the journal mints one: sixteen
+/// characters of upper-case Crockford base32.
+pub fn is_scan_id(id: &str) -> bool {
+    id.len() == ID_CHARS && id.bytes().all(|byte| ID_ALPHABET.contains(&byte))
+}
+
+/// Why [`scan`] names no directory.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ScanPathError {
+    /// The environment names no home, as for [`root`].
+    #[error("no directory to keep scan records in: this environment names no home")]
+    NoRoot,
+    /// What was given is not a scan id.
+    #[error("'{0}' is not a scan id: an id is {ID_CHARS} characters of Crockford base32")]
+    NotAnId(String),
+}
+
+/// The characters an id is written in: Crockford base32, which has no letters a
+/// reader can mistake for digits.
+pub(crate) const ID_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// How many characters an id is.
+///
+/// Sixteen: the millisecond the scan started, then randomness. Shorter than a
+/// ULID's twenty-six so a listing of ids fits a terminal and an id can be typed.
+///
+/// The ten characters saved all come off the random half. Millisecond timing keeps ids
+/// sorted in run order and distinguishes scans close together in time. That leaves 32
+/// random bits for scans started in the same millisecond, and a collision just mints
+/// another id.
+pub(crate) const ID_CHARS: usize = 16;
 
 /// The state root this crate's directory sits under, before `zond/` is joined.
 ///
@@ -293,12 +332,36 @@ mod tests {
     /// A scan directory is the root plus exactly one component.
     #[test]
     fn a_scan_directory_is_one_component_under_the_root() {
-        let (Some(root), Some(scan)) = (root(), scan("01J8Z5Q7VN")) else {
+        let (Some(root), Ok(scan)) = (root(), scan("01J8Z5Q7VNKX4M2P")) else {
             return;
         };
 
         assert_eq!(scan.parent(), Some(root.as_path()));
-        assert!(scan.ends_with("01J8Z5Q7VN"), "{scan:?}");
+        assert!(scan.ends_with("01J8Z5Q7VNKX4M2P"), "{scan:?}");
+    }
+
+    /// Only an id of the shape the journal mints names a directory, so nothing given as
+    /// an id climbs out of the root or names a path of its own.
+    #[test]
+    fn only_a_scan_id_names_a_directory() {
+        for not_an_id in [
+            "..",
+            "../../../../etc/zond",
+            "/etc/zond",
+            "01J8Z5Q7VNKX4M2P/..",
+            "01J8Z5Q7VNKX4M2",
+            "01J8Z5Q7VNKX4M2PQ",
+            "01j8z5q7vnkx4m2p",
+            "01J8Z5Q7VNKX4M2U",
+            "",
+        ] {
+            assert_eq!(
+                scan(not_an_id),
+                Err(ScanPathError::NotAnId(not_an_id.to_owned())),
+                "'{not_an_id}' was taken as a scan id"
+            );
+        }
+        assert!(is_scan_id("01J8Z5Q7VNKX4M2P"));
     }
 
     /// Asking where the journal is creates no part of the path.
@@ -307,7 +370,7 @@ mod tests {
         let existed = root().map(|path| path.exists());
 
         let _ = root();
-        let _ = scan("01J8Z5Q7VN");
+        let _ = scan("01J8Z5Q7VNKX4M2P");
         let _ = invoking_user();
 
         assert_eq!(
