@@ -8,24 +8,20 @@
 
 //! # The capability envelope
 //!
-//! What the operator *grants* a detection, against what a detection *asks for*.
-//! A [`Finding`](crate::model::finding::Finding)-producing detection declares an
-//! intrusiveness [class](DetectionClass); it runs only where the envelope permits
-//! that class, so intrusiveness is enforced rather than advised: a passive read
-//! and an exploit are not the same permission, and the operator decides which are
-//! on.
+//! What the operator *grants* a detection, against what a detection *asks for*. A
+//! [`Finding`](crate::model::finding::Finding)-producing detection declares an
+//! intrusiveness [class](DetectionClass) and runs only where the envelope permits that
+//! class, so intrusiveness is enforced.
 //!
-//! ## An ordered ceiling, not a checklist
+//! ## An ordered ceiling
 //!
 //! The classes are ordered by how much they do to the target
 //! ([`Passive`](DetectionClass::Passive) reads what the scan already gathered,
-//! [`Dos`](DetectionClass::Dos) may degrade the service), so the grant is one
-//! number: the most intrusive class permitted. A detection runs when its class is
-//! at or below the ceiling. The default ceiling is
-//! [`Passive`](DetectionClass::Passive): a detection reads the responses the scan
-//! already drew, and anything that opens a connection of its own waits for an
-//! operator to raise the ceiling to it. See [`Default`] for what that costs and
-//! why it is the operator's call.
+//! [`Dos`](DetectionClass::Dos) may degrade the service), so the grant is one value:
+//! the most intrusive class permitted. A detection runs when its class is at or below
+//! the ceiling. The default ceiling is [`Passive`](DetectionClass::Passive); anything
+//! that opens a connection of its own waits for an operator to raise it. See
+//! [`Default`] for why.
 
 use std::fmt;
 use std::str::FromStr;
@@ -35,10 +31,8 @@ use crate::model::finding::DetectionClass;
 /// The most intrusive class of detection an operator permits, and the gate every
 /// detection is checked against before it runs.
 ///
-/// Ordered, because one envelope being higher than another is the question a
-/// caller comparing two runs is asking. Parses from a word or a number like the
-/// three scales in [`config`](crate::config), so a front end offering this as a
-/// flag keeps no table of its own; see [`FromStr`].
+/// Ordered, so two runs' envelopes can be compared. Parses from a word or a number like
+/// the scales in [`config`](crate::config); see [`FromStr`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DetectionEnvelope {
     /// The most intrusive class permitted, or [`None`] where the operator
@@ -56,10 +50,8 @@ impl DetectionEnvelope {
 
     /// An envelope permitting nothing, so no detection runs at all.
     ///
-    /// Below [`Passive`](DetectionClass::Passive) rather than equal to it. A
-    /// passive detection sends nothing, but it still reads the responses a scan
-    /// gathered and still puts findings in the report, and an operator who wants
-    /// a port scan and nothing else is asking for neither.
+    /// Below [`Passive`](DetectionClass::Passive): a passive detection sends nothing
+    /// but still reads the scan's responses and puts findings in the report.
     pub const fn none() -> Self {
         Self { ceiling: None }
     }
@@ -87,11 +79,8 @@ impl fmt::Display for DetectionEnvelope {
     }
 }
 
-/// The error parsing a [`DetectionEnvelope`] returns, carrying the classes that
-/// would have worked so a front end can print it verbatim.
-///
-/// The list is built from [`DetectionClass::ALL`] rather than spelled here, so a
-/// class added to the model is a class this message names.
+/// The error parsing a [`DetectionEnvelope`] returns. Its message lists the accepted
+/// values, built from [`DetectionClass::ALL`], so a front end can print it verbatim.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownDetectionEnvelope {
@@ -101,8 +90,7 @@ pub struct UnknownDetectionEnvelope {
 
 impl fmt::Display for UnknownDetectionEnvelope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // `off` leads, because it is the step the class list does not name and
-        // the one a reader given only the classes would not guess exists.
+        // `off` leads, since the class list does not name it.
         let mut names = vec!["off"];
         names.extend(DetectionClass::ALL.iter().map(|class| class.label()));
         write!(
@@ -122,21 +110,13 @@ impl FromStr for DetectionEnvelope {
 
     /// Reads a ceiling by name or by number.
     ///
-    /// The envelope is the one thing here an *operator* decides, and without a
-    /// parser it would be the one scale a front end could not read from text:
-    /// offering it as a flag would mean writing the word-to-class table again
-    /// in whoever called this, which is what two front ends eventually disagree
-    /// about.
+    /// Names are [`DetectionClass::label`], case-insensitive, with `-` and `_` read
+    /// alike so a command-line word and a settings key match, plus `off` for the
+    /// envelope that grants nothing. Numbers run `0` for `off`, then the classes in
+    /// [`DetectionClass::ALL`] order, least intrusive first.
     ///
-    /// Names are [`DetectionClass::label`], matched without regard to case, and
-    /// `-` and `_` are read alike so a command-line word and a settings key
-    /// spell the same thing, plus `off` for the envelope that grants nothing.
-    /// The number is a step along the same scale, `0` being `off` and the classes
-    /// following in [`DetectionClass::ALL`] order, least intrusive first.
-    ///
-    /// Distinct from the on-disk vocabulary in `record::wire`, which is a
-    /// versioned file format rather than something a person types, and which
-    /// refuses a name it does not know for its own reasons.
+    /// The on-disk vocabulary in `record::wire` is separate: it is a versioned file
+    /// format.
     ///
     /// # Examples
     ///
@@ -158,9 +138,7 @@ impl FromStr for DetectionEnvelope {
         };
 
         if let Ok(level) = written.parse::<usize>() {
-            // Zero is off and the classes start at one, so the numbers run the
-            // whole scale an operator chooses along rather than starting part way
-            // up it.
+            // Zero is off and the classes start at one.
             let Some(step) = level.checked_sub(1) else {
                 return Ok(Self::none());
             };
@@ -192,27 +170,17 @@ impl FromStr for DetectionEnvelope {
 
 impl Default for DetectionEnvelope {
     /// Only what the scan already gathered is read. Everything that opens a
-    /// connection of its own, [`ActiveBenign`](DetectionClass::ActiveBenign)
-    /// upward, waits for an operator to raise the ceiling.
+    /// connection of its own, [`ActiveBenign`](DetectionClass::ActiveBenign) upward,
+    /// waits for an operator to raise the ceiling.
     ///
-    /// The default was `ActiveBenign` and the reason it moved is what that costs
-    /// against the hosts it is pointed at. An HTTP port attracts three dozen
-    /// active flows, and they are not one question asked thirty-six ways: each
-    /// guesses a path belonging to a particular product, `/wp-config.php.bak`,
-    /// `/v1/sys/seal-status`, `/v2/_catalog`, so each opens its own connection
-    /// and each is a miss unless the target happens to run that product. Against
-    /// a device that accepts a connection and then says nothing, which is most
-    /// consumer and embedded gear, every one of those misses costs the flow's
-    /// whole time budget. Measured against four such ports: thirteen seconds and
-    /// twenty-eight connections to reach the same findings this ceiling reaches
-    /// in three and a half, because all of them came from reading what the
-    /// service pass had already collected.
-    ///
-    /// So the tier that pays for itself everywhere is the default, and the tier
-    /// that pays for itself against a chosen target is asked for. It is the same
-    /// reasoning already applied one rung up: intrusiveness is not the only thing
-    /// an operator should be the one to decide, and neither is spending a minute
-    /// on a network to learn nothing.
+    /// The reason is cost. An HTTP port attracts three dozen active flows, each
+    /// guessing a path belonging to a particular product (`/wp-config.php.bak`,
+    /// `/v1/sys/seal-status`, `/v2/_catalog`) over its own connection, and each a miss
+    /// unless the target runs that product. Against a device that accepts a
+    /// connection and then says nothing, which is most consumer and embedded gear,
+    /// every miss costs the flow's whole time budget. Measured against four such
+    /// ports, `ActiveBenign` took thirteen seconds and twenty-eight connections to
+    /// reach the same findings this ceiling reaches in three and a half.
     fn default() -> Self {
         Self {
             ceiling: Some(DetectionClass::Passive),
@@ -224,9 +192,7 @@ impl Default for DetectionEnvelope {
 mod tests {
     use super::*;
 
-    /// Zero is off, one is the first class, and the scale runs from there. An
-    /// operator who wants a port scan and no claims about it says so with a
-    /// number at the bottom of the same dial they would raise.
+    /// Zero is off, one is the first class, and the scale runs from there.
     #[test]
     fn the_scale_runs_from_off_through_the_classes() {
         assert_eq!("off".parse(), Ok(DetectionEnvelope::none()));
@@ -252,8 +218,7 @@ mod tests {
         );
     }
 
-    /// An envelope granting nothing permits nothing, and says so rather than
-    /// naming a ceiling it does not have.
+    /// An envelope granting nothing permits nothing and names no ceiling.
     #[test]
     fn off_permits_nothing_and_is_the_bottom_of_the_scale() {
         let off = DetectionEnvelope::none();
@@ -282,8 +247,7 @@ mod tests {
         assert!(!envelope.permits(DetectionClass::Dos));
     }
 
-    /// The envelope was the one scale here a front end could not read from text,
-    /// so offering it as a flag meant writing the word-to-class table again.
+    /// A ceiling parses by name and by number, like the other scales.
     #[test]
     fn a_ceiling_parses_by_name_and_by_number_like_every_other_scale() {
         for (index, class) in DetectionClass::ALL.iter().copied().enumerate() {
@@ -318,8 +282,7 @@ mod tests {
         );
     }
 
-    /// The message names every class that would have worked, built from the
-    /// model's own list so a class added there is a class it names.
+    /// The message names every class that would have worked.
     #[test]
     fn a_refusal_names_every_ceiling_that_would_have_worked() {
         let message = "everything"
@@ -348,10 +311,8 @@ mod tests {
     #[test]
     fn raising_the_ceiling_opens_the_classes_up_to_it_and_no_further() {
         let envelope = DetectionEnvelope::up_to(DetectionClass::Exploit);
-        // Everything up to exploit is now permitted.
         assert!(envelope.permits(DetectionClass::ActiveMutating));
         assert!(envelope.permits(DetectionClass::Exploit));
-        // But the class above it still is not.
         assert!(!envelope.permits(DetectionClass::Dos));
     }
 }

@@ -8,14 +8,10 @@
 
 //! # A stable name for what went wrong
 //!
-//! Every public error in this crate carries a message written for a person to
-//! read. A consumer that is not Rust needs the other thing: a short name it can
-//! branch on, which stays the same when the message is reworded.
-//!
-//! [`Coded`] is that name. A front end deciding whether to offer a retry, a
-//! daemon filling in a protocol's error field, and a test asserting which
-//! failure it provoked all want the code; only the person reading the screen
-//! wants the message.
+//! Every public error in this crate carries a message for a person to read. Code that
+//! branches on a failure, such as a front end deciding whether to offer a retry or a
+//! consumer outside Rust filling in a protocol's error field, needs a short name that stays
+//! the same when the message is reworded. [`Coded`] provides it.
 //!
 //! ```
 //! use zond_engine::{Coded, ScanError};
@@ -24,32 +20,24 @@
 //! assert_eq!(refused.code(), "scan.wrong_phase");
 //! ```
 //!
-//! ## The codebook lives here rather than beside each error
+//! ## The codebook
 //!
-//! A code is a contract with everything that has ever read one, so the whole set
-//! is written down in one file where it can be read as a set. The alternative
-//! puts each match beside its own type, where two of them can drift into the
-//! same name without anybody seeing both at once.
-//!
-//! It also decides where the compiler points. These matches carry no wildcard
-//! arm, so a variant added to any of these errors fails to compile here, and
-//! here is where somebody has to come to choose its code.
+//! All codes are assigned in this one file so the set can be read as a whole and two
+//! errors cannot drift into the same name. The matches have no wildcard arm, so a new
+//! variant on any of these errors fails to compile here until it is given a code.
 //!
 //! ## What a code promises
 //!
-//! Every public error type in this crate has one, the low-level ones a caller
-//! assembling its own scan meets included, since a front end that has to fall
-//! back on the wording for some errors cannot rely on codes for any.
+//! Every public error type in this crate has one, including the low-level ones a caller
+//! assembling its own scan meets.
 //!
-//! The name is stable and the wording of the message is not. Renaming a variant
-//! does not rename its code, and a code is only ever retired by being replaced
-//! with one a consumer can tell apart. Each names one failure, so no two arms
-//! hand out the same code.
+//! The code is stable; the message wording is not. Renaming a variant does not rename its
+//! code, and a code is only retired by replacing it with one a consumer can tell apart.
+//! Each code names one failure, so no two arms share one.
 //!
-//! Codes read `area.what`: the area a caller was working in, and the thing that
-//! stopped it. An error that wraps another reports the inner one's code, since
-//! `scan.evasion` would say only that a scan refused something the caller could
-//! read for themselves in `evasion.hop_limit_zero`.
+//! Codes read `area.what`: the area the caller was working in, and what stopped it. An
+//! error that wraps another reports the inner one's code, so a refused evasion profile
+//! reads `evasion.hop_limit_zero`, which says what was refused.
 
 use crate::config::envelope::UnknownDetectionEnvelope;
 use crate::config::{
@@ -110,9 +98,8 @@ use crate::import::settings::SettingsError;
 
 /// An error with a name a consumer outside Rust can branch on.
 ///
-/// The module documentation states what the name promises and how the codes are
-/// shaped. Implemented for every public error type in this crate, so whatever
-/// error a caller holds, it has a code to branch on.
+/// Implemented for every public error type in this crate. The module documentation
+/// describes what a code promises and how codes are shaped.
 pub trait Coded {
     /// A short, stable name for what went wrong.
     ///
@@ -131,9 +118,8 @@ impl Coded for ScanError {
             ScanError::OptionChanged(changed) => changed.code(),
             ScanError::Evasion(evasion) => evasion.code(),
             ScanError::TooFewDescriptors { .. } => "scan.too_few_descriptors",
-            // A strategy that unwound is a defect in this crate, and a strategy
-            // that returned an error is the network being the network. A
-            // consumer that files bugs wants to tell those apart.
+            // A panic is a defect in this crate; an error is the network. Bug
+            // reporters need to tell them apart.
             ScanError::TaskFailed { panicked: true, .. } => "scan.task_panicked",
             ScanError::TaskFailed { .. } => "scan.task_failed",
         }
@@ -316,9 +302,8 @@ impl Coded for FetchError {
         match self {
             FetchError::Setup(_) => "fetch.setup",
             FetchError::Cancelled => "fetch.cancelled",
-            // One code per way the network failed, since a front end retries a
-            // timeout and sends somebody to their trust store over a
-            // certificate.
+            // One code per network failure: a timeout is worth a retry, a
+            // certificate failure sends someone to their trust store.
             FetchError::Network { failure, .. } => match failure {
                 NetworkFailure::Url => "fetch.unparsable_url",
                 NetworkFailure::Connect => "fetch.connect",
@@ -343,9 +328,8 @@ impl Coded for VerificationFailure {
     fn code(&self) -> &'static str {
         match self {
             VerificationFailure::DigestMismatch => "fetch.digest_mismatch",
-            // Its own code rather than the inner error's: the signature being
-            // unreachable is a different thing to act on from the resource
-            // being so.
+            // Its own code: an unreachable signature calls for different action
+            // from an unreachable resource.
             VerificationFailure::NoSignature(_) => "fetch.no_signature",
             VerificationFailure::Signature(signature) => signature.code(),
         }
@@ -358,8 +342,7 @@ impl<E: std::error::Error + 'static> Coded for DeriveError<E> {
         match self {
             DeriveError::Store(store) => store.code(),
             DeriveError::NotStored { .. } => "fetch.not_stored",
-            // The conversion's error is the caller's type, which this crate
-            // has no code for.
+            // The caller's error type, which has no code of its own.
             DeriveError::Convert(_) => "fetch.conversion",
         }
     }
@@ -788,9 +771,8 @@ mod tests {
 
     /// Every code reads `area.what`, in lower case.
     ///
-    /// The shape is part of the contract. A consumer grouping failures by the
-    /// area they came from splits on the dot, and a code arriving in some other
-    /// shape puts a whole area in the wrong bucket rather than failing loudly.
+    /// The shape is part of the contract: a consumer grouping failures by area splits
+    /// on the dot, and a misshapen code lands silently in the wrong bucket.
     #[test]
     fn every_code_reads_area_then_what() {
         for code in sample() {
@@ -810,8 +792,7 @@ mod tests {
 
     /// An error that wraps another answers with the inner one's code.
     ///
-    /// That a scan refused an evasion profile is not news to whoever wrote the
-    /// profile. Which part of it was refused is.
+    /// Whoever wrote the profile wants to know which part of it was refused.
     #[test]
     fn a_wrapping_error_reports_the_reason_rather_than_itself() {
         assert_eq!(
@@ -840,8 +821,7 @@ mod tests {
 
     /// A panicking strategy and a failing one are told apart.
     ///
-    /// One is a defect in this crate and the other is the network being the
-    /// network. A consumer that files bug reports needs to know which it has.
+    /// One is a defect in this crate and the other is the network.
     #[test]
     fn a_panic_and_a_failure_are_not_the_same_code() {
         let panicked = ScanError::TaskFailed {
@@ -859,10 +839,8 @@ mod tests {
 
     /// The codes, written out.
     ///
-    /// A golden list rather than a property, because the whole promise of a code
-    /// is that it does not move, and the only way to hold one still is to have
-    /// written down what it is. A failure here is either a mistake or a decision
-    /// somebody has to make on purpose.
+    /// A golden list, because a code's promise is that it does not move. A failure
+    /// here is either a mistake or a decision to make on purpose.
     #[test]
     fn the_codes_are_what_they_were() {
         assert_eq!(ScanError::WrongPhase.code(), "scan.wrong_phase");
@@ -927,11 +905,9 @@ mod tests {
 
     /// Every code this file hands out, written down once.
     ///
-    /// The codebook is read out of this file's own source, every quoted
-    /// `area.what` outside the tests, so an arm added, renamed or dropped
-    /// anywhere above fails here until the list is edited to match. That edit
-    /// is the decision a code change is, made where it can be seen. Each code
-    /// names one failure, so none is handed out by two arms.
+    /// Reads every quoted `area.what` outside the tests from this file's source, so
+    /// an arm added, renamed or dropped above fails here until the list is edited to
+    /// match. Also checks that no code is handed out by two arms.
     #[test]
     fn every_code_is_in_the_codebook_once() {
         const WRITTEN: &[&str] = &[
