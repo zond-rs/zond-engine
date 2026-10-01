@@ -62,8 +62,11 @@ report at the end that says what was asked, what came back, and what failed.
 - **Records**: scans are journalled as they run, so they can be resumed.
   Reports export as JSON, JSONL, CSV, HTML or nmap XML, and can be diffed and
   merged, nmap's included.
-- **Scope**: excluded addresses are enforced before the first packet and
-  checked again on every result, and excluded ports are never probed.
+- **Scope**: no packet is addressed to an excluded address, and none appears
+  in the report. A local sweep's broadcasts (ARP, the all-nodes echo, one
+  router solicitation and one DHCPINFORM) still reach every machine on the
+  segment. Excluded ports are never probed; name lookups and the IP-protocol
+  pass do not consult them.
 
 The [docs](https://docs.rs/zond-engine) walk through all of it; the crate-level
 page is the place to start. File formats and optional pieces sit behind cargo
