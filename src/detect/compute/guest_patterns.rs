@@ -8,30 +8,17 @@
 
 //! # A module's regular expressions, compiled once where that is affordable
 //!
-//! A module names a pattern at each call of a regex helper, and a module
-//! matching in a loop, or run over every port of a scan, names the same few
-//! again and again. Compiled at each call, each costs its compile every time,
-//! on the thread whose wall-clock budget the run is spending. So a compiled
-//! pattern is kept for the process, keyed by its source, and every later call
-//! naming it matches with that copy.
+//! A module tends to name the same few patterns repeatedly, so a compiled
+//! pattern is kept for the process, keyed by its source.
 //!
-//! A flow's patterns are kept the same way, but a flow's come from its
-//! definition, while a module's are whatever its code computes, which may be
-//! built from a reply the scan did not write. So this set is bounded by what it
-//! holds and not only by how many: by count, by the bytes of source it keys on,
-//! and by what each kept pattern may compile to. A pattern past those bounds is
-//! compiled for its call and dropped after it. The oldest pattern leaves when
-//! the set is full, so a module naming a new pattern at every call keeps the
-//! set turning over rather than filling it once and leaving every pattern
-//! named after that uncached.
+//! A module's patterns may be built from reply bytes, so the kept set is
+//! bounded by count, by source bytes, and by each pattern's compiled size. A
+//! pattern past those bounds is compiled for its call only. The oldest leaves
+//! when the set is full.
 //!
-//! Matched on the caller's thread, unlike a flow's, which are matched on one
-//! thread kept for them. A module's regex calls are part of its run and are
-//! paid for from its budget, and a hop to a thread every module shares would
-//! have each run wait on every other's matching. What that costs is a lazy
-//! search cache per thread matching with a kept pattern at once, each grown
-//! only as far as its searches need and never past
-//! [`MAX_COMPILED_BYTES`]'s bound.
+//! Unlike flow patterns, these are matched on the caller's thread, since a
+//! module's regex calls are paid from its own budget. Each thread then grows a
+//! lazy search cache, bounded by [`MAX_COMPILED_BYTES`].
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -41,24 +28,21 @@ use ::regex::{Error, Regex, RegexBuilder};
 /// The most a module's pattern may compile to, and the ceiling on its lazy
 /// search cache.
 ///
-/// The one cost of a guest pattern the linear engine does not bound itself: a
-/// pathologically large pattern's compiled program, which is memory rather than
-/// the runaway match time a backtracking engine would risk.
+/// The linear engine bounds match time but not a huge pattern's program size.
 const MAX_COMPILED_BYTES: usize = 1 << 20;
 
 /// The most a kept pattern may compile to.
 ///
-/// Measured against the patterns a module writes: a header or version pattern
-/// compiles to a few kilobytes, and a Unicode `\w+` to under 64 KiB. A pattern
-/// needing more still compiles, within [`MAX_COMPILED_BYTES`], but for its call
-/// alone.
+/// A header or version pattern compiles to a few kilobytes, a Unicode `\w+` to
+/// under 64 KiB. A larger one compiles within [`MAX_COMPILED_BYTES`] for its
+/// call alone.
 const MAX_KEPT_COMPILED_BYTES: usize = 128 * 1024;
 
 /// How many patterns are kept compiled, several times the regex calls the
 /// shipped modules make between them.
 ///
-/// With [`MAX_KEPT_COMPILED_BYTES`], this bounds what the set costs at 16 MiB
-/// of compiled programs, whatever a module names.
+/// With [`MAX_KEPT_COMPILED_BYTES`], this caps the set at 16 MiB of compiled
+/// programs.
 const MAX_KEPT_PATTERNS: usize = 128;
 
 /// How many bytes of source the kept patterns may hold between them, the key
@@ -70,8 +54,8 @@ const MAX_KEPT_SOURCE_BYTES: usize = 32 * 1024;
 enum Compiled {
     /// Compiled within the kept bound, and the copy every call matches with.
     Kept(Arc<Regex>),
-    /// Compiles only past the kept bound, so it is compiled for each call. Kept
-    /// as that answer so the kept bound is not tried again.
+    /// Compiles only past the kept bound, so it is compiled per call; remembered
+    /// so the kept bound is not tried again.
     PerCall,
     /// Does not compile, and never will.
     Refused,
@@ -100,12 +84,9 @@ impl KeptPatterns {
     /// `source` compiled, the kept copy where there is one, or `None` where it
     /// will not compile within [`MAX_COMPILED_BYTES`].
     ///
-    /// Compiled without the lock held, since a compile can take milliseconds
-    /// and every module's regex call waits on the lock. Two runs compiling one
-    /// pattern at once both compile it, and the first to finish is kept.
+    /// Compiled without the lock; if two runs race, the first to finish is kept.
     fn get(this: &Mutex<Self>, source: &str) -> Option<Arc<Regex>> {
-        // A panic while the set was held leaves it whole, since each change to
-        // it completes before the next, so it is read on regardless.
+        // A poisoned set is still consistent; each change completes before the next.
         let lock = || this.lock().unwrap_or_else(PoisonError::into_inner);
 
         let found = lock().compiled.get(source).cloned();
@@ -189,8 +170,7 @@ mod tests {
         KeptPatterns::get(set, source).expect("compiles")
     }
 
-    /// A pattern named again is matched with the copy compiled the first time,
-    /// which is what spares a module matching in a loop a compile per call.
+    /// A pattern named again uses the first compiled copy.
     #[test]
     fn a_pattern_named_again_is_not_compiled_again() {
         let first = guest_regex("nginx/([0-9.]+)").expect("compiles");
@@ -201,8 +181,7 @@ mod tests {
         assert!(guest_regex("(unclosed").is_none(), "a refusal stands");
     }
 
-    /// A module naming a new pattern at every call cannot grow the set past its
-    /// count, and the patterns it keeps are the latest ones.
+    /// The set stays within its count and keeps the latest patterns.
     #[test]
     fn the_set_holds_no_more_patterns_than_its_bound() {
         let set = Mutex::new(KeptPatterns::new());
@@ -221,8 +200,7 @@ mod tests {
     #[test]
     fn the_set_holds_no_more_source_than_its_bound() {
         let set = Mutex::new(KeptPatterns::new());
-        // Padding a verbose pattern ignores, so each is long to key on and small
-        // to compile.
+        // Ignored padding: long to key on, small to compile.
         let long = |n: usize| format!("(?x){n}{}", " ".repeat(MAX_KEPT_SOURCE_BYTES / 4));
         for n in 0..8 {
             kept(&set, &long(n));
@@ -237,8 +215,7 @@ mod tests {
         assert!(set.lock().expect("not poisoned").source_bytes <= MAX_KEPT_SOURCE_BYTES);
     }
 
-    /// A pattern compiling past the kept bound, but within the ceiling, still
-    /// matches, compiled for each call rather than held.
+    /// A pattern past the kept bound but within the ceiling still matches.
     #[test]
     fn a_pattern_too_large_to_keep_still_matches() {
         let set = Mutex::new(KeptPatterns::new());

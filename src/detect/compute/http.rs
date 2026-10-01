@@ -8,39 +8,28 @@
 
 //! # HTTP as a compute-module primitive
 //!
-//! The parse a detection would otherwise hand-roll, in tested Rust behind two
-//! helpers the [Rhai backend](super::rhai) exposes: `http_response(blob)` turns a
-//! raw reply into a status, a header map, and a decoded body, and
-//! `http_request(map)` builds a well-formed request to hand to `speak`. Roughly
-//! forty of the planned detections speak HTTP; without this each one re-derives
-//! header splitting and chunked decoding in the sandbox language, which is where
-//! the fiddly, off-by-one, security-relevant mistakes live.
+//! Two helpers the [Rhai backend](super::rhai) exposes: `http_response(blob)`
+//! turns a raw reply into a status, a header map and a decoded body, and
+//! `http_request(map)` builds a request to hand to `speak`.
 //!
-//! ## What it parses, and what it leaves alone
+//! ## Scope
 //!
-//! One HTTP/1.1 response message: the status line, the header block, and a body
-//! delimited by `Content-Length`, decoded from `Transfer-Encoding: chunked`, or
-//! read to the end when neither says. It reads the head as Latin-1, the encoding
-//! the rest of the detection tier reads a reply through, so a header carrying a
-//! stray non-ASCII byte does not fail the parse. It does not follow a redirect,
-//! decompress a `Content-Encoding`, or reassemble across messages: a detection
-//! that wants those does them itself over `speak`, and a primitive that quietly
-//! did them would hide from the module what actually crossed the wire.
+//! One HTTP/1.1 response: the status line, the headers, and a body delimited by
+//! `Content-Length`, de-chunked, or read to the end. The head is read as
+//! Latin-1, as elsewhere in the detection tier, so a stray non-ASCII byte does
+//! not fail the parse. Redirects, `Content-Encoding` and multiple messages are
+//! left to the module, so it sees what crossed the wire.
 //!
 //! ## Bounded by its input
 //!
-//! Every loop here consumes input as it goes and stops when the input runs out,
-//! so the cost is linear in the reply, which the byte budget already bounds. A
-//! chunk that claims more than is present yields what is present rather than
-//! reading past it.
+//! Every loop consumes input and stops when it runs out, so cost is linear in
+//! the reply. A chunk claiming more than is present yields what is present.
 
 /// A parsed HTTP response: the status line split out, the headers in the order
 /// received with their names lowercased, and the body decoded.
 ///
-/// Header names are lowercased because a detection matches them case-insensitively
-/// and HTTP declares them case-insensitive; the values are left exactly as they
-/// arrived. Duplicates are kept as separate entries here, the caller folding them
-/// into one map value, so nothing is lost before the caller decides how to join.
+/// Names are lowercased, since HTTP header names are case-insensitive; values
+/// are left as they arrived. Duplicates are kept for the caller to fold.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Response {
     /// The HTTP version token, `HTTP/1.1`.
@@ -58,8 +47,7 @@ pub(crate) struct Response {
 #[cfg(test)]
 impl Response {
     /// The value of the first header named `name` (already lowercased), if
-    /// present. A test convenience: the runtime reads the whole header map the
-    /// [Rhai wrapper](super::rhai) folds, not one header at a time.
+    /// present. For tests.
     fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
@@ -95,8 +83,7 @@ pub(crate) fn parse_response(raw: &[u8]) -> Option<Response> {
 
 /// Assembles a request message from its parts. `method` and `path` are the
 /// request line, `host` fills the `Host` header a 1.1 request must carry, and
-/// `headers` are added verbatim. A non-empty body sets `Content-Length`, so a
-/// caller need not count the bytes itself.
+/// `headers` are added verbatim. A non-empty body sets `Content-Length`.
 pub(crate) fn build_request(
     method: &str,
     path: &str,
@@ -187,8 +174,7 @@ fn decode_body(headers: &[(String, String)], body: &[u8]) -> Vec<u8> {
 
 /// Decodes a chunked body: a hex length, a `\r\n`, that many bytes, and repeat
 /// until a zero-length chunk or the input is spent. A chunk claiming more than is
-/// present contributes what is present and ends the decode, so a truncated reply
-/// yields a truncated body rather than reading past its end.
+/// present contributes what is present and ends the decode.
 fn dechunk(mut data: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     while let Some(eol) = find(data, b"\r\n") {
@@ -221,8 +207,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-/// Bytes as a Latin-1 string, every byte its own code point, the decoding the
-/// rest of the detection tier reads a reply through.
+/// Bytes as a Latin-1 string, every byte its own code point.
 fn latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|&byte| byte as char).collect()
 }
@@ -244,9 +229,9 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(response.reason, "OK");
         assert_eq!(response.header("server"), Some("nginx/1.25.3"));
-        // The name matched case-insensitively though it arrived capitalised.
+        // Matched case-insensitively.
         assert_eq!(response.header("content-type"), Some("text/html"));
-        // Content-Length bounds the body: the trailing bytes are not part of it.
+        // Content-Length bounds the body.
         assert_eq!(response.body, b"hello");
     }
 
