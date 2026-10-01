@@ -8,14 +8,10 @@
 
 //! # CISA's Known Exploited Vulnerabilities catalogue
 //!
-//! Turns the JSON CISA publishes into what the correlator can use: the list of
-//! vulnerabilities it names exploited, which [`exploited`] reads and which
-//! marks the findings a correlation draws from its other data, or a
-//! [`Catalogue`] of its own, which [`read`] makes and which draws findings
-//! from KEV alone.
-//! The answer to the first question anybody asks after seeing that
-//! [`cve`](crate::cve) takes its dataset as a parameter: how do I point it at the
-//! real one.
+//! Turns the JSON CISA publishes into one of two things the correlator uses:
+//! [`exploited`] reads the list of exploited vulnerabilities, which marks the findings a
+//! correlation draws from its other data; [`read`] makes a [`Catalogue`] that draws
+//! findings from KEV alone.
 //!
 //! ```no_run
 //! use std::fs::File;
@@ -33,50 +29,37 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! ## It converts to a document rather than straight to a catalogue
+//! ## Conversion goes through a document
 //!
-//! [`to_document`] emits the TOML that [`Catalogue::read`] already consumes, and
-//! [`read`] is the two of those in sequence. The extra step buys two things. A
-//! caller can write the document out and keep it, which turns a feed fetched over
-//! the network into a file a scan can be re-run against and a report traced back
-//! to. And there is only one parser: a converted catalogue is checked by exactly
-//! the code that checks a hand-written one, so nothing can arrive through this
-//! path that could not have been written by hand.
+//! [`to_document`] emits the TOML that [`Catalogue::read`] consumes, and [`read`] is the
+//! two in sequence. A caller can keep the document, so a scan can be re-run against the
+//! same feed and a report traced back to it. A converted catalogue is checked by the
+//! same parser as a hand-written one, so nothing arrives this way that could not have
+//! been written by hand.
 //!
 //! ## What KEV does not carry, and what that costs
 //!
-//! **No versions.** A KEV entry names a vendor and a product and stops there:
-//! `Apache` / `HTTP Server`, with no indication of which releases are affected.
-//! The catalogue grammar has a word for that, `affected = "*"`, and
-//! [`cve`](crate::cve) reads it honestly: an entry naming no version matches a
-//! patched installation as readily as a vulnerable one, so its findings are
-//! [`Confidence::Weak`](crate::model::confidence::Confidence::Weak) and say in
-//! the excerpt that no version was checked. What a converted KEV tells an
-//! operator is "this host runs software with vulnerabilities known to be
-//! exploited in the wild, go and check the version", which is worth saying and
-//! is not the same claim as a version match.
+//! **No versions.** A KEV entry names a vendor and a product, `Apache` / `HTTP Server`,
+//! with no indication of which releases are affected. It converts to `affected = "*"`,
+//! which matches a patched installation as readily as a vulnerable one, so its findings
+//! are [`Confidence::Weak`](crate::model::confidence::Confidence::Weak) and say in the
+//! excerpt that no version was checked. What a converted KEV tells an operator is "this
+//! host runs software with vulnerabilities exploited in the wild; check the version".
 //!
-//! **No severities.** Every entry is in the catalogue because it is being
-//! exploited, so the severity comes from the one distinction KEV does draw:
-//! `knownRansomwareCampaignUse`. Entries used in ransomware campaigns are
-//! [`Critical`](crate::model::finding::Severity::Critical) and the rest are
-//! [`High`](crate::model::finding::Severity::High). Nothing here is lower than
-//! that; inclusion in KEV is itself the finding.
+//! **No severities.** Every entry is being exploited, so the severity comes from the one
+//! distinction KEV draws, `knownRansomwareCampaignUse`: entries used in ransomware
+//! campaigns are [`Critical`](crate::model::finding::Severity::Critical) and the rest
+//! [`High`](crate::model::finding::Severity::High).
 //!
-//! **Names, not identifiers.** KEV writes what a person would read, and the
-//! correlator matches the identifiers a CPE carries. [`cpe_identity`] normalises
-//! between them, and it is a heuristic: `HTTP Server` becomes `http_server` and
-//! matches, `Adaptive Security Appliance (ASA)` becomes
-//! `adaptive_security_appliance_asa` and does not. The failures are all in the
-//! safe direction, since a name that does not normalise to the CPE identity
-//! simply never matches, but they are failures and there is no dictionary here
-//! to fix them.
+//! **Names, not identifiers.** KEV writes display names; the correlator matches CPE
+//! identifiers. [`cpe_identity`] normalises between them heuristically: `HTTP Server`
+//! becomes `http_server` and matches, `Adaptive Security Appliance (ASA)` becomes
+//! `adaptive_security_appliance_asa` and does not. A miss means a finding not raised,
+//! never a wrong one, and there is no dictionary here to fix it.
 //!
-//! So a converted catalogue holds every KEV entry and correlates against a small
-//! part of it: the network-reachable software this engine's fingerprint corpus
-//! names. Most of KEV is browsers, phones and appliance firmware that no port
-//! scan identifies, which is a property of the two datasets rather than of the
-//! conversion.
+//! So a converted catalogue holds every KEV entry but correlates against only the
+//! network-reachable software the fingerprint corpus names. Most of KEV is browsers,
+//! phones and appliance firmware that no port scan identifies.
 
 use std::io::BufRead;
 
@@ -86,9 +69,7 @@ use crate::cve::{Catalogue, CatalogueError, KnownExploited, MAX_DOCUMENT_BYTES};
 
 /// What a converted catalogue names itself.
 ///
-/// CISA's, not this engine's. The `zond:` namespace is what this crate ships and
-/// is refused to anything read from outside; a converted KEV is somebody else's
-/// data passing through, and a report saying so is a report a reader can trace.
+/// CISA's identity, since the `zond:` namespace is reserved for what this crate ships.
 pub const KEV_ID: &str = "cisa:kev";
 
 /// Why a KEV catalogue could not be converted.
@@ -110,8 +91,8 @@ pub enum KevError {
         limit: u64,
     },
 
-    /// The converted document was refused by the catalogue reader, which is a
-    /// defect in the conversion rather than in the feed.
+    /// The catalogue reader refused the converted document, which is a defect in the
+    /// conversion.
     #[error("the converted catalogue was refused: {0}")]
     Rejected(#[from] CatalogueError),
 }
@@ -119,9 +100,8 @@ pub enum KevError {
 /// Converts the KEV JSON in `input` into the TOML document
 /// [`Catalogue::read`] consumes.
 ///
-/// The result names itself [`KEV_ID`] and carries CISA's own `catalogVersion`,
-/// so two scans run against two dumps of the feed are visibly different in the
-/// report.
+/// The result names itself [`KEV_ID`] and carries CISA's `catalogVersion`, so scans run
+/// against two dumps of the feed differ visibly in the report.
 ///
 /// # Errors
 ///
@@ -135,17 +115,15 @@ pub fn to_document(input: &mut dyn BufRead) -> Result<String, KevError> {
         vulnerability: feed.vulnerabilities.iter().map(Entry::from).collect(),
     };
 
-    // Serialised rather than written by hand. Every string here is CISA's, and a
-    // product name carrying a quote or a backslash would end a hand-written
-    // document early or change what came after it.
+    // Serialised, never formatted by hand: a quote or backslash in CISA's strings would
+    // otherwise change the document's structure.
     toml::to_string(&document).map_err(|error| KevError::Malformed(error.to_string()))
 }
 
 /// Reads the KEV JSON in `input` as a [`Catalogue`].
 ///
-/// [`to_document`] and [`Catalogue::read`] in sequence, which is the ordinary
-/// call. Convert once with [`to_document`] and keep the result where a scan is
-/// re-run against the same feed.
+/// [`to_document`] and [`Catalogue::read`] in sequence. To re-run scans against the same
+/// feed, convert once with [`to_document`] and keep the result.
 ///
 /// # Errors
 ///
@@ -159,10 +137,10 @@ pub fn read(input: &mut dyn BufRead) -> Result<Catalogue, KevError> {
 /// Reads the KEV JSON in `input` as the list of vulnerabilities it names
 /// exploited, for marking what a correlation finds.
 ///
-/// The other use of the feed, and the one its data fits: KEV is keyed by CVE
-/// identifier, which a correlation already has for every vulnerability it
-/// reports, so nothing here rests on [`cpe_identity`]'s heuristic. The list
-/// names itself [`KEV_ID`] and carries CISA's `catalogVersion`.
+/// The use the feed's data fits best: KEV is keyed by CVE identifier, which a
+/// correlation already has for every vulnerability it reports, so nothing here rests on
+/// [`cpe_identity`]'s heuristic. The list names itself [`KEV_ID`] and carries CISA's
+/// `catalogVersion`.
 ///
 /// # Errors
 ///
@@ -184,9 +162,7 @@ pub fn exploited(input: &mut dyn BufRead) -> Result<KnownExploited, KevError> {
 
 /// The feed in `input`, read no further than [`MAX_DOCUMENT_BYTES`].
 fn feed(input: &mut dyn BufRead) -> Result<Feed, KevError> {
-    // Bounded before the read, on the reasoning `Catalogue::read` gives: this is
-    // by definition a feed fetched from somewhere else, and a source with no end
-    // must not be held in memory to discover it had none.
+    // Bounded before the read, as `Catalogue::read` is: the feed comes from elsewhere.
     let mut source = String::new();
     let read = {
         use std::io::Read as _;
@@ -208,13 +184,11 @@ fn feed(input: &mut dyn BufRead) -> Result<Feed, KevError> {
 /// `http_server` and `D-Link` stays `d-link`, which are the identities CPE uses
 /// for both.
 ///
-/// A heuristic, and the one place this conversion can be wrong. There is no CPE
-/// dictionary here to check a name against, so a product whose registered
-/// identity is not its display name with the spaces replaced does not match:
-/// `Adaptive Security Appliance (ASA)` normalises to
-/// `adaptive_security_appliance_asa` where CPE says
-/// `adaptive_security_appliance`. Every such failure is a finding not raised
-/// rather than one raised wrongly, which is the direction to be wrong in.
+/// A heuristic with no CPE dictionary behind it, so a product whose registered identity
+/// is not its display name with the spaces replaced does not match:
+/// `Adaptive Security Appliance (ASA)` normalises to `adaptive_security_appliance_asa`
+/// where CPE says `adaptive_security_appliance`. Each such miss is a finding not raised,
+/// never one raised wrongly.
 pub fn cpe_identity(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut pending_separator = false;
@@ -235,10 +209,8 @@ pub fn cpe_identity(name: &str) -> String {
 
 /// CISA's `catalogVersion` as the catalogue grammar's `major.minor.patch`.
 ///
-/// The feed writes a date, `2026.09.03`, whose components are already the three
-/// a version wants once the leading zeros are gone. Anything else is carried
-/// through untouched and refused by [`Catalogue::read`], which is the reader that
-/// owns that grammar.
+/// The feed writes a date, `2026.09.03`, which becomes a version once the leading zeros
+/// are dropped. Anything else is passed through for [`Catalogue::read`] to refuse.
 fn catalogue_version(declared: &str) -> String {
     let parts: Vec<&str> = declared.split('.').collect();
     if parts.len() != 3
@@ -315,16 +287,13 @@ impl From<&KevEntry> for Entry {
     fn from(entry: &KevEntry) -> Self {
         Self {
             cve: entry.cve_id.clone(),
-            // The catalogue refuses an entry with no title, and a KEV row
-            // without one is still worth carrying: it has a CVE, and that names
-            // the vulnerability well enough for a reader to look it up.
+            // The catalogue refuses an entry with no title; the CVE id is enough to look
+            // one up.
             title: match entry.vulnerability_name.trim().is_empty() {
                 true => format!("{} known exploited vulnerability", entry.cve_id),
                 false => entry.vulnerability_name.clone(),
             },
-            // Inclusion in KEV is the finding. The one distinction the feed
-            // draws between its entries is whether ransomware operators are
-            // using them, and that is the one this carries.
+            // Ransomware use is the only distinction the feed draws.
             severity: match entry
                 .known_ransomware_campaign_use
                 .eq_ignore_ascii_case("known")
@@ -335,8 +304,7 @@ impl From<&KevEntry> for Entry {
             .to_string(),
             vendor: cpe_identity(&entry.vendor_project),
             product: cpe_identity(&entry.product),
-            // The feed carries no version data at all; see the module
-            // documentation for what that costs and how it is reported.
+            // The feed has no version data; see the module documentation.
             affected: "*".to_string(),
             cwe: entry.cwes.first().and_then(|cwe| {
                 cwe.trim()
@@ -403,26 +371,23 @@ mod tests {
         read(&mut FEED.as_bytes()).expect("the feed converts")
     }
 
-    /// A KEV name is what a person reads and a CPE identity is what the
-    /// correlator matches, and the whole conversion turns on the two agreeing.
+    /// Display names normalise to the CPE identities the correlator matches.
     #[test]
     fn a_display_name_becomes_the_identity_a_cpe_carries() {
         assert_eq!(cpe_identity("Apache"), "apache");
         assert_eq!(cpe_identity("HTTP Server"), "http_server");
         assert_eq!(cpe_identity("OpenBSD"), "openbsd");
-        // A hyphen is part of the identity rather than punctuation to strip:
-        // CPE writes this vendor with one.
+        // CPE keeps the hyphen in this vendor's identity.
         assert_eq!(cpe_identity("D-Link"), "d-link");
         assert_eq!(cpe_identity("Windows Server 2019"), "windows_server_2019");
-        // Runs of punctuation collapse rather than each leaving a separator.
+        // Runs of punctuation collapse to one separator.
         assert_eq!(cpe_identity("Foo   Bar"), "foo_bar");
         assert_eq!(cpe_identity("  Leading"), "leading");
         assert_eq!(cpe_identity(""), "");
     }
 
-    /// The heuristic's own limit, written down as a test rather than left for
-    /// somebody to discover: a display name that is not the identity with its
-    /// spaces replaced does not match, and this is what that looks like.
+    /// The heuristic's known limit: a display name that is not the identity with its
+    /// spaces replaced does not match.
     #[test]
     fn a_name_cpe_spells_differently_does_not_normalise_to_it() {
         assert_eq!(
@@ -438,13 +403,11 @@ mod tests {
         assert_eq!(catalogue_version("2026.09.03"), "2026.9.3");
         assert_eq!(catalogue_version("2026.10.30"), "2026.10.30");
         assert_eq!(catalogue_version("2026.01.01"), "2026.1.1");
-        // Anything else is carried through for the catalogue reader to refuse,
-        // rather than guessed at here.
+        // Anything else is passed through for the catalogue reader to refuse.
         assert_eq!(catalogue_version("not-a-date"), "not-a-date");
     }
 
-    /// The conversion produces a document the catalogue reader accepts, which is
-    /// the property the two-step shape exists to guarantee.
+    /// The conversion produces a document the catalogue reader accepts.
     #[test]
     fn a_converted_feed_is_a_document_the_catalogue_reader_accepts() {
         let catalogue = converted();
@@ -466,10 +429,8 @@ mod tests {
         assert!(document.contains("Apply updates per vendor instructions."));
     }
 
-    /// KEV grades nothing, so the severity comes from the one distinction it
-    /// does draw. An entry ransomware operators are using outranks one they are
-    /// not, and nothing is below high: being in this catalogue at all means the
-    /// vulnerability is being exploited.
+    /// Severity comes from ransomware use: critical with it, high without, nothing
+    /// lower.
     #[test]
     fn ransomware_use_is_the_one_distinction_the_feed_offers() {
         let document = to_document(&mut FEED.as_bytes()).expect("converts");
@@ -480,14 +441,9 @@ mod tests {
         assert!(document.contains(r#"severity = "high""#), "the Apache row");
     }
 
-    /// The correlation a converted feed actually produces, end to end, and the
-    /// honesty that has to come with it.
-    ///
-    /// KEV names no version, so the entry matches a patched server exactly as it
-    /// matches a vulnerable one. The finding is still worth raising, and it has
-    /// to say what it is: `Weak`, with an excerpt that does not claim a version
-    /// was checked. Reporting this at the confidence of a version match would put
-    /// a fully patched host and a vulnerable one in the same row.
+    /// A converted feed's correlation end to end. KEV names no version, so the entry
+    /// matches a patched server as readily as a vulnerable one; the finding is `Weak`, and
+    /// its excerpt does not claim a version was checked.
     #[test]
     fn a_kev_finding_says_that_no_version_was_checked() {
         use crate::model::confidence::Confidence;
@@ -522,8 +478,7 @@ mod tests {
         );
     }
 
-    /// A feed longer than the ceiling is refused rather than buffered, on the
-    /// reasoning the catalogue reader gives: this comes off a socket.
+    /// A feed longer than the ceiling is refused without being buffered.
     #[test]
     fn a_feed_past_the_ceiling_is_refused() {
         let huge = format!(
@@ -536,8 +491,8 @@ mod tests {
         ));
     }
 
-    /// Anything that is not the feed is refused by name rather than producing an
-    /// empty catalogue, which would read as a scan that found nothing wrong.
+    /// Anything that is not the feed is refused; an empty catalogue would read as a scan
+    /// that found nothing wrong.
     #[test]
     fn what_is_not_the_feed_is_refused() {
         for text in ["", "not json", "{}", r#"{"vulnerabilities": 3}"#] {
@@ -549,15 +504,10 @@ mod tests {
         }
     }
 
-    /// Every string here is CISA's text and none of it is this crate's, so a
-    /// name carrying TOML syntax must not become TOML structure.
-    ///
-    /// Two different defences, and the test covers both because they protect
-    /// different fields. A vendor or product is normalised by [`cpe_identity`],
-    /// which keeps alphanumerics and three punctuation marks and drops the rest,
-    /// so quotes and newlines never reach the document at all. A title and a
-    /// remediation are carried through verbatim and are safe only because the
-    /// document is serialised rather than written by hand.
+    /// A name carrying TOML syntax does not become TOML structure. Two defences, for
+    /// different fields: a vendor or product goes through [`cpe_identity`], which drops
+    /// quotes and newlines; a title and a remediation are carried verbatim and are safe
+    /// because the document is serialised.
     #[test]
     fn a_name_carrying_toml_syntax_does_not_become_toml_structure() {
         let hostile = r#"{
@@ -575,11 +525,8 @@ mod tests {
 
         let document = to_document(&mut hostile.as_bytes()).expect("converts");
 
-        // Parsed rather than scanned for text. Both hostile strings survive
-        // inside the document as *values*, and a line-based check cannot tell a
-        // key from the contents of a multi-line string, which is exactly what
-        // the serialiser produced here. What matters is the shape the parser
-        // sees.
+        // Parsed, since both hostile strings survive as values inside multi-line strings,
+        // which a line-based check would mistake for keys.
         let parsed: toml::Value = toml::from_str(&document).expect("the document parses");
         let table = parsed.as_table().expect("a table");
         assert_eq!(
@@ -601,8 +548,7 @@ mod tests {
             "the title's injected severity did not take"
         );
 
-        // And the severity this crate chose is the one that survived, rather
-        // than the one the hostile title tried to set.
+        // The severity this crate chose survived, not the one the hostile title set.
         let catalogue = read(&mut hostile.as_bytes()).expect("reads");
         assert_eq!(catalogue.len(), 1, "one entry in, one entry out");
 
