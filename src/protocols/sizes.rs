@@ -8,18 +8,13 @@
 
 //! # How long each header is
 //!
-//! The fixed sizes the builders in this module allocate and the parsers step
-//! over, in one place so a buffer and the parse that reads it cannot disagree.
+//! The fixed sizes the builders allocate and the parsers step over, kept in one
+//! place so a buffer and the parse that reads it cannot disagree.
 //!
-//! These are the *fixed* portions only. An IPv4 header may carry options and an
-//! IPv6 header may be followed by extension headers, so
-//! [`IP_V4_HDR_LEN`] and [`IP_V6_HDR_LEN`] are where the next layer starts in
-//! the packets this engine builds, not a claim about every packet it might
-//! parse. Anything reading a captured frame reads the length out of the header
-//! rather than assuming one of these.
-//!
-//! Public because crafting a packet is a supported use of this crate, and a
-//! caller doing that needs the same numbers rather than a second copy of them.
+//! These are fixed portions only. IPv4 options and IPv6 extension headers make
+//! [`IP_V4_HDR_LEN`] and [`IP_V6_HDR_LEN`] where the next layer starts in
+//! packets this engine builds, not in every packet it might parse; code reading
+//! a captured frame takes the length from the header.
 
 /// A DNS header: transaction id, flags, and four section counts.
 pub const DNS_HDR_LEN: usize = 12;
@@ -39,8 +34,8 @@ pub const IP_V4_HDR_LEN: usize = 20;
 /// it.
 pub const IP_V6_HDR_LEN: usize = 40;
 
-/// An ARP packet over Ethernet and IPv4: the whole thing, not a header, since
-/// ARP carries no payload.
+/// An ARP packet over Ethernet and IPv4. The whole packet, since ARP carries no
+/// payload.
 pub const ARP_LEN: usize = 28;
 
 /// An Ethernet II header: destination, source, ethertype. No VLAN tag, which
@@ -65,7 +60,6 @@ pub const SCTP_CHUNK_HDR_LEN: usize = 4;
 /// The shortest Ethernet frame that may legally go out, excluding the frame
 /// check sequence the hardware appends.
 ///
-/// A frame shorter than this has to be padded rather than sent as-is: a
-/// receiver treats an undersized frame as a collision fragment and discards it,
-/// so an unpadded ARP request is not a slow probe but an invisible one.
+/// Shorter frames must be padded: a receiver treats an undersized frame as a
+/// collision fragment and discards it, so an unpadded ARP request is never seen.
 pub const MIN_ETH_FRAME_NO_FCS: usize = 60;

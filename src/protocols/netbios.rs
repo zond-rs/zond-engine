@@ -10,35 +10,24 @@
 //!
 //! Reads the name table a node-status response carries.
 //!
-//! The corpus registers the query in `assets/fingerprinting/network/netbios-ns.toml`:
-//! a NBSTAT question for the wildcard name, which is what `nbtscan` sends and
-//! what makes a Windows or Samba host list every name it has registered. The
-//! answer went unread until this module: a scan counted it as evidence the port
-//! was open, which it already knew from the datagram arriving.
+//! The query is registered in `assets/fingerprinting/network/netbios-ns.toml`:
+//! an NBSTAT question for the wildcard name, which makes a Windows or Samba host
+//! list every name it has registered.
 //!
-//! ## What is in a name table, and what is not
-//!
-//! Each entry is a sixteen-byte name whose last byte is a suffix saying which
-//! service registered it, and a flags word whose top bit says whether the name is
-//! a group rather than one machine's own. The names themselves are site-specific,
-//! a machine and a workgroup somebody chose, so there is nothing here for a
-//! signature to match, which is why this produces no corpus text. The
-//! machine's own name and its workgroup's are recorded on the host instead,
-//! where a report masks them, as names from
-//! [`NameSource::Netbios`](crate::model::host::NameSource::Netbios).
-//!
-//! The suffixes are not site-specific at all, and they are what
-//! [`NameTable::domain_controller`] reads.
+//! Each entry is a sixteen-byte name whose last byte is a suffix naming the
+//! service that registered it, plus a flags word whose top bit marks a group
+//! name. The names are site-specific, so they produce no corpus text; the
+//! machine's own name and its workgroup are recorded on the host as names from
+//! [`NameSource::Netbios`](crate::model::host::NameSource::Netbios), where a
+//! report masks them.
 //!
 //! ## Which suffix means a domain controller
 //!
-//! `<1C>` is registered as a group by every domain controller in a domain and by
-//! nothing else, so its presence names the machine's role outright. `<1B>` is the
-//! domain master browser, held by exactly one controller, and it is a unique name
-//! rather than a group.
-//!
-//! Not `<20>`, which is the server service and means only that the host shares
-//! something, and not `<00>`, which every NetBIOS host registers.
+//! [`NameTable::domain_controller`] reads the suffixes. `<1C>` is registered as a
+//! group by every domain controller in a domain and by nothing else. `<1B>` is
+//! the domain master browser, a unique name held by exactly one controller.
+//! `<20>` (server service) and `<00>` (every NetBIOS host) say nothing about the
+//! role.
 
 /// The suffix a domain controller registers as a group name.
 const SUFFIX_DOMAIN_CONTROLLERS: u8 = 0x1C;
@@ -47,8 +36,7 @@ const SUFFIX_DOMAIN_CONTROLLERS: u8 = 0x1C;
 /// controller in a domain holds it.
 const SUFFIX_DOMAIN_MASTER_BROWSER: u8 = 0x1B;
 
-/// The bit in a name's flags word marking it a group name rather than a
-/// machine's own.
+/// The bit in a name's flags word marking it a group name.
 const FLAG_GROUP: u16 = 0x8000;
 
 /// Bytes of the fixed header: transaction ID, flags, and four section counts.
@@ -72,13 +60,12 @@ const FLAG_RESPONSE: u16 = 0x8000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisteredName {
     /// The fifteen-character name with its padding removed. May be empty, and
-    /// may hold anything a person typed, so nothing here treats it as a
-    /// hostname without deciding to.
+    /// may hold anything a person typed.
     pub name: String,
     /// The service byte: `0x00` for the workstation, `0x20` for the server
     /// service, `0x1C` for the domain controllers group.
     pub suffix: u8,
-    /// Whether the name belongs to a group rather than to this machine.
+    /// Whether the name belongs to a group instead of this machine.
     pub group: bool,
 }
 
@@ -89,19 +76,16 @@ pub struct NameTable {
     /// The registered names, in the order the responder listed them.
     pub names: Vec<RegisteredName>,
     /// The adapter's hardware address, from the first six bytes of the
-    /// statistics block. All zeroes on a responder that reports none, which
-    /// Samba does by default, so it is offered as read rather than as a fact
-    /// about hardware.
+    /// statistics block. All zeroes on a responder that reports none, which Samba
+    /// does by default.
     pub unit_id: [u8; 6],
 }
 
 impl NameTable {
     /// Whether this table was answered by a domain controller.
     ///
-    /// Reads the two suffixes only a controller registers, and reads each in the
-    /// form it is registered in: `<1C>` as a group, `<1B>` as a unique name. A
-    /// check that ignored the group bit would take a machine that merely holds a
-    /// name resembling one of these for a controller.
+    /// Requires each suffix in the form it is registered in: `<1C>` as a group,
+    /// `<1B>` as a unique name.
     #[must_use]
     pub fn domain_controller(&self) -> bool {
         self.names.iter().any(|entry| {
@@ -111,11 +95,8 @@ impl NameTable {
     }
 
     /// The name this machine registered for itself, if it named one.
-    ///
-    /// The `<00>` unique name is the workstation service, which every NetBIOS
-    /// host registers under its own computer name. The same suffix on a group
-    /// name is the workgroup or domain instead, which is why the group bit is part of
-    /// the question rather than an afterthought.
+    /// The `<00>` unique name, which every NetBIOS host registers under its
+    /// computer name. The same suffix on a group name is the workgroup or domain.
     #[must_use]
     pub fn workstation(&self) -> Option<&str> {
         self.names
@@ -136,16 +117,13 @@ impl NameTable {
 
 /// Reads the name table out of a node-status response.
 ///
-/// [`None`] for anything that is not one: a datagram too short to hold a header,
-/// a message that is a query rather than a response, an answer that claims more
-/// names than the bytes after it can hold. Every length is checked against what
-/// actually arrived rather than trusted, because this parses a datagram from an
-/// unauthenticated stranger and a claimed count is the stranger's to choose.
+/// [`None`] for anything that is not one: a datagram too short for a header, a
+/// query, or an answer claiming more names than the bytes after it can hold.
+/// Every length is checked against what arrived, since the sender is an
+/// unauthenticated stranger.
 ///
-/// The statistics block is truncated on some responders, so a table whose names
-/// parse is returned with a zero unit ID rather than refused: the names are the
-/// part anything here reads, and losing them to a missing trailer would be
-/// discarding an answer over a field nobody asked for.
+/// Some responders truncate the statistics block, so a table whose names parse
+/// is returned with a zero unit ID.
 #[must_use]
 pub fn node_status(datagram: &[u8]) -> Option<NameTable> {
     let flags = u16::from_be_bytes([*datagram.get(2)?, *datagram.get(3)?]);
@@ -158,9 +136,8 @@ pub fn node_status(datagram: &[u8]) -> Option<NameTable> {
         return None;
     }
 
-    // The answer's own name repeats the question's, in the same encoding and at
-    // the same fixed width, so the record body sits at a known offset. No
-    // compression pointer can appear here: the name service uses none.
+    // The answer's name repeats the question's at the same fixed width (the name
+    // service uses no compression), so the record body sits at a known offset.
     let rdata = datagram.get(HEADER_BYTES + ENCODED_NAME_BYTES + ANSWER_FIXED_BYTES..)?;
 
     let count = *rdata.first()? as usize;
@@ -170,9 +147,8 @@ pub fn node_status(datagram: &[u8]) -> Option<NameTable> {
         let entry = rdata.get(at..at + ENTRY_BYTES)?;
         let flags = u16::from_be_bytes([entry[16], entry[17]]);
         names.push(RegisteredName {
-            // Trailing spaces are the padding to fifteen characters; a leading
-            // one is padding too on the browser names that start with a control
-            // byte, so both ends are trimmed.
+            // Trailing spaces pad to fifteen characters; browser names that start with
+            // a control byte are padded at the front too.
             name: String::from_utf8_lossy(&entry[..15]).trim().to_string(),
             suffix: entry[15],
             group: flags & FLAG_GROUP != 0,
@@ -201,9 +177,8 @@ pub fn node_status(datagram: &[u8]) -> Option<NameTable> {
 pub(crate) mod tests {
     use super::*;
 
-    /// Builds a node-status response carrying `entries`, in the layout a
-    /// responder writes: header, the question's name echoed back, the fixed
-    /// record fields, then the table and the statistics block.
+    /// Builds a node-status response carrying `entries`: header, the echoed
+    /// question name, the fixed record fields, the table and the statistics block.
     pub(crate) fn response(entries: &[(&str, u8, bool)]) -> Vec<u8> {
         let mut out = vec![0x80, 0xf0]; // transaction ID
         out.extend_from_slice(&0x8400u16.to_be_bytes()); // response, authoritative
@@ -276,9 +251,8 @@ pub(crate) mod tests {
         assert!(table.domain_controller());
     }
 
-    /// The group bit is half of each claim. `<1C>` as a unique name and `<1B>`
-    /// as a group are both the wrong form, and a host registering either has not
-    /// said it is a controller.
+    /// `<1C>` as a unique name and `<1B>` as a group are the wrong forms and do
+    /// not make a controller.
     #[test]
     fn a_suffix_in_the_wrong_form_names_nothing() {
         let unique_1c =
@@ -290,8 +264,7 @@ pub(crate) mod tests {
         assert!(!group_1b.domain_controller());
     }
 
-    /// An ordinary workstation is not a controller, which is the case that has
-    /// to stay false for the role to mean anything.
+    /// An ordinary workstation is not a controller.
     #[test]
     fn a_workstation_is_not_a_controller() {
         let table = node_status(&response(&[
@@ -304,8 +277,8 @@ pub(crate) mod tests {
         assert!(!table.domain_controller());
     }
 
-    /// A query is not an answer. Our own probe echoed back by a reflector must
-    /// not be read as a name table.
+    /// A query, such as our own probe echoed back by a reflector, is not read as
+    /// a name table.
     #[test]
     fn a_query_is_refused() {
         let mut query = response(&[("HOST", 0x00, false)]);
@@ -314,8 +287,7 @@ pub(crate) mod tests {
         assert!(node_status(&query).is_none());
     }
 
-    /// A count larger than the bytes behind it is the stranger choosing a
-    /// number, and is refused rather than read past.
+    /// A count larger than the bytes behind it is refused.
     #[test]
     fn a_count_the_datagram_cannot_back_is_refused() {
         let mut lying = response(&[("HOST", 0x00, false)]);

@@ -9,29 +9,21 @@
 //! # Packets, in and out
 //!
 //! What every layer of a probe looks like on the wire, and how to read one that
-//! comes back. One module per protocol, each holding both halves: [`tcp`] knows
-//! what a TCP header is and what a TCP reply says, [`arp`] the same for ARP, and
-//! so on down.
+//! comes back. One module per protocol, each holding both halves: [`tcp`] builds
+//! TCP headers and reads TCP replies, [`arp`] the same for ARP, and so on.
 //!
-//! ## What this module knows, and what it does not
+//! This module knows headers, not scans. Which address to probe, how often, and
+//! what an answer proves about a host belong to [`scanner`](crate::scanner), so
+//! these functions also serve callers that are not running a scan.
 //!
-//! It knows headers. It does not know what a scan is. Nothing here decides which
-//! address to probe, how often, in what order, or what an answer proves about a
-//! host; all of that belongs to [`scanner`](crate::scanner), and keeping it out
-//! is what lets these functions serve a caller who is not running a scan at
-//! all.
+//! The line blurs at replies. [`tcp::classify_probe_response`] says a RST
+//! arrived, not what it means: a RST is a closed port to a FIN probe and a
+//! reachable port to an ACK probe. That verdict lives on
+//! [`TcpScanTechnique`](crate::model::technique::TcpScanTechnique).
 //!
-//! The one place the line is easy to blur is a reply.
-//! [`tcp::classify_probe_response`] says a RST arrived and does not say what
-//! that means, since a RST is a closed port to a FIN probe and a reachable port
-//! to an ACK probe. Only the technique that sent the probe knows which, so that
-//! verdict lives on
-//! [`TcpScanTechnique`](crate::model::technique::TcpScanTechnique) instead.
+//! ## Naming
 //!
-//! ## How things are named
-//!
-//! The module already says which protocol, so a function name does not repeat
-//! it. Four shapes cover everything here:
+//! The module names the protocol, so function names do not repeat it:
 //!
 //! | Shape | Means | Example |
 //! |---|---|---|
@@ -40,57 +32,40 @@
 //! | a plain noun | reads one thing out of a frame | [`ip::ipv6_source`] |
 //! | `classify_*` | says which of a few answers arrived | [`tcp::classify_probe_response`] |
 //!
-//! A reader takes the frame or the bytes and nothing else, so its parameter
-//! already says where it is reading from and the name does not have to.
+//! ## Read-only protocols
 //!
-//! ## Two of these only read
+//! [`lldp`] and [`cdp`] have no builders. They carry what equipment on a link
+//! announces about itself, unprompted, roughly every thirty seconds: a switch's
+//! name, the port this machine is plugged into, and its capabilities. Emitting
+//! one would make the engine pose as network equipment on the segment it is
+//! measuring.
 //!
-//! [`lldp`] and [`cdp`] carry no builders. Every other protocol here exists so a
-//! scan can ask something, where those two are what the equipment on a link says
-//! about itself on its own timer with no question put to it. A switch names
-//! itself, names the port this machine is plugged into, and lists what it is
-//! doing, roughly every thirty seconds, whether or not anybody is listening.
+//! ## Building
 //!
-//! Emitting one would be this engine claiming to be network equipment on a
-//! segment it was asked to measure, so the modules read and do not write.
+//! Most builders write a fixed-size header into a buffer they allocate and
+//! return the packet directly. The few that return a `Result` fail on a payload
+//! too large for a 16-bit length field or a checksum across two address
+//! families. See [`error`].
 //!
-//! ## Building a packet usually cannot fail
+//! ## Reading
 //!
-//! Most builders here write a fixed-size header into a buffer they allocate
-//! themselves, which cannot go wrong, and they say so by returning the packet
-//! rather than a `Result`. The few that are fallible fail for one of two
-//! reasons: a payload too large for a 16-bit length field, or a checksum asked
-//! for across two address families. See [`error`].
+//! A promiscuous capture sees the whole segment, so most frames belong to
+//! somebody else. Every reader stops at the fixed header and reports a frame it
+//! cannot read plainly as an error. Missing a frame costs one observation;
+//! misreading one credits a host that was never there.
 //!
-//! ## Reading one declines rather than guesses
+//! Four readers walk records whose lengths come off the wire: [`lldp`]'s TLVs,
+//! [`cdp`]'s records, [`dhcp`]'s options and [`sctp`]'s chunks. All four behave
+//! the same way:
 //!
-//! A promiscuous capture sees the whole segment's traffic, so most of what
-//! arrives belongs to somebody else. Every reader here stops at the fixed
-//! header, and reports a frame it cannot read plainly rather than working harder
-//! to interpret it. Missing a frame costs one observation; misreading one
-//! credits a host that was never there.
-//!
-//! ## What a short tail costs, and what it does not
-//!
-//! Four readers here walk a run of records whose lengths came off the wire:
-//! [`lldp`]'s type-length-value units, [`cdp`]'s records, [`dhcp`]'s options and
-//! [`sctp`]'s chunks. All four meet the same two situations, and all four answer
-//! them the same way.
-//!
-//! A record whose length runs past the buffer ends the walk, and what was already
-//! read is kept. A capture cut at its snapshot length ends mid-record, and so
-//! does a frame from equipment that miscounted, and neither is a reason to throw
-//! away the fields in front of it. An LLDP unit that names the switch and the
-//! port and then stops mid-description is worth the switch and the port.
-//!
-//! A record whose value cannot be read is skipped and the walk carries on. One
-//! vendor's malformed system description must not cost the chassis identifier
-//! beside it.
-//!
-//! Each walk is bounded by a count as well. The lengths that drive it are a
-//! stranger's, and a run of them must not decide how long a loop in this process
-//! runs. Past the bound the walk stops and keeps what it has, which is the same
-//! answer as a short tail.
+//! - A record whose length runs past the buffer ends the walk, and what was
+//!   already read is kept. Captures cut at the snapshot length and miscounting
+//!   equipment both end mid-record; an LLDP unit that names the switch and port
+//!   and then stops mid-description is still worth the switch and port.
+//! - A record whose value cannot be read is skipped and the walk continues, so
+//!   one malformed system description does not cost the chassis ID beside it.
+//! - Each walk is capped at a record count, so lengths from a stranger cannot
+//!   decide how long the loop runs. Past the cap the walk keeps what it has.
 
 pub mod arp;
 pub mod cdp;
@@ -112,17 +87,15 @@ pub mod tls;
 pub mod udp;
 
 // Where an HTTP response ends by its own framing, for the two readers that
-// fetch pages. Crate-private: nothing here builds or classifies HTTP, so it is
-// a reader's helper rather than a protocol this crate speaks.
+// fetch pages.
 pub(crate) mod http;
 
-// Between this crate's `MacAddr` and the one `pnet`'s packet builders take.
-// Private, because every public signature here takes and returns the model's
-// type, and the conversion is the one place the packet library's shows.
+// Conversion between this crate's `MacAddr` and `pnet`'s. Public signatures use
+// the model's type only.
 pub(crate) mod mac;
 
 // Reading a string a stranger wrote, shared by the three announcement protocols
-// that carry one. Private, being a helper rather than a protocol.
+// that carry one.
 mod text;
 
 use crate::protocols::ethernet::Frame;
@@ -131,17 +104,14 @@ use std::net::IpAddr;
 
 /// The address `frame` was sent from, whichever of the three shapes it is.
 ///
-/// An ARP frame answers from the sender's protocol address and an IP frame from
-/// its header's source. A caller that already knows which it is holding should
-/// ask that protocol's module directly; this is for the receive loop that does
-/// not yet.
+/// ARP's sender protocol address, or the IP header's source. For a receive loop
+/// that does not yet know the frame's type.
 ///
 /// # Errors
 ///
-/// [`UnsupportedEtherType`](error::PacketError::UnsupportedEtherType) for
-/// anything else, which under promiscuous capture is the ordinary case rather
-/// than a fault, and [`Truncated`](error::PacketError::Truncated) for a frame
-/// too short to read.
+/// [`UnsupportedEtherType`](error::PacketError::UnsupportedEtherType) for any
+/// other EtherType (the ordinary case under promiscuous capture), and
+/// [`Truncated`](error::PacketError::Truncated) for a frame too short to read.
 pub fn source_address(frame: &Frame<'_>) -> error::Result<IpAddr> {
     match EtherType(frame.ethertype()) {
         EtherTypes::Arp => Ok(IpAddr::V4(arp::sender_address(frame)?)),

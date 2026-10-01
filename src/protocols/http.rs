@@ -8,13 +8,10 @@
 
 //! # Where an HTTP response ends
 //!
-//! Two readers ask the same servers for pages: a detection's exchange and the
-//! fingerprint engine's favicon fetch. Both have to stop reading where a
-//! response says it ends, since plenty of servers hold a connection open after
-//! answering, whatever the request's `Connection: close` asked for, and a
-//! reader waiting for the close waits out the server's idle timeout instead.
-//! One parser for both, so they cannot come to disagree about when a reply is
-//! whole.
+//! Shared by a detection's exchange and the fingerprint engine's favicon fetch.
+//! Both stop reading where a response says it ends: many servers keep the
+//! connection open after answering despite `Connection: close`, and a reader
+//! waiting for the close waits out the server's idle timeout.
 
 /// Where the HTTP/1.x response at the start of `reply` ends, once all of it has
 /// arrived: [`None`] while it is still arriving, and for anything that does not
@@ -27,9 +24,9 @@
 /// is delimited by the connection closing, and so is anything that is not an
 /// HTTP response at all; both are left to the caller's read-to-close.
 ///
-/// An interim `1xx` response is not the answer, so it ends nothing here. A
-/// `Content-Length` that does not parse, or two that disagree, is a message
-/// whose length is not known, and is read to close like one that gave none.
+/// An interim `1xx` response ends nothing. A `Content-Length` that does not
+/// parse, or two that disagree, leaves the length unknown, so the message is
+/// read to close.
 ///
 /// Bounded by its input: every loop consumes `reply` and stops at its end.
 pub(crate) fn message_end(reply: &[u8]) -> Option<usize> {

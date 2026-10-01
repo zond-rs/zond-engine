@@ -9,69 +9,58 @@
 //! # SCTP probes
 //!
 //! Builds the packet an SCTP port scan puts on the wire and reads the packet
-//! that comes back. What a reply *means* about a port is the scanner's to
-//! decide, as with [`tcp`](super::tcp); this module knows only what an SCTP
-//! packet is.
+//! that comes back. What a reply means about a port is the scanner's to decide,
+//! as with [`tcp`](super::tcp).
 //!
 //! ## Two probes, and the answers they draw
 //!
-//! An INIT scan puts an INIT chunk to a port and reads the chunk that answers.
-//! Two answers are decisive, and RFC 4960 fixes both:
+//! An INIT scan sends an INIT chunk and reads the chunk that answers. RFC 4960
+//! fixes two decisive answers:
 //!
 //! - INIT-ACK (§5.1): an endpoint willing to open an association. The port is
 //!   open.
-//! - ABORT (§8.4): a reachable stack with nothing listening on that port,
-//!   refusing the association outright. The port is closed.
+//! - ABORT (§8.4): a reachable stack refusing the association because nothing
+//!   listens on that port. The port is closed.
 //!
-//! Silence is neither, and it is the weakest of the three. An endpoint that is
-//! up answers an INIT whichever way its port stands, so a probe that drew
-//! nothing was stopped on the way out or on the way back rather than ignored by
-//! a listener.
+//! An endpoint that is up answers an INIT either way, so silence means the
+//! probe or the reply was stopped on the way.
 //!
-//! A COOKIE-ECHO scan sends the other chunk this module builds, and it draws
-//! only one of those two answers. RFC 4960 §8.4 hands an out-of-the-blue
-//! COOKIE-ECHO to the cookie authentication of §5.1, which a listener fails and
-//! then discards the packet in silence; a port with no endpoint behind it has
-//! nothing to authenticate against and takes the rule that answers an
+//! A COOKIE-ECHO scan draws only one of those answers. RFC 4960 §8.4 hands an
+//! out-of-the-blue COOKIE-ECHO to the cookie authentication of §5.1, which a
+//! listener fails and then drops silently; a port with no endpoint answers an
 //! unrecognised packet with an ABORT. So an ABORT is a closed port and silence
 //! is everything else.
 //!
-//! What either answer means about a port belongs to
-//! [`SctpScanTechnique`](crate::model::technique::SctpScanTechnique), not here.
-//! This module names the chunk; see [`classify_probe_response`] for where it
-//! stops.
+//! What an answer means about a port belongs to
+//! [`SctpScanTechnique`](crate::model::technique::SctpScanTechnique); see
+//! [`classify_probe_response`].
 //!
-//! ## Where the nonce lives, which differs by probe
+//! ## Where the nonce lives
 //!
-//! Both probes recover their nonce from the same field of the reply, and put it
-//! in different fields of the packet.
+//! Both probes recover their nonce from the reply's verification tag, but put
+//! it in different fields.
 //!
-//! An INIT carries a 32-bit Initiate Tag the peer is obliged to echo: a
-//! listener's INIT-ACK and a closed port's ABORT both set their common-header
-//! verification tag to it (RFC 4960 §3.3.2, §8.4). The INIT's *own* verification
-//! tag is zero, which §8.5.1 requires.
+//! An INIT carries a 32-bit Initiate Tag that a listener's INIT-ACK and a closed
+//! port's ABORT both echo as their common-header verification tag (RFC 4960
+//! §3.3.2, §8.4). The INIT's own verification tag is zero, as §8.5.1 requires.
 //!
-//! A COOKIE-ECHO has no Initiate Tag to carry, and needs none: §8.4 obliges the
-//! ABORT to reflect the offending packet's verification tag and set the T bit to
-//! say it did. So the nonce goes in the common header, where a conformant refusal
-//! sends it straight back.
+//! A COOKIE-ECHO has no Initiate Tag. §8.4 obliges the ABORT to reflect the
+//! offending packet's verification tag and set the T bit, so the nonce goes in
+//! the common header.
 //!
-//! [`echoed_nonce`] reads either one, since either lands in the reply's
-//! verification tag. What the two do not share is what survives an ICMP error: a
-//! quotation is only guaranteed to reach the first eight bytes, which hold the
-//! ports and the common header's tag. That names a COOKIE-ECHO's exact attempt
-//! and names an INIT's not at all, its Initiate Tag sitting sixteen bytes in. See
-//! [`quoted_probe`] and [`quoted_init_tag`], the SCTP twin of the story in
-//! [`tcp::quoted_nonce`](super::tcp::quoted_nonce).
+//! [`echoed_nonce`] reads either. They differ in what survives an ICMP error: a
+//! quotation is only guaranteed to reach the first eight bytes (the ports and
+//! the common header's tag). That names a COOKIE-ECHO's exact attempt and not
+//! an INIT's, whose Initiate Tag sits sixteen bytes in. See [`quoted_probe`] and
+//! [`quoted_init_tag`], and [`tcp::quoted_nonce`](super::tcp::quoted_nonce) for
+//! the TCP equivalent.
 //!
-//! ## The checksum is a CRC32c, over the packet alone
+//! ## The checksum is a CRC32c
 //!
-//! SCTP does not use the internet checksum. It carries a CRC32c (RFC 3309, RFC
-//! 4960 §6.8) computed over the whole packet with the field zeroed and written
-//! into the field little-endian, which is the detail most implementations get
-//! wrong first. It covers no pseudo-header, so unlike a TCP or UDP probe an SCTP
-//! one needs no addresses to be built. The computation lives in [`craft`]; this module
-//! assembles the chunks around it.
+//! SCTP carries a CRC32c (RFC 3309, RFC 4960 §6.8) over the whole packet with
+//! the field zeroed, written into the field **little-endian**. It covers no
+//! pseudo-header, so building a probe needs no addresses. The computation lives
+//! in [`craft`].
 
 use crate::model::technique::SctpReply;
 use crate::protocols::craft;
@@ -79,16 +68,12 @@ use crate::protocols::error::{PacketError, Result};
 use crate::protocols::sizes::{SCTP_CHUNK_HDR_LEN, SCTP_COMMON_HDR_LEN};
 
 /// The IANA protocol number SCTP is carried under in an IP header (RFC 4960
-/// §1.7). The value a raw sender writes into `protocol` / `next_header`, offered
-/// here so a caller building the IP layer by hand does not reach for a magic
-/// `132`.
+/// §1.7), for a caller writing `protocol` / `next_header` by hand.
 pub const IP_PROTOCOL_NUMBER: u8 = 132;
 
 /// SCTP chunk type numbers, from the registry in RFC 4960 §3.2.
 ///
-/// Only the handful a scan builds or reads. A reply to an INIT is one of the
-/// first two; the rest are here because the probes that draw them are the
-/// natural next tenants of this module.
+/// Only those a scan builds or reads.
 pub mod chunk_type {
     /// Requests a new association. The probe an INIT scan sends.
     pub const INIT: u8 = 1;
@@ -96,17 +81,15 @@ pub mod chunk_type {
     pub const INIT_ACK: u8 = 2;
     /// Refuses an association outright: a closed port's answer to an INIT.
     pub const ABORT: u8 = 6;
-    /// Replays a state cookie. The chunk a COOKIE-ECHO scan sends, carrying a
-    /// cookie no endpoint minted, so that the only stack which answers is one
-    /// with nothing listening on the port.
+    /// Replays a state cookie. The chunk a COOKIE-ECHO scan sends, with a cookie
+    /// no endpoint minted, so only a stack with nothing listening answers.
     pub const COOKIE_ECHO: u8 = 10;
 }
 
 /// The receive window an INIT advertises, in bytes.
 ///
-/// Immaterial to classification, the probe intending to receive nothing, but a
-/// field a peer reads back, so it is one plausible value across every probe
-/// rather than a signature. Mirrors [`tcp`](super::tcp)'s advertised window.
+/// Immaterial to classification, but a peer reads it, so it is one plausible
+/// value across every probe. Mirrors [`tcp`](super::tcp)'s advertised window.
 const ADVERTISED_RWND: u32 = 65_535;
 
 /// The number of outbound streams an INIT asks to open, and the number of
@@ -118,23 +101,17 @@ const INBOUND_STREAMS: u16 = 65_535;
 /// Builds an INIT-scan probe from `src_port` to `dst_port`, carrying
 /// `initiate_tag` as the nonce a reply will echo.
 ///
-/// The packet's common-header verification tag is zero, which RFC 4960 §8.5.1
-/// requires of anything carrying an INIT, and the Initiate Tag inside the chunk
-/// is `initiate_tag`. A conformant peer copies that tag into its reply's
-/// verification tag, whether it accepts with an INIT-ACK or refuses with an
-/// ABORT, so
-/// the caller recovers it with [`echoed_nonce`] and matches it against what it
-/// sent.
+/// The common-header verification tag is zero, as RFC 4960 §8.5.1 requires of
+/// a packet carrying an INIT. A conformant peer copies `initiate_tag` into its
+/// reply's verification tag whether it answers INIT-ACK or ABORT, and the
+/// caller recovers it with [`echoed_nonce`].
 ///
 /// `initiate_tag` must be non-zero (RFC 4960 §3.3.2); a random tag per probe
-/// is both the requirement and what makes correlation trustworthy. A zero tag is
-/// left to the caller to avoid rather than silently rewritten, on the same
-/// reasoning [`tcp::build_probe`](super::tcp::build_probe) does not police its
-/// nonce.
+/// meets that and makes correlation trustworthy. A zero tag is the caller's to
+/// avoid, as with [`tcp::build_probe`](super::tcp::build_probe)'s nonce.
 ///
-/// Infallible, unlike its TCP and UDP counterparts: an SCTP checksum covers no
-/// pseudo-header, so there are no addresses to reconcile, and the INIT chunk is
-/// a fixed size that no length field can fail to describe.
+/// Infallible: the checksum covers no pseudo-header and the INIT chunk is a
+/// fixed size.
 pub fn build_init_probe(src_port: u16, dst_port: u16, initiate_tag: u32) -> Vec<u8> {
     craft::Sctp::new(src_port, dst_port)
         .with_chunks(init_chunk(initiate_tag))
@@ -149,8 +126,8 @@ fn init_chunk(initiate_tag: u32) -> Vec<u8> {
     value.extend_from_slice(&ADVERTISED_RWND.to_be_bytes());
     value.extend_from_slice(&OUTBOUND_STREAMS.to_be_bytes());
     value.extend_from_slice(&INBOUND_STREAMS.to_be_bytes());
-    // Initial TSN. The peer's own reply carries its choice, not ours, so nothing
-    // reads this back; a random value is what an ordinary stack would send.
+    // Initial TSN. Nothing reads it back; a random value is what an ordinary
+    // stack sends.
     value.extend_from_slice(&rand::random::<u32>().to_be_bytes());
     chunk(chunk_type::INIT, 0, &value).expect("a sixteen-byte value fits the length field")
 }
@@ -158,20 +135,18 @@ fn init_chunk(initiate_tag: u32) -> Vec<u8> {
 /// Builds a COOKIE-ECHO scan probe from `src_port` to `dst_port`, carrying
 /// `verification_tag` as the nonce a refusal will reflect.
 ///
-/// The tag goes in the common header rather than inside the chunk, because that
-/// is the field RFC 4960 §8.4 obliges an out-of-the-blue ABORT to send back. A
-/// COOKIE-ECHO has nowhere else to put one: its value is the cookie, which is
-/// opaque to everything but the endpoint that minted it.
+/// The tag goes in the common header, the field RFC 4960 §8.4 obliges an
+/// out-of-the-blue ABORT to send back. The chunk's value is the cookie, opaque
+/// to all but the endpoint that minted it.
 ///
-/// `verification_tag` should be non-zero, so that a reflected tag is
+/// `verification_tag` should be non-zero, so a reflected tag is
 /// distinguishable from a packet that carried none.
 ///
-/// The cookie is a short run of random bytes. No value could authenticate,
-/// since only the target's own secret mints one, so its content cannot change a
-/// verdict. Its *length* can: a chunk carrying no value at all is a plausible
-/// protocol violation, and a stack answering that with an ABORT would make an
-/// open port look closed. A cookie the size a real one occupies takes the
-/// authentication path instead, which is the path this scan reads.
+/// The cookie is random bytes; no value could authenticate, so its content
+/// cannot change a verdict. Its length can: an empty chunk is a plausible
+/// protocol violation that a stack might answer with an ABORT, making an open
+/// port look closed. A realistically sized cookie takes the authentication
+/// path this scan reads.
 pub fn build_cookie_echo_probe(src_port: u16, dst_port: u16, verification_tag: u32) -> Vec<u8> {
     craft::Sctp::new(src_port, dst_port)
         .with_verification_tag(verification_tag)
@@ -181,10 +156,8 @@ pub fn build_cookie_echo_probe(src_port: u16, dst_port: u16, verification_tag: u
 
 /// How many bytes of cookie a COOKIE-ECHO probe carries.
 ///
-/// Chosen for plausibility rather than for any requirement: RFC 4960 fixes no
-/// length, and real implementations mint cookies from a few dozen bytes upward.
-/// The value is random per probe, so nothing here is a constant a filter could
-/// match the scan by.
+/// RFC 4960 fixes no length; real implementations mint cookies from a few
+/// dozen bytes upward. The bytes are random per probe.
 const COOKIE_LEN: usize = 32;
 
 /// The COOKIE-ECHO chunk [`build_cookie_echo_probe`] carries.
@@ -201,18 +174,15 @@ pub const MAX_CHUNK_VALUE: usize = u16::MAX as usize - SCTP_CHUNK_HDR_LEN;
 /// aligns whatever follows to a four-byte boundary.
 ///
 /// The length field counts the header and value but **not** the padding (RFC
-/// 4960 §3.2), which is why a reader steps to the next chunk by the padded
-/// length while trusting the field for where the value ends. The primitive the
-/// probe builders are written on; exposed so a chunk this module does not send
-/// yet, a COOKIE-ECHO say, is a few lines rather than a fork.
+/// 4960 §3.2), so a reader steps by the padded length and trusts the field for
+/// where the value ends. Exposed so other chunk types can be built in a few
+/// lines.
 ///
 /// # Errors
 ///
 /// [`PacketError::TooLong`] for a value past [`MAX_CHUNK_VALUE`]. The field
-/// wraps rather than saturating, so a value four bytes short of 64 KiB would
-/// otherwise produce a chunk declaring itself zero bytes long, which every
-/// receiver reads as the end of the packet. Every chunk a scan sends is a few
-/// dozen bytes and cannot reach this.
+/// wraps, so a value four bytes short of 64 KiB would declare a zero-length
+/// chunk, which receivers read as the end of the packet.
 pub fn chunk(chunk_type: u8, flags: u8, value: &[u8]) -> Result<Vec<u8>> {
     if value.len() > MAX_CHUNK_VALUE {
         return Err(PacketError::too_long(
@@ -235,14 +205,9 @@ pub fn chunk(chunk_type: u8, flags: u8, value: &[u8]) -> Result<Vec<u8>> {
 /// A view over a received SCTP packet: the common header, and an iterator over
 /// the chunks after it.
 ///
-/// Borrows the bytes rather than copying them, and holds the header as an array
-/// rather than as a slice it trusts [`parse`] to have measured. The counterpart
-/// [`tcp::Segment`](super::tcp::Segment) still keeps the invariant by
-/// convention — "sound only because nothing else constructs one" — which is
-/// true of both and checkable by neither. Splitting the header off at
-/// construction makes it the compiler's problem instead: every accessor below
-/// indexes a `[u8; 12]`, so a future constructor cannot reintroduce a panic
-/// here by forgetting the minimum.
+/// Borrows the bytes, and holds the common header as a `[u8; 12]` split off at
+/// construction, so no accessor can index past it whatever constructs a
+/// `Segment`.
 #[derive(Debug, Clone, Copy)]
 pub struct Segment<'a> {
     header: &'a [u8; SCTP_COMMON_HDR_LEN],
@@ -255,8 +220,7 @@ impl<'a> Segment<'a> {
         u16::from_be_bytes([self.header[0], self.header[1]])
     }
 
-    /// The port it was aimed at, which for a reply is the source port the scan
-    /// sent from.
+    /// The port it was aimed at: for a reply, the scan's source port.
     pub fn destination_port(&self) -> u16 {
         u16::from_be_bytes([self.header[2], self.header[3]])
     }
@@ -280,10 +244,8 @@ impl<'a> Segment<'a> {
 
 /// One chunk of a [`Segment`], as read from the wire.
 ///
-/// Not `#[non_exhaustive]`, on the reasoning
-/// [`VlanTag`](crate::protocols::ethernet::VlanTag) sets out: RFC 4960 §3.2
-/// defines a chunk as a type byte, a flags byte, a length and the value it
-/// measures, and there is nothing else in one to read.
+/// Not `#[non_exhaustive]`: RFC 4960 §3.2 defines a chunk as a type byte, a
+/// flags byte, a length and the value, and there is nothing else to read.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Chunk<'a> {
@@ -294,24 +256,19 @@ pub struct Chunk<'a> {
     /// The chunk's value, without the four-byte header or the trailing padding.
     ///
     /// **Cut to what arrived, which may be less than the length field claimed.**
-    /// A capture stopped at its snapshot length, or a sender that omitted the
-    /// padding on a last chunk, leaves fewer bytes here than the chunk declared,
-    /// and nothing in this type distinguishes that from a whole one. The walk
-    /// clamps rather than refuses on purpose — a chunk whose *type* arrived
-    /// still says what kind of answer this was, which is all
-    /// [`classify_probe_response`] needs — but a reader that wants a field out
-    /// of the value has to take it with `get` and not by index. An INIT-ACK cut
-    /// after its header yields a value of length zero.
+    /// A capture stopped at its snapshot length, or a sender omitting the padding
+    /// on a last chunk, leaves fewer bytes than declared, indistinguishable from a
+    /// whole chunk. The walk clamps so the chunk's type still classifies the
+    /// answer; a reader wanting a field from the value must use `get`, not
+    /// indexing. An INIT-ACK cut after its header yields an empty value.
     pub value: &'a [u8],
 }
 
 /// Walks the chunks of a [`Segment`], outermost first.
 ///
-/// Stops rather than guesses at a malformed length: a chunk claiming fewer than
-/// its four header bytes cannot say where the next one starts, so iteration ends
-/// there instead of spinning. That is the safe reading of a hostile or truncated
-/// packet: a missed chunk credits nothing, where a loop that never advances hangs
-/// the receive path.
+/// A chunk claiming fewer than its four header bytes cannot say where the next
+/// one starts, so iteration ends there. A missed chunk credits nothing; a loop
+/// that never advances would hang the receive path.
 #[derive(Debug, Clone, Copy)]
 pub struct Chunks<'a> {
     rest: &'a [u8],
@@ -329,15 +286,13 @@ impl<'a> Iterator for Chunks<'a> {
         let flags = self.rest[1];
         let length = usize::from(u16::from_be_bytes([self.rest[2], self.rest[3]]));
 
-        // A length that does not clear the header would leave the cursor where it
-        // is; stopping is what makes the walk terminate on any input at all.
+        // A length that does not clear the header would never advance the cursor.
         if length < SCTP_CHUNK_HDR_LEN {
             return None;
         }
 
-        // A sender may omit the padding on the last chunk, and a capture may be
-        // cut short, so both the value and the step are clamped to what is
-        // actually present rather than to what the length claims.
+        // A sender may omit the last chunk's padding and a capture may be cut
+        // short, so the value and the step are clamped to what is present.
         let value_end = length.min(self.rest.len());
         let value = &self.rest[SCTP_CHUNK_HDR_LEN..value_end];
         let advance = round_up_to_4(length).min(self.rest.len());
@@ -356,9 +311,8 @@ impl<'a> Iterator for Chunks<'a> {
 /// # Errors
 ///
 /// [`PacketError::Truncated`] when there are too few bytes for the common
-/// header. Nothing here validates the checksum: a scan correlates a reply by its
-/// verification tag, and a CRC32c only a captured packet could carry is not what
-/// establishes it is ours.
+/// header. The checksum is not validated: a reply is correlated by its
+/// verification tag.
 pub fn parse(bytes: &'_ [u8]) -> Result<Segment<'_>> {
     let Some((header, chunks)) = bytes.split_first_chunk::<SCTP_COMMON_HDR_LEN>() else {
         return Err(PacketError::truncated(
@@ -373,12 +327,11 @@ pub fn parse(bytes: &'_ [u8]) -> Result<Segment<'_>> {
 /// Classifies a received packet as one of the two answers an SCTP port probe can
 /// draw, if it is one.
 ///
-/// Returns `None` for anything else, such as a heartbeat, a shutdown, or a chunk
-/// from an association this scan is not part of, which a caller treats as noise.
-/// An INIT-ACK settles the question ahead of anything bundled behind it, on the
-/// same reasoning [`tcp::classify_probe_response`](super::tcp::classify_probe_response)
-/// reads a RST first: it is the decisive answer, and the two never legitimately
-/// arrive together.
+/// `None` for anything else (a heartbeat, a shutdown, another association's
+/// chunk), which a caller treats as noise. An INIT-ACK is read ahead of
+/// anything bundled behind it, as
+/// [`tcp::classify_probe_response`](super::tcp::classify_probe_response) reads
+/// a RST first; the two never legitimately arrive together.
 pub fn classify_probe_response(segment: &Segment<'_>) -> Option<SctpReply> {
     for chunk in segment.chunks() {
         match chunk.chunk_type {
@@ -393,30 +346,28 @@ pub fn classify_probe_response(segment: &Segment<'_>) -> Option<SctpReply> {
 /// The nonce `reply` implies: the verification tag a conformant peer echoed from
 /// the Initiate Tag it was sent.
 ///
-/// A caller compares this against the tags it actually sent. A match names the
-/// probe that was answered; anything else is a stray, a duplicate, or a packet
-/// from another association, none of which may resolve a port.
+/// A caller compares this against the tags it sent. A match names the probe
+/// that was answered; anything else (a stray, a duplicate, another
+/// association) must not resolve a port.
 pub fn echoed_nonce(reply: &Segment<'_>) -> u32 {
     reply.verification_tag()
 }
 
 /// A probe's common header as an ICMP error quotes it back.
 ///
-/// Not a [`Segment`], because there may not be a whole one: RFC 792 guarantees
-/// only the IP header plus the offending packet's first eight bytes, which for
-/// SCTP are the two ports and the verification tag, enough to say a probe was
-/// this scan's but not which attempt, since an INIT's tag is zero and its
-/// Initiate Tag sits past the eight. See [`quoted_init_tag`].
+/// RFC 792 guarantees only the IP header plus the offending packet's first
+/// eight bytes: for SCTP, the two ports and the verification tag. That says a
+/// probe was this scan's but not which attempt, since an INIT's tag is zero
+/// and its Initiate Tag lies past the eight. See [`quoted_init_tag`].
 ///
-/// `#[non_exhaustive]`, for the reason
-/// [`tcp::QuotedProbe`](crate::protocols::tcp::QuotedProbe) is: what a sender
-/// quotes past the guaranteed eight bytes is worth reading when it is there, and
-/// reading more of it adds a field.
+/// `#[non_exhaustive]`, as
+/// [`tcp::QuotedProbe`](crate::protocols::tcp::QuotedProbe) is: more of the
+/// quotation may be read when a sender includes it.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuotedProbe {
-    /// The port the probe was sent from, which is what proves the quoted packet
-    /// belongs to this scan.
+    /// The port the probe was sent from, which proves the quoted packet belongs
+    /// to this scan.
     pub source: u16,
     /// The port it was aimed at.
     pub destination: u16,
@@ -427,8 +378,8 @@ pub struct QuotedProbe {
 /// Reads what an ICMP error quoted of an SCTP probe, or `None` if the quotation
 /// is too short to name one.
 ///
-/// Every byte here was chosen by whatever sent the error, so nothing is assumed
-/// beyond the eight bytes RFC 792 guarantees.
+/// The error's sender chose every byte, so nothing past the eight RFC 792
+/// guarantees is assumed.
 pub fn quoted_probe(quoted: &[u8]) -> Option<QuotedProbe> {
     let head: &[u8; 8] = quoted.first_chunk()?;
     Some(QuotedProbe {
@@ -441,21 +392,18 @@ pub fn quoted_probe(quoted: &[u8]) -> Option<QuotedProbe> {
 /// The Initiate Tag a quoted INIT carried, or `None` when the quotation stopped
 /// short of it or did not begin with an INIT.
 ///
-/// The tag names the exact attempt, but it sits sixteen bytes in, past the common
-/// header and the INIT chunk's own header, so only a sender generous enough to
-/// quote past the guaranteed eight reveals it.
+/// The tag names the exact attempt but sits sixteen bytes in, past the common
+/// header and the INIT chunk header, so only a sender quoting past the
+/// guaranteed eight reveals it.
 ///
-/// A caller that gets `None` has nothing tying the error to an attempt. The
-/// ports from [`quoted_probe`] do not, for the reason
-/// [`tcp::quoted_nonce`](super::tcp::quoted_nonce) gives, and the verification
-/// tag beside them does not either: RFC 4960 §8.5.1 requires it to be zero on
-/// every INIT. The engine's own INIT scan acts on no error that arrives without
-/// the tag, whatever its code, so such an error retires no probe and files
-/// nothing against the host.
+/// With `None`, nothing ties the error to an attempt: not the ports (see
+/// [`tcp::quoted_nonce`](super::tcp::quoted_nonce)), and not the verification
+/// tag, which RFC 4960 §8.5.1 requires to be zero on every INIT. The engine's
+/// INIT scan acts on no error without the tag.
 pub fn quoted_init_tag(quoted: &[u8]) -> Option<u32> {
     let head: &[u8; 20] = quoted.first_chunk()?;
-    // Byte twelve is the first chunk's type; the Initiate Tag is only where this
-    // reads it if that chunk is an INIT.
+    // Byte twelve is the first chunk's type; the tag is read only if that chunk
+    // is an INIT.
     (head[SCTP_COMMON_HDR_LEN] == chunk_type::INIT)
         .then(|| u32::from_be_bytes([head[16], head[17], head[18], head[19]]))
 }
@@ -484,9 +432,8 @@ mod tests {
     const NONCE: u32 = 0xDEAD_BEEF;
 
     /// A conformant reply: the common header carrying `vtag`, then a single
-    /// chunk of `chunk_type`. Built from the wire layout directly rather than
-    /// from anything above, so a wrong rule in [`parse`] or
-    /// [`classify_probe_response`] fails instead of agreeing with itself.
+    /// chunk of `chunk_type`. Built from the wire layout, independent of
+    /// [`parse`] and [`classify_probe_response`].
     fn reply(vtag: u32, chunk_type: u8) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&DST_PORT.to_be_bytes()); // from the port we hit
@@ -499,9 +446,8 @@ mod tests {
 
     // ── Probe construction ───────────────────────────────────────────────────
 
-    /// The probe is a well-formed INIT: the ports it was asked for, a zeroed
-    /// verification tag per RFC 4960 §8.5.1, and its nonce in the Initiate Tag
-    /// where a reply will echo it from.
+    /// The probe is a well-formed INIT: the requested ports, a zeroed
+    /// verification tag per RFC 4960 §8.5.1, and its nonce in the Initiate Tag.
     #[test]
     fn an_init_probe_is_framed_the_way_a_peer_expects() {
         let bytes = build_init_probe(SRC_PORT, DST_PORT, NONCE);
@@ -528,9 +474,8 @@ mod tests {
         assert_eq!(bytes.len(), SCTP_COMMON_HDR_LEN + 20);
     }
 
-    /// The other probe, and the field that differs. A COOKIE-ECHO has no
-    /// Initiate Tag, so its nonce goes in the common header, which is where RFC
-    /// 4960 §8.4 obliges an out-of-the-blue ABORT to send it back from.
+    /// A COOKIE-ECHO carries its nonce in the common header, where RFC 4960 §8.4
+    /// obliges an out-of-the-blue ABORT to send it back from.
     #[test]
     fn a_cookie_echo_probe_carries_its_nonce_in_the_common_header() {
         let bytes = build_cookie_echo_probe(SRC_PORT, DST_PORT, NONCE);
@@ -551,9 +496,7 @@ mod tests {
         assert!(chunks.next().is_none(), "the probe sends nothing else");
     }
 
-    /// The cookie is random per probe, so nothing about it is a constant a
-    /// filter could recognise the scan by. Two probes sharing one would also
-    /// hand a target a value to match on.
+    /// The cookie is random per probe.
     #[test]
     fn two_cookie_echo_probes_do_not_carry_the_same_cookie() {
         let first = build_cookie_echo_probe(SRC_PORT, DST_PORT, NONCE);
@@ -561,10 +504,8 @@ mod tests {
         assert_ne!(first, second);
     }
 
-    /// The cookie is not empty, and that is a correctness property rather than
-    /// a stylistic one: a COOKIE-ECHO carrying no value at all is a plausible
-    /// protocol violation, and a stack answering that with an ABORT would make
-    /// an open port look closed.
+    /// The cookie is not empty: a stack might answer an empty COOKIE-ECHO with
+    /// an ABORT, making an open port look closed.
     #[test]
     fn a_cookie_echo_probe_carries_a_cookie_worth_authenticating() {
         let bytes = build_cookie_echo_probe(SRC_PORT, DST_PORT, NONCE);
@@ -583,9 +524,8 @@ mod tests {
         assert_eq!(&bytes[8..12], &craft::crc32c(&zeroed).to_le_bytes());
     }
 
-    /// What the CRC32c living behind the builder buys: the probe leaves
-    /// with a valid one, computed over the packet with the field zeroed and
-    /// written little-endian. Recomputed here the way a receiver would.
+    /// The probe carries a valid CRC32c, over the packet with the field zeroed
+    /// and written little-endian, recomputed here as a receiver would.
     #[test]
     fn an_init_probe_carries_a_valid_crc32c() {
         let bytes = build_init_probe(SRC_PORT, DST_PORT, NONCE);
@@ -604,8 +544,7 @@ mod tests {
     // ── Correlation and classification ───────────────────────────────────────
 
     /// An open port answers with an INIT-ACK, a closed one with an ABORT, and
-    /// both echo the probe's Initiate Tag as their verification tag, which is
-    /// what ties a reply to the probe that drew it.
+    /// both echo the probe's Initiate Tag as their verification tag.
     #[test]
     fn an_init_ack_reads_as_open_and_an_abort_as_closed() {
         let init_ack_bytes = reply(NONCE, chunk_type::INIT_ACK);
@@ -619,8 +558,7 @@ mod tests {
         assert_eq!(echoed_nonce(&abort), NONCE);
     }
 
-    /// A reply to somebody else's association must not read as one of ours: its
-    /// verification tag is not the tag we sent.
+    /// A reply to another association does not carry the tag we sent.
     #[test]
     fn a_reply_to_another_association_yields_a_different_nonce() {
         let theirs_bytes = reply(NONCE ^ 0x1234, chunk_type::INIT_ACK);
@@ -628,8 +566,7 @@ mod tests {
         assert_ne!(echoed_nonce(&theirs), NONCE);
     }
 
-    /// Chunks that are not one of the two decisive answers are noise, not a
-    /// verdict.
+    /// Chunks that are not one of the two decisive answers are noise.
     #[test]
     fn an_unrelated_chunk_answers_no_probe() {
         // Type 4 is HEARTBEAT, type 11 COOKIE-ACK: neither settles an INIT scan.
@@ -640,9 +577,7 @@ mod tests {
         }
     }
 
-    /// A chunk whose length field cannot advance the cursor ends iteration
-    /// rather than looping. The reading a hostile packet must not be able to
-    /// hang the receive path.
+    /// A chunk whose length field cannot advance the cursor ends iteration.
     #[test]
     fn a_chunk_length_that_cannot_advance_stops_iteration() {
         let mut bytes = reply(NONCE, chunk_type::ABORT);
@@ -658,9 +593,8 @@ mod tests {
     // ── Quotation ────────────────────────────────────────────────────────────
 
     /// The eight bytes an ICMP error is guaranteed to quote name the probe's
-    /// ports and its zero verification tag, but the Initiate Tag that names the
-    /// attempt needs a more generous quotation, the SCTP twin of an ACK-carrying
-    /// TCP probe.
+    /// ports and its zero verification tag; the Initiate Tag needs a longer
+    /// quotation.
     #[test]
     fn a_quoted_probe_needs_a_generous_quotation_to_name_its_attempt() {
         let bytes = build_init_probe(SRC_PORT, DST_PORT, NONCE);
@@ -682,10 +616,8 @@ mod tests {
         );
     }
 
-    /// The asymmetry that matters to a scan reading ICMP errors. A COOKIE-ECHO
-    /// keeps its nonce in the common header, so the eight bytes RFC 792
-    /// guarantees name the exact attempt; an INIT's does not, and this is the
-    /// one respect in which the quieter probe carries more.
+    /// A COOKIE-ECHO keeps its nonce in the common header, so the eight bytes
+    /// RFC 792 guarantees name the exact attempt; an INIT's do not.
     #[test]
     fn a_quoted_cookie_echo_names_its_attempt_from_the_guaranteed_eight() {
         let bytes = build_cookie_echo_probe(SRC_PORT, DST_PORT, NONCE);
@@ -712,14 +644,9 @@ mod tests {
     }
 
     /// A chunk value past what the length field can count is refused, not
-    /// wrapped.
-    ///
-    /// A `debug_assert` stating the bound would have the two build profiles
-    /// disagree: a debug build would panic and a release build wrap, and four
-    /// bytes short of 64 KiB would produce a chunk declaring itself zero bytes
-    /// long, which every receiver reads as the end of the packet. `ip.rs` has a
-    /// test making the same argument about `build_ipv4_header`, and both are
-    /// refused the same way.
+    /// wrapped, in debug and release builds alike. A wrapped field four bytes
+    /// short of 64 KiB declares a zero-length chunk, which receivers read as the
+    /// end of the packet.
     #[test]
     fn a_chunk_value_too_large_for_the_length_field_is_refused_rather_than_wrapped() {
         let largest = vec![0u8; MAX_CHUNK_VALUE];
@@ -749,13 +676,11 @@ mod tests {
         ));
     }
 
-    /// **The walk terminates on every input**, which is the property a receive
-    /// path depends on and which no length off the wire may take away.
+    /// **The walk terminates on every input.**
     ///
-    /// Exhaustive over the pair that decides it: every value the sixteen-bit
-    /// length field can hold, against every buffer length that can hold a chunk
-    /// header. A step of zero would hang the capture thread rather than crash
-    /// it, so a bound on the count is the only way to assert this.
+    /// Exhaustive over every 16-bit length value against every buffer length that
+    /// can hold a chunk header. A zero step would hang the capture thread, so the
+    /// test bounds the count.
     #[test]
     fn the_chunk_walk_terminates_for_every_length_field() {
         for rest_len in 0..24usize {
@@ -768,9 +693,8 @@ mod tests {
                 }
                 let segment = parse(&bytes).expect("the common header is present");
 
-                // Six is generous: a 24-byte tail cannot hold more than six
-                // four-byte chunks, so anything at the cap is a walk that
-                // stopped advancing.
+                // A 24-byte tail holds at most six four-byte chunks, so reaching the cap
+                // means the walk stopped advancing.
                 assert!(
                     segment.chunks().take(8).count() < 8,
                     "the walk did not advance: rest_len={rest_len} declared={declared}"
@@ -779,15 +703,13 @@ mod tests {
         }
     }
 
-    /// **Reading more bytes only ever adds to what was read.** The property
-    /// `fuzz/wire/ethernet_frame` holds for the announcement readers, asserted
-    /// here for the chunk walk over a packet built from the RFC layout.
+    /// **Reading more bytes only ever adds to what was read**, as
+    /// `fuzz/wire/ethernet_frame` holds for the announcement readers, here for the
+    /// chunk walk.
     ///
-    /// It holds because a step clamped to what is present always empties the
-    /// remainder, so a truncated read stops rather than resuming at an offset
-    /// the whole packet never had. A clamp that wrapped instead would put a
-    /// shorter read at a different chunk boundary, and this is what would say
-    /// so.
+    /// It holds because a clamped step always empties the remainder, so a
+    /// truncated read stops instead of resuming at an offset the whole packet
+    /// never had.
     #[test]
     fn a_shorter_read_reports_a_prefix_of_the_longer_one() {
         let mut packet = vec![0u8; SCTP_COMMON_HDR_LEN];
@@ -817,9 +739,7 @@ mod tests {
     }
 
     /// A quotation short of the Initiate Tag names no attempt, and one that
-    /// reaches it names exactly the tag that was sent. The field an INIT scan's
-    /// ICMP correlation stands on; see the scanner's own tests for what happens
-    /// when it is absent.
+    /// reaches it names exactly the tag that was sent.
     #[test]
     fn an_init_tag_is_named_only_by_a_quotation_that_reaches_it() {
         let probe = build_init_probe(50_000, 132, 0x1234_5678);
@@ -833,8 +753,8 @@ mod tests {
         }
         assert_eq!(quoted_init_tag(&probe[..20]), Some(0x1234_5678));
 
-        // And the common header's own tag, which is what a COOKIE-ECHO uses, is
-        // zero for an INIT — so it can never stand in for the Initiate Tag.
+        // The common header's tag, which a COOKIE-ECHO uses, is zero for an INIT,
+        // so it cannot stand in for the Initiate Tag.
         let quoted = quoted_probe(&probe).expect("eight bytes are there");
         assert_eq!(
             quoted.verification_tag, 0,

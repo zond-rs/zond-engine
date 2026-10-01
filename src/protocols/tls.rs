@@ -9,49 +9,40 @@
 //! # TLS handshake probes
 //!
 //! Builds the ClientHello an enumeration puts on the wire and reads the first
-//! record that comes back. What an answer *means* about an endpoint is the
-//! caller's to decide, as with [`tcp`](super::tcp) and [`sctp`](super::sctp);
-//! this module knows only what a handshake record is.
+//! record that comes back. What an answer means about an endpoint is the
+//! caller's to decide, as with [`tcp`](super::tcp) and [`sctp`](super::sctp).
 //!
 //! ## Asking, without answering
 //!
-//! An enumeration never completes a handshake. It offers a version and a set of
-//! cipher suites, reads which one the server picked out of the ServerHello, and
-//! hangs up. That is the whole exchange, and it is why none of this needs a
-//! crypto library: no key is derived, no record is decrypted, and nothing is
-//! sent that a key would protect.
+//! An enumeration offers a version and a set of cipher suites, reads which one
+//! the server picked out of the ServerHello, and hangs up. No key is derived and
+//! no record decrypted, so no crypto library is needed.
 //!
-//! It is also why the enumeration can ask about the versions and suites a real
-//! TLS client refuses to offer. `rustls`, which
-//! the `fingerprint::tls` module uses for certificates,
-//! implements TLS 1.2 and 1.3 and the nine AEAD suites of its ring provider, and
-//! declines by design to speak SSL 3.0, RC4, 3DES or an export cipher. Those are
-//! precisely the configurations a report is asked about, so the question has to
-//! be put by hand.
+//! Building hellos by hand also lets the enumeration offer what real clients
+//! refuse to. `rustls` (used by `fingerprint::tls` for certificates) speaks TLS
+//! 1.2 and 1.3 with the nine AEAD suites of its ring provider, and will not
+//! speak SSL 3.0, RC4, 3DES or export ciphers, which are exactly what a report
+//! is asked about.
 //!
-//! ## TLS 1.3 negotiates its version somewhere else
+//! ## TLS 1.3 negotiates its version in an extension
 //!
-//! Every version through 1.2 is named in the ClientHello's version field and
-//! echoed in the ServerHello's. TLS 1.3 is not: RFC 8446 §4.1.2 freezes both
-//! fields at `0x0303` and moves the real negotiation into the
-//! `supported_versions` extension, in the ClientHello and again in the
-//! ServerHello. A reader that trusted the version field would report every TLS
-//! 1.3 server as 1.2, so [`read_response`] looks in the extension first and
-//! falls back to the field.
+//! Through 1.2 the version is named in the ClientHello's version field and
+//! echoed in the ServerHello's. RFC 8446 §4.1.2 freezes both at `0x0303` for
+//! TLS 1.3 and negotiates in the `supported_versions` extension, so
+//! [`read_response`] looks there first and falls back to the field. Trusting
+//! the field would report every TLS 1.3 server as 1.2.
 //!
 //! ## HelloRetryRequest is a ServerHello
 //!
-//! RFC 8446 §4.1.4 gives a TLS 1.3 server a way to ask for a different key
-//! share, and the message it sends is a ServerHello carrying a fixed random
-//! ([`HELLO_RETRY_RANDOM`]) rather than a message type of its own. It names the
-//! selected cipher suite exactly as an ordinary ServerHello does, which is all
-//! an enumeration wanted, so it is read as an answer and flagged rather than
-//! treated as a refusal.
+//! RFC 8446 §4.1.4 lets a TLS 1.3 server ask for a different key share with a
+//! ServerHello carrying a fixed random ([`HELLO_RETRY_RANDOM`]). It names the
+//! selected suite like an ordinary ServerHello, so it is read as an answer and
+//! flagged.
 
 use crate::model::tls::{CipherSuite, TlsVersion};
 
-/// Record content types (RFC 8446 §5.1). Only the two an enumeration can
-/// receive as a first record.
+/// Record content types (RFC 8446 §5.1): the two an enumeration can receive as
+/// a first record.
 mod content_type {
     /// A handshake message: what a ServerHello arrives in.
     pub const HANDSHAKE: u8 = 22;
@@ -86,9 +77,8 @@ mod extension {
 /// The random a TLS 1.3 server writes into a HelloRetryRequest, which is the
 /// SHA-256 of the string `"HelloRetryRequest"` (RFC 8446 §4.1.3).
 ///
-/// A fixed value rather than a message type is how the RFC keeps the retry
-/// indistinguishable from a ServerHello to anything that does not know to look,
-/// so a reader that does not check this reports a retry as a completed
+///
+/// A reader that does not check this reports a retry as a completed
 /// negotiation.
 pub const HELLO_RETRY_RANDOM: [u8; 32] = [
     0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11, 0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xB8, 0x91,
@@ -102,17 +92,16 @@ pub const RECORD_HEADER_LEN: usize = 5;
 /// length.
 const HANDSHAKE_HEADER_LEN: usize = 4;
 
-/// The largest record TLS permits (RFC 8446 §5.1), which bounds what a reader
-/// has to be willing to buffer before it can refuse.
+/// The largest record TLS permits (RFC 8446 §5.1), which bounds how much a
+/// reader buffers.
 pub const MAX_RECORD_LEN: usize = 16_384 + 2_048;
 
 /// The groups a hello offers, which decide whether an ECDHE or DHE suite can be
 /// negotiated at all.
 ///
-/// A server with none of these in common has to fall back to a static key
-/// exchange or refuse, so a list that is too short would report forward-secret
-/// suites unsupported on a server that supports them. These are the curves and
-/// finite-field groups current stacks implement.
+/// A server with none in common must fall back to a static key exchange or
+/// refuse, so a short list would report forward-secret suites unsupported on a
+/// server that supports them. These are the groups current stacks implement.
 const SUPPORTED_GROUPS: [u16; 7] = [
     0x001D, // x25519
     0x0017, // secp256r1
@@ -125,10 +114,9 @@ const SUPPORTED_GROUPS: [u16; 7] = [
 
 /// The signature algorithms a hello offers.
 ///
-/// Deliberately wide, SHA-1 and DSA included. A modern client omits those and an
-/// enumeration must not: a server that will only sign with SHA-1 is exactly the
-/// server this exists to find, and refusing to offer the algorithm would report
-/// it as supporting nothing.
+/// Wide, SHA-1 and DSA included. A modern client omits those, but a server that
+/// will only sign with SHA-1 is exactly what an enumeration looks for, and
+/// would otherwise report as supporting nothing.
 const SIGNATURE_ALGORITHMS: [u16; 14] = [
     0x0403, // ecdsa_secp256r1_sha256
     0x0503, // ecdsa_secp384r1_sha384
@@ -152,10 +140,8 @@ const KEY_SHARE_GROUP: u16 = 0x001D;
 const KEY_SHARE_LEN: usize = 32;
 
 /// What a hello is asking for.
-///
-/// A version and the suites to offer under it. The suites are the caller's
-/// because an enumeration narrows them between attempts, which is the whole of
-/// how it discovers what a server accepts.
+/// A version and the suites to offer under it. An enumeration narrows the
+/// suites between attempts to discover what a server accepts.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct Offer<'a> {
@@ -169,10 +155,9 @@ pub struct Offer<'a> {
     /// The name to ask for, where the scan knows one: the name a target
     /// reached the address by.
     ///
-    /// `None` sends no `server_name` extension, and a growing number of servers
-    /// answer a nameless hello with an alert or nothing at all, so an endpoint
-    /// known only by its address can show an enumeration less than it would
-    /// show a client that named it.
+    /// `None` sends no `server_name` extension. A growing number of servers answer
+    /// a nameless hello with an alert or nothing, so an endpoint known only by
+    /// address may show less than it would to a client that named it.
     pub server_name: Option<&'a str>,
 }
 
@@ -186,13 +171,10 @@ pub enum ServerResponse {
         /// server sent one and from the legacy field otherwise. `None` for a
         /// number no known version claims.
         version: Option<TlsVersion>,
-        /// The suite selected, by its wire number. A number rather than a
-        /// [`CipherSuite`] because a server may name one this build does not
-        /// carry, and a caller has to be able to tell that from a suite it
-        /// offered.
+        /// The suite selected, by its wire number, not a [`CipherSuite`]: a server
+        /// may name one this build does not carry.
         suite: u16,
-        /// Whether this was a HelloRetryRequest rather than a completed
-        /// selection. The suite is chosen either way.
+        /// Whether this was a HelloRetryRequest. The suite is chosen either way.
         retry: bool,
     },
     /// An alert: the peer speaks TLS and declined these terms.
@@ -212,27 +194,19 @@ impl ServerResponse {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Building
-// ---------------------------------------------------------------------------
-
 /// Builds the ClientHello `offer` describes, wrapped in its record.
 ///
-/// The random is drawn fresh for every hello. The legacy probe this module grew
-/// out of used a fixed one, on the reasoning that nothing in it is a security
-/// context; that holds for one packet and stops holding across the dozens an
-/// enumeration sends, where a constant random is a signature any filter could
-/// match the scan by. A real client draws a fresh one, so this does.
+/// The random is drawn fresh for every hello, as a real client's is; a
+/// constant random across the dozens of hellos an enumeration sends would be
+/// a signature a filter could match.
 ///
-/// Extensions are omitted entirely under SSL 3.0, which predates them (RFC 6066
-/// extends TLS, not SSL) and where a stack old enough to still be offering it is
-/// the stack most likely to drop a hello it cannot parse. Every other version
-/// carries the full block.
+/// SSL 3.0 hellos carry no extensions: they predate them (RFC 6066 extends
+/// TLS, not SSL), and a stack old enough to offer SSL 3.0 is the most likely to
+/// drop a hello it cannot parse.
 pub fn client_hello(offer: &Offer<'_>) -> Vec<u8> {
     let mut body = Vec::with_capacity(512);
 
-    // The version field, which for TLS 1.3 says 1.2 and leaves the real answer
-    // to the extension. RFC 8446 §4.1.2.
+    // TLS 1.3 says 1.2 here and negotiates in the extension (RFC 8446 §4.1.2).
     let legacy_version = match offer.version {
         TlsVersion::Tls13 => TlsVersion::Tls12.code(),
         version => version.code(),
@@ -242,7 +216,7 @@ pub fn client_hello(offer: &Offer<'_>) -> Vec<u8> {
     let random: [u8; 32] = rand::random();
     body.extend_from_slice(&random);
 
-    // No session to resume: a scan has never spoken to this endpoint before.
+    // No session to resume.
     body.push(0);
 
     let suites_len = offer.suites.len() * 2;
@@ -251,8 +225,8 @@ pub fn client_hello(offer: &Offer<'_>) -> Vec<u8> {
         body.extend_from_slice(&suite.code().to_be_bytes());
     }
 
-    // One compression method, null. Offering DEFLATE is what CRIME is about and
-    // is a question of its own rather than part of this one.
+    // Null compression only. Offering DEFLATE is the CRIME question, asked
+    // separately.
     body.push(1);
     body.push(0);
 
@@ -269,9 +243,8 @@ pub fn client_hello(offer: &Offer<'_>) -> Vec<u8> {
 
     let mut record = Vec::with_capacity(handshake.len() + RECORD_HEADER_LEN);
     record.push(content_type::HANDSHAKE);
-    // The record's own version, which RFC 8446 §5.1 fixes at 0x0301 for a first
-    // record whatever is being negotiated inside it. Middleboxes drop records
-    // announcing anything else.
+    // RFC 8446 §5.1 fixes a first record's version at 0x0301 whatever is
+    // negotiated inside it; middleboxes drop records announcing anything else.
     record.extend_from_slice(&TlsVersion::Tls10.code().to_be_bytes());
     record.extend_from_slice(&(handshake.len() as u16).to_be_bytes());
     record.extend_from_slice(&handshake);
@@ -284,7 +257,7 @@ fn extensions(offer: &Offer<'_>) -> Vec<u8> {
 
     if let Some(name) = offer.server_name {
         // RFC 6066 §3: a list of names, each a type byte and a length-prefixed
-        // string. Only `host_name`, type 0, has ever been defined.
+        // string. Only `host_name`, type 0, is defined.
         let name = name.as_bytes();
         let mut value = Vec::with_capacity(name.len() + 5);
         value.extend_from_slice(&((name.len() + 3) as u16).to_be_bytes());
@@ -312,17 +285,14 @@ fn extensions(offer: &Offer<'_>) -> Vec<u8> {
     push_extension(&mut out, extension::SIGNATURE_ALGORITHMS, &algorithms);
 
     if offer.version == TlsVersion::Tls13 {
-        // The extension that actually asks for 1.3. A one-entry list, because
-        // offering more would let the server answer about a version this hello
-        // did not carry suites for.
+        // A one-entry list: offering more would let the server answer about a
+        // version this hello carries no suites for.
         push_extension(&mut out, extension::SUPPORTED_VERSIONS, &[2, 0x03, 0x04]);
 
-        // A key share the server can complete against, so an ordinary
-        // ServerHello comes back rather than the HelloRetryRequest an empty
-        // share would provoke. The bytes are random and nothing is ever derived
-        // from them: X25519 accepts any 32-byte string as a public key (RFC
-        // 7748 §5), the server does one scalar multiplication, and this hangs up
-        // before the result could matter.
+        // A valid key share, so the server answers with a ServerHello and not the
+        // HelloRetryRequest an empty share would provoke. The bytes are random:
+        // X25519 accepts any 32 bytes as a public key (RFC 7748 §5), and the
+        // connection closes before the result matters.
         let share: [u8; KEY_SHARE_LEN] = rand::random();
         let mut key_share = Vec::with_capacity(KEY_SHARE_LEN + 6);
         key_share.extend_from_slice(&((KEY_SHARE_LEN + 4) as u16).to_be_bytes());
@@ -348,18 +318,12 @@ fn three_byte_len(len: usize) -> [u8; 3] {
     [bytes[1], bytes[2], bytes[3]]
 }
 
-// ---------------------------------------------------------------------------
-// Reading
-// ---------------------------------------------------------------------------
-
 /// How many bytes the first record in `bytes` occupies in total, header
 /// included, or `None` while the header itself is incomplete.
 ///
-/// What a reader loops on: TCP delivers a record in as many pieces as it likes,
-/// and this says when enough has arrived to stop reading. A length past
-/// [`MAX_RECORD_LEN`] is refused rather than waited for, since no conformant
-/// peer sends one and a reader that trusted it would buffer whatever a stranger
-/// asked it to.
+/// TCP delivers a record in pieces; a reader loops until this says enough has
+/// arrived. A length past [`MAX_RECORD_LEN`] is refused at once, so a stranger
+/// cannot decide how much a reader buffers.
 pub fn record_length(bytes: &[u8]) -> Option<usize> {
     let header: &[u8; RECORD_HEADER_LEN] = bytes.first_chunk()?;
     let declared = usize::from(u16::from_be_bytes([header[3], header[4]]));
@@ -369,14 +333,11 @@ pub fn record_length(bytes: &[u8]) -> Option<usize> {
 /// Reads the first record of `bytes` as a server's answer to a hello, or `None`
 /// where it is not one.
 ///
-/// `None` covers three different things a caller treats alike: bytes that are
-/// not TLS at all, a TLS record carrying something other than a handshake or an
-/// alert, and a record too short to hold what it claims. None of them is a
-/// server accepting the terms, which is the only question asked here.
+/// `None` for bytes that are not TLS, a record carrying neither a handshake
+/// nor an alert, and a record too short for what it claims.
 ///
-/// Every offset is checked against what actually arrived. These bytes are a
-/// stranger's and the walk has to terminate on any input rather than merely on a
-/// well-formed one.
+/// Every offset is checked against what arrived, so the walk terminates on any
+/// input.
 pub fn read_response(bytes: &[u8]) -> Option<ServerResponse> {
     let (content, body) = record_body(bytes)?;
 
@@ -397,10 +358,9 @@ pub fn read_response(bytes: &[u8]) -> Option<ServerResponse> {
 /// from the start of `bytes`, or `None` where the record does not open with a
 /// whole one.
 ///
-/// For a reader that walks the hello by offsets of its own rather than through
-/// [`read_response`], and has to know both that all of it arrived and where it
-/// stops. It is bounded exactly as [`read_response`] reads, so the two cannot
-/// disagree about what a whole hello is.
+/// For a reader that walks the hello by its own offsets and needs to know that
+/// all of it arrived and where it stops. Bounded exactly as [`read_response`]
+/// reads.
 pub(crate) fn server_hello_end(bytes: &[u8]) -> Option<usize> {
     let (content, body) = record_body(bytes)?;
     if content != content_type::HANDSHAKE {
@@ -412,9 +372,8 @@ pub(crate) fn server_hello_end(bytes: &[u8]) -> Option<usize> {
 
 /// The first record's content type and its body.
 ///
-/// The length field is trusted only as far as what arrived: a record announcing
-/// more than it delivered is read for what it delivered, and whatever it holds
-/// is then judged by its own lengths.
+/// A record announcing more than it delivered is read for what it delivered,
+/// and its contents are then judged by their own lengths.
 fn record_body(bytes: &[u8]) -> Option<(u8, &[u8])> {
     let header: &[u8; RECORD_HEADER_LEN] = bytes.first_chunk()?;
     let declared = usize::from(u16::from_be_bytes([header[3], header[4]]));
@@ -440,9 +399,8 @@ fn read_server_hello(body: &[u8]) -> Option<ServerResponse> {
 
     let suite = u16::from_be_bytes([*rest.first()?, *rest.get(1)?]);
 
-    // The compression method, then the extension block. Both are optional in a
-    // TLS 1.2 ServerHello that carries neither, so a message that simply ends
-    // here is still a well-formed answer and yields the version it named.
+    // Compression method and extensions are both optional in a TLS 1.2
+    // ServerHello, so a message that ends here still yields its version.
     let version = rest
         .get(3..)
         .and_then(negotiated_version)
@@ -459,15 +417,11 @@ fn read_server_hello(body: &[u8]) -> Option<ServerResponse> {
 /// version to the end of its extensions, or `None` where the body opens with
 /// something else or the message has not all arrived.
 ///
-/// Exactly as long as the message declares itself, and both bounds carry
-/// weight. Short of it, a peer that closed the connection part way through
-/// its ServerHello leaves the version, the random and the suite and no
-/// extensions, which every offset reads successfully: a TLS 1.3 hello cut
-/// before `supported_versions` would read as the TLS 1.2 its legacy field
-/// says, which is the one reading this module exists to prevent. Past it is
-/// whatever the server coalesced into the same record (RFC 8446 §5.1), and a
-/// hello without extensions is followed directly by the next message, whose
-/// bytes would otherwise be walked as its extensions.
+/// Exactly as long as the message declares itself, and both bounds matter.
+/// Short of it, a TLS 1.3 hello cut before `supported_versions` would read as
+/// the TLS 1.2 its legacy field says. Past it is whatever the server coalesced
+/// into the record (RFC 8446 §5.1): after a hello without extensions, the next
+/// message would be walked as its extensions.
 fn hello_message(body: &[u8]) -> Option<&[u8]> {
     if *body.first()? != handshake_type::SERVER_HELLO {
         return None;
@@ -480,7 +434,7 @@ fn hello_message(body: &[u8]) -> Option<&[u8]> {
 /// where it carries none.
 ///
 /// The only place a TLS 1.3 negotiation is visible. `extensions` is the
-/// two-byte-prefixed block that follows the compression method.
+/// two-byte-prefixed block after the compression method.
 fn negotiated_version(extensions: &[u8]) -> Option<TlsVersion> {
     let declared = usize::from(u16::from_be_bytes([
         *extensions.first()?,
@@ -495,8 +449,8 @@ fn negotiated_version(extensions: &[u8]) -> Option<TlsVersion> {
         let value = rest.get(4..4 + len)?;
 
         if number == extension::SUPPORTED_VERSIONS {
-            // In a ServerHello the extension carries one version and no list
-            // header, unlike the client's (RFC 8446 §4.2.1).
+            // In a ServerHello the extension carries one version with no list header
+            // (RFC 8446 §4.2.1).
             let selected: &[u8; 2] = value.first_chunk()?;
             return TlsVersion::from_code(u16::from_be_bytes(*selected));
         }
@@ -523,9 +477,8 @@ mod tests {
         CipherSuite::offered_under(version).take(4).collect()
     }
 
-    /// A hello whose length fields disagree with its contents is dropped without
-    /// a word, and the port reads as one that does not speak TLS at all. So the
-    /// record and the handshake must each count exactly what follows them.
+    /// A server silently drops a hello whose length fields disagree with its
+    /// contents, so the record and the handshake each count exactly what follows.
     #[test]
     fn a_hello_declares_its_own_lengths_correctly() {
         for &version in TlsVersion::ALL {
@@ -560,8 +513,8 @@ mod tests {
         }
     }
 
-    /// The suites go on the wire in the order they were given, because that is
-    /// what a server taking the client's preference reads.
+    /// The suites go on the wire in the order given, which a server honouring
+    /// the client's preference reads.
     #[test]
     fn a_hello_offers_the_suites_it_was_given_in_order() {
         let suites: Vec<_> = CipherSuite::offered_under(TlsVersion::Tls12)
@@ -589,9 +542,8 @@ mod tests {
         assert_eq!(on_the_wire, expected);
     }
 
-    /// TLS 1.3 is asked for in an extension and nowhere else. A hello that put
-    /// `0x0304` in the version field would be refused by every conformant server
-    /// and the whole version reported unsupported.
+    /// TLS 1.3 is asked for only in the extension. `0x0304` in the version field
+    /// would be refused by every conformant server.
     #[test]
     fn tls13_is_asked_for_in_the_extension_and_not_the_version_field() {
         let suites = offer(TlsVersion::Tls13);
@@ -617,8 +569,7 @@ mod tests {
         );
     }
 
-    /// Every other version says so in the field, and none of them carries the
-    /// 1.3 extensions.
+    /// Every other version is named in the field, without the 1.3 extensions.
     #[test]
     fn the_older_versions_are_asked_for_in_the_version_field() {
         for version in [TlsVersion::Tls10, TlsVersion::Tls11, TlsVersion::Tls12] {
@@ -634,8 +585,7 @@ mod tests {
         }
     }
 
-    /// SSL 3.0 predates extensions, and a stack old enough to still offer it is
-    /// the one most likely to drop a hello carrying a block it cannot parse.
+    /// SSL 3.0 predates extensions.
     #[test]
     fn an_ssl3_hello_carries_no_extensions_at_all() {
         let suites = offer(TlsVersion::Ssl30);
@@ -655,8 +605,8 @@ mod tests {
         );
     }
 
-    /// A name reaches the wire in the shape RFC 6066 §3 gives it, and a hello
-    /// without one carries no extension rather than an empty name.
+    /// A name goes on the wire as RFC 6066 §3 gives it; with no name there is no
+    /// extension.
     #[test]
     fn a_server_name_reaches_the_wire_and_its_absence_sends_nothing() {
         let suites = offer(TlsVersion::Tls12);
@@ -681,8 +631,7 @@ mod tests {
         assert!(!contains_extension(&anonymous, extension::SERVER_NAME));
     }
 
-    /// Two hellos differ, because a constant random across the dozens an
-    /// enumeration sends is a signature a filter could match the scan by.
+    /// Two hellos have different randoms.
     #[test]
     fn two_hellos_do_not_carry_the_same_random() {
         let suites = offer(TlsVersion::Tls12);
@@ -698,9 +647,8 @@ mod tests {
 
     // ── Reading ──────────────────────────────────────────────────────────────
 
-    /// A ServerHello, built here from the RFC layout rather than from anything
-    /// above, so what these tests assert is the protocol and not the engine's
-    /// reading of it.
+    /// A ServerHello built from the RFC layout independently of the code above,
+    /// so the tests assert the protocol.
     fn server_hello(
         legacy_version: u16,
         suite: u16,
@@ -741,9 +689,7 @@ mod tests {
         );
     }
 
-    /// The case a reader that trusted the version field gets wrong. Every TLS
-    /// 1.3 server writes 1.2 in the field and 1.3 in the extension, so trusting
-    /// the field reports the entire modern web as TLS 1.2.
+    /// Every TLS 1.3 server writes 1.2 in the field and 1.3 in the extension.
     #[test]
     fn tls13_is_read_from_the_extension_rather_than_the_field() {
         let extensions = [0x00, 0x2B, 0x00, 0x02, 0x03, 0x04];
@@ -758,8 +704,7 @@ mod tests {
         );
     }
 
-    /// The extension is found behind others rather than only when it comes
-    /// first, since a server orders its own however it likes.
+    /// The extension is found behind others, since servers order their own.
     #[test]
     fn the_version_extension_is_found_behind_others() {
         let extensions = [
@@ -777,9 +722,8 @@ mod tests {
         ));
     }
 
-    /// A HelloRetryRequest is a ServerHello with a fixed random, and it names the
-    /// suite exactly as a completed one does. Read as an answer, and flagged, so
-    /// a caller neither loses the suite nor mistakes a retry for a negotiation.
+    /// A HelloRetryRequest names the suite like a completed ServerHello, and is
+    /// flagged so a caller does not mistake it for a negotiation.
     #[test]
     fn a_hello_retry_request_is_an_answer_and_says_so() {
         let extensions = [0x00, 0x2B, 0x00, 0x02, 0x03, 0x04];
@@ -794,8 +738,7 @@ mod tests {
         );
     }
 
-    /// A session id shifts everything behind it, and a reader that assumed the
-    /// field was empty would read the suite out of the middle of it.
+    /// A session id shifts everything behind it.
     #[test]
     fn a_session_id_does_not_move_the_suite() {
         let mut body = vec![handshake_type::SERVER_HELLO, 0, 0, 0];
@@ -818,8 +761,8 @@ mod tests {
         ));
     }
 
-    /// An alert is the peer speaking TLS and declining these terms, which is the
-    /// answer an enumeration reads as the end of a version.
+    /// An alert is the peer declining these terms, which an enumeration reads as
+    /// the end of a version.
     #[test]
     fn an_alert_is_read_as_a_refusal_with_its_reason() {
         // Fatal, handshake_failure.
@@ -835,7 +778,7 @@ mod tests {
     }
 
     /// Anything that is not a server answering a hello names nothing, and a
-    /// truncated record is refused rather than read past.
+    /// truncated record is refused.
     #[test]
     fn what_is_not_an_answer_is_not_read_as_one() {
         assert_eq!(read_response(b"HTTP/1.1 200 OK"), None);
@@ -859,8 +802,7 @@ mod tests {
         );
     }
 
-    /// A record announcing more than any peer may send is refused rather than
-    /// waited for, or a stranger decides how much this process buffers.
+    /// A record announcing more than any peer may send is refused immediately.
     #[test]
     fn a_record_longer_than_tls_permits_is_refused() {
         let absurd = [0x16, 0x03, 0x03, 0xFF, 0xFF];
@@ -879,9 +821,8 @@ mod tests {
         );
     }
 
-    /// Whether an extension is present in a built hello, read by walking the
-    /// block rather than by searching for the number anywhere in the packet: a
-    /// two-byte value could appear inside a random and answer this wrongly.
+    /// Whether an extension is present in a built hello, found by walking the
+    /// block: a two-byte value could also appear inside the random.
     fn contains_extension(hello: &[u8], number: u16) -> bool {
         let after_random = RECORD_HEADER_LEN + 4 + 2 + 32;
         let session_len = usize::from(hello[after_random]);
@@ -909,9 +850,7 @@ mod tests {
     }
 
     proptest::proptest! {
-        /// These bytes come off a socket a scanner opened to a stranger, so both
-        /// walks have to terminate on any input rather than merely on a
-        /// well-formed one.
+        /// These bytes come from a stranger, so both walks terminate on any input.
         #[test]
         fn reading_an_answer_never_panics(
             record in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512)
@@ -920,8 +859,8 @@ mod tests {
             let _ = record_length(&record);
         }
 
-        /// The same for a record that starts out looking like a handshake, which
-        /// is the shape that reaches furthest into the walk.
+        /// The same for a record that starts like a handshake, which reaches
+        /// furthest into the walk.
         #[test]
         fn reading_a_malformed_handshake_never_panics(
             body in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..256)
@@ -935,15 +874,12 @@ mod tests {
 
     // ── Reading a stranger's bytes ───────────────────────────────────────────
 
-    /// **The truncation property**, the one `wire/ethernet_frame` holds for
-    /// frames: reading more bytes never changes what a shorter read already
-    /// reported. A reader that satisfies it cannot be walked off the end of a
-    /// short buffer, and cannot be made to answer differently by a peer that
-    /// dribbles a record out in pieces.
+    /// **The truncation property**, as `wire/ethernet_frame` holds it for frames:
+    /// reading more bytes never changes what a shorter read reported, so a peer
+    /// dribbling a record out in pieces cannot change the answer.
     ///
-    /// Held here across every prefix of a well-formed ServerHello. The record
-    /// is only whole at the last prefix, so every earlier one must yield
-    /// `None` — never a `Hello` assembled out of bytes that had not arrived.
+    /// Held across every prefix of a well-formed ServerHello. The record is only
+    /// whole at the last prefix, so every earlier one must yield `None`.
     #[test]
     fn a_prefix_of_a_record_never_reads_as_more_than_the_whole_does() {
         let extensions = [0x00, 0x2B, 0x00, 0x02, 0x03, 0x04];
@@ -980,9 +916,8 @@ mod tests {
         }
     }
 
-    /// Every length field in a ServerHello is a stranger's, and each one is a
-    /// separate opportunity to be walked past the end of the buffer. None of
-    /// them may panic, whatever it claims.
+    /// Every length field in a ServerHello is a stranger's. None may cause a
+    /// panic.
     #[test]
     fn no_length_field_can_walk_the_reader_off_the_end() {
         let base = server_hello(
@@ -992,9 +927,8 @@ mod tests {
             Some(&[0x00, 0x2B, 0x00, 0x02, 0x03, 0x04]),
         );
 
-        // Every byte of the message, set to every extreme a length field can
-        // take. Cheap, exhaustive over the positions, and it needs no oracle:
-        // the assertion is that the call returns at all.
+        // Every byte set to each extreme a length field can take. The assertion is
+        // that the call returns.
         for at in 0..base.len() {
             for poison in [0x00u8, 0x01, 0x7F, 0x80, 0xFE, 0xFF] {
                 let mut bytes = base.clone();
@@ -1006,9 +940,7 @@ mod tests {
     }
 
     /// A record whose declared length runs past what arrived is read for what
-    /// arrived, and one whose declared length is past what TLS permits is
-    /// refused outright rather than waited for. Together these are what stop a
-    /// peer deciding how much this process buffers.
+    /// arrived; one past what TLS permits is refused outright.
     #[test]
     fn a_lying_record_length_neither_panics_nor_is_believed() {
         let mut record = server_hello(0x0303, 0xC02F, [0u8; 32], None);
@@ -1028,9 +960,8 @@ mod tests {
         assert_eq!(read_response(&record), None);
     }
 
-    /// An extension block whose entries claim more than the block holds ends the
-    /// search rather than reading past it, and the reader still answers from the
-    /// legacy version field.
+    /// Extension entries claiming more than the block holds end the search, and
+    /// the reader falls back to the legacy version field.
     #[test]
     fn an_overlong_extension_does_not_escape_its_block() {
         // One extension declaring 0xFFFF bytes of value and carrying none.
@@ -1048,8 +979,8 @@ mod tests {
         );
     }
 
-    /// A session id is a stranger's length too, and the largest one shifts the
-    /// suite past the end of every real message.
+    /// The largest session id shifts the suite past the end of every real
+    /// message.
     #[test]
     fn a_session_id_longer_than_the_message_is_refused() {
         let mut body = vec![handshake_type::SERVER_HELLO, 0, 0, 0];
@@ -1068,14 +999,12 @@ mod tests {
         assert_eq!(read_response(&record), None);
     }
 
-    /// **A hello cut short is refused rather than read**, which is what the
-    /// handshake's declared length is checked for.
+    /// **A hello cut short is refused**, by checking the handshake's declared
+    /// length.
     ///
-    /// A TLS 1.3 ServerHello cut off before its `supported_versions` extension
-    /// leaves a body that reads perfectly well and says `0x0303` in the legacy
-    /// field. Answering from that field reports a 1.3 server as 1.2 — which is
-    /// the exact misreading this module exists to prevent, arriving by a route
-    /// the version fields alone cannot close: a peer that stops sending.
+    /// A TLS 1.3 ServerHello cut before `supported_versions` reads fine and says
+    /// `0x0303` in the legacy field, so answering from it would report a 1.3 server
+    /// as 1.2 whenever a peer stops sending.
     #[test]
     fn a_truncated_tls13_hello_is_refused_rather_than_read_as_tls12() {
         let extensions = [0x00, 0x2B, 0x00, 0x02, 0x03, 0x04];
@@ -1100,8 +1029,8 @@ mod tests {
         ));
     }
 
-    /// Several handshake messages in one record is legal (RFC 8446 §5.1), so
-    /// bytes past this message are not a disagreement with its length.
+    /// Several handshake messages in one record are legal (RFC 8446 §5.1), so
+    /// bytes past this message do not contradict its length.
     #[test]
     fn a_coalesced_record_is_read_for_its_first_message() {
         let mut record = server_hello(0x0303, 0xC02F, [0u8; 32], None);
@@ -1123,12 +1052,8 @@ mod tests {
         );
     }
 
-    /// Where a hello ends, for a reader walking it by its own offsets: at the
-    /// end of its message once all of it has arrived, and never before.
-    ///
-    /// Short of whatever the record holds behind it, since that is another
-    /// message, and absent on every prefix, since a reader told a hello had
-    /// ended would read a partial one as whole.
+    /// Where a hello ends, for a reader walking it by its own offsets: at the end
+    /// of its message, and `None` on every prefix short of that.
     #[test]
     fn a_hello_ends_where_its_message_does() {
         let extensions = [0x00, 0x2B, 0x00, 0x02, 0x03, 0x04];
@@ -1150,16 +1075,11 @@ mod tests {
         assert_eq!(server_hello_end(&alert), None);
     }
 
-    /// And the message's own length is where its extensions end, whatever the
-    /// record holds behind it.
+    /// The message's own length is where its extensions end.
     ///
-    /// A TLS 1.2 ServerHello may carry no extensions at all, and the bytes after
-    /// its compression method are then the next message's header and body.
-    /// Walked as an extension block they are searched for a
-    /// `supported_versions` that is not there, and the next message decides
-    /// which version is reported. The trailer here is a Certificate built to
-    /// spell TLS 1.3 when misread that way; a real one spells whatever its
-    /// bytes happen to.
+    /// A TLS 1.2 ServerHello may carry no extensions, and the bytes after its
+    /// compression method are then the next message. The trailer here is a
+    /// Certificate built to spell TLS 1.3 if misread as an extension block.
     #[test]
     fn a_hello_without_extensions_does_not_read_the_next_message_as_them() {
         let mut record = server_hello(0x0303, 0xC02F, [0u8; 32], None);

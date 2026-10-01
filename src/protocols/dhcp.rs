@@ -11,32 +11,25 @@
 //! Enough of the protocol to ask a segment which machine hands out its
 //! configuration, and to recognise the answer.
 //!
-//! ## Why a DHCP server cannot be found by scanning ports
+//! ## Finding a server takes a broadcast
 //!
-//! Every other service this engine identifies is reached by addressing it. A
-//! DHCP server is not: a client that has no address yet cannot address anyone,
-//! so the protocol is built on broadcast, and the server is discovered rather
-//! than connected to. Probing UDP/67 on each address in turn asks the wrong
-//! question: a server that answers a broadcast may ignore a unicast to the same
-//! port, and a port with nothing listening is `OpenOrNoReply` like every
-//! other silent UDP port. One broadcast to the segment finds every server on
-//! it; sixty thousand unicasts find none.
+//! A client with no address cannot address anyone, so DHCP is built on
+//! broadcast. A server that answers a broadcast may ignore a unicast to UDP/67,
+//! and a silent port is `OpenOrNoReply` like any other UDP port. One broadcast
+//! finds every server on the segment; probing port 67 address by address finds
+//! none.
 //!
-//! ## Which message, and why it is the safe one
+//! ## The probe allocates nothing
 //!
-//! [`build_inform`] builds a `DHCPINFORM` (§3.4): the message a client with an
-//! address already sends to ask for the rest of its configuration: routers, name
-//! servers, a domain. It allocates nothing. A `DHCPDISCOVER` would find
-//! the same servers and would also make each of them reserve an address for a
-//! client that never appears, which is a scan changing the network it is
-//! measuring.
+//! [`build_inform`] builds a `DHCPINFORM` (§3.4), which a client that already
+//! has an address sends to ask for the rest of its configuration: routers, name
+//! servers, a domain. A `DHCPDISCOVER` would find the same servers but make
+//! each reserve an address for a client that never appears.
 //!
 //! ## Who the answer is about
 //!
-//! A server names itself in the server-identifier option (§9.7), and that is
-//! read rather than the packet's source address, because the two differ exactly
-//! when it matters: where a relay agent forwards for a server on another
-//! segment, the frame comes from the relay. The caller compares the two; see
+//! A server names itself in the server-identifier option (§9.7). Behind a relay
+//! agent the frame's source is the relay, so the caller compares the two; see
 //! [`ServerReply::server`].
 
 use crate::model::mac::MacAddr;
@@ -62,8 +55,7 @@ pub const SERVER_PORT: u16 = 67;
 
 /// A message from a client to a server.
 const BOOTREQUEST: u8 = 1;
-/// A message from a server to a client, which is the only kind that can say
-/// anything about a server.
+/// A message from a server to a client.
 const BOOTREPLY: u8 = 2;
 
 /// Ethernet, in the hardware-type registry BOOTP borrows (RFC 1700).
@@ -78,17 +70,16 @@ const BOOTP_FIXED_LEN: usize = 236;
 
 /// Where `chaddr`, the hardware address being configured, begins.
 ///
-/// Past the opcode, hardware type, address length and hop count (4), the
-/// transaction id (4), the seconds and flags (4), and the four addresses
-/// `ciaddr`, `yiaddr`, `siaddr` and `giaddr` (16).
+/// After the opcode, hardware type, address length and hop count (4), the
+/// transaction id (4), seconds and flags (4), and `ciaddr`, `yiaddr`, `siaddr`
+/// and `giaddr` (16).
 const CHADDR_OFFSET: usize = 28;
 
-/// What marks the bytes after the fixed header as DHCP options rather than
-/// BOOTP's vendor area (RFC 2131 §3).
+/// Marks the bytes after the fixed header as DHCP options instead of BOOTP's
+/// vendor area (RFC 2131 §3).
 const MAGIC_COOKIE: [u8; 4] = [99, 130, 83, 99];
 
-/// The smallest message some servers will accept, a BOOTP-era expectation that
-/// costs one padded datagram to satisfy and an unanswered probe to ignore.
+/// The smallest message some servers accept, a BOOTP-era expectation.
 const MIN_MESSAGE_LEN: usize = 300;
 
 const OPT_PAD: u8 = 0;
@@ -103,14 +94,13 @@ const OPT_PARAMETER_REQUEST: u8 = 55;
 const OPT_VENDOR_CLASS: u8 = 60;
 const OPT_END: u8 = 255;
 
-/// The message types a *client* sends, which is everything a server does not.
+/// The message types a client sends.
 const DHCPDISCOVER: u8 = 1;
 const DHCPREQUEST: u8 = 3;
 const DHCPDECLINE: u8 = 4;
 const DHCPRELEASE: u8 = 7;
 
-/// The message types a *server* sends. Anything else on the wire is a client
-/// talking, and a client says nothing about who serves it.
+/// The message types a server sends.
 const DHCPOFFER: u8 = 2;
 const DHCPACK: u8 = 5;
 const DHCPNAK: u8 = 6;
@@ -118,8 +108,8 @@ const DHCPNAK: u8 = 6;
 /// The message this engine sends: "I have an address, tell me the rest".
 const DHCPINFORM: u8 = 8;
 
-/// The parameters asked for, chosen to be the ones every server is configured
-/// to hand out, so no server declines it for want of anything to say.
+/// The parameters asked for: ones every server is configured to hand out, so
+/// none declines for want of anything to say.
 const REQUESTED_PARAMETERS: [u8; 4] = [
     1,  // subnet mask
     3,  // router
@@ -129,26 +119,21 @@ const REQUESTED_PARAMETERS: [u8; 4] = [
 
 /// A DHCP message sent by a server.
 ///
-/// Beyond identifying the server, this is a description of the network the
-/// server is configuring, meaning the way out and the resolvers and the domain,
-/// stated by the one machine on the segment authoritative about all three. No
-/// probe obtains that. A port scan of the gateway establishes that something
-/// answers on 53; this says which resolvers the network *tells its clients to
-/// use*, which is a different and better-sourced fact.
+/// Besides identifying the server, this describes the network it configures:
+/// the way out, the resolvers and the domain, from the one machine on the
+/// segment authoritative about all three. A port scan of the gateway finds
+/// something answering on 53; this says which resolvers the network tells its
+/// clients to use.
 ///
-/// `#[non_exhaustive]`, which two private fields already make it in practice.
-/// Saying so is what stops the next field being public and quietly reopening it.
+/// `#[non_exhaustive]`, which the private fields already make it in practice.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServerReply<'a> {
-    /// The address the server identified *itself* as (option 54), where it gave
-    /// one.
+    /// The address the server identified itself as (option 54), if given.
     ///
-    /// The claim to attribute the role to, and not the same thing as where the
-    /// frame came from. A relay agent forwarding for a server on another
-    /// segment puts its own address on the packet, so a caller that marks the
-    /// sender marks the relay; a caller that compares the two can tell the
-    /// difference and decline.
+    /// This is the claim to attribute the role to. A relay agent forwarding for a
+    /// server on another segment puts its own address on the packet, so a caller
+    /// can compare the two and decline when they differ.
     pub server: Option<Ipv4Addr>,
 
     /// The domain name the network hands out (option 15).
@@ -164,18 +149,14 @@ pub struct ServerReply<'a> {
 }
 
 impl<'a> ServerReply<'a> {
-    /// The routers this server offers its clients (option 3), in the order it
-    /// listed them, which is the order a client tries them in.
+    /// The routers this server offers its clients (option 3), in the order a
+    /// client tries them.
     pub fn routers(&self) -> impl Iterator<Item = Ipv4Addr> + 'a {
         addresses(self.routers)
     }
 
     /// The resolvers this server offers its clients (option 6), in the order it
     /// listed them.
-    ///
-    /// Every address here is one the network's own machines are being told to
-    /// send their lookups to, which is a stronger statement about what a box is
-    /// *for* than finding 53 open on it.
     pub fn resolvers(&self) -> impl Iterator<Item = Ipv4Addr> + 'a {
         addresses(self.resolvers)
     }
@@ -183,33 +164,26 @@ impl<'a> ServerReply<'a> {
 
 /// A DHCP message sent by a client.
 ///
-/// What a machine says about itself while asking for an address, which it does
-/// on joining any network and then periodically for as long as it stays. It is
-/// the one moment a device volunteers its own name and model without being
-/// asked, and it happens on a broadcast every other machine on the segment can
-/// hear.
+/// What a machine says about itself while asking for an address, on joining a
+/// network and at every renewal after. It is the one moment a device
+/// volunteers its name and model unasked, on a broadcast the whole segment
+/// hears.
 ///
-/// `#[non_exhaustive]`: five of the dozens of options a client may send, chosen
-/// for what they say about the device. [`ServerReply`] beside it is already
-/// closed, by carrying two fields as raw bytes rather than by anybody deciding,
-/// and two readers of one protocol should not have opposite answers to this.
+/// `#[non_exhaustive]`: five of the many options a client may send, chosen for
+/// what they say about the device.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClientRequest<'a> {
-    /// The hardware address the client is asking on behalf of, from the message's
-    /// own `chaddr` field.
+    /// The hardware address being configured, from the message's `chaddr` field.
     ///
-    /// Read from the message rather than from the Ethernet header, because those
-    /// are different claims: the frame's source is whatever put it on this
-    /// segment, and this is the address being configured. A relay forwarding a
-    /// client's request preserves the second and replaces the first.
+    /// The Ethernet source is whatever put the frame on this segment; a relay
+    /// forwarding a client's request replaces it and preserves `chaddr`.
     pub client_mac: Option<MacAddr>,
 
     /// What the client calls itself (option 12).
     ///
-    /// Often the only name a device ever announces: a printer or a camera with
-    /// no DNS record and no open port still says this every time its lease is
-    /// renewed.
+    /// Often the only name a device announces: a printer or camera with no DNS
+    /// record and no open port still sends it at every renewal.
     pub hostname: Option<&'a str>,
 
     /// What the client says it is (option 60): a vendor class such as
@@ -218,12 +192,11 @@ pub struct ClientRequest<'a> {
 
     /// The options the client asked for (option 55), **in the order it asked**.
     ///
-    /// Kept as raw bytes because the order is the signal. Which
-    /// options a stack requests, and in what sequence, is chosen by whoever
-    /// wrote it and is near-identical across every device running that software,
-    /// so the list distinguishes a Windows laptop from an Android phone from a
-    /// network printer without any of them being probed. Sorting or
-    /// deduplicating it would destroy exactly the part that identifies.
+    /// Raw bytes because the order is the signal. Which options a stack requests,
+    /// and in what sequence, is near-identical across every device running that
+    /// software, so the list tells a Windows laptop from an Android phone from a
+    /// printer without probing any of them. Sorting or deduplicating it would
+    /// destroy that.
     pub parameter_request_list: Option<&'a [u8]>,
 
     /// The address the client is asking to keep (option 50), which on a renewal
@@ -233,14 +206,12 @@ pub struct ClientRequest<'a> {
 
 /// Builds a `DHCPINFORM` from `src_mac`/`src_addr`, broadcast at the segment.
 ///
-/// The address goes in `ciaddr`, which is what makes this an inform rather than
-/// a request: it says the sender is already configured, and it is where the
-/// server sends its answer.
+/// The address goes in `ciaddr`, which makes this an inform: it says the
+/// sender is already configured and is where the server sends its answer.
 ///
-/// The transaction id is derived from the sending hardware address rather than
-/// drawn at random, because nothing correlates on it. A server's reply is
-/// evidence about the server whether it answers this probe or a real client's,
-/// so the field only has to be ours and stable.
+/// The transaction id is derived from the sending hardware address. Nothing
+/// correlates on it: a server's reply is evidence about the server whether it
+/// answers this probe or a real client's.
 pub fn build_inform(src_mac: MacAddr, src_addr: Ipv4Addr) -> Vec<u8> {
     let mut message = Vec::with_capacity(MIN_MESSAGE_LEN);
     let mac = src_mac.octets();
@@ -280,9 +251,8 @@ pub fn build_inform(src_mac: MacAddr, src_addr: Ipv4Addr) -> Vec<u8> {
 
 /// Reads `frame` as a DHCP message from a server, if it is one.
 ///
-/// Refuses a client's own traffic, which is most of the DHCP a segment carries:
-/// the discovers and requests every machine broadcasts when it wakes up prove
-/// only that the network has clients on it.
+/// Refuses client traffic, which is most of the DHCP a segment carries and
+/// proves only that the network has clients.
 pub fn server_reply<'a>(frame: &Frame<'a>) -> Option<ServerReply<'a>> {
     let (_, options) = bootp_message(frame, SERVER_PORT, BOOTREPLY)?;
 
@@ -305,22 +275,19 @@ pub fn server_reply<'a>(frame: &Frame<'a>) -> Option<ServerReply<'a>> {
         }
     }
 
-    // A message with no type is BOOTP rather than DHCP, and a BOOTP reply comes
-    // from a boot server rather than from a DHCP one. Named as absent rather
-    // than assumed: this engine reports what it can prove.
+    // A message with no type is BOOTP, and a BOOTP reply comes from a boot
+    // server, not a DHCP one.
     matches!(kind, Some(DHCPOFFER | DHCPACK | DHCPNAK)).then_some(reply)
 }
 
 /// Reads `frame` as a DHCP message sent by a client, or `None` if it is not one.
 ///
-/// The mirror of [`server_reply`], and the more informative direction for
-/// anything building an inventory: a server's answer describes the *network*,
-/// where a client's request describes the *device*.
+/// The mirror of [`server_reply`]: a server's answer describes the network,
+/// a client's request describes the device.
 ///
-/// This proves the client is present and nothing more. A request is a
-/// broadcast, so hearing one says its sender is on this segment; it does not say
-/// the sender holds the address it is asking for, and a `DHCPDISCOVER` is sent
-/// by a machine that has no address at all.
+/// Proves the client is on this segment and nothing more. It need not hold the
+/// address it asks for, and a `DHCPDISCOVER` comes from a machine with no
+/// address at all.
 pub fn client_request<'a>(frame: &Frame<'a>) -> Option<ClientRequest<'a>> {
     let (message, options) = bootp_message(frame, CLIENT_PORT, BOOTREQUEST)?;
 
@@ -354,11 +321,9 @@ pub fn client_request<'a>(frame: &Frame<'a>) -> Option<ClientRequest<'a>> {
 /// A BOOTP message inside `frame`, when it is one sent from `source_port` with
 /// operation `op`, as the whole message and the option bytes after its cookie.
 ///
-/// The walk both readers above share, down through IPv4 and UDP to the magic
-/// cookie that separates a DHCP message from the BOOTP it extends. Both halves
-/// are returned because both are wanted and walking twice is how two readings of
-/// one frame come to disagree: the message for `chaddr`, the options for
-/// everything else.
+/// The walk both readers share, down through IPv4 and UDP to the magic cookie.
+/// Returns the message (for `chaddr`) and the options (for everything else) so
+/// the frame is walked once.
 fn bootp_message<'a>(frame: &Frame<'a>, source_port: u16, op: u8) -> Option<(&'a [u8], &'a [u8])> {
     if frame.ethertype() != EtherTypes::Ipv4.0 {
         return None;
@@ -369,15 +334,15 @@ fn bootp_message<'a>(frame: &Frame<'a>, source_port: u16, op: u8) -> Option<(&'a
         return None;
     }
 
-    // The header length comes off the wire and the fixed header is five words,
-    // so anything under five puts the datagram's start inside the header that
-    // named it. `ip::udp_payload` refuses the same claim for the same reason.
+    // The header length comes off the wire, and anything under the five-word
+    // fixed header would start the datagram inside it. `ip::udp_payload`
+    // refuses the same claim.
     if usize::from(packet.get_header_length()) * WORD_LEN < IP_V4_HDR_LEN {
         return None;
     }
 
-    // Offsets rather than the parsed views' own `payload`, because those borrow
-    // from the view and the values returned here have to outlive it.
+    // Offsets, since the views' own `payload` borrows from the view and these
+    // values outlive it.
     let header_len = usize::from(packet.get_header_length()) * WORD_LEN;
     let datagram_bytes = frame.payload().get(header_len..)?;
 
@@ -401,11 +366,9 @@ fn bootp_message<'a>(frame: &Frame<'a>, source_port: u16, op: u8) -> Option<(&'a
 
 /// The hardware address out of a BOOTP message's `chaddr` field.
 ///
-/// `None` where the message says it is describing something other than an
-/// Ethernet address of the length Ethernet addresses have, or is too short to
-/// carry one. The field is sixteen bytes whatever the link, and taking the first
-/// six from a message about some other kind of hardware produces a
-/// plausible-looking address for a device that has none.
+/// `None` when the message describes something other than a six-byte Ethernet
+/// address, or is too short for one. The field is sixteen bytes on any link,
+/// and the first six of some other hardware's address would look plausible.
 fn client_hardware_address(message: &[u8]) -> Option<MacAddr> {
     if *message.get(1)? != HTYPE_ETHERNET || *message.get(2)? != HLEN_ETHERNET {
         return None;
@@ -419,15 +382,11 @@ fn client_hardware_address(message: &[u8]) -> Option<MacAddr> {
 
 /// The addresses packed into an option carrying a list of them, four bytes each.
 ///
-/// A trailing partial address is dropped rather than padded: an option whose
-/// length is not a multiple of four is malformed, and the addresses before the
-/// remainder are still what the server said.
+/// A trailing partial address is dropped: the option is malformed, but the
+/// addresses before the remainder are still what the server said.
 fn addresses(bytes: &[u8]) -> impl Iterator<Item = Ipv4Addr> + '_ {
-    // `.0` is the whole four-byte groups and `.1` is the remainder, which is
-    // dropped, the behaviour the doc comment above describes and the same one
-    // `chunks_exact` gave. Taking the chunks as arrays rather than as slices is
-    // what lets the address be built from one value instead of four indexes,
-    // each of which the compiler would otherwise have to prove is in bounds.
+    // `.0` is the whole four-byte groups; `.1`, the remainder, is dropped.
+    // Array chunks let the address be built without bounds-checked indexing.
     bytes
         .as_chunks::<4>()
         .0
@@ -437,9 +396,7 @@ fn addresses(bytes: &[u8]) -> impl Iterator<Item = Ipv4Addr> + '_ {
 
 /// The options in `bytes`, as code and value.
 ///
-/// Stops at the end option and at any truncation. A malformed option list is
-/// ordinary, being whatever arrived, so it ends the walk rather than discarding
-/// what was already read.
+/// Stops at the end option and at any truncation, keeping what was read.
 fn walk_options(bytes: &[u8]) -> impl Iterator<Item = (u8, &[u8])> {
     let mut rest = bytes;
     std::iter::from_fn(move || {
@@ -447,8 +404,7 @@ fn walk_options(bytes: &[u8]) -> impl Iterator<Item = (u8, &[u8])> {
             let (&code, tail) = rest.split_first()?;
             match code {
                 OPT_END => return None,
-                // A pad has no length byte, which is the whole reason this walk
-                // cannot be a simple stride.
+                // A pad has no length byte, so the walk cannot be a simple stride.
                 OPT_PAD => rest = tail,
                 _ => {
                     let (&len, tail) = tail.split_first()?;
@@ -545,10 +501,9 @@ pub(crate) mod tests {
         .concat()
     }
 
-    /// The probe has to be addressed so that every server on the segment sees
-    /// it, and shaped so that each one answers: an inform asks for
-    /// configuration without asking for an address, and `ciaddr` is both the
-    /// claim that we have one and where the answer is sent.
+    /// Every server on the segment must see the probe and answer it: an inform
+    /// asks for configuration without an address, and `ciaddr` is both the claim
+    /// that we have one and where the answer goes.
     #[test]
     fn an_inform_is_broadcast_and_asks_for_nothing_it_would_have_to_be_given() {
         let bytes = build_inform(SRC_MAC, src_addr());
@@ -587,8 +542,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// What the role is read from: a server's own message, and the address it
-    /// gives for itself in it.
+    /// The role is read from a server's own message and the address it gives
+    /// for itself.
     #[test]
     fn a_server_message_yields_the_address_the_server_named() {
         for kind in [DHCPOFFER, DHCPACK, DHCPNAK] {
@@ -605,13 +560,11 @@ pub(crate) mod tests {
 
     /// Everything else on the segment says nothing about who serves it.
     ///
-    /// The client half of DHCP is the case that matters: a machine waking up
-    /// broadcasts a discover and a request, which any listener sees, and
-    /// reading one as a server's answer would name every laptop on the network
-    /// a DHCP server.
+    /// A client's broadcast discover or request read as a server's answer would
+    /// name every laptop on the network a DHCP server.
     #[test]
     fn a_clients_own_traffic_is_never_a_servers_answer() {
-        // A discover: from the client port, and a request rather than a reply.
+        // A discover: from the client port, and a request, not a reply.
         let mut message = vec![0u8; BOOTP_FIXED_LEN];
         message[0] = BOOTREQUEST;
         message.extend_from_slice(&MAGIC_COOKIE);
@@ -640,8 +593,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// A server that does not name itself is still a server; the caller is left
-    /// to decide what to do with a message it cannot attribute.
+    /// A server that does not name itself is still a server; the caller decides
+    /// what to do with a message it cannot attribute.
     #[test]
     fn a_reply_without_a_server_identifier_names_nobody() {
         let bytes = reply_frame(DHCPACK, None);
@@ -661,8 +614,7 @@ pub(crate) mod tests {
     }
 
     /// A client renewing its lease: a `DHCPREQUEST` sent from the address it
-    /// already holds, naming itself. The common shape on a segment that has
-    /// been up for any length of time, and the one a listener can attribute.
+    /// already holds, naming itself. The common shape on an established segment.
     pub(crate) fn renewal_frame(from: Ipv4Addr, hostname: &str) -> Vec<u8> {
         request_frame_from(
             from,
@@ -680,8 +632,8 @@ pub(crate) mod tests {
         )
     }
 
-    /// The shared builder, taking the address the client sends from, which is the
-    /// whole of the difference between a discover and a renewal.
+    /// The shared builder, taking the address the client sends from, the only
+    /// difference between a discover and a renewal.
     fn request_frame_from(from: Ipv4Addr, kind: u8, options: &[(u8, Vec<u8>)]) -> Vec<u8> {
         const CLIENT_MAC: MacAddr = MacAddr::new(0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33);
 
@@ -719,9 +671,8 @@ pub(crate) mod tests {
 
     /// What a device volunteers about itself while asking for an address.
     ///
-    /// The whole reason to read the client half: a printer with no DNS record
-    /// and no open port still says its name and its model here, on a broadcast,
-    /// every time its lease renews.
+    /// A printer with no DNS record and no open port still says its name and model
+    /// here at every renewal.
     #[test]
     fn a_clients_request_carries_its_name_and_what_it_says_it_is() {
         let bytes = request_frame(
@@ -748,12 +699,9 @@ pub(crate) mod tests {
         );
     }
 
-    /// The parameter request list identifies a device by *what it asks for and
-    /// in what order*, which is chosen by whoever wrote the stack and is
-    /// near-identical across every device running it.
-    ///
-    /// Sorting or deduplicating it would leave two stacks asking for the same
-    /// four options indistinguishable, which is most of them.
+    /// The parameter request list identifies a stack by what it asks for and in
+    /// what order. Sorted or deduplicated, two stacks asking for the same four
+    /// options would be indistinguishable.
     #[test]
     fn the_parameter_request_list_keeps_the_order_it_was_asked_in() {
         let asked = vec![1u8, 121, 3, 6, 15, 119, 252];
@@ -769,9 +717,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// A server's answer describes the network rather than the device: the way
-    /// out, the resolvers, and the domain, from the one machine on the segment
-    /// that is authoritative about all three.
+    /// A server's answer describes the network: the way out, the resolvers, and
+    /// the domain.
     #[test]
     fn a_server_reply_carries_what_the_network_hands_out() {
         let mut extra = vec![
@@ -798,9 +745,9 @@ pub(crate) mod tests {
         );
     }
 
-    /// The two directions must not be read as each other. A client broadcast
-    /// read as a server's answer would name every laptop on the network a DHCP
-    /// server; a server's answer read as a client request would invent a device.
+    /// The two directions are not read as each other. A client broadcast read
+    /// as a server's answer would name every laptop a DHCP server; the reverse
+    /// would invent a device.
     #[test]
     fn neither_direction_is_readable_as_the_other() {
         let request = request_frame(DHCPDISCOVER, &[(OPT_HOSTNAME, b"laptop".to_vec())]);
@@ -820,9 +767,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// An option list carrying a partial address is malformed. The addresses in
-    /// front of the remainder are still what the server said, and padding the
-    /// remainder out would invent one.
+    /// An option list carrying a partial address keeps the addresses in front of
+    /// the remainder.
     #[test]
     fn a_trailing_partial_address_is_dropped_rather_than_padded() {
         let bytes = reply_frame_with(
@@ -841,13 +787,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// A device that NUL-terminates its hostname and pads past the terminator
-    /// still names itself, and the padding does not reach the host record.
-    ///
-    /// A reader that trimmed one NUL would report an eleven-byte field carrying
-    /// a seven-character name as `"printer\0\0\0"`, which nobody can search
-    /// for. `lldp` and `cdp` read the same kind of field, so all three read
-    /// through `protocols::text`.
+    /// A hostname padded with NULs past its terminator has every NUL trimmed
+    /// (through `protocols::text`, shared with `lldp` and `cdp`).
     #[test]
     fn a_nul_padded_hostname_arrives_without_its_padding() {
         let frame_bytes = renewal_frame(src_addr(), "printer\0\0\0\0");
@@ -857,8 +798,7 @@ pub(crate) mod tests {
         assert_eq!(request.hostname, Some("printer"));
     }
 
-    /// Options are a walk rather than a stride: a pad carries no length byte,
-    /// and a truncated option ends the list rather than being read past it.
+    /// A pad carries no length byte, and a truncated option ends the list.
     #[test]
     fn the_option_walk_survives_padding_and_truncation() {
         let padded = [OPT_PAD, OPT_PAD, OPT_MESSAGE_TYPE, 1, DHCPACK, OPT_END];

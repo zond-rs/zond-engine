@@ -10,11 +10,10 @@
 //!
 //! ARP requests, and the address a reply claims.
 //!
-//! The cheapest and most informative probe this engine sends. A neighbour that
-//! answers proves it is there, and it answers with its MAC, which is the one
-//! identifier a routed probe can never learn. Every conformant IPv4 host
-//! replies, whatever it thinks of being scanned, because ignoring ARP means its
-//! own router cannot reach it either.
+//! The cheapest and most informative probe this engine sends: a neighbour that
+//! answers proves it is there and gives its MAC, which a routed probe cannot
+//! learn. Every conformant IPv4 host replies, since ignoring ARP would cut it
+//! off from its own router.
 
 use crate::model::mac::MacAddr;
 use crate::protocols::craft::{Arp, Ethernet, Packet};
@@ -31,16 +30,11 @@ const PROTO_ADDR_LEN_V4: u8 = 4;
 /// Builds the broadcast ARP request a sweep sends, asking who holds
 /// `dst_addr`.
 ///
-/// The frame goes to broadcast, because that is what a request is: the whole
-/// point is that the holder of the address is not yet known. The request's own
-/// target hardware address is left zero, which RFC 826 expects and every
+/// The target hardware address is left zero, as RFC 826 expects and every
 /// ordinary stack sends, so the probe looks like any other on the segment.
 ///
-/// Padded to [`MIN_ETH_FRAME_NO_FCS`]. A frame shorter than that is treated as
-/// a collision fragment and discarded, so an unpadded request is not a slow
-/// probe but an invisible one.
-///
-/// Infallible: nothing here is derived from a length.
+/// Padded to [`MIN_ETH_FRAME_NO_FCS`], since a shorter frame is discarded as a
+/// collision fragment.
 pub fn build_request(src_mac: MacAddr, src_addr: Ipv4Addr, dst_addr: Ipv4Addr) -> Vec<u8> {
     frame(
         src_mac,
@@ -49,24 +43,17 @@ pub fn build_request(src_mac: MacAddr, src_addr: Ipv4Addr, dst_addr: Ipv4Addr) -
     )
 }
 
-/// Builds an ARP request aimed at one host rather than at the segment.
-///
-/// What validates a cache entry: the holder of `dst_addr` is believed to be
-/// `dst_mac`, and this asks it directly. Every other neighbour's hardware
-/// discards the frame, so it costs the segment nothing.
-///
-/// Unreachable through [`build_request`] on purpose. The two differ in who
-/// sees the frame, which is a decision worth making by choosing a function
-/// rather than by passing a different argument to one.
+/// Builds an ARP request sent to `dst_mac` only, to validate a cache entry
+/// that says `dst_mac` holds `dst_addr`. Every other neighbour's hardware
+/// discards the frame.
 pub fn build_unicast_request(
     src_mac: MacAddr,
     dst_mac: MacAddr,
     src_addr: Ipv4Addr,
     dst_addr: Ipv4Addr,
 ) -> Vec<u8> {
-    // Named here, unlike in a broadcast request, which is what makes a host that
-    // has moved visible: it answers from a different address and the mismatch
-    // says the entry was stale.
+    // Naming the target makes a host that moved visible: it answers from a
+    // different address and the mismatch says the entry was stale.
     let request = Arp::request(src_mac, src_addr, dst_addr).with_target_hw_addr(dst_mac);
     frame(src_mac, dst_mac, request)
 }
@@ -84,13 +71,10 @@ fn frame(src_mac: MacAddr, dst_mac: MacAddr, packet: Arp) -> Vec<u8> {
 
 /// The address the sender of an ARP frame claims to hold.
 ///
-/// The packet has to say it is carrying an IPv4 address before those four bytes
-/// are read as one. ARP is a container: its protocol type and address lengths
-/// are fields, they come off the wire like everything else, and a packet
-/// declaring sixteen-byte protocol addresses has its sender's address somewhere
-/// this cannot reach. Reading the fixed offset anyway credits a host with four
-/// bytes out of the middle of somebody else's address, which is the mistake
-/// [the module documentation](crate::protocols) is about.
+/// Read only when the packet declares IPv4 protocol addresses. ARP's protocol
+/// type and address lengths come off the wire, and a packet with sixteen-byte
+/// protocol addresses keeps its sender's address elsewhere; reading the fixed
+/// offset anyway would credit four bytes out of the middle of another address.
 ///
 /// # Errors
 ///
@@ -165,9 +149,8 @@ mod tests {
         [eth_buffer, arp_buffer].concat()
     }
 
-    /// Every field of the request a sweep sends, including the padding: a
-    /// frame under sixty bytes is discarded as a collision fragment, so an
-    /// unpadded request is invisible rather than merely small.
+    /// Every field of the request a sweep sends, including the padding to sixty
+    /// bytes.
     #[test]
     fn a_broadcast_request_asks_the_segment_and_names_nobody() {
         let src_mac = MacAddr::new(0x01, 0x02, 0x03, 0x04, 0x05, 0x06);
@@ -202,11 +185,7 @@ mod tests {
         assert_eq!(arp_packet.get_target_proto_addr(), dst_addr);
     }
 
-    /// The two requests differ in who sees the frame, which is the whole
-    /// reason they are separate functions rather than one with an argument.
-    /// Written as an argument, the caller that meant broadcast and the caller
-    /// that meant unicast passed different values into the same field and
-    /// neither got what they meant.
+    /// The unicast request goes to one MAC and names it as the target.
     #[test]
     fn a_unicast_request_reaches_one_host_and_a_broadcast_one_reaches_all() {
         let src_mac = MacAddr::new(0x01, 0x02, 0x03, 0x04, 0x05, 0x06);
@@ -228,11 +207,8 @@ mod tests {
         assert_eq!(arp.get_target_proto_addr(), dst_addr);
     }
 
-    /// The address an ARP frame is credited to, read through the dispatcher
-    /// the receive loop actually calls rather than through a copy of it.
-    ///
-    /// A reimplementation of `source_address` in this test module would pass
-    /// whatever the real one did.
+    /// The address an ARP frame is credited to, read through the dispatcher the
+    /// receive loop calls.
     #[test]
     fn a_well_formed_frame_is_credited_to_its_sender() {
         let expected = Ipv4Addr::new(192, 0, 2, 123);
@@ -245,9 +221,7 @@ mod tests {
         );
     }
 
-    /// A frame cut short of an ARP packet credits nobody. Reading the sender
-    /// address out of whatever bytes happened to follow would attribute a
-    /// finding to an address nothing sent.
+    /// A frame cut short of an ARP packet credits nobody.
     #[test]
     fn a_truncated_frame_credits_nobody() {
         let buffer = build_mock_arp_packet(Ipv4Addr::UNSPECIFIED, 10);
@@ -259,13 +233,8 @@ mod tests {
         ));
     }
 
-    /// ARP is a container, and the fields saying what it contains come off the
-    /// wire like everything else.
-    ///
     /// A packet declaring sixteen-byte protocol addresses keeps its sender's
-    /// address somewhere the IPv4 offsets do not reach. Reading them anyway
-    /// credited a host with four bytes out of the middle of an IPv6 address, and
-    /// `craft::Arp` exists so that exactly this packet can be built.
+    /// address where the IPv4 offsets do not reach, and credits nobody.
     #[test]
     fn an_arp_packet_about_another_protocol_credits_nobody() {
         let mut buffer = build_mock_arp_packet(Ipv4Addr::new(198, 51, 100, 1), ARP_LEN);
@@ -290,9 +259,8 @@ mod tests {
         );
     }
 
-    /// An ethertype this module does not read is the ordinary case under
-    /// promiscuous capture, not a fault, and it is reported as itself so a
-    /// caller can tell it from a frame that arrived broken.
+    /// An unread EtherType is reported as itself, so a caller can tell it from
+    /// a frame that arrived broken.
     #[test]
     fn a_frame_of_another_kind_is_reported_as_unread_rather_than_broken() {
         let mut buffer = build_mock_arp_packet(Ipv4Addr::UNSPECIFIED, 20);
@@ -301,9 +269,7 @@ mod tests {
             .set_ethertype(EtherTypes::Ipv4);
         let parsed = super::super::ethernet::parse(&buffer).expect("a frame");
 
-        // Ethertype IPv4 with twenty bytes behind it parses as an IPv4 header,
-        // so this reads a source rather than refusing: the dispatcher covers
-        // more than ARP.
+        // EtherType IPv4 with twenty bytes behind it parses as an IPv4 header.
         assert!(crate::protocols::source_address(&parsed).is_ok());
 
         MutableEthernetPacket::new(&mut buffer)

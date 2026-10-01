@@ -8,18 +8,16 @@
 
 //! # Between the model's hardware address and `pnet`'s
 //!
-//! Every frame this crate builds or reads goes through `pnet::packet`, which
-//! has a `MacAddr` of its own. Nothing public names that type: the builders
-//! and readers take and return [`MacAddr`](crate::model::mac::MacAddr), and
-//! convert here, at the call into the packet library.
+//! `pnet::packet` has its own `MacAddr`. Public builders and readers take and
+//! return [`MacAddr`](crate::model::mac::MacAddr) and convert here, at the call
+//! into the packet library.
 
 use crate::model::mac::MacAddr as CoreMacAddr;
 use pnet_base::MacAddr as PnetMacAddr;
 
-/// From `pnet`'s address to the model's, for one read off a frame.
+/// From `pnet`'s address to the model's.
 pub(crate) trait IntoCoreMac {
-    /// The same address in the model's own type, for a MAC read off a frame or
-    /// an interface on its way into a host record.
+    /// The same address in the model's type.
     fn into_core(self) -> CoreMacAddr;
 }
 
@@ -30,17 +28,12 @@ impl IntoCoreMac for PnetMacAddr {
     }
 }
 
-/// The reverse: a model address as the packet builders want one.
+/// From the model's address to the one `pnet`'s packet builders take.
 ///
-/// Needed because the two vocabularies meet in both directions. An address
-/// read off an interface arrives as the model's, and every frame this crate
-/// emits is built by `pnet::packet`, which wants its own. Written as a trait
-/// rather than a `From` impl, as [`IntoCoreMac`] is, because an impl of a
-/// public trait is public wherever it sits, and a `From` between the two
-/// addresses would put the packet library's back in the public API.
+/// A crate-private trait, like [`IntoCoreMac`], because a `From` impl between
+/// the two would be public and put `pnet`'s type in the public API.
 pub(crate) trait IntoPnetMac {
-    /// The same address in the type `pnet`'s packet builders take, for handing
-    /// a model address to whatever is writing the frame.
+    /// The same address in `pnet`'s type.
     fn into_pnet(self) -> PnetMacAddr;
 }
 

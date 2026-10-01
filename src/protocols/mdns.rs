@@ -10,25 +10,21 @@
 //!
 //! Builds a forward mDNS query, and reads the hosts an mDNS message names.
 //!
-//! [`build_query`] asks for a `.local` name's addresses; [`extract_hosts`]
-//! reads the addresses out of the answer. The two are the wire-format half of
-//! resolution and know nothing about sockets: sending the query on the multicast
-//! group and reading the reply belong to [`crate::resolve`], the same way
-//! [`crate::protocols::dns`] leaves the query socket to
-//! [`crate::scanner::rdns`].
+//! [`build_query`] asks for a `.local` name's addresses; [`extract_hosts`] reads
+//! them out of the answer. Sockets belong to [`crate::resolve`], as
+//! [`crate::protocols::dns`] leaves its socket to [`crate::scanner::rdns`].
 //!
-//! A hostname comes from the *owner* of an address record: `raspberrypi.local.
-//! A 203.0.113.150` says that this address belongs to that name, and says it
-//! about one host. The PTR records in the same message do not - service
-//! discovery answers `_airplay._tcp.local. PTR Living Room._airplay._tcp.local.`,
-//! which names a service instance and not the machine hosting it. The one PTR
-//! worth reading is a reverse one, whose owner is an `in-addr.arpa` or
-//! `ip6.arpa` name and so names an address outright.
+//! A hostname comes from the owner of an address record:
+//! `raspberrypi.local. A 203.0.113.150` ties one name to one host's address.
+//! Service-discovery PTRs such as
+//! `_airplay._tcp.local. PTR Living Room._airplay._tcp.local.` name a service
+//! instance, not a machine, so only reverse PTRs (owned by an `in-addr.arpa` or
+//! `ip6.arpa` name) are read.
 //!
-//! One message can speak for several hosts, since responders answer with
-//! whatever else they know in the additional section. Records are therefore
-//! grouped by owner, and each group comes back as its own [`MdnsHost`], so a
-//! name is never paired with an address that belongs to a different machine.
+//! Responders add whatever else they know in the additional section, so one
+//! message can speak for several hosts. Records are grouped by owner and each
+//! group is its own [`MdnsHost`], so a name is never paired with another
+//! machine's address.
 
 use crate::protocols::error::{PacketError, Result};
 
@@ -49,28 +45,21 @@ pub const PORT: u16 = 5353;
 
 /// Builds a forward mDNS query for the addresses of `name`.
 ///
-/// Asks for A and AAAA together in one message, so a single exchange learns a
-/// host's addresses in both families rather than costing a query each. The
-/// trailing dot a fully-qualified `.local` name may carry is stripped, since the
-/// wire form never includes it.
+/// Asks for A and AAAA in one message. A trailing dot on `name` is stripped.
 ///
 /// The transaction ID is zero, as RFC 6762 §18.1 requires of a multicast query.
-/// That is not how the answer is correlated: an mDNS response echoes no ID worth
-/// trusting, so the caller matches the address records back to the name they own
-/// (see [`extract_hosts`]), which is the same reason the reverse path in
-/// [`crate::protocols::dns`] correlates on the question name.
+/// An mDNS response echoes no ID worth trusting, so the caller matches address
+/// records to the name they own (see [`extract_hosts`]).
 ///
-/// Recursion is not asked for, since a multicast query has nobody to ask it of
-/// (RFC 6762 §18.6), and the unicast-response bit is not set: the resolver sends
-/// from an ephemeral port, and a responder seeing a query from any port other
-/// than 5353 must answer it directly under the legacy rule of §6.7.
+/// Recursion is not requested (RFC 6762 §18.6), and neither is a unicast
+/// response: the resolver sends from an ephemeral port, and a query from any
+/// port but 5353 must be answered directly under the legacy rule of §6.7.
 ///
 /// # Errors
 ///
-/// [`PacketError::UnwritableName`] for a name that has no wire form, which for
-/// an mDNS lookup means a label past 63 octets or a name past 255. `name` is
-/// whatever a caller was asked to resolve, so this is the ordinary way a bad
-/// hostname arrives rather than a rare one.
+/// [`PacketError::UnwritableName`] for a label past 63 octets or a name past
+/// 255. `name` comes from a caller, so this is how a bad hostname ordinarily
+/// arrives.
 pub fn build_query(name: &str) -> Result<Vec<u8>> {
     dns::build_query(
         MULTICAST_QUERY_ID,
@@ -81,45 +70,37 @@ pub fn build_query(name: &str) -> Result<Vec<u8>> {
 
 /// One host as an mDNS message described it.
 ///
-/// `#[non_exhaustive]`: a responder says more about a host than its name and its
-/// addresses, and reading another of those adds a field here. [`Default`] is
-/// what to build one from.
+/// `#[non_exhaustive]`: build one from [`Default`].
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MdnsHost {
     /// The name the host answers to, without its trailing dot.
     pub hostname: String,
     /// Every address the message gave for that name, in address order.
-    ///
-    /// Ordered rather than hashed so two runs over one message hand back the
-    /// same list. A responder may name an address twice across the answer and
-    /// additional sections, so this is a set; what it must not be is a set whose
-    /// order moves between processes, since these addresses reach a report.
+    /// A responder may repeat an address across the answer and additional
+    /// sections, hence a set; ordered so the list reaching a report is stable
+    /// across runs.
     pub ips: BTreeSet<IpAddr>,
 }
 
 /// The name a host's device-info record is published under, or `None` for a
 /// name no responder publishes one under.
 ///
-/// Bonjour hangs it off the hostname rather than advertising it as a service, so
-/// it does not appear in a `_services._dns-sd._udp` enumeration and cannot be
-/// asked for without knowing what the host calls itself. Measured against
-/// mDNSResponder: `_device-info._tcp.local` alone draws nothing, and
+/// Bonjour hangs the record off the hostname, so it does not appear in a
+/// `_services._dns-sd._udp` enumeration. Measured against mDNSResponder:
+/// `_device-info._tcp.local` alone draws nothing, and
 /// `<host>._device-info._tcp.local` draws the record.
 ///
 /// # Which names have one
 ///
-/// A name in `.local`, whose host part is what the record hangs off, and a bare
-/// label, which is how a device names itself in its DHCP request. A name in any
-/// other zone came from a unicast resolver: multicast DNS answers for `.local`
-/// and nothing else (RFC 6762 §3), so `x.fritz.box._device-info._tcp.local` is
-/// a question no responder answers, and the zone's own label for the device is
-/// whatever whoever runs the zone chose, which need not be what the device
-/// calls itself.
+/// A name in `.local`, and a bare label (how a device names itself in its DHCP
+/// request). A name in any other zone came from a unicast resolver: multicast
+/// DNS answers only for `.local` (RFC 6762 §3), and that zone's label for the
+/// device need not be what the device calls itself.
 ///
-/// The trailing dot of a fully-qualified name is dropped first, and the zone
-/// is recognised whatever its case, as DNS compares names (RFC 4343), so
-/// `mac.`, `mac.local.` and `mac.LOCAL` all name the record under `mac`.
+/// A trailing dot is dropped and the zone is matched case-insensitively
+/// (RFC 4343), so `mac.`, `mac.local.` and `mac.LOCAL` all name the record
+/// under `mac`.
 pub fn device_info_name(hostname: &str) -> Option<String> {
     let name = hostname.trim_end_matches('.');
     let host = match name.rsplit_once('.') {
@@ -135,11 +116,9 @@ pub fn device_info_name(hostname: &str) -> Option<String> {
 /// A query asking a host what it calls itself, by the reverse name of its
 /// address.
 ///
-/// The device-info record is published under the host's own name, so a scan that
-/// does not already know that name cannot ask for the record. A responder
-/// answers a reverse lookup about its own address, which is where the name comes
-/// from when nothing else resolved one: measured against mDNSResponder, and it is
-/// what makes the device-info query reachable on a host the scan learned nothing
+/// The device-info record is published under the host's own name. A responder
+/// answers a reverse lookup about its own address (measured against
+/// mDNSResponder), which gives that name for a host the scan learned nothing
 /// else about.
 pub fn build_reverse_query(ip: IpAddr) -> Result<Vec<u8>> {
     dns::build_query(
@@ -152,14 +131,12 @@ pub fn build_reverse_query(ip: IpAddr) -> Result<Vec<u8>> {
 /// A query for a host's device-info record, asked of that host directly, or
 /// `None` where `hostname` has no record under it: see [`device_info_name`].
 ///
-/// Sent to the host directly rather than to the multicast group. A scan is asking
-/// one host about itself, so telling the whole segment would make the answer
-/// harder to attribute rather than easier.
+/// Sent to the host directly, not the multicast group, so the answer is easy
+/// to attribute.
 ///
-/// The question carries an ordinary `IN` class. RFC 6762 §5.4 defines a top bit
-/// asking for a unicast reply, and it is not set here because it is not needed:
-/// measured against mDNSResponder, a query sent to a responder's own port is
-/// answered either way, and the bit exists for queries put on the group.
+/// The unicast-response bit (RFC 6762 §5.4) is not set: measured against
+/// mDNSResponder, a query sent to a responder's own port is answered either
+/// way.
 ///
 /// # Errors
 ///
@@ -176,10 +153,9 @@ pub fn build_device_info_query(hostname: &str) -> Option<Result<Vec<u8>>> {
 
 /// The strings a TXT record carries, one per character-string.
 ///
-/// Kept apart rather than joined, because that is the unit the signature corpus
-/// is written against: a device-info record answers `model=Mac16,10`,
-/// `osxvers=25`, `icolor=0`, and a rule reads one of them. Joining them would
-/// reach none.
+/// Kept separate because the corpus matches single strings: a device-info
+/// record answers `model=Mac16,10`, `osxvers=25`, `icolor=0`, and a rule reads
+/// one of them.
 pub fn text_records(data: &[u8]) -> Result<Vec<String>> {
     let packet =
         Packet::parse(data).map_err(|error| PacketError::unreadable("an mDNS message", error))?;
@@ -200,9 +176,8 @@ pub fn text_records(data: &[u8]) -> Result<Vec<String>> {
 
 /// Reads every host an mDNS message names, in name order.
 ///
-/// A message that names none - a query, or a response carrying only service
-/// records - yields an empty list rather than an error. Only bytes that are not
-/// a DNS message at all are rejected.
+/// A query, or a response carrying only service records, yields an empty
+/// list. Only bytes that are not a DNS message are rejected.
 pub fn extract_hosts(data: &[u8]) -> Result<Vec<MdnsHost>> {
     let packet =
         Packet::parse(data).map_err(|error| PacketError::unreadable("an mDNS message", error))?;
@@ -235,8 +210,7 @@ fn owner_name(name: &dns_parser::Name<'_>) -> String {
     trim_root(&name.to_string())
 }
 
-/// Drops the trailing dot a fully-qualified name carries, which is on the wire
-/// and is not what anybody writes or reads.
+/// Drops the trailing dot a fully-qualified name carries.
 fn trim_root(name: &str) -> String {
     name.trim_end_matches('.').to_string()
 }
@@ -272,9 +246,7 @@ mod tests {
         );
     }
 
-    /// A service PTR names an instance of a service, not the machine running
-    /// it. Reading one as a hostname puts "Living Room._airplay._tcp.local" on
-    /// a host in the scan report.
+    /// A service PTR names a service instance, not the machine running it.
     #[test]
     fn a_service_record_names_no_host() {
         let message = response(&[
@@ -291,8 +263,7 @@ mod tests {
         assert_eq!(extract_hosts(&message).unwrap(), Vec::new());
     }
 
-    /// A reverse PTR is the one PTR that does name a host, because its owner
-    /// is the address itself.
+    /// A reverse PTR names a host, because its owner is the address.
     #[test]
     fn a_reverse_record_names_the_host_at_that_address() {
         let message = response(&[record(
@@ -309,9 +280,8 @@ mod tests {
         );
     }
 
-    /// A responder answers with what else it knows, so one message routinely
-    /// covers several machines. Merging them would hand one host's name to
-    /// another host's address.
+    /// One message routinely covers several machines; merging them would hand
+    /// one host's name to another host's address.
     #[test]
     fn each_owner_in_a_message_is_a_host_of_its_own() {
         let message = response(&[
@@ -343,10 +313,9 @@ mod tests {
         assert!(extract_hosts(b"not dns").is_err());
     }
 
-    /// A query has to be a DNS message a responder will parse, ask about the
-    /// name it was given, and carry the zero ID a multicast query is required
-    /// to. Building bytes a responder would drop would fail silently as a
-    /// network that never answers.
+    /// A query must parse, ask about the given name, and carry the zero ID
+    /// multicast requires. A responder drops anything else, which would look like
+    /// a silent network.
     #[test]
     fn a_forward_query_asks_for_the_name_in_both_families() {
         let query = build_query("raspberrypi.local").expect("the query builds");
@@ -370,13 +339,8 @@ mod tests {
     }
 
     /// A name with no wire form comes back as an error.
-    ///
-    /// Not a panic that aborts the process. `name` is whatever a caller was
-    /// asked to resolve, and a builder that asserted the label bound rather
-    /// than reporting it would panic inside a dependency on a label past 63
-    /// octets. The panic would reach `Resolver::resolve` through two layers
-    /// written to turn every failure into an empty vector, so nothing between
-    /// here and the caller could catch it.
+    /// `name` comes from a caller, and a panic here would pass through two layers
+    /// that turn every failure into an empty vector, beyond any caller's reach.
     #[test]
     fn a_name_with_no_wire_form_is_refused_rather_than_fatal() {
         let long_label = format!("{}.local", "a".repeat(64));
@@ -385,7 +349,7 @@ mod tests {
             Err(PacketError::UnwritableName { .. })
         ));
 
-        // 63 is the bound and is legal: the refusal must not start one short.
+        // 63 is the bound and is legal.
         assert!(build_query(&format!("{}.local", "a".repeat(63))).is_ok());
 
         // A name inside every label bound can still be too long as a whole.
@@ -404,9 +368,8 @@ mod tests {
         ));
     }
 
-    /// The wire form of a name never carries the trailing dot, so a
-    /// fully-qualified name must reach the wire without it or the question names
-    /// something one label longer than the host.
+    /// A trailing dot left in would name something one label longer than the
+    /// host.
     #[test]
     fn a_trailing_dot_is_stripped_from_the_question() {
         let query = build_query("printer.local.").expect("the query builds");
@@ -486,7 +449,7 @@ mod tests {
         0x3d, 0x30,
     ];
 
-    /// Each character-string separately, because that is the unit a rule reads.
+    /// Each character-string separately, the unit a rule reads.
     #[test]
     fn a_device_info_record_yields_one_string_per_field() {
         assert_eq!(
@@ -495,7 +458,7 @@ mod tests {
         );
     }
 
-    /// The name the record hangs off, which is a hostname and not a service.
+    /// The name the record hangs off.
     #[test]
     fn the_query_name_is_built_from_the_host_rather_than_browsed_for() {
         for name in ["mac", "mac.local", "mac.local."] {
@@ -510,9 +473,7 @@ mod tests {
     /// A trailing dot is dropped from a bare label as it is from a `.local`
     /// name, and the zone is recognised whatever its case.
     ///
-    /// Kept, the dot would be an empty label in the middle of the question,
-    /// `mac.._device-info._tcp.local`, which names nothing a responder
-    /// publishes.
+    /// A kept dot would make `mac.._device-info._tcp.local`, which names nothing.
     #[test]
     fn a_fully_qualified_or_capitalised_name_asks_the_same_question() {
         assert_eq!(
@@ -525,13 +486,8 @@ mod tests {
         );
     }
 
-    /// A name in any zone but `.local` asks no question, rather than one no
-    /// responder answers.
-    ///
-    /// Such a name came from a unicast resolver, and a query built from it is
-    /// a datagram spent on silence. Refusing it is what lets a caller ask the
-    /// host what it calls itself instead, which is the name the record is
-    /// published under.
+    /// A name in any zone but `.local` builds no query. It came from a unicast
+    /// resolver, and the caller can instead ask the host what it calls itself.
     #[test]
     fn a_name_outside_local_asks_no_question() {
         assert_eq!(device_info_name("x.fritz.box"), None);
@@ -573,8 +529,8 @@ mod tests {
         assert!(text_records(b"not an mdns message at all").is_err());
     }
 
-    /// The question asked of a host that has not been named any other way. Its
-    /// answer is what makes the device-info query possible at all.
+    /// The question asked of a host that has not been named any other way, whose
+    /// answer makes the device-info query possible.
     #[test]
     fn the_reverse_query_asks_for_the_name_of_an_address() {
         let ip: IpAddr = "203.0.113.160".parse().expect("a literal address");

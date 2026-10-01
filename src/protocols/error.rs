@@ -8,23 +8,15 @@
 
 //! # Why a packet could not be built or read
 //!
-//! One error type for the whole module, with a variant per thing that can
-//! actually go wrong. There are fewer of those than the signatures suggest: most
-//! builders here write fixed-size headers into buffers they allocate themselves,
-//! which cannot fail, and they say so by returning a packet rather than a
-//! `Result`.
-//!
-//! What remains falls in three groups. A caller can describe a packet no header
-//! can measure ([`TooLong`], [`OptionsTooLong`], [`OptionsMisaligned`],
-//! [`UnwritableName`]), ask for something the protocols do not offer
-//! ([`FamilyMismatch`], [`WrongFamily`], [`MtuTooSmall`], [`HeaderHasOptions`]),
-//! or hand a reader bytes that are not what they
-//! were read as ([`Truncated`], [`Unreadable`], [`UnexpectedMessage`],
-//! [`UnsupportedEtherType`]).
-//!
-//! The last group is the one that arrives rather than being caused, and under
-//! promiscuous capture most of it is ordinary. See [`PacketError`] for which is
-//! which.
+//! One error type for the whole module. Most builders write fixed-size headers
+//! into buffers they allocate and cannot fail; the rest fail in three ways. A
+//! caller can describe a packet no header can measure ([`TooLong`],
+//! [`OptionsTooLong`], [`OptionsMisaligned`], [`UnwritableName`]), ask for
+//! something the protocols do not offer ([`FamilyMismatch`], [`WrongFamily`],
+//! [`MtuTooSmall`], [`HeaderHasOptions`]), or hand a reader bytes that are not
+//! what they were read as ([`Truncated`], [`Unreadable`], [`UnexpectedMessage`],
+//! [`UnsupportedEtherType`]). Under promiscuous capture the last group is
+//! ordinary.
 //!
 //! [`TooLong`]: PacketError::TooLong
 //! [`OptionsTooLong`]: PacketError::OptionsTooLong
@@ -47,12 +39,10 @@ use std::net::IpAddr;
 pub enum PacketError {
     /// A length field cannot represent a packet this large.
     ///
-    /// Both length fields in IP and the one in UDP are 16 bits and count the
-    /// header as well as the payload, so the largest payload each can describe
-    /// is slightly under 64 KiB. A payload past that is refused rather than
-    /// truncated into the field: the wrapped value describes a packet shorter
-    /// than its own header, which every receiver drops, and the scan reads the
-    /// resulting silence as a firewall.
+    /// The IP length fields and UDP's are 16 bits and count the header, so each
+    /// payload limit is slightly under 64 KiB. Wrapping the field instead would
+    /// describe a packet shorter than its own header, which receivers drop and the
+    /// scan would read as a firewall.
     #[error("{field} cannot describe {actual} bytes; the most it can hold is {limit}")]
     TooLong {
         /// The header field that cannot hold the value, such as
@@ -67,13 +57,10 @@ pub enum PacketError {
     /// A transport checksum was asked for over two addresses of different
     /// families.
     ///
-    /// TCP and UDP checksum over a pseudo-header built from the source and
-    /// destination, so the two have to agree on what an address is. This is a
-    /// caller mistake rather than a network condition: nothing on the wire
-    /// produces it.
-    ///
-    /// Distinct from [`WrongFamily`](Self::WrongFamily), which is two addresses
-    /// that agree with each other and not with the protocol between them.
+    /// TCP and UDP checksum over a pseudo-header built from both addresses. A
+    /// caller mistake; nothing on the wire produces it. See also
+    /// [`WrongFamily`](Self::WrongFamily), where the addresses agree with each
+    /// other but not with the protocol.
     #[error("cannot checksum from {src} to {dst}: an IPv4 and an IPv6 address")]
     FamilyMismatch {
         /// The source that was given.
@@ -85,29 +72,25 @@ pub enum PacketError {
     /// A checksum was asked for over an address family the protocol it belongs
     /// to does not have.
     ///
-    /// ICMPv6 is the case this exists for: its checksum covers an IPv6
-    /// pseudo-header and there is no IPv4 form of the message, so an ICMPv6
-    /// layer inside an IPv4 header is a packet nothing can build. Reported apart
-    /// from [`FamilyMismatch`](Self::FamilyMismatch) because the two addresses
-    /// agree here, and saying they do not sends a reader after the wrong fault.
+    /// ICMPv6 checksums over an IPv6 pseudo-header and has no IPv4 form, so an
+    /// ICMPv6 layer inside an IPv4 header cannot be built. The addresses agree
+    /// with each other here, unlike [`FamilyMismatch`](Self::FamilyMismatch).
     #[error("an {protocol} checksum covers {expected} addresses, and {got} is not one")]
     WrongFamily {
         /// The protocol whose checksum was being computed, such as `"ICMPv6"`.
         protocol: &'static str,
         /// The family it needs, such as `"IPv6"`.
         expected: &'static str,
-        /// One of the addresses that was given instead.
+        /// One of the addresses that was given.
         got: IpAddr,
     },
 
     /// A datagram was handed to the fragmenter with an MTU too small to split
     /// it into any useful piece.
     ///
-    /// A fragment offset counts eight-byte units, so the smallest step a
-    /// fragment can make through the datagram is one unit past the header. An
-    /// MTU that will not hold even that carries no payload at all, and splitting
-    /// to fit it would emit headers forever without reaching the end, so it is
-    /// refused rather than looped.
+    /// A fragment offset counts eight-byte units, so each fragment must carry at
+    /// least one unit past the header. A smaller MTU would loop forever emitting
+    /// empty fragments.
     #[error("an MTU of {mtu} cannot fragment past a {minimum}-byte floor")]
     MtuTooSmall {
         /// The MTU that was asked for, in bytes.
@@ -119,11 +102,9 @@ pub enum PacketError {
 
     /// An IPv4 header carrying options was handed to the fragmenter.
     ///
-    /// Each option names in its own high bit whether it is copied into every
-    /// fragment or kept only on the first (RFC 791 §3.1). Splitting a header
-    /// without honouring that bit produces fragments a receiver reassembles into
-    /// the wrong header, so an option-bearing header is refused rather than
-    /// split blind.
+    /// Each option's high bit says whether it is copied into every fragment or
+    /// kept on the first only (RFC 791 §3.1). The fragmenter does not honour that
+    /// bit, so receivers would reassemble the wrong header.
     #[error("cannot fragment an IPv4 header carrying {options} bytes of options")]
     HeaderHasOptions {
         /// How many option bytes the header carried.
@@ -132,11 +113,10 @@ pub enum PacketError {
 
     /// A header's options do not fit the field that measures them.
     ///
-    /// Both IPv4's header length and TCP's data offset are four bits counting
-    /// four-byte words, so each describes at most fifteen of them: sixty bytes
-    /// of header, forty of which are options. A longer run cannot be measured,
-    /// and the field wraps rather than saturating, so forty-four bytes of options
-    /// produce a header declaring itself zero words long.
+    /// IPv4's header length and TCP's data offset are four bits counting
+    /// four-byte words: at most sixty bytes of header, forty of them options. The
+    /// field wraps, so forty-four bytes of options would declare a header zero
+    /// words long.
     #[error(
         "{what} carrying {options} bytes of options cannot be measured: its length field holds at most {limit}"
     )]
@@ -151,10 +131,8 @@ pub enum PacketError {
 
     /// A header's options are not a whole number of four-byte words.
     ///
-    /// The field that measures them counts words, so a run that is not a
-    /// multiple of four is rounded down and the odd bytes are read as payload
-    /// by whatever receives the packet. Padding options to the boundary is the
-    /// caller's job, and this is what says they did not.
+    /// The field counts words, so a receiver would read the odd bytes as payload.
+    /// Padding to the boundary is the caller's job.
     #[error(
         "{what} carrying {options} bytes of options is not a whole number of the four-byte words its length field counts"
     )]
@@ -167,21 +145,18 @@ pub enum PacketError {
 
     /// A frame carried something this module does not read.
     ///
-    /// Not a malformed frame and not a fault. A promiscuous capture sees the
-    /// whole segment's traffic, so most of what arrives is somebody else's, and
-    /// the ethertype is named so a caller debugging a missed host can tell
-    /// "arrived and was not understood" from "never arrived".
+    /// Ordinary under promiscuous capture. The EtherType is named so a caller
+    /// debugging a missed host can tell "arrived and was not understood" from
+    /// "never arrived".
     #[error("nothing here reads ethertype {0:#06x}")]
     UnsupportedEtherType(u16),
 
     /// Bytes that are not the message they were read as.
     ///
-    /// Distinct from [`Truncated`](Self::Truncated), which is a message that
-    /// stopped early. This is one whose structure never held: a length pointing
-    /// past its own record, a label the name grammar does not allow, a field
-    /// carrying a value its type has no room for. Whatever the reader that
-    /// found it says goes in `detail`, because that reader knows and this type
-    /// does not.
+    /// A message whose structure never held, as opposed to
+    /// [`Truncated`](Self::Truncated): a length pointing past its own record, a
+    /// label the name grammar does not allow, a value its field has no room for.
+    /// `detail` carries what the reader that found it said.
     #[error("{what} could not be read: {detail}")]
     Unreadable {
         /// What was being read, such as `"a DNS response"`.
@@ -192,10 +167,9 @@ pub enum PacketError {
 
     /// A message of the right protocol and the wrong kind.
     ///
-    /// Not malformed and not truncated: it parsed, and it is not what was
-    /// asked for. A DNS query arriving where a response was expected is the
-    /// case this exists for, and it is worth telling apart because a query on
-    /// that socket means something (somebody is asking) rather than nothing.
+    /// It parsed but is not what was asked for, such as a DNS query arriving
+    /// where a response was expected. Worth telling apart because a query on that
+    /// socket means somebody is asking.
     #[error("expected {expected} and got {got}")]
     UnexpectedMessage {
         /// What the reader was looking for, such as `"a DNS response"`.
@@ -206,11 +180,9 @@ pub enum PacketError {
 
     /// A name has no wire form, so no message could be built around it.
     ///
-    /// DNS spells a name as length-prefixed labels, and the prefix is one byte
-    /// with its top two bits reserved for compression pointers. That caps a
-    /// label at 63 octets and a whole name at 255 (RFC 1035 §2.3.4). A name past
-    /// either bound is refused here rather than encoded into a message no
-    /// resolver will read back.
+    /// DNS spells a name as length-prefixed labels with a one-byte prefix whose
+    /// top two bits are reserved for compression, capping a label at 63 octets and
+    /// a name at 255 (RFC 1035 §2.3.4).
     #[error("{name} is not a name this can write: {detail}")]
     UnwritableName {
         /// The name that was given.
@@ -220,10 +192,7 @@ pub enum PacketError {
     },
 
     /// A buffer held too few bytes to read the header it was supposed to
-    /// contain.
-    ///
-    /// What a truncated capture looks like from here, and the one variant that
-    /// describes something arriving rather than something being built.
+    /// contain, as a truncated capture does.
     #[error("{what} needs at least {needed} bytes and got {got}")]
     Truncated {
         /// What was being read, such as `"an Ethernet frame"`.
@@ -252,10 +221,7 @@ impl PacketError {
     }
 
     /// Checks that `options` can be measured by a four-bit field counting
-    /// four-byte words, which is what both IPv4 and TCP use.
-    ///
-    /// Shared because the two headers have the same field in the same shape, and
-    /// a bound written twice is a bound that comes to disagree with itself.
+    /// four-byte words, as both IPv4 and TCP use.
     pub(crate) fn check_options(
         what: &'static str,
         options: usize,

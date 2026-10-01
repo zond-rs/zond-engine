@@ -8,13 +8,9 @@
 
 //! # UDP datagrams
 //!
-//! The datagram a UDP port probe puts on the wire.
-//!
-//! Thinner than its TCP counterpart because UDP is thinner: there is no
-//! handshake to correlate against, so every probe in a scan leaves from one
-//! fixed source port and that port is the whole of the scan's identity on the
-//! wire. What makes an open port answer at all is the payload, which is
-//! `payload`'s business rather than this module's.
+//! The datagram a UDP port probe puts on the wire. With no handshake to
+//! correlate against, every probe in a scan leaves from one fixed source port.
+//! The payload that makes an open port answer comes from `payload`.
 
 use std::net::IpAddr;
 
@@ -24,15 +20,9 @@ use crate::protocols::error::Result;
 /// Builds a UDP datagram from `src_addr` to `dst_addr`, checksummed over the
 /// IP pseudo-header.
 ///
-/// The addresses are parameters because a UDP checksum covers them: it is
-/// computed over a pseudo-header of source, destination, protocol, and length,
-/// not over the datagram alone. Passing them mirrors
-/// [`tcp::build_probe`](super::tcp::build_probe).
-///
 /// The checksum is optional on IPv4 but **mandatory on IPv6**: RFC 8200 §8.1
-/// requires a receiver to discard a zero-checksum UDP datagram, so a v6 probe
-/// built without one never reaches the port it is aimed at, and the scan reads
-/// the resulting silence as `OpenOrNoReply`.
+/// requires a receiver to discard a zero-checksum UDP datagram, and the scan
+/// would read the silence as `OpenOrNoReply`.
 ///
 /// # Errors
 ///
@@ -50,24 +40,18 @@ pub fn build_packet(
     build_packet_shaped(src_addr, dst_addr, src_port, dst_port, payload, None)
 }
 
-/// [`build_packet`], with `padding` random bytes appended to the datagram's
-/// payload: the segment-level shaping an evasion profile applies to move a probe
-/// off the fixed size of a bare header.
+/// [`build_packet`], with `padding` random bytes appended to the payload, as an
+/// evasion profile uses to move a probe off the fixed size of a bare header.
 ///
-/// The padding follows the meaningful payload, so it is covered by the length
-/// field and the checksum like any other bytes and an open port still reads the
-/// request in front of it. `None` appends nothing and builds exactly what
-/// [`build_packet`] does. See
-/// [`craft::random_padding`] for why the bytes are
-/// random.
+/// The padding follows the payload and is covered by the length field and the
+/// checksum, so an open port still reads the request in front of it. `None`
+/// builds exactly what [`build_packet`] does. See [`craft::random_padding`] for
+/// why the bytes are random.
 ///
 /// # Errors
 ///
-/// The same as [`build_packet`]: a
-/// [`FamilyMismatch`](crate::protocols::error::PacketError::FamilyMismatch)
-/// across address families, and a
-/// [`TooLong`](crate::protocols::error::PacketError::TooLong) for a payload the
-/// 16-bit length field cannot describe, padding included.
+/// As [`build_packet`], with the padding counted toward
+/// [`TooLong`](crate::protocols::error::PacketError::TooLong).
 pub fn build_packet_shaped(
     src_addr: IpAddr,
     dst_addr: IpAddr,
@@ -154,9 +138,8 @@ mod tests {
         assert_ne!(checksum, 0);
     }
 
-    /// The two address families checksum over different pseudo-headers, so the
-    /// same ports and payload must not produce the same value - that would mean
-    /// one of the two was computed against the wrong one.
+    /// The two families checksum over different pseudo-headers, so equal values
+    /// would mean one was computed against the wrong one.
     #[test]
     fn each_address_family_checksums_over_its_own_pseudo_header() {
         let v4 = build_packet(V4_SRC, V4_DST, 40_000, 53, vec![]).unwrap();
@@ -168,9 +151,8 @@ mod tests {
         );
     }
 
-    /// Zero means "not computed", so a genuine zero goes out as 0xFFFF: the
-    /// field is never left at zero. Rare, but a scan sends enough datagrams to
-    /// reach it.
+    /// Zero means "not computed", so a computed zero goes out as 0xFFFF. Rare,
+    /// but a scan sends enough datagrams to hit it.
     #[test]
     fn a_computed_zero_checksum_is_sent_as_all_ones() {
         let mut exercised = false;
@@ -196,13 +178,8 @@ mod tests {
         assert!(build_packet(V4_SRC, V6_DST, 40_000, 53, vec![]).is_err());
     }
 
-    /// Padding follows the meaningful payload, and both the length field and the
-    /// checksum cover it. The baseline is the same datagram with `None`, which is
-    /// how this also pins the inert default: unshaped, nothing is appended.
-    ///
-    /// A mutant that appended nothing fails the length; one that padded in front
-    /// of the payload would displace the request an open port has to read; one
-    /// that left the padding out of the checksum fails the recompute.
+    /// Padding follows the payload and is covered by the length field and the
+    /// checksum. The `None` baseline also pins that unshaped appends nothing.
     #[test]
     fn padding_extends_the_datagram_and_is_covered() {
         let plain =

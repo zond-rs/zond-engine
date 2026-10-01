@@ -10,13 +10,10 @@
 //!
 //! Building reverse (PTR) queries and reading the responses they draw.
 //!
-//! The reverse name is the correlation key throughout. A response echoes the
-//! question it answers, so [`address_from_pointer_name`] recovers the address a
-//! response is *about* from the response itself, rather than trusting its
-//! transaction ID to say. That matters because the resolver also reads DNS
-//! traffic it never asked for: a transaction ID means nothing in a packet
-//! addressed to someone else, while the question name means the same thing in
-//! every packet that carries it.
+//! The reverse name is the correlation key. A response echoes its question, so
+//! [`address_from_pointer_name`] recovers the address a response is about from
+//! the response itself. The resolver also reads DNS traffic it never asked for,
+//! where a transaction ID means nothing but the question name still does.
 
 use crate::protocols::error::{PacketError, Result};
 use crate::protocols::sizes::DNS_HDR_LEN;
@@ -33,9 +30,7 @@ const IPV6_NIBBLES: usize = 32;
 /// A DNS response to a reverse question, reduced to what hostname resolution
 /// needs from it.
 ///
-/// `#[non_exhaustive]`: a response carries more than resolution reads, and the
-/// next thing worth taking off one is a field here. Built by
-/// [`parse_ptr_response`] and never by a caller.
+/// `#[non_exhaustive]`: built only by [`parse_ptr_response`].
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PtrResponse {
@@ -45,19 +40,17 @@ pub struct PtrResponse {
     /// response echoes back. `None` when the response carries no question, or
     /// one that is not a reverse lookup.
     pub subject: Option<IpAddr>,
-    /// The name the first PTR answer carries. `None` for a negative answer,
-    /// which is still an answer: the address simply has no name.
+    /// The name the first PTR answer carries. `None` for a negative answer: the
+    /// address has no name.
     pub hostname: Option<String>,
 }
 
 /// Reads a DNS response to a reverse lookup.
 ///
-/// Both callers feed this bytes they did not choose - replies arriving on the
-/// query socket, and DNS traffic sniffed off the wire - so "this says nothing
-/// about any address" is an ordinary outcome, not a failure. It comes back as a
-/// [`PtrResponse`] with an empty `subject` or `hostname` rather than an error.
-/// Only bytes that are not a DNS message at all, or that are a query rather
-/// than a response, are rejected.
+/// Both callers feed this bytes they did not choose (replies on the query
+/// socket and DNS traffic sniffed off the wire), so a response about no address
+/// is ordinary and comes back with an empty `subject` or `hostname`. Only bytes
+/// that are not a DNS response are rejected.
 pub fn parse_ptr_response(payload: &[u8]) -> Result<PtrResponse> {
     let packet =
         Packet::parse(payload).map_err(|error| PacketError::unreadable("a DNS response", error))?;
@@ -92,16 +85,14 @@ pub fn parse_ptr_response(payload: &[u8]) -> Result<PtrResponse> {
 
 /// The text of the first TXT answer in a DNS response.
 ///
-/// What a `version.bind` query draws: a nameserver's own account of its build,
-/// which the signature corpus has several hundred rules written against. Runs of
-/// text inside one record are joined without a separator, which is how a value
-/// too long for a single 255-byte chunk arrives.
+/// What a `version.bind` query draws: a nameserver's account of its build,
+/// which several hundred corpus rules match. Runs of text inside one record are
+/// joined without a separator, since a value longer than one 255-byte chunk
+/// arrives split.
 ///
-/// The question is not inspected, for the reason [`is_response`] gives: this is
-/// handed a reply to a datagram this engine addressed to port 53, and encoding
-/// the corpus's choice of probe here would put that choice inside the scanner
-/// that merely sends it. [`None`] for anything that is not a response, carries
-/// no TXT answer, or whose text is not UTF-8.
+/// The question is not inspected, for the reason [`is_response`] gives.
+/// [`None`] for anything that is not a response, carries no TXT answer, or
+/// whose text is not UTF-8.
 pub fn first_text_answer(payload: &[u8]) -> Option<String> {
     let packet = Packet::parse(payload).ok()?;
     if packet.header.query {
@@ -122,22 +113,16 @@ pub fn first_text_answer(payload: &[u8]) -> Option<String> {
 
 /// Whether `payload` is a DNS server answering a question.
 ///
-/// The evidence behind [`NetworkRole::DnsServer`], and the reason it is a claim
-/// about the host rather than about a port: something bound to 53 is a socket,
-/// and something that answers in DNS is a name server.
+/// The evidence behind [`NetworkRole::DnsServer`]: something bound to 53 is a
+/// socket, something that answers in DNS is a name server.
 ///
-/// The question the answer carries is not compared against the one the engine
-/// asked. Three facts already correlate this reply with that probe: it came from
-/// port 53, it is addressed to the source port this scan probes from, and a
-/// datagram went to that port carrying a DNS query. Comparing
-/// the question here would put the corpus's choice of probe inside the scanner
-/// that merely sends it. What is checked instead is that the message parses
-/// whole: a header, and every question and record it claims to carry, which is
-/// not something arbitrary bytes do.
+/// The question is not compared against the one the engine asked. The reply
+/// already came from port 53 to the scan's probe source port after a DNS query
+/// went there, and comparing questions would put the corpus's choice of probe
+/// inside the scanner. Instead the whole message must parse: a header and every
+/// question and record it claims, which arbitrary bytes do not.
 ///
-/// A response that says *no* still counts. `REFUSED` and `NOTIMP` are a
-/// nameserver declining a question, and declining in DNS is something only a
-/// nameserver can do.
+/// `REFUSED` and `NOTIMP` still count: only a nameserver declines in DNS.
 ///
 /// [`NetworkRole::DnsServer`]: crate::model::host::NetworkRole::DnsServer
 pub fn is_response(payload: &[u8]) -> bool {
@@ -145,7 +130,7 @@ pub fn is_response(payload: &[u8]) -> bool {
 }
 
 /// The reverse name `ip` is looked up under: `in-addr.arpa` for IPv4, and
-/// `ip6.arpa` - one label per nibble, least significant first - for IPv6.
+/// `ip6.arpa` (one label per nibble, least significant first) for IPv6.
 pub fn reverse_pointer_name(ip: IpAddr) -> String {
     match ip {
         IpAddr::V4(ipv4) => {
@@ -170,9 +155,9 @@ pub fn reverse_pointer_name(ip: IpAddr) -> String {
 
 /// The address a reverse name refers to, or `None` when `name` is not one.
 ///
-/// The inverse of [`reverse_pointer_name`], and the reason a response can be
-/// tied to an address without trusting whoever sent it. Names are compared
-/// case-insensitively, since a resolver may echo a question back in any case.
+/// The inverse of [`reverse_pointer_name`], which ties a response to an
+/// address without trusting the sender. Case-insensitive, since a resolver may
+/// echo a question in any case.
 pub fn address_from_pointer_name(name: &str) -> Option<IpAddr> {
     let name = name.trim_end_matches('.').to_ascii_lowercase();
 
@@ -203,12 +188,10 @@ fn parse_ipv4_pointer(prefix: &str) -> Option<IpAddr> {
 
 /// One label of an `in-addr.arpa` name as the octet it spells.
 ///
-/// Read as strictly as [`reverse_pointer_name`] writes it, which
-/// `str::parse::<u8>` is not: it takes a leading `+` and any number of leading
-/// zeros, so `001.002.000.192.in-addr.arpa` and `+1.2.0.192.in-addr.arpa` both
-/// named 192.0.2.1. This is the correlation key a response is tied to an address
-/// by, and a key that accepts spellings its own writer cannot produce is one
-/// with more than one name per address.
+/// Read as strictly as [`reverse_pointer_name`] writes it, so one address has
+/// one name. `str::parse::<u8>` would accept a leading `+` and leading zeros,
+/// making `001.002.000.192.in-addr.arpa` and `+1.2.0.192.in-addr.arpa` both
+/// name 192.0.2.1.
 fn octet(label: &str) -> Option<u8> {
     let value: u8 = label.parse().ok()?;
     (label == value.to_string()).then_some(value)
@@ -242,11 +225,9 @@ fn hex_nibble(label: &str) -> Option<u8> {
 
 /// Builds a reverse (PTR) query for `ip_addr`, tagged with transaction ID `id`.
 ///
-/// Returns the query rather than a `Result` because there is no failure to
-/// report: a reverse name is spelled from an address rather than from anything a
-/// caller typed, its labels are one to three characters, and the longest of them
-/// is IPv6's `ip6.arpa` form at 74 bytes. Neither bound in [`build_query`] is
-/// within reach.
+/// Infallible: reverse names are spelled from an address, with labels of one
+/// to three characters and at most 74 bytes (IPv6), well inside the bounds in
+/// [`build_query`].
 pub fn build_ptr_packet(ip_addr: IpAddr, id: u16) -> Vec<u8> {
     build_query(
         id,
@@ -258,8 +239,7 @@ pub fn build_ptr_packet(ip_addr: IpAddr, id: u16) -> Vec<u8> {
 
 /// Record type numbers, from the registry in RFC 1035 §3.2.2 and RFC 3596 §2.1.
 ///
-/// Only the three this crate asks for. The number goes on the wire in a
-/// question's `QTYPE`, and in an answer's type.
+/// Only the three this crate asks for.
 pub mod record_type {
     /// A host's IPv4 address.
     pub const A: u16 = 1;
@@ -267,12 +247,11 @@ pub mod record_type {
     pub const PTR: u16 = 12;
     /// A host's IPv6 address.
     pub const AAAA: u16 = 28;
-    /// Free-form text, which is what a device-info record and a `version.bind`
-    /// answer are both carried as.
+    /// Free-form text, used by device-info records and `version.bind` answers.
     pub const TXT: u16 = 16;
 }
 
-/// The internet class, which is the only one anything here asks in.
+/// The internet class.
 const CLASS_IN: u16 = 1;
 
 /// The flag bit a query sets to ask a resolver to chase the answer for it.
@@ -281,31 +260,24 @@ const FLAG_RECURSION_DESIRED: u16 = 0x0100;
 /// The longest a single label may be, and the longest a whole name may be on the
 /// wire (RFC 1035 §2.3.4).
 ///
-/// A label is length-prefixed by one byte whose top two bits are reserved for
-/// compression pointers, which is where 63 comes from. The 255 counts every
-/// length byte and the zero that ends the name, not just the characters.
+/// The one-byte length prefix reserves its top two bits for compression
+/// pointers, hence 63. The 255 counts every length byte and the terminating
+/// zero.
 const MAX_LABEL_OCTETS: usize = 63;
 const MAX_NAME_OCTETS: usize = 255;
 
 /// Builds a DNS query carrying `questions`, each a name and the record type
 /// being asked for.
 ///
-/// The message is written here rather than through a library, for the reason
-/// every other wire format in this module is: a query is a twelve-byte header
-/// and a run of length-prefixed labels, the two callers between them need three
-/// record types, and owning it is what lets a name that cannot be spelled come
-/// back as an error instead of ending the process.
 ///
 /// `recursion_desired` asks a resolver to chase the answer. A unicast lookup
-/// sets it; a multicast one must not, since there is nobody to chase it
-/// (RFC 6762 §18.6).
+/// sets it; a multicast one must not (RFC 6762 §18.6).
 ///
 /// # Errors
 ///
-/// [`PacketError::UnwritableName`] for a name with no wire form: a label past 63
-/// octets, a name past 255, or an empty label, which is what a leading dot or a
-/// doubled one produces. A trailing dot is not one of those; a fully-qualified
-/// name may carry it and the wire form never does, so it is trimmed.
+/// [`PacketError::UnwritableName`] for a label past 63 octets, a name past 255,
+/// or an empty label (from a leading or doubled dot). A trailing dot is
+/// trimmed.
 pub fn build_query(id: u16, recursion_desired: bool, questions: &[(&str, u16)]) -> Result<Vec<u8>> {
     let flags = if recursion_desired {
         FLAG_RECURSION_DESIRED
@@ -334,8 +306,7 @@ pub fn build_query(id: u16, recursion_desired: bool, questions: &[(&str, u16)]) 
 fn write_name(name: &str, out: &mut Vec<u8>) -> Result<()> {
     let trimmed = name.trim_end_matches('.');
 
-    // Built aside and appended whole, so a refusal leaves `out` as it found it
-    // rather than as far as it got.
+    // Built aside and appended whole, so a refusal leaves `out` untouched.
     let mut encoded = Vec::with_capacity(trimmed.len() + 2);
     for label in trimmed.split('.') {
         if label.is_empty() {
@@ -389,8 +360,8 @@ pub(crate) mod tests {
         s.parse().unwrap()
     }
 
-    /// The name a query is asked under and the address a response is read back
-    /// as have to agree, or correlation silently stops matching anything.
+    /// The query name and the address read back from a response must agree, or
+    /// correlation silently stops matching.
     #[test]
     fn a_reverse_name_round_trips_through_the_address_it_names() {
         for address in [
@@ -423,8 +394,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// A resolver may echo a question back in any case, so the comparison that
-    /// ties a response to an address cannot be case-sensitive.
+    /// A resolver may echo a question back in any case.
     #[test]
     fn a_reverse_name_is_read_regardless_of_case() {
         assert_eq!(
@@ -439,9 +409,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// Anything that is not a reverse name has to come back as "no address"
-    /// rather than a wrong one - this is what stands between unrelated sniffed
-    /// traffic and a hostname landing on the wrong host.
+    /// Anything that is not a reverse name gives no address, which keeps
+    /// unrelated sniffed traffic from landing a hostname on the wrong host.
     #[test]
     fn a_name_that_is_not_a_reverse_name_names_no_address() {
         for name in [
@@ -458,8 +427,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// A response has to be readable as the answer to the question that was
-    /// asked, since the question is what identifies the address it concerns.
+    /// The question in a response identifies the address it concerns.
     #[test]
     fn a_response_reports_the_address_asked_about_and_the_name_returned() {
         let response = parse_ptr_response(&ptr_response(
@@ -479,9 +447,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// A resolver that will not answer for private space - which RFC 6303 asks
-    /// it to do - answers with no records at all. That is a real answer about a
-    /// known address, not a parse failure, and has to read as one.
+    /// A resolver that will not answer for private space (as RFC 6303 asks)
+    /// answers with no records. That is a real answer about a known address.
     #[test]
     fn a_negative_response_still_names_the_address_it_answers_for() {
         let response =
@@ -493,12 +460,7 @@ pub(crate) mod tests {
     }
 
     /// A reverse name is read as strictly as it is written, so one address has
-    /// one name.
-    ///
-    /// `str::parse::<u8>` takes a leading `+` and any number of leading zeros,
-    /// which made three spellings of 192.0.2.1 all resolve. This is the key a
-    /// response is tied to an address by, and `src/model/parse/ip.rs` settled the
-    /// same question on the range grammar.
+    /// one name. `str::parse::<u8>` takes a leading `+` and leading zeros.
     #[test]
     fn a_reverse_name_is_read_only_as_it_would_be_written() {
         let address = ip("192.0.2.1");
@@ -527,8 +489,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// Sniffed traffic is mostly forward lookups. They parse fine and simply
-    /// concern no address, which is what keeps them out of the host store.
+    /// Sniffed traffic is mostly forward lookups, which parse fine and concern no
+    /// address.
     #[test]
     fn a_forward_lookup_concerns_no_address() {
         let mut bytes = build_query(1, true, &[("example.com", record_type::A)]).unwrap();

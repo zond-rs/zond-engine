@@ -8,30 +8,23 @@
 
 //! # Cisco Discovery Protocol
 //!
-//! The same job [`lldp`](crate::protocols::lldp) does, from the vendor that did
-//! it first, and still the only one speaking on a great many enterprise
-//! networks. Cisco equipment runs CDP by default and LLDP only when somebody
-//! turns it on, so a segment that looks silent to the standard is often loudly
-//! announcing itself here.
+//! The same job as [`lldp`](crate::protocols::lldp), and the only one spoken on
+//! many enterprise networks: Cisco equipment runs CDP by default and LLDP only
+//! when configured, so a segment silent to LLDP is often announcing itself here.
 //!
-//! It carries one thing LLDP's base standard does not: the **native VLAN** of
-//! the port, which is the VLAN untagged traffic lands in. LLDP moves that into
-//! an organizationally-specific TLV that plenty of equipment omits.
+//! CDP also carries the port's **native VLAN** (where untagged traffic lands),
+//! which LLDP moves into an organizationally-specific TLV that plenty of
+//! equipment omits.
 //!
-//! ## It is not an EtherType protocol
+//! ## Not an EtherType protocol
 //!
-//! This is the part that trips a reader written by analogy with LLDP. CDP uses
-//! the original 802.3 framing, where the two bytes after the addresses are a
-//! *length* rather than a protocol number, and the protocol is named further in
-//! by an LLC/SNAP header. A reader matching on
-//! [`Frame::ethertype`](crate::protocols::ethernet::Frame::ethertype) finds a
-//! small integer that names nothing and concludes there is no CDP on the
-//! network.
+//! CDP uses 802.3 framing: the two bytes after the addresses are a *length*,
+//! and the protocol is named further in by an LLC/SNAP header. A reader
+//! matching on [`Frame::ethertype`](crate::protocols::ethernet::Frame::ethertype)
+//! finds a small integer that names nothing.
 //!
-//! The consequence for length is real too: an 802.3 frame is padded out to the
-//! minimum frame size, so the payload has to be cut to the length the header
-//! claims rather than read to the end of the buffer, or the walk below runs into
-//! the padding.
+//! An 802.3 frame is also padded to the minimum frame size, so the payload must
+//! be cut to the length the header claims or the walk runs into the padding.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -59,9 +52,8 @@ const RECORD_HDR_LEN: usize = 4;
 
 /// How many records are read out of one announcement.
 ///
-/// As with [`lldp`](crate::protocols::lldp), the walk is driven by lengths the
-/// sender chose, so something other than the sender has to bound it. A real
-/// announcement carries under a dozen.
+/// The walk is driven by lengths the sender chose, so it is bounded here. A
+/// real announcement carries under a dozen.
 const MAX_RECORDS: usize = 128;
 
 // Record type numbers.
@@ -84,8 +76,8 @@ const PROTOCOL_TYPE_IEEE_802_2: u8 = 2;
 /// What a device says it does.
 ///
 /// Unlike [`lldp::Capabilities`](crate::protocols::lldp::Capabilities) there is
-/// only one set of bits here: CDP has no notion of a capability that is present
-/// but switched off, so every bit set is a claim about behaviour.
+/// one set of bits: CDP has no notion of a capability present but disabled, so
+/// every bit set is a claim about behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities(u32);
 
@@ -103,12 +95,8 @@ impl Capabilities {
         self.0 & Self::ROUTER != 0
     }
 
-    /// Whether the device switches frames, by either of the two spellings CDP
-    /// has for it.
-    ///
-    /// Cisco distinguishes a transparent bridge, a source-route bridge and a
-    /// switch, which were three different products and are one answer to the
-    /// question a reader is asking.
+    /// Whether the device switches frames. Cisco's transparent-bridge,
+    /// source-route-bridge and switch bits all count.
     pub fn is_switch(self) -> bool {
         self.0 & (Self::SWITCH | Self::TRANSPARENT_BRIDGE | Self::SOURCE_ROUTE_BRIDGE) != 0
     }
@@ -123,7 +111,7 @@ impl Capabilities {
         self.0 & Self::REPEATER != 0
     }
 
-    /// Whether the device says it snoops IGMP rather than flooding multicast.
+    /// Whether the device says it snoops IGMP instead of flooding multicast.
     pub fn is_igmp_capable(self) -> bool {
         self.0 & Self::IGMP != 0
     }
@@ -136,19 +124,16 @@ impl Capabilities {
 
 /// One device's announcement of itself.
 ///
-/// Every field is optional: CDP mandates nothing, and what a given platform
-/// sends varies by model and by software version. A field that is `None` was not
-/// sent.
+/// Every field is optional: CDP mandates nothing, and what a platform sends
+/// varies by model and software version. `None` means not sent.
 ///
-/// `#[non_exhaustive]`, for the reason
-/// [`lldp::Advertisement`](crate::protocols::lldp::Advertisement) is: these are
-/// nine of the record types Cisco equipment sends and a tenth worth reading is a
-/// matter of time.
+/// `#[non_exhaustive]`: these are nine of the record types Cisco equipment
+/// sends, and more may be read.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Announcement<'a> {
-    /// What the device calls itself, which on Cisco equipment is the configured
-    /// hostname and often the fully-qualified name.
+    /// What the device calls itself: on Cisco equipment the configured hostname,
+    /// often fully qualified.
     pub device_id: Option<&'a str>,
 
     /// What the device calls the port this frame left by, which is the port this
@@ -158,8 +143,8 @@ pub struct Announcement<'a> {
     /// What the device says it does. See [`Capabilities`].
     pub capabilities: Option<Capabilities>,
 
-    /// The software the device is running, as a banner: version, image name and
-    /// build date, in a format that changes between releases.
+    /// The software banner: version, image name and build date, in a format that
+    /// changes between releases.
     pub software_version: Option<&'a str>,
 
     /// The hardware model, as the vendor names it.
@@ -167,19 +152,15 @@ pub struct Announcement<'a> {
 
     /// The VLAN untagged traffic on this port lands in.
     ///
-    /// The field this protocol is worth reading for even where LLDP is also
-    /// running: LLDP carries the same fact only in an organizationally-specific
-    /// TLV, which a great deal of equipment does not send.
+    /// LLDP carries this only in an organizationally-specific TLV that much
+    /// equipment does not send.
     pub native_vlan: Option<u16>,
 
     /// Whether the port is running full duplex, where the device said.
     pub full_duplex: Option<bool>,
 
-    /// An address the device is reachable at, where it advertised one.
-    ///
-    /// The first, from either the address record or the management-address
-    /// record. As with LLDP, the question this answers is how to reach the box,
-    /// and the first address answers it.
+    /// The first address the device advertised, from the address record or the
+    /// management-address record.
     pub address: Option<IpAddr>,
 }
 
@@ -187,20 +168,15 @@ pub struct Announcement<'a> {
 ///
 /// # What identifies one
 ///
-/// The LLC/SNAP header, which names Cisco's OUI and CDP's protocol number
-/// within it. The destination address is deliberately *not* required to be
-/// [`GROUP_ADDRESS`]: a frame captured on a mirrored port is addressed to
-/// whoever the switch was talking to, and the SNAP header already says what the
-/// frame is.
+/// The LLC/SNAP header naming Cisco's OUI and CDP's protocol number. The
+/// destination need not be [`GROUP_ADDRESS`]: on a mirrored port a frame is
+/// addressed to whoever the switch was talking to.
 ///
-/// Individual records that cannot be read are skipped and the walk carries on,
-/// for the reason [`lldp::parse`](crate::protocols::lldp::parse) gives: one
-/// unreadable field should not cost the switch name beside it.
+/// Records that cannot be read are skipped and the walk continues, as in
+/// [`lldp::parse`](crate::protocols::lldp::parse).
 pub fn parse<'a>(frame: &Frame<'a>) -> Option<Announcement<'a>> {
-    // Cut to the claimed length before anything else. An 802.3 frame is padded
-    // to the minimum frame size, and the padding parses as records of type zero
-    // and length zero, which is not a record and would otherwise be walked
-    // until the record bound stopped it.
+    // Cut to the claimed length first: the 802.3 padding parses as records of
+    // type zero and length zero.
     let payload = frame.payload_as_claimed()?;
 
     let (llc, rest) = payload.split_at_checked(LLC_SNAP.len())?;
@@ -224,10 +200,8 @@ pub fn parse<'a>(frame: &Frame<'a>) -> Option<Announcement<'a>> {
         rest = remainder;
         seen += 1;
 
-        // Every field takes the first readable value and keeps it, for the
-        // reason [`lldp::parse`](crate::protocols::lldp::parse) does: a second
-        // record of a kind an announcement carries once is malformed, and
-        // letting it erase a value that already parsed costs the switch's name.
+        // Every field keeps the first readable value, so a malformed repeat cannot
+        // erase one that parsed (as in `lldp::parse`).
         match kind {
             RECORD_DEVICE_ID => keep_first(&mut announcement.device_id, text(value)),
             RECORD_PORT_ID => keep_first(&mut announcement.port_id, text(value)),
@@ -256,9 +230,7 @@ pub fn parse<'a>(frame: &Frame<'a>) -> Option<Announcement<'a>> {
         }
     }
 
-    // As with LLDP: bytes that arrived under CDP's SNAP header and named
-    // nothing are not an announcement, and crediting a device with an empty one
-    // would put a finding on the record that nothing said.
+    // Bytes under CDP's SNAP header that named nothing are not an announcement.
     let read_something = announcement.device_id.is_some()
         || announcement.port_id.is_some()
         || announcement.capabilities.is_some();
@@ -269,9 +241,8 @@ pub fn parse<'a>(frame: &Frame<'a>) -> Option<Announcement<'a>> {
 /// Records `value` in `field` if the field is still empty and the value is
 /// readable.
 ///
-/// The twin of [`lldp`](crate::protocols::lldp)'s, and it holds the same
-/// property: a longer prefix of an announcement reports everything a shorter one
-/// did.
+/// As in [`lldp`](crate::protocols::lldp): a longer prefix of an announcement
+/// reports everything a shorter one did.
 fn keep_first<T>(field: &mut Option<T>, value: Option<T>) {
     if field.is_none() {
         *field = value;
@@ -280,16 +251,15 @@ fn keep_first<T>(field: &mut Option<T>, value: Option<T>) {
 
 /// Splits one record off the front of `bytes`.
 ///
-/// The length counts the record's own header, unlike LLDP's, which counts
-/// only the value. A reader that treats it as a value length walks four bytes
-/// short per record and desynchronises after the first one.
+/// The length counts the record's own header, unlike LLDP's. Read as a value
+/// length, the walk falls four bytes short per record.
 fn next_record(bytes: &[u8]) -> Option<(u16, &[u8], &[u8])> {
     let header = bytes.first_chunk::<4>()?;
     let kind = u16::from_be_bytes([header[0], header[1]]);
     let length = usize::from(u16::from_be_bytes([header[2], header[3]]));
 
-    // A record shorter than its own header describes nothing, and taken at face
-    // value would advance the walk by zero bytes for ever.
+    // A record shorter than its own header would advance the walk by zero bytes
+    // forever.
     if length < RECORD_HDR_LEN {
         return None;
     }
@@ -302,11 +272,9 @@ fn next_record(bytes: &[u8]) -> Option<(u16, &[u8], &[u8])> {
 
 /// Reads the first address out of an address record.
 ///
-/// The record is a count followed by that many entries, each naming the protocol
-/// it belongs to before the address itself. Only the first entry is read: the
-/// question is how to reach the device, and any of them answers it.
+/// The record is a count followed by entries, each naming its protocol before
+/// the address. Only the first entry is read.
 fn first_address(value: &[u8]) -> Option<IpAddr> {
-    // A four-byte count of entries, then the entries.
     let rest = value.get(4..)?;
 
     let (protocol_type, rest) = rest.split_first()?;
@@ -321,9 +289,8 @@ fn first_address(value: &[u8]) -> Option<IpAddr> {
         (PROTOCOL_TYPE_NLPID, [NLPID_IPV4]) => address
             .first_chunk::<4>()
             .map(|bytes| IpAddr::V4(Ipv4Addr::from(*bytes))),
-        // IPv6, named by the 802.2 encapsulation's own eight-byte identifier.
-        // The address length is what actually settles it, and it is checked
-        // rather than the identifier decoded.
+        // IPv6, named by the 802.2 encapsulation's eight-byte identifier. The
+        // address length settles it.
         (PROTOCOL_TYPE_IEEE_802_2, _) if address_length == 16 => address
             .first_chunk::<16>()
             .map(|bytes| IpAddr::V6(Ipv6Addr::from(*bytes))),
@@ -357,8 +324,8 @@ pub(crate) mod tests {
         bytes
     }
 
-    /// A CDP frame carrying `records`, framed as 802.3 with an LLC/SNAP header
-    /// and padded to the minimum frame size the way a real one is.
+    /// A CDP frame carrying `records`: 802.3 with an LLC/SNAP header, padded to
+    /// the minimum frame size as a real one is.
     fn frame_of(records: &[Vec<u8>]) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&LLC_SNAP);
@@ -380,8 +347,7 @@ pub(crate) mod tests {
         );
         bytes.extend_from_slice(&payload);
 
-        // Padded to the minimum frame size, which is what makes cutting the
-        // payload to its claimed length necessary rather than tidy.
+        // Padded to the minimum frame size, which is why the payload must be cut.
         bytes.resize(bytes.len().max(60), 0);
         bytes
     }
@@ -396,25 +362,9 @@ pub(crate) mod tests {
         record(RECORD_ADDRESSES, &value)
     }
 
-    /// A complete announcement from a Cisco switch that is also routing: named
-    /// `core-sw-02`, on port `GigabitEthernet1/0/14`, untagged traffic in VLAN
-    /// 40, reachable at `198.51.100.2`.
-    ///
-    /// The same four facts as
-    /// [`lldp::tests::switch_announcement`](crate::protocols::lldp::tests::switch_announcement),
-    /// so the listener's tests can assert that both protocols arrive at one
-    /// shape rather than assert twice against two.
-    ///
-    /// The device name is the bare one rather than the fully-qualified name a
-    /// Cisco box usually sends, because what is under test there is that the
-    /// field is carried across rather than what the vendor puts in it.
-    /// A second record of a kind an announcement carries once must not erase
-    /// the first.
-    ///
-    /// Assigning unconditionally, a switch that named itself and then repeated
-    /// the device-id record with bytes that are not text was reported as no
-    /// switch at all. `lldp::parse` had the same shape and the same defect; the
-    /// fuzz target holds the general property over both.
+    /// A second record of a kind an announcement carries once does not erase
+    /// the first, even when it is unreadable. The fuzz target holds the same
+    /// property over LLDP.
     #[test]
     fn a_second_unreadable_record_does_not_erase_the_first() {
         let bytes = frame_of(&[
@@ -429,6 +379,15 @@ pub(crate) mod tests {
         assert_eq!(announcement.port_id, Some("GigabitEthernet1/0/14"));
     }
 
+    /// A complete announcement from a Cisco switch that is also routing: named
+    /// `core-sw-02`, on port `GigabitEthernet1/0/14`, untagged traffic in VLAN
+    /// 40, reachable at `198.51.100.2`.
+    ///
+    /// The same four facts as
+    /// [`lldp::tests::switch_announcement`](crate::protocols::lldp::tests::switch_announcement),
+    /// so the listener's tests can assert both protocols arrive at one shape.
+    /// The device name is the bare one, since the test is about the field being
+    /// carried across.
     pub(crate) fn switch_announcement() -> Vec<u8> {
         frame_of(&[
             record(RECORD_DEVICE_ID, b"core-sw-02"),
@@ -484,9 +443,7 @@ pub(crate) mod tests {
     }
 
     /// CDP rides 802.3 framing, so the field a reader would take for an
-    /// EtherType is a length. A reader matching on the EtherType finds a small
-    /// integer naming no protocol, decides there is no CDP, and reports a silent
-    /// segment on a network that is announcing itself continuously.
+    /// EtherType is a length.
     #[test]
     fn the_frame_is_identified_by_its_snap_header_rather_than_an_ethertype() {
         let bytes = frame_of(&[record(RECORD_DEVICE_ID, b"sw-01")]);
@@ -507,10 +464,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// An 802.3 frame is padded out to the minimum frame size. Read to the end
-    /// of the buffer, the walk runs into that padding, which decodes as records
-    /// of type zero and length zero, and a length of zero advances the walk by
-    /// nothing.
+    /// The 802.3 padding decodes as zero-length records of type zero and must
+    /// not be walked.
     #[test]
     fn trailing_padding_is_cut_off_rather_than_walked() {
         // One short record, so the frame is padded well past the real content.
@@ -524,9 +479,7 @@ pub(crate) mod tests {
         assert_eq!(announcement.port_id, None, "the padding invented nothing");
     }
 
-    /// A CDP record's length counts its own four-byte header, where LLDP's
-    /// counts only the value. Read with LLDP's rule, the walk lands four bytes
-    /// short after the first record and every field after it is nonsense.
+    /// A CDP record's length counts its own four-byte header, unlike LLDP's.
     #[test]
     fn a_record_length_counts_its_own_header() {
         let bytes = frame_of(&[
@@ -546,10 +499,8 @@ pub(crate) mod tests {
         assert_eq!(announcement.native_vlan, Some(99), "and so was the third");
     }
 
-    /// A record claiming a length of zero would advance the walk by nothing.
-    /// Left to the record bound alone that is a hundred and twenty-eight wasted
-    /// iterations per frame; taken at face value with no bound at all it never
-    /// returns.
+    /// A record claiming a length of zero would advance the walk by nothing,
+    /// forever without the record bound.
     #[test]
     fn a_record_shorter_than_its_own_header_stops_the_walk() {
         let mut bytes = frame_of(&[record(RECORD_DEVICE_ID, b"sw-01")]);
@@ -566,8 +517,7 @@ pub(crate) mod tests {
         assert_eq!(announcement.device_id, Some("sw-01"));
     }
 
-    /// An ordinary IP frame is not an announcement, which is nearly everything
-    /// on any capture wide enough to see one.
+    /// An ordinary IP frame is not an announcement.
     #[test]
     fn a_frame_of_another_protocol_is_declined() {
         let bytes = ethernet::build_header(
