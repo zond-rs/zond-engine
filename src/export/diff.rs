@@ -9,59 +9,46 @@
 //! # Writing a comparison out
 //!
 //! What [`export`](crate::export) is to a [`ScanReport`](crate::ScanReport),
-//! this is to a [`ScanDiff`]: the document somebody else reads. A comparison
-//! that only reaches a terminal serves the person who ran it and nobody
-//! downstream, and downstream is where a nightly comparison earns its keep, in
-//! an alerting rule or a ticket or a review queue.
+//! this is to a [`ScanDiff`]: a document for whoever acts on the changes, such as
+//! an alerting rule, a ticket or a review queue.
 //!
 //! ## Every change is one scalar fact
 //!
-//! The document's whole shape follows from one decision. A change is
-//! `{kind, before, after}` and nothing else: a fixed token saying which field
-//! moved, and the two values, either of which may be `null`. A host that gained
-//! three addresses produces three changes rather than one carrying a list.
+//! A change is `{kind, before, after}`: a fixed token saying which field moved,
+//! and the two values, either of which may be `null`. A host that gained three
+//! addresses produces three changes.
 //!
-//! That costs some faithfulness to the engine's own
-//! [`HostChange`](crate::diff::HostChange) and
-//! [`PortChange`](crate::diff::PortChange), which group set changes together. It
-//! buys a document a rule engine can act on without a parser per variant: one
-//! shape, one code path, and a `kind` that maps onto "alert me when this
-//! happens". The same flattening produces a front end's per-line output, so a
-//! comparison printed in a terminal and one posted to a queue name the same
-//! events the same way.
+//! The engine's own [`HostChange`](crate::diff::HostChange) and
+//! [`PortChange`](crate::diff::PortChange) group set changes together; the
+//! document flattens them so a rule engine handles one shape, and a `kind` maps
+//! onto "alert me when this happens". A front end's per-line output uses the same
+//! flattening, so the terminal and the document name the same events the same way.
 //!
 //! ## What a consumer must not lose
 //!
 //! Every host and every endpoint carries `confirmed` and `significance`, and the
-//! document carries one of its own. Both are derived, from the presence and the
-//! other scan's coverage and from
-//! [`Significance`](crate::diff::Significance)'s table, and both are stated
-//! anyway, because they are the fields an alerting rule keys on and re-deriving
-//! them is the step somebody will skip. A comparison whose `confirmed` is ignored
-//! reports hosts as gone every time a scan is narrowed, which is the failure
-//! [`diff`](crate::diff) is arranged to prevent; one whose `significance` is
-//! ignored pages somebody at three in the morning because a reverse name moved.
+//! document carries one of its own. Both are derivable (from the presence and the
+//! other scan's coverage, and from
+//! [`Significance`](crate::diff::Significance)'s table) and are stated anyway,
+//! because alerting rules key on them. Ignoring `confirmed` reports hosts as gone
+//! every time a scan is narrowed, which [`diff`](crate::diff) is arranged to
+//! prevent; ignoring `significance` pages somebody because a reverse name moved.
 //!
 //! A rule that reads only one of them should read `significance`, which already
-//! answers `routine` for anything the comparison cannot vouch for. `confirmed` is
-//! then the reason rather than a second condition.
+//! answers `routine` for anything the comparison cannot vouch for.
 //!
 //! ## The records on either side
 //!
 //! Each host delta carries the whole [`HostDto`](crate::export::schema::HostDto)
-//! from each side that has one, in the report document's own schema. A ticket
-//! wants the ports the new host is running, not another lookup; a dashboard
-//! wants to render the host beside the change. A consumer that wants only the
-//! changes ignores those two fields.
+//! from each side that has one, in the report document's own schema, so a ticket
+//! or dashboard can show the host without another lookup. A consumer that wants
+//! only the changes ignores those two fields.
 //!
 //! ## Choosing a format
 //!
 //! [`DiffFormat`] resolves one from a destination's extension and
-//! [`DiffFormat::all`] names every one this build can write, exactly as
-//! [`ExportFormat`](crate::export::ExportFormat) does for a report. A front end
-//! that offers the user a choice should read that list rather than naming the
-//! exporters itself, or a build without one of them advertises a format it
-//! cannot produce.
+//! [`DiffFormat::all`] names every one this build can write, as
+//! [`ExportFormat`](crate::export::ExportFormat) does for a report.
 //!
 //! ## Versioned apart from the report
 //!
@@ -91,25 +78,22 @@ pub use json::JsonDiffExporter;
 
 /// One output format for a comparison.
 ///
-/// The counterpart of [`Exporter`](crate::export::Exporter), separate because
-/// the two take different things: a report is what a scan found, a comparison is
-/// what changed between two of them. One type may implement both.
+/// The counterpart of [`Exporter`](crate::export::Exporter) for a [`ScanDiff`].
+/// One type may implement both.
 pub trait DiffExporter {
     /// Writes `diff` to `out`.
     ///
-    /// Implementations must stream: the memory a comparison costs to write
-    /// should be a function of the largest single host, not of how many of them
-    /// moved.
+    /// Implementations must stream: memory should scale with the largest single
+    /// host, not with how many hosts changed.
     fn export(&self, diff: &ScanDiff, out: &mut dyn Write) -> Result<(), ExportError>;
 }
 
 /// The comparison formats this build can write.
 ///
-/// The counterpart of [`ExportFormat`](crate::export::ExportFormat), down to the
-/// extension rule: a front end resolves an output path such as `changes.json`
-/// to a format rather than taking a second flag. A front end offering the user
-/// a choice reads [`all`](Self::all) rather than naming the exporters itself,
-/// so a build without one of them lists what it can actually write.
+/// The counterpart of [`ExportFormat`](crate::export::ExportFormat), including
+/// resolving an output path such as `changes.json` to a format. A front end
+/// offering the user a choice should list [`all`](Self::all), so it only offers
+/// what this build can write.
 ///
 /// Which variants exist depends on the cargo features the crate was built with.
 #[non_exhaustive]
@@ -128,14 +112,11 @@ pub enum DiffFormat {
 impl DiffFormat {
     /// Resolves a file extension, case-insensitively and without a leading dot.
     ///
-    /// Returns `None` for an extension no compiled-in format claims, which the
-    /// caller should report rather than writing one format into a file named for
-    /// another.
+    /// Returns `None` for an extension no compiled-in format claims.
     pub fn from_extension(extension: &str) -> Option<Self> {
         match extension.to_ascii_lowercase().as_str() {
             #[cfg(feature = "export-json")]
             "json" => Some(DiffFormat::Json),
-            // Both spellings, matching what the report side accepts.
             #[cfg(feature = "export-html")]
             "html" | "htm" => Some(DiffFormat::Html),
             _ => None,
@@ -144,9 +125,8 @@ impl DiffFormat {
 
     /// Resolves a path by its extension.
     ///
-    /// A path with no extension has no format rather than a default one, for the
-    /// reason [`ExportFormat::from_path`](crate::export::ExportFormat::from_path)
-    /// gives.
+    /// A path with no extension has no format, as with
+    /// [`ExportFormat::from_path`](crate::export::ExportFormat::from_path).
     pub fn from_path(path: &Path) -> Option<Self> {
         path.extension()
             .and_then(|extension| extension.to_str())
@@ -196,8 +176,8 @@ impl fmt::Display for DiffFormat {
 /// Writes a comparison in the format named by `path`'s extension.
 ///
 /// Returns `None` if the extension names no format this build supports. The
-/// comparison is written to `out`, not to `path`: opening the destination, and
-/// deciding whether overwriting it is acceptable, stays with the caller.
+/// comparison is written to `out`; `path` only selects the format, and opening
+/// the destination is the caller's job.
 pub fn export_to(
     path: &Path,
     diff: &ScanDiff,
@@ -221,9 +201,8 @@ pub fn export_to(
 mod tests {
     use super::*;
 
-    /// Anything [`DiffFormat::all`] advertises has to resolve from its own
-    /// extension and produce a document, or a front end built the same way
-    /// offers a format it cannot write.
+    /// Anything [`DiffFormat::all`] advertises resolves from its own extension
+    /// and produces a document.
     #[test]
     fn every_advertised_format_writes_and_resolves_from_its_own_extension() {
         let diff = ScanDiff::between(
@@ -247,8 +226,8 @@ mod tests {
         }
     }
 
-    /// The path-driven entry point reaches the same exporter a caller would have
-    /// built by hand, and an extension naming no format produces no file.
+    /// [`export_to`] writes every format by path, and an unknown extension
+    /// writes nothing.
     #[test]
     fn exporting_by_path_matches_exporting_by_format() {
         let diff = ScanDiff::between(

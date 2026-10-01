@@ -9,20 +9,17 @@
 //! Holds the exported document to the published schema.
 //!
 //! `assets/schema/zond-report-v1.schema.json` ships with the crate and is what
-//! a consumer validates against. A schema nobody checks drifts: a field added to
-//! a DTO, a `null` that becomes a string, an enum that gains a variant, and the
-//! file on disk stops describing the thing it claims to.
+//! a consumer validates against. These tests run the real exporter against it so
+//! the schema cannot drift from the DTOs.
 //!
-//! The schema is strict, with every object closed and every field required
-//! except the handful a writer omits when it has nothing to say, and these tests
-//! run the real exporter against it. Adding a field to a DTO without describing
-//! it here fails the build.
+//! The schema is strict: every object is closed and every field required except
+//! the few a writer omits when it has nothing to say. Adding a field to a DTO
+//! without describing it in the schema fails the build.
 //!
-//! That handful is itself pinned, by
-//! `the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out`. The
-//! module documentation of [`schema`](super::schema) tells a consumer what an
-//! absent field means, and a `skip_serializing_if` added without a thought for
-//! that sentence is how the two stop agreeing.
+//! The optional fields are pinned by
+//! `the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out`, so a new
+//! `skip_serializing_if` must be matched by the schema and by what the
+//! [`schema`](super::schema) module documentation says an absent field means.
 
 use boon::{Compiler, Schemas};
 use regex::Regex;
@@ -52,8 +49,8 @@ use crate::record::wire::{
 use crate::report::{AttachmentSource, LivenessSkip, Pass, ScanKind, ScannerKind, StopReason};
 use crate::transport::probe::SendMode;
 
-/// The published schemas, compiled into the test binary so a test cannot pass
-/// against a file that was not shipped.
+/// The published schemas, compiled into the test binary so the tests check the
+/// shipped files.
 const SCHEMA: &str = include_str!("../../assets/schema/zond-report-v1.schema.json");
 const LINES_SCHEMA: &str = include_str!("../../assets/schema/zond-lines-v1.schema.json");
 const DIFF_SCHEMA: &str = include_str!("../../assets/schema/zond-diff-v1.schema.json");
@@ -77,7 +74,7 @@ impl Validator {
 
     /// A validator over the record-per-line schema.
     ///
-    /// Validates one record, not a file: JSON Lines is not one JSON document.
+    /// Validates one record; a JSON Lines file is not one JSON document.
     fn lines() -> Self {
         Self::over(LINES_SCHEMA_URL)
     }
@@ -87,11 +84,10 @@ impl Validator {
         Self::over(DIFF_SCHEMA_URL)
     }
 
-    /// Compiles both schemas and points a validator at one of them.
+    /// Compiles the schema at `url`.
     ///
-    /// All three are registered whichever is being compiled. The lines and
-    /// comparison schemas are written in terms of the report schema's
-    /// definitions and cannot resolve without it.
+    /// All three are registered, since the lines and comparison schemas refer to
+    /// the report schema's definitions.
     fn over(url: &str) -> Self {
         let mut schemas = Schemas::new();
         let mut compiler = Compiler::new();
@@ -139,14 +135,13 @@ fn document(options: ExportOptions) -> Value {
     serde_json::from_slice(&bytes).expect("the export parses as JSON")
 }
 
-/// The schema has to be a schema before it can pin anything.
+/// The published schema compiles.
 #[test]
 fn the_published_schema_compiles() {
     let _ = Validator::new();
 }
 
-/// The version the code emits and the version the schema pins are the same
-/// number, or one of them was bumped without the other.
+/// The version the code emits is the one the schema pins.
 #[test]
 fn the_schema_pins_the_version_the_code_emits() {
     let schema: Value = serde_json::from_str(SCHEMA).expect("valid JSON");
@@ -160,24 +155,19 @@ fn the_schema_pins_the_version_the_code_emits() {
 /// Every enumerated value in the report document, as the schema lists it and as
 /// this build spells it, compared both ways.
 ///
-/// A variant the engine can write and the schema does not accept produces
-/// documents no consumer's validator takes, and the document tests below cannot
-/// see it since they exercise whichever variant the fixture happens to carry.
+/// A variant the engine writes and the schema rejects produces documents no
+/// validator accepts; the document tests only see the variants the fixture
+/// carries. A name the schema lists and the engine cannot produce is one a third
+/// party may write and the report readers refuse.
 ///
-/// The reverse direction matters as much: a name the schema advertises and the
-/// engine cannot produce is a promise to a third party writing this format that
-/// both report readers then refuse.
-///
-/// Only the enums whose type publishes an `ALL` are here, and every closed enum
-/// in the schema has one except `port_scope`, whose variants carry data. An
-/// exhaustive list written out in this file would be a third copy of the
-/// variants, which is the arrangement this test exists to catch, so a new enum
-/// in the document should arrive with an `ALL`.
+/// Only enums whose type publishes an `ALL` are here. Every closed enum in the
+/// schema has one except `port_scope`, whose variants carry data. A new enum in
+/// the document should come with an `ALL`, so the variants are not listed a
+/// third time in this file.
 ///
 /// `reason.protocol` is compared through [`StatusProtocol::ALL`], which holds
-/// its built-in names. The one variant it leaves out carries a strategy-chosen
-/// name and is the schema's other `anyOf` arm, a `custom:` prefix, which is a
-/// pattern rather than an enumeration.
+/// the built-in names. The variant it leaves out carries a strategy-chosen name
+/// and matches the schema's other `anyOf` arm, a `custom:` prefix pattern.
 fn enumerations() -> Vec<(&'static str, Vec<String>)> {
     let named = |names: Vec<&'static str>| names.into_iter().map(str::to_owned).collect();
 
@@ -297,9 +287,8 @@ fn enumerations() -> Vec<(&'static str, Vec<String>)> {
             ),
         ),
         (
-            // Inside an `anyOf`. The other arm is the `custom:` prefix a
-            // strategy-supplied name is written under, a pattern rather than an
-            // enumeration.
+            // Inside an `anyOf`; the other arm is the `custom:` prefix pattern
+            // for strategy-supplied names.
             "/$defs/reason/properties/protocol/anyOf/0/enum",
             StatusProtocol::ALL
                 .iter()
@@ -411,14 +400,12 @@ fn enumerations() -> Vec<(&'static str, Vec<String>)> {
 
 /// Every enumerated value in the comparison document, the same way.
 ///
-/// A shorter list than the report's, because a comparison is built out of the
-/// report's own vocabulary and re-uses its names for everything it carries over.
-/// What is its own is the coverage answer and the significance grade, neither of
-/// which exists anywhere else.
+/// The comparison reuses the report's names for everything it carries over;
+/// only the coverage answer and the significance grade are its own.
 ///
-/// [`Presence`](crate::diff::Presence) is the other closed enum in the document
-/// and is not here, for the reason `port_scope` is not in the report's list: two
-/// of its three variants carry data, so it publishes no `ALL`.
+/// [`Presence`](crate::diff::Presence) is the other closed enum in the document.
+/// Two of its three variants carry data, so it publishes no `ALL`, like
+/// `port_scope`.
 fn diff_enumerations() -> Vec<(&'static str, Vec<String>)> {
     let coverage: Vec<String> = Coverage::ALL
         .iter()
@@ -432,9 +419,8 @@ fn diff_enumerations() -> Vec<(&'static str, Vec<String>)> {
         .map(|significance| significance_name(significance).to_owned())
         .collect();
 
-    // Both answers are asked of a host and of an endpoint, and the grade again of
-    // the document as a whole, so each list is spelled several times and every
-    // copy is held to the same build.
+    // Coverage appears on hosts and endpoints, significance on those and on the
+    // document; every copy is checked.
     vec![
         (
             "/$defs/host_delta/properties/coverage/oneOf/0/enum",
@@ -511,10 +497,8 @@ fn a_full_report_matches_the_schema() {
 /// A scan that altered no packets, read no zombie's counter and found no
 /// managed equipment, which is most scans.
 ///
-/// Every test above exports the fixture that has one of everything, so the
-/// schema's `required` lists are only exercised where nothing is missing. A field
-/// the schema demands and this document omits would pass all of them and fail in
-/// a consumer's validator.
+/// The full fixture has one of everything, so it cannot catch a field the schema
+/// requires and an ordinary document omits.
 #[test]
 fn an_ordinary_report_matches_the_schema() {
     let plain = fixture::compared().0;
@@ -524,7 +508,7 @@ fn an_ordinary_report_matches_the_schema() {
         .expect("the export succeeds");
     let document: Value = serde_json::from_slice(&bytes).expect("the export parses as JSON");
 
-    // Otherwise this validates the same document the test above does.
+    // Make sure this fixture really lacks the optional blocks.
     let settings = &document["phases"][0]["settings"];
     assert!(settings["evasion"].is_null(), "the fixture altered packets");
     assert!(settings["idle_scan"].is_null(), "the fixture read a zombie");
@@ -538,113 +522,93 @@ fn an_ordinary_report_matches_the_schema() {
 
 /// The fields a writer leaves out, as the schema lists them.
 ///
-/// Everything else the document carries is present whatever its value: `null` for
-/// nothing, `[]` for nothing in a list. These are the exception, and
-/// [`schema`](super::schema) promises a consumer that reading an absent one as
-/// the empty value is always correct. A `skip_serializing_if` added to a field
-/// not on this list breaks that promise silently.
+/// Every other field is always present: `null` for nothing, `[]` for an empty
+/// list. [`schema`](super::schema) promises a consumer that reading an absent
+/// field as the empty value is correct, so a new `skip_serializing_if` must be
+/// added here.
 #[test]
 fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
     /// `$defs` entry, or `report` for the document itself, then field.
     const OMITTED: &[(&str, &str)] = &[
-        // A version whose every accepted suite is one this build carries, which
-        // is every version against every server anyone has configured.
+        // Absent when every accepted suite is one this build knows.
         ("accepted_version", "unrecognised"),
         ("attachment", "device_mac"),
         ("attachment", "device_name"),
         ("attachment", "management_address"),
         ("attachment", "native_vlan"),
         ("attachment", "port"),
-        // A strategy that failed rather than one a limit cut short, which is
-        // what every entry of a document predating the mark meant.
+        // Absent for a strategy that failed outright, not cut short by a limit.
         ("failure", "cut_short"),
-        // Every finding but a correlation's leaves out the first three, and a
-        // correlation of an upstream build leaves out the build and the stamp.
+        // Only a correlation carries the first three; one against an upstream
+        // build omits the build and the stamp.
         ("finding", "advised_by"),
         ("finding", "build"),
         ("finding", "cpe"),
         ("finding", "cpes"),
         ("finding", "excerpt"),
-        // A finding none of whose vulnerabilities a list of exploited ones
-        // names, which is most correlations and every other finding.
+        // Absent unless a known-exploited list names one of its vulnerabilities.
         ("finding", "exploited"),
-        // A finding whose detection covers its weakness by itself, which is
-        // most of them.
+        // Absent when the detection covers its weakness by itself (most).
         ("finding", "group"),
         ("finding", "remediation"),
         ("finding", "subject"),
-        // A rule names whichever parts of a box it knows, and most name one or
-        // two: a vendor and a model, or a family and nothing else.
+        // A rule names whichever parts of a box it knows, usually one or two.
         ("hardware", "cpe23"),
         ("hardware", "family"),
-        // The three a service states about a box and an address block never
-        // reaches. Absent from most records because most rules name none of
-        // them, and `serial_number` is absent from every redacted document.
+        // Stated by a service, never by an address block. `serial_number` is
+        // absent from every redacted document.
         ("hardware", "model"),
         ("hardware", "product"),
         ("hardware", "serial_number"),
         ("hardware", "version"),
         ("origin", "label"),
         ("phase", "attachments"),
-        // A phase that found no host rationing its ICMP errors leaves this out,
-        // which is every phase that asked no UDP ports of one.
+        // Absent unless a host rationed its ICMP errors.
         ("phase", "icmp_rate_limited"),
-        // A port phase a liveness pass preceded leaves this out, which is most
-        // of them, and so does every phase that is not a port scan.
+        // Only on a port phase that no liveness pass preceded.
         ("phase", "liveness_skipped"),
-        // Every phase that closed leaves this out, which is all but the last
-        // of a sitting killed before it ended.
+        // Only on a phase still open when the sitting was killed.
         ("phase", "open"),
         ("phase", "origin"),
-        // A phase no stop cut a pass of, which is nearly every phase.
+        // Absent unless a stop cut a pass.
         ("phase", "passes_cut"),
-        // A phase that reached everything the way its privilege says leaves this
-        // out, which is most phases and every unprivileged one.
+        // Absent when everything was reached the way the privilege says, as in
+        // every unprivileged phase.
         ("phase", "reached_by_connect"),
-        // A phase that declined nothing leaves this out rather than writing an
-        // empty list, which is what most phases do.
+        // Absent when the phase declined nothing.
         ("phase", "refusals"),
-        // A phase no route of the scanning host refused an address to, which
-        // is nearly every phase.
+        // Absent unless a local route refused an address.
         ("phase", "refused_by_route"),
-        // Every phase but a port phase standing in for a liveness pass the
-        // engine dropped leaves this out, and so does such a phase that heard
-        // something from every address it asked.
+        // Only on a port phase standing in for a dropped liveness pass, and only
+        // when some address stayed silent.
         ("phase", "silent"),
-        // A phase nobody stopped leaves this out, which is most of them.
+        // Absent unless the phase was stopped.
         ("phase", "stopped"),
-        // A phase that ran out of time on no host leaves this out rather than
-        // writing an empty list, which is every phase that set no per-host
-        // budget.
+        // Absent unless a host ran out of its per-host budget.
         ("phase", "timed_out"),
-        // A phase that reached a verdict on every address it was asked about
-        // leaves this out, which is every finished sweep and every port scan.
+        // Absent when every address got a verdict, as in every finished sweep
+        // and every port scan.
         ("phase", "undecided"),
-        // A phase that did not stand in for a liveness pass leaves this out,
-        // and so does one that heard something from every address it asked.
+        // As `silent`: only on a stand-in for a liveness pass, and only when
+        // some address went unheard.
         ("phase", "unheard_probes"),
-        // A phase whose walk ran to its end leaves this out, and so does every
-        // phase that is not a port scan.
+        // Only on a port scan whose walk did not finish.
         ("phase", "unreached"),
-        // What the report as a whole left open, left out where nothing is, as
-        // the phases' own lists are: a scan that finished everything it was
-        // asked has none of the three.
+        // Report-wide versions of the phase lists, absent when empty.
         ("report", "timed_out"),
         ("report", "undecided"),
         ("report", "unreached"),
         ("scope", "listened"),
-        // A port on a scan that did not enumerate, which is the default.
+        // Absent unless the scan enumerated suites.
         ("security", "accepts"),
-        // A port whose every walk finished, which is every port a scan did
-        // not enumerate and nearly every one it did.
+        // Absent when every walk on the port finished.
         ("security", "unfinished"),
         ("settings", "evasion"),
         ("settings", "excluded_ports"),
         ("settings", "idle_scan"),
     ];
 
-    /// The two objects that are a technique's own profile, where every field
-    /// describes one part of it and any part may be absent.
+    /// Objects describing a technique's profile, where every field is optional.
     const OMITTED_WHOLESALE: &[&str] = &["evasion", "idle_scan"];
 
     let schema: Value = serde_json::from_str(SCHEMA).expect("valid JSON");
@@ -693,8 +657,7 @@ fn the_schema_marks_optional_exactly_the_fields_a_writer_leaves_out() {
     );
 }
 
-/// Redaction rewrites hostnames and hardware addresses. It must not rewrite
-/// them into something the schema no longer accepts.
+/// Redacted hostnames and hardware addresses still match the schema.
 #[test]
 fn a_redacted_report_matches_the_schema() {
     Validator::new().check(&document(
@@ -702,8 +665,7 @@ fn a_redacted_report_matches_the_schema() {
     ));
 }
 
-/// If the schema accepted anything, passing it would prove nothing. This checks
-/// that it rejects.
+/// The schema rejects malformed documents, so passing it means something.
 #[test]
 fn the_schema_rejects_a_document_it_should_reject() {
     let validator = Validator::new();
@@ -741,9 +703,8 @@ fn the_schema_rejects_a_document_it_should_reject() {
     );
 }
 
-/// Every line of a JSON Lines export has to validate on its own. A record that
-/// only means something in the context of the file is a record that cannot be
-/// split, filtered or concatenated, which is most of the reason for the format.
+/// Every line of a JSON Lines export validates on its own, so files can be
+/// split, filtered and concatenated.
 #[cfg(feature = "export-jsonl")]
 #[test]
 fn every_exported_line_matches_the_lines_schema() {
@@ -829,8 +790,7 @@ fn the_published_comparison_schema_compiles() {
     let _ = Validator::diff();
 }
 
-/// The version the code emits and the version the schema pins are the same
-/// number, counted apart from the report's.
+/// The comparison version the code emits is the one its schema pins.
 #[test]
 fn the_comparison_schema_pins_the_version_the_code_emits() {
     let schema: Value = serde_json::from_str(DIFF_SCHEMA).expect("valid JSON");
@@ -850,9 +810,7 @@ fn a_comparison_matches_the_published_schema() {
     Validator::diff().check(&document);
 }
 
-/// Two scans that found the same things still produce a document, and it is a
-/// valid one: a consumer polling nightly gets the same shape whether or not
-/// anything moved.
+/// Two identical scans still produce a valid document of the same shape.
 #[test]
 fn an_unchanged_comparison_matches_the_published_schema() {
     let report = fixture::report();
@@ -863,8 +821,7 @@ fn an_unchanged_comparison_matches_the_published_schema() {
     assert_eq!(document["hosts"].as_array().map(Vec::len), Some(0));
 }
 
-/// Redaction is an export-time policy here as it is for a report, and a
-/// comparison leaks the same fields if it is not applied.
+/// Redaction applies to a comparison as it does to a report.
 #[test]
 fn a_redacted_comparison_masks_what_a_redacted_report_masks() {
     let (before, after) = fixture::compared();
@@ -895,14 +852,13 @@ fn a_redacted_comparison_masks_what_a_redacted_report_masks() {
     );
 }
 
-/// What a phase carries worth masking is its attachment, which names a device
-/// and its hardware address.
+/// Redaction masks a phase's attachment, which names a switch and its hardware
+/// address.
 ///
-/// Neither is less identifying for describing a switch rather than a
-/// workstation: a switch name is an internal hostname and a chassis address is a
-/// real MAC. Both sit outside the `hosts` array, where every other redaction test
-/// looks. The JSON Lines writer is checked alongside because it renders the
-/// header through a different type.
+/// A switch name is an internal hostname and a chassis address is a real MAC,
+/// and both sit outside the `hosts` array the other redaction tests look at. The
+/// JSON Lines writer is checked too because it renders the header through a
+/// different type.
 #[test]
 fn redaction_masks_the_switch_a_phase_says_it_was_plugged_into() {
     let report = fixture::report();
@@ -953,9 +909,9 @@ fn redaction_masks_the_switch_a_phase_says_it_was_plugged_into() {
 /// Every token the change vocabulary can emit is a value the published schema
 /// accepts.
 ///
-/// The document tests above exercise whichever changes the fixtures happen to
-/// produce, so a token added to `ChangeDto` could ship past all of them while
-/// producing documents no consumer's validator accepts.
+/// Covers only the changes the fixtures produce;
+/// `the_schema_accepts_exactly_the_change_kinds_the_exporter_emits` covers the
+/// rest.
 #[test]
 fn every_change_the_fixtures_produce_is_a_token_the_schema_accepts() {
     let schema: Value = serde_json::from_str(DIFF_SCHEMA).expect("valid JSON");
@@ -991,8 +947,8 @@ fn every_change_the_fixtures_produce_is_a_token_the_schema_accepts() {
 /// The change kinds the comparison exporter emits, read out of its own source.
 ///
 /// Every kind reaches the document through one of these constructors, and
-/// [`ChangeDto::set`] names two. Reading the source avoids needing one of every
-/// change constructed by hand, which would rot faster than the list it checks.
+/// [`ChangeDto::set`] names two. Reading the source avoids constructing one of
+/// every change by hand.
 fn emitted_change_kinds() -> BTreeSet<String> {
     const SOURCE: &str = include_str!("diff/schema.rs");
 
@@ -1026,8 +982,7 @@ fn accepted_change_kinds() -> BTreeSet<String> {
 /// The exporter and the schema name the same set of change kinds.
 ///
 /// `a_comparison_matches_the_published_schema` sees only the kinds the fixture
-/// produces, so a kind the fixture omits is a kind nothing checks: the exporter
-/// could emit one the schema rejects while the conformance suite stays green.
+/// produces; this covers the rest.
 #[test]
 fn the_schema_accepts_exactly_the_change_kinds_the_exporter_emits() {
     let emitted = emitted_change_kinds();
@@ -1053,29 +1008,26 @@ fn the_schema_accepts_exactly_the_change_kinds_the_exporter_emits() {
 
 /// The two JSON encodings of a host name their fields the same way.
 ///
-/// A `Host` reaches a file twice: as a [`HostRecord`](crate::record::HostRecord)
-/// in the journal, and as a `HostDto` in an exported report. They differ in
-/// encoding on purpose, since a duration is a `Duration` in one and an integer of
-/// microseconds in the other, and the exported document carries derived fields
-/// the journal has no reason to store. Where both name the same thing they have
-/// to spell it the same way, or a consumer who reads both learns two vocabularies
-/// for one domain.
+/// A `Host` reaches a file as a [`HostRecord`](crate::record::HostRecord) in the
+/// journal and as a `HostDto` in an exported report. Their encodings differ (a
+/// duration is a `Duration` in one and integer microseconds in the other, and
+/// the report adds derived fields), but where both name the same thing they must
+/// spell it the same way.
 ///
-/// This compares the field names the two emit. The encoding differences listed
-/// below are the only permitted divergence.
+/// This compares the field names the two emit; the lists below are the only
+/// permitted differences.
 #[test]
 fn the_journal_and_the_report_spell_a_host_the_same_way() {
     use crate::record::HostRecord;
 
     /// Fields one side carries and the other has no reason to.
     ///
-    /// Each is a decision rather than an oversight, named here so that adding a
-    /// field to one side without the other fails this test until somebody says
-    /// which it is.
+    /// Adding a field to one side only fails this test until it is listed
+    /// here or in `REPORT_ONLY`.
     const RECORD_ONLY: &[&str] = &[
         // The document carries the OS verdict and not the sources behind it.
         "os_evidence",
-        // Round-trip samples, which the report renders as statistics instead.
+        // Round-trip samples, which the report renders as statistics.
         "rtts",
         "hop_counter",
         // Durations, which the report writes as integers of microseconds.
@@ -1083,18 +1035,15 @@ fn the_journal_and_the_report_spell_a_host_the_same_way() {
         "elapsed",
         "first_reply",
         "last_reply",
-        // The interface a link-local range is valid on, and only meaningful
-        // with it. The journal and the report have to spell it the same way or a
-        // resumed scan disagrees with the report of the scan it resumed.
+        // The interface a link-local address is valid on.
         "zone",
         // The retry policy, flattened here and nested under `retry` there.
         "retry_effort",
         "retry_max_attempts",
         "retry_timeout_scale",
         "retry_dampen_silent_hosts",
-        // serde's own encoding of `SystemTime` and `Duration`. The report writes
-        // an RFC 3339 string and an integer of microseconds instead, both of
-        // which a person can read.
+        // serde's encoding of `SystemTime` and `Duration`; the report writes an
+        // RFC 3339 string and integer microseconds.
         "secs_since_epoch",
         "nanos_since_epoch",
         "secs",
@@ -1136,12 +1085,9 @@ fn the_journal_and_the_report_spell_a_host_the_same_way() {
         "retry",
         "services",
         "systems",
-        // What an accepted cipher suite is worth. The journal stores each suite
-        // by its wire number alone and the report spells out the name, the
-        // grade and the faults, all of which are derived from the number by the
-        // build doing the reading. Storing them would let a record disagree with
-        // the engine that reads it back, which is the one thing a derivation
-        // cannot do.
+        // The journal stores a cipher suite by wire number only; the reading
+        // build derives its name, grade and faults, so a record cannot disagree
+        // with the engine that reads it back.
         "code",
         "strength",
         "faults",
@@ -1200,37 +1146,30 @@ fn field_names(value: &Value) -> BTreeSet<String> {
 
 /// **Every string the schema declares is one the hostile fixture poisons.**
 ///
-/// The escaping tests — `no_field_of_a_hostile_report_reaches_the_page_unescaped`
-/// and its siblings for XML and CSV — are only as wide as
-/// [`fixture::hostile`](crate::export::fixture::hostile). A field the fixture
-/// leaves clean is a field those tests walk straight past, and the report says
-/// nothing about it either way.
+/// The escaping tests (`no_field_of_a_hostile_report_reaches_the_page_unescaped`
+/// and its XML and CSV siblings) only cover the fields
+/// [`fixture::hostile`](crate::export::fixture::hostile) poisons.
 ///
-/// Most string properties are the engine's own — enum names, timestamps,
-/// addresses — but not all: `device_name`, `device_mac` and
-/// `management_address` come from LLDP and CDP, which are unauthenticated by
-/// design and so are written by whoever is on the segment; `extrainfo` comes
-/// from a service banner and `kernel` from a fingerprint. Whether the escaping
-/// covers a field is established only for the fields the fixture poisons.
+/// Most string properties are the engine's own (enum names, timestamps,
+/// addresses), but `device_name`, `device_mac` and `management_address` come
+/// from unauthenticated LLDP and CDP, `extrainfo` from a service banner and
+/// `kernel` from a fingerprint.
 ///
-/// So this is the census that keeps the two in step: a string property added to
-/// the schema fails here until the fixture carries a hostile value in it.
-/// [`ENGINE_WRITTEN`] is the exemption list, and it is short on purpose.
+/// A string property added to the schema fails here until the fixture carries a
+/// hostile value in it or it is listed in [`ENGINE_WRITTEN`]. Keep that list
+/// short.
 #[test]
 fn the_hostile_fixture_poisons_every_string_the_schema_declares() {
-    /// Properties no stranger's bytes can reach, for one of two reasons.
+    /// Properties no remote bytes can reach.
     ///
     /// Most are the engine's own: enum names, timestamps, versions, the
-    /// operator's settings. Nothing remote touches them.
+    /// operator's settings.
     ///
-    /// The rest are the more interesting kind — **stranger-chosen, but parsed
-    /// into a type before they are ever a string.** `device_mac` and
-    /// `management_address` arrive in an LLDP or CDP advertisement, which is to
-    /// say from whoever is on the segment, and are read into a `MacAddr` and an
-    /// `IpAddr` at the frame reader. What reaches a document is this crate
-    /// rendering that value back, so the type is the escaping and a hostile
-    /// string cannot survive the trip. Their neighbour `device_name` is a free
-    /// string and is *not* exempt.
+    /// The rest are remote values **parsed into a type before they are ever a
+    /// string.** `device_mac` and `management_address` arrive in an LLDP or CDP
+    /// advertisement and are read into a `MacAddr` and an `IpAddr` at the frame
+    /// reader; the document holds this crate's rendering of that value. Their
+    /// neighbour `device_name` is a free string and is *not* exempt.
     const ENGINE_WRITTEN: &[&str] = &[
         "algorithm",
         "at",
@@ -1379,11 +1318,14 @@ fn the_hostile_fixture_poisons_every_string_the_schema_declares() {
 // ---------------------------------------------------------------------------
 
 /// Every rendering of the [`fixture::named`] host this build can write, by
-/// format: each report format, each comparison format over the earlier record
-/// and this one, and over [`fixture::named_late`], whose earlier record names
-/// the host only in its text, and each report format over the fold of
-/// [`fixture::renamed`], which keeps the text of the record whose names it
-/// replaced.
+/// format:
+///
+/// - each report format;
+/// - each comparison format, against the earlier record and against
+///   [`fixture::named_late`], whose earlier record names the host only in its
+///   text;
+/// - each report format over the merge of [`fixture::renamed`], which keeps the
+///   text of the record whose names it replaced.
 fn named_renderings(options: &ExportOptions) -> Vec<(String, String)> {
     use crate::diff::ScanDiff;
     use crate::export::diff::DiffExporter;
@@ -1434,9 +1376,8 @@ fn named_renderings(options: &ExportOptions) -> Vec<(String, String)> {
     rendered
 }
 
-/// `text` as a reader searching it for a name sees it: without the NULs a
-/// reply read byte for byte carries between the letters of a UTF-16 name,
-/// however the format wrote them, dropped them or drew them, and in one case.
+/// `text` lowercased and with NULs removed in every form a format writes them,
+/// so a UTF-16 name read byte for byte matches.
 fn as_searched(text: &str) -> String {
     text.replace(r#"<span class="ctl">U+0000</span>"#, "")
         .replace("\\u0000", "")
@@ -1446,17 +1387,14 @@ fn as_searched(text: &str) -> String {
         .to_lowercase()
 }
 
-/// A name the host gave reaches a report inside the text of its own replies
-/// as well as in its fields: the raw bytes of an SMB reply in a finding's
-/// excerpt, a banner, a title a detection filled from the reply, a service's
-/// extra information, a certificate issuer named for the machine. Redaction
-/// that masks the fields and leaves the text has masked nothing, so every
-/// format, the comparisons and a merge included, is searched for each name,
-/// in any case and with the NULs of its UTF-16 spelling taken out.
+/// A name the host gave reaches a report inside its replies as well as in its
+/// fields: an SMB reply in a finding's excerpt, a banner, a title filled from a
+/// reply, a service's extra information, a certificate issuer. Every format,
+/// including comparisons and a merge, is searched for each name in any case and
+/// with UTF-16 NULs removed.
 ///
-/// A comparison or a merge holds text from records that did not all know the
-/// host by the same names, so each is rendered from a pair in which the
-/// record whose words name the host is not the one that states the names.
+/// Comparisons and merges are rendered from a pair in which the record whose
+/// text names the host is not the one that states the names.
 #[test]
 fn no_format_carries_a_name_the_host_gave_under_redaction() {
     let names: Vec<String> = [fixture::NAMED_HOST, fixture::NAMED_DOMAIN]
@@ -1489,9 +1427,7 @@ fn no_format_carries_a_name_the_host_gave_under_redaction() {
 
 /// Every path under a host record at which the schema declares a free
 /// string, as `host.ports[].service.product`: a property of type `string`, or
-/// an array of them, reached through every reference. A property that is only
-/// one of a fixed set of words is left out, since no host can put a name in
-/// it.
+/// an array of them, reached through every reference.
 fn host_string_paths() -> BTreeSet<String> {
     fn walk(
         node: &Value,
@@ -1580,53 +1516,38 @@ fn host_paths_naming(host: &Value) -> BTreeSet<String> {
 /// **Every free string the schema declares for a host carries the host's
 /// name in the fixture, or is one no host can fill.**
 ///
-/// `no_format_carries_a_name_the_host_gave_under_redaction` is only as wide
-/// as [`fixture::named`]: a field the fixture leaves without a name is a
-/// field it walks straight past, and a platform identifier a correlated
-/// finding carried reached a redacted report that way. So this is the census
-/// that keeps the two in step: a string added to the host record fails here
-/// until the fixture names the host in it, or until it is listed below with
-/// the reason no host can.
+/// `no_format_carries_a_name_the_host_gave_under_redaction` only covers the
+/// fields [`fixture::named`] names the host in. A string added to the host
+/// record fails here until the fixture names the host in it, or it is listed
+/// below with the reason no host can.
 ///
-/// Then the report masks each rather than dropping it: the finding survives
-/// with its claim, and the binary reply that justified it is replaced by a
-/// note saying it was withheld, not left out as though there had been none.
+/// It then checks the redacted values are masked in place: a finding keeps its
+/// claim, and a binary excerpt is replaced by a note that it was withheld.
 #[test]
 fn redaction_masks_the_host_s_words_in_every_field_its_replies_fill() {
-    /// Strings in a host record that no host's reply and no rule reading one
-    /// can fill, each for one of three reasons.
+    /// Strings in a host record that no reply, and no rule reading one, can
+    /// fill:
     ///
-    /// The engine's own words and figures: timestamps, a detection's identity,
-    /// which its author fixed before any host answered, the name a strategy
-    /// gives its own evidence, and the name of an interface on the scanning
-    /// machine.
-    ///
-    /// Values parsed into a type before they are ever a string: addresses,
-    /// hardware addresses, a fingerprint, a suite's number, rendered back by
-    /// this crate from the type.
-    ///
-    /// Values this crate chose from a closed set of its own, which a reply
-    /// only selects among: a protocol version, a cipher suite, a key
-    /// algorithm, and an application protocol, which the handshake refuses
-    /// unless it is one this crate offered.
+    /// - the engine's own: timestamps, a detection's identity, the name a
+    ///   strategy gives its evidence, an interface on the scanning machine;
+    /// - values parsed into a type before they are a string: addresses, hardware
+    ///   addresses, a fingerprint, a suite's number;
+    /// - values a reply only selects from a closed set this crate offered: a
+    ///   protocol version, a cipher suite, a key algorithm, an application
+    ///   protocol.
     const UNFILLABLE: &[&str] = &[
-        // The advisory data a correlation consulted names itself; the engine
-        // or an operator chose the dataset, and no reply reaches its stamp.
+        // The advisory dataset's own stamp, chosen by the engine or operator.
         "host.findings[].advised_by.content_hash",
         "host.findings[].advised_by.id",
         "host.findings[].advised_by.version",
         "host.findings[].content_hash",
-        // A list of exploited vulnerabilities names itself and CVE
-        // identifiers; the engine or an operator chose it, and no reply
-        // reaches it.
+        // The exploited-vulnerabilities list's stamp and CVE identifiers.
         "host.findings[].exploited.by.content_hash",
         "host.findings[].exploited.by.id",
         "host.findings[].exploited.by.version",
         "host.findings[].exploited.cves[]",
-        // A group is written into the detection manifest beside the title of
-        // the detection, and unlike a finding's own title it carries no `{var}`
-        // a reply could fill: it says which detections cover a weakness
-        // together, which is settled before any host answers.
+        // Fixed in the detection manifest; unlike a finding's title it has no
+        // `{var}` a reply could fill.
         "host.findings[].group.id",
         "host.findings[].group.summary",
         "host.findings[].id",

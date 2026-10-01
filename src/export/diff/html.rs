@@ -8,38 +8,31 @@
 
 //! # A comparison as a page
 //!
-//! What changed, in one file, opened in a browser and read by a person. The
-//! digest a nightly job attaches to an email, where [`json`](super::json) is
-//! what its pipeline ingests.
+//! What changed, in one HTML file for a person to read, such as the digest a
+//! nightly job attaches to an email. [`json`](super::json) is the form for
+//! pipelines.
 //!
-//! Everything [`export::html`](crate::export::html) commits to holds here
-//! unchanged: the stylesheet is inlined and nothing is fetched from anywhere,
-//! there is no JavaScript, printing is a first-class output, and every value a
-//! scanned network chose goes through the same escaping writer. The escaper, the
-//! stylesheet and the frame the two pages share live in `export::write`, so there
-//! is one of each.
+//! Everything [`export::html`](crate::export::html) commits to holds here: the
+//! stylesheet is inlined and nothing is fetched, there is no JavaScript, the page
+//! prints well, and every value from a scanned network goes through the same
+//! escaping writer. The escaper, stylesheet and frame are shared with the report
+//! page through `export::write`.
 //!
 //! ## What a comparison page leads with
 //!
-//! Not the hosts. A report's reader is looking for a host; a comparison's reader
-//! is asking whether anything happened, and usually wants the answer without
-//! scrolling. The page opens with the counts, and each headline count states how
-//! much of it the other scan is known to have looked for, which is the number the
-//! whole comparison is arranged to protect.
+//! The counts, since a comparison's reader first wants to know whether anything
+//! happened. Each headline count states how much of it the other scan is known to
+//! have looked for.
 //!
 //! ## Three states, carried by colour
 //!
-//! A host is one the later scan gained, one it lost, or one both hold. That is
-//! the first thing to see and it costs a border rather than a line of prose, so
-//! a reader running down the left edge takes in the shape of the night before
-//! reading a word of it.
+//! A host is one the later scan gained, one it lost, or one both hold. Each card's
+//! left border shows which, so the shape of the change reads at a glance.
 //!
-//! ## A change unconfirmed is a change said differently
+//! ## Unconfirmed changes are labelled
 //!
-//! Where the other scan is not known to have covered a host, the card says so.
-//! Suppressing those would hide a finding; showing them as though they were
-//! findings about the network is what makes a monitoring tool cry wolf. They are
-//! shown, and they are labelled.
+//! Where the other scan is not known to have covered a host, the change is shown
+//! and the card says it is unconfirmed.
 
 use std::io::Write;
 
@@ -83,8 +76,8 @@ impl HtmlDiffExporter {
         }
     }
 
-    /// Sets the heading, for a page that is about a named engagement rather
-    /// than about a comparison in the abstract.
+    /// Sets the page heading, e.g. the name of an engagement. Defaults to
+    /// "Scan comparison".
     pub fn with_heading(mut self, heading: impl Into<String>) -> Self {
         self.heading = Some(heading.into());
         self
@@ -130,10 +123,10 @@ fn write_masthead(
 
 /// The things that change how the rest of the page should be read.
 ///
-/// Each is a fact about the two scans rather than about the network, and each
-/// makes what follows mean something other than it appears to. A comparison
-/// against a scan that stated no scope can confirm nothing, and one between two
-/// different kinds of scan reports every port only one of them looked at.
+/// Each is a fact about the two scans that changes what the rest means. A
+/// comparison against a scan that stated no scope can confirm nothing, and one
+/// between two different kinds of scan reports every port only one of them
+/// looked at.
 fn write_notices(
     out: &mut dyn Write,
     diff: &ScanDiff,
@@ -203,8 +196,7 @@ fn write_notices(
 /// The figures somebody reads before they read anything else.
 ///
 /// Each headline count says how much of it the other scan is known to have looked
-/// for. A page printing only the total would throw away the coverage the rest of
-/// the comparison is careful about.
+/// for.
 fn write_tiles(out: &mut dyn Write, document: &DiffDto<'_>) -> Result<(), ExportError> {
     let summary = &document.summary;
 
@@ -215,8 +207,7 @@ fn write_tiles(out: &mut dyn Write, document: &DiffDto<'_>) -> Result<(), Export
         (&summary.ports_opened, "ports opened"),
         (&summary.ports_closed, "ports closed"),
     ] {
-        // A count of nothing has nothing to qualify, and "all confirmed" under
-        // a zero answers a question nobody asked.
+        // A zero count gets "none", not "all confirmed".
         let note = match (count.total, count.total - count.confirmed) {
             (0, _) => "none".to_string(),
             (_, 0) => "all confirmed".to_string(),
@@ -238,9 +229,7 @@ fn write_tiles(out: &mut dyn Write, document: &DiffDto<'_>) -> Result<(), Export
         &esc("rotated, expiring or lapsed"),
     )?;
 
-    // The tile a scheduled comparison is read for, and the only one that answers
-    // how much of the page is worth anybody's evening. Everything above counts
-    // what moved; this counts what moving it means.
+    // Hosts graded notable or higher, with the urgent count as the note.
     let graded = |grade: Significance| {
         document
             .hosts
@@ -314,9 +303,8 @@ fn write_host(
         ip = Text(&dto.address),
     )?;
 
-    // From the rendered record rather than the host itself. Masking is applied
-    // on the way into the document, so reaching past it for a hostname would put
-    // an unredacted one on a page meant to carry none.
+    // Read from the rendered record, which is already masked; the host itself
+    // would leak an unredacted name.
     let named = dto
         .current
         .as_ref()
@@ -327,11 +315,9 @@ fn write_host(
     }
     write!(out, "<span class=\"tag {tone}\">{word}</span>")?;
 
-    // Only where it says something. A grade on every card is a column of the
-    // word "routine", which is most of a diff and is the part a reader is
-    // skipping. `TONE_FOUND` is the page's "worth looking at" tone rather than
-    // its "good news" one, and urgent is what it is for; notable takes the bare
-    // tag, which reads as neutral against it.
+    // Routine is left unmarked, since most hosts are routine. `TONE_FOUND` is
+    // the page's "worth looking at" tone, so urgent takes it; notable takes the
+    // plain tag.
     match delta.significance() {
         Significance::Urgent => {
             write!(out, "<span class=\"tag {TONE_FOUND}\">urgent</span>")?;
@@ -356,7 +342,7 @@ fn write_host(
         write_port(out, port)?;
     }
 
-    // Said once, and only where it changes what the card above means.
+    // Only for an unconfirmed host.
     if let Some(coverage) = delta.presence().counterpart_coverage()
         && !delta.presence().is_confirmed()
     {
@@ -426,10 +412,8 @@ fn write_change(out: &mut dyn Write, change: &ChangeDto) -> Result<(), ExportErr
             now = Text(after),
         )?,
         (None, Some(after)) => write!(out, "<span class=\"mono\">{}</span>", Text(after))?,
-        // A set member that went is said once. The kind above already reads
-        // "address lost", and an arrow pointing at nothing repeats it. A claim
-        // the later scan did not settle is said once too, since an arrow to
-        // nothing would read as the resolution it is kept apart from.
+        // No arrow to "nothing" for a lost set member (the kind already says
+        // "lost") or an unsettled claim (it would read as resolved).
         (Some(before), None)
             if change.kind.ends_with("_lost") || change.kind == "finding_unsettled" =>
         {
@@ -521,8 +505,7 @@ mod tests {
         }
     }
 
-    /// The three states are what a reader takes in first, so each has to be on
-    /// the page and be told apart.
+    /// Each of the three host states appears with its own class and word.
     #[test]
     fn every_host_carries_what_happened_to_it() {
         let page = compared();
@@ -535,8 +518,7 @@ mod tests {
         }
     }
 
-    /// A reader arriving at a page of forty changed hosts needs to know which
-    /// three to open, and this is the whole of what tells them.
+    /// The page shows which hosts are graded notable or urgent.
     #[test]
     fn the_page_says_which_hosts_are_worth_opening() {
         let page = compared();
@@ -554,16 +536,14 @@ mod tests {
             "nothing on the page is graded notable"
         );
 
-        // And the grade a whole diff would carry is not printed on every card,
-        // since a column of one word is a column a reader skips.
+        // Routine is not printed on cards.
         assert!(
             !page.contains(">routine<"),
             "routine is written out where it says nothing: {page}"
         );
     }
 
-    /// Two scans of a network that only drifted have nothing to open, and the
-    /// page says so rather than leaving the tile to be read as a failure.
+    /// With nothing urgent, the tile says "nothing urgent".
     #[test]
     fn a_page_with_nothing_urgent_on_it_says_nothing_urgent() {
         let (before, _) = fixture::compared();
@@ -572,13 +552,12 @@ mod tests {
         assert!(quiet.contains("nothing urgent"), "{quiet}");
     }
 
-    /// The number the whole comparison is arranged to protect. A page that
-    /// printed only the total would throw it away at the last step.
+    /// Headline counts say how much of them was confirmed.
     #[test]
     fn a_headline_count_says_how_much_of_it_nobody_looked_for() {
         let (before, after) = fixture::compared();
-        // A sweep that walked no ports: everything the port scan found on them
-        // is then something nobody had looked for.
+        // A sweep that walked no ports, so every port found later is
+        // unconfirmed.
         let unconfirmed = page(&ScanDiff::between(&fixture::report(), &after));
 
         assert!(
@@ -588,27 +567,25 @@ mod tests {
         // The endpoints nobody had looked for are marked where they are shown.
         assert!(unconfirmed.contains("not looked for"), "{unconfirmed}");
 
-        // And where everything is confirmed it says so rather than staying
-        // silent, which would read as the question not having been asked.
+        // Fully confirmed counts say so.
         let confirmed = page(&ScanDiff::between(&before, &after));
         assert!(confirmed.contains("all confirmed"), "{confirmed}");
 
-        // And a count of nothing has nothing to qualify.
+        // A zero count says "none".
         let (before, _) = fixture::compared();
         let quiet = page(&ScanDiff::between(&before, &before));
         assert!(quiet.contains("tile-note\">none"), "{quiet}");
         assert!(!quiet.contains("all confirmed"), "{quiet}");
     }
 
-    /// A host on ground the other scan was forbidden is not a host that
-    /// appeared, and the card says which of the two it is.
+    /// A host in ground the other scan was forbidden to walk is marked
+    /// unconfirmed, with the reason.
     #[test]
     fn a_host_on_ground_nobody_covered_says_so_on_its_card() {
         use crate::model::host::{Host, HostStatus};
         use std::net::{IpAddr, Ipv4Addr};
 
-        // The report fixture walks 203.0.113.0/25 and is forbidden the rest, so
-        // a host in the upper half was ground it was told not to look at.
+        // The report fixture walks 203.0.113.0/25 and is forbidden the rest.
         let mut withheld = Host::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 200)));
         withheld.set_status(HostStatus::Up);
 
@@ -626,8 +603,7 @@ mod tests {
         );
     }
 
-    /// A set member that went says so once. The kind already reads "address
-    /// lost"; an arrow pointing at "nothing" after it says it twice.
+    /// A lost set member has no arrow to "nothing".
     #[test]
     fn a_set_member_that_went_is_not_also_pointed_at_nothing() {
         let (before, after) = fixture::compared();
@@ -640,8 +616,8 @@ mod tests {
         }
     }
 
-    /// A claim the later scan did not settle is not pointed at "nothing",
-    /// which is how the page says a claim was resolved.
+    /// An unsettled claim has no arrow to "nothing", which would read as
+    /// resolved.
     #[test]
     fn a_claim_the_later_scan_did_not_settle_is_not_shown_as_gone() {
         use crate::model::host::{Host, HostStatus};
@@ -712,8 +688,8 @@ mod tests {
         assert!(page.trim_end().ends_with("</html>"));
     }
 
-    /// A scanned host chooses its own hostname, banner and certificate subject,
-    /// and a page is where those are read by a person.
+    /// Hostnames, banners and certificate subjects come from the scanned host
+    /// and must reach the page escaped.
     #[test]
     fn every_value_a_scanned_host_chose_reaches_the_page_escaped() {
         let hostile = fixture::hostile();

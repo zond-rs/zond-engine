@@ -8,10 +8,8 @@
 
 //! # A comparison as one JSON document
 //!
-//! The canonical form, in the schema [`schema`](super::schema) defines. This is
-//! what a pipeline ingests: a nightly comparison posted to a queue, filed as a
-//! ticket, or fed to a rule that alerts on a port opening where nobody expected
-//! one.
+//! The canonical form, in the schema [`schema`](super::schema) defines, for
+//! pipelines: a queue, a ticket system, or an alerting rule.
 
 use std::io::Write;
 
@@ -46,10 +44,8 @@ pub struct JsonDiffExporter {
     pretty: bool,
 }
 
-/// Written out rather than derived, for the reason
-/// [`JsonExporter`](crate::export::JsonExporter)'s is: a derived one reads
-/// `pretty` as `false` and disagrees with [`JsonDiffExporter::new`] about what
-/// this exporter does by default.
+/// Matches [`JsonDiffExporter::new`]; a derived `Default` would set `pretty` to
+/// `false`.
 impl Default for JsonDiffExporter {
     fn default() -> Self {
         Self::new(ExportOptions::default())
@@ -59,9 +55,8 @@ impl Default for JsonDiffExporter {
 impl JsonDiffExporter {
     /// An exporter that writes indented JSON.
     ///
-    /// Indented for the same reason the report exporter is: the usual
-    /// destination is a file somebody opens, and a document that diffs line by
-    /// line is worth more than one that saves bytes.
+    /// Indented because the usual destination is a file somebody opens, and an
+    /// indented document diffs line by line.
     pub fn new(options: ExportOptions) -> Self {
         Self {
             options,
@@ -132,14 +127,8 @@ mod tests {
         }
     }
 
-    /// A write that failed reports *why* it failed, and the report exporter and
-    /// the comparison exporter say the same thing about the same disk.
-    ///
-    /// This exporter carried its own copy of the sorting `write::render_error`
-    /// does, and the copy wrapped the error with `io::Error::other` instead of
-    /// unwrapping serde_json's own. A full disk during a comparison export came
-    /// back as `Other` where the same disk during a report export came back as
-    /// `StorageFull`. Found by W23's byte-comparison harness.
+    /// A failed write keeps the I/O error kind the destination reported, as the
+    /// report exporter does.
     #[test]
     fn a_failed_write_keeps_the_kind_the_destination_reported() {
         let (before, after) = fixture::compared();
@@ -200,10 +189,8 @@ mod tests {
     /// The field a scheduled comparison is triaged by, at all three levels it is
     /// written: the endpoint, the host above it, and the document.
     ///
-    /// A host is graded by the worst thing on it, so the grades have to nest.
-    /// A consumer that alerts on the document and then looks for the host, and
-    /// the host and then the endpoint, must not be sent somewhere the grade
-    /// evaporates.
+    /// A host is graded by the worst thing on it, so the grades nest: following
+    /// a grade down from the document always reaches what caused it.
     #[test]
     fn a_grade_is_carried_at_every_level_and_nests() {
         let document = document();
@@ -237,8 +224,8 @@ mod tests {
         );
     }
 
-    /// The grades in the order the type ranks them, so a test can compare two
-    /// without depending on the strings sorting that way. They do not.
+    /// The grades in the order the type ranks them; the strings do not sort
+    /// that way.
     fn rank(grade: &str) -> usize {
         ["routine", "notable", "urgent"]
             .iter()
@@ -246,8 +233,7 @@ mod tests {
             .unwrap_or_else(|| panic!("'{grade}' is not a grade this document may carry"))
     }
 
-    /// An endpoint that started accepting connections is the change the grade
-    /// exists to lift out of a page of drift.
+    /// An endpoint that started accepting connections is graded urgent.
     #[test]
     fn an_endpoint_that_opened_is_the_urgent_one() {
         let document = document();
@@ -268,8 +254,7 @@ mod tests {
         );
     }
 
-    /// The vocabulary is the contract: a rule somebody writes today keys on
-    /// these strings.
+    /// The change tokens are a contract that rules key on.
     #[test]
     fn each_change_is_named_by_its_documented_token() {
         let found = changes(&document());
@@ -287,9 +272,7 @@ mod tests {
         }
     }
 
-    /// A certificate is identified by its fingerprint, so that is what a
-    /// rotation carries: two certificates are the same one exactly when they are
-    /// byte for byte the same.
+    /// A rotation carries both certificates' fingerprints.
     #[test]
     fn a_rotation_carries_both_fingerprints() {
         let found = changes(&document());
@@ -302,8 +285,8 @@ mod tests {
         assert!(rotation.contains("bbbb"), "{rotation}");
     }
 
-    /// The certificate did not move; the clock did. `after` is when it lapses,
-    /// absolute, so a consumer computes whatever window it wants.
+    /// `after` is the absolute validity end, so a consumer picks its own
+    /// window.
     #[test]
     fn an_expiry_crossing_carries_when_it_lapses_and_no_before() {
         let document = document();
@@ -326,8 +309,8 @@ mod tests {
         );
     }
 
-    /// The field a rule keys on, and the one thing this document must never get
-    /// wrong.
+    /// `confirmed` is true when the other scan is known to have covered the
+    /// host or endpoint.
     #[test]
     fn confirmed_says_whether_the_other_scan_looked() {
         let document = document();
@@ -351,7 +334,7 @@ mod tests {
         assert_eq!(gone["presence"], "removed");
         assert_eq!(gone["confirmed"], true);
 
-        // A port both scans walked, that only one found, is likewise a finding.
+        // A port both scans walked and only one found is confirmed too.
         let router = hosts
             .iter()
             .find(|host| host["address"] == "203.0.113.1")
@@ -373,8 +356,8 @@ mod tests {
     /// A scan that never walked the ground cannot confirm what turned up on it.
     #[test]
     fn a_change_the_other_scan_never_covered_is_not_confirmed() {
-        // The gateway alone, compared against a sweep that stated it walked
-        // addresses and no ports at all.
+        // Compared against a sweep that stated it walked addresses and no
+        // ports.
         let (_, after) = fixture::compared();
         let sweep = fixture::report();
 
@@ -399,8 +382,7 @@ mod tests {
         );
     }
 
-    /// Two scans that found the same things still produce a document, because a
-    /// consumer polling nightly wants the same shape either way.
+    /// Two identical scans still produce a document of the same shape.
     #[test]
     fn an_unchanged_comparison_still_writes_a_document() {
         let (before, _) = fixture::compared();
@@ -417,16 +399,13 @@ mod tests {
         assert_eq!(document["summary"]["hosts_changed"], 0);
     }
 
-    /// The two ways of building one of these have to produce the same exporter,
-    /// for the reason the report exporter's own test gives: a derived `Default`
-    /// reads `pretty` as `false` and quietly disagrees with `new`.
+    /// `Default` and `new` build the same exporter.
     #[test]
     fn the_default_exporter_is_the_one_new_builds() {
         let (before, after) = fixture::compared();
         let diff = ScanDiff::between(&before, &after);
 
-        // Without the stamp, which is the one field that moves between two
-        // exports of one comparison.
+        // Skip the timestamp, the one field that differs between two exports.
         let render = |exporter: &JsonDiffExporter| {
             let mut bytes = Vec::new();
             exporter.export(&diff, &mut bytes).expect("exports");
@@ -447,7 +426,7 @@ mod tests {
     }
 
     /// The document ends with a newline, so a file of one is a well-formed text
-    /// file and a stream of them concatenates.
+    /// file and documents concatenate.
     #[test]
     fn the_document_ends_with_a_newline() {
         let (before, after) = fixture::compared();
