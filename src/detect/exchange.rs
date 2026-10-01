@@ -8,36 +8,24 @@
 
 //! # One request and its reply, over a socket to the scanned port
 //!
-//! What both detection tiers reach the network through. A flow's
-//! [`Probe`](super::flow::Probe) hands back a bare absence and a compute module's
-//! [`Capabilities`](super::compute::Capabilities) hands back a typed error the
-//! module may catch, and those are two seams over the same exchange: connect,
-//! wrap the socket in the transport the port answered inside, send, read until
-//! the reply is whole, the port stops, or the byte cap is reached.
+//! Both detection tiers reach the network through this: connect, wrap the
+//! socket in the port's transport, send, and read until the reply is whole, the
+//! port stops, or the byte cap is reached. A flow's
+//! [`Probe`](super::flow::Probe) reports a failure as absence; a compute
+//! module's [`Capabilities`](super::compute::Capabilities) as a typed error.
 //!
-//! The budgets are spent by the callers rather than here. This opens one socket,
-//! bounded by the deadline and the cap it is given, and the tier above it decides
-//! what a spent budget means.
+//! The callers own the budgets; this opens one socket within the deadline and
+//! cap it is given.
 //!
 //! ## When a reply is whole
 //!
-//! Most of what the corpus speaks is HTTP, and an HTTP response says where it
-//! ends: a `Content-Length`, or a chunked body's closing chunk. A reply read to
-//! that point is over, whatever the connection then does, so the read stops
-//! there. Anything else is read until the peer closes, or, once it has said
-//! something, until it has been quiet for an [idle gap](idle_gap): the bytes
-//! alone cannot say whether more is coming, but a port that answered and then
-//! went quiet has, for any purpose a detection has, finished answering.
+//! An HTTP response ends at its `Content-Length` or closing chunk, whatever the
+//! connection then does. Anything else is read until the peer closes or, once
+//! it has spoken, falls quiet for an [idle gap](idle_gap).
 //!
-//! Stopping at the message's own end is what keeps a detection's time budget
-//! paying for the target's answers rather than for its idle connections. A
-//! server that holds the connection open after replying, whether it ignores the
-//! request's `Connection: close`, keeps every connection alive until an idle
-//! timeout, or, like redis and memcached, waits on the same connection for the
-//! next command, would otherwise have each exchange wait out that timeout, or
-//! the rest of the detection's budget, for bytes that are never sent. A
-//! detection asking four questions of such a server spends its budget on the
-//! first few and leaves the rest unasked.
+//! Otherwise a server that holds the connection open after replying (ignoring
+//! `Connection: close`, or waiting for the next command as redis and memcached
+//! do) would make each exchange wait out the detection's budget.
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, SocketAddr};
@@ -53,23 +41,17 @@ use crate::transport::dial::{Egress, Slot};
 
 /// The pattern a step declares its reply ends at, compiled once.
 ///
-/// Most of what the corpus speaks either says where it ends, as HTTP does, or
-/// answers one command per connection, so the port going quiet is the end. A
-/// service that greets on connect and then pauses before answering a pipelined
-/// command, an FTP server holding its reply for a failed-login delay among
-/// them, ends neither way: it has fallen quiet with its answer still to come.
-/// This is the flow's own statement of where such a reply ends, a line the
-/// answer closes with, so the read waits through the pause for it rather than
-/// taking the pause for the end.
+/// For a service that greets and then pauses before answering a pipelined
+/// command (an FTP server's failed-login delay): the read waits through the
+/// pause for the line the answer closes with.
 pub(crate) struct ReplyEnd(KeptPattern);
 
 impl ReplyEnd {
-    /// `pattern`, or [`None`] where it will not compile. The corpus is
-    /// validated at build, so a shipped flow's pattern is sound here; a caller's
-    /// unsound one simply leaves the reply to end as it would with none set.
+    /// `pattern`, or [`None`] where it will not compile, which leaves the reply
+    /// to end as with none set.
     ///
-    /// Compiled once for the process and matched on the flow-matching
-    /// thread, as every flow pattern is; see [`patterns`](super::patterns).
+    /// Compiled once for the process and matched on the flow-matching thread;
+    /// see [`patterns`](super::patterns).
     pub(crate) fn compile(pattern: &str) -> Option<Self> {
         KeptPattern::of(pattern).map(Self)
     }
@@ -82,10 +64,8 @@ impl ReplyEnd {
     }
 }
 
-/// Decodes bytes as Latin-1, each byte its own code point, so a byte-oriented
-/// end-of-reply pattern matches the bytes it names rather than a lossy
-/// conversion's replacements. The reading a flow's own matcher does; see
-/// [`super::flow`].
+/// Decodes bytes as Latin-1, each byte its own code point, as a flow's matcher
+/// does; see [`super::flow`].
 fn latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|&byte| byte as char).collect()
 }
@@ -98,19 +78,17 @@ const LARGEST_DATAGRAM: u64 = 65_535;
 pub(crate) struct Reply {
     /// The bytes read back. Empty when the port stayed silent.
     pub(crate) bytes: Vec<u8>,
-    /// Whether the reply reached a self-terminating end, a TCP peer that closed
-    /// the connection, an HTTP message read to the length it declared, or a
-    /// whole datagram, rather than being cut short by the byte cap or a read
-    /// timeout. Only a complete reply is safe to hand to a second caller that
-    /// sent the same request.
+    /// Whether the reply reached a self-terminating end (a close, a declared
+    /// HTTP length, a whole datagram) rather than the byte cap or a timeout. Only
+    /// a complete reply may be shared with a second caller sending the same
+    /// request.
     pub(crate) complete: bool,
 }
 
 /// Why an exchange produced nothing.
 ///
-/// Kept apart from [`CapError`](super::compute::CapError) so that this module
-/// owes nothing to either tier's seam. The compute tier converts; the flow tier
-/// discards, because a flow's probe reports absence rather than cause.
+/// Independent of [`CapError`](super::compute::CapError): the compute tier
+/// converts it, the flow tier discards it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExchangeError {
     /// The deadline passed, or a read waited out what was left of it.
@@ -119,14 +97,11 @@ pub(crate) enum ExchangeError {
     ConnectionRefused,
     /// The connection failed, or a TLS handshake could not be set up over it.
     Reset,
-    /// The process had no descriptor to give the exchange's socket for as
-    /// long as the caller's time allowed, so nothing was sent. This machine's
-    /// shortfall rather than anything the port did, and kept apart from a
-    /// reset so that it is reported rather than read as the port's answer.
+    /// No descriptor was available in the caller's time, so nothing was sent.
+    /// This machine's shortfall, not the port's answer.
     Starved,
-    /// The scan stopped, or the host ran out of the time the scan gave it,
-    /// while the exchange waited for its slot, so nothing was sent. The
-    /// scan's own record says which, and neither is the port's answer.
+    /// The scan stopped, or the host's time ran out, while the exchange waited
+    /// for its slot; nothing was sent.
     Withheld,
 }
 
@@ -147,12 +122,10 @@ impl ExchangeError {
 /// Waits for the slot of the coming exchange with `peer`, which the scan's
 /// pacing gives out by `egress`, and says how long the wait took.
 ///
-/// Taken before the exchange's own clock is read, and the wait is handed back
-/// so the caller can add it to that clock's deadline: the gap between the
-/// scan's probes is the scan's time, and a detection that spent it would
-/// report a budget run out on a port that was never slow. The same wait on a
-/// thread is what [`held_here`](crate::transport::dial::pacing::held_here)
-/// adds up, for the clocks a caller cannot move.
+/// Taken before the exchange's clock starts; the caller adds the wait to its
+/// deadline, since pacing gaps are the scan's time. The same wait is counted by
+/// [`held_here`](crate::transport::dial::pacing::held_here) for clocks a caller
+/// cannot move.
 pub(crate) fn slot(egress: &Egress, peer: IpAddr) -> Result<(Slot, Duration), ExchangeError> {
     let asked = Instant::now();
     let slot = egress
@@ -176,27 +149,17 @@ pub(crate) fn remaining(deadline: Instant) -> Option<Duration> {
 /// Silent means no first byte before the deadline, or no further byte for the
 /// [idle gap](idle_gap) once the port has begun to answer.
 ///
-/// A `tunnel` wraps the connected socket in the transport the port answered
-/// inside before a byte of the probe is sent, so an `ssl/*` service is reached
-/// through a handshake naming the site `peer` is asked for by, and every other
-/// port in the clear. A handshake that
-/// cannot be set up is a reset; one that fails to complete surfaces as the first
-/// read or write erroring, like any other broken port.
+/// A `tunnel` wraps the socket before anything is sent, so an `ssl/*` service is
+/// reached through a handshake naming `peer`'s site. A handshake that cannot be
+/// set up is a reset; one that fails surfaces as the first read or write error.
 ///
-/// A silent port is an empty reply rather than an error. What that means belongs
-/// to the caller.
+/// A silent port is an empty reply, not an error.
 ///
-/// The exchange holds one descriptor, its socket, and nothing beside it: a
-/// caller that took one share of the process's descriptor budget for its
-/// exchanges has taken all they need. A table full for other reasons is
-/// waited out until the deadline, since a socket that comes free later still
-/// leaves the question time to be asked, and one that never does comes back
-/// [`ExchangeError::Starved`].
-/// A step's `until` marks where its reply ends: while it is set the read waits
-/// on the port up to the deadline rather than ending the reply at an idle gap,
-/// so a pause the port takes before answering a pipelined command does not read
-/// as the end. [`None`] leaves the reply to end at the idle gap, which is right
-/// for a service that answers one command per connection.
+/// The exchange holds one descriptor, its socket. A full table is waited out
+/// until the deadline, then reported as [`ExchangeError::Starved`].
+///
+/// `until` makes the read wait up to the deadline for the reply's closing line
+/// instead of ending at an idle gap. [`None`] ends at the idle gap.
 ///
 /// The connection is the probe `slot` was given; see [`slot`].
 #[allow(clippy::too_many_arguments)]
@@ -239,9 +202,7 @@ pub(crate) fn tcp(
             }
             Ok(read) => {
                 reply.extend_from_slice(&buffer[..read]);
-                // A message that has said where it ends and got there is over,
-                // whether or not the server lets the connection go. So is one
-                // that has reached the line its flow named as its end.
+                // A message read to its declared end, or to the flow's `until`.
                 if http_message_end(&reply).is_some()
                     || until.is_some_and(|end| end.reached(&reply))
                 {
@@ -251,9 +212,7 @@ pub(crate) fn tcp(
                 let Some(left) = remaining(deadline) else {
                     break;
                 };
-                // A flow that named where its reply ends is waited on for it up
-                // to the deadline; otherwise the port has only the idle gap to
-                // go on answering once it has begun, and never past the deadline.
+                // With `until`, wait to the deadline; otherwise the idle gap.
                 let wait = match until {
                     Some(_) => left,
                     None => (*gap.get_or_insert_with(|| idle_gap(sent.elapsed(), left))).min(left),
@@ -262,10 +221,7 @@ pub(crate) fn tcp(
                     break;
                 }
             }
-            // A read timeout is the ordinary end of a reply that does not close
-            // the connection, whether the port went quiet after answering or the
-            // deadline came first; any other error ends it too. Neither is a
-            // self-terminating end, so the reply is not whole.
+            // A timeout or error ends the read; the reply is not complete.
             Err(_) => break,
         }
     }
@@ -280,27 +236,15 @@ pub(crate) fn tcp(
 /// taken as over, given how long it took to begin and how much of the deadline
 /// was left when it did.
 ///
-/// Only a reply that neither closes the connection nor says where it ends
-/// relies on this, and the gap has to outlast the pauses a live service makes
-/// in the middle of one, while leaving the rest of the caller's budget for its
-/// next question. Each of the three terms answers one of those:
+/// For a reply that neither closes nor declares its end. The gap is the largest
+/// of:
 ///
-/// - Twice the wait for the first byte. A reply larger than the sender's first
-///   flight pauses one round trip for acknowledgements, and a server that
-///   writes in pieces pauses on its own work between them. The first byte's
-///   wait held both, the round trip and the server's thought, so twice it
-///   covers a pause of either kind with a margin of one more.
-/// - A quarter of the time left. A speak-first service greets before it has
-///   read the request, so its first byte says nothing about how long the
-///   answer to the request takes; this lets that answer take a good share of
-///   what the caller can spare. A quarter, because a caller asking question
-///   after question of a port that holds every connection open keeps three
-///   quarters of what was left each time, so no question is left unasked for
-///   want of time.
-/// - 300 ms at least, above the stalls a fast link's replies still show: a
-///   small second write held by Nagle's algorithm until the client's delayed
-///   acknowledgement, up to 200 ms on common stacks, and a busy host's
-///   scheduling on top.
+/// - Twice the wait for the first byte, which held a round trip and the
+///   server's work, covering a mid-reply pause of either kind.
+/// - A quarter of the time left, since a speak-first service's greeting says
+///   nothing about how long its answer takes; three quarters stay for later
+///   questions.
+/// - 300 ms, above a Nagle-delayed second write (up to 200 ms) plus scheduling.
 ///
 /// The gap never outlasts the deadline, which the read loop holds it to.
 fn idle_gap(first_byte: Duration, left: Duration) -> Duration {
@@ -313,8 +257,8 @@ fn idle_gap(first_byte: Duration, left: Duration) -> Duration {
 /// A datagram is one whole message, so a reply that arrives is complete. Silence
 /// is an empty reply, as it is over TCP.
 ///
-/// The datagram is the probe `slot` was given, spent once it leaves and given
-/// back where this machine refused to open, address or send it.
+/// The datagram is the probe `slot` was given; the slot is returned if this
+/// machine could not send it.
 pub(crate) fn udp(
     addr: SocketAddr,
     egress: &Egress,
@@ -371,9 +315,8 @@ mod tests {
     use super::{ReplyEnd, http_message_end, idle_gap};
     use std::time::Duration;
 
-    /// **Where a flow says its reply ends is matched on the pattern kept for
-    /// the process**, as its `expect` is: a read asks after every chunk it
-    /// takes, and a copy compiled for each would cost a compile per chunk.
+    /// **The `until` pattern is compiled once for the process**, since it is
+    /// checked after every chunk.
     #[test]
     fn a_reply_s_end_is_matched_on_the_kept_pattern() {
         const END: &str = "(?m)^226 kept-end";
@@ -389,14 +332,9 @@ mod tests {
     /// An exchange holds one descriptor, its socket, and nothing beside it, so
     /// a table with room for that socket carries the exchange through.
     ///
-    /// Every connection a scan makes takes one share of the process's
-    /// descriptor budget, and a detection's flow takes one for its exchanges.
-    /// An exchange that held a second descriptor of its own would push the
-    /// scan past its budget into the share kept for the rest of the process,
-    /// and where the table was full, the second descriptor would be refused
-    /// after the connection was made and read as the port resetting it: a
-    /// finding lost with nothing said. Here the table has room for two, the
-    /// exchange's socket and the listener's accepted end, and not a third.
+    /// A second descriptor would exceed the flow's share and, on a full table,
+    /// be read as the port resetting. Here the table has room for two (the
+    /// socket and the listener's accepted end) and no third.
     #[cfg(unix)]
     #[test]
     fn an_exchange_holds_one_descriptor_and_goes_through_on_a_table_with_room_for_it() {
@@ -413,8 +351,7 @@ mod tests {
         const REPLY: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
         let addr = listener.local_addr().expect("its address");
-        // Answers once, keeping the connection open, so the reply is read to
-        // the length it declares rather than to a close.
+        // Keeps the connection open, so the reply ends at its declared length.
         let server = std::thread::spawn(move || {
             let (mut stream, _) = loop {
                 match listener.accept() {
@@ -457,10 +394,7 @@ mod tests {
         let _ = server.join();
     }
 
-    /// The gap a quiet port is allowed covers a pause as long again as its
-    /// first byte took, lets a speak-first service take a good share of the
-    /// budget over its answer, and never drops to a stall a fast link shows.
-    /// Each term is the one that governs somewhere.
+    /// Each of the three terms governs somewhere.
     #[test]
     fn the_idle_gap_is_the_largest_of_its_three_terms() {
         let ms = Duration::from_millis;
@@ -477,7 +411,7 @@ mod tests {
         let whole = b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nnot found";
         assert_eq!(http_message_end(whole), Some(whole.len()));
         assert_eq!(http_message_end(&whole[..whole.len() - 1]), None);
-        // Before the header block is over nothing is known yet.
+        // Headers incomplete: unknown.
         assert_eq!(
             http_message_end(b"HTTP/1.1 404 Not Found\r\nContent-Le"),
             None
@@ -501,8 +435,7 @@ mod tests {
         assert_eq!(http_message_end(trailed), Some(trailed.len()));
     }
 
-    /// Chunked framing is the one a recipient follows when a sender gives
-    /// both, so a length beside it does not end the message early.
+    /// Chunked framing takes precedence over a `Content-Length`.
     #[test]
     fn chunked_framing_outranks_a_length_given_beside_it() {
         let reply = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n";
@@ -515,8 +448,7 @@ mod tests {
         assert_eq!(http_message_end(reply), Some(reply.len()));
     }
 
-    /// Each of these is delimited by the connection closing, or is no answer
-    /// yet, so the read goes on.
+    /// None of these declares an end, so the read goes on.
     #[test]
     fn a_reply_that_does_not_say_where_it_ends_is_left_to_the_close() {
         for reply in [

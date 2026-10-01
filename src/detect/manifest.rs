@@ -12,33 +12,25 @@
 //! identity, the cheap gate that decides whether it runs for a port at all, and
 //! the capabilities and intrusiveness [class](Class) it asks the operator to
 //! grant. A [flow](super::flow) and a [compute module](super::compute) differ in
-//! their body, steps versus code, but declare themselves the same way, so the
-//! manifest is one vocabulary both tiers share rather than each restating.
+//! their body (steps or code) but share this manifest.
 //!
-//! ## The class is the request, not the grant
+//! ## The class is a request
 //!
-//! Nothing here self-reports a permission. A detection declares a
-//! [`Class`] and a [`CapabilitySpec`]; the [envelope](crate::config::envelope) decides
-//! what to serve, and the runtime serves exactly that. The class a detection asks
-//! for is the set of capabilities an envelope will hand it, so a `passive`
-//! detection cannot reach the network however it is authored, the boundary is
-//! the serving, not the label.
+//! A detection declares a [`Class`] and a [`CapabilitySpec`]; the
+//! [envelope](crate::config::envelope) decides what to serve, and the runtime
+//! serves exactly that. A `passive` detection is never handed the network,
+//! however it is authored.
 //!
-//! ## Authoring types, kept free of the model
+//! ## Authoring types
 //!
-//! These deserialize from TOML and are separate from the
-//! [`model`](crate::model) types they map onto, for the reason the fingerprint
-//! signature schema is: the model stays serde-free, so a detection's `class` is
-//! parsed here and [converted](Class::into_model) into the model's own vocabulary
-//! when a detection produces a finding. Keeping this file free of any dependency
-//! on the rest of the crate is also what lets `build.rs` share it, and validate
-//! the corpus with the very types the runtime deserializes.
+//! These deserialize from TOML and are kept separate from the serde-free
+//! [`model`](crate::model) types; a `class` is
+//! [converted](Class::into_model) when a finding is produced. The file has no
+//! crate-internal dependencies, so `build.rs` validates the corpus with the
+//! same types.
 
-// `build.rs` compiles this file too, to validate the detection corpus, and its
-// checks read only a subset of these fields, the rest are a detection's declared
-// budget the runtime reads. Within the library every field is public API and
-// live; the unread-field lint fires only in the build-script crate, so it is
-// silenced here rather than field by field.
+// `build.rs` compiles this file too and reads only some fields; the unread-field
+// lint fires only there.
 #![allow(dead_code)]
 
 use serde::Deserialize;
@@ -46,10 +38,9 @@ use serde::Deserialize;
 /// `[detection]`, what a detection is and what it asks to be handed, shared
 /// by every tier that runs one.
 ///
-/// Deserialized, never built by hand: `non_exhaustive` so a
-/// field a later capability adds is not a breaking change for a caller who parses a
-/// detection. A caller adds one as TOML through
-/// [`Detections::builder`](crate::detect::Detections::builder), not as a literal.
+/// Deserialized, not built by hand; `non_exhaustive` so fields can be added. A
+/// caller adds one as TOML through
+/// [`Detections::builder`](crate::detect::Detections::builder).
 #[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -62,9 +53,7 @@ pub struct DetectionManifest {
     /// A one-line human name for the detection, the label a report prints for
     /// it. Required; the build rejects an empty one.
     pub title: String,
-    /// `[detection.group]`: which group of detections this one covers a
-    /// weakness with, where it shares one. Absent from a detection that stands
-    /// alone, which is most of them.
+    /// `[detection.group]`: the group this detection belongs to, if any.
     #[serde(default)]
     pub group: Option<GroupSpec>,
     /// The cheap gate deciding whether this detection runs for a port at all.
@@ -77,17 +66,13 @@ pub struct DetectionManifest {
 /// `[detection.group]`, what a detection covers a weakness together with.
 ///
 /// Four detections read one SSH KEXINIT and each reports a different weak
-/// algorithm in it. They are four findings, separately true and separately
-/// fixed, and they are also one thing to say to a person. A group is how the
-/// detections say so themselves, rather than a front end guessing it from a
-/// shared CWE and a shared port, which is a guess that is wrong the first time
-/// two unrelated weaknesses land on one number.
+/// algorithm: four findings that a report can present as one. The group says so
+/// explicitly, so a front end need not guess from a shared CWE and port.
 ///
-/// Both fields are required where the table is written at all: an id nothing can
-/// be printed for, or a phrase nothing can be gathered by, is half a group. The
-/// build rejects either empty, as it rejects an empty title.
+/// Both fields are required where the table is written; the build rejects
+/// either empty.
 ///
-/// `non_exhaustive` for the reason [`DetectionManifest`] is.
+/// `non_exhaustive` as [`DetectionManifest`] is.
 #[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -95,41 +80,32 @@ pub struct GroupSpec {
     /// The identity every detection in the group repeats, `ssh-weak-algorithms`.
     /// Two detections are in one group when they spell this the same.
     pub id: String,
-    /// How the group reads when its findings are spoken of as one: a plural noun
-    /// phrase a count can lead, `weak SSH algorithms offered`, so that four of
-    /// them read as *4 weak SSH algorithms offered*.
+    /// A plural noun phrase a count can lead: `weak SSH algorithms offered`
+    /// reads as *4 weak SSH algorithms offered*.
     pub summary: String,
 }
 
-/// `[detection.when]`, the rule that gates the whole detection, nmap's portrule.
-/// Every set field ANDs; an empty table means "any port the level offers".
+/// `[detection.when]`, the rule that gates the whole detection. Every set field
+/// ANDs; an empty table means "any port the level offers".
 ///
-/// `non_exhaustive` for the reason [`DetectionManifest`] is;
-/// [`Rule::default`] still builds the empty gate.
+/// `non_exhaustive` as [`DetectionManifest`] is; [`Rule::default`] builds the
+/// empty gate.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
-    /// The identified service name, `redis` or `http`. A port whose service the
-    /// scan could not name never fits a rule that names one, and a service
-    /// identified inside TLS fits by the protocol it carries: a port labelled
-    /// `ssl/http` fits `http`, since the detection reaches it through the
-    /// tunnel.
+    /// The identified service name, `redis` or `http`. An unidentified port never
+    /// fits; a port labelled `ssl/http` fits `http`, reached through the tunnel.
     #[serde(default)]
     pub service: Option<String>,
     /// A set of service names, any of which fits. Empty leaves the service
-    /// unconstrained, and this and [`service`](Self::service) set together admit
-    /// only a name satisfying both.
+    /// unconstrained; with [`service`](Self::service) both must hold.
     ///
-    /// What a detection reaches for when the software it is written about
-    /// answers to more than one name. The fingerprint corpus gives a product its
-    /// own service name, so a server that says `Grafana` is identified as
-    /// `grafana` and a quieter one on the same software as `http`. A gate naming
-    /// one of those runs against half the population it was written for.
+    /// For software identified under several names: a Grafana server that names
+    /// itself is `grafana`, a quieter one `http`.
     #[serde(default)]
     pub services: Vec<String>,
-    /// A single port number. Every field of the gate ANDs, so this and
-    /// [`ports`](Self::ports) set together admit only a number satisfying both.
+    /// A single port number. With [`ports`](Self::ports) both must hold.
     #[serde(default)]
     pub port: Option<u16>,
     /// A set of port numbers, any of which fits. Empty leaves the number
@@ -142,16 +118,10 @@ pub struct Rule {
 
     /// The application protocol the port must be carried over, `http`.
     ///
-    /// What a detection written about a protocol rather than about a product
-    /// gates on. The fingerprint corpus gives a product its own service name,
-    /// so a Grafana server is identified as `grafana` and a plain web server as
-    /// `http`; a gate naming service names has to list every product that
-    /// speaks the protocol and is short by one the next time the corpus grows.
-    /// This asks the corpus instead, through
-    /// [`speaks`](crate::fingerprint::ServiceSignature::speaks).
-    ///
-    /// Fits a tunnelled service too: a port labelled `ssl/http` is a port
-    /// speaking HTTP, and the label is two facts rather than a name.
+    /// For a detection about a protocol rather than a product: `grafana` and
+    /// `http` both speak HTTP, per
+    /// [`speaks`](crate::fingerprint::ServiceSignature::speaks). A port labelled
+    /// `ssl/http` fits too.
     #[serde(default)]
     pub speaks: Option<String>,
 }
@@ -159,12 +129,11 @@ pub struct Rule {
 /// `[detection.capabilities]`, what a detection asks to be handed. The class is
 /// the capability set an envelope will serve; nothing here self-reports.
 ///
-/// Named a spec for the same reason the flow schema's other authoring types are:
-/// it is a specification a detection writes, distinct from the served
-/// [`Capabilities`](super::compute::Capabilities) a compute module holds at run
-/// and the [`Grant`](super::compute::Grant) an envelope produces from it.
+/// The authored request, distinct from the served
+/// [`Capabilities`](super::compute::Capabilities) and the
+/// [`Grant`](super::compute::Grant) an envelope produces.
 ///
-/// `non_exhaustive` for the reason [`DetectionManifest`] is.
+/// `non_exhaustive` as [`DetectionManifest`] is.
 #[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -182,9 +151,8 @@ pub struct CapabilitySpec {
     /// A ceiling on the bytes crossing the socket over the whole run, what the
     /// detection sends and what comes back counted together.
     ///
-    /// Unset falls back to the runtime's default ceiling. A declared one is
-    /// checked at build time against the payloads the steps send, so a flow
-    /// cannot ship claiming a budget its own probes would exceed.
+    /// Unset falls back to the runtime's default. A declared one is checked at
+    /// build time against the payloads the steps send.
     #[serde(default)]
     pub max_bytes: Option<u32>,
     /// Wall-clock milliseconds the whole run has, socket timeouts drawn from
@@ -197,10 +165,9 @@ pub struct CapabilitySpec {
     pub max_connections: Option<u16>,
 }
 
-/// The intrusiveness a detection declares. Deserializes from the wire names and
-/// maps onto the model's [`DetectionClass`](crate::model::finding::DetectionClass)
-/// through [`into_model`](Self::into_model) in the runtime `convert` module, so
-/// this stays free of the model.
+/// The intrusiveness a detection declares. Maps onto the model's
+/// [`DetectionClass`](crate::model::finding::DetectionClass) through
+/// [`into_model`](Self::into_model).
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -209,18 +176,11 @@ pub enum Class {
     /// is a recombination of what other detections and the port table already
     /// settled.
     ///
-    /// One rung below [`Passive`](Self::Passive), which at least reads the bytes
-    /// a scan gathered off the wire. What a host correlation declares, and the
-    /// reason it is a class of its own rather than an absence: a listing that
-    /// left the column empty made a blank carry the fact, and one that borrowed
-    /// `passive` made a detection that declares nothing indistinguishable from
-    /// one that asked for it.
+    /// Below [`Passive`](Self::Passive), which reads gathered bytes. What a host
+    /// correlation declares.
     ///
-    /// It reaches the model as
-    /// [`Passive`](crate::model::finding::DetectionClass::Passive), because what
-    /// a finding records is the intrusiveness its detection *ran* at and the two
-    /// run alike. The distinction here is where the conclusion came from, which
-    /// is a fact about the detection rather than about the traffic.
+    /// Becomes [`Passive`](crate::model::finding::DetectionClass::Passive) in the
+    /// model, since both run alike on the wire.
     Derived,
     /// `passive`: sends nothing. Everything it concludes comes from bytes the
     /// scan already gathered.
@@ -231,8 +191,7 @@ pub enum Class {
     /// `active-mutating`: something is left behind. A write, an entry in an
     /// authentication log, a test record nobody cleans up.
     ActiveMutating,
-    /// `exploit`: triggers the weakness to prove it, rather than inferring it
-    /// from a version.
+    /// `exploit`: triggers the weakness to prove it.
     Exploit,
     /// `dos`: the service may not survive the probe.
     Dos,
@@ -241,15 +200,10 @@ pub enum Class {
 impl Class {
     /// Every class this build knows, cheapest to the target first.
     ///
-    /// Here for the reason [`ScanKind::ALL`](crate::report::ScanKind::ALL)
-    /// gives: the enum is `#[non_exhaustive]`, so nothing outside this crate can
-    /// match it exhaustively, and a front end listing the detection corpus over
-    /// a protocol of its own has no other way to check it wrote a name for all
-    /// of them. A class with no name in that protocol is a detection the front
-    /// end can show but not describe.
+    /// As [`ScanKind::ALL`](crate::report::ScanKind::ALL): the enum is
+    /// non-exhaustive, and a front end needs the full list.
     ///
-    /// Ordered by what running one costs the target, which is the order the
-    /// variants are declared in and the order an envelope's ceiling reads.
+    /// In declaration order, which is the order an envelope's ceiling reads.
     pub const ALL: &'static [Self] = &[
         Self::Derived,
         Self::Passive,
@@ -264,8 +218,6 @@ impl Class {
     /// The name a document spells this class with, which is also the name an
     /// [envelope](crate::config::envelope::DetectionEnvelope) is set to.
     ///
-    /// Here rather than derived from the variant, so a listing and a command line
-    /// agree on the spelling without either keeping a table.
     pub const fn label(self) -> &'static str {
         match self {
             Class::Derived => "derived",
@@ -278,20 +230,17 @@ impl Class {
     }
 }
 
-/// What a detection may `speak` to. A single value, held in an enum so the set
-/// has room to grow.
+/// What a detection may `speak` to.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Speak {
-    /// `target`: the one socket the scan already holds open to the port under
-    /// examination. There is no address for a detection to name.
+    /// `target`: the scanned port. A detection names no address.
     Target,
 }
 
 /// The byte budget a detection that declares no `max_bytes` runs under, counting
-/// what it sends and what comes back across the whole run. Both tiers fall back to
-/// it, so it is defined once here beside the field it stands in for.
+/// what it sends and what comes back across the whole run. Shared by both tiers.
 pub(crate) const DEFAULT_MAX_BYTES: u64 = 64 * 1024;
 
 /// The wall-clock budget, in milliseconds, a detection that declares no
@@ -317,15 +266,8 @@ mod tests {
 
     /// Every class is listed, once each, cheapest to the target first.
     ///
-    /// `place` is exhaustive on purpose. This module is inside the crate that
-    /// declares `Class`, so `non_exhaustive` does not apply here and the
-    /// compiler will not let a variant be added without a decision being made
-    /// about where it belongs. The assertion then holds [`Class::ALL`] to that
-    /// decision.
-    ///
-    /// The order is not decoration: an envelope permits everything up to its
-    /// ceiling, so a class out of place would have a ceiling permit something
-    /// dearer than the one it names.
+    /// `place` is an exhaustive match, so a new variant must be placed. The order
+    /// matters: an envelope permits everything up to its ceiling.
     #[test]
     fn the_list_of_classes_holds_every_one_of_them_once_and_in_order() {
         fn place(class: Class) -> usize {
