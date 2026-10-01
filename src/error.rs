@@ -194,6 +194,15 @@ impl Coded for LockRefused {
     }
 }
 
+impl Coded for crate::journal::paths::ScanPathError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::NoRoot => "journal.no_root",
+            Self::NotAnId(_) => "journal.not_an_id",
+        }
+    }
+}
+
 impl Coded for DetectionError {
     fn code(&self) -> &'static str {
         match self {
@@ -1026,7 +1035,9 @@ mod tests {
             "journal.lock_io",
             "journal.locked",
             "journal.malformed",
+            "journal.no_root",
             "journal.not_a_journal",
+            "journal.not_an_id",
             "journal.option_changed",
             "journal.plan_changed",
             "journal.version_too_new",

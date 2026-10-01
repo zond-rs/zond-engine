@@ -2923,6 +2923,8 @@ impl zond_engine::error::Coded for zond_engine::journal::manifest::OptionChanged
 pub fn zond_engine::journal::manifest::OptionChanged::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::journal::manifest::PlanChanged
 pub fn zond_engine::journal::manifest::PlanChanged::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::journal::paths::ScanPathError
+pub fn zond_engine::journal::paths::ScanPathError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::journal::store::OpenError
 pub fn zond_engine::journal::store::OpenError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::model::finding::FindingError
@@ -8305,6 +8307,8 @@ pub fn zond_engine::journal::paths::ScanPathError::fmt(&self, &mut core::fmt::Fo
 impl core::fmt::Display for zond_engine::journal::paths::ScanPathError
 pub fn zond_engine::journal::paths::ScanPathError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for zond_engine::journal::paths::ScanPathError
+impl zond_engine::error::Coded for zond_engine::journal::paths::ScanPathError
+pub fn zond_engine::journal::paths::ScanPathError::code(&self) -> &'static str
 impl core::marker::Freeze for zond_engine::journal::paths::ScanPathError
 impl core::marker::Send for zond_engine::journal::paths::ScanPathError
 impl core::marker::Sync for zond_engine::journal::paths::ScanPathError
@@ -19874,6 +19878,8 @@ impl zond_engine::error::Coded for zond_engine::journal::manifest::OptionChanged
 pub fn zond_engine::journal::manifest::OptionChanged::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::journal::manifest::PlanChanged
 pub fn zond_engine::journal::manifest::PlanChanged::code(&self) -> &'static str
+impl zond_engine::error::Coded for zond_engine::journal::paths::ScanPathError
+pub fn zond_engine::journal::paths::ScanPathError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::journal::store::OpenError
 pub fn zond_engine::journal::store::OpenError::code(&self) -> &'static str
 impl zond_engine::error::Coded for zond_engine::model::finding::FindingError
