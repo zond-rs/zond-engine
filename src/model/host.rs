@@ -580,6 +580,9 @@ impl Host {
     /// What name resolution answered for the address, and the name a host is displayed
     /// under. The names a host gives for itself are [`names`](Self::names); see
     /// [`name`].
+    ///
+    /// As the network stated it, so it can hold control characters. Untrusted; escape
+    /// before display.
     pub fn hostname(&self) -> Option<&str> {
         self.hostname.as_deref()
     }
@@ -1824,6 +1827,26 @@ mod tests {
             "a name already held is not news"
         );
         assert_eq!(flooded.names().count(), MAX_NAMES);
+    }
+
+    /// A server's own words reach a terminal through `Display` as text, not as
+    /// control sequences: a banner-filled OS field carrying an escape prints it
+    /// escaped.
+    #[test]
+    fn display_escapes_control_characters_a_server_chose() {
+        let mut host = Host::new(IP_ADDR);
+        host.set_os(
+            OsFingerprint::new("Linux\x1b]0;owned\x07", 90)
+                .with_family("Linux")
+                .with_kernel("6.1\x1b[2J\r\n"),
+        );
+
+        let shown = host.to_string();
+        assert!(!shown.contains(char::is_control), "raw: {shown:?}");
+        assert!(
+            shown.contains("Linux\\x1b]0;owned\\x07") && shown.contains("6.1\\x1b[2J\\r\\n"),
+            "escaped, so it can still be read: {shown}"
+        );
     }
 
     /// A sender inventing source addresses is held to [`MAX_IPS`], and an address that

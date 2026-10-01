@@ -38,6 +38,9 @@ pub const HIGH_CONFIDENCE_ACCURACY: u8 = 85;
 ///
 /// A better-informed finding replaces a worse one, and equally informed ones fill each
 /// other's gaps. See [`merge`](Self::merge).
+///
+/// A rule can fill its names from a banner, so each is untrusted and can hold control
+/// characters; escape before display. Its `Display` does.
 #[must_use]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OsFingerprint {
@@ -381,19 +384,43 @@ pub(super) fn join_readings(existing: &str, incoming: &str) -> String {
     parts.join(SEPARATOR)
 }
 
+/// Text a server may have chosen, with every control character written as an
+/// escape, so printing a fingerprint cannot drive the terminal it is printed to.
+///
+/// Escaped as the zond CLI escapes a field, so its output reads the same.
+struct Printable<'a>(&'a str);
+
+impl std::fmt::Display for Printable<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write as _;
+
+        for character in self.0.chars() {
+            match character {
+                '\t' => f.write_str("\\t")?,
+                '\n' => f.write_str("\\n")?,
+                '\r' => f.write_str("\\r")?,
+                c if c.is_control() => write!(f, "\\x{:02x}", u32::from(c))?,
+                c => f.write_char(c)?,
+            }
+        }
+        Ok(())
+    }
+}
+
 impl std::fmt::Display for OsFingerprint {
+    // Each name is written `Printable`, since a rule can fill it from a banner.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // The family and its agreement first; anything finer follows with its own
         // figure.
         let family = self.family.as_deref().unwrap_or(&self.name);
-        write!(f, "{family} [{}%]", self.accuracy)?;
+        write!(f, "{} [{}%]", Printable(family), self.accuracy)?;
 
         // Then the distribution. `·` separates facts of different strengths.
         let names_a_release = &*self.name != family || self.generation.is_some();
         if names_a_release {
-            write!(f, " · {}", self.name)?;
+            write!(f, " · {}", Printable(&self.name))?;
             if let Some(generation) = &self.generation {
-                write!(f, " {generation}")?;
+                write!(f, " {}", Printable(generation))?;
             }
             if let Some(accuracy) = self.detail_accuracy {
                 write!(f, " [{accuracy}%]")?;
@@ -402,7 +429,7 @@ impl std::fmt::Display for OsFingerprint {
 
         // The kernel last, labelled: `Debian 12 · 6.1.0` would read as two guesses.
         if let Some(kernel) = &self.kernel {
-            write!(f, " · kernel {kernel}")?;
+            write!(f, " · kernel {}", Printable(kernel))?;
             if let Some(accuracy) = self.detail_accuracy {
                 write!(f, " [{accuracy}%]")?;
             }
