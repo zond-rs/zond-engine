@@ -8,35 +8,22 @@
 
 //! # HTTP header analyzer
 //!
-//! Identifies HTTP servers by parsing the response structurally, splitting the
-//! status line and headers and then reading named fields, rather than running a
-//! regex over the raw banner. Its headline contribution is long-tail server
-//! coverage: it lifts product and version out of the `Server` header for any
-//! server (`gunicorn/21.2.0`, `Microsoft-IIS/10.0`, `openresty/1.25.3.1`,
-//! `Caddy`), with no hand-authored regex per product. That is where the
-//! banner-regex analyzer is weakest, its curated `Server:` rules covering only
-//! the handful of servers someone wrote a pattern for.
+//! Identifies HTTP servers by parsing the status line and headers and reading
+//! named fields. It lifts product and version out of any `Server` header
+//! (`gunicorn/21.2.0`, `Microsoft-IIS/10.0`, `openresty/1.25.3.1`, `Caddy`)
+//! without a per-product regex.
 //!
-//! ## Passive, by design
+//! ## Passive
 //!
-//! The analyzer reads the HTTP response the transport already captured (the
-//! shared [`ResponseSet`], being the reply to the `get_root` probe) instead of
-//! sending its own `GET`. On the standard HTTP ports the probe has already run,
-//! so re-probing here would only double the request count on the busiest ports.
-//! It therefore keeps the default no-op `collect` and does all its work in
-//! [`analyze`](Analyzer::analyze). Active HTTP probing on non-standard ports,
-//! where no probe is configured, is a separate and later step: it needs the
-//! collect phase to know the port is worth a `GET`.
+//! It reads the response the transport already captured (the shared
+//! [`ResponseSet`], the reply to the `get_root` probe), so all its work is in
+//! [`analyze`](Analyzer::analyze).
 //!
-//! ## Scope of the evidence it emits
+//! ## Evidence
 //!
-//! It reports the **`Server`** product/version, the **`X-Powered-By`** secondary
-//! technology (as `extrainfo`), and a baseline `http` service label. Server and
-//! X-Powered-By live in different slots on purpose: `X-Powered-By` names a
-//! *component* (`Apache` serving `PHP/8.2`), so it goes to `extrainfo` and can
-//! never displace the real server in the resolver's single `product` slot. The
-//! parser exposes every header, so further secondary-tech signals (`Set-Cookie`
-//! framework cookies, `X-AspNet-Version`) are a few lines more when wanted.
+//! It reports the **`Server`** product and version, the **`X-Powered-By`**
+//! component (`PHP/8.2` behind Apache) as `extrainfo` so it never takes the
+//! product slot, and a baseline `http` service label.
 //!
 //! [`ResponseSet`]: super::response::ResponseSet
 
@@ -51,7 +38,7 @@ use crate::model::confidence::Confidence;
 use crate::model::port::{Build, Distributor};
 
 /// Identifies HTTP servers from the structured headers of a captured response.
-/// See the module docs for why it is passive and what evidence it emits.
+/// See the module docs.
 pub struct HttpHeadersAnalyzer;
 
 #[async_trait]
@@ -60,15 +47,12 @@ impl Analyzer for HttpHeadersAnalyzer {
         SourceId::HttpHeaders
     }
 
-    // Cheap to run on any port: `analyze` self-gates on an HTTP status line, so a
-    // non-HTTP banner falls straight through. Kept always-interested (like the
-    // banner analyzer) rather than guessing HTTP from the port, so HTTP on an
-    // unusual port is still parsed once its response has been captured.
+    // Any port: `analyze` gates on an HTTP status line.
     fn interested(&self, _ctx: &PortContext) -> bool {
         true
     }
 
-    // Passive, so the default no-op `collect` stands. See the module docs.
+    // Passive. See the module docs.
 
     fn analyze(
         &self,
@@ -76,38 +60,25 @@ impl Analyzer for HttpHeadersAnalyzer {
         responses: &ResponseSet,
         _collected: &Collected,
     ) -> Vec<Evidence> {
-        // Every captured response that is actually an HTTP reply. Banners that
-        // aren't HTTP (a bare grab, another protocol) are skipped.
-        //
-        // Several, because a port may have answered more than once: a redirect
-        // and the page it pointed at are both this port's answer, and the second
-        // is where the application names itself. Reading only the first left the
-        // engine looking at a `302` with no body and concluding the port ran
-        // whatever framework served the redirect.
+        // Every captured HTTP reply. There may be several: a redirect and the
+        // page it pointed at, where the application names itself.
         let parsed: Vec<HttpResponse<'_>> = responses
             .banners
             .iter()
             .filter_map(|banner| HttpResponse::parse(banner))
             .collect();
-        // The headers below come from the *direct* answer: what this port said
-        // when it was asked, not what a page one hop away said.
+        // Headers come from the direct answer, not the page one hop away.
         let Some(http) = parsed.first() else {
             return Vec::new();
         };
 
-        // Baseline: a valid HTTP response is itself the evidence that the port
-        // speaks HTTP, even when the server does not name itself. It asserts only
-        // the service and no product. Naming a product here (say "http") would,
-        // being equal-confidence with a versionless `Server` match, win the
-        // resolver's single product slot on the stable-sort tie and bury the
-        // real server name (`cloudflare`, `Caddy`, bare `nginx`), which is the
-        // long tail this analyzer exists to surface.
+        // Baseline: the service only. A product here would tie with a
+        // versionless `Server` match and could bury the real server name.
         let mut evidence = vec![stamp(
             Evidence::new(SourceId::HttpHeaders, Confidence::Probable).with_service("http"),
             ctx,
         )];
 
-        // The `Server` header: the long-tail product/version signal.
         if let Some(header) = http.header("server") {
             if let Some((product, version)) = parse_server(header) {
                 let confidence = if version.is_some() {
@@ -123,17 +94,9 @@ impl Analyzer for HttpHeadersAnalyzer {
                 evidence.push(stamp(server, ctx));
             }
 
-            // And the same header, whole, against the signature set, which is
-            // what reaches the imported rules naming an operating system.
-            //
-            // They cannot be reached any other way. Those patterns are written
-            // against a `Server` value and anchored at both ends
-            // (`^Microsoft-IIS/6.0$`), so matching them against a whole response
-            // fails however much of the response is right. That single mismatch
-            // hid the largest family of operating-system-bearing rules in the
-            // corpus, the web servers that map a server version to a precise
-            // Windows release, behind an analyzer that had the text they wanted
-            // sitting in a local.
+            // The whole header value against the signature set. Those rules are
+            // anchored on a `Server` value (`^Microsoft-IIS/6.0$`) and map server
+            // versions to Windows releases; a whole response never matches them.
             let (os, from_corpus) = corpus_reading(header);
 
             if let Some(os) = os {
@@ -143,21 +106,15 @@ impl Analyzer for HttpHeadersAnalyzer {
                 evidence.push(stamp(carrier, ctx));
             }
 
-            // What the same match said about the *service*. Dropping it would
-            // drop the runtime a rule names beside the server with it:
-            // `SimpleHTTP/0.6 Python/3.13.5` would read as a server nobody
-            // attacks with the interpreter behind it thrown away.
-            //
-            // After the reading `parse_server` drew, so a tie leaves the product
-            // where it was and this fills the fields nothing else supplied.
+            // What the same match said about the service, such as the runtime in
+            // `SimpleHTTP/0.6 Python/3.13.5`. Pushed after `parse_server`'s
+            // reading, so on a tie it only fills empty fields.
             if let Some(from_corpus) = from_corpus {
                 evidence.push(stamp(from_corpus, ctx));
             }
         }
 
-        // `X-Powered-By`: a secondary technology (PHP, ASP.NET, Express). It
-        // names a component running behind the server rather than the server
-        // itself, so it goes to `extrainfo` and never the server's product slot.
+        // `X-Powered-By` (PHP, ASP.NET, Express) goes to `extrainfo`.
         if let Some(powered_by) = http.header("x-powered-by").and_then(super::identity_field) {
             evidence.push(stamp(
                 Evidence::new(SourceId::HttpHeaders, Confidence::Probable)
@@ -167,8 +124,7 @@ impl Analyzer for HttpHeadersAnalyzer {
             ));
         }
 
-        // What is *running on* the server, as distinct from the server. See
-        // `application_hint`.
+        // What is running on the server. See `application_hint`.
         let named = http
             .header("server")
             .and_then(parse_server)
@@ -193,43 +149,30 @@ impl Analyzer for HttpHeadersAnalyzer {
 /// What application this response belongs to, where it can be read off the
 /// response without anybody having written a rule for that application.
 ///
-/// This is the answer to a question the corpus scales badly against. A signature
-/// per product identifies the products somebody has written a signature for, and
-/// the long tail of self-hosted software is the part nobody has, which is also
-/// the part a scan of somebody's own network is mostly made of. So the two
-/// signals here are chosen for being structural: they identify by
-/// where a name appears, not by matching a name that was known in advance.
+/// Covers self-hosted software nobody wrote a signature for, using two
+/// structural signals:
 ///
-/// A vendor prefix on a header name. In `X-Emby-Token`, `X-Plex-Protocol`,
-/// `X-Jenkins`, `X-Drupal-Cache` and `X-Shopify-Stage`, the convention of
-/// prefixing one's own headers with one's own name is near-universal and
-/// hands over the vendor for free. Read across the CORS allow-list too, which is
-/// where a server enumerates the vocabulary it accepts and so names itself even
-/// when its response body is a bare redirect.
+/// A vendor prefix on a header name: `X-Emby-Token`, `X-Plex-Protocol`,
+/// `X-Jenkins`, `X-Drupal-Cache`, `X-Shopify-Stage`. The CORS allow-list is read
+/// too, so a server names itself even when its body is a bare redirect.
 ///
-/// The document title. For a self-hosted application serving its own web
-/// interface, the `<title>` is very often the product name and nothing else:
-/// `Sonarr`, `Netdata`, `Grafana`, `Squoosh`. It is user-controlled text and so
-/// is never allowed near the product slot; as supplementary detail it is the
-/// difference between a row that says `http` and one that says which one.
+/// The document title, which for a self-hosted web interface is often just the
+/// product name: `Sonarr`, `Netdata`, `Grafana`, `Squoosh`. It is user-controlled
+/// text, so it only ever reaches `extrainfo`.
 ///
-/// The prefix is preferred where both exist: a title is whatever somebody typed,
-/// and a header name is what the software calls itself in its own code.
+/// The prefix wins where both exist, since a header name comes from the
+/// software's own code.
 ///
-/// `named` is the product the `Server` header already gave up, and a title that
-/// mentions it is discarded. Almost every default landing page on the internet
-/// is titled after the server serving it, as `Welcome to nginx!` and `Apache2
-/// Ubuntu Default Page` are, and repeating a name the row already carries is at
-/// best noise
-/// and at worst the claim that an unconfigured web server is an application. A
-/// title naming something *else* is the case this exists for, and survives.
+/// `named` is the product from the `Server` header; a title mentioning it is
+/// discarded, since default landing pages (`Welcome to nginx!`) are titled after
+/// the server.
 fn application_hint(http: &HttpResponse<'_>, named: Option<&str>) -> Option<String> {
     if let Some(vendor) = vendor_prefix(http) {
         return Some(vendor);
     }
 
-    // A redirect's page is the server's, whatever it is titled: nginx titles
-    // every one it serves `301 Moved Permanently`.
+    // A redirect's page is the server's: nginx titles every one `301 Moved
+    // Permanently`.
     if http.is_redirect() {
         return None;
     }
@@ -246,15 +189,11 @@ fn application_hint(http: &HttpResponse<'_>, named: Option<&str>) -> Option<Stri
 /// identification did not follow it: another name, another port or another
 /// scheme.
 ///
-/// Recorded because it is the port's answer. A server that sends every visitor
-/// to `http://box.example/` is saying which site it holds, and a scan of its
-/// address that follows only redirects back to the port it was asked about
-/// would otherwise report nothing but the server that sent the hop. A
-/// redirect that stays on the port was followed, and the page it led to
-/// speaks for itself.
+/// A server that sends every visitor to `http://box.example/` is saying which
+/// site it holds. A redirect that stays on the port was followed instead.
 ///
-/// Only an absolute URL leads elsewhere. With no address to compare it to,
-/// every absolute one is taken to, which is the most it can be shown to do.
+/// Only an absolute URL leads elsewhere. With no address to compare against,
+/// every absolute URL is taken to.
 fn leads_elsewhere<'a>(http: &HttpResponse<'a>, ctx: &PortContext) -> Option<&'a str> {
     if !http.is_redirect() {
         return None;
@@ -279,11 +218,8 @@ fn leads_elsewhere<'a>(http: &HttpResponse<'a>, ctx: &PortContext) -> Option<&'a
 
 /// Header names that begin with `x-` and name no vendor.
 ///
-/// The list is what makes the prefix rule usable: without it `X-Frame-Options`
-/// reports a product called "Frame". These are the de-facto standard extension
-/// headers, a closed and slow-moving set that has nothing to do with how many
-/// products exist, which is why this approach scales where a signature per
-/// product does not.
+/// Without it `X-Frame-Options` would report a product called "Frame". These are
+/// the de-facto standard extension headers, a small and stable set.
 const NOT_A_VENDOR: &[&str] = &[
     "accel",
     "access",
@@ -326,16 +262,12 @@ const NOT_A_VENDOR: &[&str] = &[
 
 /// The vendor a response names by prefixing its own headers with it.
 ///
-/// The most repeated prefix wins rather than the first. A server that has its own
-/// header namespace uses it several times over, while a stray prefix from a
-/// proxy, a framework or a former product name appears once, so counting
-/// separates the software that is running here from everything else that
-/// touched the response. Emby is the case that settled it: its allow-list leads
-/// with the single `X-MediaBrowser-Token` it kept for compatibility and then
-/// names itself three times.
+/// The most repeated prefix wins. Software uses its own namespace several times,
+/// while a stray prefix from a proxy or a former name appears once: Emby's
+/// allow-list leads with one `X-MediaBrowser-Token` and then names itself three
+/// times.
 ///
-/// Ties go to whichever appeared first, so the result does not depend on hash
-/// ordering.
+/// Ties go to whichever appeared first.
 fn vendor_prefix(http: &HttpResponse<'_>) -> Option<String> {
     let mut counts: Vec<(String, usize)> = Vec::new();
 
@@ -359,9 +291,8 @@ fn vendor_prefix(http: &HttpResponse<'_>) -> Option<String> {
         }
     }
 
-    // `counts` is in first-seen order, and the index breaks the tie toward the
-    // front. `max_by_key` alone would take the last of equal maxima and make the
-    // answer depend on header order for no reason.
+    // `counts` is in first-seen order; the index breaks ties toward the front,
+    // where `max_by_key` alone would take the last.
     counts
         .iter()
         .enumerate()
@@ -369,8 +300,7 @@ fn vendor_prefix(http: &HttpResponse<'_>) -> Option<String> {
         .map(|(_, (token, _))| capitalize(token))
 }
 
-/// `emby` -> `Emby`. The header was lowercased on the way in and a product name
-/// rendered in lower case reads as a mistake rather than as a finding.
+/// `emby` -> `Emby`. Header names were lowercased on the way in.
 fn capitalize(token: &str) -> String {
     let mut chars = token.chars();
     match chars.next() {
@@ -381,9 +311,8 @@ fn capitalize(token: &str) -> String {
 
 /// Titles that name the page rather than the application.
 ///
-/// An error page, a login prompt or a default landing page is served by
-/// thousands of unrelated things, so reporting one as though it identified
-/// something would be worse than reporting nothing.
+/// Error pages, login prompts and default landing pages are served by thousands
+/// of unrelated things.
 const NOT_AN_APPLICATION: &[&str] = &[
     "400 bad request",
     "401 unauthorized",
@@ -425,19 +354,14 @@ fn title_text(body: &str) -> Option<String> {
 /// The header values and document title the signature corpus writes rules
 /// against, as texts to match a response by.
 ///
-/// A corpus rule names one field and anchors on it at both ends, so
-/// `^Microsoft-IIS/6.0$` matches the `Server` value and never the response
-/// carrying it. Handing the matcher the whole banner therefore reaches none of
-/// them, and this is what turns a response into the fields they were written
-/// for.
+/// A corpus rule anchors on one field at both ends, so `^Microsoft-IIS/6.0$`
+/// matches the `Server` value and never the whole response.
 ///
-/// `Server` is absent on purpose. It is already read for an operating system by
-/// [`corpus_reading`], and offering it here as well would let one header contribute the
-/// same reading twice to a resolver that settles by vote.
+/// `Server` is left out: [`corpus_reading`] already reads it, and offering it
+/// twice would let one header vote twice.
 ///
-/// Borrowed where the field is a slice of the response, owned only for the
-/// title, whose whitespace is normalised. Empty for anything that is not an HTTP
-/// response, which is the common case and costs one prefix comparison.
+/// Borrowed from the response, except the title, whose whitespace is
+/// normalised. Empty for anything that is not an HTTP response.
 pub(super) fn corpus_fields(raw: &str) -> Vec<Cow<'_, str>> {
     let Some(http) = HttpResponse::parse(raw) else {
         return Vec::new();
@@ -455,32 +379,24 @@ pub(super) fn corpus_fields(raw: &str) -> Vec<Cow<'_, str>> {
 
 /// The `Server` value of an HTTP-shaped message, whole.
 ///
-/// The header [`corpus_fields`] leaves out, offered on its own for the callers
-/// that have no analyzer reading it for them. [`HttpHeadersAnalyzer`] is what
-/// covers this for a TCP banner: it reads the header directly and hands the
-/// value to the corpus itself, which is why offering it as a field there would
-/// count one header twice.
+/// The header [`corpus_fields`] leaves out, for callers with no analyzer reading
+/// it. On TCP [`HttpHeadersAnalyzer`] reads it; a UDP reply such as SSDP goes
+/// only through [`from_datagram`](super::extract::from_datagram), which uses
+/// this.
 ///
-/// A UDP reply has no such analyzer. [`from_datagram`](super::extract::from_datagram)
-/// is the whole of what an SSDP answer becomes, so a value this engine does not
-/// hand back there is a value nothing ever sees.
-///
-/// Borrowed from `raw`, and [`None`] for anything that is not an HTTP-shaped
-/// message or that carries no such header.
+/// [`None`] for anything that is not HTTP-shaped or carries no such header.
 pub(super) fn server_value(raw: &str) -> Option<&str> {
     HttpResponse::parse(raw)?.header("server")
 }
 
 /// The title, held to what may stand in for a product name.
 ///
-/// Stricter than [`title_text`] because a title reaching the product slot is a
-/// claim about what is running, where the corpus matches titles as text and has
-/// rules for `301 Moved Permanently` that these filters would reject.
+/// Stricter than [`title_text`]. The corpus matches raw titles and has rules for
+/// `301 Moved Permanently` that these filters would reject.
 fn document_title(body: &str) -> Option<String> {
     let title = title_text(body)?;
 
-    // A sentence is a page description, not a product. Anything this long is
-    // being read for the wrong reason.
+    // Longer than this is a description, not a product name.
     if title.len() > 40 {
         return None;
     }
@@ -492,26 +408,19 @@ fn document_title(body: &str) -> Option<String> {
 
 /// Words that may appear lowercase inside a name without making it a sentence.
 ///
-/// Short and closed on purpose. It is the difference between `Bill of Materials`
-/// and `Yo whats up`, and every word added to it moves the line toward accepting
-/// the second.
+/// Kept short: it separates `Bill of Materials` from `Yo whats up`, and every
+/// added word moves the line toward accepting the second.
 const NAME_CONNECTIVES: &[&str] = &["of", "the", "and", "for", "de", "la", "du"];
 
 /// Whether `title` reads as the name of something rather than as a remark about
 /// a page.
 ///
-/// A product name is a proper noun and is written like one, so the test is
-/// whether every word is capitalised: `Home Assistant`, `Proxmox Virtual
-/// Environment`, `Uptime Kuma` are names, and `Yo whats up` is somebody talking.
-/// A single word is taken as a name whatever its case, because that is how a
-/// great many of them are written: `phpMyAdmin`, `openHAB`, `code-server`.
+/// Every word must be capitalised: `Home Assistant`, `Proxmox Virtual
+/// Environment` and `Uptime Kuma` are names; `Yo whats up` is not. A single word
+/// is accepted in any case (`phpMyAdmin`, `openHAB`, `code-server`).
 ///
-/// A title carrying a separator is declined outright. `Dashboard - Grafana` and
-/// `Sonarr - Series` both name their product, and they name it on *opposite
-/// sides*; with one page to look at there is no way to tell which convention is
-/// in use, and picking wrong reports the page as the product. Declining costs a
-/// name the row would have liked; guessing costs a name that is wrong, and this
-/// is the weakest signal the engine has, so it has no business guessing.
+/// A title with a separator is declined: `Dashboard - Grafana` and
+/// `Sonarr - Series` put the product on opposite sides.
 fn reads_as_a_name(title: &str) -> bool {
     if title.contains(['-', '|', ':', '·', '—', '–', '/', '(']) {
         return false;
@@ -540,29 +449,17 @@ fn stamp(mut evidence: Evidence, ctx: &PortContext) -> Evidence {
 
 /// What the signature set makes of one header value, as an operating system.
 ///
-/// Matched globally rather than through the port index: a rule naming a system
-/// from a `Server` value is registered under whatever service it belongs to, not
-/// under port 80, so narrowing by port would skip exactly the rules wanted here.
-/// The literal prefilter keeps that affordable by selecting a handful of
-/// candidates out of thousands before any regex is compiled.
+/// Matched globally: these rules are registered under their own service, not
+/// port 80. The prefilter keeps that cheap.
 ///
-/// Only the most complete match contributes. A `Server` value that matches
-/// several rules has matched several statements about one machine, and taking
-/// them all would count one header as corroborating itself.
+/// Only the most complete match contributes, so one header cannot corroborate
+/// itself.
 ///
-/// Ranked by how much a reading says, not by how sure it is, which is the
-/// same choice `SignatureDb::identify` makes and for the same reason: a rule
-/// pinning a product exactly outranks one that also happens to name a release,
-/// so ranking by confidence throws the release away. Two functions answering one
-/// question differently is how that argument gets lost, and the shipped corpus
-/// currently produces at most one match per header, which is exactly the
-/// condition under which such a divergence goes unnoticed.
+/// Ranked by how much a reading says, as `SignatureDb::identify` ranks: a rule
+/// pinning a product exactly would outrank one that also names a release, and
+/// ranking by confidence would lose the release. Keep the two consistent.
 ///
-/// Costs 22–37 µs per header, measured, and is slowest when nothing matches,
-/// since a miss compiles and tries every candidate the prefilter selected. Paid
-/// once per
-/// open HTTP port, against a path that has already spent a TCP connect and up to
-/// half a second waiting for the banner, so it does not show.
+/// Costs 22 to 37 µs per header, most on a miss. Paid once per open HTTP port.
 fn corpus_reading(header: &str) -> (Option<crate::model::host::OsEvidence>, Option<Evidence>) {
     use crate::fingerprint::prefilter::Prefilter;
 
@@ -577,9 +474,7 @@ fn corpus_reading(header: &str) -> (Option<crate::model::host::OsEvidence>, Opti
         })
         .collect();
 
-    // `reduce` keeps the earlier reading on a tie, where `max_by` would keep
-    // the last and make the answer depend on which signature was indexed
-    // first. Both halves are ranked that way.
+    // `reduce` keeps the earlier reading on a tie; `max_by` would keep the last.
     let os = matched
         .iter()
         .filter_map(|matched| matched.os.clone())
@@ -590,10 +485,8 @@ fn corpus_reading(header: &str) -> (Option<crate::model::host::OsEvidence>, Opti
             },
         );
 
-    // Only a match that names a service is a service reading. A rule may fire and
-    // identify nothing about the service, an "assert nothing" token like a bare
-    // `null`, and such a match carries an operating-system reading above but no
-    // service to report, so it must not be surfaced as one.
+    // Only a match that names a service is a service reading; an "assert
+    // nothing" rule (a bare `null`) may still carry an OS reading.
     let service = matched
         .into_iter()
         .filter(|matched| matched.evidence.service.is_some())
@@ -623,8 +516,7 @@ fn parse_server(value: &str) -> Option<(String, Option<String>)> {
         if !product.is_empty() && !is_placeholder(product) && versioned {
             return Some((product.to_string(), Some(version.to_string())));
         }
-        // A `/` but no numeric version (e.g. a URL-ish token): treat the whole
-        // left side as the product name, no version.
+        // A `/` but no numeric version: the left side is the product.
         if !product.is_empty() && !is_placeholder(product) {
             return Some((product.to_string(), None));
         }
@@ -641,13 +533,10 @@ fn parse_server(value: &str) -> Option<(String, Option<String>)> {
 /// Debian, Ubuntu and the Red Hat family package them say whose package this
 /// is: `Apache/2.4.7 (Ubuntu)`, `Apache/2.4.6 (CentOS) OpenSSL/1.0.2k-fips`,
 /// `Apache/2.4.37 (Red Hat Enterprise Linux)`. It names no revision, so the
-/// build it yields says only who packaged the server. That is still the fact
-/// that matters most about it: the version beside it is the upstream release
-/// the package started from, and fixes the distributor backported since are
-/// invisible in it.
+/// build says only who packaged the server, which matters because the
+/// distributor backports fixes without changing the upstream version.
 ///
-/// Only a comment that is a distributor's name counts. `(Unix)` and `(Win64)`
-/// say where the server was built to run, not who built it.
+/// Only a distributor's name counts; `(Unix)` and `(Win64)` do not.
 fn server_build(value: &str) -> Option<Build> {
     value
         .split('(')
@@ -658,11 +547,8 @@ fn server_build(value: &str) -> Option<Build> {
         .map(Build::new)
 }
 
-/// Whether a server token is a null-ish placeholder rather than a real product
-/// name. Some devices (notably embedded/router HTTP stacks) emit `Server: null`,
-/// `unknown`, `-` and the like, which is a captured value and no identification.
-/// Dropping it leaves the resolver the clean `http` baseline rather than a bogus
-/// product.
+/// Whether a server token is a placeholder. Embedded and router HTTP stacks emit
+/// `Server: null`, `unknown`, `-` and the like.
 fn is_placeholder(product: &str) -> bool {
     matches!(
         product.trim().to_ascii_lowercase().as_str(),
@@ -676,16 +562,11 @@ fn is_placeholder(product: &str) -> bool {
 struct HttpResponse<'a> {
     /// The status code, where the status line carries one.
     status: Option<u16>,
-    /// `(lowercased name, trimmed value)` in wire order. The value borrows from
-    /// the response, so a field handed to the matcher costs no copy.
+    /// `(lowercased name, trimmed value)` in wire order, borrowing the value.
     headers: Vec<(String, &'a str)>,
     /// Whatever followed the blank line, as far as the response was read.
     ///
-    /// Kept because on the ports that need identifying most, the body is the
-    /// only place the application names itself: a self-hosted service on an
-    /// unregistered number very often serves a single-page app whose `<title>`
-    /// is its own name and whose `Server` header names the framework
-    /// underneath it, if it sets one at all.
+    /// A self-hosted single-page app often names itself only in its `<title>`.
     body: &'a str,
 }
 
@@ -694,14 +575,11 @@ impl<'a> HttpResponse<'a> {
     /// anything that is not an HTTP response, so the analyzer can scan a mixed
     /// set of banners and pick the HTTP one.
     fn parse(raw: &'a str) -> Option<Self> {
-        // The status line must lead. This is what distinguishes an HTTP reply
-        // from any other captured banner.
         if !raw.starts_with("HTTP/") {
             return None;
         }
 
-        // Headers end at the first blank line and the body follows it. Tolerant
-        // of both CRLF and bare LF, and of a response cut off before either.
+        // CRLF or bare LF, and a response cut off before the blank line.
         let (head, body) = raw
             .find("\r\n\r\n")
             .map(|at| (&raw[..at], &raw[at + 4..]))
@@ -709,7 +587,6 @@ impl<'a> HttpResponse<'a> {
             .unwrap_or((raw, ""));
 
         let mut headers = Vec::new();
-        // Skip the status line; every remaining line of the head is a header.
         for line in head.split('\n').skip(1) {
             let line = line.strip_suffix('\r').unwrap_or(line);
             if let Some((name, value)) = line.split_once(':') {
@@ -737,12 +614,8 @@ impl<'a> HttpResponse<'a> {
     /// Every header name this response carries, plus the names it *mentions* in
     /// its CORS allow-list.
     ///
-    /// The allow-list is included because it is a list of header names the
-    /// server expects a client to send, which is the server enumerating its own
-    /// vocabulary, and a server's vocabulary names it. One media server was
-    /// identified from nothing else: it sent no product anywhere in its
-    /// response, and then listed `X-Emby-Token` among the headers it would
-    /// accept.
+    /// The allow-list is the server's own header vocabulary. An Emby server was
+    /// identified from nothing else.
     fn header_vocabulary(&self) -> impl Iterator<Item = &str> {
         self.headers.iter().map(|(name, _)| name.as_str()).chain(
             self.header("access-control-allow-headers")
@@ -813,10 +686,8 @@ mod tests {
     /// A redirect and the page it pointed at are both this port's answer, and
     /// the application names itself in the second one.
     ///
-    /// The shape every ASP.NET media server has: the root is a bare 302 whose
-    /// only product is the framework, and one hop away is a page whose title is
-    /// the product. Reading the first response alone reported both Jellyfin and
-    /// Sonarr as `Kestrel`, which is true and useless.
+    /// The root is a bare 302 naming only the framework (`Kestrel`), and one hop
+    /// away a page titled with the product, as Jellyfin and Sonarr do.
     #[test]
     fn a_redirect_and_its_destination_are_read_together() {
         let evidence = analyze_all(
@@ -848,11 +719,8 @@ mod tests {
             .find_map(|evidence| evidence.extrainfo)
     }
 
-    /// The page a redirect serves is the server's note about the hop, not an
-    /// application's own, and its title says so: `301 Moved Permanently` is
-    /// what nginx titles every redirect it serves. Where the redirect leads
-    /// somewhere this scan does not go, where it leads is the finding, and it
-    /// names a site the address serves under another name.
+    /// A redirect page's title (`301 Moved Permanently`) is not an application.
+    /// Where the redirect leads elsewhere, the target is reported.
     #[test]
     fn a_redirect_off_the_port_is_recorded_and_its_title_is_not_a_product() {
         let nginx = "HTTP/1.1 301 Moved Permanently\r\nServer: nginx/1.24.0\r\n\
@@ -872,8 +740,7 @@ mod tests {
         );
     }
 
-    /// A redirect that stays on the port is followed, and the page it leads
-    /// to speaks for itself; where the hop leads is nothing a reader needs.
+    /// A redirect that stays on the port is not reported.
     #[test]
     fn a_redirect_that_stays_on_the_port_is_not_recorded() {
         let relative = "HTTP/1.1 302 Found\r\nLocation: /login\r\n\r\n\
@@ -881,12 +748,9 @@ mod tests {
         assert_eq!(extrainfo(80, relative), None);
     }
 
-    /// A media server that names no product anywhere in its response, and then
-    /// lists the headers it will accept, its own among them.
-    ///
-    /// Captured from a real Emby server on port 8097, which nmap reported as
-    /// `upnp` from the `Server` header of its embedded DLNA stack. The DLNA
-    /// stack is real and so is the header; it is just not what is running there.
+    /// A media server that names no product but lists its own headers in the
+    /// CORS allow-list. Captured from a real Emby server on port 8097, whose
+    /// `Server` header names its embedded DLNA stack.
     #[test]
     fn a_server_that_names_itself_only_in_its_cors_list_is_still_named() {
         let banner = "HTTP/1.1 200 OK\r\n\
@@ -905,9 +769,7 @@ mod tests {
         assert_eq!(extrainfo(32400, banner).as_deref(), Some("Plex"));
     }
 
-    /// The standard extension headers name no vendor, and reporting one as a
-    /// product would make the rule unusable, since every response on the internet
-    /// carries some of these.
+    /// The standard extension headers name no vendor.
     #[test]
     fn the_standard_extension_headers_name_nothing() {
         let banner = "HTTP/1.1 200 OK\r\n\
@@ -921,13 +783,8 @@ mod tests {
         assert_eq!(extrainfo(80, banner), None);
     }
 
-    /// For a self-hosted application the document title is very often the
-    /// product name and nothing else, and on the ports that most need
-    /// identifying it is the only place the name appears.
-    ///
-    /// Captured from a real server on port 7778, which nmap reported as
-    /// `interwise?`, unrecognised, with `<title>Squoosh</title>` in the body it
-    /// had already read.
+    /// A self-hosted application named only by its title. Captured from a real
+    /// server on port 7778 serving `<title>Squoosh</title>`.
     #[test]
     fn the_document_title_names_an_application_nobody_wrote_a_rule_for() {
         let banner = "HTTP/1.1 200 OK\r\n\
@@ -938,9 +795,7 @@ mod tests {
         assert_eq!(extrainfo(7778, banner).as_deref(), Some("Squoosh"));
     }
 
-    /// The default landing page of a web server is titled after the web server,
-    /// and a row reading `nginx 1.22.1 (Welcome to nginx!)` has said one thing
-    /// twice and called the second one an application.
+    /// A title mentioning the `Server` product (`Welcome to nginx!`) is dropped.
     #[test]
     fn a_title_that_only_echoes_the_server_is_not_an_application() {
         let welcome = "HTTP/1.1 200 OK\r\n\
@@ -953,16 +808,14 @@ mod tests {
              <html><head><title>Netdata</title>";
         assert_eq!(extrainfo(19999, repeat), None, "nor is a bare repeat of it");
 
-        // A title naming something the `Server` header did not is the whole
-        // point, and has to survive the filter.
+        // A title naming something else survives.
         let different = "HTTP/1.1 200 OK\r\n\
              Server: Kestrel\r\n\r\n\
              <html><head><title>Jellyfin</title>";
         assert_eq!(extrainfo(8096, different).as_deref(), Some("Jellyfin"));
     }
 
-    /// A title that names the page rather than the application identifies
-    /// thousands of unrelated things, so it identifies nothing.
+    /// A title naming the page, not the application, is dropped.
     #[test]
     fn a_page_title_is_not_an_application_name() {
         for title in ["404 Not Found", "Sign in", "Welcome", "Index of /"] {
@@ -979,8 +832,7 @@ mod tests {
         );
     }
 
-    /// Two prefixes used equally often resolve to the one the server mentioned
-    /// first, so the answer does not depend on header order beyond that.
+    /// Equally frequent prefixes resolve to the first mentioned.
     #[test]
     fn a_tie_between_prefixes_goes_to_the_first_mentioned() {
         let banner = "HTTP/1.1 200 OK\r\nX-Alpha-One: a\r\nX-Bravo-One: b\r\n\r\n";
@@ -988,8 +840,7 @@ mod tests {
         assert_eq!(vendor_prefix(&http).as_deref(), Some("Alpha"));
     }
 
-    /// The case that motivated the shape test: a title is whatever somebody
-    /// typed, and most of the web is not a product name.
+    /// Most titles are not product names.
     #[test]
     fn a_title_that_is_somebody_talking_is_not_a_product() {
         for title in [
@@ -1002,8 +853,7 @@ mod tests {
         }
     }
 
-    /// A product name is a proper noun and is written like one, including the
-    /// several-word ones and the single words that are not capitalised at all.
+    /// Capitalised multi-word names, and single words in any case.
     #[test]
     fn a_title_shaped_like_a_name_is_taken_as_one() {
         for title in [
@@ -1023,9 +873,7 @@ mod tests {
         }
     }
 
-    /// `Dashboard - Grafana` and `Sonarr - Series` both name their product, on
-    /// opposite sides of the separator. With one page to look at there is no way
-    /// to tell which convention is in use, so neither is guessed at.
+    /// Titles with a separator are declined: the product may be on either side.
     #[test]
     fn a_title_with_a_separator_is_declined_rather_than_guessed_at() {
         for title in [
@@ -1038,9 +886,7 @@ mod tests {
         }
     }
 
-    /// A vendor prefix is what the software calls itself in its own code; a
-    /// title is whatever somebody typed into a template. Where both exist the
-    /// first one wins.
+    /// A vendor prefix beats a title.
     #[test]
     fn a_vendor_prefix_outranks_a_title() {
         let banner = "HTTP/1.1 200 OK\r\n\
@@ -1050,8 +896,7 @@ mod tests {
         assert_eq!(extrainfo(8080, banner).as_deref(), Some("Jenkins"));
     }
 
-    /// The body is only reachable if the parser kept it, and it only exists if
-    /// the transport read past the header block. Reading a title needs both.
+    /// The parser keeps the body.
     #[test]
     fn the_parser_separates_the_body_from_the_headers() {
         let response = HttpResponse::parse(
@@ -1069,8 +914,7 @@ mod tests {
 
     #[test]
     fn extracts_long_tail_server_product_and_version() {
-        // A server with no hand-authored regex: the structured parse still names
-        // product and version, which is the whole point of this analyzer.
+        // No hand-authored regex for this server.
         let evidence = analyze(
             8000,
             "HTTP/1.1 200 OK\r\nServer: gunicorn/21.2.0\r\nContent-Type: text/html\r\n\r\n<html>",
@@ -1086,9 +930,7 @@ mod tests {
 
     #[test]
     fn iis_ten_is_covered_where_the_curated_regexes_stop() {
-        // The imported `^Microsoft-IIS/[1234]\.0$` rules never reach 10.0, and
-        // are anchored to a bare value they never see in a full response
-        // anyway.
+        // The imported `^Microsoft-IIS/[1234]\.0$` rules do not cover 10.0.
         let evidence = analyze(80, "HTTP/1.1 200 OK\r\nServer: Microsoft-IIS/10.0\r\n\r\n");
         let server = evidence
             .iter()
@@ -1126,14 +968,12 @@ mod tests {
         let evidence = analyze(80, "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
         assert_eq!(evidence.len(), 1);
         assert_eq!(evidence[0].service.as_deref(), Some("http"));
-        // The baseline names no product: that slot is reserved for a real server
-        // name so a versionless `Server` header is never clobbered (see below).
+        // The baseline names no product.
         assert_eq!(evidence[0].product, None);
     }
 
     #[test]
     fn x_powered_by_becomes_extrainfo_beside_the_server_product() {
-        // The server owns the product slot; the framework is a separate signal.
         let evidence = analyze(
             80,
             "HTTP/1.1 200 OK\r\nServer: Apache/2.4.58\r\nX-Powered-By: PHP/8.2.1\r\n\r\n",
@@ -1150,7 +990,7 @@ mod tests {
                 .any(|e| e.extrainfo.as_deref() == Some("PHP/8.2.1")),
             "framework lands in extrainfo"
         );
-        // Crucially, no evidence names PHP as a *product*.
+        // No evidence names PHP as a product.
         assert!(
             evidence
                 .iter()
@@ -1160,9 +1000,7 @@ mod tests {
 
     #[test]
     fn placeholder_server_token_names_no_product() {
-        // Embedded/router stacks that answer `Server: null` must not surface
-        // "null" as a product; the response still counts as HTTP, so only the
-        // baseline `http` evidence (no product) remains.
+        // `Server: null` leaves only the baseline `http` evidence.
         let evidence = analyze(80, "HTTP/1.1 200 OK\r\nServer: null\r\n\r\n");
         assert_eq!(evidence.len(), 1);
         assert_eq!(evidence[0].service.as_deref(), Some("http"));
@@ -1180,16 +1018,14 @@ mod tests {
     }
 
     proptest! {
-        /// The response parser never panics on arbitrary input, banners coming
-        /// off the wire. `(?s)` lets `.` match newlines, so CRLF/LF framing edge
-        /// cases (empty lines, colon-less lines, unterminated headers) are fuzzed.
+        /// The response parser never panics. `(?s)` lets `.` match newlines, so
+        /// framing edge cases are fuzzed.
         #[test]
         fn http_parse_never_panics(raw in "(?s).*") {
             let _ = HttpResponse::parse(&raw);
         }
 
-        /// A valid status line forces the header-parsing path, so the fuzzed body
-        /// exercises header splitting rather than bouncing off the `HTTP/` gate.
+        /// A valid status line, so the fuzzed part reaches header splitting.
         #[test]
         fn http_header_parsing_never_panics(body in "(?s).*") {
             if let Some(response) = HttpResponse::parse(&format!("HTTP/1.1 200 OK\r\n{body}")) {
@@ -1207,8 +1043,7 @@ mod tests {
 
     #[test]
     fn header_lookup_is_case_insensitive() {
-        // Header names are case-insensitive on the wire; a lowercase `server`
-        // must still be found.
+        // Header names are case-insensitive.
         let evidence = analyze(80, "HTTP/1.1 200 OK\r\nSERVER: nginx/1.25.3\r\n\r\n");
         assert!(
             evidence
@@ -1243,14 +1078,9 @@ mod os_from_headers {
     use super::*;
     use crate::fingerprint::response::Collected;
 
-    /// The seam this exists to close, checked against the shipped corpus rather
-    /// than a fixture.
-    ///
-    /// A real `Server` header, through the real analyzer, has to reach the
-    /// imported rule that maps that server version to a Windows release.
-    /// Without this, the rule is compiled into the database and unreachable: it
-    /// is anchored to a header *value*, and a matcher that sees only whole
-    /// responses never reaches it.
+    /// A real `Server` header, through the real analyzer and the shipped corpus,
+    /// reaches the imported rule mapping that server version to a Windows
+    /// release.
     #[test]
     fn a_server_header_reaches_the_rules_that_name_a_windows_release() {
         let evidence = HttpHeadersAnalyzer.analyze(
@@ -1283,10 +1113,8 @@ mod os_from_headers {
         );
     }
 
-    /// The failure mode this prevents. Matching the whole response against
-    /// rules anchored to a header value cannot succeed, and looks exactly like
-    /// a corpus that has no such rule, so the check is that the *response* form
-    /// still fails while the extracted form works.
+    /// The whole response does not match a rule anchored on a header value; the
+    /// extracted value does.
     #[test]
     fn the_whole_response_is_not_what_those_rules_match() {
         use crate::fingerprint::prefilter::Prefilter;
@@ -1316,8 +1144,7 @@ mod os_from_headers {
         );
     }
 
-    /// A server the corpus knows nothing about must name no operating system,
-    /// rather than falling through to whichever rule is loosest.
+    /// A server the corpus does not know names no operating system.
     #[test]
     fn a_server_the_corpus_does_not_know_names_nothing() {
         assert!(corpus_reading("SomeServer/1.0").0.is_none());
@@ -1347,11 +1174,8 @@ mod server_builds {
         ServiceVerdict::resolve(evidence)
     }
 
-    /// The comment after the product is where a distribution's web server says
-    /// whose package it is, and the product slot can go to a corpus rule that
-    /// calls the same server by another name: the build has to reach the
-    /// verdict either way, since it is what says the version is not the whole
-    /// story about which fixes the server carries.
+    /// The distributor named in the comment reaches the verdict, even when a
+    /// corpus rule calling the server by another name wins the product slot.
     #[test]
     fn a_server_header_naming_a_distributor_yields_its_build() {
         for (header, distributor) in [
@@ -1381,7 +1205,7 @@ mod server_builds {
         }
     }
 
-    /// Where a server was built to run is not who built it.
+    /// `(Unix)` names no distributor.
     #[test]
     fn a_server_header_naming_no_distributor_yields_no_build() {
         for header in [
