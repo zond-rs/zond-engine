@@ -26,166 +26,100 @@
 //! # }
 //! ```
 //!
-//! ## What a merge answers, and what it does not
+//! ## What a merge answers
 //!
-//! A merge answers what is out there given everything known, producing the
-//! network as of the newest source that looked at it.
-//! [`diff`](crate::diff) answers what changed. A merge that also tried to be a
-//! history, recording that 3389 was open in March and closed in August, would be
-//! a worse differ built inside a document format. The historical answer stays in
-//! the input documents and in a comparison run over them.
+//! What is out there given everything known: the network as of the newest source that
+//! looked at it. What changed is [`diff`](crate::diff)'s question; history stays in the
+//! input documents.
 //!
-//! So a merge is lossy in one way, stated once. Where two sources give different
-//! answers to the same question, one answer wins and the other is only in the
-//! input file. Everything that accumulates does accumulate: addresses, endpoints,
-//! hardware addresses, roles and status reasons. A service's CPEs are not on
-//! that list. Each one names a version of a product, so it is an answer to
-//! what is running, and it goes with the identification it was read from.
+//! So a merge is lossy in one way: where two sources disagree, one answer wins and the
+//! other remains only in its input file. What accumulates does accumulate: addresses,
+//! endpoints, hardware addresses, roles and status reasons. A service's CPEs do not;
+//! each names a product version, so it goes with the identification it was read from.
 //!
 //! ## The rule: a later source overrides only where it made a claim
 //!
 //! Sources are folded oldest to newest. Where a newer source states something,
 //! it wins. Where a newer source says nothing, the older answer stands.
 //!
-//! Absence is never a claim. A host missing from tonight's scan is not evidence
-//! the host went away, an endpoint not listed is not evidence the port closed,
-//! and a field the document has no word for, as nmap has none for a service
-//! vendor, is not a retraction of one.
+//! Absence is never a claim: a host missing from tonight's scan has not gone away, an
+//! unlisted endpoint has not closed, and a field a document has no word for (nmap has
+//! none for a service vendor) is not retracted.
 //!
-//! One carve-out follows from the model's own words.
-//! [`Unknown`](crate::model::host::HostStatus::Unknown) is documented as nothing
-//! having been received that says anything about the host, and every other
-//! status is backed by a packet. So `Unknown` is silence wearing a variant, and
-//! a newer source's `Unknown` never overrides an older verdict.
+//! [`Unknown`](crate::model::host::HostStatus::Unknown) means nothing was received, so a
+//! newer `Unknown` never overrides an older verdict.
 //!
-//! What a TLS endpoint [accepts](crate::model::tls::TlsSupport) is read the same
-//! way, version by version. A walk cut short, by an endpoint that stopped
-//! answering or by the scan's budget, records the suites it reached and says it
-//! did not finish, which is a claim about what it found and silence about the
-//! rest. So where a newer walk was cut short having found nothing the older
-//! account lacks, the older one stands if it went further: a finished walk over
-//! one cut short, or of two cut short, the one that got further. A newer walk
-//! that found a suite the older account does not list saw a configuration that
-//! changed, and one that finished made a claim about all of it; either is the
-//! newer answer.
+//! What a TLS endpoint [accepts](crate::model::tls::TlsSupport) folds version by
+//! version. A walk cut short records what it reached and is silent about the rest, so
+//! where a newer cut-short walk found nothing the older account lacks, the older stands
+//! if it went further. A newer walk that found a new suite, or finished, is the newer
+//! answer.
 //!
 //! ### A finding goes with the evidence it was drawn from
 //!
-//! Findings accumulate, since a finding a newer scan does not carry is a
-//! detection that did not fire rather than a claim that the subject is clean.
-//! The exception is a finding the newer scan's own evidence refutes, and that
-//! can be seen only where the evidence a finding rests on is in the report
-//! beside it. Three derivations draw from such evidence: what a TLS endpoint
-//! accepts, whose claims rest on the versions whose walk drew them; the
-//! certificate an endpoint presents, whose posture claims rest on that
-//! certificate; and a vulnerability correlation, whose claims rest on the
-//! platform identifier each names. Where the folded record settled what such a
-//! claim rests on and does not draw it, as where a newer walk finished and
-//! found TLS 1.0 refused, a newer scan was shown a different certificate, or a
-//! newer scan identified another version of the service, the claim is dropped.
-//! Where the folded record left it unsettled, as where the newer walk was cut
-//! short before it got there, the claim stands.
+//! Findings accumulate, since a finding missing from a newer scan is a detection that
+//! did not fire. The exception is a finding refuted by evidence the report holds beside
+//! it. Three derivations draw from such evidence: TLS acceptance (resting on the versions
+//! whose walk drew them), certificate posture (resting on the certificate), and
+//! vulnerability correlation (resting on the platform identifiers it names). Where the
+//! folded record settled what a claim rests on and does not draw it (a newer finished
+//! walk found TLS 1.0 refused, a different certificate, another service version), the
+//! claim is dropped. Where it left that unsettled, the claim stands.
 //!
-//! A claim that stands is worded from the folded record. A fault's excerpt
-//! names the suites that carry it, and the folded record may hold one version
-//! from one scan and the next from another, so the words an older scan wrote
-//! can name a suite under a version the merged report says is refused. The
-//! verdict stays the scan's own; the excerpt is restated wherever the evidence
-//! under the claim moved, and nowhere else.
+//! A claim that stands has its excerpt restated from the folded record wherever the
+//! evidence under it moved, so it never names a suite under a version the merged report
+//! says is refused. The verdict is the scan's own.
 //!
-//! Every other finding is kept whatever a newer scan found, because nothing in
-//! the report says what it rests on. A detection's finding rests on an exchange
-//! the report keeps no account of.
+//! Every other finding is kept, since the report holds nothing it rests on.
 //!
-//! ### What a merge does not enforce, and a scan does
+//! ### Exclusions
 //!
-//! [`Exclusions`](crate::model::exclusion::Exclusions) is not a parameter here,
-//! and that is worth saying rather than leaving to be discovered. The exclusion
-//! promise — no packet addressed to an excluded address, and no excluded address
-//! in the report — is enforced at the two points a *scan* has: before anything is
-//! opened, and at
-//! [`write_host`](crate::scanner::session::ScanContext::write_host) on every
-//! finding. A merge is not a scan. It probes nothing, so the first point does not
-//! apply, and it folds documents somebody else's scans produced, so the second
-//! has nothing to gate.
+//! [`Exclusions`](crate::model::exclusion::Exclusions) is not a parameter here. The
+//! exclusion promise is enforced by a *scan*, before anything is opened and at
+//! [`write_host`](crate::scanner::session::ScanContext::write_host); a merge probes
+//! nothing and folds what other scans recorded. A source that walked an address the
+//! caller now excludes contributes it.
 //!
-//! So a source that walked an address this caller now excludes contributes that
-//! address, and the merged report carries it. That is the honest outcome — the
-//! document really does record what that scan found — and it is a caller's to
-//! act on: an engagement whose scope narrowed between one scan and the next has
-//! a policy question that no fold can answer for it.
+//! Every source's phase is kept with its scope and withheld ranges, so an address can be
+//! traced to its source and checked against that source's scope.
 //!
-//! What the merged report does give them is the means to see it. Every source's
-//! phase is kept, each with the scope it walked and the ranges it withheld, so
-//! an address can be traced to the source that claimed it and checked against
-//! that source's own scope. The exclusion module's point that the promise is
-//! *checkable from the report* holds per phase, which is where a merged report
-//! keeps it.
+//! ### Coverage
 //!
-//! ### What a merge does not need, and a comparison does
-//!
-//! A comparison needs [`Coverage`](crate::diff::Coverage), because a host in one
-//! report and not the other has two explanations and telling them apart is most
-//! of that feature's value.
-//!
-//! A merge never asks what a scan covered, since it never has to explain an
-//! absence. It reports nothing, folds what each source claimed, and leaves what
-//! nothing claimed alone. The merged report's own scope needs no work either: it
-//! holds every source's phases, and coverage is already a property of the phase
-//! list.
+//! A merge never explains an absence, so it needs no
+//! [`Coverage`](crate::diff::Coverage). The merged report holds every source's phases,
+//! which carry coverage.
 //!
 //! ## Which record is which host
 //!
-//! [`HostIdentity`] decides, as it does for a comparison, and [`pairing`] carries
-//! the argument for how. The default follows a dual-stack machine keyed under
-//! IPv4 by one scanner and under IPv6 by another.
+//! [`HostIdentity`] decides, as for a comparison; see [`pairing`]. The default follows
+//! a dual-stack machine keyed under IPv4 by one scanner and IPv6 by another.
 //!
-//! ## Where a merged report says its findings came from
+//! ## Provenance
 //!
-//! Every phase folded in carries a [`PhaseOrigin`]: what the caller called the
-//! document, and what produced it as that scanner attributed itself. A merged
-//! report therefore states what each of its sources covered, when, and on whose
-//! word.
-//!
-//! An origin already on a phase is left alone, so merging a merged report keeps
-//! the labels its own sources were given.
+//! Every phase folded in carries a [`PhaseOrigin`]: what the caller called the document
+//! and what produced it. An origin already on a phase is kept, so merging a merged
+//! report keeps its sources' labels.
 //!
 //! ## What comes back
 //!
-//! A [`ScanReport`], which is the same kind of thing that went in. Every
-//! exporter takes one, so a merged report writes as JSON, JSONL, CSV, HTML or
-//! nmap XML with nothing added; every reader produces one, so a journal, an
-//! exported document, an nmap file and a live scan are the same input; and a
-//! merged report is a legal input to the next merge and to a comparison.
+//! A [`ScanReport`], so a merged report exports through every writer, compares through
+//! a diff, and merges again.
 //!
-//! ## Redacting a merged report
+//! ## Redaction
 //!
-//! A name the fold does not keep, the one a renamed machine went by, leaves
-//! the merged report as a name and not as text: the older source's findings
-//! and banners stay and still spell it. So the merged record sets such names
-//! aside, and [redaction](crate::export::Redaction) masks them wherever that
-//! text lands, as it masks the names the record states. They are not part of
-//! the report and no document carries them, so a merged report masks every
-//! name its sources knew only when it is redacted as it is written; written
-//! plain and redacted when read back, it masks the names it states.
+//! A name the fold does not keep (a renamed machine's old name) can still appear in the
+//! older source's findings and banners. The merged record sets such names aside, and
+//! [redaction](crate::export::Redaction) masks them in that text. They are not written
+//! into documents, so this works only when the merged report is redacted as it is
+//! written.
 //!
-//! ## Fold every source at once, not in rounds
+//! ## Fold every source at once
 //!
-//! A merged report is a report and not a transcript of one. Where two sources
-//! disagreed the losing answer is only in the input file, so nothing can take a
-//! merged report apart again into what went into it.
-//!
-//! That is what makes merging in rounds different from merging at once.
-//! `merge(merge(a, c), b)` folds `b` against a document whose clock is `c`'s, so
-//! a verdict `b` should have overturned survives it, and a reading that
-//! `merge(a, c)` already discarded is no longer there to enrich `b`'s finding.
-//! Both are the lossiness above applied one round earlier than the caller meant.
-//! Making the two equal would need every field to carry the moment it was
-//! established, which is a claim about the domain rather than about this fold.
-//!
-//! So N documents go into one [`Merge`]. Merging a merged report is supported and
-//! often right, as when a baseline folded last quarter takes tonight's scan, and
-//! gives a coherent report. It is not the report all N sources folded together
+//! A merged report cannot be taken apart into its inputs, so merging in rounds differs
+//! from merging at once: `merge(merge(a, c), b)` folds `b` against `c`'s clock, so a
+//! verdict `b` should have overturned survives, and readings the first round discarded
+//! cannot enrich `b`'s findings. Pass all N documents to one [`Merge`]. Merging a merged
+//! report is supported and gives a coherent report, just not the one a single fold
 //! would have given.
 
 use std::collections::BTreeMap;
@@ -237,10 +171,8 @@ struct Source {
 
 /// Several scans, folded into one report.
 ///
-/// Reports accumulate and [`finish`](Self::finish) folds them, because the order
-/// they are added in is nobody's to control and the order they are folded in is
-/// decided by their clocks. See the module documentation for the rule that
-/// decides every field.
+/// Reports accumulate and [`finish`](Self::finish) folds them in clock order, whatever
+/// order they were added in. See the module documentation.
 #[derive(Debug)]
 pub struct Merge {
     options: MergeOptions,
@@ -258,9 +190,7 @@ impl Merge {
 
     /// Adds a report with no name.
     ///
-    /// For a scan this process ran, which has no document to name. Its phases
-    /// are still attributed, by the engine version the report carries, so a
-    /// merged report can be counted in sources.
+    /// For a scan this process ran. Its phases are still attributed by engine version.
     pub fn add(&mut self, report: ScanReport) -> &mut Self {
         self.sources.push(Source {
             label: None,
@@ -271,12 +201,9 @@ impl Merge {
 
     /// Adds a report, naming the document it was read from.
     ///
-    /// The label is whatever the caller calls it: a path, a record id, a bucket
-    /// key. The engine opens nothing and has no word for one.
+    /// The label is the caller's: a path, a record id, a bucket key.
     ///
-    /// A phase that already carries a [`PhaseOrigin`] keeps it, so merging a report
-    /// that is itself a merge keeps the names its own sources were given rather
-    /// than relabelling them all with this one.
+    /// A phase that already carries a [`PhaseOrigin`] keeps it.
     pub fn add_from(&mut self, label: impl Into<Arc<str>>, report: ScanReport) -> &mut Self {
         self.sources.push(Source {
             label: Some(label.into()),
@@ -297,9 +224,8 @@ impl Merge {
 
     /// Folds every source added into one report.
     ///
-    /// Records are ordered by when each was observed, so the result does not
-    /// depend on the order a caller added their documents. A merge of nothing is
-    /// an empty report attributed to this build.
+    /// Records are ordered by when each was observed. A merge of nothing is an empty
+    /// report attributed to this build.
     pub fn finish(self) -> ScanReport {
         let Self { options, sources } = self;
 
@@ -307,19 +233,16 @@ impl Merge {
             return ScanReport::from_phases(Vec::new(), Vec::new());
         }
 
-        // Read once per source, because it walks every phase of a report and
-        // both the sort below and every record in it want the answer.
+        // Read once per source; it walks every phase.
         let mut sources: Vec<(SystemTime, Source)> = sources
             .into_iter()
             .map(|source| (source.report.observed_at(), source))
             .collect();
 
-        // Stable, so two sources that stopped at the same instant stay in the
-        // order they were added and the fold has one answer rather than two.
+        // Stable, so ties keep the order added.
         sources.sort_by_key(|(stopped, _)| *stopped);
 
-        // Every record, each carrying when it was observed rather than when its
-        // document was.
+        // Every record, dated by when it was observed.
         let mut dated: Vec<(SystemTime, &Host)> = sources
             .iter()
             .flat_map(|(stopped, source)| {
@@ -331,12 +254,10 @@ impl Merge {
             })
             .collect();
 
-        // Stable, so records observed at the same moment keep the order their
-        // sources were folded in.
+        // Stable, so ties keep source order.
         dated.sort_by_key(|(at, _)| *at);
 
-        // Oldest first, which is what makes "the last account of this endpoint"
-        // mean "the newest account that recorded one" further down.
+        // Oldest first, so "the last account" below means the newest.
         let records: Vec<&Host> = dated.into_iter().map(|(_, record)| record).collect();
 
         let hosts: Vec<Host> = pairing::groups(&records, options.identity)
@@ -347,8 +268,7 @@ impl Merge {
             })
             .collect();
 
-        // The newest source's, because it produced the findings that survived
-        // arbitration. Which build produced each phase is on the phase.
+        // The newest source's; each phase carries its own.
         let engine_version = sources
             .last()
             .expect("a non-empty source list")
@@ -373,8 +293,7 @@ impl Merge {
             }
         }
 
-        // Chronological, and stable so that two phases of one job that began
-        // together keep the order they ran in.
+        // Chronological and stable.
         phases.sort_by_key(ScanPhase::started_at);
 
         ScanReport::recorded(engine_version, phases, hosts)
@@ -383,40 +302,22 @@ impl Merge {
 
 /// When one record's account was taken, for ordering it against every other.
 ///
-/// A document states when it stopped looking, and every record in it states when
-/// the scan last heard from that host. The second is the better answer and the
-/// first is the bound on it: nothing in a document was observed after the
-/// document stopped, so a record is placed at the earlier of the two.
-///
-/// Both halves earn their place. Taking the document's clock alone puts every
-/// host in a report at one moment, which is wrong for any source that spans time,
-/// such as a resumed job or a merged report. A quarterly baseline merged with a
-/// scan from last month would then outrank it about hosts the baseline last saw
-/// in January.
-///
-/// Taking the record's alone trusts a field that is only meaningful when
-/// something restored it. Every mutator on [`Host`] stamps `last_seen` with the
-/// moment it ran and the readers put back what was recorded, but a record
-/// assembled by hand carries the moment it was assembled, which would place a
-/// document read today at today whatever it says. Bounding by the document's
-/// clock makes that case degrade to the document's own answer.
+/// The earlier of the record's `last_seen` and the document's stop time. The record's
+/// time places hosts correctly within a source that spans time (a resumed job, a merged
+/// baseline); the document's bounds a hand-assembled record whose `last_seen` is just
+/// when it was built.
 fn observed_at(record: &Host, stopped: SystemTime) -> SystemTime {
     record.last_seen().min(stopped)
 }
 
 /// Folds every record of one host into one, oldest account first.
 ///
-/// Built through the model's own constructors rather than by folding with
-/// [`Host::merge`] and correcting afterwards. `Host::merge` is right about the
-/// job it documents, two probes of one scan where a state only promotes, and a
-/// merge across scans has to be able to record that a port closed. Two policies,
-/// and the domain keeps the one it was written with.
+/// Built through the model's constructors, not [`Host::merge`], which folds probes of
+/// one scan where state only promotes; across scans a port can close.
 fn fold_host(accounts: &[&Host]) -> Host {
     let newest = accounts.last().expect("a group holds at least one record");
 
-    // The model's ranking over the union, rather than whichever record happened
-    // to be newest: which address a report keys a host under is the report's
-    // business, and `consider_primary_ip` is the rule that decides between them.
+    // `consider_primary_ip` ranks the union of addresses.
     let mut host = Host::new(newest.primary_ip());
     for account in accounts {
         host.extend_ips(account.ips().iter().copied());
@@ -427,12 +328,9 @@ fn fold_host(accounts: &[&Host]) -> Host {
         host.set_hostname(Some(hostname.to_owned()));
     }
 
-    // Per protocol, from the newest account that heard names in it, which is
-    // the rule the hostname above keeps applied to each protocol on its own.
-    // A machine renamed between two scans states its new name over NTLM and
-    // no longer its old one, so a union would report both as current; an
-    // account that asked no SMB server says nothing about what one calls the
-    // machine, so it cannot displace an older account that did.
+    // Per protocol, from the newest account that heard names in it: a renamed
+    // machine states only its new name, and an account that did not ask a
+    // protocol cannot displace one that did.
     let mut heard = std::collections::BTreeSet::new();
     for account in accounts.iter().rev() {
         let sources: std::collections::BTreeSet<_> =
@@ -445,16 +343,13 @@ fn fold_host(accounts: &[&Host]) -> Host {
         heard.extend(sources);
     }
 
-    // What the older accounts called the host stays in the words the fold
-    // keeps of them, a finding's excerpt or a service's banner, so the names
-    // it did not keep are set aside for redaction to mask there.
+    // Names not kept may still appear in older text, so set them aside for
+    // redaction.
     for account in accounts {
         host.set_aside_names_of(account);
     }
 
-    // `Unknown` is the absence of evidence, by the model's own documentation, so
-    // it never overrides. A host every source was silent about keeps the
-    // `Unknown` that `Host::new` put there.
+    // `Unknown` is the absence of evidence and never overrides.
     if let Some(status) = accounts
         .iter()
         .rev()
@@ -471,29 +366,14 @@ fn fold_host(accounts: &[&Host]) -> Host {
         for role in account.network_roles() {
             host.add_network_role(*role);
         }
-        // A conclusion about the filter in front of a host is drawn by a
-        // comparative probe, so at most one source will have run it and every
-        // account that reached one is the only account of it there is.
+        // At most one source runs the comparative probe, so all are kept.
         for filtering in account.filtering() {
             host.add_filtering(*filtering);
         }
     }
 
-    // **Newest first, which is the one place in this fold that order decides
-    // what survives rather than what wins.**
-    //
-    // Keying is per source and per claim, which is exactly the deduplication a
-    // fold across documents wants: one stack read by four scanners is four
-    // readings of it, and the same scanner's reading twice is one. But the map
-    // is capped, since a host with many identifiable services could otherwise
-    // offer one claim each until enough of them agree to a certainty none of
-    // them stated, and once full it turns away what arrives next.
-    //
-    // A fold across documents is the one caller that can fill it: eight scans
-    // that each read a different kernel release are eight distinct claims. Given
-    // oldest first, the cap would keep the eight oldest readings of a host and
-    // discard every newer one, which inverts the rule the rest of this module is
-    // built on.
+    // Newest first: the evidence map is capped and turns away what arrives once
+    // full, and many scans can fill it, so the newest readings must arrive first.
     for account in accounts.iter().rev() {
         for evidence in account.os_evidence() {
             host.record_os_evidence(evidence.clone());
@@ -504,9 +384,8 @@ fn fold_host(accounts: &[&Host]) -> Host {
         host.set_os(os);
     }
 
-    // `HardwareInfo::merge` keeps the incumbent vendor and the newest sighting
-    // of each address, so folding newest first is already the rule this module
-    // wants and the model's is reused rather than restated.
+    // `HardwareInfo::merge` keeps the incumbent vendor and newest sightings, so
+    // folding newest first gives this module's rule.
     let mut hardware = None;
     for found in accounts
         .iter()
@@ -526,11 +405,8 @@ fn fold_host(accounts: &[&Host]) -> Host {
         host.set_zone(zone.clone());
     }
 
-    // Taken whole from one account rather than interleaved.
-    // `HostTelemetry::merge` sorts two histories together by a sample's
-    // `Instant`, and states the precondition: the two records were filled by
-    // probes running at the same time. Across two documents that is false, and
-    // an `Instant` from another process orders against nothing.
+    // Taken whole from one account: `HostTelemetry::merge` sorts by `Instant`,
+    // which means nothing across documents.
     if let Some(telemetry) = newest_claim(accounts, |account| {
         let telemetry = account.telemetry();
         (!telemetry.history().is_empty() || telemetry.hop_counter().is_some()).then_some(telemetry)
@@ -541,9 +417,8 @@ fn fold_host(accounts: &[&Host]) -> Host {
         }
     }
 
-    // Whole, for the same reason. `NetworkPath::record`'s per-hop rule is
-    // written for two accounts of one route; two genuinely different routes
-    // folded hop by hop make a path nothing travelled.
+    // Whole: folding two different routes hop by hop makes a path nothing
+    // travelled.
     if let Some(path) = newest_claim(accounts, |account| {
         let path = account.path();
         (!path.is_empty()).then_some(path)
@@ -557,19 +432,15 @@ fn fold_host(accounts: &[&Host]) -> Host {
         host.add_port(port);
     }
 
-    // Oldest account first, because `Finding::corroborate` takes the incoming
-    // severity, title and class, so the last one applied is the one that
-    // stands. `add_finding` is what decides whether two accounts of a claim are
-    // one finding, and it is the same rule a single scan reaching a claim twice
-    // goes through.
+    // Oldest first, since `Finding::corroborate` lets the last account applied
+    // set the verdict.
     for account in accounts {
         for finding in account.findings() {
             host.add_finding(finding.clone());
         }
     }
 
-    // Last, because every mutator above stamps `last_seen` with the moment it
-    // ran. A fold is not a sighting.
+    // Last, since the mutators above stamp `last_seen`.
     let first_seen = accounts
         .iter()
         .map(|account| account.first_seen())
@@ -592,9 +463,7 @@ fn newest_claim<'a, T>(accounts: &[&'a Host], claim: impl Fn(&'a Host) -> Option
 
 /// Every endpoint any account holds, each folded from every account of it.
 ///
-/// Ordered by number and transport, which is the order a host stores them in, so
-/// the ports of a merged host arrive in the same order they would have if one
-/// scan had found them all.
+/// Ordered by number and transport, as a host stores them.
 fn fold_ports(accounts: &[&Host]) -> Vec<Port> {
     let mut by_endpoint: BTreeMap<(u16, Protocol), Vec<&Port>> = BTreeMap::new();
 
@@ -616,41 +485,18 @@ fn fold_port(accounts: &[&Port]) -> Port {
         .last()
         .expect("an endpoint has at least one account");
 
-    // The newest account of this endpoint is *almost* the newest source that
-    // recorded a verdict for it, since a source that recorded none contributed
-    // nothing to the list. So the state is taken rather than promoted, which is
-    // what lets a merge record that a port closed.
-    //
-    // Almost, because of one state. That premise reads "recorded none" as "is
-    // absent from the list", and [`PortState::Unasked`] is the case where it is
-    // not: a scan that ran out of wall clock, or could not send, writes the port
-    // down as one nobody asked about. It is absence that made it into the list.
-    // Taking it would let a later, narrower scan erase what an earlier, wider
-    // one found — an open port becoming `Unasked` — which is the thing this
-    // module's own rule promises does not happen: *an endpoint nothing listed is
-    // not evidence the port closed*. It is the same carve-out
-    // [`HostStatus::Unknown`](crate::model::host::HostStatus::Unknown) gets a
-    // few lines up, for the same reason, and a state added to `PortState` has
-    // to be asked the same question here.
-    //
-    // So the state is the newest one that says anything, and `Unasked` only
-    // where nothing ever did.
+    // The state is taken from the newest account, not promoted, so a merge can
+    // record a port closing. `PortState::Unasked` is absence recorded as a state,
+    // so it is skipped, as `HostStatus::Unknown` is; a new `PortState` needs the
+    // same question asked here.
     let state = newest_claim_port(accounts, |account| {
         (account.state() != PortState::Unasked).then_some(account.state())
     })
     .unwrap_or(newest.state());
     let mut port = Port::new(newest.number(), newest.protocol(), state);
 
-    // The evidence follows the verdict it explains, taken from the newest
-    // account that reached the same verdict rather than the newest account.
-    //
-    // The same shape as `fold_service` below, and the same reason. A packet is
-    // an account of the state it settled, so one that settled a different state
-    // does not explain this one; but where an older account reached the verdict
-    // that won, its packet is evidence for the finding being reported. Nmap's
-    // XML records no packet at all, so taking the newest account's blindly
-    // discards the discovery of every zond scan an imported document is folded
-    // with.
+    // From the newest account that reached the same verdict: nmap's XML records
+    // no packet, which would otherwise discard every zond scan's discovery.
     if let Some(discovery) = newest_claim_port(accounts, |account| {
         (account.state() == state)
             .then(|| account.discovery())
@@ -663,19 +509,9 @@ fn fold_port(accounts: &[&Port]) -> Port {
         port.set_service(service);
     }
 
-    // `Security::merge` keeps the incumbent version, cipher and certificate and
-    // unions the ALPN list, so folding the older accounts into each newer one in
-    // turn is this module's rule already. A certificate is identified by its
-    // fingerprint, so a rotation is a different certificate and the current one
-    // is the newest.
-    //
-    // Oldest first rather than newest first, because of what the endpoint
-    // accepts. That folds version by version, and the incumbent gives way to an
-    // account that went further and found everything it did. Folded newest
-    // first, an old finished walk would be weighed against whichever newer
-    // account had survived so far, and could outlive a finished walk between
-    // the two that had already overturned it. Oldest first, a walk that
-    // finished retires every account older than itself.
+    // Each older account is folded into the next newer one. Oldest first, so a
+    // finished TLS walk retires every older account; newest first, an old walk
+    // could outlive one that had overturned it.
     let mut security: Option<Security> = None;
     for found in accounts.iter().filter_map(|account| account.security()) {
         let mut newer = found.clone();
@@ -688,12 +524,8 @@ fn fold_port(accounts: &[&Port]) -> Port {
         port.set_security(security);
     }
 
-    // As on the host, and for the same reason, less every claim the folded
-    // record overturned. That record is what the report will say the endpoint
-    // runs, accepts and presents, and a finding it refutes carried beside it
-    // would have the one port say both. A claim it keeps is worded from it,
-    // for the same reason: an excerpt listing what an older account accepted
-    // would name suites the folded record says are refused.
+    // As on the host, less claims the folded record overturned, and with kept
+    // claims reworded from it.
     for account in accounts {
         for finding in account.findings() {
             if !overturned(finding, account, &port) {
@@ -709,30 +541,21 @@ fn fold_port(accounts: &[&Port]) -> Port {
 /// Whether the folded record of an endpoint overturned a finding one account
 /// of it carried.
 ///
-/// Asked of the account's own record, which is the evidence the finding was
-/// drawn from, against the folded one. The fold takes each part of that record
-/// from the newest account that settled it, so what overturns a claim here is
-/// always a newer account that settled what the claim rests on.
+/// Compares the account's record (the finding's evidence) with the folded one, so a
+/// claim is overturned only by a newer account that settled what it rests on.
 ///
-/// A correlation rests on the platform identifiers it names, and is
-/// overturned where the account's service carried one of them and the folded
-/// one carries none: [`fold_service`] keeps an identifier only while the
-/// identification it was read from stands, and the claim stands while any
-/// identifier it was drawn from does. Identifiers the account's own service
-/// does not carry are not evidence the report holds, and a claim resting on
-/// no other is left alone.
+/// A correlation is overturned where the account's service carried one of its
+/// identifiers and the folded service carries none. A claim resting only on
+/// identifiers the account's service did not carry is left alone.
 fn overturned(finding: &Finding, account: &Port, folded: &Port) -> bool {
     if finding.is_correlation() {
         let carries = |port: &Port| {
             port.service()
                 .is_some_and(|service| finding.cpes().any(|cpe| service.cpes().contains(cpe)))
         };
-        // The build too: a distribution publishes a fix as a new build of the
-        // same upstream version, so an upgrade leaves every identifier where it
-        // was and moves only this. A claim judged against the build the
-        // account's service carried is overturned by a folded record carrying
-        // another, and a claim judged with no build, as an upstream release, by
-        // a folded record that knows whose build it is.
+        // The build too: a distribution's fix moves only the build. A claim
+        // judged against one build, or none, is overturned by a folded record
+        // carrying a different one.
         let judged = |port: &Port| {
             port.service().and_then(Service::build).map(same_build_key)
                 == finding.build().map(same_build_key)
@@ -747,10 +570,7 @@ fn overturned(finding: &Finding, account: &Port, folded: &Port) -> bool {
     }
 }
 
-/// What identifies a build for deciding whether a correlation still describes
-/// it: who built it, which revision and which release. What said so is
-/// provenance, and two accounts reading one build by different routes are
-/// still reading one build.
+/// What identifies a build: distributor, revision and release, without the basis.
 fn same_build_key(
     build: &crate::model::port::Build,
 ) -> (crate::model::port::Distributor, Option<&str>, Option<&str>) {
@@ -764,9 +584,7 @@ fn same_build_key(
 /// A finding one account of an endpoint carried, worded for the folded record
 /// it will be carried beside.
 ///
-/// The verdict, the provenance and the references are the account's. Only the
-/// excerpt can move, where it lists evidence the folded record holds other
-/// accounts of; [`Security::restate`] says when.
+/// Only the excerpt can change; see [`Security::restate`].
 fn worded(finding: &Finding, account: &Port, folded: &Port) -> Finding {
     let restated = match (folded.security(), account.security()) {
         (Some(folded), Some(basis)) => folded.restate(finding, basis),
@@ -780,40 +598,19 @@ fn worded(finding: &Finding, account: &Port, folded: &Port) -> Finding {
 
 /// The service one endpoint is running, from every account of it.
 ///
-/// The identity moves as a unit. Letting the newest win and filling in what it
-/// left blank would splice an older `Apache` with a newer `nginx` and produce
-/// `nginx 2.4`, a finding nobody made. So name, product, vendor, version, extra
-/// info and confidence all come from the newest account that identified a
-/// service.
+/// The identity (name, product, vendor, version, extra info, confidence) comes whole
+/// from the newest account that *identified* a service, so an older `Apache` and a newer
+/// `nginx` cannot splice into `nginx 2.4`. A label [inferred](Service::is_inferred) from
+/// the port number counts only where nothing was identified, so a quick scan cannot
+/// replace `Apache httpd 2.4.49` with a bare `http`.
 ///
-/// Identified, rather than named. A service
-/// [inferred](Service::is_inferred) from the port number is the label every
-/// scan path seeds a classified port with, and one run without service
-/// detection leaves it there: silence wearing a variant, as `Unknown` is for a
-/// host's status, and it names the endpoint only where no account identified
-/// anything. Taken as the newest word, a quick port scan folded over a
-/// thorough one would replace `Apache httpd 2.4.49` with a bare `http` and
-/// retire every correlation drawn from it.
+/// An older account naming the same service (name and product) may fill in version
+/// and extra info.
 ///
-/// An older account may still enrich it, on one condition: it has to be talking
-/// about the same service. Where the name and the product agree, its version and
-/// extra info are more detail about one finding and belong.
-///
-/// CPEs follow the identification, and from an older account only where it
-/// names the same service and no other version than the folded one. A CPE is
-/// a whole identity, vendor and product and version in one string, and the
-/// correlation joins on it, so one read off an identification the newer scan
-/// replaced would have the port matched against the vulnerabilities of
-/// software it no longer runs: Apache's beside `nginx`, or 2.4.49's beside
-/// 2.4.58. That is the false finding the service verdict already refuses to
-/// make within one scan, where a CPE travels only with the product that won.
-/// An older account that stated no version contradicts none, and its
-/// identifiers stand beside the newer ones.
-///
-/// [`Service::merge`] unions every identifier, and that is its rule rather than
-/// this one's. It folds the probes of one scan, which read one listener at one
-/// time; here the accounts are months apart, and the newer is the one that says
-/// what is running.
+/// CPEs follow the identification. An older account's CPEs are kept only where it
+/// names the same service and no other version, since the correlation joins on them and
+/// a stale one would match vulnerabilities of software no longer running. Unlike
+/// [`Service::merge`], which folds probes of one scan.
 fn fold_service(accounts: &[&Port]) -> Option<Service> {
     fn identified(port: &Port) -> Option<&Service> {
         port.service().filter(|service| !service.is_inferred())
@@ -821,9 +618,8 @@ fn fold_service(accounts: &[&Port]) -> Option<Service> {
     let newest = newest_claim_port(accounts, identified)
         .or_else(|| newest_claim_port(accounts, Port::service))?;
 
-    // Every other identification, newest first. The fold's own is left out by
-    // identity rather than by position, since a newer account may hold a label
-    // the fold passed over.
+    // Every other identification, newest first, excluding the fold's own by
+    // identity.
     let others = || {
         accounts
             .iter()
@@ -865,9 +661,7 @@ fn fold_service(accounts: &[&Port]) -> Option<Service> {
         {
             folded = folded.with_extrainfo(extrainfo);
         }
-        // A build describes one version's packaging, so an older account's
-        // may complete the fold only where it read the same version: a
-        // revision of 6.6p1 says nothing about how 7.2p2 was packaged.
+        // An older build completes the fold only for the same version.
         if folded.build().is_none()
             && folded.version() == older.version()
             && let Some(build) = older.build()
@@ -876,8 +670,7 @@ fn fold_service(accounts: &[&Port]) -> Option<Service> {
         }
     }
 
-    // Newest first, so the cap, if a banner ever fills it, keeps the
-    // identifiers of the identification the fold reports.
+    // Newest first, so the cap keeps the reported identification's identifiers.
     let version = folded.version().map(str::to_owned);
     let agreeing = others().filter(|older| {
         same_service(newest, older)
@@ -895,31 +688,21 @@ fn fold_service(accounts: &[&Port]) -> Option<Service> {
 /// Whether two accounts name the same service, so that the older one's detail
 /// belongs on the newer one's finding.
 ///
-/// The name and the product, which are what identify it. The version is the
-/// thing being decided and cannot be part of the test.
+/// By name and product; the version is what is being decided.
 fn same_service(newest: &Service, older: &Service) -> bool {
     newest.name() == older.name() && newest.product() == older.product()
 }
 
 /// The operating system, from every account of one host.
 ///
-/// The same shape as [`fold_service`], one field list along. The verdict, meaning
-/// name and family and generation and vendor and the accuracy behind them, comes
-/// from the newest account that named a system. An older account naming the same
-/// system contributes the kernel, the architecture, the device class, the detail
-/// accuracy and the evidence line where the newer one carried none, and every
-/// account contributes CPEs. That last part is where the two differ: the
-/// service fold keeps only the identifiers of the identification it reports,
-/// because the vulnerability correlation joins on them, and nothing joins on
-/// an operating system's.
+/// Like [`fold_service`]: the verdict (name, family, generation, vendor, accuracy) comes
+/// from the newest account that named a system, and an older account naming the same
+/// system fills kernel, architecture, device class, detail accuracy and evidence. Every
+/// account contributes CPEs, since nothing correlates on an operating system's.
 ///
-/// Identity here is name, family, generation and vendor.
-/// [`diff::host`](crate::diff::host) has a `same_system` of its own that also
-/// compares the kernel, the architecture and the CPEs, and it answers a
-/// different question:
-/// whether anything about the reading changed, which is what a comparison
-/// reports. Reusing it would refuse to enrich exactly the readings worth
-/// enriching.
+/// Identity is name, family, generation and vendor. [`diff::host`](crate::diff::host)'s
+/// `same_system` also compares kernel, architecture and CPEs, since it asks whether
+/// anything changed.
 fn fold_os(accounts: &[&Host]) -> Option<OsFingerprint> {
     let newest = newest_claim(accounts, |account| account.os())?;
 
@@ -1089,13 +872,8 @@ mod tests {
         ScanReport::recorded(engine, vec![phase], hosts)
     }
 
-    /// A folded report can be told from a measured one, which is what anything
-    /// reading a report as an account of one job has to know.
-    ///
-    /// `elapsed` is a sum over the phases, so a merged report's is the working
-    /// time of every source added together, which is a real quantity and not a
-    /// length of time anything took. A caller presenting it as a duration would
-    /// describe a scan that never ran, and this is the flag that stops it.
+    /// A folded report can be told from a measured one. Its `elapsed` sums every
+    /// source's working time and is not a duration anything took.
     #[test]
     fn a_folded_report_says_it_was_folded_and_a_measured_one_does_not() {
         let one = report("0.13.0", day(1), vec![host(1)]);
@@ -1106,8 +884,7 @@ mod tests {
         let folded = merged(vec![one, two]);
         assert!(folded.is_merged());
 
-        // And the two numbers it has to keep apart: two minutes of scanning a
-        // day apart is a day and two minutes of span, not two minutes.
+        // Two minutes of scanning a day apart: a span of a day and two minutes.
         assert_eq!(folded.elapsed(), Duration::from_secs(120));
         assert_eq!(
             folded
@@ -1118,11 +895,8 @@ mod tests {
         );
     }
 
-    /// **A name is the newest account's in each protocol.** A machine renamed
-    /// between two scans states only its new name, so a fold that kept both
-    /// would report a name the machine no longer answers to; and a newer scan
-    /// that asked no directory says nothing about what the directory calls
-    /// the machine, so the older account's LDAP names stand.
+    /// A name is the newest account's in each protocol: a rename replaces the old
+    /// name, and a newer scan that asked no directory leaves the older LDAP names.
     #[test]
     fn a_name_is_the_newest_account_s_in_each_protocol() {
         use crate::model::host::{HostName, NameKind, NameSource};
@@ -1148,8 +922,7 @@ mod tests {
         assert_eq!(names, ["new.corp.example", "dc.corp.example"]);
     }
 
-    /// Folding a merged report keeps it merged: the origins its own sources were
-    /// given are left alone, so nothing about it reverts to reading as one job.
+    /// Folding a merged report keeps the origins its sources were given.
     #[test]
     fn folding_a_folded_report_leaves_it_folded() {
         let once = merged(vec![
@@ -1226,14 +999,8 @@ mod tests {
     // The rule
     // -----------------------------------------------------------------------
 
-    /// The decision the whole module turns on, and the reason it does not fold
-    /// with `Port::merge`.
-    ///
-    /// `PortState`'s ordering ranks `Open` above `Closed` so that two probes of
-    /// one scan settle on the stronger verdict, and `Port::merge` takes the
-    /// maximum for exactly that reason. Applied across scans it means a merge can
-    /// never record that a port closed, and a year of nightly merges reads as a
-    /// network that is wide open.
+    /// A newer `Closed` replaces an older `Open`. `Port::merge` takes the maximum,
+    /// which across scans would never let a port close.
     #[test]
     fn a_port_that_closed_since_the_older_scan_reads_as_closed() {
         let january = with_port(host(1), Port::new(3389, Protocol::Tcp, PortState::Open));
@@ -1251,12 +1018,9 @@ mod tests {
         );
     }
 
-    /// The other half of the same rule, and the one that stops it becoming
-    /// "whatever the last scan said".
-    ///
-    /// An unprivileged scan files no closed ports and nmap summarises them in
-    /// `<extraports>`, so an endpoint missing from a later document is routine
-    /// and says nothing. Only a source that recorded a verdict may overturn one.
+    /// An endpoint missing from a later document keeps its verdict. Unprivileged
+    /// scans file no closed ports and nmap summarises them in `<extraports>`, so
+    /// absence is routine.
     #[test]
     fn an_endpoint_a_later_scan_never_recorded_keeps_its_verdict() {
         let january = with_port(host(1), Port::new(22, TCP, PortState::Open));
@@ -1274,10 +1038,8 @@ mod tests {
         );
     }
 
-    /// `HostStatus::Unknown` is documented as nothing having been received, and
-    /// every other status is backed by a packet. So it is an absence wearing a
-    /// variant, and letting it win would have a host vanish from a merged report
-    /// the first time one source's sweep missed it.
+    /// A newer `HostStatus::Unknown` does not override an older verdict, or a host
+    /// would vanish the first time one sweep missed it.
     #[test]
     fn silence_in_a_later_scan_does_not_unseat_a_host_that_answered() {
         let january = host(1);
@@ -1295,15 +1057,11 @@ mod tests {
         );
     }
 
-    /// The other half of the carve-out, and what makes it a carve-out rather
-    /// than a rule. `Unknown` is silence; `Down` and `Blocked` are each backed
-    /// by a packet, so a router calling an address unreachable tonight is a
-    /// later word about it than an ARP reply last quarter.
+    /// A newer `Down` or `Blocked` does override an older `Up`; each is backed by a
+    /// packet.
     ///
-    /// Worth holding because the fold expresses replacement through
-    /// [`Host::set_status`], which promotes and never lowers. It reads as a
-    /// replacement only because the host it is called on is still `Unknown`, the
-    /// bottom of that ordering, so the rule holds by where the call sits.
+    /// The fold calls [`Host::set_status`], which only promotes, on a host still
+    /// `Unknown`, so it acts as a replacement.
     #[test]
     fn a_newer_unreachable_verdict_unseats_an_older_answer() {
         let january = host(1);
@@ -1322,11 +1080,8 @@ mod tests {
         );
     }
 
-    /// A verdict a merged report cannot explain is a verdict its reader cannot
-    /// check. Nmap's XML records no packet behind a port state, so taking the
-    /// newest account's discovery unconditionally drops the evidence of every
-    /// zond scan an imported document is folded with, while both accounts agree
-    /// on what the state is.
+    /// The discovery comes from the newest account that reached the same verdict,
+    /// since nmap's XML records no packet behind a port state.
     #[test]
     fn an_older_probe_of_the_state_that_won_still_explains_it() {
         let probed = with_port(
@@ -1348,10 +1103,8 @@ mod tests {
         );
     }
 
-    /// The guard on the rule above, and the reason it is written on the state
-    /// rather than on the endpoint. A packet is an account of the state it
-    /// settled, so the SYN/ACK from the quarter this port was open explains
-    /// nothing about tonight's `Closed`.
+    /// A packet that settled a different state is not kept: last quarter's SYN/ACK
+    /// does not explain tonight's `Closed`.
     #[test]
     fn evidence_never_comes_from_an_account_that_reached_another_verdict() {
         let january = with_port(
@@ -1378,14 +1131,8 @@ mod tests {
         );
     }
 
-    /// The evidence map is capped, because a host running many identifiable
-    /// services can otherwise offer one claim each until enough of them agree to
-    /// a certainty none of them stated. A fold across documents is the one caller
-    /// that can fill it: a dozen scans that each read a different kernel release
-    /// are a dozen distinct claims.
-    ///
-    /// Replayed oldest first the cap keeps a host's oldest readings and turns
-    /// away every newer one, which is this module's rule exactly inverted.
+    /// The capped evidence map keeps a host's newest readings when a dozen scans
+    /// each read a different kernel release.
     #[test]
     fn the_newest_readings_are_the_ones_the_evidence_cap_keeps() {
         fn read(release: &str) -> OsEvidence {
@@ -1404,8 +1151,7 @@ mod tests {
             }
         }
 
-        // Comfortably past the cap, so the test states the rule rather than the
-        // number.
+        // Well past the cap.
         let nightly: Vec<ScanReport> = (0..12)
             .map(|night| {
                 let mut host = host(1);
@@ -1437,9 +1183,8 @@ mod tests {
     // Identity blocks
     // -----------------------------------------------------------------------
 
-    /// "Newest wins, then fill in the blanks" is the obvious rule and it invents
-    /// findings: an older `Apache httpd 2.4.1` and a newer `nginx` splice into
-    /// `nginx 2.4.1`, which nothing observed.
+    /// An older `Apache httpd 2.4.1` and a newer `nginx` do not splice into
+    /// `nginx 2.4.1`.
     #[test]
     fn a_service_that_changed_product_does_not_inherit_the_old_version() {
         let older = with_port(
@@ -1470,10 +1215,7 @@ mod tests {
         );
     }
 
-    /// The positive half, and why the guard above is written on identity rather
-    /// than on everything. A guard that also compared the version or the CPEs
-    /// would refuse to enrich the readings most worth enriching, and a merge
-    /// would keep only whatever the last scan happened to extract.
+    /// An older reading of the same service fills in what the newer one lacks.
     #[test]
     fn an_older_reading_of_the_same_service_supplies_the_version_the_newer_one_missed() {
         let older = with_port(
@@ -1509,13 +1251,8 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// A CPE is a whole identity, and one read off an identification a newer
-    /// scan replaced goes with it.
-    ///
-    /// Kept beside `nginx`, Apache's identifier would have the correlation
-    /// match the port against Apache's vulnerabilities while the report names
-    /// something else, which the service verdict refuses to do within one scan
-    /// and a merge must not do across two.
+    /// A CPE read off a replaced identification goes with it, so Apache's is not
+    /// correlated beside `nginx`.
     #[test]
     fn a_cpe_goes_with_the_identification_it_was_read_from() {
         let older = with_port(
@@ -1543,10 +1280,8 @@ mod tests {
         assert_eq!(cpes_on(&merged), ["cpe:/a:nginx:nginx"]);
     }
 
-    /// The positive half. An older reading of the same service that states no
-    /// other version contradicts nothing, so its identifiers stand, and one
-    /// whose version the fold took because the newer reading had none is the
-    /// identification the fold reports.
+    /// An older reading of the same service with no other version keeps its CPEs,
+    /// as does one whose version the fold took.
     #[test]
     fn an_older_identifier_of_the_same_service_at_no_other_version_stands() {
         let apache = |version: Option<&str>, cpe: Option<&str>| {
@@ -1612,10 +1347,8 @@ mod tests {
     // Identity, and the fold's own properties
     // -----------------------------------------------------------------------
 
-    /// Which address a report keys a host under is the report's business rather
-    /// than the network's. Two scanners that key one dual-stack machine
-    /// differently must not produce two hosts, which is what folding by primary
-    /// address alone would do.
+    /// Two scanners that key one dual-stack machine under different addresses
+    /// produce one host.
     #[test]
     fn two_documents_keying_one_machine_differently_fold_to_one_host() {
         let v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
@@ -1639,13 +1372,8 @@ mod tests {
         );
     }
 
-    /// A fold is not a change. Merging one report, and merging it with itself,
-    /// both have to give back what went in, which catches a field any of the fold
-    /// rules drops whichever field it was.
-    ///
-    /// Asserted through the differ rather than field by field, on the same
-    /// reasoning as `import::report::json`'s round-trip test: the comparison
-    /// already knows every finding worth comparing.
+    /// Merging one report, or a report with itself, gives back what went in.
+    /// Asserted through the differ, which compares every finding.
     #[test]
     fn folding_a_report_leaves_its_findings_alone() {
         let mut port = Port::new(443, TCP, PortState::Open).with_service(
@@ -1673,12 +1401,8 @@ mod tests {
         );
     }
 
-    /// Two sources that found different things about one host hold both, and two
-    /// that reached the same claim hold one, graded as the later scan graded it.
-    ///
-    /// Which is [`Host::add_finding`]'s rule, not a second one written here: a
-    /// merge reaching a claim twice and a single scan reaching it twice are the
-    /// same question.
+    /// Different findings about one host are both kept; the same claim is kept
+    /// once, graded as the later scan graded it ([`Host::add_finding`]'s rule).
     #[test]
     fn two_accounts_of_one_host_keep_every_claim_and_grade_it_as_the_newer_did() {
         use crate::model::confidence::Confidence;
@@ -1728,8 +1452,7 @@ mod tests {
         );
     }
 
-    /// The order a caller adds sources in is argv order, which is nobody's
-    /// statement about which scan is the later word. Only the clocks decide.
+    /// The order sources are added in does not matter; their clocks decide.
     #[test]
     fn the_order_sources_are_added_in_does_not_decide_the_outcome() {
         let january = report(
@@ -1750,12 +1473,8 @@ mod tests {
         assert_eq!(state_of(&backwards, 1, 3389), Some(PortState::Closed));
     }
 
-    /// `fe80::1` names a different machine on every segment, which is why
-    /// [`pairing`](crate::diff::pairing) scopes a link-local token by the
-    /// interface it was read on. A fold that correctly separates two of them
-    /// then needs a report that can hold both: keyed by the bare address the
-    /// second would replace the first, and a scanner watching two segments would
-    /// publish a report holding fewer hosts than it found.
+    /// `fe80::1` on two interfaces is two hosts, as
+    /// [`pairing`](crate::diff::pairing) scopes link-local tokens by interface.
     #[test]
     fn two_link_locals_on_different_segments_stay_two_hosts() {
         let shared = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
@@ -1781,16 +1500,8 @@ mod tests {
         assert_eq!(zones, ["en0", "en1"], "and each says which link it is on");
     }
 
-    /// Merging in rounds is not merging at once, and this is what pins it.
-    ///
-    /// `merge(merge(a, c), b)` folds `b` against a document whose clock is `c`'s,
-    /// so `a`'s verdict survives a round it should not have, having been
-    /// overturned by `b` and never spoken to by `c`. Making the two equal would
-    /// need every field to carry the moment it was established, which the record
-    /// does not offer and a fold cannot invent.
-    ///
-    /// Asserted rather than left alone, since the tempting claim is that a merge
-    /// is associative: it reads true, and the API gives no hint otherwise.
+    /// Merging is not associative: `merge(merge(a, c), b)` folds `b` against
+    /// `c`'s clock, so `a`'s verdict survives although `b` overturned it.
     #[test]
     fn folding_in_rounds_is_not_folding_at_once() {
         let january = report(
@@ -1803,7 +1514,7 @@ mod tests {
             day(60),
             vec![with_port(host(1), Port::new(3389, TCP, PortState::Closed))],
         );
-        // Silent about the endpoint, which by §3 leaves March's verdict standing.
+        // Silent about the endpoint, which leaves March's verdict standing.
         let august = report("august", day(200), vec![host(1)]);
 
         let at_once = merged(vec![january.clone(), march.clone(), august.clone()]);
@@ -1824,9 +1535,7 @@ mod tests {
         );
     }
 
-    /// Merges compose, and the labels are what say so. Re-stamping every phase
-    /// with the outer merge's name would lose which of five documents a finding
-    /// came from the moment somebody merged in two rounds instead of one.
+    /// An outer merge keeps the labels of an inner one's sources.
     #[test]
     fn merging_a_merge_keeps_the_labels_its_own_sources_were_given() {
         let mut inner = Merge::new(MergeOptions::default());
@@ -1847,10 +1556,8 @@ mod tests {
         assert_eq!(labels, ["q1.xml", "q2.xml", "q3.xml"]);
     }
 
-    /// What a source's phase never decided stays with that phase. The merged
-    /// report's coverage is a property of its phase list, so a gap dropped
-    /// here would have a later comparison read every host past a stopped
-    /// sweep's last answer as one that went away.
+    /// What a source's phase never decided stays with that phase, so a later
+    /// comparison does not read undecided hosts as gone.
     #[test]
     fn a_merged_report_keeps_what_each_phase_left_undecided() {
         let source = crate::export::fixture::report();
@@ -1877,10 +1584,8 @@ mod tests {
     // What a merged report is judged against
     // -----------------------------------------------------------------------
 
-    /// A merged report's findings are as of when it last looked, not when its
-    /// oldest source started. Placed by the earliest instead, a comparison judges
-    /// tonight's certificates against last quarter and the crossing rule the diff
-    /// design's §6 argues for stops working for the whole side.
+    /// A merged report is dated by when it last looked, so a comparison judges
+    /// tonight's certificates against tonight.
     #[test]
     fn a_merged_report_is_placed_by_when_it_last_looked() {
         let merged = merged(vec![
@@ -1899,16 +1604,9 @@ mod tests {
         );
     }
 
-    /// A source that spans time does not place all of its hosts at one moment.
-    ///
-    /// A document's clock is when it stopped looking, which for a merged baseline
-    /// or a resumed job is months after some of its records were taken. Placed
-    /// there, a quarterly baseline outranks last month's scan about a host the
-    /// baseline last heard from in January, and the newer reading loses to the
-    /// older one.
-    ///
-    /// The document's clock still bounds each record, which is what makes the
-    /// rule safe where `last_seen` means nothing: see [`observed_at`].
+    /// A source that spans time places each host at its own `last_seen`, so a
+    /// baseline stopped in August does not outrank last month's scan about a host
+    /// it last heard from in January. See [`observed_at`].
     #[test]
     fn a_record_is_placed_by_when_it_was_seen_not_by_when_its_document_stopped() {
         // A baseline that stopped looking in August, holding a host it last
@@ -1932,13 +1630,8 @@ mod tests {
         );
     }
 
-    /// What the filter in front of a host was shown to be doing survives a fold.
-    ///
-    /// Every other field here is folded by an argument about which account wins.
-    /// This one has no contest to lose: a conclusion is drawn by a comparative
-    /// probe only a scan that asked for it runs, so the account that reached one
-    /// is the only account of it there is, and a fold that did not name the field
-    /// discarded every one of them.
+    /// Filtering conclusions survive a fold; only the scan that ran the
+    /// comparative probe has one.
     #[test]
     fn a_conclusion_about_the_filter_in_front_of_a_host_survives_a_fold() {
         use crate::model::host::Filtering;
@@ -1957,13 +1650,8 @@ mod tests {
         assert!(host.filtering().contains(&Filtering::StatelessFilter));
     }
 
-    /// The other half of [`observed_at`], and the case the bound exists for.
-    ///
-    /// A reader puts back the times a document recorded. A document that recorded
-    /// none leaves its records carrying the moment they were assembled, since
-    /// every mutator on a host stamps the current time, so a record can be
-    /// stamped later than the document holding it is dated. Taken at its word, an
-    /// undated archive read tonight outranks tonight's scan.
+    /// A record stamped later than its document is placed at the document's
+    /// clock, so an undated archive read tonight does not outrank tonight's scan.
     #[test]
     fn a_record_stamped_later_than_its_document_is_placed_by_the_document() {
         let mut archived = with_port(host(1), Port::new(3389, TCP, PortState::Open));
@@ -1983,9 +1671,7 @@ mod tests {
         );
     }
 
-    /// A route is measured end to end, and two of them folded hop by hop make a
-    /// path nothing travelled. `NetworkPath::record`'s promoting rule is written
-    /// for two accounts of one route, which two scans months apart are not.
+    /// A route is taken whole from one account, not folded hop by hop.
     #[test]
     fn two_measured_routes_do_not_splice_into_one_that_was_never_travelled() {
         let mut january = host(1);
@@ -2009,19 +1695,8 @@ mod tests {
         );
     }
 
-    /// **A port nobody asked about does not erase one somebody found.**
-    ///
-    /// `Unasked` is what a scan writes down when it ran out of wall clock, or
-    /// could not send: the port is on the record so the count still adds up, and
-    /// nothing was established either way. Its own documentation says it "never
-    /// overrides anything", and `Port::merge` honours that with a `max`.
-    ///
-    /// A fold that took the newest account's state outright would not, on the
-    /// reasoning that a source recording no verdict contributes nothing to the
-    /// list — true of every state but this one, which is absence that made it
-    /// into the list. A later, narrower scan would erase what an earlier, wider
-    /// one found, which is exactly what this module's rule promises does not
-    /// happen.
+    /// A newer `Unasked` does not erase an older verdict. `Unasked` is written
+    /// when a scan ran out of time or could not send, and establishes nothing.
     #[test]
     fn a_later_scan_that_never_asked_does_not_erase_what_an_earlier_one_found() {
         for found in [PortState::Open, PortState::Closed, PortState::NoReply] {
@@ -2047,12 +1722,8 @@ mod tests {
         }
     }
 
-    /// And a real verdict still wins, in both directions, which is what makes
-    /// the carve-out a carve-out rather than a promotion rule.
-    ///
-    /// `Port::merge` promotes, because it folds two readings of one live scan.
-    /// A merge is not that: it folds two scans, and the later one is entitled to
-    /// say a port closed. Only silence is not.
+    /// A newer real verdict still wins in both directions, unlike `Port::merge`,
+    /// which promotes.
     #[test]
     fn a_later_scan_that_did_ask_still_overrides() {
         let january = with_port(host(1), Port::new(3389, Protocol::Tcp, PortState::Open));
@@ -2102,15 +1773,9 @@ mod tests {
             .expect("443 carries an enumeration")
     }
 
-    /// **A walk cut short is a floor, not a newer answer.**
-    ///
-    /// The newer scan ran out of budget part way through TLS 1.2 and said so.
-    /// What it reached is the head of the server's own preference order, and
-    /// nothing in it says the server stopped accepting the rest; taken as the
-    /// newer answer, it would erase the older scan's tail, which is where a
-    /// legacy configuration keeps the suites worth reporting. Judged per
-    /// version rather than per endpoint: the same scan finished TLS 1.3 and
-    /// found it changed, and there it is the answer.
+    /// A walk cut short is a floor: the newer scan stopped part way through
+    /// TLS 1.2, so the older tail stands there. It finished TLS 1.3, which takes
+    /// its answer.
     #[test]
     fn a_cut_short_walk_does_not_replace_a_complete_one() {
         use TlsVersion::{Tls12, Tls13};
@@ -2146,14 +1811,9 @@ mod tests {
         );
     }
 
-    /// Oldest first, so a finished walk retires every older answer for good.
-    ///
-    /// January accepted two suites, February finished a walk that found one of
-    /// them, and March was cut short having found the other. Each change is the
-    /// server's, and March's floor is all that is known of it now. Weighed
-    /// newest first, January would be read against March alone, found to hold
-    /// everything March found, and stand as the finished answer that February
-    /// had already overturned.
+    /// A finished walk retires every older answer. January accepted two suites,
+    /// February finished finding one, March was cut short finding the other;
+    /// January must not return.
     #[test]
     fn a_finished_walk_retires_every_older_answer() {
         use TlsVersion::Tls12;
@@ -2176,8 +1836,7 @@ mod tests {
         assert_eq!(support_on(&merged), march);
     }
 
-    /// Host 1, with 443 carrying `support` and the findings drawn from it, as
-    /// a scan records an enumeration.
+    /// Host 1, with 443 carrying `support` and the findings drawn from it.
     fn audited(support: TlsSupport) -> Host {
         let findings = support.findings();
         let mut port = Port::new(443, TCP, PortState::Open)
@@ -2198,13 +1857,8 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// **A finding goes with the evidence it was drawn from.**
-    ///
-    /// January found TLS 1.0 accepted, and February walked every version to
-    /// the end and found it refused. The fold already takes February's word for
-    /// TLS 1.0, so a January finding carried beside it would have the merged
-    /// report say the endpoint accepts a version its own record says it
-    /// refuses, which is the finding a remediation ticket is opened from.
+    /// A finding goes with its evidence: January found TLS 1.0 accepted,
+    /// February finished and found it refused, so January's findings are dropped.
     #[test]
     fn a_finding_a_newer_finished_walk_overturned_is_not_carried() {
         use TlsVersion::{Tls10, Tls12};
@@ -2230,15 +1884,9 @@ mod tests {
         );
     }
 
-    /// A newer walk cut short settled nothing past where it stopped, so a
-    /// claim resting on what lies there stands, which is the rule's other
-    /// half: a later source overrides only where it made a claim.
-    ///
-    /// February's TLS 1.0 walk stopped having found a suite January does not
-    /// list, so the fold takes it as the configuration now and no longer lists
-    /// January's static-RSA suite. Whether the server still accepts that suite
-    /// is in the part of the walk February never reached, and January's claim
-    /// about it is the only word there is.
+    /// A claim resting on what lies past where a newer walk stopped stands.
+    /// February's TLS 1.0 walk stopped after a suite January does not list, so the
+    /// fold takes February's list, but January's static-RSA claim stands.
     #[test]
     fn a_finding_a_newer_walk_never_got_back_to_is_kept() {
         use TlsVersion::Tls10;
@@ -2267,9 +1915,8 @@ mod tests {
         );
     }
 
-    /// A certificate's posture is a property of that certificate, so a claim
-    /// about the one an older scan was shown goes when a newer scan is shown
-    /// another, and stays while the same one is presented.
+    /// Certificate posture claims go when a newer scan sees another certificate
+    /// and stay while the same one is presented.
     #[test]
     fn a_posture_finding_goes_with_the_certificate_it_was_drawn_from() {
         use crate::model::port::security::CertificateInfo;
@@ -2342,15 +1989,9 @@ mod tests {
 
     const RC4: &str = "cipher suites accepted with RC4, prohibited by RFC 7465";
 
-    /// **A finding carried beside a folded record says what that record
-    /// holds.**
-    ///
-    /// February finished TLS 1.0 and found it refused, and was cut short in
-    /// TLS 1.2 having found nothing, so the fold takes February's TLS 1.0 and
-    /// January's TLS 1.2. The RC4 claim still stands on TLS 1.2. January's
-    /// text for it lists the suite it accepted under TLS 1.0 as well, and
-    /// carried as it was written, the merged port would name a suite under a
-    /// version its own record says is refused.
+    /// A kept finding is reworded for the folded record. February refused TLS 1.0
+    /// and was cut short in TLS 1.2, so the RC4 claim stands on TLS 1.2 and its
+    /// excerpt no longer names the TLS 1.0 suite.
     #[test]
     fn a_carried_fault_names_only_the_suites_the_folded_record_accepts() {
         use TlsVersion::{Tls12, Tls13};
@@ -2389,16 +2030,8 @@ mod tests {
         );
     }
 
-    /// The same where the claim stands only because the fold left it
-    /// unsettled: the text keeps the part of the older account nothing newer
-    /// contradicts.
-    ///
-    /// February was cut short in TLS 1.2 having found a suite January does not
-    /// list, so its walk stands there as the configuration now, and nothing
-    /// in the folded record draws the RC4 claim. It stands because what
-    /// January found under TLS 1.2 lies past where February stopped. Under
-    /// TLS 1.0 February finished and was refused, so January's suite there is
-    /// not part of what keeps the claim.
+    /// The same where the claim stands only because the fold left it unsettled:
+    /// the excerpt keeps January's TLS 1.2 suite and drops its refused TLS 1.0 one.
     #[test]
     fn an_unsettled_fault_names_only_the_suites_nothing_newer_refused() {
         use TlsVersion::{Tls12, Tls13};
@@ -2421,10 +2054,7 @@ mod tests {
         );
     }
 
-    /// Where nothing moved under a claim, the finding is carried as it was
-    /// written, in the words of whatever build wrote it. A merge of one report
-    /// is that report, and a merge that reworded every finding it carried
-    /// would rewrite a document it had no newer evidence about.
+    /// Where nothing moved under a claim, the finding is carried as written.
     #[test]
     fn a_fault_whose_evidence_did_not_move_is_carried_as_written() {
         let support = rc4_under_ten_and_twelve();
@@ -2449,9 +2079,8 @@ mod tests {
         assert_eq!(finding_on(&merged, RC4), Some(written));
     }
 
-    /// Port 80 of host 1 serving Apache httpd `version`, identified the way
-    /// the service pass names it and correlated against the shipped catalogue
-    /// the way a scan's correlation step does.
+    /// Port 80 of host 1 serving Apache httpd `version`, correlated against the
+    /// shipped catalogue.
     fn serving_apache(version: &str) -> Host {
         let service = Service::new("http", 90)
             .with_product("Apache httpd")
@@ -2479,14 +2108,8 @@ mod tests {
         claims
     }
 
-    /// **A correlation goes with the identification it was drawn from.**
-    ///
-    /// January read Apache httpd 2.4.49, the path-traversal release, and the
-    /// correlation drew its vulnerabilities from that identifier. June read
-    /// 2.4.58 on the same port. The merged service is June's, and a January
-    /// identifier kept beside it would have the one port say it runs two
-    /// versions at once and carry the vulnerabilities of the one it no longer
-    /// runs, which is a remediation ticket for a patch that already landed.
+    /// A correlation goes with its identification: January's 2.4.49
+    /// vulnerabilities are dropped once June reads 2.4.58.
     #[test]
     fn a_correlation_an_older_identification_drew_is_not_carried_past_a_newer_one() {
         let january = serving_apache("2.4.49");
@@ -2557,12 +2180,9 @@ mod tests {
         claims
     }
 
-    /// **A correlator's claims give way to a newer correlator's on the same
-    /// port.** An earlier build of this engine summarised a distribution build
-    /// as the upstream release, keyed the claim on its lowest identifier and
-    /// held it probable. Its claims are keyed differently from the newer
-    /// correlator's, so folding claim by claim would carry both, and the port
-    /// would say once more what the newer judgement exists to correct.
+    /// A correlator's claims give way to a newer correlator's on the same port,
+    /// even when keyed differently (a distribution build summarised as the
+    /// upstream release, keyed on its lowest identifier).
     #[test]
     fn an_earlier_correlators_claims_are_retired_by_a_later_ones() {
         use crate::model::finding::{DetectionClass, DetectionId, Finding, Reference, Version};
@@ -2603,18 +2223,12 @@ mod tests {
         assert_eq!(claims_on_22(merged.hosts().cloned()), claims_on_22([june]));
     }
 
-    /// **A distribution's fix moves the build and nothing else, and a claim
-    /// judged against the old build does not survive it.** January read
-    /// OpenSSH 6.6.1p1 as Ubuntu's `2ubuntu2.7`, June the same version at
-    /// `2ubuntu2.13`. The identifier is the same in both; only the build says
-    /// the package was upgraded, and a claim judged against January's build
-    /// describes a package the host no longer has.
+    /// A claim judged against an old build does not survive a newer one: OpenSSH
+    /// 6.6.1p1 at Ubuntu `2ubuntu2.7`, then at `2ubuntu2.13`.
     #[test]
     fn a_claim_judged_against_an_older_build_is_not_carried_past_an_upgrade() {
         let january = serving_ubuntu_openssh("2ubuntu2.7");
-        // June's scan found nothing to claim, as it does once the
-        // distributor's data says the build carries every fix: the port holds
-        // the upgraded build and no correlation at all.
+        // The upgraded build carries every fix, so no correlation.
         let mut june = serving_ubuntu_openssh("2ubuntu2.13");
         june.replace_port_correlations(22, TCP, "zond:cve-kev", Vec::new());
         assert!(claims_on_22([june.clone()]).is_empty(), "test premise");
@@ -2631,13 +2245,8 @@ mod tests {
         );
     }
 
-    /// **A claim is carried while any identifier it was drawn from is still
-    /// backed.** An imported document can name one release twice, in the URI
-    /// form and the 2.3 form, and each draws the same vulnerability. A newer
-    /// scan that backs only the first, identifying the release under a
-    /// version string of its own, still backs the claim, and dropping it
-    /// because the second went unbacked would retire a vulnerability the
-    /// newer scan's own identification carries.
+    /// A claim stands while any identifier it was drawn from is backed: one
+    /// release named in both URI and 2.3 form, with a newer scan backing only one.
     #[test]
     fn a_claim_is_carried_while_any_identifier_it_was_drawn_from_is_backed() {
         const URI: &str = "cpe:/a:apache:http_server:2.4.49";
@@ -2719,11 +2328,7 @@ mod tests {
         ScanReport::recorded("zond", vec![phase], Vec::new())
     }
 
-    /// **A merge of a stopped sweep with a later complete one is complete.**
-    /// The stopped sweep's phase keeps its own record of what it never
-    /// decided, and the later one decided all of it, so the merged report has
-    /// nothing left undecided and is not partial. Read phase by phase it
-    /// would stay partial for ever, however many sweeps finished the job.
+    /// A stopped sweep merged with a later complete one is not partial.
     #[test]
     fn a_stopped_sweep_merged_with_a_later_complete_one_is_not_partial() {
         let stopped = swept(day(1), "192.0.2.0/28", Some("192.0.2.4-192.0.2.15"));
@@ -2741,16 +2346,8 @@ mod tests {
         assert!(!merged.is_partial());
     }
 
-    /// A newer scan that named the port from its number identified nothing,
-    /// and carries neither the older identification nor the correlation drawn
-    /// from it away.
-    ///
-    /// Every scan path seeds a classified port with the label its number is
-    /// registered under, at a confidence of zero, and a scan run without
-    /// service detection leaves it there. Read as the newest identification,
-    /// that label would replace Apache httpd 2.4.49 with a bare `http` and
-    /// retire every vulnerability the older scan correlated, on the word of a
-    /// scan that never asked what was listening.
+    /// A newer label inferred from the port number does not replace an older
+    /// identification or its correlation.
     #[test]
     fn a_service_named_from_its_port_number_does_not_unseat_an_identification() {
         let january = serving_apache("2.4.49");
@@ -2775,8 +2372,7 @@ mod tests {
         );
     }
 
-    /// A port only ever recorded unasked stays unasked, rather than vanishing or
-    /// acquiring a verdict nothing established.
+    /// A port only ever recorded unasked stays unasked.
     #[test]
     fn a_port_nobody_ever_asked_about_stays_unasked() {
         let first = with_port(host(1), Port::new(3389, Protocol::Tcp, PortState::Unasked));
