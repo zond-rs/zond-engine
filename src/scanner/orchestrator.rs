@@ -2410,18 +2410,22 @@ pub(super) fn probed_subset(target_map: &TargetMap, live: &IpSet) -> TargetMap {
 }
 
 /// The SCTP port a discovery sweep should ask about, or `None` where the scan
-/// named no SCTP port and so wants no SCTP sweep.
+/// named no SCTP port it may probe and so wants no SCTP sweep.
 ///
-/// Chosen from the scan's own ports, which a filter in front of an SCTP host is
-/// likeliest to pass. Among them the catalogue's order decides; a port it does not
-/// know loses to one it does, and with only unknown ports the lowest is taken, so
-/// every run chooses alike.
-pub(super) fn sctp_discovery_port(map: &TargetMap) -> Option<u16> {
+/// Chosen from the scan's own ports less `excluded`, which a filter in front of
+/// an SCTP host is likeliest to pass. Among them the catalogue's order decides; a
+/// port it does not know loses to one it does, and with only unknown ports the
+/// lowest is taken, so every run chooses alike.
+///
+/// `excluded` matters where `map` still names a port the sitting may not probe:
+/// a resumed job keeps the ports a later sitting excludes in its plan.
+pub(super) fn sctp_discovery_port(map: &TargetMap, excluded: &PortSet) -> Option<u16> {
     let named: Vec<u16> = map
         .units
         .iter()
         .flat_map(|unit| unit.ports().ranges(Protocol::Sctp))
         .flat_map(|range| range.clone())
+        .filter(|&port| !excluded.contains(port, Protocol::Sctp))
         .collect();
 
     named.iter().copied().min_by_key(|port| {
@@ -2641,7 +2645,7 @@ mod tests {
             "s:9999, s:3868, s:2905".parse().expect("a specification"),
         ));
 
-        assert_eq!(sctp_discovery_port(&map), Some(3868));
+        assert_eq!(sctp_discovery_port(&map, &PortSet::new()), Some(3868));
     }
 
     /// A scan naming nothing the catalogue knows still asks the same port every
@@ -2656,7 +2660,7 @@ mod tests {
             "s:9999, s:9001".parse().expect("a specification"),
         ));
 
-        assert_eq!(sctp_discovery_port(&map), Some(9001));
+        assert_eq!(sctp_discovery_port(&map, &PortSet::new()), Some(9001));
     }
 
     /// A scan that never mentioned SCTP opens no socket for it.
@@ -2670,7 +2674,30 @@ mod tests {
             "80, u:53".parse().expect("a specification"),
         ));
 
-        assert_eq!(sctp_discovery_port(&map), None);
+        assert_eq!(sctp_discovery_port(&map, &PortSet::new()), None);
+    }
+
+    /// A port the scan may not probe is never the sweep's, though the plan
+    /// still names it, as a resumed job's does for a port a later sitting
+    /// excludes.
+    #[test]
+    fn the_sweep_never_asks_on_an_excluded_port() {
+        use crate::model::target::TargetSet;
+
+        let mut map = TargetMap::new();
+        map.add_unit(TargetSet::new(
+            "192.0.2.1".parse().expect("an address"),
+            "s:9999, s:3868".parse().expect("a specification"),
+        ));
+        let excluded = |spec: &str| PortSet::try_from(spec).expect("a specification");
+
+        assert_eq!(sctp_discovery_port(&map, &excluded("s:3868")), Some(9999));
+        assert_eq!(sctp_discovery_port(&map, &excluded("s:3868,9999")), None);
+        assert_eq!(
+            sctp_discovery_port(&map, &excluded("3868")),
+            Some(3868),
+            "a TCP exclusion held SCTP back"
+        );
     }
 
     /// One address, valid on the interface with index `zone`.

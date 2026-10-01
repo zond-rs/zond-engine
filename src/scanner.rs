@@ -877,7 +877,7 @@ fn liveness_earns_its_place(cfg: &ZondConfig, map: &TargetMap) -> bool {
     let asked = SynPorts::for_scan(&tcp_ports_of(map))
         .excluding(&cfg.excluded_ports)
         .len()
-        + usize::from(orchestrator::sctp_discovery_port(map).is_some());
+        + usize::from(orchestrator::sctp_discovery_port(map, &cfg.excluded_ports).is_some());
     if asked == 0 {
         return false;
     }
@@ -1808,7 +1808,7 @@ fn spawn_scan(
             // SCTP-only host is not called down.
             ctx.enter_stage(Stage::Discovery, None);
             let syn_ports = SynPorts::for_scan(&tcp_ports_of(&target_map));
-            let sctp = orchestrator::sctp_discovery_port(&target_map);
+            let sctp = orchestrator::sctp_discovery_port(&target_map, &cfg.excluded_ports);
             run_discovery(ips, Scope::Targeted, caps, &cfg, &ctx, syn_ports, sctp).await;
 
             orchestrator::correlate(&ctx, cfg.service_detection).await;
