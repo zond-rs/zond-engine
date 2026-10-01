@@ -8,38 +8,22 @@
 
 //! # Recording a run, and replaying it
 //!
-//! A compute module reaches the world only through its [`Capabilities`], so a run
-//! is a pure function of what those capabilities returned. Capture every return
-//! and the run can be re-executed later with no network at all, producing the same
-//! findings byte for byte. That capture is a [`CapTape`], and the two types here
-//! are its ends. [`RecordingCapabilities`] wraps a live capability set and writes a
-//! tape as the module runs. [`RecordedCapabilities`] serves a finished tape back so
-//! the module runs again offline.
+//! A module reaches the world only through its [`Capabilities`], so a run is a
+//! pure function of what they returned. A [`CapTape`] captures every return:
+//! [`RecordingCapabilities`] writes one around a live set, and
+//! [`RecordedCapabilities`] serves it back offline, reproducing the findings
+//! exactly. That allows offline re-analysis, deterministic tests, and showing
+//! the exact bytes a detection decided on.
 //!
-//! ## What a faithful recording buys
+//! ## What is captured
 //!
-//! - Offline re-analysis: a new detection can run against a tape captured last
-//!   week, whether or not the target still exists or still answers.
-//! - Deterministic tests: a detection's test becomes a tape and the findings it
-//!   should produce, with no live socket to flake.
-//! - An answer to "why did it fire": replaying the exact bytes a detection saw
-//!   shows the evidence it decided on.
+//! Each verb in call order: [`speak`](Capabilities::speak) with bytes sent and
+//! reply (or error), [`resolve`](Capabilities::resolve) with name and result,
+//! and [`now`](Capabilities::now) ticks. Replay serves each verb from its own
+//! queue in order. The bytes a `speak` sent are kept for provenance; positional
+//! replay does not compare them.
 //!
-//! ## What is captured, and what replay does with it
-//!
-//! Each verb is recorded in call order: every [`speak`](Capabilities::speak) with
-//! the bytes sent and the reply returned, every [`resolve`](Capabilities::resolve)
-//! with its name and result, and every [`now`](Capabilities::now) tick. Replay
-//! serves each verb from its own queue in order, so the same module, which makes
-//! the same sequence of calls, reads back the same value at each one. A recorded
-//! reply carries its error too, so a module that branches on a timeout or a refusal
-//! takes the same branch on replay. The bytes a `speak` sent are kept for
-//! provenance, and are what a strict replay would check against; positional
-//! replay does not match on them.
-//!
-//! The tape itself lives in memory and carries no wire form. A journal holds it
-//! through the sibling `record` module, the compute tier's parallel to the model's
-//! record layer, so a whole scan's detections replay from a saved run.
+//! The journal form is in the sibling `record` module.
 
 use std::net::IpAddr;
 
@@ -50,11 +34,10 @@ use super::capability::{CapError, Capabilities, ScanInstant};
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpeakExchange {
-    /// The bytes the module sent. Kept for provenance and for a later strict replay;
-    /// positional replay does not compare against it.
+    /// The bytes the module sent. Kept for provenance; positional replay does not
+    /// compare them.
     pub sent: Vec<u8>,
-    /// The reply the module received, which replay returns verbatim so a module that
-    /// branches on an error branches the same way offline.
+    /// The reply the module received, returned verbatim on replay.
     pub reply: Result<Vec<u8>, CapError>,
 }
 
@@ -63,8 +46,7 @@ pub struct SpeakExchange {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolveExchange {
-    /// The name the module asked to resolve. Kept for provenance; positional replay
-    /// does not compare against it.
+    /// The name the module asked to resolve. Kept for provenance.
     pub name: String,
     /// The result the module received, returned verbatim on replay.
     pub result: Result<Vec<IpAddr>, CapError>,
@@ -72,9 +54,8 @@ pub struct ResolveExchange {
 
 /// Every capability interaction of one run, in call order per verb.
 ///
-/// This is everything a run read from the world. Build a
-/// [`RecordedCapabilities`] from it and the run reproduces exactly, because there
-/// is nothing else a module can read.
+/// Everything a run read from the world; a [`RecordedCapabilities`] built from
+/// it reproduces the run exactly.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CapTape {
@@ -88,10 +69,9 @@ pub struct CapTape {
 
 /// A live capability set that writes a [`CapTape`] as it serves.
 ///
-/// It wraps any [`Capabilities`] and forwards every call to it, appending what
-/// crossed the seam to the tape. Wrap [`LiveCapabilities`](super::LiveCapabilities)
-/// with it to capture a real scan for later replay; the module it serves cannot
-/// tell it is being recorded, because every return is the inner set's own.
+/// Forwards every call to the wrapped [`Capabilities`] and appends what crossed
+/// the seam to the tape. Wrap [`LiveCapabilities`](super::LiveCapabilities) to
+/// capture a real scan.
 pub struct RecordingCapabilities<C: Capabilities> {
     inner: C,
     tape: CapTape,
@@ -145,15 +125,11 @@ impl<C: Capabilities> Capabilities for RecordingCapabilities<C> {
 
 /// A capability set that serves a finished [`CapTape`] with no network.
 ///
-/// Each verb draws from its own queue in call order, so a module that makes the
-/// same sequence of calls it made when the tape was recorded reads back the same
-/// value at each one. It enforces no budget: the tape already holds the outcomes a
-/// budget produced live, so replay reproduces them rather than deriving them again.
+/// Each verb draws from its own queue in call order. No budget is enforced; the
+/// tape holds the outcomes the live budget produced.
 ///
-/// A call past the end of a queue means the run diverged from the one recorded,
-/// which a faithful same-module replay never does. That call returns a benign
-/// default (an empty reply, a zero tick) rather than an error, and the divergence
-/// is surfaced afterwards through `diverged`.
+/// A call past the end of a queue means the run diverged. It returns a benign
+/// default (an empty reply, a zero tick), and `diverged` reports it afterwards.
 pub struct RecordedCapabilities {
     tape: CapTape,
     speak_cursor: usize,
@@ -179,9 +155,7 @@ impl RecordedCapabilities {
         &self.tape
     }
 
-    /// Whether the replay read past the end of the tape at any verb. A faithful
-    /// replay of the same detection over a complete tape never does; a truncated
-    /// tape makes it, which is a diverged replay rather than a reproduced one.
+    /// Whether the replay read past the end of the tape at any verb.
     pub fn diverged(&self) -> bool {
         self.diverged
     }
@@ -275,8 +249,7 @@ mod tests {
 
     #[test]
     fn a_live_run_replays_byte_identically_from_its_tape() {
-        // A loopback that answers the module's probe with a banner, standing in for
-        // the service a detection reads.
+        // A loopback that answers with a banner.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         thread::spawn(move || {
@@ -287,8 +260,7 @@ mod tests {
             }
         });
 
-        // The finding depends on both the reply and the clock, so the tape must
-        // carry both for the replay to reproduce it.
+        // The finding depends on both the reply and the clock.
         let source = r#"
             fn analyze(ctx, responses) {
                 let reply = speak(blob(4, 0x41));
@@ -304,7 +276,7 @@ mod tests {
             .load(&ModuleBody::Rhai(source.to_string()))
             .expect("the module compiles");
 
-        // Run once, live, recording every call as it goes.
+        // Live, recording.
         let mut recording =
             RecordingCapabilities::new(LiveCapabilities::new(addr, Protocol::Tcp, None, &budget()));
         let mut instance = runtime
@@ -315,11 +287,10 @@ mod tests {
             .expect("a clean live run");
         let tape = recording.into_tape();
 
-        // The tape captured the one probe and at least one clock read.
         assert_eq!(tape.speaks.len(), 1, "the speak was not recorded");
         assert!(!tape.nows.is_empty(), "the clock read was not recorded");
 
-        // Run again from the tape alone, with no socket.
+        // From the tape alone.
         let mut replayed_caps = RecordedCapabilities::from_tape(tape);
         let mut instance = runtime
             .instantiate(&module, &grant())
@@ -336,9 +307,7 @@ mod tests {
 
     #[test]
     fn a_recorded_now_tick_replays_from_the_tape() {
-        // A tape with a distinctive clock reading. Replay must serve that exact
-        // tick, not a fresh clock, or a finding that names the time would come out
-        // different offline than it did live.
+        // Replay serves the recorded tick, not a fresh clock.
         let tape = CapTape {
             nows: vec![4242],
             ..CapTape::default()
@@ -371,9 +340,7 @@ mod tests {
 
     #[test]
     fn a_recorded_error_reply_replays_as_the_same_error() {
-        // A tape whose one speak was refused. A module that catches the error and
-        // reports on it must take that branch again on replay, which only holds if
-        // the error itself was recorded and returned.
+        // A recorded refusal takes the module's error branch again.
         let tape = CapTape {
             speaks: vec![SpeakExchange {
                 sent: b"x".to_vec(),
@@ -382,9 +349,8 @@ mod tests {
             ..CapTape::default()
         };
 
-        // The array is the function's return value, not something inside the
-        // `try`: in Rhai a `try`/`catch` is a statement that evaluates to unit, so
-        // the branch sets the verdict and the finding is built after.
+        // In Rhai `try`/`catch` is a statement evaluating to unit, so the finding
+        // is built after it.
         let source = r#"
             fn analyze(ctx, responses) {
                 let severity = "low";

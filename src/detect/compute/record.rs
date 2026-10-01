@@ -8,22 +8,18 @@
 
 //! # The on-disk form of a capability tape
 //!
-//! A [`CapTape`] written down as data a journal can hold, so a scan's recorded runs
-//! survive to be replayed later. This is the compute tier's parallel to the model's
-//! record layer: the tape itself stays free of `serde`, and this module is the one
-//! place its wire shape and the names of its errors are defined. A record is built
-//! from a tape through [`From`] and read back through
+//! A [`CapTape`] as journal data, so recorded runs can be replayed later. The
+//! tape itself has no `serde`; this module defines its wire shape. Build a
+//! record with [`From`] and read it back with
 //! [`rebuild`](CapTapeRecord::rebuild).
 //!
-//! ## How the pieces are written
+//! ## Encoding
 //!
-//! Bytes become lowercase hex, the encoding the engine already uses for a content
-//! hash: compact enough, identical across two runs so a journal stays comparable
-//! with itself, and needing no dependency. Each exchange records either its reply
-//! or its error, never both, so a run that branched on a refusal replays that branch
-//! from the file. Following the model records, a value that will not parse reads
-//! back as the least it could mean rather than failing the whole tape: an
-//! undecodable byte string reads empty, and an unknown error kind reads as a reset.
+//! Bytes are lowercase hex, as content hashes are. Each exchange records its
+//! reply or its error, so a run that branched on a refusal replays that branch.
+//! As in the model records, an unparsable value reads as the least it could
+//! mean: undecodable bytes read empty, and an unknown error kind reads as a
+//! reset.
 
 use std::net::IpAddr;
 
@@ -34,19 +30,16 @@ use super::replay::{CapTape, ResolveExchange, SpeakExchange};
 use crate::record::DetectionIdRecord;
 
 /// One detection run, as the journal holds it: which detection ran over which
-/// subject, and the tape of what it read. This is the line the journal writes per
-/// run, so a recorded scan can be replayed offline, detection by detection.
+/// subject, and the tape of what it read.
 ///
-/// A versioned record, read back from a journal, never built by hand:
-/// `#[non_exhaustive]`, so a field a later format adds is not a breaking change for
-/// a caller reading one.
+/// `#[non_exhaustive]`, so the format can gain fields.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DetectionRunRecord {
     /// The address the detection ran against.
     pub host: String,
-    /// The name a target reached that address by, where it named a host: what
-    /// a module read as `ctx.hostname`, kept so a replay reads it too.
+    /// The name a target reached that address by, where it named a host: the
+    /// module's `ctx.hostname`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_name: Option<String>,
     /// The port it ran over.
@@ -55,9 +48,7 @@ pub struct DetectionRunRecord {
     pub protocol: String,
     /// Which detection ran, to which version, from which bytes.
     pub detection: DetectionIdRecord,
-    /// The responses the scan had already gathered and handed the detection, which
-    /// a passive detection reads instead of speaking. Kept so a replay feeds the
-    /// same input.
+    /// The responses the scan had gathered and handed the detection.
     #[serde(default)]
     pub responses: Vec<String>,
     /// What it read from its capabilities, kept for replay.
@@ -68,14 +59,12 @@ pub struct DetectionRunRecord {
 /// journal: the port and its responses once, then each run's detection and
 /// tape.
 ///
-/// Every passive detection that matches a port's service reads everything the
-/// scan gathered there, a dozen of them for any HTTP port, and a response runs
-/// to kilobytes. Written with each run, a port's responses would fill the file
-/// once per detection that read them. [`DetectionRunRecord`] stays the shape a
-/// run is read back in; this is only how the file holds a batch of them.
+/// A dozen passive detections may read one HTTP port's kilobytes of responses,
+/// so the responses are written once per port. Runs are still read back as
+/// [`DetectionRunRecord`]s.
 ///
-/// An engine that writes a run to a line reads this as a line it cannot parse,
-/// and refuses the file rather than replaying a passive run on no input.
+/// An engine that only knows one run per line cannot parse this and refuses
+/// the file.
 #[cfg(feature = "journal-format")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PortRunsRecord {
@@ -356,7 +345,7 @@ fn cap_error_kind_name(error: &CapError) -> &'static str {
 }
 
 /// The capability error a wire name and its reason name. An unknown kind reads as a
-/// reset, the most generic failure, rather than dropping the exchange.
+/// reset, the most generic failure.
 fn cap_error(kind: &str, reason: Option<&str>) -> CapError {
     match kind {
         "byte-budget-exhausted" => CapError::ByteBudgetExhausted,
@@ -376,9 +365,8 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 /// Bytes from lowercase hex. A malformed string, an odd length, or a non-hex or
-/// non-ASCII byte reads back empty rather than failing, since a machine wrote it
-/// and a corrupt tape is a degraded replay, not a crash. Indexing is over bytes,
-/// not chars, so a multi-byte character cannot land a slice mid-character.
+/// non-ASCII byte reads back empty. Indexing is over bytes, so a multi-byte
+/// character cannot split a slice.
 fn from_hex(hex: &str) -> Vec<u8> {
     let hex = hex.as_bytes();
     if !hex.len().is_multiple_of(2) {
@@ -446,16 +434,14 @@ mod tests {
 
     #[test]
     fn a_tape_survives_json_and_still_replays_identically() {
-        // The whole persistence guarantee: capture a live run, write the tape to
-        // JSON and read it back, and the replay from that JSON reproduces the live
-        // findings exactly. This is what the journal will do.
+        // A live run's tape, through JSON and back, replays to the same findings.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         thread::spawn(move || {
             if let Some(mut sock) = from_this_process(&listener).next() {
                 let mut probe = [0u8; 64];
                 let _ = sock.read(&mut probe);
-                // A reply with a non-ASCII byte, so a lossy encoding would corrupt it.
+                // A non-ASCII byte, which a lossy encoding would corrupt.
                 let _ = sock.write_all(&[0x52, 0x45, 0x44, 0x49, 0x53, 0xff]);
             }
         });
@@ -475,7 +461,6 @@ mod tests {
             .load(&ModuleBody::Rhai(source.to_string()))
             .expect("the module compiles");
 
-        // Capture a live run.
         let mut recording =
             RecordingCapabilities::new(LiveCapabilities::new(addr, Protocol::Tcp, None, &budget()));
         let mut instance = runtime
@@ -486,7 +471,7 @@ mod tests {
             .expect("a clean live run");
         let tape = recording.into_tape();
 
-        // Round-trip the tape through JSON, as a journal writes and reads it.
+        // Through JSON and back.
         let json = serde_json::to_string(&CapTapeRecord::from(&tape)).expect("serializes");
         let restored = serde_json::from_str::<CapTapeRecord>(&json)
             .expect("deserializes")
@@ -496,7 +481,6 @@ mod tests {
             "the tape did not survive the JSON round-trip"
         );
 
-        // Replay from the restored tape and compare to the live findings.
         let mut caps = RecordedCapabilities::from_tape(restored);
         let mut instance = runtime
             .instantiate(&module, &grant())
@@ -511,9 +495,7 @@ mod tests {
         );
     }
 
-    /// The name a run's module read as `ctx.hostname` survives the journal's
-    /// line, so a replay reads what the live run did, and a line written
-    /// without one reads as a run on an address named by itself.
+    /// `ctx.hostname` survives the journal; a line without one reads as `None`.
     #[test]
     fn a_runs_host_name_survives_the_journal_line() {
         let detection = DetectionId::new("d", Version::new(1, 0, 0), "h").expect("an id");
@@ -545,8 +527,7 @@ mod tests {
 
     #[test]
     fn every_error_kind_is_named_and_read_back() {
-        // A name that does not parse back to its own variant would silently rewrite a
-        // recorded error on read, turning a refusal into something else.
+        // Every error kind's name parses back to its own variant.
         let errors = [
             CapError::ByteBudgetExhausted,
             CapError::ConnectionBudgetExhausted,
@@ -568,9 +549,8 @@ mod tests {
 
     #[test]
     fn a_tape_with_non_ascii_hex_reads_back_empty_rather_than_panicking() {
-        // A journal a local attacker plants can hold any string in a hex field. An
-        // even byte length of multi-byte characters once passed the length guard
-        // and then sliced a `&str` mid-character, aborting the read of the file.
+        // A planted journal may hold multi-byte characters of even byte length in
+        // a hex field; reading must not slice mid-character.
         let record = CapTapeRecord {
             speaks: vec![SpeakExchangeRecord {
                 sent: "€€".to_string(),
