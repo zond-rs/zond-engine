@@ -8,27 +8,21 @@
 
 //! # Running compute detections over a port
 //!
-//! The Tier-2 detection stage, the sibling of [`flow::stage`](crate::detect::flow)
-//! and the active counterpart to the [CVE correlator](crate::cve). For a port,
-//! every loaded detection whose class the [envelope](crate::config::DetectionEnvelope)
-//! permits and whose `when` rule fits is instantiated under its
-//! [grant](Grant) and run, and the findings it returns are recorded. It gates on
-//! exactly the two questions the [`gate`](crate::detect::gate) module answers, so
-//! a compute detection and a flow select ports the same way.
+//! The Tier-2 detection stage, beside [`flow::stage`](crate::detect::flow). For a
+//! port, every detection whose class the
+//! [envelope](crate::config::DetectionEnvelope) permits and whose `when` rule
+//! fits (see [`gate`](crate::detect::gate)) is instantiated under its
+//! [grant](Grant) and run.
 //!
-//! ## The capabilities are supplied per port
+//! ## Capabilities per port
 //!
-//! Like the flow stage, this holds no socket of its own: `caps_for` yields the
-//! [`Capabilities`] a running detection is served, given the grant it will run
-//! under, so a scan hands it a live socket bound to the port and a test hands it a
-//! recorded one: the module cannot tell, which is what replay is.
+//! `caps_for` yields the [`Capabilities`] for a grant: a live socket in a scan,
+//! a recorded one in a test or replay.
 //!
 //! ## An abnormal end is not a finding
 //!
-//! A detection that trapped on a budget, was denied a call, or faulted did not
-//! clear the port. It did not finish. That outcome is logged and dropped, never
-//! turned into a finding, so a reader never mistakes "ran out of fuel" for "found
-//! nothing wrong."
+//! A detection that trapped on a budget, was denied a call, or faulted is
+//! returned as an [`InconclusiveRun`], never as a finding.
 
 use std::time::Duration;
 
@@ -46,10 +40,8 @@ use super::db::ReplayError;
 use super::replay::{CapTape, RecordedCapabilities, RecordingCapabilities};
 use super::runtime::ComputeRuntime;
 
-/// A compute detection that did not finish cleanly: which detection, and why it
-/// ended. The stage returns these beside the findings so the caller can record an
-/// inconclusive run rather than dropping it: a run that trapped on a budget or
-/// faulted did not clear the port, and a reader must be able to tell the two apart.
+/// A compute detection that did not finish cleanly: which detection, and why.
+/// Returned beside the findings, since such a run did not clear the port.
 pub(crate) struct InconclusiveRun {
     /// The detection whose run did not complete.
     pub(crate) detection: DetectionId,
@@ -61,12 +53,11 @@ pub(crate) struct InconclusiveRun {
 }
 
 /// What a port's compute detections produced: the findings, and the runs that did
-/// not finish cleanly. A clean scan leaves [`inconclusive`](Self::inconclusive)
-/// empty; anything in it is a detection the report should account for.
+/// not finish cleanly.
 pub(crate) struct PortDetections {
     /// The findings the detections drew.
     pub(crate) findings: Vec<Finding>,
-    /// The runs that ended abnormally, kept so the caller can surface them.
+    /// The runs that ended abnormally.
     pub(crate) inconclusive: Vec<InconclusiveRun>,
 }
 
@@ -90,15 +81,13 @@ impl<M> LoadedDetection<M> {
         }
     }
 
-    /// The content hash of the detection body, its provenance and the key a
-    /// journalled run is matched back to for replay.
+    /// The content hash of the detection body: its provenance, and the key
+    /// replay matches a journalled run by.
     pub(crate) fn content_hash(&self) -> &str {
         &self.content_hash
     }
 
-    /// What the detection declares. The live path matches a run to its detection
-    /// by content hash instead; this is for a corpus listing and for tests looking
-    /// a shipped detection up by name.
+    /// What the detection declares, for corpus listings and tests.
     pub(crate) fn manifest(&self) -> &DetectionManifest {
         &self.manifest
     }
@@ -110,19 +99,13 @@ impl<M> LoadedDetection<M> {
 /// `ctx` carries the port number, protocol, and address a running detection sees;
 /// `responses` are the bytes the scan already gathered. `caps_for` yields the
 /// [`Capabilities`] a detection is served under the grant it will run, or [`None`]
-/// to skip it. A detection the envelope forbids or whose gate does not fit the
-/// port never instantiates.
+/// to skip it. A detection the envelope forbids or whose gate does not fit never
+/// instantiates.
 ///
-/// Every run is recorded, and its [`CapTape`] is handed to `record` once the run
-/// ends, clean or not, so a caller can keep it for a later replay. A caller that
-/// does not want the tapes ignores them.
+/// Every run's [`CapTape`] is handed to `record` when it ends, for a later
+/// replay.
 ///
-/// A run that ends abnormally is not turned into a finding, but it is not dropped
-/// either: it is returned in [`PortDetections::inconclusive`] so the caller can
-/// record that the detection did not finish, which a report needs to tell apart
-/// from a detection that finished and found nothing.
-// Eight inputs: the whole per-port situation plus both capability seams. Bundling
-// them into a request type is a later cleanup shared with the flow stage.
+/// A run that ends abnormally is returned in [`PortDetections::inconclusive`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn detect_port<R: ComputeRuntime>(
     runtime: &R,
@@ -191,10 +174,8 @@ pub(crate) fn detect_port<R: ComputeRuntime>(
 /// Replays one detection over a recorded [`CapTape`], reproducing the findings the
 /// recorded run produced with no network.
 ///
-/// Where [`detect_port`] serves a live socket, this serves the tape, so the same
-/// module reads the same bytes and reaches the same verdict offline. It does not
-/// gate on the envelope: the run already happened and passed the gate live, so this
-/// reproduces it rather than deciding again.
+/// Serves the tape where [`detect_port`] serves a live socket. Does not gate on
+/// the envelope, since the live run already passed it.
 pub(crate) fn replay_over_tape<R: ComputeRuntime>(
     runtime: &R,
     detection: &LoadedDetection<R::Module>,
@@ -205,11 +186,8 @@ pub(crate) fn replay_over_tape<R: ComputeRuntime>(
     let Some(mut grant) = Grant::from_manifest(&detection.manifest, &detection.content_hash) else {
         return Err(ReplayError::GrantFailed);
     };
-    // Replay reads its I/O from the tape, so it does no network work and finishes
-    // in its own time. Leaving the live wall-clock deadline in place would let a
-    // slow replay host trap a run the recording did not, so a fast machine and a
-    // slow one would disagree about the findings. Fuel still bounds it, the same
-    // deterministic count the recording ran under.
+    // No wall-clock deadline offline, so a slow replay host cannot trap a run the
+    // recording did not. Fuel still bounds it.
     grant.budget.deadline = Duration::from_secs(86_400);
     let mut instance = runtime
         .instantiate(&detection.module, &grant)
@@ -218,8 +196,7 @@ pub(crate) fn replay_over_tape<R: ComputeRuntime>(
     let findings = runtime
         .run(&mut instance, ctx, responses, &mut caps)
         .map_err(ReplayError::Run)?;
-    // A faithful replay reads the tape exactly; reading past its end means the tape
-    // was too short to reproduce the run, so the findings are not the recorded ones.
+    // Reading past the tape's end means the replay diverged.
     if caps.diverged() {
         return Err(ReplayError::Diverged);
     }
@@ -254,8 +231,7 @@ mod tests {
     use crate::model::port::Protocol;
     use std::net::IpAddr;
 
-    /// A stand-in socket that answers every probe with one banner, so an active
-    /// detection has something to decide on and a passive one ignores it.
+    /// A stand-in socket that answers every probe with one banner.
     struct StubCaps;
     impl Capabilities for StubCaps {
         fn speak(&mut self, _bytes: &[u8]) -> Result<Vec<u8>, CapError> {
@@ -269,8 +245,7 @@ mod tests {
         }
     }
 
-    /// A passive detection that fires whenever it runs, so a finding is proof the
-    /// stage chose to run it.
+    /// A passive detection that fires whenever it runs.
     const ALWAYS: &str = r#"
         fn analyze(ctx, responses) {
             [ #{ severity: "medium", summary: "port " + ctx.port } ]
@@ -353,7 +328,7 @@ mod tests {
         let runtime = RhaiRuntime::new();
         let detections = vec![loaded(&runtime, "exploit", "redis", Class::Exploit, ALWAYS)];
 
-        // Off by default: the exploit class is above the default ceiling.
+        // The exploit class is above the default ceiling.
         let withheld = detect_port(
             &runtime,
             &detections,
@@ -370,7 +345,7 @@ mod tests {
             "an exploit ran under the default envelope"
         );
 
-        // The operator raises the ceiling to it, and the same detection runs.
+        // Raised to it, the detection runs.
         let permitted = detect_port(
             &runtime,
             &detections,
@@ -386,12 +361,10 @@ mod tests {
     }
 
     #[test]
-    /// Named rather than defaulted: the default ceiling reads what a scan
-    /// gathered and permits nothing that opens a connection, which is the whole
-    /// of what this test is about.
+    /// The envelope is set explicitly: the default permits no connections.
     fn an_active_detection_is_served_its_socket_and_decides_on_the_reply() {
         let runtime = RhaiRuntime::new();
-        // Speaks, and fires only because the stub answered.
+        // Fires only on the stub's answer.
         let source = r#"
             fn analyze(ctx, responses) {
                 let reply = speak(blob(1, 0x41));
@@ -428,8 +401,7 @@ mod tests {
 
     #[test]
     fn a_passive_detection_that_reaches_for_speak_produces_nothing() {
-        // The grant gives a passive detection no `speak`, so a passive body that
-        // names it faults and emits nothing, the class enforced at the stage.
+        // A passive body naming `speak` faults and emits nothing.
         let runtime = RhaiRuntime::new();
         let source = r#"
             fn analyze(ctx, responses) {
@@ -458,12 +430,9 @@ mod tests {
     }
 
     #[test]
-    /// The ceiling is named for the reason the test above names one: a tape is
-    /// what a module's socket work leaves behind, and the default ceiling grants
-    /// none.
+    /// The envelope is set explicitly, as above.
     fn a_run_is_recorded_and_its_tape_handed_back() {
-        // An active detection that speaks once. The tape the stage captures must
-        // hold that exchange, so a later replay can reproduce the run.
+        // An active detection that speaks once; the tape holds the exchange.
         let runtime = RhaiRuntime::new();
         let source = r#"
             fn analyze(ctx, responses) {
@@ -508,9 +477,7 @@ mod tests {
 
     #[test]
     fn a_recorded_run_replays_an_active_detection_offline() {
-        // The offline replay: an active detection that decides on a socket reply is
-        // reproduced from its tape alone, no network. The recorded reply drives the
-        // finding exactly as the live one did.
+        // An active detection reproduced from its tape alone.
         use crate::detect::compute::SpeakExchange;
 
         let runtime = RhaiRuntime::new();
@@ -541,9 +508,7 @@ mod tests {
 
     #[test]
     fn a_replay_over_a_short_tape_reports_divergence_rather_than_a_finding() {
-        // A module that speaks twice, replayed against a one-entry tape: the second
-        // speak reads past the end, so the replay diverged from the recorded run and
-        // its findings are not the recorded ones.
+        // A module speaking twice against a one-entry tape diverges.
         use crate::detect::compute::SpeakExchange;
         let runtime = RhaiRuntime::new();
         let source = r#"
@@ -576,9 +541,7 @@ mod tests {
 
     #[test]
     fn a_faulting_detection_is_returned_as_inconclusive_not_a_finding() {
-        // A module that throws did not clear the port; it did not finish. The stage
-        // must hand that back as an inconclusive run, naming the detection and why,
-        // rather than dropping it into a log where the report cannot see it.
+        // A module that throws is returned as an inconclusive run.
         let runtime = RhaiRuntime::new();
         let source = r#"
             fn analyze(ctx, responses) {
