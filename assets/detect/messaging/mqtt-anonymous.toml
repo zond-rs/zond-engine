@@ -4,12 +4,17 @@
 # The reply 0x20 0x02 0x00 0x00 is CONNACK, remaining length two, no session
 # present, accepted.
 #
+# Graded by who can reach the broker. From the internet, anyone can read every
+# topic and publish to any of them. Inside a network, the anonymous broker is a
+# common home-automation setup, but a neighbour publishing to it can still switch
+# the devices it drives, so it stays a rung above a note.
+#
 # The payload is a single-quoted TOML literal string so its byte escapes reach the
 # interpreter rather than the TOML parser.
 
 [detection]
 id      = "mqtt-anonymous"
-version = "1.0.0"
+version = "1.1.0"
 title   = "MQTT broker accepts anonymous connections"
 
 [detection.when]
@@ -29,7 +34,7 @@ send   = '\x10\x10\x00\x04MQTT\x04\x02\x00\x3c\x00\x04zond'
 expect = '\x20\x02\x00\x00'   # CONNACK: connection accepted
   [[step.finding]]
   when         = "matched"
-  severity     = "high"
+  severity     = { internet = "high", internal = "medium" }
   summary      = "MQTT broker accepted an anonymous connection"
   detail       = "The broker answered a CONNECT carrying no credentials with an accepted CONNACK, so anyone who reaches it can subscribe to and publish on its topics."
   references   = [{ cwe = 306 }]

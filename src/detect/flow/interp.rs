@@ -1150,6 +1150,31 @@ mod tests {
         (findings[0].severity(), findings[0].title().to_string())
     }
 
+    /// **A default a LAN runs on is rated by who can reach it.** `public` on a
+    /// printer and an anonymous home-automation broker are configuration
+    /// inside a network and exposures from outside it.
+    #[test]
+    fn snmp_and_mqtt_defaults_are_rated_by_who_can_reach_them() {
+        let snmp = flow("snmp-default-community");
+        assert_eq!(graded(&snmp, "198.51.100.7", &mut Snmp).0, Severity::High);
+        assert_eq!(
+            graded(&snmp, "192.168.0.10", &mut Snmp).0,
+            Severity::Low,
+            "`public` answering on a private address was rated as an attack"
+        );
+
+        let mqtt = flow("mqtt-anonymous");
+        let connack = || Canned(b"\x20\x02\x00\x00".to_vec());
+        assert_eq!(
+            graded(&mqtt, "198.51.100.7", &mut connack()).0,
+            Severity::High
+        );
+        assert_eq!(
+            graded(&mqtt, "192.168.0.10", &mut connack()).0,
+            Severity::Medium
+        );
+    }
+
     /// A Kubernetes Dashboard: its index page for `/`, and `skippable` for the
     /// login API.
     struct Dashboard {

@@ -4,6 +4,15 @@
 # GetResponse PDU (tag 0xa2); one that does not stays silent, so a reply tagged
 # 0xa2 is the community being accepted.
 #
+# Graded by who can reach the agent. From the internet, any default community is
+# the device's inventory and configuration handed to strangers, and an agent that
+# answers is a UDP amplifier. Inside a network, `public` is the read-only default
+# that nearly every printer, switch and NAS ships with and that monitoring is built
+# on; it lets a neighbour read what the device is, which is worth listing and is
+# not an incident. `private`, `manager` and `admin` are the conventional read-write
+# communities, so an agent that accepts one is likely to accept a SET from anyone
+# on the network, a rung above.
+#
 # The community changes the length octets of the outer SEQUENCE and the
 # community OCTET STRING, so the packets cannot share one interpolated template
 # and are written out per community instead. The payloads are single-quoted TOML
@@ -12,7 +21,7 @@
 
 [detection]
 id      = "snmp-default-community"
-version = "1.0.0"
+version = "1.1.0"
 title   = "SNMP reachable with a default community string"
 
 [detection.when]
@@ -32,7 +41,7 @@ expect      = '\xa2'                # GetResponse PDU tag: the community was acc
 on_no_match = "continue"            # try the next community
   [[step.finding]]
   when         = "matched"
-  severity     = "high"
+  severity     = { internet = "high", internal = "low" }
   summary      = "SNMP answered the default community 'public'"
   references   = [{ cwe = 1392 }]   # Use of Default Credentials
   excerpt_from = "$response"        # the GetResponse the agent returned
@@ -43,7 +52,7 @@ expect      = '\xa2'
 on_no_match = "continue"
   [[step.finding]]
   when         = "matched"
-  severity     = "high"
+  severity     = { internet = "high", internal = "medium" }
   summary      = "SNMP answered the default community 'private'"
   references   = [{ cwe = 1392 }]
   excerpt_from = "$response"
@@ -54,7 +63,7 @@ expect      = '\xa2'
 on_no_match = "continue"
   [[step.finding]]
   when         = "matched"
-  severity     = "high"
+  severity     = { internet = "high", internal = "medium" }
   summary      = "SNMP answered the default community 'manager'"
   references   = [{ cwe = 1392 }]
   excerpt_from = "$response"
@@ -65,7 +74,7 @@ expect      = '\xa2'
 on_no_match = "continue"
   [[step.finding]]
   when         = "matched"
-  severity     = "high"
+  severity     = { internet = "high", internal = "medium" }
   summary      = "SNMP answered the default community 'admin'"
   references   = [{ cwe = 1392 }]
   excerpt_from = "$response"
