@@ -8,12 +8,11 @@
 
 //! # Source Address Selection
 //!
-//! Answers a single question the raw-socket scanners keep asking: given a
-//! destination, which of this host's addresses should a packet to it be sent
-//! *from*? For a raw Layer-4 socket the kernel fills in the IP header's
-//! source, but it does **not** compute the TCP checksum - so the source we
-//! feed into the pseudo-header has to match the one the kernel will route the
-//! packet out with, or the target silently drops it.
+//! Given a destination, which of this host's addresses should a packet to it be
+//! sent *from*? For a raw Layer-4 socket the kernel fills in the IP header's
+//! source but does **not** compute the TCP checksum, so the source fed into the
+//! pseudo-header must match the one the kernel routes the packet out with, or the
+//! target silently drops it.
 //!
 //! Two access patterns share the machinery here:
 //!
@@ -21,10 +20,9 @@
 //!   thousands of distinct targets classified once, in parallel. Callers match
 //!   on-link targets against an [`OnLinkTable`] and ask the kernel about the
 //!   rest.
-//! - **Streaming, one-at-a-time** (the SYN port scanner): targets trickle in,
-//!   with the *same* host revisited across many ports. [`SourceResolver`]
-//!   wraps the same primitives behind a per-destination cache so that repeat
-//!   is a single lookup rather than a fresh kernel probe each time.
+//! - **Streaming, one-at-a-time** (the SYN port scanner): the same host is
+//!   revisited across many ports. [`SourceResolver`] wraps the same primitives
+//!   behind a per-destination cache.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, UdpSocket};
@@ -34,8 +32,7 @@ use crate::system::descriptors;
 use crate::system::interface::{Link, LinkAddress};
 
 /// The links usable as a probe source: up, not loopback, and holding at least
-/// one assigned address. Centralizes a filter that source selection, interface
-/// prioritization, and target routing would otherwise each repeat.
+/// one assigned address.
 pub(crate) fn viable_interfaces() -> Vec<Link> {
     crate::system::interface::interfaces_or_none()
         .into_iter()
@@ -46,14 +43,11 @@ pub(crate) fn viable_interfaces() -> Vec<Link> {
 /// The host's own addresses, ordered most-specific-first so that the longest
 /// matching prefix wins.
 ///
-/// A destination on the same segment is reached directly, so its source is
-/// simply this host's address on that segment: no kernel round-trip required.
+/// A destination on the same segment is reached directly, so its source is this
+/// host's address on that segment, with no kernel round-trip.
 ///
-/// One list rather than one per family, because a [`LinkAddress`] already knows
-/// which family it is and declines a target of the other. Sorting the two
-/// together is harmless for the same reason: the order only has to hold *within*
-/// a family, and a v6 `/64` sitting between two v4 prefixes is never a candidate
-/// for a v4 target to begin with.
+/// Both families share one list: a [`LinkAddress`] declines a target of the other
+/// family, so the order only has to hold within a family.
 pub struct OnLinkTable {
     held: Vec<LinkAddress>,
 }
@@ -74,12 +68,10 @@ impl OnLinkTable {
     /// Returns the source address for `target` if it sits on one of the host's
     /// own subnets, or `None` if it has to be routed off-link.
     ///
-    /// A link-local target answers `None`. Every interface holds an
-    /// `fe80::/64`, so such a target matches all of them and identifies none,
-    /// and the first match would be decided by whatever order the host listed
-    /// its interfaces in. [`RoutedTargets::ambiguous`](super::RoutedTargets) is
-    /// the same refusal made earlier and with a reason the caller can read.
-    ///
+    /// A link-local target answers `None`: every interface holds an `fe80::/64`,
+    /// so the match would depend on the order the host listed its interfaces in.
+    /// [`RoutedTargets::ambiguous`](super::RoutedTargets) refuses the same case
+    /// earlier, with a reason.
     /// A target that named its interface is answered before this table is
     /// consulted, from the interface it named. See
     /// [`SourceResolver::with_zones`](super::SourceResolver::with_zones).
@@ -100,13 +92,12 @@ impl OnLinkTable {
     }
 
     /// Whether `target` is the network or the broadcast address of an IPv4
-    /// segment this host holds, which names the segment rather than a
-    /// neighbour on it.
+    /// segment this host holds.
     ///
-    /// A kernel refuses a socket to the broadcast address the way it refuses
-    /// one to an address a policy keeps out, and some still treat the network
-    /// address as a broadcast, so a refusal for either says nothing about a
-    /// route. A `/31` and a `/32` have no such addresses.
+    /// A kernel refuses a socket to the broadcast address the way it refuses one
+    /// to an address a policy keeps out, and some treat the network address as a
+    /// broadcast, so a refusal for either says nothing about a route. A `/31` and
+    /// a `/32` have no such addresses.
     pub(crate) fn is_segment_edge(&self, target: IpAddr) -> bool {
         self.held.iter().any(|held| {
             held.contains(&target)
@@ -137,49 +128,35 @@ impl OnLinkTable {
 /// Picks an address on `interfaces` that could plausibly reach `target` when
 /// the kernel's own route lookup has declined to answer.
 ///
-/// A refusal is not always the truth about reachability. A VPN that claims the
-/// IPv6 default route without carrying IPv6 makes every off-link IPv6 lookup
-/// fail while the host still holds a global address on a segment with a working
-/// router: measured on the machine this was written on, where `connect` to
-/// every public resolver returned `No route to host` and the same addresses
-/// answered in 22 ms once a source was named explicitly.
+/// A kernel refusal is not always the truth about reachability. A VPN that
+/// claims the IPv6 default route without carrying IPv6 makes every off-link IPv6
+/// lookup fail while the host still holds a global address on a segment with a
+/// working router, and naming that source explicitly works. A probe from an
+/// address the host really holds either reaches the target or does not, and the
+/// scan reports what it observed. This is only asked where the kernel said it has
+/// no route, never after a policy refusal; see [`RouteAnswer::Forbidden`].
 ///
-/// What follows from that is not that the kernel is wrong, but that giving up
-/// here is worse than trying, where the kernel said it has no route. A route
-/// that refuses by policy is another answer, and this is never asked after
-/// one; see [`RouteAnswer::Forbidden`]. A probe sourced from an address the host really
-/// holds either reaches the target or does not, and either way the scan reports
-/// what it observed. Giving up produces a scan that reports nothing and blames
-/// the network.
+/// Scope-matched: a global destination needs a global source.
 ///
-/// Scope-matched, since an address of the wrong scope cannot reach the target
-/// whatever the routing table says: a global destination needs a global source.
-///
-/// A **link-local destination is declined** rather than matched. It would need
-/// the link-local address of the interface it is on, and a bare [`IpAddr`]
-/// cannot say which interface that is -- so the honest answer is that this
-/// function does not know. See
+/// A **link-local destination is declined**: it needs the link-local address of
+/// its interface, and a bare [`IpAddr`] cannot say which interface that is. See
 /// [`OnLinkTable::source_for`](OnLinkTable::source_for).
 ///
-/// An **IPv4 address written inside IPv6** is declined as IPv4 itself is. It
-/// is an IPv4 host, reached only by a dual-stack socket from an IPv4 source,
-/// and a global IPv6 address, the one thing the scope match below offers, is
+/// An **IPv4 address written inside IPv6** is declined as IPv4 itself is. It is
+/// an IPv4 host, reachable only from an IPv4 source, and a global IPv6 address is
 /// the one source that certainly cannot reach it.
 pub(crate) fn plausible_source(links: &[Link], target: IpAddr) -> Option<IpAddr> {
     let IpAddr::V6(target_v6) = target else {
-        // IPv4 has no equivalent failure worth second-guessing: there is one
-        // scope, and a kernel that cannot route a v4 address is describing a
-        // host with no v4 connectivity.
+        // IPv4 has one scope, and a kernel that cannot route a v4 address
+        // describes a host with no v4 connectivity.
         return None;
     };
     if target_v6.to_ipv4_mapped().is_some() {
         return None;
     }
 
-    // A link-local destination cannot be answered here for the reason
-    // `OnLinkTable::source_for` gives: every interface holds one, so any answer
-    // is the interface list's order rather than a fact about the target. The
-    // scope match below would otherwise pick the first and look deliberate.
+    // Declined for the reason `OnLinkTable::source_for` gives; the scope match
+    // below would otherwise pick the first interface.
     if target_v6.is_unicast_link_local() {
         return None;
     }
@@ -194,8 +171,8 @@ pub(crate) fn plausible_source(links: &[Link], target: IpAddr) -> Option<IpAddr>
 
 /// Asks the kernel which local address it would route a packet to `target`
 /// from, by `connect`-ing an unbound UDP socket to it and reading back the
-/// address the routing layer selected. No datagram is ever sent - `connect`
-/// on a UDP socket only performs the route lookup and binds the local end.
+/// address the routing layer selected. No datagram is sent: `connect` on a UDP
+/// socket only performs the route lookup and binds the local end.
 pub fn probe_route_source(target: IpAddr) -> Option<IpAddr> {
     match ask_route(target) {
         RouteAnswer::From(source) => Some(source),
@@ -208,16 +185,13 @@ pub fn probe_route_source(target: IpAddr) -> Option<IpAddr> {
 
 /// What the kernel's routing table said about one destination.
 ///
-/// Read off the error a UDP `connect` fails with, which is the route lookup's
-/// own and never the neighbour's: neither kernel consults the neighbour table
-/// on this path. Linux resolves the route in `ip_route_output_flow` and turns
-/// a route's type into an error through `fib_props`, and reads no neighbour
-/// state before a datagram is sent. XNU picks the source in `in_pcbladdr`,
-/// which does not look at the `RTF_REJECT` a failed ARP resolution sets; that
-/// flag turns sends away, from `arp_lookup_ip`, and is the sender's to report.
-/// So a refusal here is the table's answer about the destination, in one of
-/// the few words a table answers in, and anything else is a lookup that did
-/// not finish.
+/// Read off the error a UDP `connect` fails with, which comes from the route
+/// lookup and never from the neighbour table. Linux resolves the route in
+/// `ip_route_output_flow` and maps a route's type to an error through
+/// `fib_props`. XNU picks the source in `in_pcbladdr`, which ignores the
+/// `RTF_REJECT` a failed ARP resolution sets (that flag rejects sends, from
+/// `arp_lookup_ip`). So a refusal here is the table's answer about the
+/// destination, and anything else is a lookup that did not finish.
 #[derive(Debug)]
 pub(crate) enum RouteAnswer {
     /// It routes there, from this address.
@@ -226,33 +200,27 @@ pub(crate) enum RouteAnswer {
     /// `EADDRNOTAVAIL` for a route with no address of this host's to send
     /// from.
     ///
-    /// What a missing route answers, and what a VPN holding the IPv6 default
-    /// route without carrying IPv6 answers too, which is the case
-    /// [`plausible_source`] steps around. An `unreachable` route an
-    /// administrator added answers the same and cannot be told apart from
-    /// here, and so does XNU's refusal of an interface this socket may not
-    /// send on.
+    /// Also what a VPN holding the IPv6 default route without carrying IPv6
+    /// answers, the case [`plausible_source`] steps around. An `unreachable`
+    /// route an administrator added answers the same and cannot be told apart,
+    /// as does XNU's refusal of an interface this socket may not send on.
     NoRoute,
     /// A route there refuses by policy: a `prohibit` route answers `EACCES`
     /// and a `blackhole` route `EINVAL`, where Linux has them, and an IPsec
     /// policy that blocks the destination `EPERM`. No missing or unusable
-    /// route answers any of these, so a refusal in these words is a decision
-    /// this host's administrator made about the destination, and a scan that
-    /// stepped around it by naming a source would be the one program on the
-    /// machine that ignored it.
+    /// policy that blocks the destination `EPERM`. No missing or unusable route
+    /// answers any of these, so this is the administrator's decision about the
+    /// destination, and the scan honours it.
     Forbidden,
-    /// The table was asked and gave no answer, in words no route refuses in:
-    /// a lookup that ran out of memory or buffers, was interrupted or told to
-    /// try again, as Linux tells a socket whose IPsec keys are still being
-    /// negotiated, or found the interface down; and any error this does not
-    /// know.
+    /// The table was asked and gave no answer: a lookup that ran out of memory
+    /// or buffers, was interrupted or told to try again (as Linux does while IPsec
+    /// keys are being negotiated), or found the interface down; and any unknown
+    /// error.
     ///
-    /// Says nothing about the destination, and is asked again. An error not
-    /// named here is read as this rather than as a refusal because the two
-    /// mistakes cost differently: a lookup wrongly asked again costs a few
-    /// questions and then settles as [`SourceResolver`] settles an
-    /// unanswered one, and a refusal wrongly remembered files a live host
-    /// unreachable for the rest of the scan.
+    /// Says nothing about the destination, and is asked again. Unknown errors land
+    /// here because the mistakes cost differently: a lookup wrongly asked again
+    /// costs a few questions before [`SourceResolver`] settles it, while a refusal
+    /// wrongly remembered files a live host unreachable for the rest of the scan.
     Unanswered(std::io::Error),
     /// Nothing was asked: no socket to ask with, which says nothing about the
     /// destination.
@@ -285,16 +253,11 @@ impl RouteAnswer {
 /// Asks the kernel how it routes to `target`, keeping its refusal apart from a
 /// question that could not be put. See [`probe_route_source`].
 ///
-/// Each question is put on a socket of its own. A socket that has been
-/// connected keeps the source its first connect chose on Linux, where
-/// `__ip4_datagram_connect` fills the source in only while it is unset, so a
-/// second connect is routed from the first answer's address: it answers a
-/// target behind another link with an address that link does not hold, and
-/// after a question about loopback refuses every routed target with the
-/// `EINVAL` a loopback source off the loopback device gets, which reads as a
-/// route refusing it by policy. XNU disconnects a datagram socket before
-/// connecting it again and has no such memory, but a question that owes
-/// nothing to the one before it is the same on both.
+/// Each question is put on a socket of its own. On Linux a connected UDP
+/// socket keeps the source its first connect chose (`__ip4_datagram_connect`
+/// fills it only while unset), so a reused socket would answer a target behind
+/// another link with the wrong address, and after a loopback question would
+/// refuse every routed target with `EINVAL`, which reads as a policy refusal.
 pub(crate) fn ask_route(target: IpAddr) -> RouteAnswer {
     let unbound = if target.is_ipv4() {
         "0.0.0.0:0"
@@ -319,18 +282,14 @@ pub(crate) fn ask_route(target: IpAddr) -> RouteAnswer {
 pub(crate) enum NoSource {
     /// No address on this host reaches the destination, or the routing table
     /// refuses it; [`refused_by_route`](SourceResolver::refused_by_route)
-    /// says which. A fact about the destination, and the same answer the next
-    /// time it is asked.
+    /// says which. The same answer the next time it is asked.
     Unreached,
     /// This process had no descriptor for the socket the routing table is
-    /// asked through, so the table was never asked. A fact about this
-    /// machine, which a socket closing elsewhere undoes: said as the shortage
-    /// it is, and asked again next time rather than remembered as an address
-    /// nothing reaches.
+    /// asked through, so the table was never asked. Asked again next time, not
+    /// remembered.
     Unasked(std::io::Error),
     /// The routing table was asked and gave no answer this time; see
-    /// [`RouteAnswer::Unanswered`]. A fact about this machine at this
-    /// moment, and asked again next time, up to
+    /// [`RouteAnswer::Unanswered`]. Asked again next time, up to
     /// [`UNANSWERED_LOOKUPS`] times for one destination.
     Unanswered(std::io::Error),
 }
@@ -339,27 +298,23 @@ pub(crate) enum NoSource {
 /// destination that it has not answered before it settles the destination
 /// without the table's answer.
 ///
-/// Each unanswered lookup costs the probe that needed it, which is not sent,
-/// so the bound is what a lookup that never succeeds costs a host: two
-/// probes, and the third sent on what the table has said, which is nothing.
-/// A shortage of memory or buffers passes between one probe and the next,
-/// and a table that failed three questions spread across a host's probes is
-/// not answering. A refusal is never what runs this out: a route that refuses
-/// says so in words [`RouteAnswer`] remembers the first time.
+/// Each unanswered lookup costs the probe that needed it, so a lookup that
+/// never succeeds costs a host two probes, and the third is sent on what the
+/// table has said, which is nothing. Memory or buffer shortages pass between
+/// probes; a table that fails three questions spread across a host's probes is
+/// not answering. A refusal never runs this out, since [`RouteAnswer`] records
+/// a refusal the first time.
 pub(crate) const UNANSWERED_LOOKUPS: u8 = 3;
 
 /// Whether the routing table refuses `target`, a destination on one of this
 /// host's own segments.
 ///
-/// A segment this host holds is reached directly, so the table's answer for
-/// it is the connected route unless a more specific one overrides it, and
-/// every override that refuses is the host's policy: a `prohibit`,
-/// `unreachable` or `blackhole` route, or the rules a VPN's kill switch keeps
-/// the local network out with. A frame built for the neighbour never asks the
-/// table, so asking it here is the only way such a policy is heard. A table
-/// that could not be asked, for want of a socket to ask with, or that gave no
-/// answer, is not read as a refusal: a policy refuses in its own words, which
-/// [`RouteAnswer`] reads.
+/// A segment this host holds is reached directly, so the table's answer is the
+/// connected route unless a more specific one overrides it, and every refusing
+/// override is host policy: a `prohibit`, `unreachable` or `blackhole` route, or
+/// a VPN kill switch's rules. A frame built for the neighbour never asks the
+/// table, so this is the only way such a policy is heard. A table that could not
+/// be asked, or gave no answer, is not read as a refusal.
 pub(crate) fn refuses_neighbour(target: IpAddr) -> bool {
     matches!(
         ask_route(target),
@@ -367,30 +322,24 @@ pub(crate) fn refuses_neighbour(target: IpAddr) -> bool {
     )
 }
 
-/// Resolves the source address for arbitrary destinations seen one at a time,
-/// memoizing each answer. Built for the streaming SYN port scanner, where the
-/// same host recurs across every port it probes: the first probe to a host
-/// does the work, and every later port reuses the cached result.
+/// Resolves the source address for destinations seen one at a time, caching
+/// each answer. Built for the streaming SYN port scanner, where the same host
+/// recurs across every port it probes.
 ///
-/// Four sources, in descending order of confidence. A link-local destination the
-/// scan scoped to an interface is answered from that interface's own link-local
-/// address, which [`with_zones`](Self::with_zones) supplies. Other on-link
-/// destinations are answered from an in-memory table of each interface's own
-/// subnets. Everything else is put to the kernel, by connecting a UDP socket to
-/// the target and reading back the address it chose, which asks the routing
-/// table without sending a packet. When the kernel has no route, the last
-/// resort is any address on an interface that could plausibly carry the
-/// traffic. A source the scan [forced](Self::with_forced) answers between the
-/// subnets and the kernel, and a route that refuses by policy is answered by
-/// none of them.
+/// Sources, in descending order of confidence: a link-local destination scoped
+/// to an interface is answered from that interface's link-local address (see
+/// [`with_zones`](Self::with_zones)); other on-link destinations from each
+/// interface's own subnets; a [forced](Self::with_forced) source; the kernel,
+/// asked by connecting a UDP socket without sending a packet; and, when the
+/// kernel has no route, any address on an interface that could plausibly carry
+/// the traffic. A route that refuses by policy is answered by none of them.
 pub struct SourceResolver {
     onlink: OnLinkTable,
     /// How the routing table is asked about a destination: [`ask_route`].
     route: fn(IpAddr) -> RouteAnswer,
-    /// Whether the routing table is asked about a destination on one of the
-    /// segments this resolver holds: for a resolver of this host's, and not
-    /// for one built over links it was handed, which are not this host's
-    /// table's to refuse.
+    /// Whether the routing table is asked about a destination on one of this
+    /// resolver's segments: yes for this host's resolver, no for one built over
+    /// links it was handed.
     asks_on_link: bool,
     /// The destinations the routing table refused. See
     /// [`refused_by_route`](Self::refused_by_route).
@@ -399,18 +348,15 @@ pub struct SourceResolver {
     /// table gave no answer to. See [`UNANSWERED_LOOKUPS`].
     unanswered: HashMap<IpAddr, u8>,
     cache: HashMap<IpAddr, Option<IpAddr>>,
-    /// The interfaces themselves, kept for [`plausible_source`]. The
-    /// [`OnLinkTable`] cannot answer for it: that table matches a destination
-    /// against a prefix, and the case this exists for is a destination on no
-    /// prefix this host holds.
+    /// The interfaces themselves, kept for [`plausible_source`], which answers
+    /// for a destination on no prefix this host holds.
     links: Vec<Link>,
     /// The interfaces this scan's link-local targets were named on, empty for a
     /// scan that named none. A prefix match cannot answer for these, since every
     /// interface holds an `fe80::/64`.
     zones: ZoneMap,
-    /// Source addresses the caller forced, one per family at most. When set for
-    /// a routed target's family, this is the answer, ahead of the routing
-    /// table.
+    /// Source addresses the caller forced, at most one per family. When set for
+    /// a routed target's family, this is the answer, ahead of the routing table.
     forced: Vec<IpAddr>,
 }
 
@@ -444,10 +390,10 @@ impl SourceResolver {
     /// Teaches the resolver which interface each of a scan's link-local targets
     /// was named on.
     ///
-    /// Without this a link-local destination has no source address, since the
-    /// prefix it sits in is one every interface holds. With it, the source is the
-    /// link-local address of the interface the target named, and
-    /// [`zone_of`](Self::zone_of) is the scope id the send needs alongside it.
+    /// Without this a link-local destination has no source address, since every
+    /// interface holds its prefix. With it, the source is the link-local address
+    /// of the interface the target named, and [`zone_of`](Self::zone_of) is the
+    /// scope id the send needs alongside it.
     pub fn with_zones(mut self, zones: ZoneMap) -> Self {
         self.zones = zones;
         self
@@ -463,17 +409,16 @@ impl SourceResolver {
 
     /// The interface index a destination is valid on, for a scan that named one.
     ///
-    /// A raw send carries this as the scope id of its destination. Everything
-    /// that identifies its host on its own answers `None` and needs none.
+    /// A raw send carries this as the scope id of its destination. `None` for
+    /// every target that identifies its host on its own.
     pub fn zone_of(&self, target: IpAddr) -> Option<u32> {
         self.zones.zone_of(&target)
     }
 
     /// The link-local address of the interface `target` was named on.
     ///
-    /// A link-local source is the only one a link-local destination can be
-    /// reached from, and which interface holds it is the whole question a zone
-    /// answers.
+    /// A link-local destination can only be reached from a link-local source on
+    /// its own interface.
     fn scoped_source(&self, target: IpAddr) -> Option<IpAddr> {
         let zone = self.zones.zone_of(&target)?;
         self.links
@@ -485,40 +430,35 @@ impl SourceResolver {
             .find(|address| matches!(address, IpAddr::V6(v6) if v6.is_unicast_link_local()))
     }
 
-    /// Whether `target` sits on one of this host's own segments, so a packet
-    /// to it is framed to the target itself rather than to a gateway.
+    /// Whether `target` sits on one of this host's own segments, so a packet to
+    /// it is framed to the target itself and not to a gateway.
     ///
     /// A link-local target the scan named an interface for is on that
-    /// interface's segment, which is the only place such an address means
-    /// anything.
+    /// interface's segment.
     pub(crate) fn is_on_link(&self, target: IpAddr) -> bool {
         self.zones.zone_of(&target).is_some() || self.onlink.source_for(target).is_some()
     }
 
-    /// Whether [`resolve`](Self::resolve) found no source for `target`
-    /// because the routing table refuses it, rather than because nothing
-    /// here reaches it.
+    /// Whether [`resolve`](Self::resolve) found no source for `target` because
+    /// the routing table refuses it.
     pub(crate) fn refused_by_route(&self, target: IpAddr) -> bool {
         self.refused.contains(&target)
     }
 
-    /// Whether this host has any address to send probes from. When false,
-    /// there is no point standing up a raw-socket scanner at all.
+    /// Whether this host has any address to send probes from. When false, a
+    /// raw-socket scanner has nothing to send from.
     pub fn has_sources(&self) -> bool {
         !self.onlink.is_empty()
     }
 
     /// The forced source matching `target`'s family, when one was set and
-    /// applies to it. This is how [`with_forced`](Self::with_forced) overrides
-    /// the routing table: a scan pinned to an interface sends a routed target
-    /// from that interface's address rather than the one the kernel would have
-    /// picked.
+    /// applies: a scan pinned to an interface sends a routed target from that
+    /// interface's address.
     ///
-    /// Only a routed target, as the plan and the scan's connections apply it.
-    /// [`resolve`](Self::resolve) asks this after this host's own prefixes,
-    /// and loopback, an IPv4 address written inside IPv6, and a link-local
-    /// address are no link's to be pinned to: the first two are the kernel's,
-    /// and the third is on the link its zone names or on none.
+    /// Only for a routed target. [`resolve`](Self::resolve) asks this after this
+    /// host's own prefixes. Loopback and an IPv4 address written inside IPv6 are
+    /// left to the kernel, and a link-local address is on the link its zone names
+    /// or on none.
     fn forced_source(&self, target: IpAddr) -> Option<IpAddr> {
         let no_link = target.is_loopback()
             || matches!(target, IpAddr::V6(v6) if v6.to_ipv4_mapped().is_some()
@@ -536,48 +476,35 @@ impl SourceResolver {
     /// if no address on this host could plausibly reach it.
     ///
     /// Five answers in order of authority: the interface a link-local target
-    /// named, this host's own segments and tunnel prefixes, a forced source,
-    /// the kernel's routing table, then `plausible_source` for the case where
-    /// the kernel refuses but the host visibly holds an address of the right
-    /// scope.
+    /// named, this host's own segments and tunnel prefixes, a forced source, the
+    /// kernel's routing table, then `plausible_source` for the case where the
+    /// kernel refuses but the host visibly holds an address of the right scope.
     ///
-    /// The same order the scan's plan classifies in and its connections leave
-    /// by. A target inside a prefix this host holds has one link that reaches
-    /// it, which a forced source must not move it off; a forced source placed
-    /// ahead would send its probes out by another link while the plan and
-    /// every connection to it went by its own.
+    /// This is the order the scan's plan classifies in and its connections leave
+    /// by. A target inside a prefix this host holds has one link that reaches it,
+    /// so a forced source must not move it off that link.
     ///
-    /// A target on one of this host's segments that the routing table
-    /// refuses has no source, whatever the segment says. A probe to it would
-    /// be framed to the neighbour, or sent by a socket held to the link,
-    /// neither of which asks the table, and would reach a host the machine's
-    /// own policy keeps it from: the one scanner on the box that ignored a
-    /// route its administrator added, found out by the probes arriving. A
-    /// segment this host holds is reached directly, so the table's answer for
-    /// it is the connected route unless a more specific one overrides it, and
-    /// every override that refuses is the host's policy: a `prohibit`,
-    /// `unreachable` or `blackhole` route, or the rules a VPN's kill switch
-    /// keeps the local network out with. The table is asked by connecting a
-    /// UDP socket, as for a routed target.
+    /// A target on one of this host's segments that the routing table refuses has
+    /// no source. A probe to it would be framed to the neighbour or sent by a
+    /// socket held to the link, neither of which asks the table, and would reach a
+    /// host the machine's own policy keeps out (a `prohibit`, `unreachable` or
+    /// `blackhole` route, or a VPN kill switch's rules). The table is asked by
+    /// connecting a UDP socket, as for a routed target.
     ///
-    /// A routed target whose route refuses by policy has no source either,
-    /// forced or fallen back on. Both send by a socket held to an address,
-    /// which the kernel sends from wherever the table refuses, and a routed
-    /// target's refusal can be the kernel's own absence of a route as well as
-    /// a policy, so only the policy's words decline it: the permission denied
-    /// of a `prohibit` route and the invalid argument of a `blackhole` one,
-    /// where Linux has them.
+    /// A routed target whose route refuses by policy has no source either, forced
+    /// or fallback. Since a routed refusal can also mean no route at all, only the
+    /// policy errors decline it: `EACCES` from a `prohibit` route and `EINVAL`
+    /// from a `blackhole` one, where Linux has them.
     pub fn resolve(&mut self, target: IpAddr) -> Option<IpAddr> {
         self.source(target).ok()
     }
 
     /// [`resolve`](Self::resolve), saying why there is no source.
     ///
-    /// A lookup this process had no descriptor for is not remembered, and
-    /// the next asks the table afresh; see [`NoSource::Unasked`]. Nor is one
-    /// the table gave no answer to, up to [`UNANSWERED_LOOKUPS`] of them;
-    /// see [`NoSource::Unanswered`]. Everything else is remembered for the
-    /// life of the resolver.
+    /// A lookup this process had no descriptor for is not remembered; see
+    /// [`NoSource::Unasked`]. Nor is one the table gave no answer to, up to
+    /// [`UNANSWERED_LOOKUPS`] of them; see [`NoSource::Unanswered`]. Everything
+    /// else is remembered for the life of the resolver.
     pub(crate) fn source(&mut self, target: IpAddr) -> Result<IpAddr, NoSource> {
         if let Some(cached) = self.cache.get(&target) {
             return cached.ok_or(NoSource::Unreached);
@@ -594,11 +521,10 @@ impl SourceResolver {
         source
     }
 
-    /// Counts a lookup of `target` the routing table gave no answer to, and
-    /// says whether to ask again: [`NoSource::Unanswered`] while the
-    /// destination has had fewer than [`UNANSWERED_LOOKUPS`], and `Ok` once
-    /// it has had that many, for the caller to settle it on what the table
-    /// has said, which is nothing.
+    /// Counts a lookup of `target` the routing table gave no answer to:
+    /// [`NoSource::Unanswered`] while the destination has had fewer than
+    /// [`UNANSWERED_LOOKUPS`], and `Ok` once it has had that many, for the caller
+    /// to settle it without the table's answer.
     fn unanswered(&mut self, target: IpAddr, error: std::io::Error) -> Result<(), NoSource> {
         let count = self.unanswered.entry(target).or_default();
         *count += 1;
@@ -611,19 +537,16 @@ impl SourceResolver {
 
     /// [`source`](Self::source), asked afresh.
     ///
-    /// A table this process could not ask about a target on its own segment
-    /// is not read as one that allows it: the question is what keeps the
-    /// probes from a neighbour the host's policy refuses, and it is put again
-    /// once a descriptor is free rather than skipped.
+    /// A table this process could not ask about a target on its own segment is
+    /// not read as allowing it: the question is put again once a descriptor is
+    /// free.
     ///
-    /// Nor is a table that gave no answer, or a socket to ask it with that
-    /// could not be made for a reason other than the file limit, until it
-    /// has done so [`UNANSWERED_LOOKUPS`] times. The destination is then
-    /// settled on what the table has said, which is nothing: a target on
-    /// this host's segment is sent from the segment, since a policy that
-    /// refuses it says so in its own words the first time it is asked, and a
-    /// routed target is given what a target the table has no route to is
-    /// given, a forced source or the fallback, or none.
+    /// Nor is a table that gave no answer, or a socket that could not be made for
+    /// a reason other than the file limit, until [`UNANSWERED_LOOKUPS`] times. The
+    /// destination is then settled without the table: a target on this host's
+    /// segment is sent from the segment (a policy refusal would have said so the
+    /// first time), and a routed target gets a forced source, the fallback, or
+    /// none.
     fn find(&mut self, target: IpAddr) -> Result<IpAddr, NoSource> {
         if let Some(scoped) = self.scoped_source(target) {
             return Ok(scoped);
@@ -634,9 +557,8 @@ impl SourceResolver {
             }
             return match (self.route)(target) {
                 RouteAnswer::NoRoute | RouteAnswer::Forbidden => {
-                    // Unreached all the same, but not named refused by a
-                    // route: the kernel refuses a segment's broadcast address
-                    // on grounds of its own.
+                    // Unreached, but not named refused by a route: the kernel refuses a
+                    // segment's broadcast address on grounds of its own.
                     if !self.onlink.is_segment_edge(target) {
                         self.refused.insert(target);
                     }
@@ -656,8 +578,7 @@ impl SourceResolver {
             RouteAnswer::From(source) => Some(source),
             RouteAnswer::NoRoute => None,
             RouteAnswer::Forbidden => {
-                // The limited broadcast address is refused as a segment's
-                // is, which says nothing about a route.
+                // The limited broadcast address is refused as a segment's is.
                 if !matches!(target, IpAddr::V4(v4) if v4.is_broadcast()) {
                     self.refused.insert(target);
                 }
@@ -679,9 +600,8 @@ impl SourceResolver {
             .ok_or(NoSource::Unreached)
     }
 
-    /// This resolver, asking the routing table through `route` about every
-    /// destination a resolver of this host's asks about, for a test that
-    /// needs the table to answer as no host a test runs on does.
+    /// This resolver, asking the routing table through `route`, for a test that
+    /// needs the table to answer as no test host does.
     #[cfg(all(test, unix))]
     pub(crate) fn asking_with(mut self, route: fn(IpAddr) -> RouteAnswer) -> Self {
         self.route = route;
@@ -703,8 +623,7 @@ impl SourceResolver {
 mod tests {
 
     /// The same address, with the interface named. The source is that
-    /// interface's own link-local address, which is the only one a link-local
-    /// destination can be reached from.
+    /// interface's own link-local address.
     #[test]
     fn a_link_local_target_that_named_an_interface_is_sourced_from_it() {
         use crate::model::ip::range::Ipv6Range;
@@ -738,11 +657,8 @@ mod tests {
         );
     }
 
-    /// The defect this guard exists for, and the shape of it: every interface
-    /// holds an `fe80::/64`, so a bare link-local target matched whichever one
-    /// the host happened to list first. Measured before the fix: the same
-    /// target answered `fe80::a` or `fe80::b` depending only on the order the
-    /// links arrived in.
+    /// Every interface holds an `fe80::/64`, so a bare link-local target would
+    /// match whichever one the host listed first.
     #[test]
     fn a_bare_link_local_target_has_no_source_rather_than_an_arbitrary_one() {
         let en0 = mock_interface(vec![v6net(
@@ -766,8 +682,8 @@ mod tests {
         );
     }
 
-    /// The fallback made the same guess, so it declines the same case. A global
-    /// destination is still answered, which is what the fallback is for.
+    /// The fallback declines the same case. A global destination is still
+    /// answered.
     #[test]
     fn the_fallback_declines_a_link_local_and_still_answers_a_global() {
         let links = [mock_interface(vec![
@@ -792,8 +708,7 @@ mod tests {
         );
     }
 
-    /// An ordinary on-link target is untouched: the guard is about one family
-    /// of address and must not cost the rest anything.
+    /// An ordinary on-link target is untouched.
     #[test]
     fn an_on_link_target_still_resolves_to_its_own_segment() {
         let table = OnLinkTable::from_links(&[mock_interface(vec![v4net(192, 0, 2, 10, 24)])]);
@@ -813,10 +728,8 @@ mod tests {
     /// theirs.
     ///
     /// A `prohibit`, `unreachable` or `blackhole` host route over an address
-    /// on a connected segment is the host's own policy. A probe framed to the
-    /// neighbour, or sent by a socket held to the link, never asks the table,
-    /// so without this the one program on the box that ignored the route
-    /// would be the scanner, found out by its probes arriving.
+    /// on a connected segment is the host's own policy, and a probe framed to the
+    /// neighbour never asks the table.
     #[test]
     fn a_target_on_link_the_routing_table_refuses_has_no_source() {
         let refused = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 13));
@@ -840,8 +753,8 @@ mod tests {
     }
 
     /// The table is asked, and an address it routes is not refused. Loopback
-    /// is routed on every host a test runs on, and the one refusal a test
-    /// could build takes privileges; that half is Tier 3's.
+    /// is routed on every test host; building a refusal takes privileges, so
+    /// that half is Tier 3's.
     #[test]
     fn an_address_the_kernel_routes_is_not_refused() {
         assert!(matches!(
@@ -850,14 +763,11 @@ mod tests {
         ));
     }
 
-    /// A question about a route is answered as it would be were it the first
-    /// one asked. A socket connected once keeps the source it was given on
-    /// Linux, so asked through one, a question after loopback's was routed
-    /// from `127.0.0.1` and refused with `EINVAL`, which reads as a route
-    /// refusing the target by policy, and a target behind a second link was
-    /// answered with the first link's address. On a host a test runs on with
-    /// no route to the documentation range, both answers are the same
-    /// refusal, and the test says nothing.
+    /// A question about a route is answered as if it were the first one asked.
+    /// On Linux a reused socket would route a question after loopback's from
+    /// `127.0.0.1` and get `EINVAL`, and answer a target behind a second link with
+    /// the first link's address. On a test host with no route to the documentation
+    /// range, both answers are the same refusal and the test says nothing.
     #[test]
     fn a_route_question_is_answered_whatever_was_asked_before_it() {
         let routed = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
@@ -871,11 +781,8 @@ mod tests {
     }
 
     /// A routed target whose route refuses by policy has no source, and the
-    /// fallback that steps around a missing route does not step around it:
-    /// a `prohibit` route over an off-link IPv6 address was probed through a
-    /// socket held to the global address, the one program on the box that
-    /// ignored the route. A missing route still gets the fallback, which is
-    /// the case the fallback is for.
+    /// fallback for a missing route does not step around it. A missing route
+    /// still gets the fallback.
     #[test]
     fn a_routed_target_a_route_forbids_is_given_no_fallback() {
         let global = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xb1a0);
@@ -897,9 +804,8 @@ mod tests {
         assert!(!missing.refused_by_route(target));
     }
 
-    /// Nor does a forced source step around it: a scan pinned to an interface
-    /// chose which link its probes leave by, not which of this host's routes
-    /// they may ignore.
+    /// Nor does a forced source step around it: pinning a scan to an interface
+    /// chooses which link its probes leave by, not which routes they may ignore.
     #[test]
     fn a_forced_source_does_not_answer_for_a_target_a_route_forbids() {
         let lan = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
@@ -914,11 +820,9 @@ mod tests {
     }
 
     /// A segment's broadcast and network addresses, and the limited broadcast
-    /// address, are refused a source as a neighbour a route refuses is, since
-    /// the kernel refuses them too, and are not named refused by a route: a
-    /// kernel refuses a socket to a broadcast address on grounds of its own,
-    /// and a scan of a `/24` would otherwise name its two edges as addresses
-    /// a route on this machine keeps out.
+    /// address, get no source, since the kernel refuses them too, but are not
+    /// named refused by a route; otherwise a scan of a `/24` would report its two
+    /// edges as kept out by policy.
     #[test]
     fn a_segment_s_edges_are_unreached_without_being_named_refused_by_a_route() {
         let mut resolver = SourceResolver {
@@ -939,12 +843,9 @@ mod tests {
         assert!(resolver.refused_by_route(neighbour));
     }
 
-    /// A routing table this process had no descriptor to ask is a shortage
-    /// said as one, and asked again next time: remembered as a target with
-    /// no source, a moment's full table would file a live host unreachable
-    /// for the rest of the scan. A target on this host's own segment is not
-    /// given its segment's source unasked either, since the question is what
-    /// keeps its probes from a neighbour the host's policy refuses.
+    /// A routing table this process had no descriptor to ask is reported as a
+    /// shortage and asked again next time. A target on this host's own segment is
+    /// not given its segment's source unasked either.
     #[cfg(unix)]
     #[test]
     fn a_route_asked_without_a_descriptor_is_a_shortage_asked_again() {
@@ -984,14 +885,11 @@ mod tests {
         ));
     }
 
-    /// A policy route is told from a missing one by the words the kernel
-    /// refuses in: `prohibit` answers `EACCES`, `blackhole` `EINVAL` and a
-    /// blocking IPsec policy `EPERM`, and a missing or `unreachable` route
-    /// `ENETUNREACH` or `EHOSTUNREACH`, or `EADDRNOTAVAIL` where it leaves no
-    /// address to send from. Every other word is a lookup that did not
-    /// finish, which says nothing of the destination: read as a missing
-    /// route, one `ENOBUFS` filed a live neighbour unreachable for a whole
-    /// scan.
+    /// A policy route is told from a missing one by the error: `prohibit`
+    /// answers `EACCES`, `blackhole` `EINVAL` and a blocking IPsec policy `EPERM`;
+    /// a missing or `unreachable` route `ENETUNREACH` or `EHOSTUNREACH`, or
+    /// `EADDRNOTAVAIL` where it leaves no address to send from. Any other error is
+    /// an unfinished lookup and says nothing of the destination.
     #[cfg(unix)]
     #[test]
     fn a_refused_lookup_is_read_as_a_policy_a_missing_route_or_no_answer() {
@@ -1027,10 +925,8 @@ mod tests {
     }
 
     /// A lookup the routing table gave no answer to is asked again, for a
-    /// neighbour on this host's segment and for a routed target alike, and
-    /// the host is not named refused by a route. Remembered as a refusal, a
-    /// moment's shortage of buffers filed a live neighbour unreachable for
-    /// the rest of the scan, every port of it unasked.
+    /// neighbour on this host's segment and for a routed target alike, and the
+    /// host is not named refused by a route.
     #[cfg(unix)]
     #[test]
     fn a_lookup_the_routing_table_did_not_answer_is_asked_again() {
@@ -1057,13 +953,10 @@ mod tests {
         }
     }
 
-    /// A table that never answers is asked a bounded number of times, and
-    /// the destination is then settled on what it has said, which is
-    /// nothing: a neighbour is sent from its segment, since a policy refuses
-    /// in its own words the first time, and a routed target with no route
-    /// has no source. Neither is named refused by a route, and neither is
-    /// asked about again, so a lookup that never succeeds costs a host a
-    /// few probes rather than one question per probe for the whole scan.
+    /// A table that never answers is asked a bounded number of times, then the
+    /// destination is settled without it: a neighbour is sent from its segment,
+    /// and a routed target with no route has no source. Neither is named refused
+    /// by a route or asked about again.
     #[cfg(unix)]
     #[test]
     fn a_lookup_the_table_never_answers_is_settled_after_a_few_asks() {
@@ -1099,8 +992,7 @@ mod tests {
         }
     }
 
-    /// A link-local written with its interface is not this case at all: it
-    /// carries the answer, and the sweep that reaches it is the local one.
+    /// A link-local address written with its interface carries the answer.
     #[test]
     fn a_zoned_link_local_is_not_what_this_declines() {
         use crate::model::ip::scoped::ScopedIp;
@@ -1160,9 +1052,8 @@ mod tests {
 
     #[test]
     fn v6_and_v4_are_kept_separate() {
-        // A global prefix rather than a link-local one: this is about the two
-        // families not matching each other, and a link-local target is declined
-        // for a different reason that would mask what is being tested.
+        // A global prefix, because a link-local target is declined for another
+        // reason that would mask the family mismatch under test.
         let v6 = v6net(Ipv6Addr::new(0x2001, 0xdb8, 0, 1, 0, 0, 0, 1), 64);
         let intf = mock_interface(vec![v4net(192, 0, 2, 50, 24), v6]);
         let table = OnLinkTable::from_links(&[intf]);
@@ -1201,10 +1092,9 @@ mod tests {
         assert!(!resolver.has_sources());
     }
 
-    /// A forced source answers a routed target ahead of the routing table, the
-    /// override a scan pinned to an interface needs. It picks by family, so the
-    /// IPv4 force answers the IPv4 target even listed behind the IPv6 one, and
-    /// the kernel is never consulted.
+    /// A forced source answers a routed target ahead of the routing table. It
+    /// picks by family, so the IPv4 force answers the IPv4 target even listed
+    /// behind the IPv6 one, and the kernel is never consulted.
     #[test]
     fn a_forced_source_answers_a_routed_target_by_family() {
         let v4 = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
@@ -1216,13 +1106,10 @@ mod tests {
         assert_eq!(resolver.resolve(public), Some(v4));
     }
 
-    /// A forced source is for a target the routing table would send out by the
-    /// wrong link, and a target inside a prefix this host holds has one link
-    /// that reaches it: a neighbour on another segment by that segment, a peer
-    /// inside a tunnel's own prefix through the tunnel. The plan and every
-    /// connection to such a target leave by its own link; a raw probe sourced
-    /// from the forced LAN address would leave by the LAN, reach nothing the
-    /// plan expected, and report a host the rest of the scan reached as silent.
+    /// A target inside a prefix this host holds has one link that reaches it (a
+    /// neighbour on another segment, a peer inside a tunnel's prefix), and the
+    /// plan and every connection leave by that link. A forced source must not
+    /// send its raw probes out by another.
     #[test]
     fn a_forced_source_leaves_a_target_inside_a_held_prefix_to_its_own_link() {
         use crate::system::interface::Addressing;
@@ -1256,8 +1143,8 @@ mod tests {
         );
     }
 
-    /// Loopback and an IPv4 address written inside IPv6 are no link's, so the
-    /// plan leaves them to the kernel whatever is forced, and so does this.
+    /// Loopback and an IPv4 address written inside IPv6 are no link's, so they
+    /// are left to the kernel whatever is forced.
     #[test]
     fn a_forced_source_does_not_answer_for_loopback_or_a_mapped_address() {
         let lan = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
@@ -1282,13 +1169,9 @@ mod tests {
         LinkAddress::new(IpAddr::V6(addr), prefix)
     }
 
-    /// The §1.6 case: the kernel refuses to route an off-link IPv6 target - a
-    /// VPN holding the default route without carrying IPv6 - while the host
-    /// plainly has a global address to send from.
-    ///
-    /// Answering `None` here is what made a scan of seven live addresses report
-    /// zero hosts in two milliseconds, having sent nothing. The address chosen
-    /// may not work, and the scan will say so; refusing to try cannot.
+    /// The kernel refuses to route an off-link IPv6 target (a VPN holding the
+    /// default route without carrying IPv6) while the host has a global address to
+    /// send from. The chosen address may not work, and the scan will say so.
     #[test]
     fn a_global_target_the_kernel_will_not_route_still_gets_a_global_source() {
         let global = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xb1a0);
@@ -1305,17 +1188,12 @@ mod tests {
         assert_eq!(source, Some(IpAddr::V6(global)));
     }
 
-    /// Scope is not negotiable in the other direction either: a link-local
-    /// destination is reachable only from a link-local address, so a global one
-    /// must not be offered for it.
+    /// A link-local destination is reachable only from a link-local address, so a
+    /// global one must not be offered for it.
     ///
-    /// Nor may a link-local one be. The property above is real, but it does not
-    /// establish *which* link-local address, and on a fixture with one
-    /// interface there is only one to pick. Every interface holds an
-    /// `fe80::/64`, so on a real host the answer would be whichever the platform
-    /// listed first: a guess with the shape of an answer, and the one
-    /// [`RoutedTargets::ambiguous`](super::RoutedTargets) names as exactly the
-    /// mistake.
+    /// Nor may a link-local one: every interface holds an `fe80::/64`, so on a
+    /// real host the answer would be whichever the platform listed first, the
+    /// mistake [`RoutedTargets::ambiguous`](super::RoutedTargets) names.
     #[test]
     fn a_link_local_target_is_offered_no_source_at_all() {
         let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50);
@@ -1336,8 +1214,7 @@ mod tests {
     }
 
     /// An IPv4 address written inside IPv6 is an IPv4 host, and a global IPv6
-    /// source can never reach it. Offered one, a probe to it would leave as an
-    /// IPv6 packet toward the router, the one place the host certainly is not.
+    /// source can never reach it.
     #[test]
     fn a_mapped_target_is_offered_no_ipv6_source() {
         let intf = mock_interface(vec![
@@ -1354,10 +1231,8 @@ mod tests {
         );
     }
 
-    /// IPv4 keeps the kernel's answer. It has one scope and no equivalent of a
-    /// tunnel swallowing the default route for a family it does not carry, so
-    /// second-guessing it would invent a source where the host genuinely has
-    /// none.
+    /// IPv4 keeps the kernel's answer: it has one scope and no equivalent of a
+    /// tunnel swallowing the default route for a family it does not carry.
     #[test]
     fn an_unroutable_v4_target_is_not_second_guessed() {
         let intf = mock_interface(vec![v4net(192, 0, 2, 50, 24)]);

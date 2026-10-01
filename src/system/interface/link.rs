@@ -8,36 +8,12 @@
 
 //! # What this machine is plugged into, as this engine needs it
 //!
-//! One type, [`Link`], owned by this crate rather than borrowed from whichever
-//! library happened to enumerate it.
+//! One type, [`Link`], owned by this crate so the public API does not carry the
+//! enumerating library's type or its platform defects. Where the facts come from
+//! is [`from_netdev`](Link::from_netdev)'s business alone.
 //!
-//! ## Why this is a type here and not a re-export
-//!
-//! A re-export would have every function that takes an interface take the
-//! enumerating library's type, such as `pnet::datalink::NetworkInterface`, and
-//! carry it into the public API through half a dozen signatures. Two things are
-//! wrong with that, and only one of them is about the library.
-//!
-//! The one about the library: `pnet`'s Windows backend fills the flags word
-//! with a literal zero and a `FIXME`, so its `is_up()` is false for every
-//! interface on that platform, always. Nothing errors. Every entry point in
-//! this engine filtering on it would find nothing and report a machine with no
-//! network, which is the one failure shape the rest of this crate is built to
-//! refuse.
-//!
-//! The one that outlives any library: swapping that type for another library's
-//! would fix the platform and keep the shape, and the next library's defect
-//! would arrive by the same route. A consumer of this crate should not have to
-//! know which crate read the interface table, any more than they have to know
-//! which syscall did. So the facts an interface has are named here, and where
-//! they come from is [`from_netdev`](Link::from_netdev)'s business and nobody
-//! else's.
-//!
-//! ## What it does not carry
-//!
-//! Speed, MTU, DNS servers, statistics. All available from the source and none
-//! of them read by anything in this engine, and a field nothing reads is a
-//! field that is wrong on some platform without anybody finding out.
+//! It carries only what the engine reads: speed, MTU, DNS servers and statistics
+//! are left out.
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -49,11 +25,8 @@ use crate::model::mac::MacAddr;
 
 /// One address an interface holds, and how much of it names the network.
 ///
-/// The pair is kept together because the two halves answer different questions
-/// and both are asked: the address is what a probe goes out *from*, and the
-/// network is what decides whether a target is on this link or beyond it.
-/// Carrying only the first loses on-link tests; carrying only the second loses
-/// source selection.
+/// The address is what a probe goes out *from*, and the network decides whether
+/// a target is on this link or beyond it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LinkAddress {
     address: IpAddr,
@@ -63,10 +36,9 @@ pub struct LinkAddress {
 impl LinkAddress {
     /// An address and the length of its prefix.
     ///
-    /// The prefix is clamped to what the family allows rather than refused. It
-    /// comes from the operating system's own interface table, so a value past
-    /// the end is a platform reporting something impossible, and the address is
-    /// still true and still worth having.
+    /// The prefix is clamped to what the family allows. A value past the end is
+    /// the platform reporting something impossible, and the address is still
+    /// worth having.
     pub fn new(address: IpAddr, prefix: u8) -> Self {
         let ceiling = if address.is_ipv4() { 32 } else { 128 };
         Self {
@@ -87,12 +59,10 @@ impl LinkAddress {
 
     /// Every address this prefix covers, network and broadcast included.
     ///
-    /// Whether either end is usable is a question for whoever is sweeping; this
-    /// says what the link carries, which is the wider answer and the one an
-    /// on-link test needs.
+    /// This is what the link carries, as an on-link test needs; whether either
+    /// end is worth probing is the sweeper's decision.
     pub fn network(&self) -> IpRange {
-        // `new` clamped the prefix to its family, which is the only way this
-        // fails. The expect is a statement that the constructor holds.
+        // `new` clamped the prefix to its family, the only way this could fail.
         cidr_range(self.address, self.prefix).expect("a prefix clamped to its family")
     }
 
@@ -104,10 +74,8 @@ impl LinkAddress {
 
 /// What kind of thing a link is.
 ///
-/// Narrower than the source's own two dozen variants, because this engine asks
-/// only three questions of it: can it carry a link-layer probe, is it wireless,
-/// which is a pacing question rather than a capability one, and is it the
-/// machine talking to itself.
+/// The engine asks only three questions of it: can it carry a link-layer probe,
+/// is it wireless (a pacing question), and is it the machine talking to itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum LinkKind {
@@ -115,7 +83,7 @@ pub enum LinkKind {
     /// the wired families that look like it from here.
     Wired,
     /// 802.11. Told apart from [`Wired`](Self::Wired) because a wireless link
-    /// answers slower and less predictably, not because it is less capable.
+    /// answers slower and less predictably.
     Wireless,
     /// The machine talking to itself.
     Loopback,
@@ -126,10 +94,7 @@ pub enum LinkKind {
 
 /// A network interface on this machine.
 ///
-/// Built from the host's interface table by `from_netdev`,
-/// or by hand in a test. Every predicate below is a fact this crate acts on;
-/// see the module note for why none of them is delegated to the library that
-/// read the table.
+/// Built from the host's interface table by `from_netdev`, or by hand in a test.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Link {
     name: String,
@@ -148,10 +113,9 @@ pub struct Link {
 impl Link {
     /// A link with nothing on it but a name and a number.
     ///
-    /// The starting point for a test, and for a caller describing a link this
+    /// The starting point for a test, or for a caller describing a link this
     /// machine cannot be asked about. Everything else is added through the
-    /// builders below, so a `Link` that says an interface is up is one somebody
-    /// wrote that down about.
+    /// builders below.
     pub fn new(name: impl Into<String>, index: u32) -> Self {
         Self {
             name: name.into(),
@@ -217,8 +181,7 @@ impl Link {
         self
     }
 
-    /// Whether it has a gateway of its own, meaning a router configured on the
-    /// link rather than just an address.
+    /// Whether a router is configured on the link.
     #[must_use]
     pub fn with_gateway(mut self, has: bool) -> Self {
         self.gateway = has;
@@ -227,10 +190,8 @@ impl Link {
 
     /// What the interface is called here.
     ///
-    /// Whatever this platform calls it, which is not always what a person
-    /// would: on Windows it is the adapter's GUID rather than the name in the
-    /// control panel. It is the name every other call in this crate is keyed
-    /// by, so it is the one worth carrying.
+    /// The platform's name, which every other call in this crate is keyed by.
+    /// On Windows it is the adapter's GUID.
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -247,8 +208,7 @@ impl Link {
 
     /// Its number in this kernel's interface table.
     ///
-    /// True of this boot and no other, which is why nothing durable is keyed by
-    /// it. see [`Zone`].
+    /// Valid for this boot only, so nothing durable is keyed by it. See [`Zone`].
     pub fn index(&self) -> u32 {
         self.index
     }
@@ -309,9 +269,8 @@ impl Link {
 
     /// Whether there is a physical port behind it.
     ///
-    /// False for a tunnel, a hypervisor's virtual switch, and a VPN: each of
-    /// which carries IP perfectly well and none of which has a neighbour to ARP
-    /// for.
+    /// False for a tunnel, a hypervisor's virtual switch, and a VPN, none of
+    /// which has a neighbour to ARP for.
     pub fn is_physical(&self) -> bool {
         self.physical
     }
@@ -328,13 +287,9 @@ impl Link {
 
     /// Whether this machine's default route leaves by this link.
     ///
-    /// The closest thing there is to "which network am I on". It is a fact
-    /// about the routing table rather than a guess about the hardware, which is
-    /// what makes it answerable the same way on every platform, and what makes
-    /// it right where hardware guesses are wrong. macOS presents `awdl0`
-    /// (AirDrop) and `llw0` as ordinary broadcast Ethernet with real hardware
-    /// behind them, indistinguishable from a wired port by any other field;
-    /// neither carries a route anywhere.
+    /// The closest thing there is to "which network am I on", answerable the
+    /// same way on every platform. Hardware fields cannot tell: macOS presents
+    /// `awdl0` (AirDrop) and `llw0` as ordinary wired Ethernet.
     pub fn carries_default_route(&self) -> bool {
         self.default_route
     }
@@ -349,19 +304,17 @@ impl Link {
     /// Whether it is a physical link that is not wireless.
     ///
     /// The one to prefer when there is a choice: a wired segment answers faster
-    /// and more consistently than the same segment reached over 802.11, and a
-    /// virtual adapter is not a segment at all.
+    /// and more consistently than 802.11.
     pub fn is_wired(&self) -> bool {
         self.kind == LinkKind::Wired
     }
 
     /// Whether a link-layer probe can be put on it.
     ///
-    /// The question ARP and neighbour discovery both need answered: there has to
-    /// be a segment with somebody else on it, and a hardware address to send
-    /// from. A point-to-point link has a peer rather than a segment, loopback
-    /// has neither, and a link with no hardware address has nothing to put in
-    /// the frame.
+    /// ARP and neighbour discovery need a segment with somebody else on it and
+    /// a hardware address to send from. A point-to-point link has a peer and no
+    /// segment, loopback has neither, and a link with no hardware address has
+    /// nothing to put in the frame.
     pub fn carries_frames(&self) -> bool {
         !self.is_point_to_point() && !self.is_loopback() && self.mac.is_some()
     }
@@ -370,9 +323,7 @@ impl Link {
 /// How addresses on a link reach anything, which decides what a scan may send
 /// out of it.
 ///
-/// One value rather than two flags. A link is one of these three and the flags
-/// are not independent, so a signature that let a caller say both could
-/// describe a link no operating system reports.
+/// One value, since the platform's two flags are not independent.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Addressing {
@@ -392,11 +343,9 @@ pub enum Addressing {
 impl Addressing {
     /// What a platform's two flags amount to.
     ///
-    /// A link reporting both is read as point-to-point. No operating system
-    /// sets `IFF_BROADCAST` and `IFF_POINTOPOINT` together, so this is a rule
-    /// about a case that should not arise; it picks the direction that refuses
-    /// rather than the one that sweeps, because broadcasting onto something
-    /// that is not a broadcast domain is the more expensive mistake.
+    /// A link reporting both `IFF_BROADCAST` and `IFF_POINTOPOINT` (which no
+    /// operating system does) is read as point-to-point, since broadcasting onto
+    /// something that is not a broadcast domain is the more expensive mistake.
     pub(crate) fn of(broadcast: bool, point_to_point: bool) -> Self {
         match (broadcast, point_to_point) {
             (_, true) => Self::PointToPoint,
@@ -409,38 +358,30 @@ impl Addressing {
 /// Every interface this machine has.
 ///
 /// The one place the host is asked. Everything else in this crate takes
-/// [`Link`]s from a caller or from here, which is what makes a scan against a
-/// stated set of links and a scan against the real machine the same code path,
-/// and what stops a second enumeration appearing with a second library's
-/// opinion of what is up.
+/// [`Link`]s from a caller or from here, so a scan against a stated set of links
+/// and a scan against the real machine share a code path.
 ///
 /// # Errors
 ///
-/// When the host cannot be asked, which is a process with no descriptor free:
-/// the error is the one the system gives for that, `EMFILE`, or, where no
-/// shortage can be found to blame, one saying the table came back empty.
-/// Every host has a loopback interface, so an empty table is never the
-/// answer; it is what a read that failed without saying so returns.
+/// When the host cannot be asked because the process has no descriptor free:
+/// `EMFILE`, or, where no shortage can be found, an error saying the table came
+/// back empty. Every host has a loopback interface, so an empty table means a
+/// read failed silently.
 ///
-/// On macOS the first read in a process with no descriptor free is refused
-/// rather than made: the system framework it goes through would dereference
-/// what it failed to open and end the process with a segmentation fault. Once
-/// one read has succeeded, later ones need no descriptor there and are made
-/// whatever the table holds.
+/// On macOS the first read in a process with no descriptor free is refused,
+/// because the system framework it goes through would segfault. Once one read
+/// has succeeded, later ones need no descriptor.
 pub fn interfaces() -> io::Result<Vec<Link>> {
     Ok(host_table()?.into_iter().map(Link::from_netdev).collect())
 }
 
-/// [`interfaces`], or none where the host cannot be asked, for a reader with
-/// no error of its own to give. The readers of [`host_table`] with none to
-/// give take an empty table there for the same reason.
+/// [`interfaces`], or none where the host cannot be asked, for a reader with no
+/// error of its own to give.
 ///
-/// The table is unreadable only in a process with no descriptor free, and
-/// every such reader already has an answer for a host that holds nothing: a
-/// source it cannot pick, a link it cannot name, a segment it treats as off
-/// this host. That is the answer a full table earns, since nothing it would
-/// do with a link could open a socket either. A scan is refused before it
-/// starts in such a table; see [`too_few`](crate::system::descriptors::too_few).
+/// The table is unreadable only in a process with no descriptor free, where
+/// nothing a reader would do with a link could open a socket either. A scan is
+/// refused before it starts in such a table; see
+/// [`too_few`](crate::system::descriptors::too_few).
 pub(crate) fn interfaces_or_none() -> Vec<Link> {
     interfaces().unwrap_or_default()
 }
@@ -448,32 +389,24 @@ pub(crate) fn interfaces_or_none() -> Vec<Link> {
 /// The host's interface table as `netdev` reads it, with the one fact it reads
 /// wrong put right.
 ///
-/// Every part of the crate that needs something [`Link`] does not carry, such
-/// as a gateway's hardware address, reads the table through here rather than
-/// from `netdev` directly, so a correction made here holds everywhere, and so
-/// does the refusal below. A census in `tests/hygiene/architecture.rs` keeps
-/// it that way.
+/// Every part of the crate that needs something [`Link`] does not carry, such as
+/// a gateway's hardware address, reads the table through here, so the correction
+/// and the refusal below hold everywhere. A census in
+/// `tests/hygiene/architecture.rs` enforces this.
 ///
 /// The correction is to a point-to-point link's own address on Linux. `netdev`
-/// reads each address from netlink and keeps the first of the message's
-/// `IFA_ADDRESS` and `IFA_LOCAL`. On every other link the two are one address.
-/// On a point-to-point link configured with a peer, which is every link pppd
-/// brings up and OpenVPN's tunnel in its p2p and net30 topologies, the kernel
-/// sends `IFA_ADDRESS` first and it names the far end. Taken as it comes, the
-/// table says this host holds the peer's address: the VPN's gateway is then
-/// reported as this machine, up without being asked, and a probe pinned to that
-/// address as its source cannot be sent, while the tunnel's real address is
-/// missing as a source altogether.
+/// keeps the first of a netlink message's `IFA_ADDRESS` and `IFA_LOCAL`, which
+/// are one address on most links. On a point-to-point link configured with a
+/// peer (every pppd link, OpenVPN's p2p and net30 topologies) the kernel sends
+/// `IFA_ADDRESS` first and it names the far end. Uncorrected, the VPN's gateway
+/// would be reported as this machine, and the tunnel's real address would be
+/// missing as a source.
 ///
 /// The refusal is of a read that would end the process; see [`asked_safely`].
-/// `netdev` reports no failure of its own: a read it could not make comes back
-/// as an empty table, which is refused as the failure it is. It keeps no
-/// error to pass on, and the error number it leaves behind is whatever the
-/// last of its calls set, so what emptied the table is asked again instead:
-/// the one cause known to empty it is a process with no descriptor free, so
-/// a descriptor is opened and closed, and the system's refusal of it, the
-/// same `EMFILE` the read met, is the error given. Only a table empty with a
-/// descriptor to spare is reported as merely empty.
+/// `netdev` returns an empty table on failure, with no usable error number. The
+/// one known cause is a process with no descriptor free, so a descriptor is
+/// opened and closed and its `EMFILE` is the error given. Only a table empty with
+/// a descriptor to spare is reported as merely empty.
 pub(crate) fn host_table() -> io::Result<Vec<netdev::Interface>> {
     let mut table = asked_safely(netdev::get_interfaces)?;
     if table.is_empty() {
@@ -494,31 +427,16 @@ pub(crate) fn host_table() -> io::Result<Vec<netdev::Interface>> {
 /// Runs `read` where it cannot end the process, or refuses it.
 ///
 /// On macOS `netdev` reads each interface's kind and display name from
-/// SystemConfiguration, and the first time a process asks, the framework
-/// opens a descriptor to load what it answers from. With none free that open
-/// fails, and the framework goes on to dereference what it did not get: the
-/// process dies of a segmentation fault, a crash no caller can catch, in the
-/// middle of whatever it was doing. Once loaded, the framework needs no
-/// descriptor again, and a table read later in the same process is read whole
-/// with none free.
+/// SystemConfiguration, which opens a descriptor the first time a process asks.
+/// With none free, the framework dereferences what it failed to open and the
+/// process segfaults. Once loaded, it needs no descriptor again.
 ///
-/// So the first read, and any after it until one has succeeded, is let
-/// through only once a descriptor has been opened and closed again, and
-/// refused with the system's own error for the open where none could be.
-/// Reads wait on each other while that holds, so two of them cannot both find
-/// the same descriptor free. What this cannot rule out is another thread of
-/// the process taking that descriptor in the instant between the check and
+/// So until one read has succeeded, a read is let through only after a
+/// descriptor has been opened and closed, and is refused with the system's error
+/// otherwise. Reads are serialised while this holds, so two cannot count on the
+/// same free descriptor. Another thread can still take it between the check and
 /// the read; the engine's own connections never take a table's last few (see
-/// [`OPENED_WHILE_RUNNING`](crate::system::descriptors::OPENED_WHILE_RUNNING)),
-/// which leaves only a process that fills its table from another thread at
-/// the moment of its very first read.
-///
-/// Guarding the read is the choice over replacing it. Reading the table
-/// without the framework would mean reading addresses, flags, gateways and
-/// their hardware addresses from the kernel by hand, work `netdev` does and
-/// keeps up with, to avoid a failure that can happen once per process; and
-/// the framework is where `netdev` learns a Wi-Fi interface from a wired one
-/// there.
+/// [`OPENED_WHILE_RUNNING`](crate::system::descriptors::OPENED_WHILE_RUNNING)).
 #[cfg(target_os = "macos")]
 fn asked_safely<T>(read: impl FnOnce() -> T) -> io::Result<T> {
     use std::sync::Mutex;
@@ -572,8 +490,7 @@ struct PeerAddress {
 
 /// Puts this host's own address wherever `interface` lists a peer in its place.
 ///
-/// Each prefix is kept. The kernel reports one prefix for the pair, and it is
-/// the prefix the table already carries.
+/// Each prefix is kept: the kernel reports one prefix for the pair.
 fn own_addresses_for_peers(interface: &mut netdev::Interface, peers: &[PeerAddress]) {
     let local_for = |peer: IpAddr| {
         peers
@@ -609,11 +526,10 @@ fn own_addresses_for_peers(interface: &mut netdev::Interface, peers: &[PeerAddre
 /// Every point-to-point link's peer and the address this host holds opposite
 /// it, from the C library's `getifaddrs`.
 ///
-/// `getifaddrs` is the reading `netdev` itself uses on macOS and the BSDs, and
-/// on Linux glibc and musl both fill it from the same netlink message the right
-/// way round: `IFA_LOCAL` as the interface's address and `IFA_ADDRESS` as its
-/// destination. Only the pairs where the two differ are returned, which is
-/// exactly the set `netdev` reads wrong.
+/// On Linux glibc and musl both fill `getifaddrs` the right way round:
+/// `IFA_LOCAL` as the interface's address and `IFA_ADDRESS` as its destination.
+/// Only pairs where the two differ are returned, which is the set `netdev` reads
+/// wrong.
 #[cfg(target_os = "linux")]
 fn point_to_point_peers() -> Vec<PeerAddress> {
     let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
@@ -694,15 +610,11 @@ unsafe fn ip_of(address: *const libc::sockaddr) -> Option<IpAddr> {
 impl Link {
     /// Reads one interface out of the host's table.
     ///
-    /// This is the whole of the crate's dependency on how that table is read.
-    /// Every fact below is copied out rather than borrowed, so the
-    /// source has no reach past this function.
+    /// The crate's whole dependency on how that table is read; every fact is
+    /// copied out.
     ///
-    /// Windows is the reason it says `oper_state` rather than a flags word.
-    /// Flags are a Unix idea, and a library reporting them on Windows is either
-    /// translating or, as the last one did, filling in a zero. The operational
-    /// state is what Windows actually publishes, through `GetAdaptersAddresses`,
-    /// and what Linux and the BSDs can be asked for as readily.
+    /// Reads `oper_state` because Windows publishes an operational state
+    /// (through `GetAdaptersAddresses`) and no flags word.
     pub(crate) fn from_netdev(interface: netdev::Interface) -> Self {
         use netdev::interface::types::InterfaceType;
 
@@ -756,27 +668,18 @@ impl Link {
 
 /// Whether a link-layer probe can be put on this link.
 ///
-/// The free-function face of [`Link::carries_frames`], kept because it reads as
-/// a question about the link rather than about the type. Both are the same
-/// answer and neither is the older one.
+/// The free-function form of [`Link::carries_frames`].
 pub fn is_layer_2_capable(link: &Link) -> bool {
     link.carries_frames()
 }
 
 /// Whether every target in `ips` is on the same segment as `link`.
 ///
-/// Every range, wholly, in both families. A range straddling the edge of
-/// the link's network is not on-link: half of it is reachable by ARP and half
-/// needs a router, and treating the whole as local would have a sweep wait out
-/// a timeout for every address past the boundary.
+/// Every range, wholly, in both families. A range straddling the edge of the
+/// link's network is not on-link, since a sweep would wait out a timeout for
+/// every address past the boundary.
 ///
-/// Both families are read. Reading only the IPv4 ranges would make an
-/// IPv6-only target set vacuously on-link for every link, including one
-/// holding no IPv6 address at all, an answer that does not mean what the name
-/// says.
-///
-/// An empty set is on-link, which is the ordinary reading of "every": there is
-/// no target here that needs a router.
+/// An empty set is on-link.
 pub fn is_on_link(link: &Link, ips: &IpSet) -> bool {
     let within = |start: IpAddr, end: IpAddr| {
         link.addresses()
@@ -796,20 +699,16 @@ pub fn is_on_link(link: &Link, ips: &IpSet) -> bool {
 /// Whether an interface with this administrative state, operational state and
 /// running flag can carry a probe or a reply.
 ///
-/// Both states count, because they are not the same claim: a cable can be
-/// plugged in to an interface nobody has brought up, and an interface can be
-/// administratively up with nothing on the other end. A scan wants the
-/// conjunction, since there is no point probing out of either.
+/// Both states must be up: a cable can be plugged into an interface nobody has
+/// brought up, and an interface can be administratively up with nothing on the
+/// other end.
 ///
-/// **An operational state of `unknown` is read from the running flag.** It is
-/// what a driver reports when it keeps no operational state at all, and the
-/// kernel's own documentation says to treat such an interface as usable. Linux
-/// reports it for every tun, WireGuard and ppp device, which is to say for the
-/// link every VPN a CTF player connects through arrives on: read as down, the
-/// tunnel was left out of source selection and of the capture list, and a SYN
-/// scan through it read every port silent while the replies arrived unheard.
-/// The running flag is what such a driver does set, once something is attached
-/// to the device, so a tunnel nobody has opened stays out.
+/// **An operational state of `unknown` is read from the running flag.** Drivers
+/// that keep no operational state report `unknown`, and the kernel documentation
+/// says to treat such an interface as usable. Linux reports it for every tun,
+/// WireGuard and ppp device, so read as down, a VPN tunnel would be left out of
+/// source selection and capture. Such a driver sets the running flag once
+/// something is attached, so a tunnel nobody has opened stays out.
 fn carries_traffic(
     admin_up: bool,
     oper: netdev::interface::state::OperState,
@@ -921,12 +820,8 @@ mod tests {
         set.insert_range(written.parse::<IpRange>().expect("a range"));
         set
     }
-    /// A range wholly inside the link's network is on it; one that leaves is
-    /// not, and half of one is not either.
-    ///
-    /// The last is the case worth the test. A range straddling the boundary is
-    /// half reachable by ARP and half not, and calling it on-link makes the
-    /// sweep wait out a timeout for every address past the edge.
+    /// A range wholly inside the link's network is on it; one that leaves it,
+    /// even halfway, is not.
     #[test]
     fn a_range_is_on_link_only_if_all_of_it_is() {
         let link = holding("en0", "198.51.100.7", 25);
@@ -951,9 +846,8 @@ mod tests {
     }
     /// An IPv6 address on the link does not make an IPv4 range local.
     ///
-    /// `is_on_link` answers for IPv4 only, the callers that ask it are the ARP
-    /// path, and a link holding a v6 prefix that happens to contain the same
-    /// bits must not be read as covering a v4 range.
+    /// A v6 prefix that happens to contain the same bits must not be read as
+    /// covering a v4 range.
     #[test]
     fn an_ipv6_prefix_does_not_answer_for_an_ipv4_range() {
         let v6_only = link("en0", LinkKind::Wired).with_addresses(vec![LinkAddress::new(
@@ -969,8 +863,7 @@ mod tests {
     use super::*;
 
     /// A tunnel is a link: Linux reports `unknown` for tun and WireGuard
-    /// devices, and one with something attached to it carries traffic. Read as
-    /// down, a VPN's replies were never captured.
+    /// devices, and one with something attached to it carries traffic.
     #[test]
     fn an_interface_of_unknown_state_carries_traffic_while_it_runs() {
         use netdev::interface::state::OperState;
@@ -1005,11 +898,8 @@ mod tests {
 
     /// The network is derived from the prefix, and covers both ends.
     ///
-    /// Both ends because the question this answers is what the *link* carries,
-    /// not what is worth probing. Whether a sweep spends a probe on the network
-    /// or broadcast address is a decision made later and by somebody else; an
-    /// on-link test that excluded them would report a host at `198.51.100.127`
-    /// as being somewhere else entirely.
+    /// Both ends, because this is what the *link* carries; an on-link test
+    /// that excluded them would place a host at `198.51.100.127` elsewhere.
     #[test]
     fn a_network_covers_every_address_its_prefix_names() {
         let held = v4("198.51.100.7", 25);
@@ -1049,13 +939,8 @@ mod tests {
         assert!(everything.contains(&"8.8.8.8".parse().unwrap()));
     }
 
-    /// A prefix past the end of its family is clamped rather than refused.
-    ///
-    /// It comes from the operating system's own table, so a `/40` on an IPv4
-    /// address is a platform reporting something impossible, and the address is
-    /// still true. Refusing would lose a real address over a field nothing else
-    /// depends on; clamping keeps it and makes `network` total, which is what
-    /// lets it return a value rather than a `Result` nobody could act on.
+    /// A prefix past the end of its family is clamped, which keeps the address
+    /// and makes `network` total.
     #[test]
     fn a_prefix_past_its_family_is_clamped_and_the_address_survives() {
         let absurd = v4("198.51.100.7", 200);
@@ -1069,11 +954,6 @@ mod tests {
     }
 
     /// The three things a link-layer probe needs, and each one's absence.
-    ///
-    /// ARP and neighbour discovery both want a segment with somebody else on it
-    /// and a hardware address to send from. A point-to-point link has a peer
-    /// rather than a segment, loopback has neither, and a link with no hardware
-    /// address has nothing to put in the frame.
     #[test]
     fn a_link_carries_frames_only_with_a_segment_and_an_address_to_send_from() {
         let mac = MacAddr::new(2, 0, 0, 0, 0, 1);
@@ -1103,8 +983,7 @@ mod tests {
         );
     }
 
-    /// The families are kept apart, because almost everything that reads them
-    /// wants one or the other.
+    /// The families are kept apart.
     #[test]
     fn a_links_addresses_are_readable_by_family() {
         let link = Link::new("en0", 1).with_addresses(vec![
@@ -1123,8 +1002,7 @@ mod tests {
         assert_eq!(v6s[0], ("fe80::1".parse().unwrap(), 64));
     }
 
-    /// A link names its own zone, which is what a link-local address needs to
-    /// mean anything.
+    /// A link names its own zone.
     #[test]
     fn a_link_is_its_own_zone() {
         let zone = Link::new("en0", 7).zone();
@@ -1133,10 +1011,9 @@ mod tests {
         assert_eq!(zone.index(), Some(7));
     }
 
-    /// A message about an interface names it the way the system settings do.
-    /// On Windows the system name is the adapter GUID, which nobody reading a
-    /// warning recognises, while an empty or repeated friendly name would name
-    /// nothing at all.
+    /// A message about an interface names it the way the system settings do,
+    /// falling back to the system name when the friendly name is empty or
+    /// repeated.
     #[test]
     fn an_interface_is_called_what_a_person_calls_it() {
         let guid = "{4D36E972-E325-11CE-BFC1-08002BE10318}";
@@ -1156,13 +1033,8 @@ mod tests {
     }
 
     /// A process with no descriptor free is told the interface table cannot
-    /// be read, and why: the system's `EMFILE`, which names the shortage a
-    /// caller can do something about. On macOS the read goes through a system
-    /// framework that, asked for the first time with no descriptor to open,
-    /// dereferences what it failed to open and takes the process down with a
-    /// segmentation fault no caller can catch; elsewhere the read comes back
-    /// empty, which is no host's table and would be taken for a machine with
-    /// no network.
+    /// be read, with the system's `EMFILE`: no segfault on macOS, no empty
+    /// table elsewhere.
     #[cfg(unix)]
     #[test]
     fn a_first_read_in_a_full_table_is_refused_rather_than_ending_the_process() {
@@ -1189,9 +1061,8 @@ mod tests {
     }
 
     /// Once a process has read its interface table, it reads it whole again
-    /// with no descriptor free. A scan whose connections fill the table still
-    /// needs to know which addresses are on its own segments, and refused a
-    /// read there it would treat every neighbour as beyond a router.
+    /// with no descriptor free, so a scan whose connections fill the table
+    /// still knows which addresses are on its own segments.
     #[cfg(target_os = "macos")]
     #[test]
     fn a_table_read_once_is_read_again_with_no_descriptor_free() {
@@ -1218,12 +1089,9 @@ mod tests {
 
     /// Whatever the host says, read through the one function that reads it.
     ///
-    /// Not an assertion about this machine, a container has one interface and a
-    /// laptop has twenty, but about the mapping holding for every one of them.
-    /// A `Link` whose kind is `Loopback` must not also claim to carry frames,
-    /// and an address must not survive the trip with a prefix its family cannot
-    /// hold. Both are properties of `from_netdev`, and this is the only place
-    /// that runs it.
+    /// Asserts properties of `from_netdev` for every interface present: a
+    /// `Loopback` link does not claim to carry frames, and no address keeps a
+    /// prefix its family cannot hold.
     #[test]
     fn every_interface_this_machine_has_reads_back_consistently() {
         for link in interfaces().expect("this machine's interfaces") {

@@ -8,17 +8,13 @@
 
 //! # Turning what a person wrote into addresses
 //!
-//! The two answers this module supplies to [`crate::model::parse::ip`], which
-//! knows the syntax of a target and nothing about the host it runs on.
+//! The host-side answers for [`crate::model::parse::ip`], which knows target
+//! syntax but nothing about the host. They meet at a function pointer, so the
+//! parser can be tested without an interface table.
 //!
 //! [`resolve_zone`] turns the `%en0` on a link-local address into the scope id
 //! the kernel wants. [`resolve_keyword`] turns `lan` into the addresses of the
 //! network this machine is on.
-//!
-//! The split is the point: a parser that read the interface table could not be
-//! tested without one, and a host module that knew the syntax would have to be
-//! changed every time the syntax was. Each knows one half and they meet at a
-//! function pointer.
 
 use crate::{info, warn};
 use std::net::{IpAddr, Ipv4Addr};
@@ -33,10 +29,8 @@ use crate::model::{
 use crate::system::interface;
 
 /// Looks up an interface by name and returns its scope id, for the
-/// `%interface` suffix on a link-local target.
-///
-/// The engine's answer to [`ZoneResolverFn`](crate::model::parse::ip::ZoneResolverFn):
-/// the parser knows the syntax and this knows the host.
+/// `%interface` suffix on a link-local target. The engine's
+/// [`ZoneResolverFn`](crate::model::parse::ip::ZoneResolverFn).
 pub fn resolve_zone(name: &str) -> Option<u32> {
     crate::system::interface::interfaces_or_none()
         .into_iter()
@@ -47,8 +41,7 @@ pub fn resolve_zone(name: &str) -> Option<u32> {
 /// Expands a [`Keyword`] into the addresses it stands for and adds them to
 /// `ip_set`, leaving whatever the set already held.
 ///
-/// [`Keyword::Lan`] is the only word so far. It adds the IPv4 network of the
-/// interface [`lan_link`](interface::lan_link) chose, less the network and
+/// [`Keyword::Lan`] adds the IPv4 network of the interface [`lan_link`](interface::lan_link) chose, less the network and
 /// broadcast addresses, which no host answers on. A subnet with nothing left
 /// after that is added whole.
 pub fn resolve_keyword(keyword: Keyword, ip_set: &mut IpSet) -> Result<(), IpParseError> {
@@ -65,25 +58,18 @@ fn lan_unresolved(reason: impl Into<String>) -> IpParseError {
     }
 }
 
-/// Dynamically resolves the host's primary LAN interface into an inclusive range.
+/// Resolves the host's primary LAN interface into an inclusive IPv4 range.
 ///
-/// Resolves the *link* rather than an IPv4 network, because the two can come
-/// apart: [`lan_viability`](interface::lan) accepts an interface
-/// carrying only a link-local IPv6 address, and that link is scannable: the
-/// all-nodes echo and neighbour discovery both work on it. Asking only for an
-/// `Ipv4Network` reported such a link as **"No active network interface
-/// found"**, having just selected one and logged its name, and it does the same
-/// on any segment whose IPv4 is not RFC1918: carrier-grade NAT, or a network
-/// addressed publicly.
+/// Starts from the *link*, because [`lan_viability`](interface::lan) accepts an
+/// interface carrying only a link-local IPv6 address (scannable through the
+/// all-nodes echo and neighbour discovery) or a non-RFC1918 IPv4 network. Such a
+/// link gets an error naming it and its addressing, so a caller can tell "no
+/// interface" apart from "this interface has no private IPv4 network to sweep".
 fn resolve_lan(set: &mut IpSet) -> Result<(), IpParseError> {
     let link = interface::lan_link()
         .ok_or_else(|| lan_unresolved("no active network interface was found"))?;
 
     let Some(net) = link.ipv4 else {
-        // Named, and named accurately. What the caller needs to be able to tell
-        // apart is nothing being there from the link not being sweepable the
-        // way it was asked for, and a message asserting the first here would
-        // mean the second.
         return Err(lan_unresolved(format!(
             "{} has no private IPv4 network to sweep{}. Give an explicit range, \
              or an IPv6 target on this link.",
@@ -95,16 +81,13 @@ fn resolve_lan(set: &mut IpSet) -> Result<(), IpParseError> {
         )));
     };
 
-    // The network's own ends, from the prefix rather than from arithmetic
-    // repeated here: `LinkAddress::network` is what knows how a prefix becomes a
-    // range, and it is the same code the on-link tests use.
+    // `LinkAddress::network` turns the prefix into a range, as the on-link tests do.
     let network = net.network();
     let (IpAddr::V4(first), IpAddr::V4(last)) = (network.start_addr(), network.end_addr()) else {
         return Err(lan_unresolved("the LAN link's IPv4 network is not IPv4"));
     };
 
-    // Neither end is a host: the first names the network and the last is the
-    // broadcast, and a sweep spends a probe on each for nothing.
+    // Drop the network and broadcast addresses.
     let start_u32 = u32::from(first).saturating_add(1);
     let end_u32 = u32::from(last).saturating_sub(1);
 

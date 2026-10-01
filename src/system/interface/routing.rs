@@ -8,48 +8,36 @@
 
 //! # How this host reaches a target
 //!
-//! The classifier, and the one decision every strategy a scan runs follows
-//! from. A target is on a segment this machine is attached to, or behind a
-//! gateway, or reachable by neither, and which of the three it is decides
-//! whether it gets a link-layer sweep, a raw probe with a source address
-//! attached, or the unprivileged fallback.
+//! A target is on a segment this machine is attached to, behind a gateway, or
+//! reachable by neither, and that decides whether it gets a link-layer sweep, a
+//! raw probe with a source address, or the unprivileged fallback.
 //!
-//! A segment is a link a frame can be put on. A tunnel's address carries a
-//! prefix too, and a WireGuard peer or an OpenVPN server in subnet topology
-//! sits inside it, but nothing on the far side of a tunnel answers ARP or
-//! neighbour discovery: the prefix is a route through the tunnel, and a target
-//! inside it is probed through the tunnel like any routed target.
+//! A segment is a link a frame can be put on. A tunnel's address carries a prefix
+//! too, and a WireGuard peer or an OpenVPN server in subnet topology sits inside
+//! it, but nothing beyond a tunnel answers ARP or neighbour discovery, so a target
+//! inside that prefix is probed through the tunnel like any routed target.
 //!
-//! ## What it refuses, and why refusing is the work
+//! ## Refusals
 //!
-//! Two of the five buckets [`RoutedTargets`] hands back are refusals, and they
-//! carry more of this module's reasoning than the three that succeed.
-//!
-//! A bare IPv6 link-local matches every interface and identifies none, so it is
-//! reported as the unanswerable question it is rather than assigned to whichever
-//! interface the host listed first. An off-link IPv6 range past
-//! [`MAX_ENUMERABLE_ADDRESSES`] is kept whole and refused, because the only
-//! strategy the engine has for an off-link range is to walk it and IPv6 defeats
-//! walking outright.
-//!
-//! Both are carried out rather than dropped, on the rule the rest of the crate
-//! is built on: a scan may report that it found nothing, and may never be quiet
-//! about ground it did not look at.
+//! Two of the five buckets [`RoutedTargets`] hands back are refusals. A bare IPv6
+//! link-local matches every interface and identifies none, so it is reported as
+//! ambiguous. An off-link IPv6 range past [`MAX_ENUMERABLE_ADDRESSES`] is kept
+//! whole and refused, because the only strategy for an off-link range is to walk
+//! it. Both are carried out so a scan never stays quiet about ground it did not
+//! look at.
 //!
 //! ## What a frame reaches
 //!
-//! A second question is asked of the same classification, by a process whose
-//! raw strategies put self-built frames on the wire with nothing behind them:
-//! an unprivileged run on macOS holding the BPF devices, and a privileged one on
-//! Windows. A frame reaches what has Ethernet in front of it, and
-//! [`beyond_frames`] names the rest and why, so that a scan can reach those
-//! targets by connect instead of sending them nothing.
+//! A process that can inject frames but holds no raw socket (an unprivileged run
+//! on macOS holding the BPF devices, a privileged one on Windows) reaches only
+//! targets with Ethernet in front of them. [`beyond_frames`] names the rest and
+//! why, so a scan can reach them by connect.
 //!
-//! ## What it costs
+//! ## Cost
 //!
 //! One `connect` per off-link target on an unbound UDP socket, which performs a
 //! route lookup and sends nothing, parallelised across the target list. On-link
-//! targets cost a prefix comparison and no syscall at all.
+//! targets cost a prefix comparison and no syscall.
 
 use crate::model::ip::range::IpRange::{self, V4, V6};
 use crate::model::ip::range::{Ipv4Range, Ipv6Range};
@@ -83,38 +71,21 @@ impl RoutedTarget {
 
 /// The largest IPv6 range any strategy will turn into addresses one at a time.
 ///
-/// Sixty-five thousand addresses, the size of an IPv4 `/16` and of an IPv6
-/// `/112`. Enumeration is the only discovery strategy the engine has for an
-/// off-link range, and it is a strategy IPv6 defeats outright rather than
-/// merely slows: a `/64` holds 2^64 addresses, which at the four thousand
-/// probes a second a routed sweep paces itself to is about 146 million years of
-/// scanning, and long before that the expansion into a `Vec<IpAddr>` exhausts
-/// memory. There is no ceiling at which walking a `/64` becomes reasonable, so
-/// the question is only where to stop pretending.
+/// 65,536 addresses, the size of an IPv4 `/16` and an IPv6 `/112`. Walking is
+/// the only discovery strategy for an off-link range, and a `/64` holds 2^64
+/// addresses: about 146 million years at a routed sweep's four thousand probes
+/// a second, and expanding it into a `Vec<IpAddr>` exhausts memory first.
+/// Larger IPv6 ranges are refused, loudly, so the caller knows the engine did
+/// not look.
 ///
-/// It is the same number as the largest IPv4 range anyone sweeps
-/// in practice, because the limit is about how many probes a scan can spend
-/// rather than about the address family. Larger IPv6 ranges are not scanned
-/// less thoroughly here; they are refused, loudly, so the caller knows the
-/// engine did not look rather than believing it looked and found nothing.
+/// IPv4 ranges are not bounded by this: the whole space is 2^32, and a `/8` is
+/// unreasonable but possible.
 ///
-/// IPv4 ranges are not bounded by this. Every IPv4 range is finite in a way a
-/// user can reason about, the whole space is 2^32, and a `/8` is an
-/// unreasonable request rather than an impossible one.
-///
-/// Public as the number, where [`is_enumerable`] is the test: three places
-/// ask the question and every one of them asks it through the function, which is
-/// what keeps the number in one place. The classifier applies it to a routed
-/// range it would have to walk; [`crate::scanner`] applies it on the
-/// unprivileged path, which takes its addresses as given and has no classifier
-/// to consult; and `DiscoveryPlan::build` applies it to an on-link range, which
-/// the classifier hands over whole because a segment is swept by multicast
-/// rather than walked.
-///
-/// Each of the three arrived after a defect. Two spellings of the number meant a
-/// `/64` refused with root and scanned forever without it; no check at all on
-/// the third path meant an on-link `/64` was walked two thousand addresses deep
-/// and reported covered.
+/// Ask through [`is_enumerable`]. The classifier applies it to a routed range
+/// it would have to walk; [`crate::scanner`] applies it on the unprivileged
+/// path, which has no classifier; and `DiscoveryPlan::build` applies it to an
+/// on-link range, which the classifier hands over whole because a segment is
+/// swept by multicast.
 pub const MAX_ENUMERABLE_ADDRESSES: u128 = 1 << 16;
 
 /// The result of classifying a set of targets against this host's interfaces
@@ -126,9 +97,9 @@ pub struct RoutedTargets {
     /// interface. Reachable directly, so they get an ARP/NDP discovery
     /// strategy bound to the interface.
     ///
-    /// Only a link that carries frames has a segment. The one exception is a
-    /// link-local target whose zone names a link that does not: the zone is
-    /// the user's own statement of where the target is, and it is kept.
+    /// Only a link that carries frames has a segment, except for a link-local
+    /// target whose zone names a link that does not: the zone is the user's own
+    /// statement of where the target is.
     pub local: HashMap<Link, IpSet>,
     /// Targets reached through a gateway or a tunnel, each already paired with
     /// the source address to probe it from. Handled by a single raw TCP SYN
@@ -140,29 +111,21 @@ pub struct RoutedTargets {
     pub unmapped: IpSet,
     /// Targets that are this host's own addresses.
     ///
-    /// Separated because no strategy can establish one. An address the host
-    /// holds is reached through loopback whatever its subnet says, so an ARP
-    /// request for it goes onto a link where nothing will answer, and the
-    /// address is reported down while `ping` to it succeeds. It is up by
-    /// construction, and saying so is both the correct answer and the cheap one.
+    /// No strategy can establish one: the kernel reaches an address the host
+    /// holds through loopback, so an ARP request for it goes unanswered. It is up
+    /// by construction.
     pub ours: IpSet,
     /// Link-local IPv6 targets with no interface named on them.
     ///
     /// Every interface holds an `fe80::/64`, so such a target matches all of
-    /// them and identifies none. Assigning it to whichever the host happened to
-    /// list first probes an arbitrary segment and reports the address absent
-    /// when it is present on another: a wrong answer arrived at silently, and
-    /// on a laptop with two dozen interfaces an unlikely guess. Written
-    /// `fe80::1%en0`, it is unambiguous; written bare, it is a question with no
-    /// answer and is reported as one.
+    /// them and identifies none. Probing whichever the host listed first could
+    /// report the address absent when it is present on another segment. Written
+    /// `fe80::1%en0`, it is unambiguous.
     pub ambiguous: Vec<Ipv6Range>,
     /// Off-link IPv6 ranges too large to enumerate, kept whole.
     ///
-    /// These are not failures of the network and not addresses that went
-    /// unanswered; they were never probed. They are carried out of here rather
-    /// than dropped because the one thing a scanner may never do is stay quiet
-    /// about a target it declined to look at: a caller reading "no hosts
-    /// found" would otherwise take it as evidence about the range.
+    /// They were never probed. They are carried out so a caller reading "no hosts
+    /// found" does not take it as evidence about the range.
     pub unenumerable: Vec<Ipv6Range>,
 }
 
@@ -172,21 +135,20 @@ pub struct RoutedTargets {
 ///
 /// Reads the host's interface table through
 /// [`interfaces`](super::interfaces), narrowed to the links that could carry a
-/// probe. Where that table comes from is [`Link::from_netdev`](super::Link)'s
-/// business and nobody else's, so nothing here names the crate that reads it.
+/// probe.
 pub fn map_ips_to_interfaces(ip_set: IpSet) -> RoutedTargets {
     map_ips_to_interfaces_with(ip_set, viable_interfaces(), &[])
 }
 
 /// [`map_ips_to_interfaces`], with source addresses forced ahead of the routing
 /// table. A scan pinned to an interface routes every off-link target from that
-/// interface's address, the override for a host whose default route a VPN owns.
+/// interface's address, for a host whose default route a VPN owns.
 pub(crate) fn map_ips_to_interfaces_forced(ip_set: IpSet, forced: &[IpAddr]) -> RoutedTargets {
     map_ips_to_interfaces_with(ip_set, viable_interfaces(), forced)
 }
 
-/// Per-single classification carried out of the parallel pass, before the
-/// results are folded back into interface-indexed buckets.
+/// Classification of one target, from the parallel pass, before the results
+/// are folded into interface-indexed buckets.
 enum Classification {
     /// On-link on the interface at this index.
     Local(usize),
@@ -200,11 +162,8 @@ enum Classification {
 
 /// [`map_ips_to_interfaces`] against an interface table the caller supplies.
 ///
-/// The seam every classification decision in this module is tested through: on
-/// a real host the table comes from the platform, and a test hands in
-/// interfaces that do not exist, so which bucket a target lands in can be
-/// exercised without depending on what the machine running the tests happens to
-/// have plugged in.
+/// The seam the classification is tested through, with interfaces that do not
+/// exist.
 pub(crate) fn map_ips_to_interfaces_with(
     ip_set: IpSet,
     interfaces: Vec<Link>,
@@ -214,8 +173,8 @@ pub(crate) fn map_ips_to_interfaces_with(
 }
 
 /// [`map_ips_to_interfaces_with`], asking the routing table about a routed
-/// target through `route`, which a test hands in to have the table answer as
-/// no host a test runs on does.
+/// target through `route`, for a test that needs the table to answer as no test
+/// host does.
 fn map_ips_to_interfaces_asking(
     ip_set: IpSet,
     interfaces: Vec<Link>,
@@ -249,15 +208,12 @@ fn map_ips_to_interfaces_asking(
         let start = IpAddr::V6(range.start_addr());
         let end = IpAddr::V6(range.end_addr());
 
-        // Checked before any interface is consulted, because consulting them is
-        // exactly the mistake: they all match.
+        // Before any interface is consulted: they all match.
         if range.is_ambiguous() {
             ambiguous.push(*range);
             continue;
         }
-        // A named interface answers the question outright. The scope id is the
-        // user's own statement about which segment they meant, and it outranks
-        // any prefix match.
+        // A named interface answers outright, ahead of any prefix match.
         if let Some(zone) = range.zone() {
             match interfaces.iter().position(|link| link.index() == zone) {
                 Some(idx) => local.entry(idx).or_default().insert_range(V6(*range)),
@@ -267,15 +223,12 @@ fn map_ips_to_interfaces_asking(
         }
 
         match owning_interface(&interfaces, start, end) {
-            // On-link, so it is kept whole and never expanded here: a segment is
-            // reached by multicast, and that is one packet whatever the prefix
-            // length. Whether the range is *also* small enough to walk address
-            // by address is a question for whoever builds the sweep, since only
-            // a targeted run walks one; `DiscoveryPlan::build` asks it.
+            // On-link, so kept whole: a segment is reached by multicast, one packet
+            // whatever the prefix length. Whether it is also small enough to walk is
+            // for `DiscoveryPlan::build` to ask.
             Some(idx) => local.entry(idx).or_default().insert_range(V6(*range)),
-            // Off-link, where the only strategy is to probe each address in
-            // turn. The check comes before `to_iter` because the expansion is
-            // what does the damage, not the probing.
+            // Off-link, so each address is probed in turn. Checked before `to_iter`
+            // because the expansion is what does the damage.
             None if !is_enumerable(range) => unenumerable.push(*range),
             None => singles_to_route.extend(range.iter()),
         }
@@ -284,39 +237,29 @@ fn map_ips_to_interfaces_asking(
     let processed: Vec<(IpAddr, Classification)> = singles_to_route
         .par_iter()
         .map(|&target| {
-            // Loopback is this host, and nothing below may say otherwise. The
-            // kernel answers `::1` with `::1`, which no interface here holds, and
-            // the fallback after it would then pair the target with a global
-            // source as though it were a routed address behind a VPN; a forced
-            // source would do the same. `127.0.0.1` would fall through to
-            // `Unmapped` only because that fallback declines IPv4, so without
-            // this the two loopbacks would be planned differently for no reason
-            // either of them has.
+            // Loopback is this host. The kernel answers `::1` with `::1`, which no
+            // interface here holds, and the fallback below would then pair it with a
+            // global source as if it were routed behind a VPN; a forced source would do
+            // the same. This keeps both loopbacks planned alike.
             if target.is_loopback() {
                 return (target, Classification::Unmapped);
             }
-            // An IPv4-mapped address is an IPv4 host written inside IPv6, and
-            // no wire carries one. The fallbacks below would pair it with a
-            // global IPv6 source as a routed target and frame it toward the
-            // router, which is the one place it certainly is not. Unmapped, it
-            // is left to whatever asks the kernel, whose dual-stack socket
-            // reaches the IPv4 host it spells.
+            // An IPv4-mapped address is an IPv4 host written inside IPv6, and no wire
+            // carries one. Unmapped, it is left to the kernel, whose dual-stack socket
+            // reaches the IPv4 host.
             if is_ipv4_mapped(target) {
                 return (target, Classification::Unmapped);
             }
-            // Before any prefix is consulted, because this host's address is
-            // inside its own link's prefix and the kernel answers it from
-            // loopback whatever that prefix says.
+            // Before any prefix: this host's address is inside its own link's prefix,
+            // and the kernel answers it from loopback.
             if owned_ips.contains(&target) {
                 return (target, Classification::Ours);
             }
 
-            // Inside a prefix this host holds, the link holding it is the one
-            // route to the target. A segment is swept; inside a tunnel's own
-            // prefix the target is reached through the tunnel from the
-            // tunnel's address. Read off the interface table rather than asked
-            // of the kernel: the table already says it, and a forced source
-            // must not move the target off the only link that reaches it.
+            // Inside a prefix this host holds, that link is the one route to the
+            // target: a segment is swept, and inside a tunnel's own prefix the target
+            // is reached through the tunnel from its address. A forced source must not
+            // move the target off that link.
             if let Some((idx, held)) = holding_prefix(&interfaces, target) {
                 return if interfaces[idx].carries_frames() {
                     (target, Classification::Local(idx))
@@ -325,22 +268,18 @@ fn map_ips_to_interfaces_asking(
                 };
             }
 
-            // A route that refuses by policy is the host's decision about the
-            // target, and neither a forced source nor the fallback below
-            // steps around it: each sends from an address named outright,
-            // which the kernel sends from wherever the table refuses. Left to
-            // the connect fallback, whose connect the kernel refuses too, and
-            // which files the address as one nothing reaches. See
+            // A route that refuses by policy is the host's decision, and neither a
+            // forced source nor the fallback below steps around it (the kernel sends
+            // from a named address wherever the table refuses). Left to the connect
+            // fallback, whose connect the kernel refuses too. See
             // `RouteAnswer::Forbidden`.
             let answer = route(target);
             if matches!(answer, RouteAnswer::Forbidden) {
                 return (target, Classification::Unmapped);
             }
 
-            // A forced source outranks the routing table otherwise. On-link
-            // and tunnel targets are already settled above and answer through
-            // their own link; a routed target the kernel would send from the
-            // wrong interface is what the override exists for.
+            // Otherwise a forced source outranks the routing table, for a routed
+            // target the kernel would send from the wrong interface.
             if let Some(source) = forced
                 .iter()
                 .copied()
@@ -355,10 +294,9 @@ fn map_ips_to_interfaces_asking(
                 return (target, Classification::Routed(source));
             }
 
-            // The kernel has no route, but this host may still hold an address
-            // of the right scope - see `plausible_source`. Without this a
-            // laptop whose VPN swallowed the IPv6 default route sends no probe
-            // at all and reports the targets as unreachable.
+            // No route, but this host may still hold an address of the right scope;
+            // see `plausible_source`. This covers a laptop whose VPN swallowed the IPv6
+            // default route.
             if let Some(source) = plausible_source(&interfaces, target) {
                 return (target, Classification::Routed(source));
             }
@@ -376,16 +314,9 @@ fn map_ips_to_interfaces_asking(
         }
     }
 
-    // Withheld from every strategy. The per-address pass settles an address
-    // this host holds before anything else, but a range wholly inside a
-    // segment's subnet is kept intact and assigned to that link without ever
-    // reaching that pass, so an address it holds arrives here inside a set:
-    // a sweep of the subnet containing it ends up in `local` whole.
-    //
-    // Nothing can establish one. The kernel routes traffic for an address this
-    // host holds through loopback, so an ARP request goes onto a link where
-    // nothing will answer and the address is reported down while `ping` to it
-    // succeeds.
+    // Withheld from every strategy. A range wholly inside a segment's subnet is
+    // assigned to that link without passing through the per-address check, so an
+    // address this host holds can arrive here inside a set.
     for address in &owned_ips {
         let mut one = IpSet::new();
         one.insert(*address);
@@ -418,29 +349,21 @@ fn map_ips_to_interfaces_asking(
 /// The addresses among `targets`, on `link`'s segment, that this host's
 /// routing table refuses.
 ///
-/// A segment is reached by frames built for the neighbour, which never ask
-/// the table, so a route an administrator added over one address of a
-/// connected prefix, or a VPN's kill switch keeping the local network out,
-/// is heard only by asking. Every other program on the machine honours it,
-/// its ping and its connect alike, and a sweep that framed its questions to
-/// such a neighbour anyway would report it up and then have every port scan
-/// refuse it: the one account of the host that ignored the host's own
-/// policy, and one at odds with itself.
+/// Frames built for a neighbour never ask the table, so a route an
+/// administrator added over one address of a connected prefix, or a VPN kill
+/// switch keeping the local network out, is heard only by asking. Every other
+/// program on the machine honours it, and a sweep should too.
 ///
-/// Asked address by address, which is a route lookup each and no packet.
-/// Three kinds of target are not asked. A link-local address is on its
-/// zone's segment by definition and the table has no route to consult for it
-/// without one. A range too large to walk is not walked, whether it is
-/// refused a sweep or answered by the solicitation, which is one packet to
-/// the whole segment. And the network and broadcast addresses of one of the
-/// link's own prefixes: a kernel refuses a connect to the broadcast address
-/// the way it refuses a policy's, and neither is a neighbour.
+/// Asked address by address: a route lookup each, no packet. Not asked: a
+/// link-local address (on its zone's segment by definition), a range too large
+/// to walk, and the network and broadcast addresses of the link's own prefixes,
+/// which a kernel refuses on other grounds.
 pub(crate) fn refused_neighbours(link: &Link, targets: &IpSet) -> IpSet {
     refused_neighbours_asking(link, targets, refuses_neighbour)
 }
 
-/// [`refused_neighbours`], asking the table through `refuses`, which a test
-/// hands in to have the table refuse as no host a test runs on does.
+/// [`refused_neighbours`], asking the table through `refuses`, for a test that
+/// needs the table to refuse as no test host does.
 fn refused_neighbours_asking(link: &Link, targets: &IpSet, refuses: fn(IpAddr) -> bool) -> IpSet {
     let edges: HashSet<IpAddr> = link
         .addresses()
@@ -477,11 +400,9 @@ fn refused_neighbours_asking(link: &Link, targets: &IpSet, refuses: fn(IpAddr) -
 
 /// Which of the engine's two frame builders a question about reach is asked for.
 ///
-/// They differ in one respect, and it decides what they reach. The segment sweep
-/// resolves an IPv6 neighbour itself, by neighbour discovery over the link it
-/// holds open. The probe transport's frame sender has ARP and nothing else, so an
-/// IPv6 neighbour on the same segment is one it has no hardware address to send
-/// to.
+/// The segment sweep resolves an IPv6 neighbour itself, by neighbour discovery
+/// over the link it holds open. The probe transport's frame sender has only ARP,
+/// so it has no hardware address for an IPv6 neighbour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FrameSender {
     /// ARP and ICMPv6 across a segment, which is discovery's local step.
@@ -513,8 +434,7 @@ pub(crate) enum Unframed {
     Mapped,
 }
 
-/// A few words, since a message puts one in brackets after the addresses it
-/// covers.
+/// A few words, for the brackets after the addresses a message lists.
 impl std::fmt::Display for Unframed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -530,11 +450,10 @@ impl std::fmt::Display for Unframed {
 
 /// The targets a self-built frame cannot reach from this host, and why.
 ///
-/// Built by [`beyond_frames`]. What it serves is a process that may inject
-/// frames and holds nothing else, which is an unprivileged run on macOS with
-/// the BPF devices handed to a group, and every privileged run on Windows. The
-/// frames reach whatever has Ethernet in front of it; everything here needs the
-/// kernel to carry it, and so needs a strategy that asks the kernel.
+/// Built by [`beyond_frames`], for a process that may inject frames and holds
+/// nothing else: an unprivileged run on macOS with the BPF devices handed to a
+/// group, or any privileged run on Windows. Everything here needs a strategy
+/// that asks the kernel.
 #[derive(Debug, Default)]
 pub(crate) struct BeyondFrames {
     /// Every target no frame reaches.
@@ -551,7 +470,7 @@ impl BeyondFrames {
     }
 
     /// Each reason with the lowest address it applied to and how many it
-    /// covered, which is what a message about the set quotes.
+    /// covered, for a message about the set.
     pub(crate) fn summary(&self) -> Vec<(Unframed, IpAddr, u128)> {
         self.reasons
             .iter()
@@ -563,7 +482,7 @@ impl BeyondFrames {
     }
 
     /// Each reason that applied, in order, joined for the brackets after a
-    /// line naming what the set was asked by.
+    /// message line.
     pub(crate) fn reasons(&self) -> String {
         let named: Vec<String> = self
             .reasons
@@ -576,10 +495,10 @@ impl BeyondFrames {
     /// These, together with every address of `unmapped` they do not already
     /// hold, each under the reason nothing routes a frame to it.
     ///
-    /// For a phase whose connect step holds both what a frame cannot reach
-    /// and what the routing table left without a route, loopback among it,
-    /// whatever the privilege: the second is classified from the address
-    /// alone, since the routing table has already been asked about it.
+    /// For a phase whose connect step holds both what a frame cannot reach and
+    /// what the routing table left without a route, loopback included. The
+    /// second is classified from the address alone, since the routing table has
+    /// already been asked.
     pub(crate) fn and_unmapped(mut self, unmapped: &IpSet) -> Self {
         let mut rest = unmapped.clone();
         rest.subtract(&self.targets);
@@ -611,11 +530,9 @@ impl BeyondFrames {
 /// Why no frame reaches each of `unmapped`, addresses the routing table found
 /// no link for, split by reason: loopback, IPv4-mapped, and no route.
 ///
-/// Split by block rather than address by address, since an unrouted range can
-/// be as wide as the target list, and none of the three needs the routing
-/// table asked again. Loopback is `127.0.0.0/8` and `::1`, as
-/// [`IpAddr::is_loopback`] has it; an IPv4 loopback address written in the
-/// mapped block is mapped.
+/// Split by block, since an unrouted range can be as wide as the target list.
+/// Loopback is `127.0.0.0/8` and `::1`, as [`IpAddr::is_loopback`] has it; an
+/// IPv4 loopback address written in the mapped block counts as mapped.
 fn unmapped_reasons(unmapped: IpSet) -> Vec<(Unframed, IpSet)> {
     let block = |ranges: &[IpRange]| {
         let mut set = IpSet::new();
@@ -674,12 +591,10 @@ fn extend(into: &mut IpSet, from: &IpSet) {
 
 /// Which of `ip_set` a frame built by `sender` cannot reach from this host.
 ///
-/// Classified the way [`map_ips_to_interfaces_forced`] classifies, and so by the
-/// routing table: a routed target is out of reach when the source the kernel
-/// would send it from belongs to a link that carries no frames. That is the
-/// kernel's own statement of where the packet leaves, and a VPN that routes a
-/// target through its tunnel has made it here. The frame sender's own choice of
-/// egress is not consulted, because it is the thing whose reach is in question.
+/// Classified as [`map_ips_to_interfaces_forced`] classifies: a routed target
+/// is out of reach when the source the kernel would send it from belongs to a
+/// link that carries no frames. The frame sender's own choice of egress is not
+/// consulted, since its reach is what is in question.
 pub(crate) fn beyond_frames(ip_set: IpSet, forced: &[IpAddr], sender: FrameSender) -> BeyondFrames {
     beyond_frames_with(ip_set, viable_interfaces(), forced, sender)
 }
@@ -701,8 +616,8 @@ pub(crate) fn beyond_frames_with(
         ..
     } = map_ips_to_interfaces_with(ip_set, interfaces, forced);
 
-    // Grouped by reason before anything is counted, since one tunnel can hold
-    // targets on its own subnet and targets routed through it alike.
+    // Grouped by reason before counting, since one tunnel can hold targets on
+    // its own subnet and targets routed through it.
     let mut groups: Vec<(Unframed, IpSet)> = Vec::new();
     let mut add = |reason: Unframed, range: IpRange| match groups
         .iter_mut()
@@ -731,13 +646,12 @@ pub(crate) fn beyond_frames_with(
         add(Unframed::Ours, V6(*range));
     }
 
-    // Sorted by name, so the order a message lists them in does not depend on a
-    // hash map's.
+    // Sorted by name, for a stable message order.
     let mut local: Vec<(Link, IpSet)> = local.into_iter().collect();
     local.sort_by(|(a, _), (b, _)| a.name().cmp(b.name()));
     for (link, targets) in &local {
-        // Only a link-local target whose zone named a tunnel is in `local` on
-        // a link without frames; a tunnel's own subnet is routed through it.
+        // Only a link-local target whose zone named a tunnel is in `local` on a
+        // link without frames; a tunnel's own subnet is routed through it.
         if !link.carries_frames() {
             for range in targets.v4() {
                 add(Unframed::Tunnel(link.name().to_string()), V4(*range));
@@ -753,9 +667,9 @@ pub(crate) fn beyond_frames_with(
     }
 
     for RoutedTarget { target, source } in routed {
-        // A source no link here holds is a forced one naming an address this
-        // host does not have. The frame sender builds that frame as asked, and
-        // a connect could not honour it, so it is left where it is.
+        // A source no link here holds is a forced address this host does not
+        // have. The frame sender builds that frame as asked, and a connect could
+        // not honour it, so it stays.
         let Some(owner) = links
             .iter()
             .find(|link| link.addresses().iter().any(|held| held.address() == source))
@@ -785,27 +699,22 @@ fn single(address: IpAddr) -> IpRange {
 
 /// Whether an IPv6 range is small enough to probe one address at a time.
 ///
-/// The question every strategy that walks addresses has to ask before it starts,
-/// and the reason it is asked of a range rather than of a set: a set holding a
-/// `/64` and three literals is partly walkable, and refusing all four of them
-/// would throw away three addresses somebody named. See
-/// [`MAX_ENUMERABLE_ADDRESSES`].
+/// Asked of a range: a set holding a `/64` and three literals is partly
+/// walkable. See [`MAX_ENUMERABLE_ADDRESSES`].
 pub fn is_enumerable(range: &Ipv6Range) -> bool {
     range.len() <= MAX_ENUMERABLE_ADDRESSES
 }
 
 /// The segment the whole inclusive range `[start, end]` is on, if it is on one.
 ///
-/// A range is kept whole only where one link answers for every address in
-/// it: the segment's, with no narrower prefix on another link inside the range
-/// to take some of it elsewhere, a VPN's `/24` within the LAN's `/8` for one.
-/// Anything less is expanded and each address asks [`holding_prefix`] for
+/// Kept whole only where one link answers for every address in it, with no
+/// narrower prefix on another link inside the range (a VPN's `/24` within the
+/// LAN's `/8`, say). Otherwise each address asks [`holding_prefix`] for
 /// itself.
 ///
-/// A host prefix does not count. A `/32` or `/128` routes only the address it
-/// was assigned with, which is this host's own and is withheld as that, and
-/// Linux lists every DHCPv6 address as one: splitting an on-link `/64` around
-/// it would refuse the segment as too large to walk, where it is swept whole.
+/// A host prefix (`/32`, `/128`) does not count: it covers only this host's own
+/// address, and Linux lists every DHCPv6 address as one, so splitting an
+/// on-link `/64` around it would refuse the segment as too large to walk.
 fn owning_interface(links: &[Link], start: IpAddr, end: IpAddr) -> Option<usize> {
     let (idx, owner) = holding_prefix(links, start)?;
     let narrower_inside = links
@@ -827,19 +736,15 @@ fn owning_interface(links: &[Link], start: IpAddr, end: IpAddr) -> Option<usize>
 /// The interface holding the most specific prefix that contains `target`,
 /// and the address it holds there.
 ///
-/// Each prefix an address carries is a connected route, and the kernel sends
-/// by the most specific one, so this does too: a VPN's `/24` inside a LAN's
-/// `/8` takes the targets in the `/24`. On a tie the first interface listed
-/// wins. Matching is within one address family, the check
-/// `LinkAddress::contains` already makes.
+/// The kernel sends by the most specific connected route, so this does too: a
+/// VPN's `/24` inside a LAN's `/8` takes the targets in the `/24`. On a tie the
+/// first interface listed wins. Matching is within one address family.
 ///
-/// What the prefix means depends on the link. On one that carries frames it is
-/// a segment, swept at the link layer. On a tunnel it is only a route: its
-/// peers sit inside it, a WireGuard peer on the tunnel's `/24` or an OpenVPN
-/// server in subnet topology, and a link-layer strategy handed one sends it
-/// nothing, since no frame can be put on the tunnel and nothing behind it
-/// answers ARP or neighbour discovery. Such a peer is probed through the
-/// tunnel from the tunnel's address.
+/// On a link that carries frames the prefix is a segment, swept at the link
+/// layer. On a tunnel it is only a route: its peers (a WireGuard peer, an
+/// OpenVPN server in subnet topology) are probed through the tunnel from the
+/// tunnel's address, since nothing behind it answers ARP or neighbour
+/// discovery.
 fn holding_prefix(links: &[Link], target: IpAddr) -> Option<(usize, LinkAddress)> {
     let mut best: Option<(usize, LinkAddress)> = None;
     for (idx, link) in links.iter().enumerate() {
@@ -868,8 +773,7 @@ mod tests {
     use crate::model::mac::MacAddr;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    /// An Ethernet interface holding one address, which is the segment the
-    /// on-link tests below are about.
+    /// An Ethernet interface holding one address.
     fn mock_named(name: &str, index: u32, ip: IpAddr, prefix: u8) -> Link {
         Link::new(name, index)
             .with_mac(MacAddr::new(0x02, 0, 0, 0, 0, index as u8))
@@ -896,12 +800,10 @@ mod tests {
         assert_eq!(holder([203, 0, 113, 1]), None, "held by neither");
     }
 
-    /// A routed target whose route refuses by policy is given to no raw
-    /// strategy, forced source or fallback source: each would send from an
-    /// address named outright, which the kernel sends from wherever its
-    /// table refuses. Left to the connect fallback, it meets the refusal the
-    /// rest of the machine meets. A missing route still gets the fallback,
-    /// which is the case the fallback is for.
+    /// A routed target whose route refuses by policy is given to no raw strategy,
+    /// forced source or fallback source; the connect fallback meets the same
+    /// refusal as the rest of the machine. A missing route still gets the
+    /// fallback.
     #[test]
     fn a_routed_target_a_route_forbids_is_left_to_the_connect_fallback() {
         let global = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 5));
@@ -934,11 +836,9 @@ mod tests {
         );
     }
 
-    /// A neighbour the routing table refuses is found among a segment's
-    /// targets, a walked range's as much as a named address's, and nothing
-    /// else is: not its neighbours, not the segment's network and broadcast
-    /// addresses, which a kernel refuses a connect to on other grounds, and
-    /// not a link-local address, which no table routes without its zone.
+    /// A neighbour the routing table refuses is found among a segment's targets,
+    /// walked or named, and nothing else is: not its neighbours, not the
+    /// segment's network and broadcast addresses, and not a link-local address.
     #[test]
     fn a_neighbour_the_routing_table_refuses_is_told_apart_from_the_segment() {
         let link = mock_interface(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24);
@@ -980,7 +880,7 @@ mod tests {
         assert_eq!(ips.len(), 11);
     }
 
-    /// The boundary of the enumeration ceiling, checked exactly rather than by
+    /// The boundary of the enumeration ceiling, checked exactly, without
     /// expanding a range: a `/112` is probed, a `/111` is not.
     #[test]
     fn the_enumeration_ceiling_is_a_112() {
@@ -997,14 +897,9 @@ mod tests {
         );
     }
 
-    /// The failure this ceiling exists to prevent: a routed `/64` expanded into
-    /// a `Vec<IpAddr>` is 2^64 allocations, which is not a slow scan but an
-    /// out-of-memory condition reached from a perfectly ordinary target
-    /// expression.
-    ///
-    /// It has to come out as its own category. Silently dropping it would report
-    /// an empty scan of a range nobody probed, and a caller cannot tell that
-    /// from a range with nothing on it.
+    /// A routed `/64` expanded into a `Vec<IpAddr>` exhausts memory. It must
+    /// come out as its own category so the caller can tell it from a range with
+    /// nothing on it.
     #[test]
     fn a_routed_v6_prefix_too_large_to_walk_is_refused_rather_than_expanded() {
         let interfaces = vec![mock_interface(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 24)];
@@ -1025,13 +920,9 @@ mod tests {
         assert!(result.local.is_empty());
     }
 
-    /// The silent wrong answer this refusal exists to prevent.
-    ///
     /// Every interface holds an `fe80::/64`, so a bare link-local target matches
-    /// all of them and `owning_interface` returns whichever the host listed
-    /// first. On a laptop with two dozen interfaces that is close to a random
-    /// choice: the scan probes one segment, hears nothing, and reports a host
-    /// that was present on another as absent.
+    /// all of them, and `owning_interface` would return whichever the host listed
+    /// first.
     #[test]
     fn a_link_local_target_naming_no_interface_is_refused() {
         let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
@@ -1052,8 +943,7 @@ mod tests {
     }
 
     /// Named, the same target is unambiguous, and the name outranks any prefix
-    /// match: every interface matches the prefix, so a prefix match is no
-    /// evidence at all.
+    /// match.
     #[test]
     fn a_link_local_target_goes_to_the_interface_it_names() {
         let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA);
@@ -1106,10 +996,9 @@ mod tests {
         assert_eq!(ips.len(), 5);
     }
 
-    /// The case that sends a scan of this host's own LAN address looking for an
-    /// ARP reply nothing would send: the address sits inside its own
-    /// interface's subnet, so the on-link test claims it, and no probe can
-    /// establish it because the kernel routes it through loopback.
+    /// This host's own LAN address sits inside its interface's subnet, so the
+    /// on-link test claims it, but no probe can establish it because the kernel
+    /// routes it through loopback.
     #[test]
     fn an_address_this_host_holds_is_ours_rather_than_on_link() {
         let own: IpAddr = "203.0.113.160".parse().unwrap();
@@ -1127,8 +1016,7 @@ mod tests {
         );
     }
 
-    /// A neighbour on the same segment still gets the on-link strategy, which is
-    /// the half of the distinction that has to keep working.
+    /// A neighbour on the same segment still gets the on-link strategy.
     #[test]
     fn a_neighbour_on_the_same_segment_is_still_on_link() {
         let own: IpAddr = "203.0.113.160".parse().unwrap();
@@ -1158,8 +1046,8 @@ mod tests {
             .with_addresses(held(addresses))
     }
 
-    /// A VPN's tunnel, as macOS presents one: a peer rather than a segment, and
-    /// no hardware address.
+    /// A VPN's tunnel, as macOS presents one: a peer and no segment, and no
+    /// hardware address.
     fn tunnel(addresses: &[(&str, u8)]) -> Link {
         Link::new("utun9", 20)
             .with_addressing(crate::system::interface::Addressing::PointToPoint)
@@ -1191,12 +1079,11 @@ mod tests {
         literal.parse().expect("a literal")
     }
 
-    /// Without its own check, `::1` would come out of the classifier as a
-    /// routed target paired with a global source, because the kernel answers it
-    /// from `::1`, no viable interface holds that, and the VPN fallback then
-    /// offers the first global address it finds. `127.0.0.1` would be spared
-    /// only because that fallback declines IPv4. A forced source would do the
-    /// same to both.
+    /// Without its own check, `::1` would be classified as a routed target with
+    /// a global source: the kernel answers it from `::1`, no viable interface
+    /// holds that, and the VPN fallback offers the first global address.
+    /// `127.0.0.1` would be spared only because the fallback declines IPv4. A
+    /// forced source would do the same to both.
     #[test]
     fn loopback_is_unmapped_in_both_families_whatever_is_forced() {
         let interfaces = vec![ethernet(&[("192.0.2.10", 24), ("2001:db8:1::10", 64)])];
@@ -1244,8 +1131,7 @@ mod tests {
         }
     }
 
-    /// And a frames-only run says why it reaches one by connect rather than
-    /// calling it unroutable.
+    /// And a frames-only run says why it reaches one by connect.
     #[test]
     fn a_mapped_address_is_beyond_frames_as_what_it_is() {
         let beyond = beyond_frames_with(
@@ -1262,10 +1148,9 @@ mod tests {
     }
 
     /// A connect step holds what a frame cannot reach and what no route leads
-    /// to, and a message about it names each address for what it is: loopback
-    /// as loopback, a mapped address as mapped, whichever block it was
-    /// written in, and the rest as having no route. An address already held
-    /// keeps the reason it was held for.
+    /// to, and names each address for what it is: loopback, mapped (whichever
+    /// block it was written in), or no route. An address already held keeps its
+    /// reason.
     #[test]
     fn what_no_route_leads_to_is_named_for_what_it_is() {
         let held = beyond_frames_with(
@@ -1295,9 +1180,8 @@ mod tests {
         assert_eq!(all.targets.len(), 6);
     }
 
-    /// What a frame reaches, which has to keep working for the split to be worth
-    /// anything: a neighbour it can ARP for, and a routed target whose route
-    /// leaves by a link with Ethernet in front of it.
+    /// What a frame reaches: a neighbour it can ARP for, and a routed target
+    /// whose route leaves by a link with Ethernet in front of it.
     #[test]
     fn a_frame_reaches_an_ipv4_neighbour_and_a_target_routed_over_ethernet() {
         let beyond = beyond_frames_with(
@@ -1310,9 +1194,8 @@ mod tests {
         assert!(beyond.is_empty(), "nothing out of reach: {beyond:?}");
     }
 
-    /// The case a VPN makes: the kernel sends the target from the tunnel's
-    /// address, so its route leaves by a link no frame can be put on, and the
-    /// frame sender's own guess at an egress is not what decides it.
+    /// The kernel sends the target from the tunnel's address, so its route
+    /// leaves by a link no frame can be put on.
     #[test]
     fn a_target_routed_through_a_tunnel_is_beyond_frames() {
         let beyond = beyond_frames_with(
@@ -1332,9 +1215,8 @@ mod tests {
         );
     }
 
-    /// A tunnel with a prefix of its own claims its subnet as on-link, and it is
-    /// no more a segment for that. Its own subnet and a target routed through it
-    /// are one reason, counted once.
+    /// A tunnel's own subnet is not a segment. Its subnet and a target routed
+    /// through it are one reason, counted once.
     #[test]
     fn a_tunnels_own_subnet_is_beyond_frames_under_the_same_reason() {
         let beyond = beyond_frames_with(
@@ -1352,9 +1234,8 @@ mod tests {
     }
 
     /// A WireGuard peer, or an OpenVPN server in subnet topology, sits inside
-    /// the prefix the tunnel's own address carries. That prefix is a route
-    /// through the tunnel and not a segment, so the peer is probed through the
-    /// tunnel from the tunnel's address, the way the kernel would send to it.
+    /// the prefix the tunnel's own address carries, and is probed through the
+    /// tunnel from the tunnel's address, as the kernel would send to it.
     #[test]
     fn a_host_on_a_tunnels_own_subnet_is_routed_through_the_tunnel() {
         let interfaces = vec![
@@ -1388,10 +1269,8 @@ mod tests {
         );
     }
 
-    /// A forced source is for a target the routing table would send through
-    /// the wrong interface. A peer on the tunnel's own subnet is reached through
-    /// that tunnel and nowhere else, so it keeps the tunnel's address as a
-    /// neighbour on a segment keeps the segment's.
+    /// A peer on the tunnel's own subnet is reached only through that tunnel,
+    /// so a forced source does not apply and it keeps the tunnel's address.
     #[test]
     fn a_forced_source_does_not_take_a_host_off_its_tunnels_subnet() {
         let routed = map_ips_to_interfaces_with(
@@ -1437,9 +1316,9 @@ mod tests {
         assert_eq!(routed.ours.len(), 1);
     }
 
-    /// Prefixes nest, and the most specific one is the route, as it is in the
-    /// kernel: a VPN's prefix inside the LAN's takes its own targets, and a
-    /// LAN inside a tunnel's wider prefix keeps its neighbours.
+    /// Prefixes nest, and the most specific one is the route, as in the kernel:
+    /// a VPN's prefix inside the LAN's takes its own targets, and a LAN inside a
+    /// tunnel's wider prefix keeps its neighbours.
     #[test]
     fn the_most_specific_prefix_decides_between_a_segment_and_a_tunnel() {
         let interfaces = vec![
@@ -1476,8 +1355,7 @@ mod tests {
     }
 
     /// A segment's range stays whole around a host prefix, on its own link or
-    /// on a tunnel. Each covers only an address this host holds, and splitting
-    /// an on-link `/64` around one would refuse it as too large to walk.
+    /// on a tunnel.
     #[test]
     fn a_host_prefix_inside_a_segments_range_leaves_the_range_whole() {
         let mut lan = ethernet(&[("2001:db8:1::10", 64)]);
@@ -1497,8 +1375,8 @@ mod tests {
         assert_eq!(routed.local.len(), 1, "the /64 is swept on its segment");
     }
 
-    /// The one place the two frame builders differ. The segment sweep resolves
-    /// an IPv6 neighbour itself; the probe sender has ARP and nothing else.
+    /// The segment sweep resolves an IPv6 neighbour itself; the probe sender
+    /// has only ARP.
     #[test]
     fn an_ipv6_neighbour_is_within_the_sweep_and_beyond_the_probe_sender() {
         let interfaces = vec![ethernet(&[("192.0.2.10", 24), ("2001:db8:1::10", 64)])];
@@ -1536,9 +1414,9 @@ mod tests {
         );
     }
 
-    /// The VPN case made deterministic: a routed target the kernel would send
-    /// from the tunnel is sent from the forced LAN source instead, and the
-    /// routing table is never asked - the source picks itself by family.
+    /// A routed target the kernel would send from the tunnel is sent from the
+    /// forced LAN source, and the routing table is never asked: the source is
+    /// picked by family.
     #[test]
     fn a_forced_source_outranks_the_routing_table_for_a_routed_target() {
         let lan: IpAddr = "203.0.113.160".parse().unwrap();

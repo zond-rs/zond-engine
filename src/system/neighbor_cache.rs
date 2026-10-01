@@ -8,38 +8,26 @@
 
 //! # The Host's Own Neighbour Table
 //!
-//! The cheapest source of addresses a scanner has, and the one the engine spent
-//! its whole life ignoring.
+//! The cheapest source of addresses a scanner has. Every address the operating
+//! system has recently spoken to on a local segment sits in its neighbour cache,
+//! already resolved to a MAC, for no packets and no waiting. This includes global
+//! and unique-local IPv6 addresses the engine could not otherwise learn, because
+//! its own IPv6 probe is sourced from a link-local address and draws only
+//! link-local answers.
 //!
-//! The operating system has been performing neighbour discovery all along. Every
-//! address it has spoken to on a local segment recently is sitting in its
-//! neighbour cache, already resolved to a MAC, obtained for no packets and no
-//! waiting. On the segment this was written against, that table names twelve
-//! devices over IPv6, against thirteen in the ARP table, and fourteen of its
-//! addresses are global or unique-local ones the engine could not otherwise
-//! learn at all, because the only IPv6 probe it sends is sourced from a
-//! link-local address and so draws only link-local answers.
+//! ## IPv6
 //!
-//! ## Why this matters more for IPv6 than for IPv4
+//! A `/24` is 256 ARP requests, but a `/64` holds 2^64 addresses, and the one
+//! probe that reaches a whole IPv6 segment, the all-nodes echo, is optional to
+//! answer. A neighbour solicitation must be answered but needs an address to aim
+//! at. The table supplies candidates and solicitation confirms them, which finds a
+//! host that ignores multicast echo and was never named by a user.
 //!
-//! An IPv4 segment can be swept: a `/24` is 256 ARP requests. An IPv6 segment
-//! cannot, a `/64` holds 2^64 addresses, and the one probe that does reach a
-//! whole IPv6 segment, the all-nodes echo, is optional to answer. A neighbor
-//! solicitation is *not* optional, but it can only be aimed at an address
-//! somebody already has.
+//! ## Limits
 //!
-//! This is where those addresses come from. The table supplies candidates and
-//! solicitation confirms them, which is the only combination that finds a host
-//! that both ignores multicast echo and has never been named by a user.
-//!
-//! ## What it is not
-//!
-//! Not a census. The table holds neighbours *this host* has had reason to talk
-//! to recently, so it is biased toward whatever this machine uses and says
-//! nothing about the rest of the segment. Entries also go stale: an address in
-//! the table is one that answered once, not one that is answering now. Both are
-//! reasons to treat an entry as a lead to be confirmed rather than as a
-//! discovered host: nothing here writes to the store.
+//! The table holds neighbours *this host* has talked to recently, so it says
+//! nothing about the rest of the segment, and entries go stale. An entry is a lead
+//! to confirm; nothing here writes to the store.
 
 use std::net::IpAddr;
 
@@ -53,42 +41,29 @@ pub struct Neighbor {
     pub ip: IpAddr,
     /// Its link-layer address, when the entry is resolved.
     ///
-    /// The crate's own [`MacAddr`] rather than the
-    /// one belonging to whichever library read the table, on the reasoning
-    /// [`Link`](crate::system::interface::Link) gives: a consumer should not
-    /// have to know which crate this came from, any more than they have to know
-    /// which syscall did. A library's own type here would put a pre-1.0 foreign
-    /// type in the public API of the module making that argument.
-    ///
-    /// `None` for an entry the operating system created but has not completed:
-    /// an address it is currently asking about. Those are still worth having:
-    /// something on this host had a reason to look the address up, which is
-    /// evidence it exists even though the neighbour has not answered yet.
+    /// `None` for an entry the operating system is still resolving. Such an
+    /// entry is still evidence: something on this host had reason to look the
+    /// address up.
     pub mac: Option<MacAddr>,
     /// The interface the entry belongs to, as a scope id.
     ///
-    /// Required rather than incidental for IPv6: a link-local address from this
-    /// table is meaningless without it, exactly as it is everywhere else in the
-    /// engine. See [`ScopedIp`](crate::model::ip::scoped::ScopedIp).
+    /// A link-local address is meaningless without it. See
+    /// [`ScopedIp`](crate::model::ip::scoped::ScopedIp).
     pub interface_index: u32,
 }
 
 /// Every IPv6 neighbour this host currently knows of.
 ///
-/// Empty rather than an error when the table cannot be read: a scan that cannot
-/// consult this source is a scan with fewer leads, not a failed one, and every
-/// address it would have supplied is still reachable by the probes that do not
-/// depend on it.
+/// Empty when the table cannot be read: the scan just has fewer leads.
 pub fn ipv6_neighbors() -> Vec<Neighbor> {
     platform::ipv6_neighbors()
 }
 
 /// Every IPv4 neighbour this host currently knows of: its ARP table.
 ///
-/// Read for what it ties together rather than as a source of leads, since an
-/// IPv4 segment is swept whole anyway: which hardware address answers for an
-/// address, learned for no packets. Empty rather than an error where the table
-/// cannot be read, for the reason [`ipv6_neighbors`] gives.
+/// Read for which hardware address answers for an address, since an IPv4
+/// segment is swept whole anyway. Empty where the table cannot be read, as with
+/// [`ipv6_neighbors`].
 pub(crate) fn ipv4_neighbors() -> Vec<Neighbor> {
     platform::ipv4_neighbors()
 }
@@ -97,15 +72,11 @@ pub(crate) fn ipv4_neighbors() -> Vec<Neighbor> {
 /// and every other address this host's neighbour tables tie to a machine
 /// they name.
 ///
-/// For a front end counting, before a scan starts, what the scan will
-/// withhold. A target named at another address of an excluded machine is sent
-/// nothing, and a count taken from the policy alone says the policy withheld
-/// nothing while the scan's report says it withheld that target. Read from
-/// the same tables the scan reads as it starts, and learned the same way,
-/// without a packet: the hardware an excluded address resolved to is the
-/// machine, and every address listed at that hardware is part of it. The
-/// scan reads them again, so a table that changes in between is answered
-/// by the scan's own report, which is the account that holds.
+/// For a front end counting, before a scan starts, what the scan will withhold:
+/// a target at another address of an excluded machine is sent nothing. The
+/// hardware an excluded address resolved to is the machine, and every address
+/// listed at that hardware is part of it. The scan reads the tables again as it
+/// starts, so if they change in between, the scan's own report is authoritative.
 pub fn with_machines_tied(
     exclusions: &crate::model::exclusion::Exclusions,
 ) -> crate::model::exclusion::Exclusions {
@@ -161,8 +132,7 @@ fn parse_proc_arp(text: &str, index_of: impl Fn(&str) -> Option<u32>) -> Vec<Nei
 
 /// On BSD-derived systems the IPv6 neighbour cache *is* the routing table: each
 /// entry is a host route carrying the `RTF_LLINFO` flag, whose gateway is a
-/// link-layer address rather than another IP. That is precisely what `ndp -an`
-/// reads, and it is reached through `sysctl` rather than through a socket.
+/// link-layer address. This is what `ndp -an` reads, reached through `sysctl`.
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
 mod platform {
     use std::mem;
@@ -231,10 +201,9 @@ mod platform {
 
     /// Reads a sysctl of unknown size: ask for the length, allocate, read.
     ///
-    /// The two calls race against a table that changes between them, so a short
-    /// read is retried once with the length the kernel reported the second time.
-    /// A table that keeps growing faster than it can be read is reported rather
-    /// than looped on.
+    /// The table can change between the two calls, so a short read is retried
+    /// once with the length the kernel reported the second time. A table that
+    /// keeps growing is reported as an error.
     fn dump(mib: &mut [c_int]) -> std::io::Result<Vec<u8>> {
         for _ in 0..2 {
             let mut len: size_t = 0;
@@ -292,9 +261,9 @@ mod platform {
 
     /// Walks the routing messages in `buffer`, yielding one neighbour per entry.
     ///
-    /// Every length here comes from the kernel and is bounds-checked anyway. The
-    /// buffer is trusted, but a message claiming to be longer than what remains
-    /// would walk off the end, and a zero-length one would loop forever.
+    /// Every length comes from the kernel and is bounds-checked anyway: a message
+    /// longer than what remains would walk off the end, and a zero-length one
+    /// would loop forever.
     fn parse(buffer: &[u8]) -> Vec<Neighbor> {
         let mut neighbors = Vec::new();
         let mut offset = 0usize;
@@ -305,15 +274,10 @@ mod platform {
             let header: rt_msghdr =
                 unsafe { std::ptr::read_unaligned(buffer[offset..].as_ptr() as *const rt_msghdr) };
 
-            // A message has to be at least a header, and no longer than what
-            // remains. The lower bound was `!= 0`, which is the same thing only
-            // if a message can never be shorter than the struct being read out
-            // of it — and `rtm_msglen` is the kernel's number while
-            // `size_of::<rt_msghdr>()` is whatever `libc` was compiled to
-            // believe. A routing socket carries several message types with
-            // headers of different sizes, so the two can disagree, and the slice
-            // below then ran from the header's end back to a smaller offset and
-            // panicked. Bounding by the header size subsumes the zero case.
+            // At least a header and no longer than what remains. `rtm_msglen`
+            // is the kernel's number and `size_of::<rt_msghdr>()` is libc's, and
+            // message types with smaller headers make them disagree; a shorter
+            // length would make the slice below run backwards and panic.
             let message_len = header.rtm_msglen as usize;
             if message_len < mem::size_of::<rt_msghdr>() || offset + message_len > buffer.len() {
                 break;
@@ -337,9 +301,7 @@ mod platform {
     /// absent according to the bits in `addrs`, in a fixed order.
     ///
     /// The destination is the neighbour's address and the gateway is its
-    /// link-layer address. Anything else in the block is skipped by its own
-    /// length, which is why the whole sequence has to be walked even to read
-    /// only two of them.
+    /// link-layer address. Anything else is skipped by its own length.
     fn entry(mut block: &[u8], addrs: c_int, interface_index: u32) -> Option<Neighbor> {
         let mut ip: Option<IpAddr> = None;
         let mut mac: Option<MacAddr> = None;
@@ -400,11 +362,8 @@ mod platform {
             unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const sockaddr_in6) };
         let mut octets = sin6.sin6_addr.s6_addr;
 
-        // BSD stores a link-local address's scope in bytes 2 and 3 of the
-        // address itself rather than in the `sin6_scope_id` field, which is a
-        // representation no other part of the engine uses and which would
-        // otherwise be reported as part of the address. The interface is carried
-        // separately, so the embedded copy is cleared.
+        // BSD embeds a link-local address's scope in bytes 2 and 3 of the
+        // address. The interface is carried separately, so clear the embedded copy.
         if octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80 {
             octets[2] = 0;
             octets[3] = 0;
@@ -421,8 +380,8 @@ mod platform {
         let sdl: sockaddr_dl =
             unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const sockaddr_dl) };
 
-        // The address lives inside a variable-length trailer after the interface
-        // name, and is only a MAC when it is six bytes long.
+        // The address follows the interface name in a variable-length trailer,
+        // and is a MAC only when it is six bytes long.
         const ETHER_ADDR_LEN: usize = 6;
         if sdl.sdl_alen as usize != ETHER_ADDR_LEN {
             return None;
@@ -471,13 +430,8 @@ mod platform {
         /// **A message shorter than the header it is read through ends the
         /// walk.**
         ///
-        /// A guard refusing only a length of zero and a length past the end of
-        /// the buffer panics here: the slice handed to `entry` runs from
-        /// `offset + size_of::<rt_msghdr>()` to `offset + message_len`, which is
-        /// backwards for every length between the two. `rtm_msglen` is the
-        /// kernel's and the struct size is the binding's, so they can disagree
-        /// on a platform whose layout has moved or a dump carrying a message
-        /// type this does not expect.
+        /// Otherwise the slice handed to `entry`, from `offset +
+        /// size_of::<rt_msghdr>()` to `offset + message_len`, runs backwards.
         #[test]
         fn a_message_shorter_than_its_header_ends_the_walk() {
             let header = mem::size_of::<rt_msghdr>();
@@ -492,17 +446,15 @@ mod platform {
                 );
             }
 
-            // And the first length that is not short is read rather than
-            // refused, so the bound is the header's size and not something
-            // larger.
+            // A length of exactly the header size is read, so the bound is not
+            // larger than it needs to be.
             let mut buffer = message(header as u16, RTA_DST | RTA_GATEWAY, 1);
             buffer.resize(header + 64, 0);
             let _ = parse(&buffer);
         }
 
         /// The walk terminates and reads nothing out of bounds whatever the
-        /// buffer, which is the property the trust model leans on: the bytes
-        /// come from the kernel, and are bounds-checked anyway.
+        /// buffer.
         #[test]
         fn the_walk_survives_any_buffer() {
             let mut state = 0x2545_F491_4F6C_DD1Du64;
@@ -519,8 +471,7 @@ mod platform {
                 let _ = parse(&buffer);
             }
 
-            // And the same over buffers shaped like real messages, where the
-            // length field is plausible enough to be acted on.
+            // Buffers shaped like real messages, with plausible length fields.
             for _ in 0..20_000 {
                 let mut buffer = message((next() % 70_000) as u16, (next() % 256) as c_int, 1);
                 let extra = (next() % 128) as usize;
@@ -549,9 +500,8 @@ mod platform {
             }
         }
 
-        /// The interface-name length inside a link-layer sockaddr is where the
-        /// MAC is read from, and it is a stranger's number in the same sense as
-        /// the rest.
+        /// The interface-name length inside a link-layer sockaddr decides where
+        /// the MAC is read from, so it is bounds-checked like the rest.
         #[test]
         fn a_link_address_naming_a_long_interface_yields_no_mac() {
             let header = mem::size_of::<rt_msghdr>();
@@ -576,14 +526,11 @@ mod platform {
 /// Platforms whose neighbour table this does not read yet, and Linux's ARP
 /// table, which it does.
 ///
-/// Reported once rather than silently returning nothing, because an empty table
-/// and an unread one lead to the same host count and mean entirely different
-/// things: the distinction this whole engine is built to preserve.
+/// An unread table is reported once, so it can be told apart from an empty one.
 ///
 /// Linux keeps its IPv6 table behind netlink (`RTM_GETNEIGH`) and Windows both
-/// behind `GetIpNetTable2`; each is a self-contained piece of work against an
-/// interface neither shares with the other. Linux also publishes its ARP table
-/// as text in `/proc/net/arp`, which needs neither.
+/// behind `GetIpNetTable2`. Linux also publishes its ARP table as text in
+/// `/proc/net/arp`.
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "freebsd")))]
 mod platform {
     use super::Neighbor;
@@ -618,10 +565,6 @@ mod platform {
     }
 
     /// Nothing, on a platform whose neighbour table this engine cannot read.
-    ///
-    /// Empty rather than an error, for the reason the public function gives: a
-    /// scan that cannot read the table is a scan with one fewer source of
-    /// candidate addresses, not a scan that failed.
     pub(super) fn ipv6_neighbors() -> Vec<Neighbor> {
         warn!(
             verbosity = 1,
@@ -676,12 +619,10 @@ not an entry
         );
     }
 
-    /// Reading the table must not panic, whatever the host looks like, and must
-    /// answer with something usable rather than an error a caller has to handle.
+    /// Reading the table must not panic, whatever the host looks like.
     ///
-    /// Deliberately not an assertion about *contents*: a machine with no IPv6
-    /// neighbours is a perfectly ordinary machine, and a test demanding some
-    /// would fail in CI for a reason having nothing to do with this code.
+    /// Asserts nothing about contents: a machine with no IPv6 neighbours is
+    /// ordinary, and CI runners may have none.
     #[test]
     fn reading_the_table_is_infallible() {
         let neighbors = ipv6_neighbors();
@@ -695,8 +636,7 @@ not an entry
         }
     }
 
-    /// The ARP table reads without failing and yields IPv4 entries alone, for
-    /// the reason the IPv6 table's test gives about contents.
+    /// The ARP table reads without failing and yields only IPv4 entries.
     #[test]
     fn reading_the_arp_table_is_infallible() {
         for neighbor in ipv4_neighbors() {
@@ -708,11 +648,8 @@ not an entry
         }
     }
 
-    /// Every entry the table yields has to be something a probe can be aimed at.
-    ///
-    /// A link-local address without its interface is the one shape this must
-    /// never produce, since it is exactly what the rest of the engine refuses to
-    /// act on.
+    /// Every entry must be something a probe can be aimed at: no link-local
+    /// address without its interface.
     #[test]
     fn every_link_local_entry_names_its_interface() {
         for neighbor in ipv6_neighbors() {

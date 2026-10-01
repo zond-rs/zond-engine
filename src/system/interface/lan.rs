@@ -8,17 +8,11 @@
 
 //! # Which link `lan` means
 //!
-//! One question: of the interfaces this machine has, which one is the network
-//! a person means when they type `lan`?
+//! Of the interfaces this machine has, which one is the network a person means
+//! when they type `lan`: the link the default route leaves by. See
+//! [`select_best_lan_interface`] for why the routing table decides.
 //!
-//! The answer is the link the default route leaves by, and the reason it is
-//! that rather than anything about the hardware is written on
-//! [`select_best_lan_interface`]. Every hardware guess this module tried before
-//! picked the wrong interface on a real laptop, and the routing table is the
-//! one fact that is answerable the same way on every platform.
-//!
-//! [`ViabilityError`] is the other half: which links could carry a sweep at all,
-//! named the way each check reads rather than the way it passes.
+//! [`ViabilityError`] says which links could carry a sweep at all.
 
 use crate::info;
 use crate::system::interface::source::viable_interfaces;
@@ -27,8 +21,7 @@ use std::net::Ipv6Addr;
 
 /// Why a link cannot carry a LAN sweep.
 ///
-/// One variant per condition [`lan_link`] requires, named the way the check
-/// reads rather than the way it passes.
+/// One variant per condition [`lan_link`] requires.
 #[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ViabilityError {
@@ -51,17 +44,12 @@ pub enum ViabilityError {
 /// The link a LAN scan runs on: the interface itself and how it is addressed in
 /// both families.
 ///
-/// The selection picks a *link*, and returns one rather than an
-/// `Ipv4Network`, which would throw away everything the link knew about itself
-/// at the moment it was chosen. The interface identity is what
-/// [`Zone`](crate::model::ip::scoped::Zone) needs to make a link-local
-/// address usable, and the IPv6 prefixes are what say which addresses are on
-/// this segment at all.
+/// The interface identity is what [`Zone`](crate::model::ip::scoped::Zone)
+/// needs to make a link-local address usable, and the IPv6 prefixes say which
+/// addresses are on this segment.
 ///
-/// `ipv4` is optional because a viable LAN link need not have one. An interface
-/// carrying only a link-local IPv6 address is perfectly scannable, the
-/// all-nodes echo and neighbour discovery both work, and a return value that
-/// required an IPv4 network would force treating that as "no network found".
+/// `ipv4` is optional: an interface carrying only a link-local IPv6 address is
+/// scannable through the all-nodes echo and neighbour discovery.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct LanLink {
@@ -94,11 +82,8 @@ pub fn prioritized_interfaces(limit: usize) -> Vec<Link> {
 
 /// The ordering, decoupled from the host so it can be tested.
 ///
-/// Wired before wireless, and a name is not consulted. A sort on
-/// `name.starts_with("e")` catches `eth0` and `en0` on Linux and macOS, and
-/// nothing at all on Windows, where an adapter is named by its GUID. It also
-/// ranks `en1` above `wlan0` on a machine where `en1` *is* the Wi-Fi, which is
-/// an ordinary Mac layout. A link says what it is, so the sort asks it.
+/// Wired before wireless, as each link reports itself. Names are not consulted:
+/// `en1` is often a Mac's Wi-Fi, and Windows names adapters by GUID.
 pub(crate) fn prioritized_interfaces_with(limit: usize, mut links: Vec<Link>) -> Vec<Link> {
     links.sort_by_key(|link| if link.is_wireless() { 1 } else { 0 });
     links.into_iter().take(limit).collect()
@@ -107,37 +92,24 @@ pub(crate) fn prioritized_interfaces_with(limit: usize, mut links: Vec<Link>) ->
 /// The best local network this host is attached to, or `None` if it is attached
 /// to none.
 ///
-/// Reads the host's own interface table and picks among the links that could
-/// carry a sweep: up, physical, not loopback, holding a hardware address,
-/// broadcast-capable and not point-to-point. [`ViabilityError`] names each of
-/// those the other way round.
-///
-/// `None` rather than an error, because there is no error to report. A
-/// machine with nothing but loopback and a VPN tunnel is a machine with no LAN,
-/// which is an answer about the host and not a failure to find one out, and a
-/// caller has nothing to do differently between the two.
+/// Reads the host's interface table and picks among the links that could carry
+/// a sweep: up, physical, not loopback, holding a hardware address,
+/// broadcast-capable and not point-to-point (see [`ViabilityError`]). A machine
+/// with nothing but loopback and a VPN tunnel has no LAN.
 pub fn lan_link() -> Option<LanLink> {
     lan_link_with(crate::system::interface::interfaces_or_none())
 }
 
 /// The IPv4 half of [`lan_link`], for callers that only sweep IPv4.
 ///
-/// Part of the engine's published surface, which a front end builds against;
-/// work inside the engine wants the link, since half of what a LAN scan does
-/// is IPv6.
+/// Inside the engine, use the link, since half of what a LAN scan does is IPv6.
 pub fn lan_network() -> Option<LinkAddress> {
     lan_link()?.ipv4
 }
 
 /// [`lan_link`] against an interface table the caller supplies.
 ///
-/// The seam every decision in this module is tested through: on a real host the
-/// table comes from the platform, and a test hands in interfaces that do not
-/// exist, so the selection can be exercised without depending on whatever the
-/// machine running the tests happens to have plugged in.
-///
-/// Whether a link is physical is read off the `Link` itself, not injected
-/// alongside as a predicate.
+/// The seam the selection is tested through, with interfaces that do not exist.
 pub(crate) fn lan_link_with(interfaces: Vec<Link>) -> Option<LanLink> {
     let interfaces_str: &str = match interfaces.len() {
         1 => "interface",
@@ -180,13 +152,10 @@ pub(crate) fn lan_link_with(interfaces: Vec<Link>) -> Option<LanLink> {
 
 /// Whether `link` could carry a LAN sweep, and what stops it if not.
 ///
-/// Public because [`ViabilityError`] would otherwise be a vocabulary for a
-/// decision nobody could see: [`lan_link`] answers `Option` and drops the
-/// reason, which is right for the question it asks and leaves a caller whose
-/// sweep found no network with nothing to look at. This is that reason, per
-/// link.
+/// [`lan_link`] drops the reason; this gives it per link, for a caller whose
+/// sweep found no network.
 ///
-/// The conditions are the ones ARP and neighbour discovery need between them: a
+/// The conditions are what ARP and neighbour discovery need between them: a
 /// segment with somebody else on it, and a hardware address to send from.
 pub fn lan_viability(link: &Link) -> Result<(), ViabilityError> {
     if !link.is_up() {
@@ -218,38 +187,25 @@ pub fn lan_viability(link: &Link) -> Result<(), ViabilityError> {
 
 /// The best of the viable links.
 ///
-/// The one the default route leaves by, before anything else. That is what
-/// `lan` means to somebody who types it, the network this machine is actually
-/// on, and it is a fact about the routing table rather than a guess about the
-/// hardware, which is why it is answerable the same way on every platform.
+/// The one the default route leaves by comes first: the network this machine is
+/// on, answerable the same way on every platform.
 ///
-/// A guess about the hardware breaks on macOS. `awdl0` (AirDrop) and `llw0`
-/// present as ordinary broadcast Ethernet with real hardware behind them:
-/// physical, up, a MAC, indistinguishable from a wired port by every field an
-/// interface table exposes. So "prefer a wired link" would pick `awdl0`, which
-/// has no IPv4 at all, over the Wi-Fi carrying the whole `/24`, and a sweep of
-/// `lan` would answer *"awdl0 has no private IPv4 network to sweep"* on a
-/// machine plainly on a network.
+/// Hardware cannot decide it. On macOS `awdl0` (AirDrop) and `llw0` look like
+/// wired Ethernet in every field an interface table exposes, so preferring wired
+/// links picks `awdl0`, which has no IPv4, over the Wi-Fi. Nor can an address:
+/// the first link with a private IPv4 can be `bridge100`, the virtualisation
+/// bridge on `192.168.64.1/24`, with only virtual machines behind it.
 ///
-/// Neither does having an address make a link the LAN. Falling back to "the
-/// first one with a private IPv4" would pick `bridge100` on the same kind of
-/// Mac, the virtualisation bridge on `192.168.64.1/24`: a real private network
-/// with nothing on it but virtual machines.
-///
-/// The remaining order is for the case where no link claims the default route
-/// at all, which is a machine with no route off itself: prefer one that could
-/// be swept, then a wired one, then whatever there is.
+/// With no default route at all: prefer a link that could be swept, then a wired
+/// one, then whatever there is.
 fn select_best_lan_interface(links: Vec<Link>) -> Option<Link> {
     if let Some(routed) = links.iter().find(|link| link.carries_default_route()) {
         return Some(routed.clone());
     }
 
-    // The default route is not always on a viable link: a VPN tunnel owns it and
-    // is point-to-point, so it is filtered out before this runs. What is left of
-    // "the network this machine is on" is then the link with a router of its
-    // own. That is what tells a Wi-Fi `/24` with a gateway from the virtualisation
-    // bridge on the same host, which has a private address and no gateway and
-    // which the wired-first rule below would otherwise prefer.
+    // A VPN tunnel can own the default route and is filtered out as
+    // point-to-point. Then the LAN is the link with a gateway, which tells the
+    // Wi-Fi from a virtualisation bridge the wired-first rule would prefer.
     links
         .iter()
         .find(|link| link.has_gateway() && has_private_ipv4(link))
@@ -290,12 +246,6 @@ mod tests {
     }
 
     /// A wired link outranks a wireless one, whatever either is called.
-    ///
-    /// An ordering by the first letter of the name cannot tell them apart:
-    /// `en1` can be a Mac's Wi-Fi and `eth0` a server's wired port, and both
-    /// start with `e`, so such a sort is right by accident where it is right at
-    /// all, and has nothing to say on Windows, where an adapter is named by a
-    /// GUID.
     #[test]
     fn a_wired_link_is_preferred_however_the_platform_names_it() {
         let ordered = prioritized_interfaces_with(
@@ -383,8 +333,7 @@ mod tests {
         assert_eq!(link.link.name(), "test0");
     }
 
-    /// The link carries both families, so a dual-stack segment does not have to
-    /// choose which half of itself to be described by.
+    /// The link carries both families of a dual-stack segment.
     #[test]
     fn a_dual_stack_link_carries_both_families() {
         let mut held = mock_interface(true, true, true, false, false, true)
@@ -406,8 +355,7 @@ mod tests {
     }
 
     /// The published IPv4-only entry point answers with a link's private IPv4
-    /// network, address and prefix, since a front end outside this repo builds
-    /// against it.
+    /// network, address and prefix.
     #[test]
     fn the_ipv4_view_of_a_link_is_unchanged() {
         let intf = mock_interface(true, true, true, false, false, true);
@@ -419,20 +367,14 @@ mod tests {
         assert_eq!(held.prefix(), 24);
     }
 
-    /// The default route decides, and a link that merely looks like hardware
-    /// does not.
-    ///
-    /// On a real Mac sitting on a `/24`, a preference for wired links answers a
-    /// sweep of `lan` with *"awdl0 has no private IPv4 network to sweep"*.
-    /// `awdl0` is AirDrop: macOS presents it as broadcast Ethernet, physical, up,
-    /// with a MAC, every field a wired port has, so "prefer a wired link" chooses
-    /// it over the Wi-Fi that has the actual network.
+    /// The default route decides over a link that only looks like wired
+    /// hardware, such as macOS's `awdl0` (AirDrop).
     #[test]
     fn the_link_carrying_the_default_route_is_the_lan() {
         let wifi = mock_interface(true, true, true, false, false, true)
             .with_kind(LinkKind::Wireless)
             .with_default_route(true);
-        // No IPv4 at all, and indistinguishable from a wired port otherwise.
+        // No IPv4, otherwise indistinguishable from a wired port.
         let airdrop = Link::new("awdl0", 17)
             .with_link_up(true)
             .with_physical(true)
@@ -454,12 +396,8 @@ mod tests {
         );
     }
 
-    /// Nor does a private network of its own make a link the LAN.
-    ///
-    /// The same laptop carries `bridge100` on `192.168.64.1/24`, which is the
-    /// virtualisation bridge: a real private network with nothing on it but
-    /// virtual machines. Falling back to "the first link with a private IPv4"
-    /// would sweep that and report the host's own VMs as the network.
+    /// A private network of its own does not make a link the LAN: `bridge100`
+    /// on `192.168.64.1/24` is a virtualisation bridge.
     #[test]
     fn a_virtualisation_bridge_does_not_outrank_the_default_route() {
         let wifi = mock_interface(true, true, true, false, false, true)
@@ -482,10 +420,8 @@ mod tests {
     }
 
     /// A VPN owns the default route, so no viable link carries it, and the LAN
-    /// is the link with a gateway. On a Mac with a VPN up, the tunnel is
-    /// point-to-point and drops out of viability, leaving a Wi-Fi `/24` with a
-    /// router and the virtualisation bridge with none; the wired-first rule
-    /// would take the bridge, so the gateway is what has to decide.
+    /// is the link with a gateway: the Wi-Fi `/24`, not the virtualisation
+    /// bridge the wired-first rule would take.
     #[test]
     fn a_gateway_beats_a_wired_bridge_when_a_vpn_holds_the_default_route() {
         let wifi = mock_interface(true, true, true, false, false, true)
@@ -508,8 +444,7 @@ mod tests {
     }
 
     /// With no default route anywhere, a link that could be swept beats one that
-    /// could not, which is the ordering that would have made the reported bug
-    /// harmless even without the rule above.
+    /// could not.
     #[test]
     fn with_no_route_a_sweepable_link_beats_one_with_nothing_to_sweep() {
         let addressed = mock_interface(true, true, true, false, false, true);
@@ -533,9 +468,6 @@ mod tests {
     }
 
     /// A virtual adapter is not a LAN, however well-addressed it is.
-    ///
-    /// It says so itself: the link carries whether it is physical, so the test
-    /// states the fact rather than stubbing a function that finds it out.
     #[test]
     fn is_viable_not_physical() {
         let intf = mock_interface(true, true, true, false, false, true).with_physical(false);

@@ -13,54 +13,36 @@
 //! shells. Past it, opening a socket fails with `EMFILE` before anything is
 //! sent, and a connect sweep keeping thousands in flight reaches it at once.
 //!
-//! The limit belongs to the process, so the budget here does too: one gate,
-//! [`gate`], that a connection takes a permit from before it opens a socket
-//! and keeps for as long as the socket lives. Sized per scan, two scans
-//! in one process would each take what fits and together take twice that, and
-//! an application running several at once, or a test harness running them in
-//! parallel, would find its own files refused.
+//! The limit belongs to the process, so there is one process-wide [`gate`]. A
+//! connection takes a permit before it opens a socket and keeps it while the
+//! socket lives, so several scans in one process share the budget.
 //!
-//! Every connection a scan opens to a target draws from it: a connect probe
-//! and the identification it goes on to over the same socket, the service
-//! pass's, each offer a TLS enumeration puts, each detection's. Each takes its
-//! permit before its first socket and gives it back when its last one closes.
-//! A pass whose one unit of work opens its sockets one after another holds one
-//! permit for the unit; one that opens several at once takes one for each.
+//! Every connection a scan opens to a target draws from it: a connect probe and
+//! the identification it goes on to over the same socket, the service pass, each
+//! TLS enumeration offer, each detection. A unit of work that opens its sockets
+//! one after another holds one permit; one that opens several at once takes one
+//! for each.
 //!
-//! The gate holds what is left of the soft limit once a reserve is set aside
-//! for the rest of the process: the standard streams, the runtime's own
-//! descriptors, capture handles, the journal, a second socket a unit briefly
-//! holds beside its first, and whatever the application embedding the engine
-//! has open. The reserve is half the limit, and never fewer than [`RESERVE`],
-//! since what the rest of the process holds does not shrink with the limit: a
-//! command-line scanner holds ten before its first connection. A table that
-//! fills anyway, from any of those, is not the engine's to prevent, and a
-//! connection refused a socket waits for one rather than reading the refusal
-//! as an answer; see [`exhausted`] and [`patiently`].
+//! The gate holds what is left of the soft limit once a reserve is set aside for
+//! the rest of the process: the standard streams, the runtime's descriptors,
+//! capture handles, the journal, a second socket a unit briefly holds, and
+//! whatever the embedding application has open. The reserve is half the limit and
+//! at least [`RESERVE`]. A connection refused a socket anyway waits for one; see
+//! [`exhausted`] and [`patiently`].
 //!
-//! A limit that leaves nothing once the reserve is set aside is too small for
-//! a scan to keep both its connections and its journal, and so is a table
-//! already too full, when the scan starts, to hold a socket beside what is
-//! open and what the scan opens as it runs: a scan is refused under either
-//! before anything is sent; see [`too_few`].
+//! A scan is refused before anything is sent when the limit leaves nothing past
+//! the reserve, or when the table is already too full to hold a socket beside
+//! what is open and what the scan opens as it runs; see [`too_few`].
 //!
-//! What is open is counted for that refusal and not for the gate's size. The
-//! gate is sized once for the life of the process, and what is open at that
-//! moment is a snapshot of an application that goes on opening and closing its
-//! own files: sized from it, a gate would keep for good a shortfall that
-//! passed, or a room that did not last. The refusal is asked afresh by each
-//! scan, of the table as it stands then, which is the moment a scan either
-//! fits or does not. A scan that fits in a table fuller than the reserve
-//! allows for holds back, for its own duration, the permits that table has no
-//! socket for; see [`hold_back`].
+//! The gate is sized once, from the limit alone, because what is open changes
+//! over the process's life. Each scan checks the table as it stands when it
+//! starts, and a scan in a table fuller than the reserve allows for holds back
+//! the permits that table has no socket for; see [`hold_back`].
 //!
-//! The limit is read and never raised. Raising it is a decision about the
-//! whole process, which a library does not own: the soft limit is inherited by
-//! every child the application starts, and a program still built on `select`
-//! cannot watch a descriptor numbered past 1,024, which is why shells default
-//! to that number in the first place. An application that wants a faster sweep
-//! raises its own limit before its first scan, and the gate is sized from what
-//! it finds then.
+//! The limit is read and never raised: the soft limit is inherited by every child
+//! the application starts, and programs built on `select` cannot watch a
+//! descriptor numbered past 1,024. An application that wants a faster sweep raises
+//! its own limit before its first scan.
 
 use std::future::Future;
 use std::io;
@@ -84,10 +66,8 @@ pub(crate) fn gate() -> &'static Semaphore {
 /// Takes a [`Descriptor`] from the gate, for a caller holding blocking
 /// sockets, waiting on `runtime` for one to come free.
 ///
-/// What a detection holds for as long as it runs, since its exchanges are made
-/// by blocking sockets on threads outside the runtime's workers. The runtime
-/// is handed in rather than found, because a detection's flows run on threads
-/// of their own that carry no runtime context to find.
+/// A detection holds one for as long as it runs. Its flows run on their own
+/// threads, which carry no runtime context, so the runtime is passed in.
 pub(crate) fn descriptor_blocking(runtime: &tokio::runtime::Handle) -> Descriptor {
     runtime
         .block_on(gate().acquire())
@@ -98,22 +78,18 @@ pub(crate) fn descriptor_blocking(runtime: &tokio::runtime::Handle) -> Descripto
 /// to give, before it is given up.
 ///
 /// A connection refused a socket has sent nothing, so waiting costs time and
-/// never a verdict. The engine's own connections take at most half the table,
-/// and a sweep gives each socket back within a
-/// [`CONNECT_PROBE_TIMEOUT`](crate::config::limits::CONNECT_PROBE_TIMEOUT), so
-/// a table that stays full for several of those is held by the rest of the
-/// process, and nothing the scan finishes will free it. Past this a connect
-/// probe's target is filed unasked, and a resume asks again; any other
-/// connection is reported as the process having run out of descriptors.
+/// never a verdict. The engine's connections take at most half the table and
+/// each gives its socket back within a
+/// [`CONNECT_PROBE_TIMEOUT`](crate::config::limits::CONNECT_PROBE_TIMEOUT), so a
+/// table full for several of those is held by the rest of the process. Past this
+/// a connect probe's target is filed unasked, for a resume to ask again; any
+/// other connection is reported as the process having run out of descriptors.
 pub(crate) const PATIENCE: Duration = Duration::from_secs(10);
 
 /// How long a connection that waits out a full table on the engine's own
 /// account keeps asking: [`PATIENCE`].
 ///
-/// A test that fills its own process's table to see a connection given up
-/// sets it shorter through `testing::wait_out_a_full_table_for`, since what
-/// it checks is that the wait ends and how, which a wait of ten seconds
-/// shows no better than one of a tenth of one.
+/// Tests shorten it through `testing::wait_out_a_full_table_for`.
 pub(crate) fn patience() -> Duration {
     #[cfg(all(test, unix))]
     if let Some(patience) = testing::patience() {
@@ -122,9 +98,8 @@ pub(crate) fn patience() -> Duration {
     PATIENCE
 }
 
-/// The first pause before an attempt refused a socket asks for one again.
-/// Short, because the descriptor it waits for is freed by whichever connection
-/// finishes next, which on a busy scan is a matter of milliseconds.
+/// The first pause before an attempt refused a socket asks again. Short, because
+/// on a busy scan the next connection to finish frees one within milliseconds.
 pub(crate) const FIRST_PAUSE: Duration = Duration::from_millis(10);
 
 /// The longest pause between two asks, so an attempt notices a freed
@@ -136,13 +111,11 @@ pub(crate) const LONGEST_PAUSE: Duration = Duration::from_millis(250);
 /// passed since the first refusal.
 ///
 /// A refusal is raised before anything is sent, so it says nothing about the
-/// target, and passed on it reads as one: a port that would not answer, an
-/// identification that found nothing. Returned as it is only once `patience`
-/// is spent, and then [`exhausted`] still names it for what it is.
+/// target, but passed on it would read as an answer. It is returned only once
+/// `patience` is spent, and [`exhausted`] still recognises it.
 ///
-/// Each attempt is made afresh, so a time budget inside `attempt` is spent on
-/// the connection and never on the wait: a refusal comes back before the
-/// attempt's clock has run at all.
+/// Each attempt is made afresh, so a time budget inside `attempt` is spent on the
+/// connection and never on the wait.
 pub(crate) async fn patiently<T, F, Fut>(patience: Duration, mut attempt: F) -> io::Result<T>
 where
     F: FnMut() -> Fut,
@@ -188,9 +161,8 @@ pub(crate) fn patiently_blocking<T>(
 /// Why a connection was never made, when the process had no socket to give
 /// it for as long as it would wait: `patience`.
 ///
-/// Said the one way wherever it is filed, since the remedy is the caller's
-/// and the same everywhere: the engine reads the file limit and does not raise
-/// it.
+/// Worded the same wherever it is filed, since the remedy is always the caller's:
+/// raise the file limit.
 pub(crate) fn starved(patience: Duration) -> String {
     let limit = soft_limit()
         .map(|limit| format!(" of {limit}"))
@@ -198,9 +170,7 @@ pub(crate) fn starved(patience: Duration) -> String {
     format!("file descriptor limit{limit} reached, no socket free within {patience:?}")
 }
 
-/// [`starved`] in the few words a console line has room for: the limit and
-/// its size, which is what the reader raises. The report's entry says the
-/// rest.
+/// [`starved`] shortened for a console line: the limit and its size.
 pub(crate) fn starved_briefly() -> String {
     match soft_limit() {
         Some(limit) => format!("file limit {limit}"),
@@ -211,14 +181,11 @@ pub(crate) fn starved_briefly() -> String {
 /// The fewest descriptors the gate leaves to the rest of the process, however
 /// small its limit.
 ///
-/// What a process running a scan holds besides the scan's connections does
-/// not shrink with the limit. A command-line scanner holds ten before its
-/// first connection: the three standard streams, the runtime's event queues
-/// and a few sockets the platform's own libraries keep, and then it opens its
-/// journal and its report beside them. Sixteen covers those with room for the
-/// second socket a unit briefly holds beside its first. Half the limit is the
-/// larger share from 32 up, which leaves an application that holds many files
-/// of its own room in proportion to them.
+/// What the rest of the process holds does not shrink with the limit. A
+/// command-line scanner holds ten before its first connection (the standard
+/// streams, the runtime's event queues, sockets the platform libraries keep) and
+/// then opens its journal and report. Sixteen covers those plus the second socket
+/// a unit briefly holds. From a limit of 32 up, half the limit is larger.
 pub(crate) const RESERVE: usize = 16;
 
 /// What a scan opens once it is running, beside its connections' sockets and
@@ -227,15 +194,10 @@ pub(crate) const RESERVE: usize = 16;
 /// of its configuration, and the second socket a unit holds for a moment
 /// beside its first.
 ///
-/// The part of the [`RESERVE`] still to come when a scan starts. The rest of
-/// it is open by then: the standard streams, the runtime's event queues, the
-/// sockets the platform's libraries keep, and a command-line scanner's report
-/// files, which it creates before the scan so a destination it cannot write
-/// is refused before anything is sent. [`too_few`] and [`hold_back`] read the
-/// table as it stands, where those are counted already, and add only this
-/// beside it: charged the whole reserve on top, a process is charged its own
-/// descriptors twice, and a table twenty-four short of its limit leaves a
-/// scan one connection at a time rather than eight.
+/// The part of the [`RESERVE`] still to come when a scan starts; the rest is
+/// already open by then. [`too_few`] and [`hold_back`] read the table as it
+/// stands and add only this, so the process's own descriptors are not counted
+/// twice.
 pub(crate) const OPENED_WHILE_RUNNING: usize = 8;
 
 /// How many sockets the connections of this process's scans may hold at once.
@@ -247,9 +209,8 @@ pub(crate) fn budget() -> usize {
 /// scans' connections: what is left once the reserve is set aside, and no
 /// bound at all where there is no limit to read.
 ///
-/// Never below one, since a gate of none would hold every connection waiting
-/// for ever. A limit that leaves none is refused a scan before it starts; see
-/// [`too_few`].
+/// At least one, since a gate of none would block every connection forever. A
+/// limit that leaves none is refused a scan before it starts; see [`too_few`].
 fn budget_within(soft: Option<usize>) -> usize {
     soft.map_or(Semaphore::MAX_PERMITS, |soft| {
         soft.saturating_sub(reserve_within(soft))
@@ -266,31 +227,21 @@ fn reserve_within(soft: usize) -> usize {
 /// The descriptor limit this process has and the least a scan needs, when the
 /// first is below the second.
 ///
-/// A scan needs a socket for its connections beside whatever the process
-/// holds open when the scan starts, its own descriptors and the rest: a table
-/// a parent filled before handing it over, or an application's own files. It
-/// needs them beside what it opens as it runs, too, which is what is left of
-/// the [`RESERVE`] once the process has started; see
-/// [`OPENED_WHILE_RUNNING`]. Below that the budget would have to come out of
-/// the reserve, and the journal and the application around the scan would
-/// find their files refused somewhere in the middle of it, where
-/// the failure says nothing about why; or the connections would find none
-/// free and wait out their [`PATIENCE`] to be filed unasked. Refused before
-/// anything is sent, the scan is not half run, and the reason names its
-/// remedy: a limit that holds what is open and the scan.
+/// A scan needs a socket for its connections beside what the process holds open
+/// when it starts and what it opens as it runs ([`OPENED_WHILE_RUNNING`]).
+/// Short of that, the journal or the embedding application would have files
+/// refused mid-scan, or connections would wait out their [`PATIENCE`] and be
+/// filed unasked. Refused up front, the scan is not half run and the error names
+/// a limit that would hold it.
 ///
-/// Where what is open cannot be counted, the whole reserve is needed, since
-/// none of what it stands for was counted either.
+/// Where what is open cannot be counted, the whole reserve is needed.
 ///
-/// `captures` is the capture devices the scan will hold beside all of that:
-/// one for each link a scan taking the raw path listens on, which is the links
-/// replies to its targets arrive by and every link, thirty on a laptop with a
-/// VPN and a hypervisor, where those cannot be told; none for a scan by
-/// connect. They
-/// are counted apart from the reserve because their number is the host's and
-/// not the scan's. Left out, a table with room for the rest alone lets the
-/// scan start and refuses its captures one link at a time, and what that
-/// leaves reads as a network that did not answer.
+/// `captures` is the capture devices the scan will hold: one per link a raw-path
+/// scan listens on (every link, which can be thirty on a laptop with a VPN and a
+/// hypervisor, where the reply links cannot be told), none for a connect scan.
+/// Their number depends on the host, so they are counted apart from the reserve.
+/// Left out, the scan would start and have its captures refused one link at a
+/// time, which reads as a network that did not answer.
 pub(crate) fn too_few(captures: usize) -> Option<(usize, usize)> {
     let soft = soft_limit();
     too_few_within(soft, soft.and_then(open_descriptors), captures)
@@ -299,29 +250,21 @@ pub(crate) fn too_few(captures: usize) -> Option<(usize, usize)> {
 /// Takes out of the gate, for as long as the scan holds what this returns,
 /// every permit the table as it stands has no socket for.
 ///
-/// The gate is sized from the limit alone, and a process that holds more
-/// than the reserve when a scan starts, a table a parent filled or an
-/// application's own files, has fewer sockets to give than the gate has
-/// permits. A scan passing [`too_few`] then runs connections the gate lets
-/// through into a full table, where each waits out its [`PATIENCE`] beside
-/// the ones holding the sockets and is filed unasked, and what the reserve
-/// keeps for the journal is spent on connections. Held back, the connections
-/// take what the table holds beside what the scan opens as it runs, and no
-/// more; see [`OPENED_WHILE_RUNNING`].
+/// The gate is sized from the limit alone, so a process holding more than the
+/// reserve when a scan starts has fewer sockets than the gate has permits.
+/// Without this, connections would run into a full table, wait out their
+/// [`PATIENCE`] and be filed unasked, and the journal's reserve would be spent on
+/// connections. Held back, connections get what the table holds beside
+/// [`OPENED_WHILE_RUNNING`], and no more.
 ///
-/// Counted as permits the gate still has against sockets the table still
-/// has, so a scan already running in the process is counted once: each of
-/// its connections holds a permit and a descriptor alike, and what the
-/// difference measures is the descriptors held outside the gate. Held until
-/// the scan ends rather than handed back as the table empties, since the gate
-/// has no way to learn the rest of the process closed a file.
+/// Counted as permits the gate has against sockets the table has, so a scan
+/// already running is counted once: each of its connections holds both. Held
+/// until the scan ends, since the gate cannot learn that the rest of the process
+/// closed a file.
 ///
-/// Taken twice over, for the two things that fill the table: when a scan
-/// starts, for what the process holds then, and when a capture has opened
-/// its links, for the descriptors those took, held for as long as the capture
-/// is open. A capture opens after the scan's own holdback was read, and the
-/// scan's connections cannot be promised the sockets it holds; see
-/// [`CaptureGuard`](crate::transport::capture::CaptureGuard).
+/// Taken when a scan starts, and again when a capture has opened its links (held
+/// while the capture is open), since a capture opens after the scan's holdback
+/// was read; see [`CaptureGuard`](crate::transport::capture::CaptureGuard).
 pub(crate) fn hold_back() -> Option<Descriptor> {
     let soft = soft_limit()?;
     let open = open_descriptors(soft)?;
@@ -360,16 +303,12 @@ fn too_few_within(
 /// taken, where it can say: every one when the table is too full to open the
 /// listing.
 ///
-/// Read from the directory the system lists a process's open descriptors
-/// in, which Linux and macOS both keep at `/dev/fd`, less the one the listing
-/// itself holds while it is read. Only descriptors numbered below `soft` are
-/// counted: both systems give a new descriptor the lowest number free and
-/// refuse one at the limit or above, so the room a table has is the numbers
-/// below its limit still free. A descriptor held at a higher number, one a
-/// parent passed down before the limit was lowered beneath it, takes none of
-/// that room, and counted it would leave a scan fewer connections than the
-/// table has sockets for. Elsewhere, and wherever the listing will not open
-/// for another reason, nothing is counted and the limit alone decides.
+/// Read from `/dev/fd` (Linux and macOS), less the descriptor the listing itself
+/// holds. Only descriptors numbered below `soft` are counted: both systems give a
+/// new descriptor the lowest free number and refuse one at the limit or above, so
+/// a descriptor above the limit (passed down by a parent before the limit was
+/// lowered) takes no room. Elsewhere, or where the listing will not open for
+/// another reason, nothing is counted and the limit alone decides.
 fn open_descriptors(soft: usize) -> Option<usize> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
@@ -400,8 +339,8 @@ fn open_descriptors(soft: usize) -> Option<usize> {
 /// The number of descriptors this process may hold, where it has such a limit
 /// and it is finite.
 ///
-/// Windows has none of this kind: a socket there is a kernel handle, bounded by
-/// memory and ports rather than by a count the process could read.
+/// `None` on Windows, where a socket is a kernel handle bounded by memory and
+/// ports.
 pub(crate) fn soft_limit() -> Option<usize> {
     #[cfg(unix)]
     {
@@ -425,14 +364,13 @@ pub(crate) fn soft_limit() -> Option<usize> {
     }
 }
 
-/// Whether `error` is this machine running out of sockets to give, rather than
+/// Whether `error` is this machine running out of sockets, as opposed to
 /// anything a target did.
 ///
-/// Raised when the socket is opened, before anything is sent, so the target
-/// has been asked nothing and the attempt can be made again once a descriptor
-/// comes free. `EMFILE` is this process's table full and `ENFILE` the whole
-/// system's; Windows reports its own two, a handle table full and no buffer
-/// space for another socket, under their Winsock names.
+/// Raised when the socket is opened, before anything is sent, so the attempt can
+/// be made again once a descriptor comes free. `EMFILE` is this process's table
+/// full and `ENFILE` the whole system's; on Windows, the Winsock equivalents (handle
+/// table full, no buffer space).
 pub(crate) fn exhausted(error: &io::Error) -> bool {
     let Some(code) = error.raw_os_error() else {
         return false;
@@ -456,15 +394,11 @@ pub(crate) fn exhausted(error: &io::Error) -> bool {
 /// Running a test out of descriptors without taking every other test down
 /// with it.
 ///
-/// A test that fills this process's descriptor table would take every test
-/// running beside it down too, so it runs its body in a process of its own:
-/// [`in_a_process_of_its_own`](testing::in_a_process_of_its_own) re-runs the
-/// test binary on that one test, and the re-run fills its own table with
-/// [`exhaust`](testing::exhaust), where how many descriptors are free is what
-/// it tests, or refuses every descriptor with
-/// [`refuse_every_descriptor`](testing::refuse_every_descriptor), where a
-/// refusal is: a socket some thread of the test closes after a fill frees
-/// room the next ask takes, and under a refusal it frees none.
+/// [`in_a_process_of_its_own`](testing::in_a_process_of_its_own) re-runs the test
+/// binary on one test, which then fills its own table with
+/// [`exhaust`](testing::exhaust) (when the number of free descriptors matters) or
+/// [`refuse_every_descriptor`](testing::refuse_every_descriptor) (when every ask
+/// must be refused, even after another thread closes a socket).
 #[cfg(all(test, unix))]
 pub(crate) mod testing {
     pub(crate) use crate::testing::own_process::in_a_process_of_its_own;
@@ -478,8 +412,7 @@ pub(crate) mod testing {
 
     /// Has every connection that waits out a full table on
     /// [`patience`](super::patience) wait `patience` instead, for the rest of
-    /// this process. For a test running in a process of its own, which is the
-    /// only kind that fills its table.
+    /// this process. For a test running in a process of its own.
     pub(crate) fn wait_out_a_full_table_for(patience: Duration) {
         let millis = u64::try_from(patience.as_millis())
             .unwrap_or(u64::MAX)
@@ -566,9 +499,8 @@ pub(crate) mod testing {
 mod tests {
     use super::*;
 
-    /// The two shells a user is most likely to start a scan from leave the
-    /// engine half of what they allow, and the rest of the process the other
-    /// half. A process with no limit to read is not held to one.
+    /// The common shell limits leave the engine half. A process with no limit
+    /// to read is not held to one.
     #[test]
     fn the_connect_paths_take_half_of_what_the_process_may_hold() {
         assert_eq!(budget_within(Some(256)), 128, "a macOS Terminal");
@@ -577,12 +509,9 @@ mod tests {
         assert_eq!(budget_within(Some(usize::MAX)), Semaphore::MAX_PERMITS);
     }
 
-    /// Under a small limit the rest of the process keeps what it needs
-    /// whatever the scan wants, rather than half of a table too small to hold
-    /// its standard streams, runtime and journal. A command-line scan holds
-    /// ten before its first connection, so half of a limit of 24 would leave
-    /// it two for its journal and report, and the journal would be refused
-    /// its file in the middle of the scan.
+    /// Under a small limit the rest of the process keeps [`RESERVE`]. Half of
+    /// 24 would leave a command-line scan (ten open before its first
+    /// connection) two for its journal and report.
     #[test]
     fn a_small_limit_keeps_the_reserve_and_gives_the_scan_the_rest() {
         assert_eq!(
@@ -629,15 +558,12 @@ mod tests {
         assert_eq!(too_few_within(None, Some(57), 0), None);
     }
 
-    /// A scan taking the raw path holds a capture device on every link it
-    /// listens on, and a table with room for what is open and the rest of
-    /// the scan alone is refused it: let through, the scan's captures are
-    /// refused one link at a time and the replies those links carry are
-    /// never heard.
+    /// A raw-path scan holds a capture device on every link it listens on, and
+    /// a table without room for them is refused.
     ///
-    /// Thirty open and twenty-eight links, as a laptop with a VPN and a
-    /// hypervisor has them, under a limit of 64: room for what the scan opens
-    /// as it runs and a socket, and not for the captures beside them.
+    /// Thirty open and twenty-eight links (a laptop with a VPN and a
+    /// hypervisor) under a limit of 64: room for the rest of the scan, not for
+    /// the captures.
     #[test]
     fn a_raw_scan_needs_a_descriptor_for_every_link_it_captures_on() {
         assert_eq!(too_few_within(Some(64), Some(30), 0), None, "by connect");
@@ -648,11 +574,9 @@ mod tests {
         assert_eq!(too_few_within(Some(256), Some(30), 28), None);
     }
 
-    /// A process whose table is nearly full before the scan starts, held by
-    /// whatever started it, is refused the scan up front, and told what limit
-    /// would hold it. Let through because its limit alone is wide enough, the
-    /// scan's connections would wait out their patience for sockets nothing
-    /// frees and be filed unasked, every one of them.
+    /// A process whose table is nearly full before the scan starts is refused
+    /// up front and told what limit would hold it, even when the limit alone is
+    /// wide enough.
     #[cfg(unix)]
     #[test]
     fn a_table_already_nearly_full_refuses_the_scan_whatever_the_limit() {
@@ -679,9 +603,7 @@ mod tests {
 
     /// A scan let through into a table fuller than the reserve allows for is
     /// left as many permits as the table has sockets, beside what the scan
-    /// opens as it runs, and no more. Promised the gate's whole budget, its connections past what
-    /// the table holds would wait out their patience for sockets the ones
-    /// before them hold, and be filed unasked.
+    /// opens as it runs, and no more.
     #[test]
     fn a_gate_is_held_to_the_sockets_the_table_has_room_for() {
         // A limit of 64 with 40 open passes the refusal, and leaves sixteen.
@@ -696,12 +618,10 @@ mod tests {
         assert_eq!(held_back_within(32, 64, 64), 31);
     }
 
-    /// What a process holds of its own when its scan starts is counted once,
-    /// as part of what is open, and not a second time as the reserve it is
-    /// part of. Charged twice, a command-line scan in a table twenty-four
-    /// short of its limit of 64 was left one connection at a time: its sixty
-    /// silent ports took 333 s to identify, against 11 s in an open table,
-    /// though the table had room for nine at once.
+    /// What a process holds of its own when its scan starts is counted once, as
+    /// part of what is open, and not again as part of the reserve. Counted
+    /// twice, a table twenty-four short of a limit of 64 leaves one connection
+    /// at a time where it has room for nine.
     #[test]
     fn what_the_process_holds_of_its_own_is_counted_once() {
         // Twenty-four free when the command line starts, and seven of those
@@ -718,13 +638,12 @@ mod tests {
         assert!(left > 1, "{left} connection at a time");
     }
 
-    /// Held back in a process whose table is fuller than the reserve allows
-    /// for, the gate hands out no more permits than the table has sockets
-    /// for, and gives them back when the scan lets go.
+    /// In a table fuller than the reserve allows for, the gate hands out no
+    /// more permits than the table has sockets, and gives them back when the
+    /// scan lets go.
     ///
-    /// A descriptor held at a number above the limit, as a parent passes one
-    /// down before the limit is lowered beneath it, takes none of that room.
-    /// A test runner can leave a few such open in the tests it starts.
+    /// A descriptor numbered above the limit takes none of that room. A test
+    /// runner can leave a few such open.
     #[cfg(unix)]
     #[test]
     fn a_scan_in_a_crowded_table_holds_back_what_it_has_no_socket_for() {
@@ -772,13 +691,8 @@ mod tests {
         assert_eq!(returned, whole);
     }
 
-    /// A socket refused because the table is full is asked for again rather
-    /// than handed back as the connection's outcome, and the attempt that
-    /// finally gets one is what the caller sees.
-    ///
-    /// The refusal is raised before anything is sent, so passed on it is a
-    /// port read as closed or an identification that found nothing, from a
-    /// target nobody asked.
+    /// A socket refused because the table is full is asked for again, and the
+    /// attempt that finally gets one is what the caller sees.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_full_table_is_waited_out_rather_than_passed_on() {
@@ -810,10 +724,9 @@ mod tests {
         assert_eq!(outcome.expect("a later attempt had a socket"), "connected");
     }
 
-    /// The wait is bounded, and what it ends on still says what it was: a
-    /// table that never frees is the process's shortfall and is reported as
-    /// one, not as a target that did not answer. Anything else an attempt
-    /// comes to, a refusal by the target among them, is passed on at once.
+    /// The wait is bounded, and a table that never frees is reported as the
+    /// process's shortfall. Anything else, a refusal by the target among them,
+    /// is passed on at once.
     #[cfg(unix)]
     #[tokio::test]
     async fn the_wait_ends_on_its_patience_and_nothing_else_is_waited_on() {
@@ -837,8 +750,7 @@ mod tests {
     }
 
     /// The table filling is told apart from everything a target can do to a
-    /// connect, which is what keeps a refused socket from being read as an
-    /// answer.
+    /// connect.
     #[cfg(unix)]
     #[test]
     fn a_full_descriptor_table_is_told_apart_from_a_target_s_answer() {
