@@ -6,19 +6,13 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Fingerprinting Domain Model
+//! # Fingerprinting domain model
 //!
-//! The vocabulary every detector in the fingerprinting subsystem speaks.
-//!
-//! A detector's job is to turn raw response data into [`Evidence`]: an
-//! independent, provenance-tagged observation about what a port is running. A
-//! regex banner match, a parsed TLS certificate, and an HTTP header scrape all
-//! produce the same `Evidence`, so they compose without knowing about one
-//! another. [`ServiceVerdict`] is how a set of evidence is reconciled into a
-//! single answer, retaining the evidence it was drawn from for explainability.
-//!
-//! These types are independent of how evidence is produced, so
-//! adding a new kind of detector never changes them.
+//! A detector turns raw response data into [`Evidence`]: an independent,
+//! provenance-tagged observation about what a port is running. A regex banner
+//! match, a parsed TLS certificate and an HTTP header scrape all produce the
+//! same `Evidence`. [`ServiceVerdict`] reconciles a set of evidence into one
+//! answer and keeps the evidence it was drawn from.
 
 use crate::model::confidence::Confidence;
 use crate::model::port::{Build, Service};
@@ -73,25 +67,19 @@ impl Tunnel {
 
     /// The tunnel a service label names, the inverse of the `<scheme>/` prefix
     /// [`to_service`](ServiceVerdict::to_service) writes: `ssl/http` is HTTP
-    /// carried inside TLS, a bare `http` is no tunnel, and an unknown scheme is
-    /// none either.
+    /// inside TLS; a bare `http` or an unknown scheme is no tunnel.
     ///
-    /// The label is where a tunnel survives past fingerprinting: the [`Service`]
-    /// model keeps the protocol name and not the transport it was read through,
-    /// so the detection phase reads the label back to decide whether to speak to
-    /// the port in the clear or through a handshake.
+    /// [`Service`] keeps only the protocol name, so the detection phase reads
+    /// the label back to decide whether to speak through a handshake.
     pub fn from_service_label(label: &str) -> Option<Self> {
         Self::split_label(label).0
     }
 
     /// A service label split into the tunnel it names and the protocol carried
     /// inside: `ssl/http` is TLS and `http`, a bare `http` no tunnel and
-    /// `http`. A bare `ssl` is a handshake with nothing identified inside it,
-    /// and so is the protocol `ssl` with no tunnel around it.
+    /// `http`. A bare `ssl` is the protocol `ssl` with no tunnel.
     ///
-    /// Whatever asks which protocol a port speaks asks it of the second half,
-    /// since the label is two facts and a name compared against it whole
-    /// matches neither.
+    /// Compare protocol names against the second half, not the whole label.
     pub(crate) fn split_label(label: &str) -> (Option<Self>, &str) {
         match label.split_once('/') {
             Some(("ssl", protocol)) => (Some(Tunnel::Tls), protocol),
@@ -106,9 +94,8 @@ impl Tunnel {
 /// actually learned. The resolver merges fields across evidence, so a TLS
 /// analyzer supplying `product` and a banner analyzer supplying `version` combine
 /// into one verdict.
-/// Comparable but not [`Eq`]: [`os`](Self::os) carries a confidence, which is a
-/// float, and a value nobody can write down exactly is not one two observations
-/// should be claimed to share.
+///
+/// Not [`Eq`]: [`os`](Self::os) carries a float confidence.
 #[must_use]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
@@ -127,26 +114,21 @@ pub struct Evidence {
     pub vendor: Option<String>,
     /// Supplementary detail that is not the product itself: an environment hint
     /// or a *secondary* technology (an HTTP `X-Powered-By` value like `PHP/8.2`,
-    /// an SSH `protocol 2.0`). Kept separate from `product` precisely so it can
-    /// never displace the primary product in the resolver.
+    /// an SSH `protocol 2.0`). Never displaces `product` in the resolver.
     pub extrainfo: Option<String>,
-    /// A CPE identifier, when known. Kept as a string rather than a typed CPE
-    /// model, so parsing it into parts is left to whoever needs them.
+    /// A CPE identifier, when known, unparsed.
     pub cpe: Option<String>,
     /// Whose build of the product this observation read, where the response
     /// said: an OpenSSH comment's `Ubuntu-2ubuntu2.13`, an Apache `Server`
-    /// header's `(Debian)`. About the product this observation names, so it
-    /// travels with that product into the verdict the way the CPE does.
+    /// header's `(Debian)`. Travels with the product into the verdict, as the
+    /// CPE does.
     pub build: Option<Build>,
     /// The transport this observation was read through, if any. Set when the
     /// data was decrypted from a tunnel (e.g. banner matched inside TLS).
     pub tunnel: Option<Tunnel>,
-    /// Whether this match is corroborated by the port it was found on, meaning
-    /// the signature was registered for this port rather than found only by
-    /// global
-    /// content search. A port-confirmed match carries a stronger prior (the
-    /// service was *expected* here), so the resolver ranks it above a
-    /// global-only match of equal confidence. Analyzers that do not consult the
+    /// Whether the signature was registered for this port, as opposed to found by
+    /// global search. The resolver ranks a port-confirmed match above a
+    /// global-only one of equal confidence. Analyzers that do not consult the
     /// port-signature index leave it `false`.
     pub port_confirmed: bool,
     /// How strongly this observation identifies what is running. The
@@ -158,30 +140,24 @@ pub struct Evidence {
     /// What this observation said about the *machine*, as distinct from the
     /// service.
     ///
-    /// Carried alongside rather than folded into the fields above because it
-    /// answers a different question and is resolved by different rules. A
-    /// banner identifies a service directly; that it also implies an operating
-    /// system is a second, weaker inference, a container names the image it was
-    /// built from, not the kernel it runs on. `ServiceVerdict` retains its
-    /// whole evidence set, so this reaches a caller without the resolver having
-    /// to rank it.
+    /// What a banner implies about the operating system is a second, weaker
+    /// inference (a container names its image, not the kernel it runs on),
+    /// resolved by different rules. `ServiceVerdict` keeps all its evidence, so
+    /// this reaches a caller unranked.
     pub os: Option<crate::model::host::OsEvidence>,
 
     /// The hardware this observation described, where it described any.
     ///
-    /// One question further out than [`os`](Self::os), and separate for the same
-    /// reason: a NETGEAR ReadyNAS runs Linux, and the box and the system on it
-    /// are two facts about one machine rather than one fact told twice. Over
-    /// five hundred shipped rules name a box and no system at all.
+    /// Separate from [`os`](Self::os): a NETGEAR ReadyNAS runs Linux, and the box
+    /// and its system are two facts. Over five hundred shipped rules name a box
+    /// and no system.
     pub hardware: Option<crate::model::host::HardwareInfo>,
 
     /// The names this observation said the machine goes by, where it said any.
     ///
-    /// About the machine, as [`os`](Self::os) is, and never folded into the
-    /// service's fields: a report masks a name and does not mask a service's
-    /// description. An observation that names the machine and identifies
-    /// nothing carries the lowest confidence, so it never leads a verdict it
-    /// has nothing to say about.
+    /// Kept out of the service's fields because reports mask names and not
+    /// service descriptions. An observation carrying only names has the lowest
+    /// confidence, so it never leads a verdict.
     pub names: Vec<crate::model::host::HostName>,
 }
 
@@ -232,8 +208,7 @@ impl Evidence {
     }
 
     /// Sets the supplementary detail described on
-    /// [`extrainfo`](Self::extrainfo), returning `self`. It never becomes the
-    /// product.
+    /// [`extrainfo`](Self::extrainfo), returning `self`.
     pub fn with_extrainfo(mut self, extrainfo: impl Into<String>) -> Self {
         self.extrainfo = Some(extrainfo.into());
         self
@@ -253,9 +228,8 @@ impl Evidence {
 
     /// Sets the platform identifier this observation established.
     ///
-    /// Whatever names the CPE should name the product too: a verdict takes the
-    /// two from one observation, because a CPE is a whole identity and not a
-    /// fragment of one. See [`ServiceVerdict::resolve`].
+    /// Set the product on the same observation: a verdict takes the two from one
+    /// observation. See [`ServiceVerdict::resolve`].
     pub fn with_cpe(mut self, cpe: impl Into<String>) -> Self {
         self.cpe = Some(cpe.into());
         self
@@ -277,17 +251,13 @@ impl Evidence {
 
 /// The reconciled answer for a port, plus the full evidence it was drawn from.
 ///
-/// Keeping every contributing [`Evidence`] (not just the winner) is deliberate:
-/// provenance is a product feature, it makes results explainable and signatures
-/// tunable. Comparable but not [`Eq`], for the reason [`Evidence`] is not: the
-/// observations it retains carry a confidence, and a float is not something two
-/// verdicts should be claimed to share exactly.
+/// Every contributing [`Evidence`] is kept, so results can be explained and
+/// signatures tuned. Not [`Eq`], for the reason [`Evidence`] is not.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ServiceVerdict {
     /// The protocol the port is speaking, from the strongest observation that
-    /// named one. Bare, as on [`Evidence`]: the `ssl/…` label belongs to
-    /// [`to_service`](Self::to_service).
+    /// named one. Bare; [`to_service`](Self::to_service) adds the `ssl/…` label.
     pub service: Option<String>,
     /// The software behind the protocol. A product that only repeats the
     /// service name is dropped in resolution, so this is empty unless something
@@ -325,21 +295,14 @@ impl ServiceVerdict {
     /// Reconciles independent observations into one verdict.
     ///
     /// Evidence is ranked strongest-first. The service comes from the strongest
-    /// observation that names one; each other field is filled from the
-    /// highest-confidence observation that carries it and agrees about the
-    /// service, so different analyzers can contribute different fields while a
-    /// reading of the reply as some other protocol contributes none. Ties
-    /// preserve insertion order, keeping the result deterministic. The full
-    /// evidence set is retained, disagreeing observations included.
+    /// observation that names one; each other field from the highest-confidence
+    /// observation that carries it and agrees about the service. Ties keep
+    /// insertion order. The full evidence set is retained, disagreeing
+    /// observations included.
     pub fn resolve(mut evidence: Vec<Evidence>) -> Self {
-        // Rank strongest-first. Confidence dominates: a genuinely stronger
-        // identification is never buried by port context. Within one confidence
-        // level, a port-confirmed match (its signature was registered for this
-        // port) outranks a global-only one, a coincidental cross-protocol
-        // banner match (the classic bare-`220` FTP-vs-SMTP ambiguity) loses to
-        // the service actually expected on the port. The sort is stable, so a
-        // full tie keeps the order produced and stays independent of analyzer
-        // scheduling.
+        // Confidence first. Within a level a port-confirmed match wins, so a
+        // coincidental cross-protocol match (the bare `220` FTP-vs-SMTP
+        // ambiguity) loses to the service expected on the port. Stable sort.
         evidence.sort_by(|a, b| {
             b.confidence
                 .cmp(&a.confidence)
@@ -354,28 +317,19 @@ impl ServiceVerdict {
             ..Default::default()
         };
 
-        // The tunnel travels with the service field: whichever evidence first
-        // supplies the service also decides how it is labelled.
+        // The tunnel comes from the evidence that supplied the service.
         if let Some(named) = evidence.iter().find(|ev| ev.service.is_some()) {
             verdict.service = named.service.clone();
             verdict.tunnel = named.tunnel;
         }
 
-        // **Only an observation that agrees about the service may describe
-        // it.** Every field below says something about the software behind the
-        // protocol the verdict names, and an observation that read the reply as
-        // a different protocol was describing different software. A Kerberos
-        // reply over TCP opens with a zero length byte, which is also how a line
-        // printer daemon answers; with the KDC rule winning the service and the
-        // printer rule free to fill the product, the port read as Kerberos run
-        // by `lpd`. The same holds for any coincidental match a port-confirmed
-        // one outranked: the bare `220` that names FTP says nothing about which
-        // mail server the SMTP rule thought it was.
+        // Only an observation that agrees about the service may fill the fields
+        // below. A Kerberos reply over TCP opens with a zero byte, which an lpd
+        // rule also matches; without this the port read as Kerberos run by `lpd`.
         //
-        // Agreement is the corpus's judgement, since the names are its
-        // vocabulary; see `SignatureDb::agree`. An observation naming no service
-        // agrees with every one, and so does every observation where the verdict
-        // names none.
+        // Agreement is decided by the corpus (`SignatureDb::agree`). An
+        // observation naming no service agrees with every one, as does every
+        // observation when the verdict names none.
         let db = super::db::SignatureDb::global();
         let evidence_agrees =
             |ev: &Evidence| match (verdict.service.as_deref(), ev.service.as_deref()) {
@@ -390,20 +344,10 @@ impl ServiceVerdict {
             fill(&mut verdict.extrainfo, &ev.extrainfo);
         }
 
-        // Product needs more than "first that carries it". A product that merely
-        // echoes the service ("http" for service http) is what a *generic* match
-        // emits, as the `generic_http` protocol baseline does. It conveys
-        // no product, so it must not bury a real name ("cloudflare", bare
-        // "nginx") that a more specific analyzer supplied at the *same*
-        // confidence.
-        //
-        // An echo is never surfaced, whatever else is present. Reporting `dns`
-        // as the software behind DNS is a claim nothing made: it disagrees with
-        // every other scanner's answer for the same port, and a comparison then
-        // reports a difference between two tools that found the same thing. The
-        // one thing an echo is good for, naming the port where no service was
-        // identified at all, is already covered, because a product is only an
-        // echo when there *is* a service for it to echo.
+        // A product that echoes the service ("http" for service http) is what a
+        // generic match emits. It is never surfaced, so it cannot bury a real
+        // name at the same confidence, and `dns` is never reported as the
+        // software behind DNS.
         let candidates: Vec<&Evidence> = agreeing
             .iter()
             .copied()
@@ -411,25 +355,13 @@ impl ServiceVerdict {
             .filter(|ev| ev.product.as_deref() != verdict.service.as_deref())
             .collect();
 
-        // Where the strongest candidates tie, the one that also states a
-        // platform identifier takes the slot. Two observations can read the same
-        // bytes and disagree about what to call the result: splitting
-        // `Microsoft-IIS/10.0` on its slash yields `Microsoft-IIS` and nothing
-        // else, while the corpus rule for the same value yields `IIS` and the
-        // CPE. Both carry a version, so both are `Strong`, and left alone the
-        // tie would be settled by the order the analyzers happened to push them.
+        // Among tied strongest candidates, one stating a versioned CPE wins.
+        // Splitting `Microsoft-IIS/10.0` on its slash yields `Microsoft-IIS`,
+        // while the corpus rule yields `IIS` and the CPE; both are `Strong`.
+        // The equal-ranked candidates are the run at the head of the list.
         //
-        // A rule that names a vendor, a product and a version is a stricter
-        // reading than a split on a separator, so this is the more specific
-        // answer winning rather than a preference for the field itself. The list
-        // is sorted strongest-first, so the equal-ranked candidates are the run
-        // at its head.
-        //
-        // The version is part of the condition because a versionless CPE is not
-        // the thing this is for. `cloudflare` matches a rule bearing
-        // `cpe:/a:cloudflare:load_balancing:-`, which no vulnerability entry can
-        // join to, and preferring it would bury the header's own word for the
-        // sake of an identifier that buys nothing.
+        // A versionless CPE such as `cpe:/a:cloudflare:load_balancing:-` joins
+        // no vulnerability entry, so it does not count.
         let best = candidates.first().copied();
         let named = best.map(|first| {
             candidates
@@ -443,33 +375,18 @@ impl ServiceVerdict {
         });
         verdict.product = named.and_then(|ev| ev.product.clone());
 
-        // **The platform identifier comes from whichever observation named the
-        // product**, and not from whichever happened to carry one first.
+        // **The CPE comes from the observation that named the product.** A CPE
+        // is a whole identity. Filled independently, a verdict reported
+        // `gunicorn 21.2.0` beside `cpe:/a:apache:http_server:2.4.49`, and `cve`
+        // joins on the CPE, producing false findings.
         //
-        // A CPE is a whole identity rather than a fragment of one: vendor,
-        // product and version in a single string, already resolved against its
-        // own observation's version. Filled independently of the product, a
-        // verdict can report `gunicorn 21.2.0` beside
-        // `cpe:/a:apache:http_server:2.4.49`, measured, and `cve` joins on the
-        // CPE, so the port is matched against Apache's vulnerabilities while
-        // the report names something else entirely. That is a false finding in
-        // a security report, which is the most expensive thing this crate can
-        // produce.
+        // Where nothing named a product, the strongest CPE stands on its own.
+        // Where the winner has none, one may come from an observation naming the
+        // same product under another spelling, or echoing the service. That
+        // covers Elasticsearch: its body rule holds the CPE but echoes the
+        // service, while a favicon hash naming `Search` wins the product.
         //
-        // Where nothing named a product there is nothing for a CPE to
-        // contradict, so the strongest one stands on its own.
-        // Where the winner has none, one may still be taken from an observation
-        // that agrees with what is being reported: same product under another
-        // spelling, or a product echoing the service, which names the same
-        // software the service does. Elasticsearch is the case that needs it.
-        // Its body rule holds the CPE and names `elasticsearch` on service
-        // `elasticsearch`, so the echo rule above bars it from the slot, and a
-        // favicon hash naming `Search` and holding nothing would take the
-        // identifier down with it.
-        //
-        // An observation that states no product at all is not agreement. It is
-        // the absence of a claim, and borrowing from it is how a verdict comes
-        // to report `gunicorn 21.2.0` beside an Apache CPE.
+        // An observation stating no product does not count as agreement.
         verdict.cpe = match named {
             Some(ev) if ev.cpe.is_some() => ev.cpe.clone(),
             Some(ev) => agreeing
@@ -483,14 +400,10 @@ impl ServiceVerdict {
             None => agreeing.iter().find_map(|ev| ev.cpe.clone()),
         };
 
-        // **The build describes the product, so only an observation of that
-        // product may supply it.** The one that named the product first; then
-        // any agreeing observation naming the same product or reading the same
-        // version, which is one product under another spelling: a `Server`
-        // header says `Apache 2.4.7 (Ubuntu)` while the corpus rule that won the
-        // product slot calls the same software `Apache HTTP Server 2.4.7`. An
-        // observation naming another product at another version is describing
-        // other software, and its packaging is not this product's.
+        // **Only an observation of the product may supply its build**: the one
+        // that named the product, then any agreeing observation naming the same
+        // product or version (a `Server` header's `Apache 2.4.7 (Ubuntu)` beside
+        // the corpus rule's `Apache HTTP Server 2.4.7`).
         //
         // Accounts of one distributor's build complete each other, as a banner
         // stating the revision and a rule naming the release do.
@@ -514,11 +427,9 @@ impl ServiceVerdict {
             verdict.build = Some(build);
         }
 
-        // An observation may state one name in both slots, so that it survives
-        // losing the product tiebreak: an icon names the application, a `Server`
-        // value names the listener in front of it, and on a reverse-proxied host
-        // only one of them can have the product. Where the same observation won
-        // the slot anyway, the second copy is noise.
+        // An observation may state one name in both slots so it survives losing
+        // the product tiebreak (an icon behind a reverse proxy). Where it won
+        // anyway, drop the duplicate.
         if verdict.extrainfo == verdict.product {
             verdict.extrainfo = None;
         }
@@ -535,10 +446,9 @@ impl ServiceVerdict {
     /// Projects the verdict onto the crate's [`Service`] model, if it names
     /// anything. Returns `None` for an empty verdict.
     ///
-    /// A tunnelled service is labelled `<scheme>/<name>` (e.g. `ssl/http`),
-    /// keeping both observed facts visible, the protocol *and* that it was
-    /// carried inside TLS, without renaming the bare protocol. An untunnelled
-    /// service, or the tunnel's own `ssl` verdict, is labelled plainly.
+    /// A tunnelled service is labelled `<scheme>/<name>` (e.g. `ssl/http`). An
+    /// untunnelled service, or the tunnel's own `ssl` verdict, is labelled
+    /// plainly.
     pub fn to_service(&self) -> Option<Service> {
         let name = self.service.clone().or_else(|| self.product.clone())?;
         let name = match self.tunnel {
@@ -603,8 +513,7 @@ mod tests {
 
     #[test]
     fn a_cpe_flows_from_evidence_through_the_verdict_into_the_service() {
-        // `to_service` carries the cpe. A verdict that resolved it and then
-        // dropped it on the way to the `Service` would lose every service CPE.
+        // `to_service` carries the CPE.
         let mut evidence = ev(Confidence::Strong).with_product("nginx");
         evidence.cpe = Some("cpe:/a:nginx:nginx:1.24.0".to_string());
 
@@ -616,13 +525,10 @@ mod tests {
         assert_eq!(cpes.len(), 1, "the verdict's cpe reached the service");
     }
 
-    /// Two observations read the same header and only one of them knows what
-    /// the software is. Measured on `Microsoft-IIS/10.0`, where splitting the
-    /// value on its slash yields the product `Microsoft-IIS` and no CPE, and the
-    /// corpus rule for the same value yields `IIS` and
-    /// `microsoft:internet_information_services`. Both carry a version, so both
-    /// are `Strong` and neither is port-confirmed: a tie, which left alone would
-    /// be settled by the order the analyzer pushed them.
+    /// On `Microsoft-IIS/10.0`, splitting on the slash yields `Microsoft-IIS` and
+    /// no CPE, and the corpus rule yields `IIS` and
+    /// `microsoft:internet_information_services`. Both are `Strong`; the CPE
+    /// breaks the tie.
     #[test]
     fn a_tie_for_the_product_goes_to_the_observation_that_knows_the_platform() {
         let mut split = ev(Confidence::Strong)
@@ -644,12 +550,9 @@ mod tests {
         );
     }
 
-    /// A rule whose product echoes the service is not eligible for the product
-    /// slot, but its CPE is. Measured on Elasticsearch, where the body rule
-    /// names `elasticsearch` on service `elasticsearch` and holds the CPE,
-    /// while a favicon hash names `Search` and holds nothing. The echo is not
-    /// surfaced as a product, and naming the service is not a reason to discard
-    /// the platform identifier.
+    /// A rule whose product echoes the service cannot take the product slot, but
+    /// its CPE can. On Elasticsearch the body rule echoes the service and holds
+    /// the CPE, while a favicon hash names `Search` and holds nothing.
     #[test]
     fn an_echoing_product_still_supplies_the_platform_identifier() {
         let favicon = ev(Confidence::Strong)
@@ -670,10 +573,8 @@ mod tests {
         );
     }
 
-    /// And the case the coupling exists for. A reverse-proxied host states two
-    /// products and only one can have the slot; the CPE may not be taken from
-    /// the loser, because `cve` joins on it and the report would name one
-    /// product while being matched against another's vulnerabilities.
+    /// A reverse-proxied host states two products; the CPE is not taken from the
+    /// one that lost the product slot.
     #[test]
     fn a_cpe_naming_a_different_product_is_never_borrowed() {
         let front = ev(Confidence::Strong)
@@ -710,10 +611,8 @@ mod tests {
 
     #[test]
     fn informative_product_beats_a_service_echo_at_equal_confidence() {
-        // A generic match names product == service ("http"); a specific analyzer
-        // names the real server ("cloudflare"). Both Probable. Even with the
-        // generic one first (as `generic_http` sorts ahead of later analyzers),
-        // the real name must win the product slot.
+        // A generic match names product == service ("http"); a specific one
+        // names "cloudflare". Both Probable, generic first; the real name wins.
         let generic = ev(Confidence::Probable)
             .with_service("http")
             .with_product("http");
@@ -728,14 +627,8 @@ mod tests {
 
     /// A product that merely repeats the service is dropped.
     ///
-    /// Surfacing the echo rather than dropping the product entirely has a cost
-    /// that shows when two scanners are compared: nmap reports port 53 as
-    /// `domain / Unbound`, and an engine surfacing the echo reports it as
-    /// `dns / dns`, so a comparison of the two shows a product changing where
-    /// both tools found the same thing and only one of them named the software.
-    ///
-    /// `dns` is not the software behind DNS. Where nothing named a product,
-    /// none is named.
+    /// `dns` is not the software behind DNS. Where nothing named a product, none
+    /// is named.
     #[test]
     fn a_product_that_only_repeats_the_service_is_dropped() {
         let verdict = ServiceVerdict::resolve(vec![
@@ -748,8 +641,7 @@ mod tests {
         assert_eq!(verdict.product, None);
     }
 
-    /// And the echo is still what *names* the service where nothing else did,
-    /// which is the one thing an echo is good for.
+    /// The echo still names the service where nothing else did.
     #[test]
     fn a_product_with_no_service_beside_it_still_names_the_service() {
         let verdict = ServiceVerdict::resolve(vec![ev(Confidence::Probable).with_product("nginx")]);
@@ -764,10 +656,7 @@ mod tests {
 
     #[test]
     fn port_confirmed_match_wins_the_service_at_equal_confidence() {
-        // Insertion order puts the global match first, so without the
-        // port-confirmation tie-break the stable sort would keep "smtp". The
-        // port-confirmed "ftp", the service actually expected on this port,
-        // must win. This is the bare-`220` FTP-vs-SMTP residue.
+        // The global match is inserted first; the port-confirmed "ftp" must win.
         let global_smtp = ev(Confidence::Probable).with_service("smtp");
         let mut port_ftp = ev(Confidence::Probable).with_service("ftp");
         port_ftp.port_confirmed = true;
@@ -776,12 +665,8 @@ mod tests {
         assert_eq!(verdict.service.as_deref(), Some("ftp"));
     }
 
-    /// A Kerberos reply over TCP opens with a zero length byte, which a line
-    /// printer daemon's rule also reads as its own answer. The KDC rule names
-    /// the service and no product, so the printer rule was the only one
-    /// offering a product, and the port read as Kerberos run by `lpd`. What a
-    /// rule for another protocol says about the software is about software
-    /// this port is not running.
+    /// A Kerberos reply over TCP opens with a zero byte, which an lpd rule also
+    /// matches. The lpd rule's product must not fill a Kerberos verdict.
     #[test]
     fn a_reading_as_another_protocol_describes_nothing_on_the_port() {
         let mut kdc = ev(Confidence::Probable).with_service("kerberos");
@@ -805,10 +690,9 @@ mod tests {
         );
     }
 
-    /// The corpus files some rules under the text they read rather than a
-    /// protocol: a certificate subject under `x509`. Such a rule names whatever
-    /// software presented the certificate, which on a TLS web port is the web
-    /// application, so it still describes the port.
+    /// Some rules are filed under the text they read, such as `x509` for a
+    /// certificate subject. Such a rule names the software that presented the
+    /// certificate, so it still describes the port.
     #[test]
     fn a_rule_filed_under_the_text_it_reads_still_describes_the_port() {
         let web = ev(Confidence::Strong).with_service("http");
@@ -826,9 +710,7 @@ mod tests {
 
     #[test]
     fn confidence_still_dominates_port_confirmation() {
-        // A weak port-confirmed match must not bury a genuinely stronger global
-        // identification. Confidence is the primary key, port-confirmation only
-        // breaks ties within a level.
+        // Confidence outranks port confirmation.
         let mut weak_port = ev(Confidence::Probable).with_service("ftp");
         weak_port.port_confirmed = true;
         let strong_global = ev(Confidence::Strong)
@@ -841,13 +723,9 @@ mod tests {
 
     /// A platform identifier belongs to the product it names.
     ///
-    /// The HTTP analyzer never sets a CPE and a banner rule often does, so a
-    /// versioned `Server` header outranking a versionless curated rule can
-    /// leave the two fields filled from different observations. Measured:
-    /// `product=gunicorn version=21.2.0` beside
-    /// `cpe:/a:apache:http_server:2.4.49`, which is the path-traversal release
-    /// of httpd. `cve` joins on the CPE, so a port the report names gunicorn
-    /// would be matched against Apache's vulnerabilities.
+    /// A versioned `Server` header (no CPE) can outrank a versionless rule that
+    /// has one. The verdict must not pair `gunicorn 21.2.0` with
+    /// `cpe:/a:apache:http_server:2.4.49`.
     #[test]
     fn a_cpe_never_belongs_to_a_product_the_verdict_did_not_name() {
         let http = ev(Confidence::Strong)
@@ -876,9 +754,7 @@ mod tests {
         );
     }
 
-    /// The ordinary case is untouched: one observation names a product and its
-    /// identifier together, which is how every curated signature carrying a
-    /// `service.cpe23` is written.
+    /// One observation naming a product and its CPE together.
     #[test]
     fn a_cpe_travels_with_the_product_that_won() {
         let mut nginx = ev(Confidence::Strong)
@@ -894,8 +770,7 @@ mod tests {
         assert_eq!(verdict.cpe.as_deref(), Some("cpe:/a:nginx:nginx:1.24.0"));
     }
 
-    /// Where nothing named a product there is nothing for an identifier to
-    /// contradict, so one that was found still reaches the report.
+    /// Where nothing named a product, a CPE still reaches the report.
     #[test]
     fn a_cpe_without_a_product_beside_it_still_stands() {
         let mut bare = ev(Confidence::Probable).with_service("http");
@@ -947,9 +822,8 @@ mod tests {
 
     #[test]
     fn vendor_and_extrainfo_resolve_and_reach_the_service() {
-        // Different analyzers contribute different attribution: a Server match
-        // names product+vendor, an X-Powered-By match adds a secondary tech.
-        // Both must survive resolution and land on the projected Service.
+        // A Server match names product and vendor; an X-Powered-By match adds a
+        // secondary technology. Both reach the Service.
         let server = ev(Confidence::Strong)
             .with_service("http")
             .with_product("Apache")
@@ -983,9 +857,8 @@ mod tests {
         assert_eq!(service.confidence(), Confidence::Strong.as_score());
     }
 
-    /// The reverse-proxy case, which is what the second slot exists for: a
-    /// `Server` value names the listener and an icon names the application
-    /// behind it, and only one of them can hold the product.
+    /// Reverse proxy: a `Server` value names the listener and an icon names the
+    /// application behind it.
     #[test]
     fn an_application_behind_a_server_survives_losing_the_product_slot() {
         let server = ev(Confidence::Strong)
@@ -1001,8 +874,8 @@ mod tests {
         assert_eq!(verdict.extrainfo.as_deref(), Some("Metabase"));
     }
 
-    /// And where nothing outranks it, the application takes the product slot and
-    /// is not also repeated beside itself.
+    /// Where nothing outranks it, the application takes the product slot and is
+    /// not repeated in extrainfo.
     #[test]
     fn an_application_on_an_anonymous_server_is_named_once() {
         let baseline = ev(Confidence::Probable).with_service("http");
@@ -1016,10 +889,7 @@ mod tests {
         assert_eq!(verdict.extrainfo, None);
     }
 
-    /// The platform identifier still follows the product rather than the icon.
-    /// A CPE naming the application beside a product naming the proxy is what
-    /// sends `cve` at the wrong software, which is the most expensive mistake
-    /// this crate can make.
+    /// The CPE follows the product, not the icon.
     #[test]
     fn the_platform_identifier_follows_the_product_not_the_application() {
         let mut server = ev(Confidence::Strong)

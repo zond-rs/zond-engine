@@ -10,11 +10,8 @@
 //!
 //! What an `assets/fingerprinting` TOML file is allowed to say, as types.
 //!
-//! Compiled into the build script as well as the library, `build.rs` loads this
-//! very file with `#[path]`, so the schema the build validates against and the
-//! schema the runtime reads are the same code rather than two descriptions of
-//! one idea. A field added here is a field both halves see at once, and a field
-//! either half could disagree about does not exist.
+//! `build.rs` loads this file with `#[path]`, so the build validates against the
+//! same schema the runtime reads.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -22,10 +19,8 @@ use std::path::Path;
 
 /// What separates a corpus file from the rule inside it in a [`rule_id`].
 ///
-/// `#` rather than `:`, because ninety-three imported rules carry a colon in
-/// their own name (`ISC BIND: Ubuntu`) and an identifier nobody can split at a
-/// glance is not much of an identifier. No name in the corpus contains this
-/// character, and [`claim_rule_id`] keeps it that way.
+/// `#` because ninety-three imported rules carry a colon in their name (`ISC
+/// BIND: Ubuntu`). [`claim_rule_id`] refuses names containing it.
 pub const RULE_ID_SEPARATOR: char = '#';
 
 /// The root every corpus slug is written relative to.
@@ -35,8 +30,7 @@ pub const CORPUS_ROOT: &str = "assets/fingerprinting";
 /// under [`CORPUS_ROOT`] with the `.toml` dropped, separators normalised to `/`.
 ///
 /// `assets/fingerprinting/remote/ssh.toml` becomes `remote/ssh`. `None` for a
-/// path that does not sit under the corpus root, which is the caller handing
-/// this something that is not a corpus file.
+/// path outside the corpus root.
 pub fn corpus_slug(path: &Path) -> Option<String> {
     let root = Path::new(CORPUS_ROOT);
     let relative = path.strip_prefix(root).ok()?;
@@ -47,27 +41,19 @@ pub fn corpus_slug(path: &Path) -> Option<String> {
 /// The identifier for one rule or probe: its file's [`corpus_slug`], then
 /// [`RULE_ID_SEPARATOR`], then the name it was authored under.
 ///
-/// Derived rather than authored, because nobody is going to hand-number four
-/// thousand rules and an identifier somebody has to remember to write is one
-/// that goes missing. Names are already unique inside a file, so scoping by the
-/// file is enough to make this unique across the corpus, which is what
-/// [`claim_rule_id`] proves at build time.
+/// Names are unique within a file, so this is unique across the corpus;
+/// [`claim_rule_id`] checks it at build time.
 ///
-/// It survives an edit to the pattern, which is the property that matters: a
-/// rule can be cited in an issue, linked to, and followed across releases, and a
-/// content hash could do none of those. What it does not survive is the file
-/// moving, and that is deliberate. A move is somebody's decision and shows up as
-/// a diff, where a silently broken permalink would not.
+/// It survives edits to the pattern, so a rule can be cited and followed across
+/// releases. Moving the file changes it.
 pub fn rule_id(slug: &str, name: &str) -> String {
     format!("{slug}{RULE_ID_SEPARATOR}{name}")
 }
 
 /// Why a rule could not be given an identifier.
 ///
-/// Open rather than `#[non_exhaustive]`: these are the three ways a corpus file
-/// can fail to name a rule uniquely, the set is closed by the shape of the
-/// problem, and a build script matching on it should not have to carry a
-/// wildcard arm.
+/// Exhaustive: these are the only three ways a file can fail to name a rule
+/// uniquely, and the build script matches on them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuleIdDefect {
     /// The rule states no `name`, so there is nothing to identify it by.
@@ -100,14 +86,8 @@ impl std::fmt::Display for RuleIdDefect {
 
 /// Claims `name` for a rule in the file `slug`, returning the identifier.
 ///
-/// `seen` is the set of names already taken in that one file, so a caller walks
-/// a file with a fresh set. Uniqueness is enforced per file rather than across
-/// the corpus because that is where an author can actually see the collision,
-/// and scoping by the slug makes it global anyway.
-///
-/// Probes and match rules share the set. They are separate blocks in the
-/// document and could in principle both be called `banner`, but they would then
-/// be two things wearing one identifier, and the corpus has never done it.
+/// `seen` is the set of names already taken in that file; use a fresh set per
+/// file. Probes and match rules share it, since they share the identifier space.
 pub fn claim_rule_id(
     slug: &str,
     name: Option<&str>,
@@ -127,34 +107,27 @@ pub fn claim_rule_id(
 
 /// Upper bound on a single compiled signature's memory footprint.
 ///
-/// The `regex` crate defaults to a 10 MiB compiled-size cap; a few legitimate
-/// signatures with large bounded repetitions (e.g. `{1,512}`) compile just past
-/// it and would otherwise be dropped. 32 MiB admits them while still bounding
-/// worst-case memory. This constant is shared by the runtime matcher and the
-/// build-time validator so both accept exactly the same set of patterns.
+/// The `regex` crate defaults to 10 MiB; a few signatures with large bounded
+/// repetitions (e.g. `{1,512}`) compile just past it. Shared by the runtime
+/// matcher and the build-time validator.
 pub const MAX_COMPILED_REGEX_BYTES: usize = 32 * 1024 * 1024;
 
 /// Upper bound on a single UDP probe payload.
 ///
-/// A probe is sent to one port at a time and can draw at most one reply, so a
-/// payload large enough to fragment costs more than it can return - and a
-/// scanner that emits large datagrams at many hosts is a traffic source out of
-/// proportion to what it learns. Shared by the build-time validator and the
-/// runtime tests so both hold probes to the same ceiling.
+/// A probe draws at most one reply, so a payload large enough to fragment costs
+/// more than it can return. Shared by the build-time validator and the runtime
+/// tests.
 pub const MAX_UDP_PROBE_BYTES: usize = 512;
 
 /// Decodes the backslash escapes in an authored probe payload into raw bytes.
 ///
-/// Payloads are authored as readable TOML *literal* strings (e.g. `'GET /
-/// HTTP/1.1\r\n\r\n'`), so escapes arrive verbatim, a literal `\`, `r`, and
-/// would go on the wire malformed if sent as-is. This resolves the common set
-/// (`\r`, `\n`, `\t`, `\0`, `\xHH`, `\\`) to the bytes they denote; any other
-/// escape is preserved literally so nothing is silently lost.
+/// Payloads are authored as TOML *literal* strings (e.g. `'GET /
+/// HTTP/1.1\r\n\r\n'`), so escapes arrive verbatim. This resolves `\r`, `\n`,
+/// `\t`, `\0`, `\xHH` and `\\` to the bytes they denote; any other escape is
+/// kept literally.
 ///
-/// Lives beside the schema, rather than in the runtime database, because
-/// `build.rs` decodes payloads to validate them and the runtime decodes them to
-/// send: two readings of the same authored bytes that must never disagree about
-/// what was written.
+/// Lives beside the schema so `build.rs` and the runtime decode payloads the
+/// same way.
 pub fn unescape(payload: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(payload.len());
     let mut chars = payload.chars();
@@ -174,7 +147,7 @@ pub fn unescape(payload: &str) -> Vec<u8> {
                 let lo = chars.next().and_then(|l| l.to_digit(16));
                 match (hi, lo) {
                     (Some(hi), Some(lo)) => out.push((hi * 16 + lo) as u8),
-                    // Malformed \xHH: keep the marker, best-effort.
+                    // Malformed \xHH: keep the marker.
                     _ => out.extend_from_slice(b"\\x"),
                 }
             }
@@ -198,26 +171,22 @@ pub struct ServiceSignature {
     /// probe in the file registers under.
     pub name: String,
     /// The ports this service owns. Each indexes the file's rules and probes
-    /// under that number in [`SignatureDb`](crate::fingerprint::SignatureDb),
-    /// and each takes the service's name as the label a scan prints before
-    /// anything has been asked.
+    /// under that number in [`SignatureDb`](crate::fingerprint::SignatureDb), and
+    /// labels the port with the service's name before anything is asked.
     ///
     /// A number several services share belongs in
-    /// [`shared_ports`](Self::shared_ports) instead.
+    /// [`shared_ports`](Self::shared_ports).
     ///
-    /// An empty list is a finished definition rather than an omission: a file
-    /// with no ports holds banner rules reached by global matching, where the
-    /// text decides what the service is and the number never enters into it.
+    /// An empty list is valid: the file's rules are reached by global matching.
     pub default_ports: Vec<u16>,
     /// Ports this service is probed and matched on without being named by them.
     ///
-    /// Indexed exactly as [`default_ports`](Self::default_ports) for rules and
-    /// probes, and absent from the port-to-name index. A scan still asks the
-    /// number and still identifies the service from the reply; what it will not
-    /// do is print the name before asking.
+    /// Indexed like [`default_ports`](Self::default_ports) for rules and probes,
+    /// but absent from the port-to-name index, so the port is not labelled
+    /// before asking.
     ///
-    /// Where a number is contested, this is what every claimant but its owner
-    /// declares. 8080 is `http`'s to name and Squid's to match.
+    /// On a contested number, every claimant but its owner declares it here:
+    /// 8080 is `http`'s to name and Squid's to match.
     #[serde(default)]
     pub shared_ports: Vec<u16>,
     /// A line of prose naming the service, for whoever reads the corpus.
@@ -231,17 +200,14 @@ pub struct ServiceSignature {
     /// carried over one somebody else can also speak. `http` for Grafana,
     /// absent for Redis.
     ///
-    /// The corpus gives a product its own service name, so a Grafana server is
-    /// identified as `grafana` and a plain web server on the same port as
-    /// `http`. Without this, a detection written about HTTP has to name every
-    /// product that speaks it, and is wrong again the next time the corpus
-    /// grows. A detection names the protocol instead, through
-    /// [`Rule::speaks`](crate::detect::manifest::Rule::speaks).
+    /// The corpus gives a product its own service name (`grafana`), so a
+    /// detection about HTTP names the protocol through
+    /// [`Rule::speaks`](crate::detect::manifest::Rule::speaks) instead of every
+    /// product.
     ///
-    /// It says what this signature matched on, not what the product offers.
-    /// Riak, Neo4j and RethinkDB all have HTTP APIs and are fingerprinted here
-    /// by their binary wire protocols, so none of them sets it: a port
-    /// identified from those bytes is not a port answering HTTP.
+    /// It describes what this signature matched on. Riak, Neo4j and RethinkDB
+    /// have HTTP APIs but are fingerprinted by their binary protocols, so none
+    /// sets it.
     #[serde(default)]
     pub speaks: Option<String>,
 }
@@ -275,14 +241,12 @@ pub struct Probe {
     /// `\n`, `\t`, `\0`, `\xHH` and `\\` are decoded to the bytes they denote
     /// before the probe goes on the wire.
     ///
-    /// A UDP payload is held to [`MAX_UDP_PROBE_BYTES`] and parsed at build
-    /// time the way the target service would parse it, because a malformed
-    /// datagram is dropped in silence and a scan reads that silence as a
-    /// port that never answered.
+    /// A UDP payload is held to [`MAX_UDP_PROBE_BYTES`] and parsed at build time
+    /// as the target service would, since a malformed datagram is silently
+    /// dropped and reads as a port that never answered.
     pub payload: String,
     /// The transport carrying the payload: `"tcp"` or `"udp"`. Anything else
-    /// warns at build time, and the loader drops the probe rather than guess
-    /// which transport was meant.
+    /// warns at build time and the loader drops the probe.
     pub protocol: String,
     /// How common the service behind this probe is, `1..=9`, on the rarity scale
     /// the imported signature corpora are authored on. A probe reaches a port
@@ -292,39 +256,26 @@ pub struct Probe {
     /// everything. See
     /// [`ServiceDetection::probe_intensity`](crate::config::ServiceDetection::probe_intensity).
     ///
-    /// Zero is not a band on that scale. It is the absence of one, and it means
-    /// the probe goes only to the ports its own service registered. Most of the
-    /// corpus is unauthored and so zero: rarity is a claim that a question is
-    /// worth putting to a stranger, and the claim is made per probe, by hand.
+    /// Zero means the probe goes only to the ports its own service registered.
+    /// Most of the corpus is zero; rarity is assigned per probe, by hand.
     ///
-    /// What earns a rarity at all is a service that will not identify itself
-    /// any other way, because it waits to be spoken to and answers an HTTP
-    /// request with silence or a closed socket. What earns a 1 is also being
-    /// what such a port most often turns out to be: Redis, PostgreSQL and
-    /// memcached. A Zabbix agent is as silent to a stranger but seldom moved
-    /// off its own port, and is authored at 5.
+    /// A rarity suits a service that identifies itself no other way: it waits to
+    /// be spoken to and answers an HTTP request with silence or a closed socket.
+    /// A 1 also means it is what such a port most often turns out to be: Redis,
+    /// PostgreSQL and memcached. A Zabbix agent is as silent but seldom moved off
+    /// its own port, and is authored at 5.
     #[serde(default)]
     pub rarity: u8,
 
-    /// Whether this probe is worth sending to a port **nothing knows anything
-    /// about**, rather than only to the ports its service registered.
+    /// Whether this probe is also sent to open ports that **register no service**.
     ///
-    /// An ordinary probe is addressed: it is sent to port 5432 because a service
-    /// claimed 5432, and it means nothing anywhere else. A generic probe is a
-    /// question worth asking of any open port at all, because the answer
-    /// identifies whatever gave it.
+    /// In practice that is one probe, an HTTP request, since HTTP is what an
+    /// unrecognised open port usually speaks. Against one home server, seven of
+    /// eleven open ports were otherwise unidentified, each costing a two-second
+    /// timeout.
     ///
-    /// In practice that is one probe, an HTTP request, and the reason is that
-    /// HTTP is what an unrecognised open port usually turns out to be speaking.
-    /// A scan that sends nothing to those ports learns nothing about them and
-    /// still pays a full timeout finding that out; measured against one
-    /// ordinary home server, seven of eleven open ports were unidentified and
-    /// each cost two seconds to leave unidentified.
-    ///
-    /// Adding a second one is a real cost, paid on every unknown port of every
-    /// scan, so it wants the same evidence the first had. TCP only: a generic
-    /// UDP probe would be a payload sent to every UDP port in the scan, which is
-    /// a different and much larger claim. `build.rs` refuses one.
+    /// Each generic probe is paid on every unknown port of every scan. TCP only;
+    /// `build.rs` refuses a generic UDP probe.
     #[serde(default)]
     pub generic: bool,
 }
@@ -353,10 +304,10 @@ pub struct MatchRule {
     pub name: Option<String>,
     /// The regex a response is matched against.
     ///
-    /// Compiled by the linear engine where it can be, and by a bounded
-    /// backtracking engine when it uses backreferences or lookaround, under the
-    /// [`MAX_COMPILED_REGEX_BYTES`] size cap. A pattern neither engine accepts
-    /// fails the build instead of going missing from a scan.
+    /// Compiled by the linear engine where possible, and by a bounded
+    /// backtracking engine for backreferences or look-around, under the
+    /// [`MAX_COMPILED_REGEX_BYTES`] cap. A pattern neither engine accepts fails
+    /// the build.
     pub pattern: String,
     /// The 1-based capture group holding the version string, where the pattern
     /// captures one. A number the pattern has no group for fails the build.
@@ -365,18 +316,16 @@ pub struct MatchRule {
     /// `"Apache Software Foundation"`, `"NGINX"`. It counts with `product`
     /// toward how specific a match is when several rules fire on one response.
     pub vendor: Option<String>,
-    /// The software a match identifies: `"nginx"`, `"Apache HTTP Server"`. A
-    /// rule that names none leaves the field empty rather than repeating the
-    /// service name back.
+    /// The software a match identifies: `"nginx"`, `"Apache HTTP Server"`. Leave
+    /// it empty when the rule names no software.
     pub product: Option<String>,
     /// The field the pattern is written against: `ssh.banner`,
     /// `http_header.server`, `snmp.sys_description`, `favicon.md5`. Imported
     /// with the rule as a record of what it reads; the runtime matches every
     /// text a response yields and does not select on it.
     pub context: Option<String>,
-    /// A response this rule is meant to match, recorded beside it. The corpus
-    /// test runs every example through its own signature, which is what catches
-    /// a pattern that quietly stopped matching what it was written for.
+    /// A response this rule is meant to match. The corpus test runs every example
+    /// through its own signature.
     pub example: Option<String>,
     /// Everything else the rule states, keyed as the corpus keys it. The engine
     /// reads `service.cpe23`, `service.version`, `service.extrainfo`,
@@ -384,17 +333,13 @@ pub struct MatchRule {
     /// and `hw.device` keys that make up
     /// [`OsMetadata`](crate::fingerprint::os::OsMetadata).
     ///
-    /// `service.extrainfo` is what a rule says about the service beyond its
-    /// product and version: the distribution build an OpenSSH banner carries,
-    /// say. Where a rule states both it and a component, the explicit one is
-    /// what the report shows.
+    /// `service.extrainfo` is detail beyond product and version, such as the
+    /// distribution build in an OpenSSH banner. Where a rule states both it and a
+    /// component, the report shows `service.extrainfo`.
     ///
-    /// Values may be templates. An `os.*` value written `{capture:1}` is filled
-    /// from the pattern's first capture group when the rule fires, and a
-    /// `service.cpe23` naming `{service.version}` is filled from the version
-    /// the match found. A template with nothing to fill it resolves to nothing
-    /// at all, rather than to a half-built value a consumer would try to match
-    /// on.
+    /// Values may be templates. `{capture:1}` is filled from the pattern's first
+    /// capture group, and `{service.version}` from the version the match found.
+    /// A template with nothing to fill it resolves to nothing.
     pub metadata: Option<HashMap<String, String>>,
 }
 
@@ -443,17 +388,10 @@ impl ServiceDefinition {
 
 /// Why an authored service definition cannot be used.
 ///
-/// Every variant is a defect that degrades detection silently. A pattern
-/// neither engine compiles is a signature that never fires; a `version_group`
-/// past the pattern's groups is a version never captured; a probe over a
-/// transport this engine does not speak is a probe never sent. None of them is
-/// distinguishable, from a scan's output, from a service that simply was not
-/// there.
+/// Every variant is a defect that would silently degrade detection.
 ///
-/// The engine's own reason for rejecting a pattern is carried as text rather
-/// than as the two regex crates' error types, which are foreign and pre-1.0 and
-/// have no business in a semver contract. Which rule and which defect are typed,
-/// because those are what a caller acts on.
+/// The engines' reasons for rejecting a pattern are carried as text, keeping
+/// the regex crates' error types out of the public API.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DefinitionError {
@@ -475,8 +413,7 @@ pub enum DefinitionError {
     },
     /// A probe names a transport this engine does not speak.
     ///
-    /// The loader drops such a probe rather than guessing which was meant, so
-    /// without this the only symptom is a probe that is never sent.
+    /// The loader drops such a probe.
     ProbeProtocol {
         /// Which `[[probe]]`, counting from zero.
         probe: usize,
@@ -485,10 +422,7 @@ pub enum DefinitionError {
     },
     /// A probe marked [`generic`](Probe::generic) over something other than TCP.
     ///
-    /// `generic` means "send this to any open port with nothing else to send",
-    /// and over UDP that is a payload aimed at every UDP port in the scan: a
-    /// different and much larger claim than the one the flag is for, and one
-    /// nobody would make by ticking a boolean.
+    /// Over UDP, `generic` would send the payload to every UDP port in the scan.
     GenericProbeNotTcp {
         /// Which `[[probe]]`, counting from zero.
         probe: usize,
@@ -498,7 +432,7 @@ pub enum DefinitionError {
     /// A UDP probe payload that is empty, or past [`MAX_UDP_PROBE_BYTES`].
     ///
     /// An empty datagram cannot elicit a reply, and an oversized one costs more
-    /// than it can return. Both read as a port that never answered.
+    /// than it can return.
     UdpProbeSize {
         /// Which `[[probe]]`, counting from zero.
         probe: usize,
@@ -556,21 +490,16 @@ impl std::error::Error for DefinitionError {}
 impl ServiceDefinition {
     /// Whether this definition is one the engine may use.
     ///
-    /// Shared with `build.rs`, which loads this very file, so the definitions
-    /// the build accepts and the definitions
+    /// Shared with `build.rs`, so the build and
     /// [`SignatureDb::try_from_definitions`](crate::fingerprint::SignatureDb::try_from_definitions)
-    /// accepts are one set rather than two descriptions of one idea.
+    /// accept the same definitions.
     ///
-    /// Patterns are compiled here, through the same engine selection and the
-    /// same [`MAX_COMPILED_REGEX_BYTES`] the runtime uses, which is what makes
-    /// "the build accepted it" and "the runtime can match it" the same
-    /// statement. It is the expensive part, and it is why the shipped database
-    /// does not run this again at load: `build.rs` already did.
+    /// Patterns are compiled here with the runtime's engine selection and
+    /// [`MAX_COMPILED_REGEX_BYTES`]. That is the expensive part, so the shipped
+    /// database skips it at load.
     ///
-    /// The build checks two further things this cannot. It parses each UDP
-    /// payload the way the target service would, which needs protocol parsers
-    /// the runtime does not carry, and it warns about softer matters that make a
-    /// corpus hard to maintain rather than wrong.
+    /// The build additionally parses each UDP payload as the target service
+    /// would, and warns about maintainability issues.
     pub fn validate(&self) -> Result<(), DefinitionError> {
         for (rule, r#match) in self.r#match.iter().enumerate() {
             let compiled = super::pattern::compile(&r#match.pattern, MAX_COMPILED_REGEX_BYTES)
@@ -641,8 +570,7 @@ mod identity {
         );
     }
 
-    /// Anything outside the corpus has no slug, rather than one built from
-    /// whatever the path happened to end with.
+    /// Anything outside the corpus has no slug.
     #[test]
     fn a_path_outside_the_corpus_has_no_slug() {
         assert_eq!(corpus_slug(Path::new("src/fingerprint/signature.rs")), None);
@@ -653,9 +581,7 @@ mod identity {
         assert_eq!(corpus_slug(Path::new("remote/ssh.toml")), None);
     }
 
-    /// The case the separator was chosen for. Ninety-three imported rules carry
-    /// a colon in their own name, so an identifier joined with one could not be
-    /// split back into its two halves.
+    /// A colon in a rule name is fine; the separator is `#`.
     #[test]
     fn a_name_carrying_a_colon_still_yields_a_splittable_identifier() {
         let id = rule_id("imported/rapid7/dns/dns_versionbind", "ISC BIND: Ubuntu");
@@ -674,8 +600,7 @@ mod identity {
         );
     }
 
-    /// The same name in a different file is a different rule and keeps its own
-    /// identifier, which is what scoping by the file buys.
+    /// The same name in a different file is a different rule.
     #[test]
     fn the_same_name_in_two_files_is_two_identifiers() {
         let mut ssh = BTreeSet::new();
