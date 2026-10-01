@@ -48,6 +48,7 @@ use std::net::IpAddr;
 
 use crate::config::OsDetection;
 use crate::fingerprint::os;
+use crate::logging::error;
 use crate::model::host::{Host, HostStatus, NetworkRole, StatusProtocol, StatusReason};
 use crate::model::ip::scoped::{ScopedIp, Zone};
 use crate::model::ip::set::IpSet;
@@ -64,7 +65,7 @@ use crate::scanner::strategy::StrategyError;
 use crate::scanner::strategy::frames::{self, DiscoveryProtocol, ProtocolMatch};
 use crate::transport::capture::{self, CaptureFilter, CaptureOptions, CapturedFrame, FrameStream};
 use crate::transport::frame::{self as transport_frame, LinkType};
-use crate::{info, warn};
+use crate::{counted, info, warn};
 use pnet_packet::ethernet::{EtherType, EtherTypes};
 
 /// How much of each frame the kernel keeps for a listener.
@@ -416,6 +417,9 @@ pub struct PassiveListener {
     held: usize,
     /// Whether the ceiling has been reported, so it is said once.
     said_full: bool,
+    /// How many frames panicked a reader, filed as one failure when the watch
+    /// ends; see [`read_contained`](Self::read_contained).
+    panicked: usize,
     /// The same readers a local sweep interprets its replies with.
     protocols: Vec<Box<dyn DiscoveryProtocol>>,
 }
@@ -497,6 +501,7 @@ impl PassiveListener {
             mac_to_ip,
             declared: HashMap::new(),
             said_full: false,
+            panicked: 0,
             protocols: frames::sweep_protocols(),
         }
     }
@@ -585,11 +590,31 @@ impl PassiveListener {
         CaptureFilter::any_of(clauses)
     }
 
+    /// [`read`](Self::read), with a panic costing only this frame.
+    ///
+    /// A reader defect a crafted frame reaches would otherwise end a watch of
+    /// days and lose everything it holds. The guard costs nothing until a
+    /// reader panics.
+    fn read_contained(&mut self, captured: &CapturedFrame) {
+        let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.read(captured)));
+        if read.is_err() {
+            if self.panicked == 0 {
+                error!("a frame panicked its reader and was skipped");
+            }
+            self.panicked += 1;
+        }
+    }
+
     /// Reads one frame for everything it proves.
     ///
     /// Every applicable reader is tried, since a frame can carry more than one
     /// finding.
     fn read(&mut self, captured: &CapturedFrame) {
+        #[cfg(test)]
+        if captured.bytes == tests::PANICKING_FRAME {
+            panic!("a reader defect, staged by a test");
+        }
+
         // Without Ethernet there is only IP: a TCP segment, or a neighbour or
         // router advertisement.
         if captured.link != LinkType::Ethernet {
@@ -1089,7 +1114,7 @@ impl PassiveListener {
 
             tokio::select! {
                 frame = self.frames.recv() => match frame {
-                    Some(frame) => self.read(&frame),
+                    Some(frame) => self.read_contained(&frame),
                     // Every capture thread has ended: the end of the run.
                     None => break,
                 },
@@ -1105,6 +1130,20 @@ impl PassiveListener {
                  phase did not hear is larger than what it did",
                 counts.dropped, counts.received,
             );
+        }
+
+        // One entry, since a defect one frame reaches is reached by every frame
+        // like it.
+        if self.panicked > 0 {
+            self.ctx.record_failure(
+                ScannerKind::Passive,
+                format!(
+                    "{} panicked a reader and went unread; this is a defect in \
+                     the engine rather than a fact about the network",
+                    counted(self.panicked as u128, "frame", "frames")
+                ),
+            );
+            self.panicked = 0;
         }
 
         Ok(())
@@ -1130,6 +1169,10 @@ mod tests {
     };
     use std::net::Ipv4Addr;
     use std::time::SystemTime;
+
+    /// A frame [`PassiveListener::read`] panics on, standing in for a reader
+    /// defect.
+    pub(super) const PANICKING_FRAME: &[u8] = b"a frame its reader panics on";
 
     fn zone() -> Zone {
         Zone::new(7, "sim0")
@@ -1864,6 +1907,44 @@ mod tests {
         assert!(
             !ctx.handle.should_stop(),
             "nobody asked it to stop, so nothing may say they did"
+        );
+    }
+
+    /// A frame that panics a reader costs that frame, not the watch: the next
+    /// frame is still read, and the panic is filed as a failure.
+    #[tokio::test]
+    async fn a_frame_that_panics_its_reader_is_skipped_and_filed() {
+        let (_session, ctx) = ScanSession::new();
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let mut listener = PassiveListener::over(
+            rx,
+            capture::CaptureGuard::noop(),
+            Recording::Everything,
+            OnLink::default(),
+            ctx.clone(),
+        );
+
+        for bytes in [
+            PANICKING_FRAME.to_vec(),
+            PANICKING_FRAME.to_vec(),
+            arp_reply_frame(Ipv4Addr::new(198, 51, 100, 2)),
+        ] {
+            tx.send(captured(bytes))
+                .await
+                .expect("the listener is reading");
+        }
+        drop(tx);
+
+        listener.observe().await.expect("the watch runs to its end");
+
+        assert_eq!(ctx.host_count(), 1, "the frame after the panics was read");
+        let failures = ctx.failures_snapshot();
+        assert_eq!(failures.len(), 1, "both panics are one entry: {failures:?}");
+        assert_eq!(failures[0].scanner(), ScannerKind::Passive);
+        assert!(
+            failures[0].reason().starts_with("2 frames panicked"),
+            "the entry counts them: {}",
+            failures[0].reason()
         );
     }
 
