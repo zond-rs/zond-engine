@@ -8,58 +8,35 @@
 
 //! # The operating-system rule database
 //!
-//! The compiled artifact and the access over it.
+//! The compiled rules and the access over them.
 //!
-//! ## What it costs, measured
+//! ## Cost
 //!
-//! Held flat and walked. That is a different shape from the service signatures
-//! next door: those carry thousands of regexes whose
-//! *compilation* dominates everything, which is why they are compiled lazily,
-//! cached, warmed in parallel, and narrowed by a port index and an Aho-Corasick
-//! literal prefilter before any of it happens. A rule here compiles to nothing,
-//! it is a handful of integer comparisons, so the same machinery would cost
-//! more than it saves.
-//!
-//! Measured on this machine, one observation against a synthetic rule set:
+//! Held flat and walked: a rule is a handful of integer comparisons, so the
+//! service signatures' lazy compilation and prefiltering would cost more than
+//! they save. One observation against a synthetic rule set:
 //!
 //! | rules | per host |
 //! |---|---|
-//! | 2 (what ships) | 0.8 µs |
+//! | 2 | 0.8 µs |
 //! | 1 000 | 33 µs |
 //! | 10 000 | 278 µs |
 //!
-//! Linear, with a small constant. At the two rules that ship it is not
-//! measurable against anything else a scan does; at ten thousand, which is what
-//! translating a public corpus would bring, it is 18 seconds of CPU across a
-//! `/16`, which is real but not disqualifying.
+//! Linear: ten thousand rules would cost 18 seconds of CPU across a `/16`.
 //!
-//! One mistake is worth naming, because it is the one this shape invites.
-//! Rendering the option layout allocates, and doing it inside the per-rule test
-//! costs 3.2 ms per host at ten thousand rules, or 210 seconds across a `/16`,
-//! essentially all of it spent building the same short string ten thousand
-//! times over. [`rules::matching`](super::rules) works the derived values out
-//! once for the whole set and orders the cheap integer comparisons ahead of the
-//! string one, which is 11.5x faster at ten thousand rules and 1.7x at two.
+//! [`rules::matching`](super::rules) computes the derived values once per
+//! observation and runs the integer comparisons before the string one;
+//! rendering the option layout per rule cost 3.2 ms per host at ten thousand
+//! rules. That is 11.5x faster at ten thousand rules and 1.7x at two.
 //!
-//! ## Where the index goes, when it is needed
+//! An index, if needed, belongs behind [`RuleDb::matching`]: key rules by reply
+//! kind and exact option layout, with an always-checked set for the rest.
 //!
-//! [`RuleDb::matching`] is the seam, and nothing above it would change. The
-//! natural narrowing is the direct analogue of the service side's port index: key
-//! rules by reply kind and by an exactly-specified option layout, keep the rules
-//! that state neither in a set that is always checked, and the walk goes from
-//! every rule to a handful. It is not built, because two rules do not need it and
-//! an index nobody can measure the benefit of is a guess.
+//! ## Source
 //!
-//! ## Where the artifact comes from
-//!
-//! Today it is the `bincode` blob `build.rs` compiles from
-//! `assets/fingerprinting/os/`. [`RuleDb::global`] is the single place a
-//! disk-loaded database will slot in later, which is what makes it possible to
-//! use a corpus this crate can never ship: the largest and best operating-system
-//! fingerprint database in existence is nmap's, and its licence is incompatible
-//! with this one, so it can only ever be something a user brings and translates
-//! on their own machine. The translator is the deliverable there; the corpus is
-//! not.
+//! The rules are a `bincode` blob `build.rs` compiles from
+//! `assets/fingerprinting/os/`, loaded by [`RuleDb::global`]. A caller's own
+//! corpus goes through [`RuleDb::try_from_rules`].
 
 use std::sync::OnceLock;
 
@@ -76,9 +53,7 @@ static DB: OnceLock<RuleDb> = OnceLock::new();
 
 /// A rule [`RuleDb::try_from_rules`] refused, and why.
 ///
-/// Carries where the rule sat and what it called itself, because a caller
-/// loading a corpus of thousands needs to find the one that is wrong rather than
-/// be told that one of them is.
+/// Carries the rule's position and label, to find it in a large corpus.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct InvalidRule {
@@ -128,22 +103,13 @@ impl RuleDb {
     /// Builds a database from rules given directly, refusing any the build would
     /// refuse.
     ///
-    /// This is how a caller supplies their own corpus. The checks are the
-    /// ones in [`OsDefinition::validate`], which `build.rs` runs over the shipped
-    /// rules from the same code, so a rule that would fail the build fails here
-    /// with the same stated reason rather than shipping into a scan.
-    ///
-    /// That matters more than it sounds. The worst defect an authored rule can
-    /// have is to state no predicates at all: it then matches every reply of its
-    /// kind and names every host that ever answers as one operating system, and
-    /// nothing downstream can tell that from a detection that worked. The build
-    /// calls that one worse than a build failure and aborts over it. An
-    /// unchecked constructor is a door around every one of those checks.
+    /// How a caller supplies their own corpus. The checks are
+    /// [`OsDefinition::validate`], which `build.rs` also runs. They refuse, for
+    /// one, a rule with no predicates, which would name every host that answers.
     ///
     /// # Errors
     ///
-    /// [`InvalidRule`] names which rule was refused and why, so a caller loading
-    /// a corpus of thousands can report the one that is wrong.
+    /// [`InvalidRule`] names which rule was refused and why.
     pub fn try_from_rules(rules: Vec<OsDefinition>) -> Result<Self, InvalidRule> {
         for (index, rule) in rules.iter().enumerate() {
             rule.validate().map_err(|error| InvalidRule {
@@ -157,11 +123,8 @@ impl RuleDb {
 
     /// Builds a database from rules given directly **without checking them**.
     ///
-    /// For a caller who has already validated, and for tests that need a rule
-    /// the checks would refuse in order to prove the checks matter. Prefer
-    /// [`try_from_rules`](Self::try_from_rules) everywhere else: what this skips
-    /// is not a formality, it is the difference between a corpus that identifies
-    /// hosts and one that names all of them the same thing.
+    /// For a caller who has already validated, and for tests. Prefer
+    /// [`try_from_rules`](Self::try_from_rules).
     pub fn from_rules_unchecked(rules: Vec<OsDefinition>) -> Self {
         Self { rules }
     }
@@ -173,21 +136,15 @@ impl RuleDb {
 
     /// Every rule that describes `observed`.
     ///
-    /// Returns all of them rather than the best one. Which of several matching
-    /// rules should name the host is a question about weights and about the other
-    /// evidence in hand, and it is not this layer's to answer. Two rules agreeing
-    /// on a family and disagreeing on a version is a result rather than a tie to
-    /// be broken here.
+    /// All of them; choosing among them is the verdict's job.
     pub fn matching<'a>(&'a self, reply: &'a StackReply) -> impl Iterator<Item = &'a OsDefinition> {
         rules::matching(&self.rules, reply, None)
     }
 
     /// Every rule that describes `reply` with its series readings known.
     ///
-    /// The form the active path calls: several replies were collected, their
-    /// series classified, and the rules asked about both the reply and the
-    /// classes together. A rule predicating on a series field matches only
-    /// here, never through [`matching`](Self::matching).
+    /// Called by the active path. A series rule matches only here, never through
+    /// [`matching`](Self::matching).
     pub fn matching_with_series<'a>(
         &'a self,
         reply: &'a StackReply,
@@ -247,14 +204,8 @@ mod tests {
         }
     }
 
-    /// The door the build spent a panic closing.
-    ///
-    /// `build.rs` refuses a rule that states no predicates and calls it the one
-    /// defect worse than a build failure, because it matches every reply of its
-    /// kind and names every host that ever answers. A public constructor that
-    /// accepted exactly that would load it: measured, a rule naming
-    /// `Windows 3.1` and testing nothing returns accuracy 70 for any SYN+ACK on
-    /// earth.
+    /// A rule with no predicates is refused; it would match any SYN+ACK at
+    /// accuracy 70.
     #[test]
     fn a_rule_that_tests_nothing_is_refused() {
         let refused = RuleDb::try_from_rules(vec![rule("Windows 3.1", MatchRule::default())])
@@ -265,9 +216,7 @@ mod tests {
         assert_eq!(refused.identity, "Windows 3.1");
     }
 
-    /// Every other check the build makes, made here too. The point is not the
-    /// individual rules but that there is one set of them: a check added to
-    /// [`OsDefinition::validate`] tightens the build and this door together.
+    /// Every other build check applies here too.
     #[test]
     fn the_checks_are_the_ones_the_build_makes() {
         let cases: Vec<(OsDefinition, RuleError)> = vec![
@@ -364,10 +313,7 @@ mod tests {
 
     /// A rule that reads a series must ship an example that recorded one.
     ///
-    /// Otherwise the example can only ever fail: a series rule is matched
-    /// through `matches_with_series` and nothing else, so the corpus test would
-    /// report a working rule as one that had stopped matching. Refused rather
-    /// than warned about, because the two are indistinguishable from outside.
+    /// Otherwise the corpus test would report it as broken.
     #[test]
     fn a_series_rule_without_a_series_example_is_refused() {
         use crate::fingerprint::os::Example;
@@ -410,7 +356,7 @@ mod tests {
             .expect_err("nothing could check this rule");
         assert!(matches!(refused.error, RuleError::ExampleWithoutSeries(_)));
 
-        // Recording the series it reads makes it loadable.
+        // With the series recorded it loads.
         definition.example = vec![Example {
             sequence_class: Some("hashed".to_owned()),
             ..single_reply
@@ -418,8 +364,7 @@ mod tests {
         assert!(RuleDb::try_from_rules(vec![definition]).is_ok());
     }
 
-    /// A well-formed rule loads and matches, so the gate is a gate rather than a
-    /// wall.
+    /// A well-formed rule loads and matches.
     #[test]
     fn a_well_formed_rule_loads() {
         let db = RuleDb::try_from_rules(vec![rule("Linux", tests_something())])
@@ -427,9 +372,7 @@ mod tests {
         assert_eq!(db.rules().len(), 1);
     }
 
-    /// Everything the build compiled passes the check the build ran, which would
-    /// be circular if they were two implementations and is a seal because they
-    /// are one.
+    /// Everything the build compiled passes the build's own check.
     #[test]
     fn every_shipped_rule_satisfies_the_shared_check() {
         for (index, rule) in RuleDb::global().rules().iter().enumerate() {
@@ -442,17 +385,14 @@ mod tests {
         }
     }
 
-    /// The unchecked door exists and says so in its name, which is the whole
-    /// difference between it and a public constructor that skips the checks
-    /// without saying so.
+    /// The unchecked constructor skips the checks.
     #[test]
     fn the_unchecked_constructor_is_the_one_that_skips_the_checks() {
         let db = RuleDb::from_rules_unchecked(vec![rule("Windows 3.1", MatchRule::default())]);
         assert_eq!(db.rules().len(), 1);
     }
 
-    /// The message names the rule, because a corpus of thousands needs the one
-    /// that is wrong rather than the fact that one of them is.
+    /// The message names the rule.
     #[test]
     fn the_refusal_names_which_rule_and_why() {
         let refused = RuleDb::try_from_rules(vec![
