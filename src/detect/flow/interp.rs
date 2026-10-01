@@ -771,6 +771,20 @@ mod tests {
         }
     }
 
+    /// No shipped flow fires on a web app that answers every path with its
+    /// index page, whatever path the flow asked for.
+    #[test]
+    fn no_flow_fires_on_an_app_answering_every_path_with_its_index() {
+        for flow in crate::detect::flow::db::FlowDb::global().flows() {
+            let findings = flow.run(&seed(), &mut Canned(CATCH_ALL_INDEX.to_vec()));
+            assert!(
+                findings.is_empty(),
+                "{} fired on an app's index page",
+                flow.flow().detection.id
+            );
+        }
+    }
+
     /// A Jenkins or Kubernetes API that answers anonymous reads with a 403 still
     /// identifies itself, and must not fire: the finding is anonymous *access*.
     #[test]
@@ -906,6 +920,33 @@ mod tests {
             b"HTTP/1.1 401 Unauthorized\r\nDocker-Distribution-Api-Version: registry/2.0\r\n\
               WWW-Authenticate: Bearer realm=\"https://auth.example.com/token\"\r\n\r\n\
               {\"errors\":[{\"code\":\"UNAUTHORIZED\"}]}\n"
+        ));
+    }
+
+    /// A served `.env` is told apart from a page that merely has a line
+    /// starting `name=`: the key is uppercase, and the body opens with it.
+    #[test]
+    fn http_dotenv_exposed_fires_on_a_dotenv_body_and_not_on_a_page() {
+        let dotenv = flow("http-dotenv-exposed");
+        let fires =
+            |reply: &[u8]| !run(&dotenv, "", &seed(), &mut Canned(reply.to_vec())).is_empty();
+
+        // A Laravel `.env` as nginx serves a dotfile it was not told to deny.
+        assert!(fires(
+            b"HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Type: application/octet-stream\r\n\r\n\
+              APP_NAME=Laravel\nAPP_ENV=production\nAPP_KEY=base64:c2VjcmV0\nDB_PASSWORD=hunter2\n"
+        ));
+        assert!(
+            !fires(CATCH_ALL_INDEX),
+            "http-dotenv-exposed read a wrapped `href=` in an app's index page as an assignment"
+        );
+        // A commented file that exports its keys.
+        assert!(fires(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n# production\n\nexport SECRET_KEY=abc\n"
+        ));
+        // An uppercase assignment inside a page is still a page.
+        assert!(!fires(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body><pre>\nAPP_ENV=local\n</pre></body></html>"
         ));
     }
 
