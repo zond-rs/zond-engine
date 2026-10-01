@@ -15,25 +15,21 @@
 //!    Every example is run through the real signature, and every one matches.
 //! 2. **Prefilter soundness** ([`prefilter_never_drops_a_matching_signature`]):
 //!    for every example that matches its pattern, the global-match prefilter
-//!    must select that signature as a candidate. This is what makes it safe to
-//!    narrow the global set instead of scanning all of it.
+//!    must select that signature as a candidate.
 //! 3. **One reply, one witness** ([`one_reply_is_one_witness`]): whatever a
-//!    rule's example leaves on a host's record, it leaves under the source it
-//!    was read as, so the arithmetic that combines sources never counts one
-//!    reading as two witnesses.
+//!    rule's example leaves on a host's record is filed under the source it was
+//!    read as, so one reading is never counted as two witnesses.
 //! 4. **Golden end-to-end** ([`golden_cases_resolve_end_to_end`],
 //!    [`non_standard_port_is_identified_via_global_fallback`]): real banners
 //!    driven through the whole pipeline with the exact verdict pinned.
 //!
 //! ## Imported examples
 //!
-//! The rules imported from Recog hold their examples to the same standard,
-//! which Recog's own suite holds them to upstream. Each is the text the engine
-//! reads a reply as, so an example Recog stores in base64 is stored here
-//! decoded, and each pattern carries the flags it was written under: Recog's
-//! case-insensitive flag as `(?i)`, its dot-matches-newline as `(?s)`, and
-//! Ruby's line anchors, which are the default there, as `(?m)` where a rule
-//! relies on them.
+//! Rules imported from Recog are held to the same standard. Each example is the
+//! text the engine reads a reply as, so one Recog stores in base64 is stored
+//! decoded. Each pattern carries the flags it was written under: Recog's
+//! case-insensitive flag as `(?i)`, dot-matches-newline as `(?s)`, and Ruby's
+//! default line anchors as `(?m)` where a rule relies on them.
 
 use proptest::prelude::*;
 use rayon::prelude::*;
@@ -45,8 +41,8 @@ use super::response::{Collected, ResponseSet, TlsInfo};
 use super::{Analyzer, BannerRegexAnalyzer, PortContext, ServiceVerdict, TlsCertAnalyzer, Tunnel};
 use crate::model::confidence::Confidence;
 
-/// The signature set flattened exactly as the runtime builds it, paired with
-/// each signature's recorded example (if any).
+/// The signature set flattened as the runtime builds it, paired with each
+/// signature's recorded example (if any).
 fn signatures_with_examples() -> (Vec<Signature>, Vec<Option<String>>) {
     let defs = SignatureDb::embedded_definitions();
     let mut signatures = Vec::new();
@@ -96,8 +92,6 @@ fn prefilter_never_drops_a_matching_signature() {
     let (signatures, examples) = signatures_with_examples();
     let prefilter = LiteralPrefilter::build(&signatures);
 
-    // For every example that genuinely matches its signature, the prefilter must
-    // list that signature as a candidate, or global matching would miss it.
     let violations: usize = signatures
         .par_iter()
         .zip(examples.par_iter())
@@ -128,14 +122,9 @@ fn prefilter_never_drops_a_matching_signature() {
     );
 }
 
-/// Signatures the prefilter cannot narrow, and so matches against every
-/// response on every port, are those with no literal worth indexing: a
-/// structural pattern, one written with look-arounds, or one whose literals
-/// are all shorter than the prefilter indexes.
-///
-/// Pinned so a rule the extractor could narrow does not slip into the bucket
-/// unnoticed, where it costs a regex run per response for the life of the
-/// corpus.
+/// Signatures the prefilter cannot narrow run against every response. They are
+/// those with no literal worth indexing: structural patterns, look-arounds, or
+/// only short literals. Pinned so a narrowable rule does not slip in unnoticed.
 #[test]
 fn only_a_pattern_with_no_literal_is_matched_against_every_response() {
     const KNOWN_ALWAYS_RUN: usize = 12;
@@ -158,21 +147,14 @@ fn only_a_pattern_with_no_literal_is_matched_against_every_response() {
 /// One reply is one witness, whatever the rule that read it says about the
 /// machine.
 ///
-/// Every shipped rule's example, read as each kind of text a rule is matched
-/// against, and filed with a host the way a reply's reading is: what it implies
-/// about the system and the hardware it describes, together, on a host with no
-/// address behind it and no name. Whatever that leaves on record has to be
-/// filed under the source that was read. Filed under another, the reply stands
-/// in for a witness that said nothing, and beside its own reading it is counted
-/// twice, which the arithmetic that combines sources takes for two witnesses
-/// agreeing: a vendor a service described, read back as its address's own,
-/// carries a single SNMP description past the confidence at which the active
-/// OS probe is skipped.
+/// Every shipped rule's example is read as each kind of text a rule is matched
+/// against and filed with a bare host. Whatever that leaves on record must be
+/// filed under the source that was read. Under another source it would count
+/// twice: a single SNMP description could then pass the confidence at which the
+/// active OS probe is skipped.
 ///
-/// What it sees is what one reply produces. A scanner joining two exchanges,
-/// such as a name one of them learned and a record the other fetched under
-/// that name, is outside any sweep of single replies, and each such join is
-/// pinned where it is made.
+/// Joins across two exchanges are outside this sweep and pinned where they are
+/// made.
 #[test]
 fn one_reply_is_one_witness() {
     use crate::model::host::{Host, OsSource};
@@ -249,9 +231,8 @@ fn golden_cases_resolve_end_to_end() {
             product: Some("dropbear"),
             version: Some("2022.83"),
         },
-        // Best-match, not first-match: the generic `HTTP/1.1` signature is
-        // listed before the `Server: nginx` one and matches this response too,
-        // but the more specific match, naming product and version, has to win.
+        // Best match wins: the generic `HTTP/1.1` signature is listed first and
+        // also matches.
         Case {
             port: 80,
             response: "HTTP/1.1 200 OK\r\nServer: nginx/1.25.3\r\nContent-Type: text/html\r\n\r\n",
@@ -305,8 +286,7 @@ fn golden_cases_resolve_end_to_end() {
 
 #[test]
 fn non_standard_port_is_identified_via_global_fallback() {
-    // SSH on an unclaimed high port: no linked signatures, so identification
-    // must come from the prefilter-narrowed global fallback.
+    // An unclaimed high port: identification comes from the global fallback.
     let port = 51987;
     assert!(
         SignatureDb::global().signatures_for_port(port).is_empty(),
@@ -340,12 +320,10 @@ fn non_standard_port_is_identified_via_global_fallback() {
 }
 
 proptest! {
-    /// The headline fuzz target: adversarial banners driven through the whole
-    /// banner-matching pipeline against the real signature set, so prefilter,
-    /// then regex, then best-match, then resolve. It never panics and always
-    /// terminates, whatever bytes arrive on the wire. Port 80 exercises the
-    /// port-linked tier; unmatched banners fall through to the global prefilter,
-    /// so both matching paths are covered.
+    /// Adversarial banners through the whole pipeline against the real
+    /// signature set: prefilter, regex, best match, resolve. Never panics and
+    /// always terminates. Port 80 covers the port-linked tier, and unmatched
+    /// banners the global one.
     #[test]
     fn banner_pipeline_never_panics_on_adversarial_input(banner in "(?s).*") {
         let responses = ResponseSet::from_banners(vec![banner]);
@@ -365,8 +343,7 @@ proptest! {
 
 #[test]
 fn port_linked_match_is_tagged_port_confirmed() {
-    // The same SSH banner on port 22 matches a signature registered for the
-    // port, so its evidence is port-confirmed, the flag the resolver ranks on.
+    // On port 22 the match is port-confirmed, which the resolver ranks on.
     let responses = ResponseSet::from_banners(vec!["SSH-2.0-OpenSSH_9.6p1 Debian-3".to_string()]);
     let evidence = BannerRegexAnalyzer.analyze(
         &PortContext {
@@ -388,8 +365,7 @@ fn port_linked_match_is_tagged_port_confirmed() {
 }
 
 /// A recorded self-signed appliance certificate (DER). Subject == issuer,
-/// `O=Zond Appliance`, `CN=zond-device.local`. Serves as the parse oracle for
-/// the TLS analyzer, mirroring the recorded-banner corpus above.
+/// `O=Zond Appliance`, `CN=zond-device.local`.
 const SELF_SIGNED_CERT: &[u8] = include_bytes!("testdata/selfsigned.der");
 
 #[test]
@@ -419,17 +395,15 @@ fn tls_cert_identifies_self_signed_appliance() {
     assert_eq!(verdict.vendor.as_deref(), Some("Zond Appliance"));
     assert_eq!(verdict.confidence, Confidence::Probable);
     let service = verdict.to_service().unwrap();
-    // The tunnel's own `ssl` verdict is not re-prefixed into `ssl/ssl`, even
-    // under a TLS context.
+    // Not re-prefixed into `ssl/ssl`.
     assert_eq!(service.name(), "ssl");
-    // The vendor reaches the projected Service, rather than being extracted
-    // here and dropped by `to_service`.
+    // The vendor survives `to_service`.
     assert_eq!(service.vendor(), Some("Zond Appliance"));
 }
 
 #[test]
 fn tls_analyzer_is_silent_without_a_certificate() {
-    // No TLS captured: the analyzer must produce nothing, not a bare "ssl".
+    // No TLS captured: no evidence.
     let responses = ResponseSet::from_banners(vec!["HTTP/1.1 200 OK".to_string()]);
     assert!(
         TlsCertAnalyzer
@@ -495,11 +469,9 @@ fn named(port: u16, protocol: crate::model::port::Protocol, banner: &str) -> Ser
 /// A Zabbix agent is named by the header its protocol frames every reply
 /// in, and not by the digit an `agent.ping` answer carries.
 ///
-/// A rule anchored on that digit alone is consulted across the whole corpus
-/// for any port its own did not name, and reads every text that begins with
-/// a `1` as an agent: a session cookie, a page titled with a count, the
-/// object identifier every SNMP agent answers with. Each of those put a
-/// monitoring agent's name on a web server or a printer.
+/// A rule anchored on that digit alone, consulted on every port, would read
+/// any text beginning with `1` (a session cookie, an SNMP object identifier)
+/// as an agent.
 #[test]
 fn only_a_framed_zabbix_reply_is_named_zabbix() {
     use crate::model::port::Protocol::{Tcp, Udp};
@@ -515,9 +487,7 @@ fn only_a_framed_zabbix_reply_is_named_zabbix() {
         (161, Udp, "1.3.6.1.4.1.11.2.3.9.1"),
     ];
     for (port, protocol, banner) in not_zabbix {
-        // Every witness rather than the winner: a reading that loses the
-        // ranking on one port is still a reading, and it wins on the next
-        // port that has nothing better to say.
+        // Every witness, not only the winner: a loser here can win elsewhere.
         let verdict = named(port, protocol, banner);
         assert!(
             verdict
@@ -540,11 +510,9 @@ fn only_a_framed_zabbix_reply_is_named_zabbix() {
 /// A raw-print port is named by the PJL its printer answers in, and not by
 /// the two letters of a vendor's name wherever they fall.
 ///
-/// A rule reading `HP` anywhere is consulted across the whole corpus for any
-/// port its own did not name, and reads every reply that mentions PHP, an
-/// `X-Powered-By` header or a page about it, as a JetDirect printer. What a
-/// printer on its raw port says of its own accord is a PJL reply, which opens
-/// with the `@PJL` command it answers.
+/// A rule reading `HP` anywhere would name every reply mentioning PHP a
+/// JetDirect printer. A printer's raw port answers in PJL, opening with the
+/// `@PJL` command it answers.
 #[test]
 fn only_a_pjl_reply_is_named_a_raw_print_port() {
     use crate::model::port::Protocol::Tcp;
@@ -579,10 +547,8 @@ fn only_a_pjl_reply_is_named_a_raw_print_port() {
 /// Every rule that reads a byte from 0x80 up ships an example, so the tests
 /// above run it.
 ///
-/// Those are the rules a reading of the reply as text can lose: a decoder that
-/// turned such a byte into anything but its own code point left thirteen of
-/// them matching nothing, and none carried an example that would have said so.
-/// A rule of that kind without one is a rule nothing checks.
+/// Those rules depend on the reply's bytes surviving the text decoding, and
+/// only an example checks that.
 #[test]
 fn every_rule_reading_a_high_byte_ships_an_example() {
     /// Whether `pattern` names, by escape, a byte from 0x80 up.
@@ -621,10 +587,8 @@ fn every_rule_reading_a_high_byte_ships_an_example() {
 /// Binary replies reach the rules written for their bytes, read the way the
 /// transport reads them.
 ///
-/// Each reply is built from the specification of its protocol and handed over
-/// as bytes, so the decoding between the socket and the matcher is under test
-/// as well as the rule: every one of these was once matched against text in
-/// which its high bytes had become the replacement character.
+/// Each reply is built from its protocol's specification and handed over as
+/// bytes, so the decoding between socket and matcher is tested with the rule.
 #[test]
 fn binary_replies_reach_the_rules_written_for_their_bytes() {
     use crate::model::port::Protocol::Tcp;
@@ -727,11 +691,10 @@ const TDS_PRELOGIN_RESPONSE: &[u8] = b"\x04\x01\x00\x2b\x00\x00\x01\x00\
 /// A binary rule claims its protocol's reply and not another's that opens the
 /// same way.
 ///
-/// Each of these rules once read one or two leading bytes, and they are
-/// consulted on every port nothing else names, where a reply of any protocol
-/// can arrive. Each is held here against a reply of a different protocol
-/// sharing its first bytes, taken from that protocol's specification, and so
-/// against the rule itself rather than whichever rule wins the ranking.
+/// These rules are consulted on every port nothing else names. Each is checked
+/// against a reply of another protocol sharing its first bytes, taken from that
+/// protocol's specification, and tested against the rule itself, not the
+/// ranking winner.
 #[test]
 fn a_binary_rule_does_not_claim_another_protocol_opening_the_same_way() {
     // A Modbus TCP reply to a register read: transaction ID, protocol zero,
@@ -819,10 +782,8 @@ fn a_binary_rule_does_not_claim_another_protocol_opening_the_same_way() {
 
 /// A high first byte alone names nothing.
 ///
-/// These rules are consulted on every port nothing else names, and a dozen
-/// binary protocols open on 0xFF or on a byte just past 0x80. Each is written
-/// against its protocol's header whole, so a reply that shares one byte with
-/// it is not taken for it.
+/// A dozen binary protocols open on 0xFF or a byte just past 0x80, so each rule
+/// is written against its protocol's whole header.
 #[test]
 fn a_high_first_byte_alone_names_no_binary_protocol() {
     use crate::model::port::Protocol::Tcp;
@@ -846,8 +807,7 @@ fn a_high_first_byte_alone_names_no_binary_protocol() {
     }
 }
 
-/// A NetBIOS session service is named from its answer end to end, over a
-/// socket, the one path every other test here stands in for.
+/// A NetBIOS session service is named from its answer, over a socket.
 #[tokio::test]
 async fn a_session_service_is_named_from_its_answer_over_a_socket() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -875,8 +835,7 @@ async fn a_session_service_is_named_from_its_answer_over_a_socket() {
         super::fingerprint_tcp(stream, port, crate::config::ServiceDetection::Probe).await;
     server.abort();
 
-    // Named above the label the port's number alone earns, which is what it
-    // carries before anything is asked.
+    // Ranked above the port-number baseline.
     let labelled = super::baseline_port(139, Protocol::Tcp, PortState::Open);
     let label = labelled.service().map(|service| service.confidence());
     let identified = identified.service().expect("the port is named");
@@ -891,10 +850,9 @@ async fn a_session_service_is_named_from_its_answer_over_a_socket() {
 /// it chose.
 ///
 /// Every Windows release since Vista and xrdp answer a negotiation request
-/// with a 19-byte Connection Confirm (MS-RDPBCGR 2.2.1.2), and which layer the
-/// server selects is the question an assessor asks of it first: CredSSP
-/// authenticates before any session exists, and TLS alone puts a logon screen
-/// in front of whoever connects.
+/// with a 19-byte Connection Confirm (MS-RDPBCGR 2.2.1.2). CredSSP
+/// authenticates before any session exists; TLS alone shows a logon screen to
+/// whoever connects.
 #[test]
 fn an_rdp_negotiation_answer_names_the_security_layer() {
     use crate::model::port::Protocol::Tcp;
@@ -927,8 +885,7 @@ fn an_rdp_negotiation_answer_names_the_security_layer() {
     }
 }
 
-/// The same, end to end over a socket: the probe goes out, the confirm comes
-/// back, and the port is named from it.
+/// The same, over a socket.
 #[tokio::test]
 async fn an_rdp_server_is_named_from_its_negotiation_over_a_socket() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -986,18 +943,15 @@ fn root_dse(level: &[u8]) -> String {
 /// A domain controller's functional level names its release only as far as
 /// the level does.
 ///
-/// Level 7 is the highest Server 2016, 2019 and 2022 support alike, so it
-/// names Windows Server and no release. A 2016 reading there would stand on
-/// every 2019 and 2022 controller with a CPE sending it to the wrong
-/// vulnerability records, and nothing else a modern controller answers would
-/// contradict it. Level 10 is Server 2025's alone, and level 6 still names
-/// 2012 R2.
+/// Level 7 is the highest Server 2016, 2019 and 2022 all support, so it names
+/// Windows Server and no release; a release CPE there would point 2019 and 2022
+/// controllers at the wrong vulnerability records. Level 10 is Server 2025's
+/// alone, and level 6 names 2012 R2.
 #[test]
 fn a_functional_level_names_the_release_only_as_far_as_it_goes() {
     use crate::model::port::Protocol::Tcp;
 
-    // The CPE a reading carries, release and all: `windows` is the family's
-    // own, which is as far as level 7 goes.
+    // `windows` is the family's CPE, as far as level 7 goes.
     let cases: &[(&[u8], &str, &str)] = &[
         (b"7", "Windows Server", "cpe:/o:microsoft:windows:-"),
         (
@@ -1028,14 +982,10 @@ fn a_functional_level_names_the_release_only_as_far_as_it_goes() {
 /// A domain controller read over SMB and LDAP together is reported with the
 /// CPE of the release the two establish.
 ///
-/// Its SMB service states build 20348, which is Windows Server 2022 and
-/// carries that release's CPE; its functional level of 7 names Windows Server
-/// and carries the family's. The first is the second carried further, so the
-/// merged product is the 2022 release, and its CPE has to be the one naming
-/// it: the family's is a true reading of something coarser than what was
-/// concluded, and two CPEs that differ for that reason are no disagreement.
-/// Dropping both left a controller with a named release and no identifier
-/// to look its vulnerabilities up by, less than SMB said alone.
+/// SMB states build 20348 (Windows Server 2022, with that release's CPE); the
+/// functional level of 7 names Windows Server with the family's CPE. The first
+/// refines the second, so the merged product is the 2022 release with its CPE.
+/// A coarser CPE is not a disagreement.
 #[test]
 fn smb_and_ldap_together_keep_the_cpe_of_the_release_they_establish() {
     use crate::model::port::Protocol::Tcp;
@@ -1073,14 +1023,12 @@ fn read_as_the_transport(port: u16, bytes: &[u8]) -> ServiceVerdict {
     ServiceVerdict::resolve(evidence)
 }
 
-/// The services a domain, a file server or a database host answers on every
-/// day are named past a label, over TCP, from what each says before any
-/// login.
+/// Common domain, file server and database services are named over TCP from
+/// what each says before login.
 ///
 /// Each reply is built from its protocol's specification: a password-protected
-/// Redis refusing INFO, a VNC server's greeting, a SQL Server pre-login answer,
-/// and a KDC, an NFS server and a nameserver each answering over TCP the
-/// question the corpus had asked them only over UDP.
+/// Redis refusing INFO, a VNC greeting, a SQL Server pre-login answer, and a
+/// KDC, an NFS server and a nameserver answering over TCP.
 #[test]
 fn everyday_services_are_named_over_tcp_from_what_they_say_first() {
     struct Case {
@@ -1204,10 +1152,9 @@ fn everyday_services_are_named_over_tcp_from_what_they_say_first() {
 /// A Kafka broker is named by its answer to the ApiVersions request, and a
 /// reply that merely opens on two zero bytes is not taken for one.
 ///
-/// Every protocol that frames its messages with a four-byte length opens that
-/// way, and the rule is consulted on every port nothing else names. What only
-/// a broker answering this engine's request sends is the correlation id the
-/// request carried, and an error code behind it.
+/// Every protocol framed by a four-byte length opens that way. Only a broker
+/// answering this engine's request echoes its correlation id, followed by an
+/// error code.
 #[test]
 fn only_a_reply_to_the_api_versions_request_is_named_kafka() {
     use crate::model::port::Protocol::Tcp;
@@ -1234,9 +1181,8 @@ fn only_a_reply_to_the_api_versions_request_is_named_kafka() {
 /// The NRPE probe is a version 2 query the daemon answers: the whole 1036-byte
 /// packet NRPE's common.h lays out, typed a query, with a CRC-32 that checks.
 ///
-/// The daemon reads a full packet before it replies and drops one whose CRC
-/// fails, so a probe short of either is a connection held open until the
-/// daemon's own timeout and an NRPE port that answers nothing.
+/// The daemon reads a full packet before replying and drops one whose CRC
+/// fails, so a shorter or mis-checksummed probe gets no answer.
 #[test]
 fn the_nrpe_probe_is_a_query_the_daemon_answers() {
     // CRC-32 as NRPE computes it: reflected, polynomial 0xEDB88320, starting
@@ -1284,8 +1230,7 @@ fn the_nrpe_probe_is_a_query_the_daemon_answers() {
 /// every SOCKS5 proxy says.
 ///
 /// The greeting's answer, version 5 and no authentication, is RFC 1928's for
-/// any proxy that asks for none, so a rule reading Tor into it named every
-/// such proxy Tor. Tor's own mark is the 501 its SOCKS port sends a web
+/// any such proxy. Tor's own mark is the 501 its SOCKS port sends a web
 /// request.
 #[test]
 fn tor_is_named_by_its_own_answer_and_not_by_a_socks5_greeting() {
@@ -1344,7 +1289,6 @@ fn an_openssh_banner_names_its_distribution_build_and_release() {
         ("12", ReleaseBasis::Revision)
     );
 
-    // And the service carries it into the report.
     let service = debian.to_service().expect("a service");
     assert_eq!(
         service.build().and_then(|build| build.revision()),
@@ -1353,9 +1297,8 @@ fn an_openssh_banner_names_its_distribution_build_and_release() {
 }
 
 /// An upstream build names no distributor, and a comment that is not a
-/// packager's (an HPN patch tag) is not read as one: a build on a service is
-/// the claim that somebody else's fix data applies, and it must not be made
-/// about software nobody repackaged.
+/// packager's (an HPN patch tag) is not read as one, since a build claims that
+/// a distributor's fix data applies.
 #[test]
 fn an_openssh_banner_without_a_packagers_comment_names_no_build() {
     for banner in [
@@ -1376,12 +1319,10 @@ fn an_openssh_banner_without_a_packagers_comment_names_no_build() {
 /// A MySQL greeting's version string carries the product, the version and the
 /// build, and each has to land in its own field.
 ///
-/// MariaDB answers with `5.5.5-10.11.6-MariaDB-…` so that clients expecting
-/// MySQL's numbering accept it. Read as MySQL, that is MySQL 5.5.5, carrying
-/// the vulnerabilities of a MySQL release this server is not, which is the
-/// most expensive kind of wrong a scanner can be. A distribution's package
-/// revision after the version is its build, not part of the version the
-/// vulnerability data is written against.
+/// MariaDB answers `5.5.5-10.11.6-MariaDB-…` so clients expecting MySQL's
+/// numbering accept it; read as MySQL 5.5.5 it would carry the wrong
+/// vulnerabilities. A distribution's package revision after the version is its
+/// build.
 #[test]
 fn a_mysql_greeting_names_product_version_and_build_apart() {
     use crate::model::port::Distributor;
@@ -1435,10 +1376,8 @@ fn a_mysql_greeting_names_product_version_and_build_apart() {
     }
 }
 
-/// A banner read off the wire runs on past its line into the key exchange,
-/// which OpenSSH sends without waiting for the client. The release a rule
-/// maps the banner to has to survive that, since it is what places a
-/// distribution's build among its fix data.
+/// A banner read off the wire runs on into the key exchange, which OpenSSH
+/// sends without waiting. The release a rule maps the banner to survives that.
 #[test]
 fn a_banner_followed_by_the_key_exchange_still_names_its_release() {
     let banner = "SSH-2.0-OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13\r\n\u{0}\u{0}\u{6}l\n\u{14}\

@@ -11,30 +11,19 @@
 //! One [`CompiledPattern`] is a signature's compiled regex, built by whichever
 //! engine can handle it. Two engines back it, tried in order:
 //!
-//! * **[`CompiledPattern::Fast`]**, the linear-time `regex` (RE2) engine. The
-//!   primary: it does not backtrack, so its match time is linear in the input
-//!   no matter the pattern. Every pattern it accepts runs here.
-//! * **[`CompiledPattern::Fancy`]**, the `fancy-regex` backtracking engine,
-//!   reached *only* when the fast engine rejects a pattern (backreferences,
-//!   lookaround). Backtracking can be superlinear, so it is bounded by a
-//!   backtrack-step limit ([`BACKTRACK_LIMIT`]): a match that would exceed it is
-//!   reported as "no match" rather than allowed to run away.
+//! * **[`CompiledPattern::Fast`]**, the linear-time `regex` (RE2) engine. Every
+//!   pattern it accepts runs here.
+//! * **[`CompiledPattern::Fancy`]**, the `fancy-regex` backtracking engine, used
+//!   only when the fast engine rejects a pattern (backreferences, look-around).
+//!   It is bounded by [`BACKTRACK_LIMIT`]: a match that would exceed it is
+//!   reported as no match.
 //!
-//! Trying the fast engine first keeps the overwhelming majority of signatures on
-//! the linear path and confines the backtracking engine, and its
-//! runtime-failure semantics, to the few patterns that genuinely need it.
+//! ## Why a step limit
 //!
-//! ## Why a step limit, not a wall clock
-//!
-//! The bound is a count of backtracking steps, not elapsed time. A synchronous
-//! regex match cannot be interrupted mid-flight, so a wall-clock "timeout" would
-//! either need a watchdog thread that leaves the runaway match burning a core
-//! until it finishes anyway, or would fire non-deterministically depending on
-//! machine load. A step ceiling instead bounds the *work itself*, and does so
-//! deterministically: the same pattern and input always resolve the same way on
-//! every machine, which is what keeps the signature corpus tests reproducible.
-//! The engine already runs off the reactor (analysis is on the blocking pool),
-//! so a bounded-but-nontrivial match can never stall the scheduler.
+//! A synchronous regex match cannot be interrupted, so a wall-clock timeout
+//! would need a watchdog thread and would fire depending on machine load. A step
+//! ceiling bounds the work deterministically, which keeps the corpus tests
+//! reproducible. Matching runs on the blocking pool, off the reactor.
 //!
 //! ## Classes mean ASCII
 //!
@@ -42,38 +31,30 @@
 //! `\B` are compiled as their ASCII readings, `[0-9]`, `[0-9A-Za-z_]` and
 //! `[\t\n\v\f\r ]`, whichever engine takes the pattern; see
 //! [`ascii_classes`]. That is what they mean in the Ruby dialect the imported
-//! corpus was written in, so a rule matches what its author tested it
-//! against, and in the Unicode readings both engines default to they are what
-//! a compiled corpus is mostly made of. `\w` alone is some seven hundred
-//! ranges, which a bounded repetition copies once per count: a rule opening
-//! on `[\w.-]{1,512}` compiled to 28 MB and its search cache to 18 more, and
-//! the corpus as a whole to 600 MB and 200 MB of caches, against 260 and 90
-//! read as ASCII. A Unicode word boundary also keeps the lazy DFA off any text
-//! holding a byte past ASCII, which is every page in a language other than
-//! English, where an ASCII one does not.
+//! corpus was written in. Read as Unicode, `\w` alone is some seven hundred
+//! ranges, copied once per count of a bounded repetition: a rule opening on
+//! `[\w.-]{1,512}` compiles to 28 MB plus an 18 MB search cache, and the whole
+//! corpus to 600 MB plus 200 MB of caches, against 260 and 90 as ASCII. A
+//! Unicode word boundary also keeps the lazy DFA off any text with a non-ASCII
+//! byte.
 //!
 //! A rule that means a Unicode class says so with `\p{…}`, which is left as
 //! written.
 //!
 //! ## Shared with the build
 //!
-//! This module is free of any crate-internal dependency (logging,
-//! models, ...) so `build.rs` can `include!` it and validate authored patterns
-//! with the *exact* engine-selection logic the runtime uses. The build and the
-//! runtime therefore cannot disagree on which patterns are accepted: a signature
-//! that compiles at build time is one the runtime can compile, and a signature
-//! the build rejects never ships.
+//! This module has no crate-internal dependencies, so `build.rs` can load it and
+//! validate authored patterns with the runtime's engine selection. The two
+//! cannot disagree on which patterns compile.
 
 use fancy_regex::RegexBuilder as FancyRegexBuilder;
 use regex::{Regex, RegexBuilder};
 
 /// Backtracking-step ceiling for the fancy engine. A match that exceeds it is
-/// reported as no match, so a pathological backref/lookaround pattern on an
-/// adversarial input is bounded instead of running away.
+/// reported as no match.
 ///
-/// This mirrors `fancy-regex`'s own default; we set it explicitly because it is
-/// the load-bearing safety bound of the whole backtracking path, not an
-/// incidental default worth leaving implicit.
+/// Equal to `fancy-regex`'s default, set explicitly because the backtracking
+/// path's safety depends on it.
 const BACKTRACK_LIMIT: usize = 1_000_000;
 
 /// A signature's regex, compiled by whichever engine could express it. See the
@@ -110,38 +91,32 @@ impl std::fmt::Display for PatternError {
 /// A signature's successful match: the text of its version capture group, if the
 /// signature asked for one and it was present.
 ///
-/// `allow(dead_code)`: read by the runtime matcher rather than `build.rs`. This
-/// module is shared by both, and each uses a different subset.
+/// `allow(dead_code)`: used by the runtime matcher; `build.rs` shares this file.
 #[allow(dead_code)]
 pub struct PatternMatch {
     /// The captured version string. `None` means the pattern matched but named
     /// no version group, or the group did not participate in the match.
     pub version: Option<String>,
 
-    /// How many characters of the response the whole match spanned. Longer means
-    /// the signature pinned down more of the bytes, so a specific pattern outranks
-    /// a generic one that matched the same response.
+    /// How many characters of the response the whole match spanned. A longer
+    /// match outranks a generic one on the same response.
     pub match_len: usize,
 
     /// Every capture group, index 0 being the whole match, when the caller asked
     /// for them via
     /// [`identify_with_captures`](CompiledPattern::identify_with_captures).
     ///
-    /// `None` means they were not requested, never that the pattern had none.
-    /// Collecting them allocates, and the rules that need them are a minority of
-    /// a corpus matched thousands of times per banner.
+    /// `None` means they were not requested. Collecting them allocates, and few
+    /// rules need them.
     pub captures: Option<Vec<String>>,
 }
 
 /// Compiles `pattern`, trying the linear engine first and the bounded
 /// backtracking engine only if the linear one cannot express the pattern.
 ///
-/// `size_limit` caps the compiled program's memory footprint on both engines,
-/// so the same oversized pattern is rejected identically whichever path it takes.
-/// Returns [`PatternError`] only when *neither* engine accepts the pattern.
+/// `size_limit` caps the compiled program's memory on both engines. Returns
+/// [`PatternError`] only when *neither* engine accepts the pattern.
 pub fn compile(pattern: &str, size_limit: usize) -> Result<CompiledPattern, PatternError> {
-    // Primary: the linear-time engine. Anything it accepts matches without
-    // backtracking, so it needs no runtime bound.
     let fast = match RegexBuilder::new(&ascii_classes(pattern, Boundaries::Flagged))
         .size_limit(size_limit)
         .build()
@@ -150,9 +125,7 @@ pub fn compile(pattern: &str, size_limit: usize) -> Result<CompiledPattern, Patt
         Err(err) => err,
     };
 
-    // Fallback: only patterns the fast engine cannot express (backrefs,
-    // lookaround). Bound its backtracking, and cap the size of the inner program
-    // it delegates to `regex` at the same limit the fast path used.
+    // Fallback, with the inner `regex` program capped at the same size limit.
     match FancyRegexBuilder::new(&ascii_classes(pattern, Boundaries::LookedAround))
         .backtrack_limit(BACKTRACK_LIMIT)
         .delegate_size_limit(size_limit)
@@ -178,18 +151,15 @@ enum Boundaries {
 /// `pattern` with each Perl class and word boundary spelled as its ASCII
 /// reading. See the module docs for why.
 ///
-/// Written out in the pattern rather than asked of the engines, because
-/// neither can be asked for it alone: turning Unicode off turns it off for `.`
-/// and for negated classes too, which then match a lone byte of a multi-byte
-/// character, and a pattern over text may not. A class is spelled as a POSIX
-/// class, which both engines read as ASCII, and a boundary as `boundaries`
-/// says.
+/// Rewritten in the pattern because turning Unicode off in the engines would
+/// also affect `.` and negated classes, which would then match a lone byte of a
+/// multi-byte character. A class is spelled as a POSIX class, which both
+/// engines read as ASCII, and a boundary as `boundaries` says.
 ///
-/// A lexical pass that knows only what it must: an escape is a backslash and
-/// the character after it, so `\\d` stays a backslash and a `d`; a bracketed
-/// class may nest, may open on a `]` it holds literally, and may hold a POSIX
-/// class, inside which nothing is rewritten. A boundary inside a class is left
-/// alone, since the engines refuse it there anyway.
+/// A minimal lexical pass: an escape is a backslash and the next character, so
+/// `\\d` stays a backslash and a `d`; a bracketed class may nest, may open on a
+/// literal `]`, and may hold a POSIX class, inside which nothing is rewritten.
+/// A boundary inside a class is left alone.
 fn ascii_classes(pattern: &str, boundaries: Boundaries) -> String {
     let mut out = String::with_capacity(pattern.len());
     let mut chars = pattern.char_indices().peekable();
@@ -278,12 +248,9 @@ fn ascii_classes(pattern: &str, boundaries: Boundaries) -> String {
 
 impl CompiledPattern {
     /// The number of capture groups, counting group 0 (the whole match). Used to
-    /// validate a signature's `version_group` at build time against both engines
-    /// uniformly.
+    /// validate a signature's `version_group` at build time.
     ///
-    /// `allow(dead_code)`: consumed by `build.rs` validation rather than the
-    /// runtime matcher. This module is shared by both, and each uses a different
-    /// subset.
+    /// `allow(dead_code)`: used by `build.rs`, which shares this file.
     #[allow(dead_code)]
     pub fn captures_len(&self) -> usize {
         match self {
@@ -293,12 +260,9 @@ impl CompiledPattern {
     }
 
     /// The declared names of this pattern's named capture groups, unnamed groups
-    /// skipped. Lets a build check that a `(?<name>…)` a `bind` expects actually
-    /// exists in the pattern, without text to match it against.
+    /// skipped. Lets the build check that a `(?<name>…)` a `bind` expects exists.
     ///
-    /// `allow(dead_code)`: consumed by `build.rs` validation rather than the
-    /// runtime matcher. This module is shared by both, and each uses a different
-    /// subset.
+    /// `allow(dead_code)`: used by `build.rs`, which shares this file.
     #[allow(dead_code)]
     pub fn capture_names(&self) -> Vec<String> {
         match self {
@@ -312,10 +276,9 @@ impl CompiledPattern {
     }
 
     /// The value of the named capture group `name`, if the pattern matches `text`
-    /// and the group participated. How a Tier-1 `bind` pulls a value out of a
-    /// match by name rather than by numeric index.
+    /// and the group participated. How a Tier-1 `bind` reads a value by name.
     ///
-    /// `allow(dead_code)`: consumed by the flow interpreter, not `build.rs`.
+    /// `allow(dead_code)`: used by the flow interpreter, not `build.rs`.
     #[allow(dead_code)]
     pub fn capture(&self, text: &str, name: &str) -> Option<String> {
         match self {
@@ -336,13 +299,10 @@ impl CompiledPattern {
     /// `version_group` capture if requested) or `None` if the pattern does not
     /// match.
     ///
-    /// A fancy-engine runtime failure, meaning the backtrack limit or the
-    /// recursion stack being exceeded, is reported as no match: the outcome is
-    /// bounded and safe rather than a hang. The linear engine has no such failure
-    /// mode.
+    /// A fancy-engine runtime failure (backtrack limit or recursion stack
+    /// exceeded) is reported as no match.
     ///
-    /// `allow(dead_code)`: consumed by the runtime matcher, not `build.rs`. This
-    /// module is shared by both, and each uses a different subset.
+    /// `allow(dead_code)`: used by the runtime matcher, not `build.rs`.
     #[allow(dead_code)]
     pub fn identify(&self, text: &str, version_group: Option<u8>) -> Option<PatternMatch> {
         self.identify_with_captures(text, version_group, false)
@@ -350,16 +310,11 @@ impl CompiledPattern {
 
     /// [`identify`](Self::identify), optionally keeping every capture group.
     ///
-    /// The groups are wanted only by the rules that carry `{capture:N}` templates
-    /// in their metadata, which is a minority of a large corpus, so collecting
-    /// them is asked for rather than always done. On the hot path of a scan that
-    /// matches thousands of signatures against a banner, the allocation per match
-    /// is the whole cost of this function.
+    /// Only rules with `{capture:N}` templates need the groups, and collecting
+    /// them is the main cost on a hot path, so it is opt-in.
     ///
-    /// Index 0 is the whole match, matching the numbering a pattern's own groups
-    /// use and the numbering `version_group` is written against. An unmatched
-    /// optional group yields an empty string rather than being skipped, so a
-    /// template naming it resolves to nothing instead of to the next group along.
+    /// Index 0 is the whole match, as in `version_group`. An unmatched optional
+    /// group yields an empty string, so later indices keep their positions.
     pub fn identify_with_captures(
         &self,
         text: &str,
@@ -369,9 +324,7 @@ impl CompiledPattern {
         macro_rules! extract {
             ($captures:expr) => {{
                 let captures = $captures;
-                // Group 0 is the whole match; its length is how much of the
-                // response the pattern pinned down, which ranks a specific
-                // signature over a generic one that matched the same bytes.
+                // Group 0's length ranks a specific signature over a generic one.
                 let match_len = captures.get(0).map_or(0, |m| m.as_str().chars().count());
                 let version = version_group
                     .and_then(|group| captures.get(group as usize))
@@ -392,9 +345,8 @@ impl CompiledPattern {
 
         let (version, captures, match_len) = match self {
             CompiledPattern::Fast(regex) => extract!(regex.captures(text)?),
-            // `Err` is a bounded runtime failure (backtrack limit / stack
-            // overflow); `Ok(None)` is a clean non-match. Both mean "no match"
-            // here.
+            // `Err` (backtrack limit, stack overflow) and `Ok(None)` both mean no
+            // match.
             CompiledPattern::Fancy(regex) => extract!(regex.captures(text).ok()??),
         };
         Some(PatternMatch {
@@ -434,9 +386,7 @@ mod tests {
 
     #[test]
     fn backreference_pattern_falls_back_to_the_fancy_engine() {
-        // A backreference is unsupported by the linear engine, so this exercises
-        // the fallback path, which build.rs accepts rather than rejecting the
-        // pattern outright.
+        // A backreference forces the fallback engine.
         let compiled = compile(r"^(\w+)\s+\1$", LIMIT).expect("compiles via fancy");
         assert!(matches!(compiled, CompiledPattern::Fancy(_)));
 
@@ -455,7 +405,7 @@ mod tests {
 
     #[test]
     fn fancy_pattern_can_still_capture_a_version_group() {
-        // Fallback patterns must remain first-class: capture groups work the same.
+        // Capture groups work the same on the fallback engine.
         let compiled = compile(r"^(\w+)-\1/([\d.]+)$", LIMIT).expect("compiles via fancy");
         let m = compiled
             .identify("srv-srv/1.2.3", Some(2))
@@ -465,9 +415,8 @@ mod tests {
 
     #[test]
     fn catastrophic_backtracking_is_bounded_not_a_hang() {
-        // A backref forces the fancy engine; the nested quantifier makes the
-        // match backtrack. With no terminating 'c' the engine would explore
-        // exponentially, and the step limit turns that into a prompt no-match.
+        // A backref forces the fancy engine; with no terminating 'c' the nested
+        // quantifier backtracks exponentially until the step limit stops it.
         let compiled = compile(r"(a+)+\1c", LIMIT).expect("compiles via fancy");
         assert!(matches!(compiled, CompiledPattern::Fancy(_)));
         let adversarial = "a".repeat(40);
@@ -478,7 +427,7 @@ mod tests {
     fn a_pattern_no_engine_can_compile_is_an_error() {
         // An unclosed group is a genuine syntax error in both engines.
         let err = compile("(", LIMIT).expect_err("neither engine compiles it");
-        // Both arms are reported, so the build can explain the rejection fully.
+        // Both engines' errors are reported.
         let msg = err.to_string();
         assert!(msg.contains("linear engine") && msg.contains("backtracking engine"));
     }
@@ -517,8 +466,7 @@ mod tests {
 
     /// **The Perl classes and word boundaries read as ASCII, on both engines.**
     ///
-    /// The reading the corpus was written in, and the one a bounded
-    /// repetition of a class can afford: see the module docs.
+    /// See the module docs.
     #[test]
     fn perl_classes_and_word_boundaries_read_as_ascii_on_both_engines() {
         for (pattern, fancy) in [(r"^\w+\s\d+\b", false), (r"^(\w+)\s\d+\b(?!\1)", true)] {
@@ -570,9 +518,9 @@ mod tests {
         }
     }
 
-    /// A bounded repetition of a class costs its count in ASCII ranges rather
-    /// than in Unicode ones. Read as Unicode, this rule from the corpus
-    /// compiles to 28 MB and is refused under a limit of one.
+    /// A bounded repetition of a class costs its count in ASCII ranges. Read as
+    /// Unicode, this corpus rule compiles to 28 MB and is refused under a 1 MB
+    /// limit.
     #[test]
     fn a_long_repetition_of_a_class_compiles_small() {
         let pattern = r"^([\w.-]{1,512}) X2 WS_FTP Server ([\d.]{3,6}\s?\(\d+\))$";

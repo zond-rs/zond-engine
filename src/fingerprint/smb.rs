@@ -8,44 +8,36 @@
 
 //! # SMB analyzer
 //!
-//! An **active** analyzer for whichever port answered the corpus's SMB probe
-//! in SMB, and the second half of the conversation that probe opens.
+//! An **active** analyzer for any port that answered the corpus's SMB probe in
+//! SMB. It continues the conversation that probe opens.
 //!
-//! ## Why a conversation, and why here
+//! ## Why a conversation
 //!
-//! SMB has two protocols on one port, and what a server answers depends on
-//! which it is asked in. Windows has shipped with SMB1 off since 2017 and Samba
-//! since 4.11, and both drop a connection that opens in SMB1 alone; a server
-//! from before SMB2 drops one that opens in SMB2. No single question gets an
-//! answer from both, and the question that follows the first depends on what
-//! the first drew.
+//! SMB has two protocols on one port. Windows has shipped with SMB1 off since
+//! 2017 and Samba since 4.11, and both drop a connection that opens in SMB1
+//! alone; a server from before SMB2 drops one that opens in SMB2.
 //!
-//! So the corpus's probe for the port is an SMB1 negotiate that offers the SMB2
-//! dialects as well, which every SMB server answers, as MS-SMB2 has it: in SMB2
-//! where it speaks it, in SMB1 where it does not. That names the service
-//! and says which protocol the server prefers. This analyzer reads that answer
-//! and continues in the protocol it names, on a connection of its own, since a
-//! connection that has negotiated one protocol will not carry the other:
+//! The corpus's probe is an SMB1 negotiate that also offers the SMB2 dialects,
+//! which every SMB server answers (per MS-SMB2) in SMB2 if it can and SMB1
+//! otherwise. That names the service and the protocol the server prefers. This
+//! analyzer continues in that protocol on a new connection, since a connection
+//! that negotiated one will not carry the other:
 //!
 //! * **SMB2.** A negotiate offering every dialect from 2.0.2 to 3.1.1 and a
 //!   session setup offering NTLM, in one write. The server answers the second
 //!   with an NTLM challenge before anything is authenticated, and Windows puts
 //!   its own version and build in it. See [`framed::smb2_exchange`].
-//! * **SMB1**, asked where the server answered in SMB1, and where SMB2 did not
-//!   name a Windows build: a negotiate and a null session setup, whose answer
-//!   names the operating system and the LAN manager, which is where a Samba
-//!   server states its version. See [`framed::smb_session_setup`]. A server
-//!   that named its build over SMB2 is not asked, since SMB1 would add no more
-//!   than an edition, and asking it of a server that dropped SMB1 is a refused
-//!   connection.
+//! * **SMB1**, where the server answered in SMB1 or SMB2 named no Windows
+//!   build: a negotiate and a null session setup, whose answer names the
+//!   operating system and the LAN manager, where Samba states its version. See
+//!   [`framed::smb_session_setup`].
 //!
-//! What either reads is matched against the corpus like any banner, so the
-//! rules that name releases live in `assets/fingerprinting` beside the probe.
+//! What either reads is matched against the corpus like any banner; the rules
+//! naming releases live in `assets/fingerprinting` beside the probe.
 //!
-//! The NTLM challenge also carries the machine's names and its domain's, and
-//! an SMB1 session setup the domain's, which are recorded on the host as
-//! [`HostName`](crate::model::host::HostName)s rather than matched: they are a
-//! report's to mask, and a service's description is not masked. See
+//! The NTLM challenge also carries the machine's and domain's names, and an
+//! SMB1 session setup the domain's. These are recorded on the host as
+//! [`HostName`](crate::model::host::HostName)s, which reports mask. See
 //! [`framed::smb2_names`] and [`framed::smb_session_names`].
 //!
 //! [`framed::smb2_exchange`]: super::framed::smb2_exchange
@@ -67,16 +59,15 @@ use super::response::{Collected, ResponseSet};
 use crate::model::confidence::Confidence;
 use crate::transport::dial::pacing;
 
-/// Whole-exchange budget: connect, write, read both replies. A reachable
-/// server answers well under a second on a path that costs nothing; a scan
-/// allows for the path it measured on top (see [`on_path`](super::on_path)).
+/// Whole-exchange budget: connect, write, read both replies. A scan adds the
+/// path delay it measured (see [`on_path`](super::on_path)).
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// How long to wait for the next part of a reply once one has arrived.
 const READ_GRACE: Duration = Duration::from_millis(1_000);
 
 /// The most read from one exchange. Both replies together are a few hundred
-/// bytes; this bounds what a hostile peer can make the analyzer hold.
+/// bytes.
 const MAX_EXCHANGE_BYTES: usize = 16 * 1024;
 
 /// An SMB1 negotiate offering NT LM 0.12 and a null session setup, in one
@@ -87,10 +78,8 @@ const MAX_EXCHANGE_BYTES: usize = 16 * 1024;
 /// 00 00 00 71  NetBIOS length, then SESSION_SETUP_ANDX with no credentials
 /// ```
 ///
-/// The session setup asks for nothing: no password, no extended security, an
-/// empty account. A server configured to allow it answers as the guest or
-/// anonymous user; one that is not refuses, and the refusal is read as no
-/// answer rather than as a service.
+/// No password, no extended security, an empty account. A server that allows
+/// it answers as guest or anonymous; a refusal is read as no answer.
 const SMB1_SESSION: &[u8] = b"\x00\x00\x00\x2f\xffSMBr\x00\x00\x00\x00\x18\x01\xc8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xfe\x00\x00\x01\x00\x00\x0c\x00\x02NT LM 0.12\x00\x00\x00\x00\x71\xffSMBs\x00\x00\x00\x00\x18\x01\xc8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xfe\x00\x00\x01\x00\x0d\xff\x00\x00\x04\x11\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x5c\x00\x00\x00\x35\x00\x00z\x00o\x00n\x00d\x00\x00\x00Z\x00O\x00N\x00D\x00L\x00A\x00B\x00\x00\x00Z\x00o\x00n\x00d\x00 \x00S\x00c\x00a\x00n\x00n\x00e\x00r\x00\x00\x00";
 
 /// Continues an SMB conversation in the protocol the server chose. See the
@@ -103,17 +92,10 @@ impl Analyzer for SmbAnalyzer {
         SourceId::BannerRegex
     }
 
-    /// Any TCP port with a socket to dial and no tunnel, whatever its number:
-    /// what gates the exchange is the reply, read in
-    /// [`collect`](Analyzer::collect).
-    ///
-    /// The reply rather than the port, because a port is SMB when it answers
-    /// like SMB, and one moved off 445 names its machine as readily. Gating on
-    /// the reply costs nothing where no SMB answer was seen: nothing is dialed.
-    /// Where the corpus probe was not put at all, as at a level that sends
-    /// nothing, there is no reply to follow, and asking 445 regardless would
-    /// send a session setup to a port that has never been heard to speak SMB,
-    /// so there is no fallback to the number.
+    /// Any TCP port with a socket to dial and no tunnel. The exchange is gated
+    /// on the reply, in [`collect`](Analyzer::collect), so SMB off 445 is
+    /// covered. Where the corpus probe was not sent there is no reply, and 445
+    /// is not dialed on its number alone.
     fn interested(&self, ctx: &PortContext) -> bool {
         ctx.protocol == crate::model::port::Protocol::Tcp
             && ctx.tunnel.is_none()
@@ -153,9 +135,8 @@ impl Analyzer for SmbAnalyzer {
     /// names the NTLM challenge and the SMB1 session setup gave for the
     /// machine.
     ///
-    /// The names travel as an observation of their own, at the lowest
-    /// confidence, because they identify the machine and nothing about the
-    /// service: whether any rule matched has no bearing on them.
+    /// The names are a separate observation at the lowest confidence, since they
+    /// identify the machine, not the service.
     fn analyze(
         &self,
         ctx: &PortContext,
@@ -194,12 +175,11 @@ impl Analyzer for SmbAnalyzer {
 /// read it: behind a NetBIOS session message header, `\xfeSMB` for SMB2 or
 /// `\xffSMB` for SMB1, and [`None`] for anything else.
 ///
-/// Anchored where the corpus's own rule for the service is, at the start of
-/// the reply, because every port with a socket asks this and a match costs a
-/// connection: a page that merely contains `þSMB` is not an SMB server. Read
+/// Anchored at the start of the reply, as the corpus's rule is, because a match
+/// costs a connection and a page merely containing `þSMB` is not SMB. Read
 /// through [`reply_bytes`](super::extract::reply_bytes) on the first eight
-/// characters alone, since neither id byte is ever UTF-8 and the header before
-/// it is four bytes of which the first is zero.
+/// characters, since neither id byte is valid UTF-8 and the header before it is
+/// four bytes starting with zero.
 fn smb_protocol_id(text: &str) -> Option<[u8; 4]> {
     let end = text.char_indices().nth(8).map_or(text.len(), |(at, _)| at);
     let head = super::extract::reply_bytes(&text[..end]);
@@ -226,7 +206,7 @@ async fn exchange(addr: SocketAddr, request: &[u8], messages: usize) -> Option<V
         }
         (!reply.is_empty()).then_some(reply)
     };
-    // The scan's gap before the connection is not the exchange's time; see
+    // The scan's pacing gap is not counted against the exchange; see
     // `dial::pacing`.
     pacing::timeout(super::on_path(EXCHANGE_TIMEOUT), || talk)
         .await
@@ -252,9 +232,8 @@ fn complete_messages(stream: &[u8]) -> usize {
 /// An SMB2 negotiate and a session setup offering NTLM, each behind its
 /// NetBIOS length, for one write.
 ///
-/// A server processes the two in order on one connection, and the negotiate
-/// response grants the credit the session setup spends, so one exchange draws
-/// both answers.
+/// The server processes them in order, and the negotiate response grants the
+/// credit the session setup spends.
 fn smb2_session() -> Vec<u8> {
     let mut out = Vec::new();
     for message in [smb2_negotiate(), smb2_session_setup()] {
@@ -286,12 +265,11 @@ fn smb2_header(command: u16, id: u64) -> Vec<u8> {
 /// A NEGOTIATE (MS-SMB2 2.2.3) offering 2.0.2, 2.1, 3.0, 3.0.2 and 3.1.1, with
 /// the preauthentication integrity context 3.1.1 requires.
 ///
-/// Every dialect is offered so the answer is the highest the server speaks,
-/// which is the fact worth reporting.
+/// Every dialect is offered so the answer is the highest the server speaks.
 fn smb2_negotiate() -> Vec<u8> {
     const DIALECTS: [u16; 5] = [0x0202, 0x0210, 0x0300, 0x0302, 0x0311];
-    /// The header, the fixed body and the dialects, padded to eight bytes,
-    /// which is where the context list must start.
+    /// The header, fixed body and dialects, padded to eight bytes, where the
+    /// context list must start.
     const CONTEXTS_AT: u32 = 112;
 
     let mut message = smb2_header(0, 0);
@@ -462,8 +440,7 @@ mod tests {
         smb2_response(1, 0xC000_0016, &body)
     }
 
-    /// A DER element whose length takes the long form where it has to
-    /// (X.690 §8.1.3.5), which the requests this analyzer builds never need.
+    /// A DER element with a long-form length where needed (X.690 §8.1.3.5).
     fn long_der(tag: u8, content: &[u8]) -> Vec<u8> {
         if content.len() < 0x80 {
             return der(tag, content);
@@ -474,8 +451,8 @@ mod tests {
         out
     }
 
-    /// What a current Windows server answers: the dialect it chose, that it
-    /// does not insist on signing, and the build its NTLM challenge states.
+    /// A current Windows server: its dialect, signing policy, and the build its
+    /// NTLM challenge states.
     #[test]
     fn an_smb2_answer_yields_the_dialect_and_the_windows_build() {
         let stream = [
@@ -519,8 +496,7 @@ mod tests {
         assert!(framed::smb2_exchange(&negotiate_response(0x0001, 0x02ff)).is_empty());
     }
 
-    /// The decoder reads bytes off an untrusted socket and returns on any of
-    /// them.
+    /// The decoder returns on any input.
     #[test]
     fn the_smb2_decoder_survives_truncation_anywhere() {
         let stream = [
@@ -569,9 +545,8 @@ mod tests {
     }
 
     /// An unauthenticated challenge names the machine, its domain and its
-    /// forest, each pair read into the kind MS-NLMP gives it, and none of them
-    /// reaches the text the corpus matches, which is a service's description
-    /// and is not masked where a report is.
+    /// forest, each read into the kind MS-NLMP gives it. None reaches the text
+    /// the corpus matches, which reports do not mask.
     #[test]
     fn an_ntlm_challenge_names_the_machine_its_domain_and_its_forest() {
         let stream = [
@@ -591,9 +566,8 @@ mod tests {
         );
     }
 
-    /// MS-NLMP allows each pair once, so a second of one is not read, and an
-    /// empty value is a server that states no such name rather than one whose
-    /// name is empty.
+    /// MS-NLMP allows each pair once, so a repeat is not read; an empty value
+    /// means no such name.
     #[test]
     fn a_pair_is_read_once_and_an_empty_one_names_nothing() {
         let stream = challenge_naming(
@@ -673,21 +647,17 @@ mod tests {
         (probe.sent, !findings.is_empty())
     }
 
-    /// The detection that reports signing not required asks the question this
-    /// analyzer asks, byte for byte, so the two cannot give different accounts
-    /// of one server. Offering 3.1.1 without the preauthentication context is
-    /// a request MS-SMB2 has a server refuse, and one that honours it anyway
-    /// can pick a different dialect under a different security mode.
+    /// The signing-not-required detection sends this analyzer's negotiate byte
+    /// for byte, so the two agree on a server. Offering 3.1.1 without the
+    /// preauthentication context is a request MS-SMB2 has a server refuse.
     #[test]
     fn the_signing_detection_negotiates_as_this_analyzer_does() {
         let (sent, _) = signing_detection(Vec::new());
         assert_eq!(sent, framed_message(&smb2_negotiate()));
     }
 
-    /// Only a successful negotiate answer is read for the signing bit. The
-    /// error a server sends a request it refuses has a zero where a negotiate
-    /// answer keeps its security mode, and reading it as one reports a server
-    /// that insists on signing as one that does not.
+    /// Only a successful negotiate answer is read for the signing bit. An error
+    /// response has a zero there, which would read as signing not required.
     #[test]
     fn the_signing_detection_reads_only_a_negotiate_that_succeeded() {
         const SIGNING_ENABLED: u16 = 0x0001;
@@ -753,9 +723,8 @@ mod tests {
         .await
     }
 
-    /// A current Windows server, which drops a connection opened in SMB1
-    /// alone, is named with its dialect, its signing policy and its release,
-    /// over sockets end to end.
+    /// A current Windows server (which drops SMB1-only connections) is named
+    /// with its dialect, signing policy and release, over sockets end to end.
     #[tokio::test]
     async fn a_server_that_speaks_smb2_is_named_with_its_release() {
         let addr = smb_server(
@@ -781,13 +750,9 @@ mod tests {
     }
 
     /// **What a Windows server calls itself reaches its host, and is masked
-    /// where a report is asked to mask.** Over sockets end to end: the corpus
-    /// probe, the analyzer's own session setup, the challenge naming the
-    /// machine and its domain, and the host record a report is written from.
-    ///
-    /// The names are the most identifying strings a scan of a domain learns,
-    /// and a service's description is not masked; carried there, or not
-    /// carried at all, a redacted report would leak the domain or lose it.
+    /// where a report masks.** Over sockets end to end: the corpus probe, the
+    /// analyzer's session setup, the challenge naming the machine and its
+    /// domain, and the host record.
     #[tokio::test]
     async fn a_server_s_ntlm_names_reach_its_host_masked_where_a_report_masks() {
         use crate::export::schema::HostDto;
@@ -869,8 +834,7 @@ mod tests {
     }
 
     /// A server from before SMB2 answers the probe in SMB1 and is asked for a
-    /// session in SMB1, whose answer names its operating system as it did
-    /// before SMB2 was asked for.
+    /// session in SMB1, whose answer names its operating system.
     #[tokio::test]
     async fn a_server_that_speaks_only_smb1_still_names_its_system() {
         let negotiated = smb1(0x72, true, &[0, 0], &[]);
@@ -905,14 +869,9 @@ mod tests {
         reply.iter().copied().map(char::from).collect()
     }
 
-    /// **An SMB server off 445 is asked for its names, since what makes a
-    /// port SMB is its answer.** The server here listens on whatever port the
-    /// system gave it, which is never 445, and answered the corpus probe in
-    /// SMB1; the session setup the analyzer then asks names its domain.
-    ///
-    /// A server moved off its number names its machine as readily, and a
-    /// gate on the number would leave those names unread wherever the corpus
-    /// probe found SMB elsewhere.
+    /// **An SMB server off 445 is asked for its names.** The server listens on
+    /// an ephemeral port and answers the corpus probe in SMB1; the session setup
+    /// then names its domain.
     #[tokio::test]
     async fn an_smb_server_off_445_is_asked_for_its_names() {
         let negotiated = smb1(0x72, true, &[0, 0], &[]);
@@ -931,12 +890,9 @@ mod tests {
         assert_eq!(names, ["CORPDOM"]);
     }
 
-    /// **An SMB server on a port that registers nothing is put the negotiate
-    /// at the thorough level, and only there.** A current server answers no
-    /// question but one in SMB and drops a connection opened with anything
-    /// else, so on a port other than its own only the corpus's negotiate can
-    /// reach it. The default level asks a silent port only what such a port
-    /// most often turns out to be, and SMB off 445 is not that.
+    /// **An SMB server on a port that registers nothing is sent the negotiate at
+    /// the thorough level only.** A current server drops a connection opened
+    /// with anything but SMB, so only the corpus's negotiate reaches it there.
     #[tokio::test]
     async fn an_smb_server_off_445_is_asked_at_the_thorough_level_alone() {
         use crate::config::ServiceDetection;
@@ -967,9 +923,8 @@ mod tests {
                         let mut request = [0u8; 1024];
                         let read = sock.read(&mut request).await.unwrap_or(0);
                         let request = &request[..read];
-                        // The corpus probe, in SMB1 offering `SMB 2.???`, is
-                        // answered in SMB2; the analyzer's own requests, in
-                        // SMB2, with its negotiate; anything else is dropped.
+                        // The corpus probe and the analyzer's requests are
+                        // answered in SMB2; anything else is dropped.
                         let answer = if request.windows(9).any(|w| w == b"SMB 2.???") {
                             heard.store(true, Ordering::SeqCst);
                             negotiate_response(0x0001, 0x02ff)
@@ -1012,9 +967,7 @@ mod tests {
     }
 
     /// **A port that did not answer in SMB is not dialed**, even where its
-    /// reply spells an SMB protocol id somewhere past the start. Every TCP
-    /// port with a socket asks this analyzer, so a reply read loosely would
-    /// cost a connection, and a session setup, on ports that are not SMB.
+    /// reply contains an SMB protocol id past the start.
     #[tokio::test]
     async fn a_port_that_did_not_answer_in_smb_is_not_dialed() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a socket");
@@ -1030,8 +983,8 @@ mod tests {
             "a reply that is not SMB was read as SMB"
         );
 
-        // The analyzer awaits its connection before it returns, so one made
-        // would be waiting here.
+        // The analyzer awaits its connection before returning, so any would be
+        // queued here.
         assert_eq!(
             listener.accept().map_err(|error| error.kind()).err(),
             Some(std::io::ErrorKind::WouldBlock),
@@ -1041,11 +994,7 @@ mod tests {
 
     /// **The domain an SMB1 server names reaches its host as a name, masked
     /// where a report masks, and never the text the corpus matches.** Over
-    /// sockets end to end, as a scan meets a server from before SMB2.
-    ///
-    /// The domain names the organisation. Offered to the corpus as text, any
-    /// rule capturing it would carry it into the service's description, which
-    /// a redacted report does not mask.
+    /// sockets end to end.
     #[tokio::test]
     async fn an_smb1_server_s_domain_reaches_its_host_masked_and_not_its_description() {
         use crate::export::schema::HostDto;
@@ -1073,9 +1022,8 @@ mod tests {
         );
     }
 
-    /// Each string is the one its position makes it. A server that sends its
-    /// operating system empty still has its LAN manager read as the LAN
-    /// manager and its domain as the domain, rather than each moved up one.
+    /// Each string is read by position: an empty operating system leaves the
+    /// LAN manager and domain in place.
     #[test]
     fn a_session_setup_s_strings_are_read_by_position() {
         let stream = session_naming(&["", "Samba 3.0.37", "CORPDOM"]);
@@ -1085,13 +1033,12 @@ mod tests {
             [HostName::new(NameKind::NetbiosDomain, NameSource::Smb, "CORPDOM").expect("a name")]
         );
 
-        // No domain at all is none recorded, rather than the LAN manager read
-        // as one.
+        // No domain: none recorded.
         let stream = session_naming(&["Unix", "Samba 3.0.37"]);
         assert_eq!(framed::smb_session_setup(&stream), ["Unix", "Samba 3.0.37"]);
         assert!(framed::smb_session_names(&stream).is_empty());
 
-        // And a reply cut short anywhere is read as far as it goes.
+        // A truncated reply is read as far as it goes.
         let stream = session_naming(&["Windows 5.1", "Windows 2000 LAN Manager", "CORPDOM"]);
         for end in 0..stream.len() {
             let _ = framed::smb_session_setup(&stream[..end]);

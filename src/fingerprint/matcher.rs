@@ -9,19 +9,14 @@
 //! # Signatures
 //!
 //! One [`Signature`] is a single service pattern plus the metadata to turn a
-//! match into [`Evidence`]. Signatures are the flat, globally-indexed unit the
-//! rest of the engine works in: the port index and the prefilter both address
-//! them by index, so a candidate set from either can be matched uniformly.
+//! match into [`Evidence`]. The port index and the prefilter both address
+//! signatures by index into one flat set.
 //!
-//! A signature's regex is compiled **lazily, once, on first match**, guarded by
-//! a `OnceLock`, never eagerly for the whole set, never per connection. Which
-//! engine compiles it (the linear `regex` engine, or the bounded `fancy-regex`
-//! backtracking engine for backref/lookaround patterns) is decided by
-//! [`pattern::compile`]; see that module for the
-//! selection and safety rules. The signature set is validated at build time
-//! (see `build.rs`) with the same logic and size limit, so in a correctly built
-//! binary compilation never fails; the `None` branch is defence in depth and is
-//! logged, not silently dropped.
+//! A signature's regex is compiled **lazily, once, on first match**, behind a
+//! `OnceLock`. [`pattern::compile`] picks the engine (linear `regex`, or bounded
+//! `fancy-regex` backtracking for backrefs and look-arounds). `build.rs`
+//! validates the set with the same logic and size limit, so compilation does not
+//! fail in a correctly built binary; if it does, the failure is logged.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -45,10 +40,9 @@ pub struct Signature {
     /// Whether a match names the service, or asserts nothing about it.
     ///
     /// Recog marks the second with `service.certainty = 0`: a rule that matches a
-    /// token but identifies no software, a `version.bind` answer of `null`, a
-    /// bare string that only rules out other readings. Such a match must not put
-    /// its parent `[service]` name on the port, or a `Server: null` header reads
-    /// as DNS. False for those rules, true for the rest.
+    /// token but identifies no software, such as a `version.bind` answer of
+    /// `null`. Such a match must not put its parent `[service]` name on the port,
+    /// or a `Server: null` header reads as DNS.
     identifies_service: bool,
     product: Option<String>,
     vendor: Option<String>,
@@ -61,20 +55,16 @@ pub struct Signature {
     /// What this rule says about the operating system underneath the service,
     /// where it says anything.
     ///
-    /// Boxed, and absent on most signatures: 2290 of the 4732 shipped rules name
-    /// no operating system, and a scan holds every signature at once. Kept at all
-    /// because dropping it is what made a full imported OS corpus invisible to
-    /// the engine that compiled it.
+    /// Boxed: 2290 of the 4732 shipped rules name no operating system, and a scan
+    /// holds every signature at once.
     os: Option<Box<OsMetadata>>,
 
     /// The `hw.*` keys, unresolved, for the hardware a rule describes.
     ///
-    /// Boxed and absent on most signatures, as the operating system's are: a
-    /// scan holds every signature at once. Kept as the raw map because the
+    /// Boxed and absent on most signatures. Kept as the raw map because the
     /// values are templates a match fills from its own captures.
-    // `box_collection` reads the indirection as waste, which is the opposite of
-    // what it buys here: absent on most of the corpus, the box is eight bytes
-    // where the map would be forty-eight, held once per signature.
+    // The box is eight bytes where the map would be forty-eight, per signature,
+    // and most signatures have none.
     #[allow(clippy::box_collection)]
     hardware: Option<Box<HashMap<String, String>>>,
 
@@ -110,13 +100,11 @@ pub struct Signature {
 ///
 /// `Python` under a `SimpleHTTP` server, `.NET CLR` under `.NET Remoting`, `PHP`
 /// under an Apache. Recog calls it `service.component.*` and 347 rules in the
-/// imported corpus carry one, which is the field a report prints in parentheses
-/// after the product.
+/// imported corpus carry one. A report prints it in parentheses after the
+/// product.
 ///
-/// Worth carrying because the runtime is often the exploitable half. A banner
-/// reading `SimpleHTTP/0.6 Python/3.13.5` names a server nobody attacks and a
-/// runtime with a CVE history, and a scanner that read the second and kept only
-/// the first has thrown away the part somebody scanned for.
+/// The runtime is often the exploitable part: `SimpleHTTP/0.6 Python/3.13.5`
+/// names a trivial server and a runtime with a CVE history.
 #[derive(Debug)]
 struct Component {
     /// What it is, possibly a `{capture:N}` template.
@@ -137,10 +125,7 @@ impl Component {
     /// The component as the one phrase a report shows, templates resolved
     /// against what the pattern captured.
     ///
-    /// Either half alone is still worth saying: a rule that names the runtime
-    /// and captures no version has established which runtime, and one that
-    /// captures a version under a product the reader can see has established
-    /// which version.
+    /// Either half alone is still reported.
     fn resolve(&self, captures: &[String]) -> Option<String> {
         let product = super::os::fill(self.product.as_deref(), captures);
         let version = super::os::fill(self.version.as_deref(), captures);
@@ -158,10 +143,9 @@ impl Component {
 /// Three keys, each a literal or a `{capture:N}` template:
 /// `service.build.distributor` (required for the rest to mean anything),
 /// `service.build.revision` and `service.build.release`. A distributor that
-/// resolves to no name [`Distributor::from_name`] knows yields no build at
-/// all, which is how a rule capturing the word before a hyphen in an OpenSSH
-/// comment reads `Ubuntu-2ubuntu2.13` as a build and `hpn-13v11`, a patch set,
-/// as nothing.
+/// [`Distributor::from_name`] does not know yields no build, so a rule
+/// capturing the word before a hyphen in an OpenSSH comment reads
+/// `Ubuntu-2ubuntu2.13` as a build and `hpn-13v11`, a patch set, as nothing.
 #[derive(Debug)]
 struct BuildTemplate {
     distributor: String,
@@ -179,8 +163,8 @@ impl BuildTemplate {
         })
     }
 
-    /// The build, templates resolved against what the pattern captured and
-    /// each captured part bounded as every other field lifted off a reply is.
+    /// The build, templates resolved against what the pattern captured, each
+    /// part bounded like every field lifted off a reply.
     fn resolve(&self, captures: &[String]) -> Option<Build> {
         let distributor = super::os::fill(Some(&self.distributor), captures)?;
         let distributor = Distributor::from_name(&distributor)?;
@@ -205,9 +189,7 @@ impl BuildTemplate {
 /// Whether a rule identifies the service it belongs to.
 ///
 /// True unless the rule sets `service.certainty = 0`, Recog's mark for a match
-/// that names no software: it fired, but what it establishes about the service is
-/// nothing. Honouring it is what stops an "assert nothing" token like a bare
-/// `null` from tagging whatever carried it with the rule's parent service.
+/// that names no software, such as a bare `null`.
 fn identifies_service(rule: &MatchRule) -> bool {
     metadata_value(rule, "service.certainty")
         .map(|certainty| !matches!(certainty.trim(), "0" | "0.0"))
@@ -225,11 +207,9 @@ fn metadata_value(rule: &MatchRule, key: &str) -> Option<String> {
 
 /// Resolves a `service.cpe23` template against `version`.
 ///
-/// The corpus uses exactly one variable, `{service.version}`; a literal CPE is
-/// returned unchanged. A template whose variable has no version to fill
-/// resolves to [`None`], because a CPE ending in an empty version,
-/// `cpe:/a:perl:perl:`, is worse than none: a consumer tries to match on it and
-/// matches the wrong thing.
+/// The corpus uses one variable, `{service.version}`; a literal CPE is returned
+/// unchanged. With no version to fill, the template resolves to [`None`], since
+/// a consumer would mis-match a CPE with an empty version (`cpe:/a:perl:perl:`).
 fn resolve_service_cpe(template: &str, version: Option<&str>) -> Option<String> {
     const VERSION: &str = "{service.version}";
     if !template.contains(VERSION) {
@@ -280,8 +260,7 @@ impl Signature {
         self.compiled();
     }
 
-    /// Whether the regex has been compiled, for a test that has to see what a
-    /// match left compiled.
+    /// Whether the regex has been compiled.
     #[cfg(test)]
     pub(crate) fn is_compiled(&self) -> bool {
         self.compiled.get().is_some()
@@ -309,14 +288,12 @@ impl Signature {
     /// [`MatchQuality`] for ranking it against other signatures that match the
     /// same response. `None` if the pattern does not match.
     ///
-    /// `attested_by` says what kind of text this is, a daemon's banner, a
-    /// management agent's own description of its machine, and decides what a
-    /// match is worth as evidence *about the host*. It does not touch the
-    /// service reading, which is the same match either way.
+    /// `attested_by` says what kind of text this is (a daemon's banner, a
+    /// management agent's description of its machine) and decides what a match
+    /// is worth as evidence *about the host*. The service reading is unaffected.
     pub fn identify(&self, response: &str, attested_by: OsSource) -> Option<Match> {
-        // Capture groups are collected only for a signature whose operating-system
-        // metadata has templates to fill from them. Most have neither, and this
-        // runs against every candidate signature for every banner.
+        // Captures are collected only where templates need them; this runs for
+        // every candidate on every banner.
         let wants_captures = self.os.is_some()
             || self.component.is_some()
             || self.extrainfo.is_some()
@@ -326,18 +303,15 @@ impl Signature {
             self.version_group,
             wants_captures,
         )?;
-        // A capture past the bound is a pattern that ran away over a hostile
-        // response, not a version. See `MAX_IDENTITY_BYTES`. What is kept is
-        // the field as the bound reads it, trimmed: a group that runs to the
-        // end of a line takes the banner's CR with it, and one that stops at a
-        // parenthesis takes the space before it, and neither is the version.
+        // Bounded by `MAX_IDENTITY_BYTES` and trimmed, since a group running to
+        // the end of a line takes the CR and one stopping at a parenthesis takes
+        // the space before it.
         let version = matched
             .version
             .as_deref()
             .and_then(super::identity_field)
             .map(str::to_owned);
 
-        // A captured version is a materially stronger signal than a bare match.
         let confidence = if version.is_some() {
             Confidence::Strong
         } else {
@@ -362,10 +336,8 @@ impl Signature {
         evidence.version = version;
         evidence.cpe = cpe;
         let captures = matched.captures.as_deref().unwrap_or(&[]);
-        // Bounded like the version above it: both routes here resolve a corpus
-        // template against a capture taken from a remote response, so a pattern
-        // that ran away puts a kilobyte in a report field. See
-        // `MAX_IDENTITY_BYTES`.
+        // Bounded like the version: both resolve a template against a capture
+        // from a remote response. See `MAX_IDENTITY_BYTES`.
         evidence.extrainfo = super::os::fill(self.extrainfo.as_deref(), captures)
             .or_else(|| {
                 self.component
@@ -404,25 +376,17 @@ impl Signature {
     }
 }
 
-/// A signature's successful match against a response: the [`Evidence`] it
-/// yields, paired with the [`MatchQuality`] used to choose the most specific
-/// match when several signatures match the same response.
 /// The service name to report for `winner`, given every match `all` made against
 /// one response.
 ///
-/// Usually the winner's own. The exception is the winner that names the generic
-/// `http` baseline while capturing an application as its product: the corpus's
-/// `generic_http` rule and the HTTP analyzer both mint `http` for any web
-/// response, so a page a title says is Grafana wins the ranking as `http` with
-/// `Grafana` in the product, and a signature that named the service `grafana`
-/// outright loses on detail. The two are the same identification, one by name and
-/// one by product, so the specific name is preferred and the port is called
-/// `grafana` rather than `http`.
+/// Usually the winner's own. The exception is a winner naming the generic `http`
+/// baseline with an application as its product: a Grafana page wins as `http`
+/// with product `Grafana`, while a signature naming the service `grafana` loses
+/// on detail. Both say the same thing, so the port is called `grafana`.
 ///
-/// The specific service must name the same application: its name and the winner's
-/// product have to contain one another, so `grafana` is taken for a `Grafana`
-/// product but a rule that coincidentally matched some unrelated text is not,
-/// which is what keeps a stray `dns` off a `Server: null`.
+/// The specific service must name the same application: its name and the
+/// winner's product must contain one another. This keeps a stray `dns` off a
+/// `Server: null`.
 pub fn resolved_service_name(winner: &Match, all: &[Match]) -> Option<String> {
     if !is_generic_service(winner.evidence.service.as_deref()) {
         return winner.evidence.service.clone();
@@ -444,9 +408,9 @@ pub fn resolved_service_name(winner: &Match, all: &[Match]) -> Option<String> {
         .or_else(|| winner.evidence.service.clone())
 }
 
-/// Whether a service name is a generic protocol baseline rather than an
-/// identification of the software. `http` is the one that matters: it is what the
-/// HTTP analyzer and the corpus's `generic_http` rule mint for any web response.
+/// Whether a service name is a generic protocol baseline. `http` is the one that
+/// matters: the HTTP analyzer and the corpus's `generic_http` rule mint it for
+/// any web response.
 fn is_generic_service(service: Option<&str>) -> bool {
     matches!(service, Some("http"))
 }
@@ -461,62 +425,47 @@ fn names_the_same(service: &str, product: &str) -> bool {
 
 /// One signature's reading of one response.
 ///
-/// Four axes, because a rule answers up to four separate questions and a caller
-/// interested in one of them should not have to take the rest: what service this
-/// is ([`evidence`](Self::evidence)), what box it runs on
+/// A rule answers up to four questions: what service this is
+/// ([`evidence`](Self::evidence)), what box it runs on
 /// ([`hardware`](Self::hardware)), what system runs on that box
 /// ([`os`](Self::os)), and what silicon underneath ([`arch`](Self::arch)).
-/// [`quality`](Self::quality) is how firmly, and is what the ranking settles on
-/// when two rules both fire.
+/// [`quality`](Self::quality) ranks it against other rules that fired.
 pub struct Match {
     /// What this match says the service is: product, vendor, version, CPE, with
     /// every template already resolved against the capture groups.
     pub evidence: Evidence,
-    /// How firmly this match holds, and what separates it from another rule that
-    /// also fired on the same response.
+    /// How firmly this match holds, for ranking against other rules that fired
+    /// on the same response.
     pub quality: MatchQuality,
     /// The hardware this match describes, templates already resolved.
     ///
-    /// Apart from [`os`](Self::os) for the reason that field gives about
-    /// [`Evidence`], one question further out: a NETGEAR ReadyNAS runs Linux, and
-    /// the box and the system on it are two facts rather than one. Five hundred
-    /// and thirty-six shipped rules name only the box.
+    /// Separate from [`os`](Self::os): a NETGEAR ReadyNAS runs Linux, and the box
+    /// and its system are two facts. 536 shipped rules name only the box.
     pub hardware: Option<crate::model::host::HardwareInfo>,
     /// The instruction set this match named, whether or not it named anything
     /// else.
     ///
-    /// Held apart from [`os`](Self::os) because seven rules state an
-    /// architecture and nothing more: `x64|amd64|x86_64` matched against a
-    /// `uname` banner says what the silicon is and not what runs on it.
-    /// [`evidence_from`](super::os::banner_evidence) declines those, and rightly:
-    /// evidence naming nothing describable cannot stand as an operating-system
-    /// reading, and letting it would put a nameless candidate into a resolver
-    /// that settles by vote.
-    ///
-    /// So the architecture is collected rather than voted on, the way
-    /// [`hardware`](Self::hardware) already is, and filled into whichever
-    /// reading wins. A third axis beside what the machine runs and what it is.
+    /// Separate from [`os`](Self::os) because seven rules state an architecture
+    /// and nothing more (`x64|amd64|x86_64` against a `uname` banner).
+    /// [`evidence_from`](super::os::banner_evidence) declines those, since a
+    /// nameless candidate cannot vote. The architecture is collected like
+    /// [`hardware`](Self::hardware) and filled into whichever reading wins.
     pub arch: Option<String>,
     /// What this match says about the operating system underneath the service,
     /// with its templates already resolved against the capture groups.
     ///
-    /// A separate field rather than more fields on [`Evidence`] because it
-    /// answers a different question and is resolved by a different set of rules.
-    /// A banner identifies a *service*; that it also implies a host is a second
-    /// inference, weaker than the first, and one a caller uninterested in
-    /// operating systems should be able to ignore entirely.
+    /// Kept off [`Evidence`]: a banner identifies a *service*, and what it implies
+    /// about the host is a weaker, second inference resolved by other rules.
     pub os: Option<crate::model::host::OsEvidence>,
 }
 
 /// How specific a signature's match is, for ranking competing matches against
 /// one response. Ordered least-to-most specific.
 ///
-/// `confidence` is compared first: a captured version (`Strong`) is the
-/// strongest identity signal, so it outranks any versionless match regardless
-/// of other fields. Within one confidence level, `detail`, the number of
-/// identity fields the signature supplies (an explicit product, a vendor),
-/// breaks the tie, so a specific `Server: Apache` match outranks a bare
-/// `HTTP/1.1` protocol match.
+/// `confidence` is compared first, so a captured version (`Strong`) outranks
+/// any versionless match. Within one level, `detail`, the number of identity
+/// fields the signature supplies (product, vendor), breaks the tie, so
+/// `Server: Apache` outranks a bare `HTTP/1.1`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MatchQuality {
     confidence: Confidence,
@@ -527,10 +476,8 @@ pub struct MatchQuality {
 impl MatchQuality {
     /// How much of the response the pattern accounted for.
     ///
-    /// Exposed so a caller collecting a field from several matches can prefer
-    /// the one that read most of the text: `x86_64` and the `x86` rule that
-    /// matches inside it both fire on one banner, and the longer read is the
-    /// one that saw the whole word.
+    /// Lets a caller collecting a field from several matches prefer the longest
+    /// read: `x86_64` and the `x86` rule inside it both fire on one banner.
     pub fn specificity(self) -> usize {
         self.specificity
     }
@@ -577,11 +524,8 @@ mod tests {
         rule
     }
 
-    /// The runtime under the server is the half worth scanning for: a
-    /// `SimpleHTTP` listener is nobody's target and the interpreter behind it
-    /// has a CVE history. The corpus captured it and nothing carried it.
-    /// A rule may state extrainfo outright, as a template over its captures,
-    /// for supplementary detail that is not a runtime.
+    /// The runtime under the server is carried. A rule may also state extrainfo
+    /// as a template over its captures.
     #[test]
     fn a_rule_can_state_extrainfo_over_its_own_captures() {
         let mut rule = rule(r"^OpenSSH_(\S+) (\S+)", Some(1), Some("OpenSSH"));
@@ -600,8 +544,7 @@ mod tests {
         );
     }
 
-    /// And what it states is held to the same bound the version is, since both
-    /// resolve against a capture from a response the scan did not write.
+    /// Extrainfo is bounded like the version.
     #[test]
     fn stated_extrainfo_past_the_bound_is_refused() {
         let mut rule = rule(r"^OpenSSH_(\S+) (\S+)", Some(1), Some("OpenSSH"));
@@ -644,8 +587,7 @@ mod tests {
 
     #[test]
     fn a_service_cpe_is_resolved_carried_and_dropped_when_unfillable() {
-        // A template resolves against the captured version; without that, every
-        // CPE template in the corpus would be dropped and Evidence.cpe never set.
+        // A template resolves against the captured version.
         let ev = Signature::new(
             "http",
             &rule_with_metadata(
@@ -676,8 +618,7 @@ mod tests {
             Some("cpe:/a:transmissionbt:transmission:-")
         );
 
-        // A template with no version to fill is dropped, never emitted with an
-        // empty version a consumer would mis-match on.
+        // A template with no version to fill is dropped.
         let ev = Signature::new(
             "http",
             &rule_with_metadata(
@@ -728,10 +669,8 @@ mod tests {
 
     /// A rule that recognised the protocol and nothing else names no product.
     ///
-    /// The service name is what protocol was spoken; the product is what
-    /// software spoke it. Copying the first into the second reports `dns` as
-    /// the software behind DNS, which is a claim nothing made, and one that
-    /// then disagrees with every other scanner's answer for the same port.
+    /// The service name is the protocol; the product is the software. Copying one
+    /// into the other would report `dns` as the software behind DNS.
     #[test]
     fn bare_match_is_probable_and_names_no_product() {
         let sig = Signature::new("http", &rule("^HTTP/1.1", None, None));
@@ -780,9 +719,7 @@ mod tests {
 
     #[test]
     fn backreference_signature_matches_via_the_fancy_engine() {
-        // A backreference: unsupported by the linear engine, so this signature
-        // only identifies at all because of the backtracking fallback. It used
-        // to be rejected outright at build time.
+        // A backreference needs the backtracking engine.
         let sig = Signature::new("dup", &rule(r"^(\w+) \1$", None, None));
         assert!(
             sig.identify("token token", OsSource::ServiceBanner)
@@ -796,8 +733,7 @@ mod tests {
 
     #[test]
     fn unsupported_pattern_is_skipped_not_fatal() {
-        // A genuine syntax error that neither engine can compile: identification
-        // yields nothing rather than panicking.
+        // A syntax error neither engine compiles yields nothing.
         let sig = Signature::new("x", &rule("(", None, None));
         assert!(sig.identify("aa", OsSource::ServiceBanner).is_none());
     }
