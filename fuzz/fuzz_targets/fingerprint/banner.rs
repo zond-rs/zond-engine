@@ -12,6 +12,9 @@
 //! Both matching tiers are covered: port 80 reaches the port-linked set, and a
 //! banner that matches nothing there falls through to the global prefilter.
 //!
+//! The bytes also go, unread as text, to every decoder that reads a UDP reply's
+//! fields.
+//!
 //! ## The oracles
 //!
 //! **Nothing panics, and everything terminates.** The backtracking engine is
@@ -64,8 +67,21 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 
-    // The SNMP decoder, on the one port whose replies are read as a field rather
-    // than as a banner. Reached with the datagram rather than the text, because
-    // that is what arrives.
-    let _ = zond_engine::fingerprint::decode_udp_reply(161, data);
+    // Every datagram decoder, on the ports whose replies are read as fields
+    // rather than as a banner. Reached with the datagram rather than the text,
+    // because that is what arrives.
+    for &port in decoded_udp_ports() {
+        let _ = zond_engine::fingerprint::decode_udp_reply(port, data);
+    }
 });
+
+/// The UDP ports the engine has a decoder for, asked of the engine once so a
+/// decoder added there is fuzzed here without a list to keep in step.
+fn decoded_udp_ports() -> &'static [u16] {
+    static PORTS: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+    PORTS.get_or_init(|| {
+        (0..=u16::MAX)
+            .filter(|&port| zond_engine::fingerprint::reads_replies(port, Protocol::Udp))
+            .collect()
+    })
+}
