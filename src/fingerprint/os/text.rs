@@ -8,45 +8,30 @@
 
 //! # What a service said about the machine underneath it
 //!
-//! A stack's shape says which family a host belongs to. A banner frequently says
-//! which build: `SSH-2.0-OpenSSH_9.6p1 Debian` names a distribution outright, and
-//! `Server: Microsoft-IIS/10.0` names a family with something close to certainty.
-//! This is where that half is read.
+//! A stack's shape says which family a host belongs to. A banner often says
+//! which build: `SSH-2.0-OpenSSH_9.6p1 Debian` names a distribution, and
+//! `Server: Microsoft-IIS/10.0` names a family.
 //!
-//! ## What a banner can and cannot say
+//! ## Limits
 //!
-//! It names the host, modestly. What it actually describes is the *software*, and
-//! the software is not always the machine: a container reports the base image it
-//! was built from rather than the kernel it runs on, a reverse proxy reports
-//! itself, and an appliance reports the vendor's firmware. That is why this
-//! source sits below a stack reading, which is the machine answering for itself,
-//! and why the two agreeing is worth more than either.
+//! A banner describes the *software*, which is not always the machine: a
+//! container reports its base image, a reverse proxy reports itself, and an
+//! appliance reports the vendor's firmware. So this source ranks below a stack
+//! reading, and the two agreeing is worth more than either.
 //!
-//! ## Where it is joined up
+//! ## Where it is read
 //!
-//! A rule matches the text it was written against, and that is not always the
-//! whole banner. The imported SSH rules match a version string as it arrives, so
-//! they work directly off what the transport read. The imported HTTP rules match
-//! a `Server` header value, `^Microsoft-IIS/4.0$` anchored at both ends, so a
-//! full response never matches one and reaching them means handing over the
-//! extracted header rather than the banner.
+//! The imported SSH rules match the version string as it arrives. The imported
+//! HTTP rules match a `Server` header value anchored at both ends
+//! (`^Microsoft-IIS/4.0$`), so
+//! [`HttpHeadersAnalyzer`](crate::fingerprint::HttpHeadersAnalyzer) extracts the
+//! value and runs it through the signature set for operating-system metadata.
 //!
-//! Extraction is [`HttpHeadersAnalyzer`](crate::fingerprint::HttpHeadersAnalyzer)'s
-//! job, and it runs the extracted value back through the signature set for
-//! *operating-system* metadata as well as for service identification. So SSH
-//! and the other line-oriented protocols reach this source directly, and the
-//! largest single family of OS-bearing rules in the corpus, the web servers,
-//! reaches it through that analyzer.
+//! ## Cost
 //!
-//! ## It costs nothing, which is the point
-//!
-//! Over half the shipped signature corpus, 2442 of 4732 rules, already carries
-//! `os.*` metadata, matched against text the service pipeline already collects
-//! from ports it has already opened. No probe here is new. The work is entirely
-//! in *not throwing the metadata away*: a
-//! [`Signature`](super::super::matcher::Signature) keeping only a rule's
-//! service, product, vendor and version would drop everything else on the
-//! floor.
+//! 2442 of the 4732 shipped rules carry `os.*` metadata, matched against text
+//! the service pipeline already collects. No probe is added;
+//! [`Signature`](super::super::matcher::Signature) keeps the metadata.
 //!
 //! ## Templates
 //!
@@ -58,16 +43,12 @@
 //! os.cpe23   = "cpe:/o:microsoft:windows_2000:{os.version}"
 //! ```
 //!
-//! Two forms, and they resolve in order. `{capture:N}` takes the Nth capture
-//! group, and is why a match has to keep its groups at all. `{os.field}` takes a
-//! sibling field of the same rule, so the capture form has to be resolved first.
-//! 205 rules in the corpus build a platform identifier out of a version that was
-//! itself captured.
+//! `{capture:N}` takes the Nth capture group. `{os.field}` takes a sibling field
+//! of the same rule, so captures are resolved first; 205 rules build a CPE from
+//! a captured version.
 //!
-//! A template naming something absent resolves to **nothing at all**, and the
-//! field is dropped rather than emitted half-built. A platform identifier reading
-//! `cpe:/o:microsoft:windows_2000:` is worse than no identifier: it is a string a
-//! consumer will try to match on.
+//! A template naming something absent resolves to **nothing**, and the field is
+//! dropped: a consumer would try to match `cpe:/o:microsoft:windows_2000:`.
 
 use std::collections::HashMap;
 
@@ -76,17 +57,12 @@ use crate::model::host::OsSource;
 
 /// What a matched service rule said about the operating system underneath it.
 ///
-/// A struct of the fields worth keeping rather than the rule's whole metadata
-/// map. The corpus carries a dozen `os.*` keys and this holds the ones that name
-/// the machine or qualify that naming. What is left out is the packaging: an
-/// edition and a build number, which distinguish two ways of selling one system
-/// rather than two systems.
+/// The `os.*` keys that name or qualify the machine. Edition and build number
+/// are left out, since they distinguish ways of selling one system.
 ///
-/// Stored behind a pointer on the signatures that have one, because 2290 of the
-/// 4732 rules have none and a scan holds all of them at once.
-/// Comparable but not [`Eq`]: [`certainty`](Self::certainty) is a float, and a
-/// value nobody can write down exactly is not one two rules should be claimed to
-/// share.
+/// Boxed on signatures, since 2290 of 4732 rules have none.
+///
+/// Not [`Eq`]: [`certainty`](Self::certainty) is a float.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct OsMetadata {
@@ -100,26 +76,19 @@ pub struct OsMetadata {
     pub version: Option<String>,
     /// The kernel release, where a rule reads one.
     ///
-    /// Not a finer [`version`](Self::version), and not a competitor to it. A
-    /// distribution release and the kernel it ships are two facts about one
-    /// machine: Debian 12 runs kernel 6.1, and neither number is a better answer
-    /// than the other. Filing the kernel as a version would make an SSH banner
-    /// naming `12` and an SNMP agent naming `6.1.0` look like a contradiction,
-    /// and a host that told this engine both would be reported as neither.
+    /// Separate from [`version`](Self::version): Debian 12 runs kernel 6.1, and
+    /// filing the kernel as a version would make an SSH banner saying `12` and
+    /// an SNMP agent saying `6.1.0` contradict each other.
     ///
-    /// Read from the `os.kernel` key, which is this engine's own: the imported
-    /// corpus has no notion of it and puts a kernel in `os.version` where it
-    /// finds one.
+    /// Read from `os.kernel`, this engine's own key; the imported corpus puts a
+    /// kernel in `os.version`.
     pub kernel: Option<String>,
     /// A Common Platform Enumeration identifier.
     pub cpe23: Option<String>,
     /// The instruction set the system runs on: `x86_64`, `mips`, `armv7l`.
     ///
-    /// A fact about the machine rather than a finer
-    /// [`version`](Self::version), and one an SNMP agent hands over for nothing:
-    /// `sysDescr` on a Unix host is `uname -a`, which ends with the machine
-    /// type. A hundred and seventy shipped rules that fire carry one, and
-    /// without this field nothing reads it.
+    /// `sysDescr` on a Unix host is `uname -a`, which ends with the machine type.
+    /// About 170 shipped rules carry one.
     pub arch: Option<String>,
     /// What kind of box the rule says this is: `Printer`, `Switch`, `Router`.
     ///
@@ -127,15 +96,12 @@ pub struct OsMetadata {
     /// class written under the hardware namespace by rules that describe a
     /// device rather than the software on it.
     ///
-    /// Its presence changes how the rest of the rule reads. A rule stating a
-    /// class is describing hardware, so its `product` is a model number and its
-    /// `vendor` is a manufacturer; see [`evidence_from`].
+    /// A rule stating a class describes hardware: its `product` is a model and its
+    /// `vendor` a manufacturer; see [`evidence_from`].
     pub device: Option<String>,
     /// How sure the corpus itself says this rule is, `0.0..=1.0`.
     ///
-    /// The imported rules carry their own hedging on 353 entries, and honouring
-    /// it is free: a corpus that marks a rule uncertain has told us something we
-    /// would otherwise have to guess.
+    /// 353 imported rules carry it.
     pub certainty: Option<f32>,
 }
 
@@ -159,12 +125,9 @@ impl OsMetadata {
             certainty: get("os.certainty").and_then(|v| v.parse().ok()),
         };
 
-        // A rule naming neither a family nor a product cannot become an
-        // operating-system *reading*, and `evidence_from` is what declines it.
-        // It is kept here where it names an instruction set, because that is a
-        // fact about the host collected rather than voted on: seven rules state
-        // one and nothing else, and dropping them at this layer put their answer
-        // out of reach of every layer above.
+        // Kept if it names only an instruction set (seven rules do), which is
+        // collected rather than voted on; `evidence_from` declines it as a
+        // reading.
         (found.family.is_some() || found.product.is_some() || found.arch.is_some()).then_some(found)
     }
 
@@ -172,9 +135,7 @@ impl OsMetadata {
     ///
     /// `captures` is indexed as the pattern numbers its groups, index 0 being the
     /// whole match. A field whose template names a group that did not participate
-    /// resolves to `None` and is dropped rather than emitted half-built. A
-    /// platform identifier reading `cpe:/o:microsoft:windows_2000:` is worse than
-    /// no identifier at all, because a consumer will try to match on it.
+    /// resolves to `None`.
     pub fn resolve(&self, captures: &[String]) -> Self {
         // Capture templates first: the sibling form below reads the results.
         let vendor = fill(self.vendor.as_deref(), captures);
@@ -212,7 +173,7 @@ impl OsMetadata {
 /// Substitutes `{capture:N}` for the Nth capture group.
 ///
 /// `None` when the template names a group that did not participate, or resolves
-/// to nothing at all, since an empty value is not a value.
+/// to an empty string.
 pub(crate) fn fill(template: Option<&str>, captures: &[String]) -> Option<String> {
     let template = template?;
     if !template.contains("{capture:") {
@@ -250,23 +211,17 @@ fn fill_siblings(template: &str, siblings: &[(&str, Option<&str>)]) -> Option<St
 
 /// The hardware a rule describes, where it describes any.
 ///
-/// Read from the same metadata map [`OsMetadata::from_map`] reads, and kept
-/// apart from it because the two answer different questions about one machine: a
-/// NETGEAR ReadyNAS runs Linux, and neither half is the other. Five hundred and
-/// thirty-six shipped rules that match name hardware and no operating system,
-/// and without this every one of them produces nothing at all, because a
-/// metadata map naming neither an OS family nor an OS product is dropped whole.
+/// Read from the same map as [`OsMetadata::from_map`], but separately: a NETGEAR
+/// ReadyNAS runs Linux, and the two are different facts. 536 shipped rules name
+/// hardware and no operating system.
 ///
-/// Templates resolve against what the pattern captured, exactly as the operating
-/// system's do, so a rule reading a model out of its own match works here too.
+/// Templates resolve as the operating system's do.
 pub fn hardware_from(
     metadata: &HashMap<String, String>,
     captures: &[String],
 ) -> Option<crate::model::host::HardwareInfo> {
-    // The corpus hedging its own claim, honoured the way the operating system's
-    // is. Forty-six rules state zero, which is the corpus saying in as many
-    // words that this attribution is worth nothing, and emitting one anyway
-    // would put a vendor on a host on the strength of a rule that disclaimed it.
+    // The corpus's own certainty. Forty-six rules state zero, which disclaims
+    // the attribution.
     let certainty: f32 = metadata
         .get("hw.certainty")
         .and_then(|value| value.parse().ok())
@@ -282,10 +237,8 @@ pub fn hardware_from(
             .and_then(|value| fill(Some(value.as_str()), captures))
     };
 
-    // Captures first, because the sibling form below reads their results:
-    // `hw.product` is written `Thermal Label Printer {hw.model}` on the label
-    // printers, and resolving it before the model would leave the brace in a
-    // value a report prints.
+    // Captures first, since siblings read them: the label printers write
+    // `hw.product` as `Thermal Label Printer {hw.model}`.
     let vendor = get("hw.vendor");
     let model = get("hw.model");
     let family = get("hw.family");
@@ -326,19 +279,15 @@ pub fn hardware_from(
 ///
 /// # The family, and when a product may stand in for one
 ///
-/// Most imported rules name no `os.family`, and for the ones describing an
-/// operating system the `os.product` is the family in all but name, as `Linux`
-/// and `AIX` and `Windows Server 2008 R2` are, so it is read as one. 362 rules
+/// Most imported rules name no `os.family`; for operating systems `os.product`
+/// (`Linux`, `AIX`, `Windows Server 2008 R2`) is read as the family. 362 rules
 /// depend on that.
 ///
-/// A rule that names a [device class](OsMetadata::device) is the exception, and
-/// it is not a small one. There the product is a model number and reading
-/// it as a family puts `NC-8700w` on the ballot [`resolve`](super::resolve)
-/// settles by vote, where it can only run against real families. Measured, on a
-/// Brother print server: `NC-8700w` at 0.385 against `Network device` at 0.4
-/// leaves 25%, under the floor, and a host that answered three separate probes
-/// would be reported as unidentified. Those 389 rules state no family, keep
-/// their model in `product` and their class in `device`, and abstain.
+/// A rule naming a [device class](OsMetadata::device) is the exception: its
+/// product is a model number. Read as a family, a Brother print server's
+/// `NC-8700w` at 0.385 against `Network device` at 0.4 would leave 25% in
+/// [`resolve`](super::resolve)'s vote, under the floor. Those 389 rules abstain
+/// from the family vote.
 pub fn evidence_from(
     metadata: &OsMetadata,
     captures: &[String],
@@ -351,18 +300,11 @@ pub fn evidence_from(
         (None, None) => Some(resolved.product.clone()?),
     };
 
-    // The corpus's own hedging where it gave any. Absent means the rule
-    // asserted its attribution without qualification, which is the ordinary
-    // case, only 353 of the shipped rules carry the field at all, so the
-    // default is full strength and a stated certainty is a *downgrade*, never
-    // an upgrade.
+    // Absent means full strength; a stated certainty only lowers it.
     let certainty = resolved.certainty.unwrap_or(1.0).clamp(0.0, 1.0);
 
-    // Forty-six rules state 0.0, which is the corpus saying in as many words that
-    // this attribution is worth nothing. Emitting it at zero confidence would put
-    // a family name into the resolver where it can only ever drag a real answer
-    // down through the disagreement penalty. Declining is what the corpus asked
-    // for.
+    // Forty-six rules state 0.0. At zero confidence the reading could only drag
+    // a real answer down through the disagreement penalty.
     if certainty <= f32::EPSILON {
         return None;
     }
@@ -401,51 +343,28 @@ pub fn evidence_from(
 /// Fills in what the corpus canonically knows about the operating system this
 /// evidence names, where it names one that is recognised.
 ///
-/// A rule that identified a service reports the operating system as the string
-/// the service handed over. An SMB session setup says `Windows Server 2008 R2
-/// Standard`, and the rule reading it states a vendor, a product and a CPE and
-/// no *family*, because the string it matched had no family in it to state.
-/// [`evidence_from`] then falls back to reading the product as the family, so
-/// the host votes as its own edition, and two Windows machines running
-/// different editions disagree about what they are.
-///
-/// The corpus already holds the answer: 59 rules that take an operating
-/// system's name and say what it canonically is. This is the stage that
-/// consults them, through
-/// [`canonical_os_name`](crate::fingerprint::SignatureDb).
+/// An SMB session setup's `Windows Server 2008 R2 Standard` has no family in it,
+/// so [`evidence_from`] reads the product as the family, and two Windows
+/// machines on different editions would disagree. `canonical` comes from the 59
+/// corpus rules that name an operating system's canonical form, consulted
+/// through [`canonical_os_name`](crate::fingerprint::SignatureDb).
 ///
 /// # It may only add
 ///
-/// Every field the first match stated is kept. The canonical reading is
-/// generally coarser about the product, naming a family where the service named
-/// a release, so letting it overwrite would turn `Windows Server 2008 R2` into
-/// `Windows`. The product stands, and so does everything else already present;
-/// only the empty fields are filled.
+/// Every field the first match stated is kept, since the canonical reading is
+/// coarser (it would turn `Windows Server 2008 R2` into `Windows`). Only empty
+/// fields are filled, plus the family where it merely repeats the product.
 ///
-/// The family is the one field that is replaced, and only where it is the
-/// product repeated, which is what [`evidence_from`]'s own fallback leaves
-/// behind. That is the point of the stage: a host whose family is its release
-/// votes as its edition, and two Windows machines running different ones
-/// disagree about what they are.
-///
-/// The confidence is the first match's own. A canonical name is a naming rather
-/// than a second observation of the host, so it adds no weight and takes none
-/// away.
+/// The confidence is unchanged: a canonical name is not a second observation.
 pub fn canonicalise(evidence: OsEvidence, canonical: &OsEvidence) -> OsEvidence {
-    /// Keeps what the first match said, and takes the canonical reading only
-    /// where it said nothing.
+    /// The first match's value, or the canonical one where it had none.
     fn or(mine: Option<String>, theirs: &Option<String>) -> Option<String> {
         mine.or_else(|| theirs.clone())
     }
 
-    // The family is the exception, because there is rarely an empty one to
-    // fill: `evidence_from` reads the product as the family where a rule
-    // states none, so by the time this runs the field usually holds the
-    // release. A family equal to the product is that fallback showing, and the
-    // canonical reading is the answer it was standing in for.
-    //
-    // A rule that genuinely states both as the same word, which the Linux and
-    // AIX rules do, is unaffected: the canonical reading agrees with it.
+    // A family equal to the product is `evidence_from`'s fallback, replaced by
+    // the canonical family. Rules stating both as the same word (Linux, AIX)
+    // agree with the canonical reading anyway.
     let family = match (&evidence.family, &evidence.product, &canonical.family) {
         (Some(family), Some(product), Some(canonical)) if family == product => {
             Some(canonical.clone())
@@ -468,11 +387,10 @@ pub fn canonicalise(evidence: OsEvidence, canonical: &OsEvidence) -> OsEvidence 
 /// The most a rule matched against `source`'s text may be worth, before the
 /// corpus's own certainty scales it.
 ///
-/// One number per kind of text, because the kinds are not equally close to the
-/// machine. See [`BANNER_CEILING`] and [`AGENT_CEILING`].
+/// See [`BANNER_CEILING`] and [`AGENT_CEILING`].
 pub fn ceiling(source: OsSource) -> f32 {
     match source {
-        // The machine answering for itself, as SNMP is, and worth the same.
+        // The machine answering for itself, as SNMP is.
         OsSource::SnmpAgent | OsSource::MdnsResponder => AGENT_CEILING,
         _ => BANNER_CEILING,
     }
@@ -480,38 +398,23 @@ pub fn ceiling(source: OsSource) -> f32 {
 
 /// The most a banner is worth, before the corpus's own certainty scales it.
 ///
-/// Enough to name a host on its own, and not by much. `OpenSSH_9.6p1 Debian`
-/// really does say Debian, a distribution's build of a daemon running on that
-/// distribution, and pretending otherwise would discard the most direct statement
-/// a machine ever makes about itself.
+/// Enough to name a host on its own. Below a stack reading because a banner
+/// describes the software, which may be a container's base image, a reverse
+/// proxy, or an appliance's firmware.
 ///
-/// Held below what a stack reading is worth for a reason that is not hedging.
-/// A banner describes the software, and the software is not always the host.
-/// A container reports the base image it was built from rather than the kernel it
-/// runs on; a reverse proxy reports the proxy and not what is behind it; an
-/// appliance reports the vendor's firmware while the box underneath runs
-/// something else. The stack, by contrast, is the machine answering for itself.
-///
-/// So one banner names a host at around 55, which reports but does not reach the
-/// threshold that stops further probing; a banner agreeing with a stack reading
-/// reaches the low eighties, which is the point of having both.
+/// One banner names a host at about 55, below the threshold that stops further
+/// probing; agreeing with a stack reading it reaches the low eighties.
 pub const BANNER_CEILING: f32 = 0.55;
 
 /// The most a management agent's own description of its machine is worth.
 ///
-/// Above [`BANNER_CEILING`] for the reason that ceiling exists: a banner is a
-/// string a daemon carries from its build, and the gap between the build and the
-/// running machine is what holds the number down. `sysDescr` has no such gap. On
-/// a Unix host net-snmp renders it from `uname -a` when the question is asked, so
-/// it is the kernel executing at the moment of asking, and on an appliance it is
-/// the firmware build reporting itself. The agent is part of the machine, not
-/// software running on it.
+/// Above [`BANNER_CEILING`]: net-snmp renders `sysDescr` from `uname -a` when
+/// asked, so it is the running kernel, and on an appliance the firmware
+/// reporting itself.
 ///
 /// Below the 85 that
 /// [`OsFingerprint::is_highly_confident`](crate::model::host::OsFingerprint::is_highly_confident)
-/// reads, so one agent still does not settle a host on its own. Reaching that
-/// takes a second independent source, which is the rule everywhere else here and
-/// there is no case for exempting this one.
+/// reads, so settling a host still takes a second independent source.
 pub const AGENT_CEILING: f32 = 0.8;
 
 // ╔════════════════════════════════════════════╗
@@ -546,10 +449,8 @@ mod tests {
         hardware_from(&map, captures)
     }
 
-    /// A product written as a phrase around a sibling field, which is how the
-    /// label printers and half the Cisco access points state theirs. Resolving
-    /// the captures without then resolving the siblings put a literal brace in a
-    /// value a report prints.
+    /// A product written around a sibling field, as the label printers and many
+    /// Cisco access points state it.
     #[test]
     fn a_product_written_around_a_sibling_field_is_completed_from_it() {
         let found = hardware(
@@ -566,10 +467,7 @@ mod tests {
         assert_eq!(found.model(), Some("1140"));
     }
 
-    /// Forty-six rules state `hw.certainty = 0.0`, which is the corpus saying in
-    /// as many words that its own attribution is worth nothing. Emitting one
-    /// anyway would put a vendor on a host on the strength of a rule that
-    /// disclaimed it.
+    /// `hw.certainty = 0.0` (forty-six rules) yields no hardware.
     #[test]
     fn a_rule_that_disclaims_its_own_attribution_produces_no_hardware() {
         assert!(hardware(&[("hw.certainty", "0.0"), ("hw.vendor", "Generic")], &[],).is_none());
@@ -598,9 +496,7 @@ mod tests {
         assert_eq!(found.serial_number(), Some("XRX9000123"));
     }
 
-    /// A rule taken verbatim from the imported corpus, with the capture groups
-    /// its pattern would have produced. Templates in three fields at once, which
-    /// is the ordinary shape rather than a corner case.
+    /// A rule verbatim from the imported corpus, templates in three fields.
     #[test]
     fn a_real_rule_builds_its_values_from_what_the_pattern_captured() {
         let rule = metadata(&[
@@ -624,10 +520,7 @@ mod tests {
         assert_eq!(resolved.version.as_deref(), Some("SP2"));
     }
 
-    /// The second template form, and the reason resolution is ordered: 205 rules
-    /// in the corpus build a platform identifier out of a version that was itself
-    /// captured, so the capture form has to be filled before the sibling form
-    /// reads it.
+    /// The sibling form reads an already-resolved capture.
     #[test]
     fn a_platform_identifier_is_built_from_a_field_that_was_itself_captured() {
         let rule = metadata(&[
@@ -650,10 +543,7 @@ mod tests {
         );
     }
 
-    /// A template naming a group that did not participate resolves to nothing and
-    /// the field is dropped. Emitting the half-built value would put
-    /// `cpe:/o:microsoft:windows_2000:` into a report, which is worse than an
-    /// absent identifier because a consumer will try to match on it.
+    /// A template naming a group that did not participate drops the field.
     #[test]
     fn a_template_over_an_absent_capture_drops_the_field_rather_than_half_building_it() {
         let rule = metadata(&[
@@ -676,7 +566,7 @@ mod tests {
     }
 
     /// A rule naming neither a family nor a product describes no operating
-    /// system, and does not become one however it is carried.
+    /// system.
     #[test]
     fn metadata_that_names_no_system_is_not_a_reading() {
         let map: HashMap<String, String> = [("os.certainty".to_string(), "1.0".to_string())]
@@ -687,13 +577,7 @@ mod tests {
 
     /// An architecture alone is kept, and is still not a reading.
     ///
-    /// The two halves are the whole arrangement. Seven rules state an
-    /// instruction set and nothing else, and dropping them at `from_map` put
-    /// their answer out of reach of every layer above, so the metadata survives.
-    /// It cannot stand as an operating-system reading, though: evidence naming
-    /// nothing describable would enter a resolver that settles by vote as a
-    /// nameless candidate, so `evidence_from` declines it and the architecture is
-    /// collected instead.
+    /// `from_map` keeps it; `evidence_from` declines it.
     #[test]
     fn an_architecture_alone_is_kept_but_is_not_a_reading() {
         let map: HashMap<String, String> = [("os.arch".to_string(), "mips".to_string())]
@@ -709,9 +593,7 @@ mod tests {
         );
     }
 
-    /// 362 rules name an operating system in `os.product` and no family at all,
-    /// `Linux`, `AIX`, `FreeBSD`, and reading the product as the family is what
-    /// makes them work.
+    /// 362 rules name `Linux`, `AIX`, `FreeBSD` in `os.product` and no family.
     #[test]
     fn a_product_stands_in_for_a_family_nobody_stated() {
         let rule = metadata(&[("os.vendor", "Ubuntu"), ("os.product", "Linux")]);
@@ -720,9 +602,7 @@ mod tests {
         assert_eq!(found.family.as_deref(), Some("Linux"));
     }
 
-    /// Except where a device class says the product is a model number. 389 rules
-    /// are written that way, and reading `NC-8700w` as a family would set a
-    /// printer's model against the class of box a hop counter had established.
+    /// Except where a device class makes the product a model number (389 rules).
     #[test]
     fn a_model_number_never_stands_in_for_a_family() {
         let rule = metadata(&[
@@ -737,16 +617,14 @@ mod tests {
         assert_eq!(found.device.as_deref(), Some("Printer"));
     }
 
-    /// The corpus writes the same class under two namespaces. Both are the same
-    /// fact about the same box.
+    /// `os.device` and `hw.device` are the same fact.
     #[test]
     fn a_class_written_under_the_hardware_namespace_is_the_same_class() {
         let rule = metadata(&[("os.product", "Linux"), ("hw.device", "IP Camera")]);
         assert_eq!(rule.device.as_deref(), Some("IP Camera"));
     }
 
-    /// A class can be captured out of the text like anything else, and a
-    /// template that resolves to nothing is dropped rather than emitted raw.
+    /// A class can be captured; an empty template is dropped.
     #[test]
     fn a_captured_device_class_resolves_against_the_match() {
         let rule = metadata(&[("os.product", "VRP"), ("os.device", "{capture:2}")]);
@@ -756,8 +634,7 @@ mod tests {
         assert_eq!(rule.resolve(&[]).device, None);
     }
 
-    /// What an agent says is worth more than what a daemon was compiled with,
-    /// and the gap is the whole reason the two are separate sources.
+    /// An agent is worth more than a banner.
     #[test]
     fn an_agent_outweighs_a_banner_saying_the_same_thing() {
         let rule = metadata(&[("os.family", "Linux"), ("os.kernel", "6.1.0")]);
@@ -776,8 +653,7 @@ mod tests {
         );
     }
 
-    /// The corpus hedges on 353 of its own rules and honouring that is free.
-    /// A rule marked uncertain must not be worth what a confident one is.
+    /// A rule marked uncertain is worth less.
     #[test]
     fn the_corpus_own_hedging_lowers_what_a_rule_is_worth() {
         let confident = metadata(&[("os.family", "Linux"), ("os.product", "Ubuntu")]);
@@ -797,10 +673,7 @@ mod tests {
         );
     }
 
-    /// Forty-six rules in the corpus state a certainty of zero, which is it
-    /// saying the attribution is worth nothing. Emitting that as evidence would
-    /// put a family name in front of the resolver where it can only drag a real
-    /// answer down through the disagreement penalty.
+    /// A certainty of zero yields no evidence.
     #[test]
     fn a_rule_the_corpus_calls_worthless_produces_no_evidence() {
         let worthless = metadata(&[
@@ -811,10 +684,8 @@ mod tests {
         assert!(evidence_from(&worthless, &[], OsSource::ServiceBanner).is_none());
     }
 
-    /// A banner names a host on its own, `OpenSSH_9.6p1 Debian` really does say
-    /// Debian, but modestly, and below the threshold that would stop a caller
-    /// probing further. The software is not always the host: a container
-    /// reports its base image rather than the kernel underneath it.
+    /// A banner names a host on its own, below the threshold that stops further
+    /// probing.
     #[test]
     fn a_banner_alone_names_a_host_but_does_not_settle_it() {
         let rule = metadata(&[("os.family", "Linux"), ("os.product", "Ubuntu")]);
@@ -829,11 +700,8 @@ mod tests {
         );
     }
 
-    /// The reason for having two sources rather than a better single one. A
-    /// banner and a stack reading are read from different places and fail in
-    /// different ways, so agreement between them is worth more than either, and
-    /// this is where a verdict legitimately passes what one packet could
-    /// support.
+    /// A banner and a stack reading fail differently, so their agreement is worth
+    /// more than either.
     #[test]
     fn a_banner_agreeing_with_the_wire_is_worth_more_than_either() {
         use super::super::OsVerdict;
@@ -870,8 +738,7 @@ mod tests {
         assert_eq!(together.family.as_deref(), Some("Linux"));
     }
 
-    /// A device-info record is the machine answering for itself, as `sysDescr`
-    /// is, so it is worth the same and not what a daemon was compiled with.
+    /// An mDNS device-info record is worth what `sysDescr` is.
     #[test]
     fn a_responder_answering_for_the_machine_is_worth_what_an_agent_is() {
         assert_eq!(ceiling(OsSource::MdnsResponder), AGENT_CEILING);
@@ -886,16 +753,10 @@ mod against_the_shipped_corpus {
 
     /// A banner naming a release must yield that release.
     ///
-    /// Both of these are strings read off a real host on 2026-08-21, exactly as
-    /// they arrive on the wire. The first is the case that depends on matching
-    /// the right text: the corpus holds a rule mapping it to Debian 12 with a
-    /// CPE, and anchors its patterns on the SSH software identifier, so matching
-    /// the whole identification line instead lets only a loose family rule fire,
-    /// and the engine would report `Linux`.
+    /// Both strings were read off a real host on 2026-08-21. The first maps to
+    /// Debian 12 only if the software identifier is matched, not the whole line.
     ///
-    /// The second names no release yet, and that is the corpus being short
-    /// rather than the matcher being broken: it holds no OpenSSH 10 rule. It is
-    /// here so that adding one is visible as this assertion getting stronger.
+    /// The second names no release: the corpus has no OpenSSH 10 rule yet.
     #[test]
     fn a_banner_that_names_a_release_yields_the_release() {
         let db = SignatureDb::global();
@@ -931,17 +792,14 @@ mod against_the_shipped_corpus {
              release the corpus has never seen still names itself: {debian_13:?}"
         );
 
-        // A backport says which release it was built *for*, in the same place.
+        // A backport names the release it was built for.
         let backported = db
             .identify(22, Protocol::Tcp, "SSH-2.0-OpenSSH_9.7p1 Debian-1~bpo12+1")
             .and_then(|found| found.os)
             .expect("a backport names one too");
         assert_eq!(backported.version.as_deref(), Some("12"));
 
-        // And a banner with the suffix stripped, `DebianBanner no`, names no
-        // release, because there is none in it to name. Declining is right:
-        // guessing a release from an OpenSSH version would attribute Debian's
-        // packaging to every distribution that ships the same upstream.
+        // With `DebianBanner no` the suffix is gone and no release is named.
         let stripped = db
             .identify(22, Protocol::Tcp, "SSH-2.0-OpenSSH_10.0p2")
             .and_then(|found| found.os);
@@ -953,16 +811,11 @@ mod against_the_shipped_corpus {
 
     /// A distribution with nothing in its banners to match.
     ///
-    /// Arch ships OpenSSH unpatched and unmarked, so no banner rule can reach
-    /// it, and Recog carries none. Its kernel release is the one place its own
-    /// packaging signs its work, and there is no version, since a rolling release
-    /// has none to give.
+    /// Arch ships OpenSSH unmarked; its kernel release is the only mark, and a
+    /// rolling release has no version.
     ///
-    /// Authored from the naming convention rather than from a host this engine
-    /// has read, which is safe here for one specific reason: the failure mode is
-    /// silence. `arch1` in a kernel release is a string only Arch produces, so a
-    /// wrong guess about the shape means the rule never fires, and it cannot name
-    /// somebody else's machine Arch.
+    /// Authored from the naming convention, not a captured host. `arch1` is a
+    /// string only Arch produces, so a wrong guess only means no match.
     #[test]
     fn arch_is_named_by_its_kernel_because_nothing_else_names_it() {
         let db = SignatureDb::global();
@@ -980,9 +833,7 @@ mod against_the_shipped_corpus {
              than the silence it replaced"
         );
 
-        // And the banner it actually presents on port 22 names nothing, which is
-        // the honest answer rather than a gap to be papered over: a bare
-        // `OpenSSH_10.0p2` is Arch, Fedora, Gentoo or a source build alike.
+        // A bare `OpenSSH_10.0p2` could be Arch, Fedora, Gentoo or a source build.
         let by_ssh = db
             .identify(22, Protocol::Tcp, "SSH-2.0-OpenSSH_10.0p2")
             .and_then(|found| found.os);
@@ -994,10 +845,7 @@ mod against_the_shipped_corpus {
 
     /// The instruction set a `uname`-derived `sysDescr` ends with.
     ///
-    /// 255 shipped rules carry `os.arch`, and without the field every one of
-    /// them drops it. It is a third axis beside what a machine runs and what
-    /// it is: a FreeBSD release and `amd64` are two facts, and an exploit that
-    /// needs a payload built for the target cares about the second.
+    /// 255 shipped rules carry `os.arch`.
     #[test]
     fn an_agent_that_states_its_machine_type_keeps_it() {
         let db = SignatureDb::global();
@@ -1020,16 +868,9 @@ mod against_the_shipped_corpus {
 
     /// A `sysDescr` that names hardware and no operating system.
     ///
-    /// Read off a Brother NC-8700w print server on 2026-08-26, exactly as its
-    /// agent answered. The rule for it carries a vendor, a model, a firmware and
-    /// a device class, and no family, since the box never said what it runs.
-    ///
-    /// Every field here is on the wire, and none of it would reach a report
-    /// with the model read as the *family*: put on the ballot against the
-    /// `Network device` a hop counter of 255 has already established, the two
-    /// annihilate. What this asserts is that the reading survives to be
-    /// reported, with the model under `product` where it belongs and the class
-    /// on its own axis.
+    /// Read off a Brother NC-8700w print server on 2026-08-26. The rule carries a
+    /// vendor, model, firmware and device class, and no family. The model stays
+    /// under `product` and the class on its own axis.
     #[test]
     fn an_agent_that_names_only_hardware_names_hardware() {
         let db = SignatureDb::global();
@@ -1054,8 +895,7 @@ mod against_the_shipped_corpus {
         );
     }
 
-    /// The kernel an agent reads out is the point of asking, and it survives the
-    /// whole path from datagram to evidence.
+    /// The kernel survives from datagram to evidence.
     #[test]
     fn an_agent_that_names_a_kernel_names_a_kernel() {
         let db = SignatureDb::global();
@@ -1076,11 +916,9 @@ mod against_the_shipped_corpus {
 
     /// Releases nobody has a machine for.
     ///
-    /// The generic Debian rule reads the release out of the stamp its packaging
-    /// writes, so a release this engine has never been pointed at names itself
-    /// from a string alone. That is what makes these testable without booting
-    /// anything, which matters because the arm64 cloud images for Debian 9 and 11
-    /// do not boot under Apple's hypervisor at all.
+    /// The generic Debian rule reads the release from the packaging stamp, so
+    /// these need no live host (Debian 9 and 11 arm64 images do not boot under
+    /// Apple's hypervisor).
     #[test]
     fn a_release_names_itself_without_a_machine_to_read_it_from() {
         let db = SignatureDb::global();
@@ -1106,15 +944,8 @@ mod against_the_shipped_corpus {
 
     /// The channel that answers the question no packet can.
     ///
-    /// A TCP stack's shape names a family and cannot separate two kernels eleven
-    /// releases apart, measured on two labelled hosts. A service banner names
-    /// a distribution release at best. An SNMP agent's `sysDescr` is the output
-    /// of `uname -a`, so it states the kernel outright, and 27 shipped rules are
-    /// written against it.
-    ///
-    /// Matched through the same entry point the analyzer uses, so this cannot
-    /// pass while the engine feeds the matcher something else, which is how the
-    /// SSH release rules stayed unreachable.
+    /// An SNMP agent's `sysDescr` states the kernel; 27 shipped rules read it.
+    /// Matched through the analyzer's own entry point.
     #[test]
     fn an_snmp_agent_names_the_system_it_is_running() {
         let db = SignatureDb::global();
@@ -1142,36 +973,22 @@ mod against_the_shipped_corpus {
         );
     }
 
-    /// The claim this module makes, checked against what actually ships rather
-    /// than against a fixture: real banners, matched by the real signature
-    /// database, produce an operating system.
-    ///
-    /// Each of these is a string a host genuinely sends. If the imported
-    /// metadata stopped reaching the matcher, which is the state this module
-    /// exists to prevent, every one would come back naming nothing and no other
-    /// test in the tree would notice.
+    /// Real banners, matched by the shipped database, produce an operating
+    /// system.
     #[test]
     fn real_banners_name_an_operating_system_through_the_shipped_signatures() {
         let db = SignatureDb::global();
-        // Each is the text the corpus's patterns are written against, which is
-        // not always the whole banner: the imported HTTP rules match a `Server`
-        // header *value* (`^Microsoft-IIS/...$`, anchored both ends), so feeding
-        // them a full response can never match. Extracting that value is
-        // `HttpHeadersAnalyzer`'s job and is where this evidence is joined up
-        // for HTTP; see the note in the module docs.
+        // The text the patterns are written against: for HTTP the `Server` value
+        // (see the module docs).
         let cases = [
             (22u16, "SSH-2.0-OpenSSH_9.6p1 Debian-3"),
             (80, "Microsoft-IIS/4.0"),
         ];
-        // Matched the way the analyzer matches them, which for a structured
-        // banner is against the field the corpus anchors on as well as the whole
-        // line. Feeding only the line would let this test pass while every
-        // release-naming SSH rule is unreachable.
+        // Matched as the analyzer matches: the extracted field and the whole line.
 
         let mut named = 0usize;
         for (port, banner) in cases {
-            // The port-linked set first, then the global one, exactly as the
-            // matcher does.
+            // Port-linked set first, then global, as the matcher does.
             let found = db
                 .identify(port, Protocol::Tcp, banner)
                 .and_then(|found| found.os);
