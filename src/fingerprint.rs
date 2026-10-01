@@ -3210,22 +3210,25 @@ mod tests {
         ) {
             return;
         }
-        // A UDP port the corpus probes, with nothing listening on loopback.
-        let snmp: SocketAddr = "127.0.0.1:161".parse().expect("an address");
-        assert!(
-            !SignatureDb::global().udp_probe_payloads(161).is_empty(),
-            "test assumes the corpus asks port 161 something over UDP"
-        );
-        let port = || baseline_port(161, Protocol::Udp, PortState::Open);
+        // A UDP port the corpus probes, held by a socket that answers nothing,
+        // so no service on the machine can answer for it. Above 1024, which
+        // any user may bind.
+        let corpus = SignatureDb::global();
+        let silent = (1024..=u16::MAX)
+            .filter(|&port| !corpus.udp_probe_payloads(port).is_empty())
+            .find_map(|port| std::net::UdpSocket::bind(("127.0.0.1", port)).ok())
+            .expect("a free UDP port the corpus asks something");
+        let addr = silent.local_addr().expect("a local address");
+        let port = || baseline_port(addr.port(), Protocol::Udp, PortState::Open);
         let patience = Duration::from_millis(50);
 
         let held = refuse_every_descriptor();
         let unasked =
-            fingerprint_udp_within(snmp, port(), &Egress::KERNEL, patience, PathAllowance::NONE)
+            fingerprint_udp_within(addr, port(), &Egress::KERNEL, patience, PathAllowance::NONE)
                 .await;
         drop(held);
         let asked =
-            fingerprint_udp_within(snmp, port(), &Egress::KERNEL, patience, PathAllowance::NONE)
+            fingerprint_udp_within(addr, port(), &Egress::KERNEL, patience, PathAllowance::NONE)
                 .await;
 
         let unasked = unasked.expect("a datagram never sent was read as the port's silence");
