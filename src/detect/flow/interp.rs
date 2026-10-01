@@ -1320,6 +1320,36 @@ mod tests {
         assert!(run(&grafana, "", &seed(), &mut other).is_empty());
     }
 
+    /// **Only the releases CVE-2021-43798 affects are probed.** It reached
+    /// Grafana in 8.0.0 and was fixed per line, in 8.0.7, 8.1.8, 8.2.7 and
+    /// 8.3.1, so 7.x and those fixed releases are not affected.
+    #[test]
+    fn grafana_path_traversal_probes_only_the_affected_releases() {
+        let grafana = flow("grafana-path-traversal");
+        let probed = |version: &str| {
+            let banner = format!("HTTP/1.1 200 OK\r\nX-Grafana: Grafana v{version}\r\n\r\n");
+            let mut probe = Echo {
+                sent: Vec::new(),
+                reply: banner.into_bytes(),
+            };
+            run(&grafana, "", &seed(), &mut probe);
+            probe.sent.iter().any(|sent| contains(sent, b"etc/passwd"))
+        };
+
+        for affected in ["8.0.0", "8.0.6", "8.1.7", "8.2.6", "8.3.0"] {
+            assert!(
+                probed(affected),
+                "Grafana {affected} is affected and was not probed"
+            );
+        }
+        for unaffected in ["7.5.11", "8.0.7", "8.1.8", "8.2.7", "8.3.1"] {
+            assert!(
+                !probed(unaffected),
+                "Grafana {unaffected} is not affected and was probed"
+            );
+        }
+    }
+
     /// **A flow's severity is graded against who can reach the endpoint.**
     ///
     /// One flow run against a private and a public address reports the same

