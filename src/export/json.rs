@@ -11,10 +11,8 @@
 //! Writes a report as a single JSON document in the schema defined by
 //! [`schema`](super::schema).
 //!
-//! This is the canonical format. Everything the engine records is in it,
-//! nothing is summarized away, and the other formats are lossy views of the
-//! same data. When a question arises about what a report contains, the answer
-//! is whatever this writes.
+//! This is the canonical format: everything the engine records is in it, and
+//! the other formats are lossy views of the same data.
 
 use std::io::Write;
 
@@ -47,8 +45,8 @@ pub struct JsonExporter {
     pretty: bool,
 }
 
-/// Written out rather than derived: a derived one reads `pretty` as `false` and
-/// hands back a compact exporter, which is not what [`JsonExporter::new`] gives.
+/// Written by hand because a derived one would set `pretty` to `false`, unlike
+/// [`JsonExporter::new`].
 impl Default for JsonExporter {
     fn default() -> Self {
         Self::new(ExportOptions::default())
@@ -58,10 +56,8 @@ impl Default for JsonExporter {
 impl JsonExporter {
     /// An exporter that writes indented JSON.
     ///
-    /// Indented is the default because the usual destination is a file somebody
-    /// will open, and because a report that diffs line by line is worth more
-    /// than one that saves bytes. The engine sorts hosts, ports and every set it
-    /// exports for the same reason.
+    /// Indented by default so the output is readable and diffs line by line,
+    /// which is also why hosts, ports and every exported set are sorted.
     pub fn new(options: ExportOptions) -> Self {
         Self {
             options,
@@ -71,8 +67,7 @@ impl JsonExporter {
 
     /// Switches to single-line output.
     ///
-    /// For a pipe rather than a file: an HTTP body, a message queue, anything
-    /// that is going to be parsed and never read.
+    /// For output that is parsed and never read: an HTTP body, a message queue.
     pub fn compact(mut self) -> Self {
         self.pretty = false;
         self
@@ -101,8 +96,8 @@ impl Exporter for JsonExporter {
         };
         written.map_err(|error| write::render_error(FORMAT, error))?;
 
-        // A POSIX text file ends in a newline, and appending after one that
-        // does not would join two documents on a line.
+        // A POSIX text file ends in a newline; without one, appending would
+        // join two documents on a line.
         out.write_all(b"\n")?;
         Ok(())
     }
@@ -145,10 +140,8 @@ mod tests {
     /// The two halves of `engine` name the same build, whoever produced the
     /// findings.
     ///
-    /// With `name` fixed at this engine's and `version` taken from the report's
-    /// own attribution, exporting a report read out of nmap's XML would write
-    /// `zond-engine` paired with `nmap 7.94`, a build that never existed. What
-    /// produced the findings is `produced_by`.
+    /// A report read from nmap's XML must not write `zond-engine` paired with
+    /// `nmap 7.94`. What produced the findings is `produced_by`.
     #[test]
     fn the_engine_object_names_the_build_that_wrote_the_document() {
         let foreign =
@@ -164,13 +157,11 @@ mod tests {
         assert_eq!(document["produced_by"], "nmap 7.94");
     }
 
-    /// **The document says what the report as a whole left open, beside the
-    /// flag that reads it.** A resumed job carries the stopped sitting's phase,
-    /// whose own lists still name the host its budget cut short and the targets
-    /// its walk never reached, beside the sitting that finished both. `partial`
-    /// reads the report and says nothing is open; a consumer reading the
-    /// phases would have to know the rule that closes one account with
-    /// another to agree with it, so the report's own reading is written out.
+    /// The document states what the report as a whole left open, consistent
+    /// with `partial`. A resumed job carries the stopped sitting's phase, whose
+    /// lists still name what it left open, beside the sitting that finished
+    /// both. The top-level fields give the report's own reading so a consumer
+    /// need not reconcile the phases.
     #[test]
     fn the_document_names_what_the_report_left_open_across_its_sittings() {
         use crate::report::{PhaseParts, ScanPhase};
@@ -234,8 +225,7 @@ mod tests {
         assert_eq!(document["partial"], resumed.is_partial());
     }
 
-    /// The header is the part a consumer reads before it decides whether it can
-    /// read the rest, so every field in it has to be there.
+    /// A consumer reads the header to decide whether it can read the rest.
     #[test]
     fn the_document_identifies_itself() {
         let document = exported(&fixture::report());
@@ -256,8 +246,7 @@ mod tests {
         assert_eq!(document["partial"], true);
     }
 
-    /// Counts in the summary are derived from the hosts, so the two views of the
-    /// same scan cannot be allowed to disagree.
+    /// The summary's counts agree with the hosts.
     #[test]
     fn the_summary_agrees_with_the_hosts_it_summarizes() {
         let document = exported(&fixture::report());
@@ -297,9 +286,8 @@ mod tests {
         assert_eq!(ports, vec![22, 80, 443]);
     }
 
-    /// Two exports of one report must be byte-identical apart from the stamp
-    /// that says when they were written. Anything else moving means an
-    /// unordered collection reached the output.
+    /// Two exports of one report are byte-identical apart from the timestamp.
+    /// Anything else moving means an unordered collection reached the output.
     #[test]
     fn two_exports_of_one_report_differ_only_in_their_timestamp() {
         let report = fixture::report();
@@ -324,8 +312,7 @@ mod tests {
         assert_eq!(strip(&first), strip(&second));
     }
 
-    /// The whole point of the redaction policy: what leaves the process is
-    /// masked, and what stays behind is not touched.
+    /// Names and hardware addresses are masked; the hosts stay distinct.
     #[test]
     fn redaction_masks_names_and_hardware_without_losing_the_hosts() {
         let report = fixture::report();
@@ -339,9 +326,8 @@ mod tests {
         assert_eq!(plain["hosts"][0]["hostname"], "router.local");
         assert_eq!(masked["hosts"][0]["hostname"], "roXXXXXal");
 
-        // A name the host gave for itself is masked on the terms its hostname
-        // is, the domain as well as the machine, and keeps what says what it
-        // is: the kind and the protocol name no one.
+        // A name the host gave for itself is masked like its hostname, domain
+        // included; its kind and protocol are kept.
         assert_eq!(plain["hosts"][0]["names"][0]["name"], "gw01.corp.example");
         assert_eq!(masked["hosts"][0]["names"][0]["name"], "gwXXXXXle");
         assert_eq!(masked["hosts"][0]["names"][0]["kind"], "host");
@@ -352,15 +338,13 @@ mod tests {
         assert_eq!(plain["hosts"][0]["hardware"]["mac"], "2c:cf:67:00:00:01");
         assert_eq!(masked["hosts"][0]["hardware"]["mac"], "2c:cf:67:XX:XX:XX");
 
-        // The vendor comes from the OUI, which masking preserves, so hiding it
-        // would cost information without buying privacy.
+        // The vendor comes from the OUI, which masking keeps.
         assert_eq!(
             plain["hosts"][0]["hardware"]["vendor"],
             masked["hosts"][0]["hardware"]["vendor"]
         );
 
-        // Addresses are untouched: a report whose hosts all mask to the same
-        // string is not a report.
+        // Addresses are untouched.
         assert_eq!(
             plain["hosts"][0]["primary_ip"],
             masked["hosts"][0]["primary_ip"]
@@ -376,16 +360,16 @@ mod tests {
             "roXXXXXal"
         );
 
-        // The scan's own redaction setting is a record of how the scan ran, not
-        // of how it was exported, and must not move when the export policy does.
+        // The scan's own redaction setting records how the scan ran and does
+        // not follow the export policy.
         assert_eq!(
             plain["phases"][0]["settings"]["redact"],
             masked["phases"][0]["settings"]["redact"]
         );
     }
 
-    /// A field that has no value is present and null; a list with nothing in it
-    /// is present and empty. A consumer never has to tell absent from empty.
+    /// A field with no value is present and null; an empty list is present and
+    /// empty.
     #[test]
     fn absent_values_are_present_and_null() {
         let document = exported(&fixture::report());
@@ -404,9 +388,7 @@ mod tests {
         );
     }
 
-    /// Instrumentation is what bounds how far a host list can be trusted, so it
-    /// has to arrive self-describing: a histogram whose bucket bounds live only
-    /// in this crate's source is not a document anyone else can read.
+    /// Probe statistics carry their own units and bucket bounds.
     #[test]
     fn probe_instrumentation_carries_its_own_units() {
         let document = exported(&fixture::report());
@@ -437,8 +419,8 @@ mod tests {
         assert_eq!(stats["capture"]["dropped"], 0);
     }
 
-    /// A failed strategy is the difference between an empty network and a scan
-    /// that never ran, and it is the one thing a consumer must not miss.
+    /// A failed strategy, which tells an empty network from a scan that never
+    /// ran, reaches the document.
     #[test]
     fn a_failed_strategy_reaches_the_document() {
         let document = exported(&fixture::report());
@@ -457,10 +439,8 @@ mod tests {
         );
     }
 
-    /// Work a limit cut short is marked so in the document, and a failure is
-    /// not, so a consumer can tell a fault to look for from a limit to raise.
-    /// Left out where false, so a failure reads as every document before the
-    /// marker wrote one.
+    /// Work a limit cut short is marked `cut_short`, so a consumer can tell a
+    /// fault from a limit to raise. The field is omitted where false.
     #[test]
     fn work_a_limit_cut_short_is_marked_apart_from_a_failure() {
         let document = exported(&fixture::report());
@@ -474,20 +454,14 @@ mod tests {
         assert_eq!(failures[1]["cut_short"], true);
     }
 
-    /// The two ways of building one of these have to produce the same exporter.
-    ///
-    /// A derived `Default` reads `pretty` as `false`, so
-    /// `JsonExporter::default()` would write the compact document while
-    /// `JsonExporter::new(ExportOptions::default())` writes the indented one that
-    /// `new` documents as the default. Compared as bytes, because the difference
-    /// is only whitespace and a test that parses the output first is blind to
-    /// it.
+    /// `JsonExporter::default()` and `JsonExporter::new(ExportOptions::default())`
+    /// produce the same exporter. Compared as bytes, since the difference a
+    /// derived `Default` would make is only whitespace.
     #[test]
     fn the_default_exporter_is_the_one_new_builds() {
         let report = fixture::report();
 
-        // Without the stamp, which is the one field that moves between two
-        // exports of one report.
+        // Without the timestamp, the one field that moves between exports.
         let render = |exporter: &JsonExporter| {
             let mut bytes = Vec::new();
             exporter.export(&report, &mut bytes).expect("exports");
@@ -523,9 +497,7 @@ mod tests {
         assert_eq!(indented, compact);
     }
 
-    /// The engine writes into whatever it is handed, and a destination that
-    /// fails part way through has to surface as a failed export rather than a
-    /// truncated file reported as a success.
+    /// A destination that fails part way through surfaces as a failed export.
     #[test]
     fn a_failing_destination_surfaces_as_an_error() {
         struct Full;

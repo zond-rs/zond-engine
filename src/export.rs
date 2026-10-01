@@ -8,33 +8,25 @@
 
 //! # Report Export
 //!
-//! Turns a finished [`ScanReport`] into a document somebody else can read: a
-//! file on disk, a body in an HTTP response, a stream into another tool.
+//! Turns a finished [`ScanReport`] into a document: a file on disk, an HTTP
+//! response body, a stream into another tool.
 //!
-//! ## Why the engine owns this
-//!
-//! A file written by the CLI, by a library consumer and by a web UI has to be
-//! the same file, or the format is not a format. The schema and its
-//! implementation live here, once, and a front end chooses only a format and a
-//! destination.
-//!
-//! ## The shape of the thing
+//! The schema and its implementation live in the engine so that the CLI, a
+//! library consumer and a web UI all write the same file. A front end chooses
+//! only a format and a destination.
 //!
 //! - [`schema`] holds the data transfer objects. They are the wire format,
-//!   written by hand rather than derived from the engine's working types. See
-//!   that module for what the boundary buys.
+//!   written by hand and kept apart from the engine's working types.
 //! - [`Exporter`] is the one trait a format implements. It takes a report and
 //!   somewhere to write, and it streams.
-//! - [`ExportOptions`] carries policy that is not the format's business, most
-//!   of all [`Redaction`].
+//! - [`ExportOptions`] carries format-independent policy, chiefly
+//!   [`Redaction`].
 //!
 //! ## Writing your own
 //!
 //! [`Exporter`] is public, and the DTOs are public and `Serialize`. A consumer
 //! who wants PDF output or their own branded HTML writes an exporter in their
-//! own crate, with their own templating engine, and this crate takes on no
-//! dependency for it. There is no plugin system: dynamic loading in a process
-//! holding raw-socket privileges buys nothing a trait does not.
+//! own crate, with their own templating engine.
 //!
 //! ```
 //! use std::io::{self, Write};
@@ -54,20 +46,16 @@
 //! }
 //! ```
 //!
-//! ## Always to a writer, never to a string
+//! ## Streaming
 //!
-//! [`Exporter::export`] writes into a `dyn Write` and nothing in this module
-//! returns a `String`. A /16 with a host on every address is a document larger
-//! than anything worth holding in memory, and writing incrementally means a
-//! consumer piping output somewhere sees the first host before the last one is
-//! scanned out of the report.
+//! [`Exporter::export`] writes into a `dyn Write`; nothing in this module
+//! returns a `String`. A /16 with a host on every address is too large to hold
+//! in memory, and a consumer piping the output sees the first host early.
 //!
 //! ## Features
 //!
-//! The DTOs and the trait are always available, costing nothing beyond `serde`,
-//! which the engine already depends on. Each concrete format sits behind a cargo
-//! feature so a consumer who wants none of them pays for none. `export-json` is
-//! on by default.
+//! The DTOs and the trait are always available and need only `serde`. Each
+//! concrete format sits behind a cargo feature. `export-json` is on by default.
 
 pub mod diff;
 pub mod redact;
@@ -137,9 +125,8 @@ pub enum ExportError {
 
     /// The report could not be rendered in the target format.
     ///
-    /// Separate from [`Io`](Self::Io) because the two call for opposite
-    /// responses: a failed write may succeed against a different destination,
-    /// while a failed render will not.
+    /// Unlike [`Io`](Self::Io), retrying against another destination will not
+    /// help.
     #[error("rendering the report as {format} failed: {message}")]
     Render {
         /// The format that could not represent the report.
@@ -151,10 +138,8 @@ pub enum ExportError {
 
 /// One output format.
 ///
-/// An exporter is a rendering of a report onto a writer. Every other decision it
-/// needs, how much to redact or whether to indent, belongs to the value
-/// implementing this trait and is chosen when that value is constructed, so a
-/// consumer can implement it without reading this crate's options type.
+/// Renders a report onto a writer. Settings such as redaction or indentation
+/// belong to the implementing value and are chosen when it is constructed.
 pub trait Exporter {
     /// Writes `report` to `out`.
     ///
@@ -165,49 +150,38 @@ pub trait Exporter {
 
 /// How much identifying detail to strip on the way out.
 ///
-/// Redaction is an export-time policy rather than something a caller does to a
-/// report afterwards, because afterwards is where it gets forgotten. A report
-/// destined for a client, an auditor or a bug tracker is masked at the one point
-/// where the data leaves the process.
+/// Applied at export, the one point where the data leaves the process.
 ///
-/// ## What is masked and what is not
+/// ## What is masked
 ///
-/// [`Standard`](Self::Standard) masks the two things that identify a person or a
-/// device: names and hardware addresses. Hostnames keep their first and last
-/// two characters, so `workstation` and `wifi-printer` stay distinguishable
-/// without either being readable. MAC addresses keep their OUI, so the vendor
-/// survives and the individual NIC does not.
+/// [`Standard`](Self::Standard) masks names and hardware addresses. Hostnames
+/// keep their first and last two characters, so `workstation` and
+/// `wifi-printer` stay distinguishable without being readable. MAC addresses
+/// keep their OUI, so the vendor survives and the individual NIC does not.
 ///
-/// A name is masked wherever a host's name appears, not only in the hostname:
-/// the names a host gives for itself
-/// ([`Host::names`](crate::model::host::Host::names)) and a certificate's
-/// subject are masked the same way. That includes a domain or a forest, which
-/// names the organisation running the machine and is the most identifying
-/// string a report can carry.
+/// Every name a host carries is masked the same way: the hostname, the names
+/// it gives for itself ([`Host::names`](crate::model::host::Host::names)), a
+/// certificate's subject, and a domain or forest, which names the
+/// organisation and is the most identifying string a report carries.
 ///
-/// A name is masked in free text too, wherever the host's own replies wrote
-/// it: see [`HostRedaction`], which every exporter reads a host's record
-/// through. A name the host stated but no protocol recorded as one cannot be
-/// found there, and is the second residual leak below; an excerpt that is not
-/// text is withheld whole for that reason. A comparison masks both of a
-/// host's records by every name either scan knew it by, and a merged report
-/// by every name any of its sources did, since the text of each record can
-/// name the host by a name only the other states.
+/// Those names are also masked in free text the host's replies wrote, through
+/// [`HostRedaction`]; an excerpt that is not text is withheld whole. A
+/// comparison masks both of a host's records by every name either scan knew it
+/// by, and a merged report by every name any of its sources did, since each
+/// record's text can name the host by a name only the other states.
 ///
-/// IP addresses are left alone. A report is a list of hosts, and a masking
-/// scheme that hides which host is which collapses ten records on a /24 into ten
-/// copies of the same string. The addresses are also what makes the findings
-/// actionable to a recipient who already knows the network they asked to have
-/// scanned.
+/// IP addresses are left alone. Masking them would collapse ten records on a
+/// /24 into ten copies of one string, and they are what makes the findings
+/// actionable to a recipient who knows the network.
 ///
-/// Two residual leaks are worth stating. An IPv6 address formed the old EUI-64
-/// way embeds the MAC that redaction masks elsewhere, so a report from a
-/// network with EUI-64 addressing is not free of hardware identifiers however
-/// this is set. And a name a host wrote into a text reply without any protocol
-/// having stated it as a name, an HTTP banner naming a machine the scan found
-/// no other name for, is text like any other and survives. A merged report
-/// written plain and redacted when it is read back is such a report for every
-/// name the merge did not keep, having no field that states it.
+/// ## Residual leaks
+///
+/// - An IPv6 address formed the EUI-64 way embeds the MAC, whatever this is
+///   set to.
+/// - A name a host wrote into a text reply without any protocol stating it as
+///   a name, such as an HTTP banner naming a machine the scan found no other
+///   name for, survives. A merged report written plain and redacted when read
+///   back leaks this way for every name the merge did not keep.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Redaction {
@@ -222,8 +196,7 @@ impl Redaction {
     /// Applies the policy to a hostname, or to any other name a report
     /// carries for a host or its domain.
     ///
-    /// Borrows when nothing is masked, so an unredacted export of a large scan
-    /// does not allocate a string per host to hand back what it was given.
+    /// Borrows when nothing is masked.
     pub fn hostname<'a>(self, name: &'a str) -> Cow<'a, str> {
         match self {
             Redaction::None => Cow::Borrowed(name),
@@ -254,11 +227,9 @@ impl Redaction {
     }
 
     /// The policy as it applies to both records a comparison holds of one
-    /// host, masking the names either scan knew it by in the text of both: a
-    /// name the later scan dropped is still the host's name in the earlier
-    /// one's text, and a reply the earlier scan kept can name the machine
-    /// before any service stated the name the later scan records. Every part
-    /// of a comparison that renders either record reads it through this one.
+    /// host, masking the names either scan knew it by in the text of both. A
+    /// name one scan dropped can still appear in the other's text. Every part
+    /// of a comparison that renders either record reads it through this.
     pub fn for_delta(self, delta: &HostDelta) -> HostRedaction {
         self.for_hosts(delta.baseline().into_iter().chain(delta.current()))
     }
@@ -283,27 +254,25 @@ impl Redaction {
 /// [`Redaction::hostname`]. The same names also sit inside text the host sent:
 /// a finding's excerpt of the reply, a title a detection filled from it, a
 /// service's extra information, an issuer naming the machine that issued it.
-/// This finds them there, in every form a reply holds them in: as written, in
-/// any case, and in UTF-16LE read a byte to a character, which is how SMB,
-/// NTLM and Kerberos carry a name. Each is replaced by the mask its field
-/// shows, so a reader still sees which name a line spoke of. The first label
-/// of a dotted name is found on its own as well, being the machine's name as
-/// a banner gives it, and so is each label after it but the top-level one, as
-/// a directory spells a domain in `DC=` parts. A label of under three
-/// characters, or a generic one such as the `com` of `example.com.au`, is
-/// left, being no one's name.
+/// This finds them there in any case, and in UTF-16LE read a byte to a
+/// character, which is how SMB, NTLM and Kerberos carry a name. Each is
+/// replaced by the mask its field shows, so a reader still sees which name a
+/// line spoke of. The first label of a dotted name is also matched on its own,
+/// as a banner gives the machine's name, and so is each later label but the
+/// top-level one, as a directory spells a domain in `DC=` parts. Labels under
+/// three characters and generic ones such as the `com` of `example.com.au` are
+/// left alone.
 ///
-/// An excerpt that is not text is withheld whole under redaction rather than
-/// searched ([`excerpt`](Self::excerpt)). A binary reply holds names in forms
-/// no search of the text can be sure of, and names the scan never recorded.
+/// Under redaction, an excerpt that is not text is withheld whole
+/// ([`excerpt`](Self::excerpt)): a binary reply holds names in forms a text
+/// search cannot be sure of.
 ///
 /// Every exporter in this crate reads a host's free text through one of
 /// these: a finding's title, excerpt, remediation, platform identifiers and
 /// links, a service's product, version and extra information, an operating
 /// system's name and evidence, a certificate's issuer, the hardware's vendor,
 /// product, family, model and version, and the details of the evidence that
-/// the host is up. A front end printing
-/// any of them reads them through one too.
+/// the host is up. A front end printing any of them should do the same.
 ///
 /// # Examples
 /// ```
@@ -362,8 +331,8 @@ fn host_names(host: &Host) -> impl Iterator<Item = &str> {
 
 /// Policy that applies to an export regardless of the format it lands in.
 ///
-/// Non-exhaustive and [`Default`]-constructed, so a future option is an
-/// additive change rather than a break for everyone who built one of these.
+/// Non-exhaustive and [`Default`]-constructed, so adding an option is not a
+/// breaking change.
 #[must_use]
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
@@ -387,10 +356,8 @@ impl ExportOptions {
 
 /// The formats this build can write.
 ///
-/// Front ends pick a format from a file extension rather than from a flag, since
-/// an output path such as `report.json` already says what the user wants. It
-/// lives in the engine so every front end resolves the same extension to the
-/// same format.
+/// Resolved from a file extension, so every front end maps the same extension
+/// to the same format.
 ///
 /// Which variants exist depends on the cargo features the crate was built with.
 #[non_exhaustive]
@@ -411,13 +378,13 @@ pub enum ExportFormat {
     #[cfg(feature = "export-csv")]
     Csv,
 
-    /// A single self-contained page: everything the report holds, laid out to
-    /// be read rather than parsed, and to print.
+    /// A single self-contained page holding everything the report holds, laid
+    /// out for reading and printing.
     #[cfg(feature = "export-html")]
     Html,
 
-    /// Nmap-compatible XML, for the ingest pipelines that already exist. Says
-    /// `scanner="zond"`: it is nmap's format, not a claim to be nmap.
+    /// Nmap-compatible XML, for existing ingest pipelines. Written with
+    /// `scanner="zond"`.
     #[cfg(feature = "export-nmap")]
     NmapXml,
 }
@@ -425,15 +392,12 @@ pub enum ExportFormat {
 impl ExportFormat {
     /// Resolves a file extension, case-insensitively and without a leading dot.
     ///
-    /// Returns `None` for an extension no compiled-in format claims, which the
-    /// caller should report as an unsupported format rather than silently
-    /// writing JSON into a file named something else.
+    /// Returns `None` for an extension no compiled-in format claims.
     pub fn from_extension(extension: &str) -> Option<Self> {
         match extension.to_ascii_lowercase().as_str() {
             #[cfg(feature = "export-json")]
             "json" => Some(ExportFormat::Json),
-            // `ndjson` is the other name the same format goes by. The
-            // canonical spelling stays `jsonl`.
+            // `ndjson` is another name for the same format.
             #[cfg(feature = "export-jsonl")]
             "jsonl" | "ndjson" => Some(ExportFormat::JsonLines),
             #[cfg(feature = "export-csv")]
@@ -448,8 +412,7 @@ impl ExportFormat {
 
     /// Resolves a path by its extension.
     ///
-    /// A path with no extension has no format rather than a default one. A
-    /// caller who wrote `-o report` has not said what they want.
+    /// A path with no extension has no format.
     pub fn from_path(path: &Path) -> Option<Self> {
         path.extension()
             .and_then(|extension| extension.to_str())
@@ -474,8 +437,7 @@ impl ExportFormat {
 
     /// Every format this build can write.
     ///
-    /// Front ends use this to describe their own capabilities, since a help
-    /// text listing formats the binary was not built with is worse than none.
+    /// Depends on the enabled cargo features.
     pub fn all() -> &'static [ExportFormat] {
         &[
             #[cfg(feature = "export-json")]
@@ -493,9 +455,8 @@ impl ExportFormat {
 
     /// Builds an exporter for this format under the given options.
     pub fn exporter(self, options: ExportOptions) -> Box<dyn Exporter> {
-        // A build with no format feature on has no match arm to hand the
-        // options to, and an unused parameter would warn. Such a build cannot
-        // reach here anyway: `ExportFormat` has no variants to construct.
+        // Silences the unused warning in a build with no format feature, which
+        // cannot reach here: `ExportFormat` then has no variants.
         let _ = &options;
 
         match self {
@@ -521,14 +482,9 @@ impl fmt::Display for ExportFormat {
 
 /// Writes a report in the format named by `path`'s extension.
 ///
-/// The convenience over [`ExportFormat::exporter`] is small and the consistency
-/// is not: every front end that resolves a destination to a format should do it
-/// the same way.
-///
-/// Returns `None` if the extension names no format this build supports, leaving
-/// the caller to decide what to tell the user. The report is written to `out`,
-/// not to `path`; opening the destination, and deciding whether overwriting it
-/// is acceptable, stays with the caller.
+/// Returns `None` if the extension names no format this build supports. The
+/// report is written to `out`, not to `path`: opening the destination, and
+/// deciding whether to overwrite it, is the caller's job.
 pub fn export_to(
     path: &Path,
     report: &ScanReport,
@@ -573,9 +529,7 @@ mod tests {
         assert!(Redaction::Standard.is_active());
     }
 
-    /// The vendor has to survive masking. It is the OUI, which is what masking
-    /// keeps, and a report without vendors is much less useful for no privacy
-    /// gained.
+    /// The OUI, and with it the vendor, survives masking.
     #[test]
     fn standard_redaction_keeps_the_oui_and_drops_the_device() {
         let mac = MacAddr::new(0x2c, 0xcf, 0x67, 0x00, 0x00, 0x01);
@@ -584,10 +538,9 @@ mod tests {
         assert_eq!(Redaction::Standard.mac(&mac), "2c:cf:67:XX:XX:XX");
     }
 
-    /// Two records of one host folded into one keep one hostname and a
-    /// bounded number of names, and the text of both. A name the fold did
-    /// not keep is still the host's name in the text it kept, so the folded
-    /// record masks it there as it masks the names it states.
+    /// A fold of two records keeps one hostname, a bounded number of names,
+    /// and the text of both. A name the fold dropped is still masked in the
+    /// text it kept.
     #[test]
     fn a_folded_record_masks_the_names_its_fold_did_not_keep() {
         use crate::model::host::{NameKind, NameSource};
@@ -646,9 +599,7 @@ mod tests {
         assert_eq!(ExportFormat::from_extension("pdf"), None);
     }
 
-    /// Anything [`ExportFormat::all`] advertises has to actually produce a
-    /// document, or a front end built the same way lists a format it cannot
-    /// write.
+    /// Every format [`ExportFormat::all`] advertises produces a document.
     #[test]
     fn every_advertised_format_can_build_an_exporter() {
         let report = super::fixture::report();
@@ -670,8 +621,8 @@ mod tests {
         }
     }
 
-    /// The path-driven entry point has to reach the same exporter a caller
-    /// would have built by hand, or the two ways of exporting diverge.
+    /// The path-driven entry point reaches the same exporter a caller would
+    /// build by hand.
     #[test]
     fn exporting_by_path_matches_exporting_by_format() {
         let report = super::fixture::report();

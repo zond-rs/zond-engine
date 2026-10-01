@@ -8,25 +8,21 @@
 
 //! # CSV export
 //!
-//! One row per host and port, for the people who are going to open this in a
-//! spreadsheet.
+//! One row per host and port, for opening in a spreadsheet.
 //!
-//! ## A deliberately lossy view
+//! ## A lossy view
 //!
-//! A scan report is a tree and a CSV is a table, so this format throws things
-//! away: the phases, the settings, the probe instrumentation, the per-script
-//! output, the full address list of a multi-homed host. Adding columns until the
-//! file is unreadable would cost the format what makes it worth having. A
-//! compliance reviewer wants to sort by port and filter by service, and
-//! [`json`](super::json) is where the whole record lives.
+//! A report is a tree and a CSV is a table, so this format drops the phases,
+//! the settings, the probe instrumentation, the per-script output and the full
+//! address list of a multi-homed host. [`json`](super::json) holds the whole
+//! record.
 //!
-//! What survives is one row per finding: a host paired with a port. A host with
-//! no ports still gets a row with the port columns empty, since a discovery
-//! sweep would otherwise export an empty file.
+//! A host with no ports still gets a row with the port columns empty, so a
+//! discovery sweep exports its hosts.
 //!
 //! The names a host gave for itself are one cell, the last, each written
 //! `source kind: name` as a comparison writes it and masked wherever the
-//! hostname is. Last because a column is only ever added at the end; see
+//! hostname is. It is last because columns are only ever added at the end; see
 //! [`COLUMNS`].
 //!
 //! ## Formula injection
@@ -36,26 +32,24 @@
 //! `+`, `-`, `@`, a tab or a carriage return as a formula to execute. A device
 //! named `=cmd|'/c calc'!A1` is a working attack on whoever opens the report.
 //!
-//! Every field is checked against [`crate::format::csv::FORMULA_LEADERS`] and,
-//! where it starts with one of those, prefixed with an apostrophe, the escape
-//! spreadsheets themselves use for text. The list lives beside the header rather
-//! than here because the reader has to take back off exactly what this puts on.
+//! A field starting with one of [`crate::format::csv::FORMULA_LEADERS`] is
+//! prefixed with an apostrophe, the escape spreadsheets themselves use for
+//! text. The list lives beside the header so the reader strips exactly what
+//! this adds.
 //!
-//! The guard is unconditional and cannot be turned off. A consumer who needs the
-//! bytes exactly as the scanner saw them has JSON. No numeric field the engine
-//! emits is ever negative, so it never fires on a legitimate number.
+//! The guard is always on; JSON carries the bytes as the scanner saw them. No
+//! numeric field the engine emits is negative, so it never fires on a number.
 //!
 //! ## Dialect
 //!
-//! RFC 4180 quoting, so a field containing a delimiter, a quote or a line break
-//! is quoted and quotes inside it are doubled, with LF line endings rather than
-//! the RFC's CRLF. Every parser and spreadsheet in use accepts LF, and CRLF
-//! leaves a stray carriage return in the last column for the Unix tools that are
-//! the other half of this format's audience.
+//! RFC 4180 quoting (a field containing a delimiter, a quote or a line break is
+//! quoted, with quotes doubled), but with LF line endings in place of the RFC's
+//! CRLF. Every parser and spreadsheet accepts LF, and CRLF leaves a stray
+//! carriage return in the last column for Unix tools.
 //!
-//! Output is UTF-8 with no byte-order mark. Excel on Windows needs one to read
-//! UTF-8 correctly and a BOM breaks naive parsers everywhere else, so it is
-//! opt-in through [`CsvExporter::with_excel_bom`].
+//! Output is UTF-8 with no byte-order mark. Excel on Windows needs one, but it
+//! breaks naive parsers elsewhere, so it is opt-in through
+//! [`CsvExporter::with_excel_bom`].
 
 use std::io::Write;
 
@@ -102,10 +96,9 @@ impl CsvExporter {
 
     /// Prefixes the output with a UTF-8 byte-order mark.
     ///
-    /// For a file that will be opened by Excel on Windows, which otherwise
-    /// reads UTF-8 as the system code page and mangles every non-ASCII vendor
-    /// name. Off by default because the same mark makes the first column header
-    /// unrecognisable to a parser that does not expect it.
+    /// For Excel on Windows, which otherwise reads UTF-8 as the system code
+    /// page. Off by default because the mark corrupts the first column header
+    /// for a parser that does not expect it.
     pub fn with_excel_bom(mut self) -> Self {
         self.excel_bom = true;
         self
@@ -159,8 +152,7 @@ impl Exporter for CsvExporter {
 
 /// The host half of a row, rendered once and reused for each of its ports.
 ///
-/// A host with 900 open ports would otherwise re-render its address list, its
-/// timestamps and its OS string 900 times.
+/// Saves a host with 900 open ports from re-rendering its columns 900 times.
 struct HostColumns {
     ip: String,
     hostname: String,
@@ -219,8 +211,8 @@ impl HostColumns {
                 .unwrap_or_default(),
             first_seen: rfc3339(host.first_seen()),
             last_seen: rfc3339(host.last_seen()),
-            // Joined by `; ` rather than the space the other lists take: a
-            // name may hold a space, and `push` quotes a cell holding a `;`.
+            // Joined by `; ` because a name may hold a space; `push` quotes a
+            // cell holding a `;`.
             names: host
                 .names()
                 .map(|name| {
@@ -319,10 +311,9 @@ fn write_port(row: &mut Row, port: &Port, masking: &HostRedaction) {
 /// The port's findings as one cell: each finding as `severity: title (refs)`,
 /// worst-first, joined by `; `.
 ///
-/// The excerpt is left out, being for a reader of the richer formats rather than
-/// a spreadsheet cell. The cell always leads with a severity word, so it never
-/// begins with a formula character, and `push` quotes any cell carrying a `;`,
-/// so the summary survives a locale that reads `;` as the column delimiter.
+/// The excerpt is left out. The cell always leads with a severity word, so it
+/// never begins with a formula character, and `push` quotes any cell carrying a
+/// `;`, so it survives a locale that reads `;` as the column delimiter.
 fn findings_cell(port: &Port, masking: &HostRedaction) -> String {
     let mut findings: Vec<&Finding> = port.findings().collect();
     findings.sort_by(|a, b| {
@@ -360,18 +351,17 @@ fn bool_cell(value: bool) -> &'static str {
 
 /// Joins several values into one cell, space separated.
 ///
-/// A space rather than a comma or a semicolon. A comma would need the cell
-/// quoted for no gain, and a semicolon is the field delimiter in the locales
-/// that use a comma for the decimal point.
+/// A comma would force quoting, and a semicolon is the field delimiter in
+/// locales that use a decimal comma.
 fn join(values: impl Iterator<Item = String>) -> String {
     values.collect::<Vec<_>>().join(" ")
 }
 
 /// One row under construction.
 ///
-/// Buffers the row rather than writing field by field, so a row reaches the
-/// destination whole or not at all. A half-written row followed by a line break
-/// parses as a complete row with missing columns.
+/// Buffered so a row reaches the destination whole or not at all. A
+/// half-written row followed by a line break would parse as a complete row with
+/// missing columns.
 struct Row {
     text: String,
     fields: usize,
@@ -394,9 +384,8 @@ impl Row {
 
         let field = field.as_ref();
         let needs_formula_guard = field.starts_with(FORMULA_LEADERS);
-        // A spreadsheet in a comma-for-decimal locale reads `;` as the column
-        // separator, so a field carrying one is quoted alongside the delimiters
-        // proper. That is what lets the findings column join with `; `.
+        // A spreadsheet in a decimal-comma locale reads `;` as the column
+        // separator, so a field carrying one is quoted too.
         let needs_quotes = needs_formula_guard
             || field.contains([',', ';', '"', '\n', '\r'])
             || field.starts_with(' ')
@@ -450,9 +439,8 @@ mod tests {
 
     /// Splits a rendered row into its fields, undoing the quoting.
     ///
-    /// Hand-written rather than borrowed from a parser crate on purpose: a
-    /// round trip through the same author's assumptions proves nothing, so this
-    /// implements what RFC 4180 says a reader does and lets the writer be wrong.
+    /// Implements what RFC 4180 says a reader does, independent of the writer's
+    /// assumptions.
     fn parse_row(line: &str) -> Vec<String> {
         let mut fields = Vec::new();
         let mut field = String::new();
@@ -486,8 +474,8 @@ mod tests {
             .collect()
     }
 
-    /// Exports one report, so a test comparing two exports compares the same
-    /// scan rather than two fixtures built a few microseconds apart.
+    /// Exports a given report, so two exports compared in a test share one
+    /// fixture.
     fn bytes(exporter: &CsvExporter, report: &crate::report::ScanReport) -> Vec<u8> {
         let mut bytes = Vec::new();
         exporter
@@ -528,8 +516,7 @@ mod tests {
         assert_eq!(column(&rows[4], "ip"), "203.0.113.2");
     }
 
-    /// A discovery sweep finds hosts and no ports. If a port-less host had no
-    /// row, that whole scan would export as a header and nothing else.
+    /// A port-less host gets a row, so a discovery sweep exports its hosts.
     #[test]
     fn a_host_with_no_ports_still_gets_a_row() {
         let rows = rows(&CsvExporter::new(ExportOptions::new()));
@@ -542,7 +529,7 @@ mod tests {
         assert_eq!(column(bare, "protocol"), "");
     }
 
-    /// The findings a spreadsheet user is actually there for.
+    /// Each row carries both the host's and the port's columns.
     #[test]
     fn a_row_carries_the_host_and_the_port_together() {
         let rows = rows(&CsvExporter::new(ExportOptions::new()));
@@ -581,10 +568,9 @@ mod tests {
         assert_eq!(column(&rows[1], "mac_vendor"), "Raspberry Pi Trading Ltd");
     }
 
-    /// The names a host gave for itself are one cell, each spelled as a
-    /// comparison spells it, and masked where the hostname is. The cell comes
-    /// last, after the port's columns, so a tool that reads the others by
-    /// position reads a file with it as it read one without.
+    /// The names a host gave for itself are one cell, spelled as a comparison
+    /// spells them and masked where the hostname is. The cell comes last, so
+    /// tools reading the others by position are unaffected.
     #[test]
     fn a_host_s_names_are_its_last_cell_and_masked_where_the_hostname_is() {
         let names = "ldap host: gw01.corp.example; ldap domain: corp.example; \
@@ -612,8 +598,7 @@ mod tests {
     }
 
     /// A device name is attacker-controlled text, and a spreadsheet executes a
-    /// cell that starts with `=`. This is the one thing in this module that is
-    /// a security control rather than a formatting choice.
+    /// cell that starts with `=`.
     #[test]
     fn a_cell_that_would_execute_is_neutralised() {
         let mut row = Row::new();
@@ -629,14 +614,13 @@ mod tests {
             "\"'=cmd|'/c calc'!A1\",\"'+1+1\",\"'-2+3\",\"'@SUM(A1)\",\"'\tstarts-with-tab\",harmless=inside"
         );
 
-        // Parsed back, the guard is visible as data rather than executed.
+        // Parsed back, the guard is visible as data.
         for field in parse_row(&row.text).iter().take(5) {
             assert!(field.starts_with('\''), "{field} escaped the guard");
         }
     }
 
-    /// The engine emits no negative numbers, so the guard must not be firing on
-    /// ordinary values and cluttering every numeric column.
+    /// The guard never fires on ordinary values.
     #[test]
     fn ordinary_values_are_left_alone() {
         let rows = rows(&CsvExporter::new(ExportOptions::new()));
@@ -651,8 +635,7 @@ mod tests {
         }
     }
 
-    /// RFC 4180 quoting, exercised against the characters that break a naive
-    /// writer.
+    /// RFC 4180 quoting, against the characters that break a naive writer.
     #[test]
     fn separators_and_quotes_survive_a_round_trip() {
         let awkward = [
@@ -674,7 +657,7 @@ mod tests {
         assert_eq!(parse_row(&row.text), awkward.to_vec());
     }
 
-    /// The mark is opt-in, and when asked for it goes in front of everything.
+    /// The mark is opt-in, and goes in front of everything.
     #[test]
     fn the_excel_byte_order_mark_is_opt_in() {
         let report = fixture::report();
@@ -718,12 +701,10 @@ mod tests {
     ///
     /// A cell beginning `=`, `+`, `-`, `@` or a tab is a formula to Excel,
     /// LibreOffice and Sheets alike, and a scanned host chooses its own banner,
-    /// so `=HYPERLINK(...)` in a service version is a scan report that
-    /// exfiltrates on open. The guard quotes the field and prefixes an
-    /// apostrophe, which the spreadsheet strips on display and never evaluates.
+    /// so `=HYPERLINK(...)` in a service version would exfiltrate on open.
     ///
-    /// Asserted over the whole document rather than one call, so a column added
-    /// later without going through the writer fails this too.
+    /// Asserted over the whole document, so a column that bypasses the writer
+    /// fails this too.
     #[test]
     fn no_field_of_a_hostile_report_can_be_read_as_a_formula() {
         let mut out = Vec::new();

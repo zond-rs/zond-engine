@@ -10,19 +10,11 @@
 //!
 //! The same data as [`json`](super::json), one record per line.
 //!
-//! ## What this buys over a JSON document
-//!
-//! A JSON document is only valid when it is complete. Kill the process, fill the
-//! disk or lose the pipe half way through writing a /16 and what is on disk is
-//! not a shorter report but a file that is not JSON, with every host already
-//! written unreadable. That is the wrong failure mode for a scan that may have
-//! taken an hour.
-//!
-//! Here every line stands alone. A truncated file is a complete file with fewer
-//! hosts in it, a consumer can process the first host before the last is
-//! written, and `grep`, `split`, `head` and `wc -l` all work on it. Two files
-//! concatenate without a parser, because no record's meaning depends on where it
-//! sits.
+//! A JSON document cut off part way through is not JSON at all. Here every line
+//! stands alone: a truncated file is a complete file with fewer hosts, a
+//! consumer can process the first host before the last is written, and `grep`,
+//! `split`, `head` and `wc -l` work on it. Two files concatenate without a
+//! parser, because no record's meaning depends on where it sits.
 //!
 //! ## The records
 //!
@@ -36,13 +28,10 @@
 //! ```
 //!
 //! Strip `type` from a `host` line and it is byte-identical to an element of the
-//! document's `hosts` array, so one parser reads both formats. The tag is a
-//! field rather than a position, since a line that has to come first to mean
-//! anything cannot be grepped out, concatenated or reordered.
+//! document's `hosts` array, so one parser reads both formats.
 //!
-//! The `report` record carries everything the document has except the hosts, and
-//! is written first so a consumer reading progressively learns what it is
-//! reading before it reads it.
+//! The `report` record carries everything the document has except the hosts,
+//! and is written first.
 
 use std::io::Write;
 
@@ -108,9 +97,8 @@ impl Exporter for JsonLinesExporter {
 
 /// Serializes one record and terminates the line.
 ///
-/// The newline is written separately rather than being part of the record, so a
-/// serialization failure cannot leave a half-written object followed by a line
-/// break that a consumer reads as a complete record.
+/// The newline is written only after the record serializes, so a failure
+/// cannot leave a half-written object followed by a line break.
 fn write_line<T: Serialize>(out: &mut dyn Write, record: &T) -> Result<(), ExportError> {
     serde_json::to_writer(&mut *out, record).map_err(|error| write::render_error(FORMAT, error))?;
     out.write_all(b"\n")?;
@@ -125,9 +113,9 @@ fn tagged<'a, T: Serialize>(tag: &'static str, body: &'a T) -> Tagged<'a, T> {
 /// A record's tag followed by the record's own fields, flattened into one
 /// object.
 ///
-/// The tag is emitted first so a consumer can dispatch on it without buffering
-/// the rest of the line. Flattening rather than nesting makes a `host` line the
-/// document's host object with one field added.
+/// The tag comes first so a consumer can dispatch on it without buffering the
+/// rest of the line. Flattened, a `host` line is the document's host object
+/// with one field added.
 #[derive(Serialize)]
 struct Tagged<'a, T: Serialize> {
     #[serde(rename = "type")]
@@ -192,8 +180,7 @@ mod tests {
         assert_eq!(records[3]["primary_ip"], "203.0.113.9");
     }
 
-    /// Strip the tag from a host line and it must be exactly what the JSON
-    /// document holds, or the two formats need two parsers.
+    /// A host line without its tag is exactly what the JSON document holds.
     #[cfg(feature = "export-json")]
     #[test]
     fn a_host_line_is_the_documents_host_object_plus_a_tag() {
@@ -221,8 +208,7 @@ mod tests {
         }
     }
 
-    /// The report record must say the same things the document's header says.
-    /// Two renderings of one scan that disagree are worse than one rendering.
+    /// The report record agrees with the document's header.
     #[cfg(feature = "export-json")]
     #[test]
     fn the_report_record_matches_the_documents_header() {
@@ -249,8 +235,7 @@ mod tests {
         }
     }
 
-    /// The point of the format: a file cut off part way through is still a
-    /// readable file with fewer hosts in it.
+    /// A file cut off part way through is still readable, with fewer hosts.
     #[test]
     fn a_truncated_stream_still_parses_up_to_the_last_whole_line() {
         let mut bytes = Vec::new();
@@ -274,7 +259,7 @@ mod tests {
         }
     }
 
-    /// Redaction is a property of the export, not of the format.
+    /// Redaction applies to this format too.
     #[test]
     fn redaction_applies_to_the_stream() {
         let records = lines(
@@ -286,8 +271,7 @@ mod tests {
         assert_eq!(records[1]["hardware"]["mac"], "2c:cf:67:XX:XX:XX");
     }
 
-    /// A destination that fails part way must surface as a failed export rather
-    /// than a short file reported as a success.
+    /// A destination that fails part way through surfaces as a failed export.
     #[test]
     fn a_failing_destination_surfaces_as_an_error() {
         struct Full;

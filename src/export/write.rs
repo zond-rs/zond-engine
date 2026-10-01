@@ -6,33 +6,19 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # What every exporter writes through
+//! # Shared writing helpers
 //!
-//! The pieces more than one format needs and none of them owns: the escaper
-//! every page puts report text through, the scaffolding a report page and a
-//! comparison page both wear, and the one mapping from a `serde_json` failure
-//! onto [`ExportError`].
+//! Pieces more than one format needs: the escaper every page puts report text
+//! through, the scaffolding shared by the report and comparison pages, and the
+//! mapping from a `serde_json` failure onto [`ExportError`].
 //!
-//! ## What belongs here
+//! Only pieces with one right spelling belong here; each format keeps its own
+//! markup, order and vocabulary. Keeping one escaper means a fix to it reaches
+//! every page.
 //!
-//! A piece two writers would otherwise each keep a copy of, whose output is
-//! fixed rather than a choice the format makes. The escaper is the clearest
-//! case: two escapers means one of them gets a fix and the other does not, and
-//! the one that does not is a hostname that executes on whoever opened the
-//! report.
-//!
-//! ## What does not
-//!
-//! Anything that decides what a document says. Each format keeps its own markup,
-//! its own order and its own vocabulary, and borrows only the pieces that have
-//! one right spelling. Nor does anything a single format is the only caller of.
-//!
-//! ## Features
-//!
-//! Every item is gated by the formats that call it and by nothing wider, so
-//! sharing a module does not make `export-csv` compile a stylesheet or
-//! `export-html` compile `serde_json`. `cargo hack check --each-feature` holds
-//! the gates honest.
+//! Every item is gated by exactly the formats that call it, so `export-csv`
+//! does not compile a stylesheet nor `export-html` compile `serde_json`.
+//! `cargo hack check --each-feature` checks the gates.
 
 #[cfg(feature = "export-html")]
 use std::fmt::{self, Write as _};
@@ -44,20 +30,17 @@ use crate::export::ExportError;
 use crate::export::schema::ENGINE_NAME;
 
 // ---------------------------------------------------------------------------
-// Escaping, for every page this crate writes
+// Escaping
 // ---------------------------------------------------------------------------
 
 /// Report text, escaped for a page as it is written.
 ///
 /// Everything a scanned network chose to call itself passes through here.
-/// Beyond the five characters that carry markup, the bidirectional set is
-/// rendered as code points rather than emitted, since a hostname that reverses
-/// the text after it makes a report display one thing and mean another. The
-/// remaining control characters are shown the same way, so that what a report
-/// claims to have found stays legible as bytes.
+/// Besides the five markup characters, bidirectional formatting and control
+/// characters are rendered as their code points (see `is_neutralized`).
 ///
-/// This writes markup, so it belongs in element content and nowhere else. No
-/// writer in this crate puts a report value into an attribute.
+/// This writes markup, so it belongs in element content only. No writer in this
+/// crate puts a report value into an attribute.
 #[cfg(feature = "export-html")]
 pub(crate) struct Text<'a>(pub(crate) &'a str);
 
@@ -85,9 +68,8 @@ impl fmt::Display for Text<'_> {
 
 /// Report text for somewhere markup cannot go.
 ///
-/// A document's title is text, not content: a `<span>` written into it renders
-/// as its own source. A neutralized character becomes the replacement character
-/// instead.
+/// For a document's title, where a `<span>` would render as its own source. A
+/// neutralized character becomes U+FFFD.
 #[cfg(feature = "export-html")]
 pub(crate) struct Plain<'a>(pub(crate) &'a str);
 
@@ -109,15 +91,14 @@ impl fmt::Display for Plain<'_> {
     }
 }
 
-/// Whether a character is shown as its code point rather than emitted.
+/// Whether a character is shown as its code point.
 ///
-/// The bidirectional formatting characters reorder the text around them and a
-/// reader cannot see they are there. The control characters are included because
-/// a page renders them as nothing, so a banner containing one would silently
-/// lose it.
+/// Bidirectional formatting characters invisibly reorder the text around them,
+/// so a hostname could make a report display one thing and mean another.
+/// Control characters render as nothing, so a banner would silently lose them.
 ///
-/// Tab, newline and carriage return pass through. They are ordinary whitespace
-/// in HTML and a script's multi-line output is worth keeping the shape of.
+/// Tab, newline and carriage return pass through, keeping the shape of a
+/// script's multi-line output.
 #[cfg(feature = "export-html")]
 fn is_neutralized(character: char) -> bool {
     matches!(character,
@@ -138,28 +119,25 @@ pub(crate) fn esc(text: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// The stylesheet, and the vocabulary it defines
+// Stylesheet and tone classes
 // ---------------------------------------------------------------------------
 
 /// The stylesheet inlined into every page this crate writes.
 ///
-/// A file of its own rather than a string in a source file, so it is edited as a
-/// stylesheet. A test pins the class names it defines to the ones the report
-/// page writes.
+/// A test pins the class names it defines to the ones the report page writes.
 #[cfg(feature = "export-html")]
 pub(crate) const STYLE: &str = include_str!("../../assets/html/report.css");
 
 /// Something is there and answering: `up`, `open`, a host that appeared.
 ///
-/// Four tones rather than one colour per state name. The state's name is always
-/// printed beside its colour, so the colour carries something else: how much the
-/// finding is worth a second look.
+/// One of four tones. The state's name is always printed beside its colour, so
+/// the colour says how much the finding is worth a second look.
 #[cfg(feature = "export-html")]
 pub(crate) const TONE_FOUND: &str = "s-found";
 
 /// Something is there and the scan could not pin it down. Drawn hatched as well
-/// as coloured, because green against amber is the pair a colour-blind reader
-/// loses first and a printed report is often greyscale.
+/// as coloured, since green against amber is lost to colour-blind readers and
+/// in greyscale print.
 #[cfg(feature = "export-html")]
 pub(crate) const TONE_PARTIAL: &str = "s-partial";
 
@@ -178,9 +156,8 @@ pub(crate) const TONE_NONE: &str = "s-none";
 
 /// The head, the stylesheet, the theme checkbox, and the open page container.
 ///
-/// Takes no report. The `generator` is what wrote the page, which is this build
-/// whoever the findings came from; who that was belongs in the page's own
-/// colophon, the one part of the frame each format writes for itself.
+/// The `generator` meta tag names this build. Who produced the findings goes
+/// in each page's own colophon.
 #[cfg(feature = "export-html")]
 pub(crate) fn head(out: &mut dyn Write, title: &str) -> Result<(), ExportError> {
     writeln!(
@@ -209,9 +186,7 @@ pub(crate) fn head(out: &mut dyn Write, title: &str) -> Result<(), ExportError> 
 
 /// The brand, the heading and the theme control, around a one-line subtitle.
 ///
-/// `subtitle` is markup the caller escaped: what a page says about itself under
-/// its own heading is the page's business, and only the frame around it is
-/// shared.
+/// `subtitle` is markup the caller escaped.
 #[cfg(feature = "export-html")]
 pub(crate) fn masthead(
     out: &mut dyn Write,
@@ -235,8 +210,8 @@ pub(crate) fn masthead(
 
 /// One notice: a fact about the scan that changes how the page should be read.
 ///
-/// `alert` is for the ones that make the findings narrower than they look, as
-/// against the ones that only say how the document was written.
+/// `alert` marks a notice that makes the findings narrower than they look;
+/// without it, a notice only says how the document was written.
 #[cfg(feature = "export-html")]
 pub(crate) fn notice(
     out: &mut dyn Write,
@@ -283,14 +258,13 @@ pub(crate) fn foot(out: &mut dyn Write) -> Result<(), ExportError> {
 }
 
 // ---------------------------------------------------------------------------
-// The JSON writers' one shared decision
+// JSON errors
 // ---------------------------------------------------------------------------
 
 /// Sorts a serialization failure into the two cases a caller can act on.
 ///
 /// `serde_json` reports a failed write and an unrepresentable value through the
-/// same error type, and they call for opposite responses: retrying against a
-/// different destination can fix the first and never the second.
+/// same error type; only the first can be fixed by retrying elsewhere.
 ///
 /// `format` is the name the caller carries in an
 /// [`ExportError::Render`].
@@ -319,9 +293,8 @@ pub(crate) fn render_error(format: &'static str, error: serde_json::Error) -> Ex
 mod tests {
     use super::*;
 
-    /// A device names itself, and what it calls itself is written into a page
-    /// somebody opens. This is the security control of the HTML exporters, and
-    /// there is one of it.
+    /// A device's self-chosen name is written into a page somebody opens. This
+    /// is the HTML exporters' one escaping control.
     #[test]
     fn a_hostname_that_would_execute_is_escaped() {
         let hostile = "<script>alert('pwned')</script>";
@@ -334,8 +307,8 @@ mod tests {
         assert_eq!(esc("say \"hi\""), "say &quot;hi&quot;");
     }
 
-    /// A right-to-left override reverses everything after it, so one address can
-    /// be made to read as another. It is shown as what it is instead.
+    /// A right-to-left override can make one address read as another, so it is
+    /// shown as a code point.
     #[test]
     fn direction_and_control_characters_are_shown_rather_than_obeyed() {
         assert_eq!(
@@ -343,15 +316,13 @@ mod tests {
             "host<span class=\"ctl\">U+202E</span>txt.exe"
         );
         assert_eq!(esc("bell\u{7}"), "bell<span class=\"ctl\">U+0007</span>");
-        // Whitespace is whitespace, and a script's line breaks are worth having.
+        // Whitespace passes through.
         assert_eq!(esc("two\nlines\tapart"), "two\nlines\tapart");
-        // A title holds no markup, so the same character degrades instead.
+        // A title holds no markup, so the character becomes U+FFFD.
         assert_eq!(Plain("host\u{202e}txt").to_string(), "host\u{fffd}txt");
     }
 
-    /// The two escapers differ in what they put in a neutralized character's
-    /// place and in nothing else. A character one of them lets through and the
-    /// other does not is the drift that having two of anything here invites.
+    /// The two escapers differ only in what replaces a neutralized character.
     #[test]
     fn both_escapers_neutralize_the_same_characters() {
         for code in (0u32..0x2100).chain([0xfeff, 0x1f600]) {
@@ -368,8 +339,7 @@ mod tests {
         }
     }
 
-    /// A title is text, so nothing that reaches one may still be able to open
-    /// an element or close the attribute it might one day sit in.
+    /// Nothing reaching a title can open an element or close an attribute.
     #[test]
     fn nothing_reaches_a_title_still_carrying_markup() {
         for code in (0u32..0x2100).chain([0xfeff, 0x1f600]) {

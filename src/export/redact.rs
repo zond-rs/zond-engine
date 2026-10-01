@@ -8,18 +8,14 @@
 
 //! # The masking [`Redaction::Standard`](super::Redaction::Standard) applies
 //!
-//! One function per thing a report carries that names a person or a device: a
-//! hostname and a hardware address. Beside them, crate-private, the mechanics
-//! [`HostRedaction`](super::HostRedaction) applies to free text a host's own
-//! replies filled: finding the names that host gave, and telling a reply that
-//! is text from one that is not.
+//! One function each for a hostname and a hardware address, plus the
+//! crate-private mechanics [`HostRedaction`](super::HostRedaction) applies to
+//! free text: finding a host's names, and telling a text reply from a binary
+//! one. [`Redaction`](super::Redaction) states the policy and its limits.
 //!
-//! [`Redaction`](super::Redaction) states the policy and its limits, including
-//! why addresses are not masked. Read that first; these are the mechanics.
-//!
-//! The goal is not anonymity. A masked hostname stays distinguishable from the
-//! next one so a reader can still follow a host through a report, and that is
-//! the whole of what is promised.
+//! This is not anonymisation. A masked hostname stays distinguishable from the
+//! next, so a reader can follow a host through a report; that is all that is
+//! promised.
 
 use std::borrow::Cow;
 
@@ -28,13 +24,11 @@ use crate::model::mac::MacAddr;
 /// Masks a hostname, keeping its first and last two characters so two masked
 /// names still read as two names.
 ///
-/// The middle becomes a fixed run of `X` rather than one per character, so the
-/// length goes with it: `router` and a fifty-character name both mask to nine
-/// characters.
+/// The middle becomes a fixed run of five `X`, hiding the length: `router` and
+/// a fifty-character name both mask to nine characters.
 ///
-/// A name with fewer than six characters is masked whole, and is the one case
-/// that does not come out nine wide. Keeping two at each end of a five-character
-/// name would leave four of its five, so a short name loses its ends as well.
+/// A name with fewer than six characters is masked whole as `XXXXX`, since its
+/// ends would be most of it.
 ///
 /// # Examples
 /// ```
@@ -71,9 +65,8 @@ pub fn hostname(name: &str) -> String {
 
 /// Masks a hardware address, keeping the OUI.
 ///
-/// The first three octets are the vendor and the last three are the individual
-/// card, so this is the cut that leaves a report saying what a device is made
-/// by without saying which one it is.
+/// The first three octets name the vendor and the last three the individual
+/// card.
 ///
 /// # Examples
 /// ```
@@ -93,26 +86,22 @@ pub fn mac_addr(mac: &MacAddr) -> String {
 
 /// What stands in for an excerpt that is not text, under redaction.
 ///
-/// A binary reply carries names in forms a search of the text cannot be sure
-/// to find: a NetBIOS name in half-ASCII, a DNS name as length-prefixed labels,
-/// a realm inside DER, a name never recorded as one at all. Its bytes are also
-/// what makes such an excerpt worth reading, so a masked copy of them is
-/// neither safe nor useful, and the finding keeps its title and its claim
-/// without them.
+/// A binary reply carries names in forms a text search cannot be sure to find:
+/// a NetBIOS name in half-ASCII, a DNS name as length-prefixed labels, a realm
+/// inside DER, a name never recorded as one. A masked copy would be neither
+/// safe nor useful; the finding keeps its title and claim.
 pub(crate) const WITHHELD_EXCERPT: &str = "(binary reply withheld under redaction)";
 
-/// Whether `text` holds a character no text reply carries: a control other
-/// than a tab or a line break, as a reply read byte for byte has wherever the
-/// protocol is binary.
+/// Whether `text` holds a control character other than a tab or a line break,
+/// as a binary reply read byte for byte does.
 pub(crate) fn is_binary(text: &str) -> bool {
     text.chars()
         .any(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r'))
 }
 
-/// Labels a registry puts under a country's top-level domain for anyone to
-/// register beneath, as in `example.com.au` or `example.gov.uk`: part of the
-/// suffix rather than of a name, so never masked on their own. See
-/// [`Needle::for_names`].
+/// Generic second-level labels under a country's top-level domain, as in
+/// `example.com.au` or `example.gov.uk`. Part of the suffix, so never masked on
+/// their own. See [`Needle::for_names`].
 const GENERIC_LABELS: &[&str] = &[
     "com", "net", "org", "edu", "gov", "mil", "int", "ltd", "plc",
 ];
@@ -126,24 +115,17 @@ pub(crate) struct Needle {
 
 impl Needle {
     /// The needles for the names a host is known by: each name whole, the
-    /// first label of a dotted one, which is the machine's own name and the
-    /// form a banner or a NetBIOS reply gives it in, and every label between
-    /// that and the last. A label that is also a name in its own right is
-    /// masked as that name is, so a NetBIOS domain reads the same in the text
-    /// as in its field. Longest first, so a whole name is masked before any
-    /// label of it could be.
+    /// first label of a dotted one (the machine's name as a banner or NetBIOS
+    /// reply gives it), and every label between that and the last. A label
+    /// that is also a name in its own right is masked as that name is, so a
+    /// NetBIOS domain reads the same in the text as in its field. Sorted
+    /// longest first, so a whole name is masked before any of its labels.
     ///
-    /// The labels between, because text spells a name in other ways than
-    /// dotted: `DC=corp,DC=example` in a directory's reply, `%2E` between
-    /// labels in a URL, a realm upper-cased on its own. Each label of a domain
-    /// is part of what names the organisation, and one left standing reads it
-    /// out. Three exceptions, each a label that names no one: the last, which
-    /// is the top-level domain and is shared by millions; one of fewer than
-    /// three characters, which as a word of its own is too often an ordinary
-    /// one (`co`, `ad`, `us`) for masking it to leave the text readable; and
-    /// the handful of generic second-level labels a country's registry puts
-    /// under its own, [`GENERIC_LABELS`], which would otherwise mask `com` in
-    /// every URL of a report on `example.com.au`.
+    /// The middle labels are needed because text spells a domain in other
+    /// ways: `DC=corp,DC=example` in a directory reply, `%2E` between labels in
+    /// a URL, a realm upper-cased on its own. Skipped are the top-level label,
+    /// labels under three characters (too often ordinary words: `co`, `ad`,
+    /// `us`), and [`GENERIC_LABELS`].
     pub(crate) fn for_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<Needle> {
         let names: Vec<&str> = names.into_iter().collect();
         let mut needles: Vec<Needle> = Vec::new();
@@ -186,10 +168,9 @@ impl Needle {
     }
 
     /// How many characters of `text` from `at` this name takes up, if it is
-    /// there: as itself, a word of its own and in any case, or as UTF-16LE read
-    /// a byte to a character, each letter followed by a NUL, which is how SMB,
-    /// NTLM and Kerberos carry a name and how a reply read byte for byte holds
-    /// it.
+    /// there: as a whole word in any case, or as UTF-16LE read a byte to a
+    /// character (each letter followed by a NUL), as SMB, NTLM and Kerberos
+    /// carry a name.
     fn at(&self, text: &[char], at: usize) -> Option<usize> {
         let len = self.chars.len();
         let rest = &text[at..];
@@ -215,9 +196,9 @@ impl Needle {
     }
 }
 
-/// Whether the three characters before `at` are a URL's percent escape, such
-/// as the `%2E` a URL can spell a dot as. It ends in a letter or a digit, and
-/// yet it is a separator, so a name after it starts a word of its own.
+/// Whether the three characters before `at` are a URL percent escape such as
+/// `%2E`. It ends in an alphanumeric but acts as a separator, so a name after
+/// it starts a word.
 fn after_escape(text: &[char], at: usize) -> bool {
     at >= 3 && text[at - 3] == '%' && text[at - 2..at].iter().all(char::is_ascii_hexdigit)
 }
@@ -286,9 +267,8 @@ mod tests {
         assert_eq!(mac_addr(&mac), "ff:ff:ff:XX:XX:XX");
     }
 
-    /// A masked name is nine characters whatever went in, so the mask hides the
-    /// length as well as the letters. The short case is the documented
-    /// exception and is five.
+    /// A masked name is nine characters whatever went in, except the short
+    /// case, which is five.
     #[test]
     fn masking_a_name_hides_how_long_it_was() {
         for name in ["router", "workstation", &"a".repeat(50)] {
@@ -318,12 +298,9 @@ mod tests {
         ));
     }
 
-    /// **Each label of a domain between its first and its last is masked on
-    /// its own**, since a directory's reply spells a domain as
-    /// `DC=corp,DC=example` and a URL as `%2E`-joined labels, and a label
-    /// left standing names the organisation. The top-level label, a label of
-    /// under three characters and a generic second-level one stay, being no
-    /// one's name.
+    /// Each label of a domain between its first and its last is masked on its
+    /// own. The top-level label, a label under three characters and a generic
+    /// second-level one stay.
     #[test]
     fn each_label_between_the_first_and_the_last_is_masked() {
         let needles = Needle::for_names(["fs01.ad.contoso.com.au"]);
@@ -350,8 +327,7 @@ mod tests {
         );
     }
 
-    /// A reply is text when it holds nothing but printable characters and
-    /// line breaks, and binary as soon as it holds any other control.
+    /// A reply is binary as soon as it holds a control other than whitespace.
     #[test]
     fn a_reply_holding_a_control_is_binary() {
         assert!(!is_binary("HTTP/1.1 200 OK\r\n\tServer: x\n"));
@@ -367,8 +343,7 @@ mod property_tests {
     use proptest::prelude::*;
 
     proptest::proptest! {
-        /// A masked name keeps its two ends and nothing between them, whatever
-        /// was there and however much of it.
+        /// A masked name keeps its two ends and nothing between them.
         #[test]
         fn a_masked_hostname_keeps_its_ends_and_loses_its_middle(
             name in "[a-zA-Z0-9.-]{6,64}"
@@ -380,24 +355,21 @@ mod property_tests {
             prop_assert_eq!(redacted.len(), 9, "every masked name is one width");
         }
 
-        /// And a name short enough that its ends would be most of it keeps
-        /// neither.
+        /// A name short enough that its ends would be most of it keeps neither.
         #[test]
         fn a_short_hostname_is_masked_whole(name in "[a-zA-Z0-9.-]{0,5}") {
             prop_assert_eq!(hostname(&name), "XXXXX");
         }
 
-        /// The vendor survives and the card does not, for every address there
-        /// is.
+        /// The OUI survives and the rest does not, for every address.
         #[test]
         fn a_masked_address_keeps_its_oui_and_loses_the_rest(
             o1 in 0..=255u8, o2 in 0..=255u8, o3 in 0..=255u8,
             o4 in 0..=255u8, o5 in 0..=255u8, o6 in 0..=255u8
         ) {
             let redacted = mac_addr(&MacAddr::new(o1, o2, o3, o4, o5, o6));
-            // Built outside the assertion: `prop_assert!` re-expands its
-            // expression through `format_args!`, which cannot capture from
-            // around it.
+            // Built outside: `prop_assert!` re-expands its expression through
+            // `format_args!`, which cannot capture from around it.
             let oui = format!("{o1:02x}:{o2:02x}:{o3:02x}");
 
             prop_assert!(redacted.starts_with(&oui));
