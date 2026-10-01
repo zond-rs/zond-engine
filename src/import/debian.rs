@@ -36,18 +36,16 @@
 //!   **ignored** too: nothing will be fixed through a security update.
 //! - `undetermined` is **open, needing triage**.
 //!
-//! The tracker's `urgency` becomes the distributor's priority for that release
-//! (never a severity), and every version its repositories name joins the
-//! release's lineage. Its `scope` is not kept: it reads `local` on nearly every
-//! record, network daemons' included, so it separates nothing.
+//! The tracker's `urgency` becomes the distributor's priority for that release (not a
+//! severity), and every version its repositories name joins the release's lineage. Its
+//! `scope` is dropped: it reads `local` on nearly every record, network daemons included.
 //!
 //! ## Filtered, and streamed
 //!
-//! The document is close to eighty megabytes covering every package in
-//! Debian, and a scan can only ever ask about the few hundred source packages
-//! the engine's map names for products it can version. The top-level object is
-//! walked one package at a time, the ones outside the map skipped unread, so
-//! peak memory is what survives the filter rather than the document.
+//! The document is close to eighty megabytes covering every package in Debian, and a scan
+//! can only ask about the few hundred source packages the engine's map names. The
+//! top-level object is walked one package at a time and packages outside the map are
+//! skipped unread, so peak memory is what survives the filter.
 //!
 //! ## Undated
 //!
@@ -69,16 +67,14 @@ use crate::import::{ImportError, ImportOrigin};
 
 /// The most of the tracker's JSON this reads.
 ///
-/// The document is under a hundred megabytes; a thousand is a source that
-/// does not end rather than a larger tracker, and it is refused before it is
-/// read to the end.
+/// The document is under a hundred megabytes; a thousand means a source that does not
+/// end, refused before it is read to the end.
 const MAX_TRACKER_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// Debian's codenames and the release numbers they stand for, oldest first.
 ///
-/// Advisories are keyed by number, as every release a banner or a lookup
-/// names is. The rolling unstable distribution has no number and keeps its
-/// name, `sid`.
+/// Advisories are keyed by number, as banners and lookups name releases. The rolling
+/// unstable distribution has no number and keeps its name, `sid`.
 const CODENAMES: &[(&str, &str)] = &[
     ("buzz", "1.1"),
     ("rex", "1.2"),
@@ -125,9 +121,8 @@ pub fn read(tracker: &mut dyn Read) -> Result<Advisories, ImportError> {
     read_into(tracker, Builder::new(Distributor::Debian))
 }
 
-/// [`read`], dated `as_of`: the day this copy of the tracker was fetched,
-/// which is the one date anything knows about it and what a dataset's
-/// version says, how current its verdicts are.
+/// [`read`], dated `as_of`, typically when this copy of the tracker was fetched; the
+/// dataset's version then says how current its verdicts are.
 ///
 /// # Errors
 ///
@@ -224,16 +219,15 @@ struct Verdict {
 /// Records one issue's verdicts and priorities, and the versions
 /// its release's repositories name.
 ///
-/// Only CVEs: the tracker also files issues it has not been given a CVE
-/// for under `TEMP-` names, which nothing a scan reports can refer to.
+/// Only CVEs: the tracker also files issues without one under `TEMP-` names, which no
+/// scan finding can refer to.
 fn record(builder: &mut Builder, package: &str, cve: &str, issue: &Issue) {
     if !cve.starts_with("CVE-") {
         return;
     }
     for (codename, verdict) in &issue.releases {
-        // A release this table does not know is one newer than it, and its
-        // verdicts wait for the table rather than being filed under a name no
-        // lookup uses.
+        // An unknown release is newer than the table; its verdicts are skipped until the
+        // table names it, since no lookup would find them under the codename.
         let Some(release) = release_of(codename) else {
             continue;
         };
@@ -245,8 +239,8 @@ fn record(builder: &mut Builder, package: &str, cve: &str, issue: &Issue) {
         if let Some(urgency) = verdict
             .urgency
             .as_deref()
-            // Neither is a rating: one says there is none yet, the other that
-            // the package is out of support.
+            // Neither is a rating: one means none yet, the other that the package is
+            // out of support.
             .filter(|urgency| !matches!(*urgency, "" | "not yet assigned" | "end-of-life"))
         {
             builder.priority(Some(release), cve, urgency);
@@ -263,8 +257,7 @@ fn record(builder: &mut Builder, package: &str, cve: &str, issue: &Issue) {
     }
 }
 
-/// What one release's verdict comes to, or nothing where the tracker says
-/// something this does not read, which it then says nothing about.
+/// What one release's verdict comes to, or `None` for a status this does not read.
 fn standing(verdict: &Verdict) -> Option<Standing> {
     match verdict.status.as_str() {
         "resolved" => match verdict.fixed_version.as_deref()? {
@@ -283,12 +276,11 @@ fn standing(verdict: &Verdict) -> Option<Standing> {
                 .map(str::to_string);
             let kind = match (verdict.nodsa_reason.as_deref(), verdict.urgency.as_deref()) {
                 (Some("ignored"), _) => OpenKind::Ignored,
-                // No advisory is planned and the fix is left to a point
-                // release, postponed or as a minor issue.
+                // No advisory planned; the fix is left to a point release.
                 (Some(_), _) => OpenKind::Deferred,
                 _ if verdict.nodsa.is_some() => OpenKind::Deferred,
-                // Rated as no security issue, or in a package whose support
-                // has ended: nothing will be fixed through security updates.
+                // Not a security issue, or support has ended: no security update will
+                // fix it.
                 (None, Some("unimportant" | "end-of-life")) => OpenKind::Ignored,
                 (None, _) => OpenKind::Needed,
             };
@@ -324,8 +316,7 @@ mod tests {
         }
     }
 
-    /// Bookworm's openssh carries the ssh-agent fix from its first stable
-    /// update, which is the version the tracker names.
+    /// Bookworm's openssh is fixed from the version the tracker names.
     #[test]
     fn a_resolved_verdict_is_a_fix_at_the_version_named() {
         let data = read_fixture();
@@ -345,8 +336,7 @@ mod tests {
         assert_eq!(data.id(), "debian:security-tracker");
     }
 
-    /// Resolved at `0` is how Debian says a release never carried the code,
-    /// which is the verdict that clears a finding outright.
+    /// Resolved at `0` reads as not affected.
     #[test]
     fn a_fix_at_version_zero_is_not_affected() {
         let data = read_fixture();
@@ -360,9 +350,8 @@ mod tests {
         );
     }
 
-    /// An open issue with no advisory planned is left to a point release,
-    /// and the tracker's reason goes with it; one rated unimportant will not
-    /// be fixed through security updates at all.
+    /// An open issue with no advisory planned is deferred with the tracker's reason; one
+    /// rated unimportant is ignored.
     #[test]
     fn open_verdicts_keep_why_they_are_open() {
         let data = read_fixture();
@@ -429,8 +418,7 @@ mod tests {
         );
     }
 
-    /// Every codename the fixture's releases use maps to a number, which the
-    /// fixture pins for the releases the whole tracker held when it was cut.
+    /// Every codename the fixture uses maps to a release number.
     #[test]
     fn every_codename_in_the_tracker_maps_to_a_release() {
         let document: serde_json::Value = serde_json::from_str(FIXTURE).expect("JSON");
