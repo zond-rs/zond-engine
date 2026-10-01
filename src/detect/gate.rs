@@ -8,14 +8,11 @@
 
 //! # Gating a detection to a port
 //!
-//! Every tier asks the same two questions before it runs a detection against a
-//! port: does the operator's [envelope](crate::config::DetectionEnvelope) permit the
-//! detection's intrusiveness class, and does the detection's `when` rule fit this
-//! port. The envelope answers the first through
-//! [`permits`](crate::config::DetectionEnvelope::permits); this module answers the second,
-//! as a method on the shared [`Rule`] both a [flow](super::flow) and a [compute
-//! module](super::compute) gate on, so the two tiers select ports by one rule
-//! rather than each restating it.
+//! Before running a detection against a port, every tier checks that the
+//! operator's [envelope](crate::config::DetectionEnvelope)
+//! [`permits`](crate::config::DetectionEnvelope::permits) its class, and that its
+//! `when` rule fits the port. This module answers the second, on the [`Rule`]
+//! both [flows](super::flow) and [compute modules](super::compute) use.
 
 use crate::fingerprint::{SignatureDb, Tunnel};
 use crate::model::port::Protocol;
@@ -24,19 +21,15 @@ use crate::record::wire;
 use super::manifest::Rule;
 
 impl Rule {
-    /// Whether this gate fits a port's facts. Every set field must hold, and an
-    /// empty gate fits any open port. A `service`/`services` names the identified
-    /// service, a `port`/`ports` the number, a `protocol` the transport, the
-    /// last of which decides whether a UDP or a TCP socket serves the detection,
-    /// so a wrong one probes a service nobody asked about, and a `speaks` the
-    /// application protocol the identified service is carried over, which the
-    /// fingerprint corpus is asked for rather than the gate listing names.
+    /// Whether this gate fits a port's facts. Every set field must hold; an empty
+    /// gate fits any open port. `service`/`services` match the identified service,
+    /// `port`/`ports` the number, `protocol` the transport (which also decides
+    /// whether a UDP or TCP socket serves the detection), and `speaks` the
+    /// application protocol the service is carried over, per the fingerprint
+    /// corpus.
     ///
-    /// A service name is held against the protocol a label names, not the
-    /// label whole: a port labelled `ssl/http` is HTTP carried inside TLS, and
-    /// the detection seam opens that tunnel before the detection speaks, so a
-    /// gate naming `http` is written about exactly that port. The scheme is a
-    /// fact about the transport, which a detection does not gate on.
+    /// A service name is compared with the protocol part of a label: `ssl/http`
+    /// fits `http`, since the detection seam opens the tunnel first.
     pub fn applies(&self, service: Option<&str>, number: u16, protocol: Protocol) -> bool {
         let carried = service.map(|label| Tunnel::split_label(label).1);
         let service_ok = self
@@ -55,8 +48,7 @@ impl Rule {
             .as_deref()
             .is_none_or(|wanted| wanted == wire::protocol_name(protocol));
 
-        // A port nothing identified speaks nothing knowable, so a gate naming a
-        // protocol does not fit it. That is the same rule `service` follows.
+        // An unidentified port fits no `speaks`, as with `service`.
         let speaks_ok = self.speaks.as_deref().is_none_or(|wanted| {
             service.and_then(|name| SignatureDb::global().speaks(name)) == Some(wanted)
         });
@@ -115,9 +107,7 @@ mod tests {
     /// A gate naming what a port speaks fits every service the corpus says is
     /// carried over it, and nothing else.
     ///
-    /// Asserted against the shipped corpus rather than a fixture, because the
-    /// claim is about that corpus: a detection written about HTTP has to reach
-    /// the products this build can name.
+    /// Against the shipped corpus.
     #[test]
     fn a_speaks_gate_fits_every_service_carried_over_that_protocol() {
         let gate = Rule {
@@ -138,15 +128,13 @@ mod tests {
         assert!(!gate.applies(Some("redis"), 6379, Protocol::Tcp));
         assert!(!gate.applies(None, 80, Protocol::Tcp));
 
-        // A tunnelled label is two facts, and a web server inside TLS still
-        // speaks HTTP. A gate matching the label whole saw neither half.
+        // A web server inside TLS still speaks HTTP.
         assert!(gate.applies(Some("ssl/http"), 443, Protocol::Tcp));
         assert!(gate.applies(Some("ssl/grafana"), 3000, Protocol::Tcp));
     }
 
-    /// Riak, Neo4j and RethinkDB all offer an HTTP API and are fingerprinted
-    /// here by their binary wire protocols, so a port identified from those
-    /// bytes is not a port answering HTTP.
+    /// Riak, Neo4j and RethinkDB are fingerprinted by their binary protocols, so
+    /// they do not fit a `speaks = "http"` gate.
     #[test]
     fn a_product_with_an_http_api_fingerprinted_on_its_own_protocol_does_not_speak_http() {
         let gate = Rule {
@@ -183,9 +171,7 @@ mod tests {
     /// A service identified inside TLS fits a gate naming that service, the
     /// way it fits a `speaks` gate.
     ///
-    /// The detection seam opens the tunnel before a detection speaks, so a
-    /// detection written about Grafana or FTP is as right about a TLS-wrapped
-    /// one as a clear one. A gate matching the label whole never ran on either.
+    /// The detection seam opens the tunnel first.
     #[test]
     fn a_service_identified_inside_tls_fits_a_gate_naming_that_service() {
         let services = Rule {
@@ -199,8 +185,7 @@ mod tests {
         let service = rule(Some("ftp"), None, None);
         assert!(service.applies(Some("ssl/ftp"), 990, Protocol::Tcp));
 
-        // A bare handshake names the tunnel and nothing inside it, which is
-        // not the protocol a gate asked about.
+        // A bare `ssl` names nothing inside the tunnel.
         assert!(!service.applies(Some("ssl"), 990, Protocol::Tcp));
     }
 }

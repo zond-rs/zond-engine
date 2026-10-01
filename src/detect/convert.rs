@@ -9,19 +9,10 @@
 //! # Lowering the authoring vocabulary to the model
 //!
 //! The [`manifest`](super::manifest) and [`authoring`](super::authoring) types
-//! deserialize free of the model, which is the discipline that lets `build.rs`
-//! share those files. Their conversion into the model's own vocabulary lives
-//! here instead.
-//!
-//! Everything shared between the tiers converts in one place: the intrusiveness
-//! [`Class`] a detection declares, and the [`Severity`] and [`Reference`] its
-//! findings carry.
-//!
-//! It is also the one file that reads both vocabularies at once, which is what
-//! [`SeveritySpec::into_model_at`] needs: a severity stated per exposure is
-//! resolved against the model's [`Exposure`], so the
-//! authoring side never has to name it and the scan path never has to translate
-//! into the authoring side to ask.
+//! stay free of the model so `build.rs` can share them; their conversion lives
+//! here: the [`Class`] a detection declares, and the [`Severity`] and
+//! [`Reference`] its findings carry. [`SeveritySpec::into_model_at`] resolves a
+//! per-exposure severity against the model's [`Exposure`].
 
 use crate::model::finding::{
     DetectionClass, FindingGroup, Reference as ModelReference, Severity as ModelSeverity,
@@ -35,10 +26,7 @@ impl Class {
     /// The model class this authoring class names.
     pub fn into_model(self) -> DetectionClass {
         match self {
-            // What a finding records is the intrusiveness its detection ran at,
-            // and a derived detection runs at exactly a passive one: it touches
-            // nothing. Where its conclusion came from is a fact about the
-            // detection, which is what `Class` is for and what a catalogue draws.
+            // A derived detection runs exactly as a passive one does.
             Class::Derived | Class::Passive => DetectionClass::Passive,
             Class::ActiveBenign => DetectionClass::ActiveBenign,
             Class::ActiveMutating => DetectionClass::ActiveMutating,
@@ -64,16 +52,12 @@ impl Severity {
 impl SeveritySpec {
     /// The model severity this spec states for a subject at `exposure`.
     ///
-    /// A [`Flat`](SeveritySpec::Flat) spec ignores the exposure, which is the
-    /// whole of what "this weakness means the same thing wherever it is" comes to.
-    /// A [`PerExposure`](SeveritySpec::PerExposure) one reads the rung, falling
-    /// back along the table as
-    /// [`SeverityByExposure`](super::authoring::SeverityByExposure) documents.
+    /// A [`Flat`](SeveritySpec::Flat) spec ignores the exposure. A
+    /// [`PerExposure`](SeveritySpec::PerExposure) one reads the rung, falling back
+    /// as [`SeverityByExposure`](super::authoring::SeverityByExposure) documents.
     ///
-    /// The match on the exposure is exhaustive on purpose. A rung added later
-    /// must be given a reading here rather than silently landing on the widest
-    /// one, which is the only place in the lowering where a missing decision
-    /// would change a published severity.
+    /// The match on the exposure is exhaustive, so a new rung must be given a
+    /// reading here.
     pub fn into_model_at(self, exposure: Exposure) -> ModelSeverity {
         let severity = match self {
             SeveritySpec::Flat(severity) => severity,
@@ -88,24 +72,20 @@ impl SeveritySpec {
 }
 
 impl GroupSpec {
-    /// The model group this names, or [`None`] where either half is blank,
-    /// which the model refuses and so does this. The corpus validator rejects
-    /// such a detection at build, so a loaded one always converts.
+    /// The model group this names, or [`None`] where either half is blank. The
+    /// validator rejects that at build, so a loaded detection always converts.
     ///
-    /// Borrows rather than consumes, as [`Reference::to_model`] does: a
-    /// manifest's group is read once per finding the detection produces, and
-    /// the manifest outlives them all.
+    /// Borrows, since it is read once per finding.
     pub fn to_model(&self) -> Option<FindingGroup> {
         FindingGroup::new(self.id.clone(), self.summary.clone()).ok()
     }
 }
 
 impl Reference {
-    /// The model reference this names, or [`None`] for a CVE identifier of the
-    /// wrong shape, which the model refuses and so does this.
+    /// The model reference this names, or [`None`] for a malformed CVE
+    /// identifier.
     ///
-    /// Borrows rather than consumes: a spec's references are read once per
-    /// finding it produces, and the spec outlives the finding.
+    /// Borrows, since it is read once per finding.
     pub fn to_model(&self) -> Option<ModelReference> {
         match self {
             Reference::Cve(id) => ModelReference::cve(id),
@@ -119,15 +99,13 @@ impl Reference {
 mod tests {
     use super::*;
 
-    /// A holder for the one field under test, since `severity` is read as part of
-    /// a finding rather than as a document of its own.
+    /// A holder for the `severity` field under test.
     #[derive(Debug, serde::Deserialize)]
     struct Wrapper {
         severity: SeveritySpec,
     }
 
-    /// A bare severity is the same rating at every rung: what "this means the
-    /// same thing wherever it is" comes to.
+    /// A bare severity is the same rating at every rung.
     #[test]
     fn a_flat_severity_ignores_the_exposure() {
         let spec = SeveritySpec::Flat(Severity::High);
@@ -141,8 +119,7 @@ mod tests {
         }
     }
 
-    /// A table reads the rung it was given, and an unstated rung falls back to
-    /// the next wider one rather than to a default.
+    /// An unstated rung falls back to the next wider one.
     #[test]
     fn a_stated_rung_is_read_and_an_unstated_one_falls_back_to_the_wider() {
         let spec: SeveritySpec =
@@ -189,9 +166,7 @@ mod tests {
         );
     }
 
-    /// The bare string is the ordinary spelling, so it has to keep parsing as one
-    /// after the table form was added. Every shipped detection but a handful
-    /// writes it.
+    /// The bare string parses.
     #[test]
     fn the_bare_string_still_parses_as_a_severity() {
         let spec = toml::from_str::<Wrapper>(r#"severity = "medium""#)
@@ -200,8 +175,7 @@ mod tests {
         assert_eq!(spec, SeveritySpec::Flat(Severity::Medium));
     }
 
-    /// A rung misspelled is a build failure rather than a severity that silently
-    /// falls back, which is the whole reason the table denies unknown fields.
+    /// A misspelled rung fails to parse.
     #[test]
     fn a_misspelled_rung_is_refused_rather_than_ignored() {
         assert!(
@@ -211,8 +185,7 @@ mod tests {
         );
     }
 
-    /// A table with no `internet` rung states no rating for the audience every
-    /// severity is written against, and is refused.
+    /// A table with no `internet` rung is refused.
     #[test]
     fn a_table_without_the_widest_rung_is_refused() {
         assert!(
@@ -275,9 +248,7 @@ mod tests {
         assert_eq!(group.summary(), "weak SSH algorithms offered");
     }
 
-    /// Half a group is no group: an id nothing prints for, or a phrase nothing
-    /// gathers by. Refused here as the model refuses it, rather than lowered
-    /// into a finding that claims membership of something unnameable.
+    /// A group with a blank id or summary is refused.
     #[test]
     fn half_a_group_is_refused() {
         assert!(

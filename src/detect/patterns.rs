@@ -8,26 +8,15 @@
 
 //! # A flow's patterns, compiled once and matched in one place
 //!
-//! A flow matches its `expect`, `bind` and `until` patterns against every reply
-//! it reads, on the blocking thread it holds the port's socket on. Compiled at
-//! each match, a pattern costs its compile every time and one copy of itself
-//! per flow running at once; compiled once but matched on those threads, it
-//! keeps a search cache for every thread that ever matched with it, for as
-//! long as it is kept. So a pattern is compiled once for the process, keyed by
-//! its source, and every match is made on one thread kept for flow matching,
-//! where it has one cache.
+//! A pattern is compiled once for the process, keyed by its source, and every
+//! match runs on one thread kept for flow matching, so each pattern keeps one
+//! search cache rather than one per thread.
 //!
-//! That thread is the flows' own rather than the one service identification
-//! matches on. A flow reads under a wall-clock budget, and a match queued
-//! behind a scan's identifications would spend it waiting; a flow's patterns
-//! are few and each match takes microseconds, so the flows queue only behind
-//! one another.
+//! That thread is separate from service identification's, since a flow runs
+//! under a wall-clock budget and should not queue behind identifications.
 //!
-//! The shipped flows hold about a hundred distinct patterns, and a caller's own
-//! flows add theirs. The kept set is bounded all the same, at
-//! [`MAX_KEPT_PATTERNS`], past which a pattern is compiled for its match and
-//! dropped after it, so a process loading flows without end does not keep
-//! every pattern it ever saw.
+//! The shipped flows hold about a hundred distinct patterns. Past
+//! [`MAX_KEPT_PATTERNS`] a pattern is compiled for its match and dropped.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -40,15 +29,13 @@ use crate::fingerprint::pattern::{self, CompiledPattern};
 const MAX_KEPT_PATTERNS: usize = 1024;
 
 /// `source` compiled, the one copy this process keeps, or `None` where it will
-/// not compile. A refusal is kept too, so a pattern that will not compile is
-/// tried once.
+/// not compile. Refusals are kept too.
 fn compiled(source: &str) -> Option<Arc<CompiledPattern>> {
     type Kept = HashMap<Box<str>, Option<Arc<CompiledPattern>>>;
     static KEPT: OnceLock<Mutex<Kept>> = OnceLock::new();
 
     let kept = KEPT.get_or_init(Mutex::default);
-    // A panic while the map was held leaves it whole: an insert either landed
-    // or did not, so the map is read on regardless.
+    // A poisoned map is still consistent: an insert either landed or did not.
     if let Some(found) = kept
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -57,9 +44,7 @@ fn compiled(source: &str) -> Option<Arc<CompiledPattern>> {
         return found.clone();
     }
 
-    // Compiled without the lock held, since a compile takes milliseconds and
-    // every flow's matching waits on the lock. Two flows compiling one pattern
-    // at once both compile it, and the first to finish is the one kept.
+    // Compiled without the lock; if two flows race, the first to finish is kept.
     let fresh = pattern::compile(source, MAX_COMPILED_REGEX_BYTES)
         .ok()
         .map(Arc::new);
@@ -101,10 +86,8 @@ static MATCHED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 /// Whether a match has been made with the one copy of `source` this process
 /// keeps, through [`KeptPattern::matching`].
 ///
-/// What a test asks after running a flow, to tell a call site that matches on
-/// the kept path from one that compiles a copy of its own: the second compiles
-/// and matches as well as the first, and differs only in what it costs, which
-/// nothing else a test can read would show.
+/// Lets a test tell a call site using the kept path from one compiling its own
+/// copy, which otherwise behave identically.
 #[cfg(test)]
 pub(crate) fn matched_as_kept(source: &str) -> bool {
     compiled(source).is_some_and(|kept| {
@@ -118,9 +101,8 @@ pub(crate) fn matched_as_kept(source: &str) -> bool {
 /// Runs `work` on the thread kept for flow matching, blocking the caller until
 /// it is done, and hands back what it returns.
 ///
-/// Run in place where that thread could not be started, which costs memory
-/// and nothing else, and in place when called on it. A panic in `work`
-/// reaches the caller as it would have in place.
+/// Runs in place when already on that thread or where it could not be started.
+/// A panic in `work` reaches the caller.
 fn on_the_matching_thread<T: Send>(work: impl FnOnce() -> T + Send) -> T {
     static POOL: OnceLock<Option<rayon::ThreadPool>> = OnceLock::new();
 
@@ -150,9 +132,8 @@ pub(crate) fn matching<T: Send>(
 mod tests {
     use super::*;
 
-    /// A pattern is compiled once for the process, however many flows and
-    /// replies match with it, and one that will not compile is refused each
-    /// time without being kept as anything else.
+    /// A pattern is compiled once; one that will not compile is refused each
+    /// time.
     #[test]
     fn a_pattern_is_compiled_once_for_the_process() {
         let first = compiled("^OK kept once").expect("compiles");
@@ -163,9 +144,7 @@ mod tests {
         assert!(compiled("(unclosed").is_none());
     }
 
-    /// Every match is made on the one flow-matching thread, from whichever
-    /// thread a flow runs on, so a pattern keeps one search cache and not one
-    /// per thread that ever matched with it.
+    /// Every match runs on the one flow-matching thread.
     #[test]
     fn every_match_is_made_on_the_flow_matching_thread() {
         let threads: std::collections::BTreeSet<String> = (0..8)

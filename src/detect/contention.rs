@@ -8,34 +8,25 @@
 
 //! # Whether a wait was a host's own
 //!
-//! Contention is a fact about the host, not the port: one process may serve
-//! several of a host's ports from a single worker, and a question to one waits
-//! behind the questions to the others in that worker's queue. A pass that asks
-//! a host several things at once cannot tell such a queue from a slow port by
-//! how long one answer took; it can tell whether anything else of its own was
-//! asking the host meanwhile. That is what this counts, for the host and across
-//! all of its ports, so a wait is read as the host's only when nothing the pass
-//! asked overlapped it.
+//! One process may serve several of a host's ports from one worker, so a
+//! question to one port waits behind questions to the others. A slow answer
+//! cannot distinguish that from a slow port, but a pass can tell whether it had
+//! anything else in flight to the host meanwhile. This counts that, per host,
+//! so a wait is blamed on the port only when nothing else overlapped it.
 //!
-//! Shared by the two passes that hold conversations with a host's services and
-//! run them side by side: the detection stage, which counts every exchange of a
-//! flow, and service identification, which counts every identification of a
-//! port. Each decides for itself what a crowded wait costs a port.
+//! Used by the detection stage (per flow exchange) and service identification
+//! (per port); each decides what a crowded wait costs.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The conversations a pass has with one host right now, and has ever begun.
 ///
-/// Both counts are one word, the begun in the high half and those in flight in
-/// the low, so a conversation counts itself into both in one step. Counted in
-/// two, a second conversation could begin between the steps of a first, which
-/// then took the ticket after the second's while having found nothing in
-/// flight, and read as alone a wait the second overlapped.
+/// Both counts share one atomic word (begun high, in flight low), so a
+/// conversation updates both in one step; two steps could let an overlapping
+/// conversation go unseen.
 #[derive(Debug, Default)]
 pub(crate) struct HostContention {
-    /// Conversations with any of the host's ports ever begun, in the high
-    /// half, so one that ends can tell whether another began meanwhile, and
-    /// those in flight, in the low.
+    /// Conversations ever begun (high half) and in flight (low half).
     counts: AtomicU64,
 }
 
@@ -79,8 +70,7 @@ impl Visit<'_> {
     /// Ends the conversation and says whether it had the host to itself: none
     /// was in flight when it began, and none began before it ended.
     pub(crate) fn leave(self) -> bool {
-        // Begun since this one, counting it, in the half word the count wraps
-        // in.
+        // Begun since this one, counting it, wrapping in the half word.
         let since = self.host.begun().wrapping_sub(self.ticket) % BEGUN;
         self.company == 0 && since == 1
     }
@@ -105,9 +95,8 @@ impl Drop for Visit<'_> {
 mod tests {
     use super::*;
 
-    /// A conversation is alone only when nothing else overlapped it at either
-    /// end: one already running when it began, or one that began and ended
-    /// while it went on.
+    /// Alone only if none was running when it began and none began before it
+    /// ended.
     #[test]
     fn a_visit_is_alone_only_when_nothing_overlapped_it() {
         let host = HostContention::default();
@@ -133,11 +122,7 @@ mod tests {
     /// other has begun are never read as alone, however their beginnings
     /// interleave.
     ///
-    /// A conversation read as alone is charged the whole of its wait: the
-    /// detection stage strikes its port, and service identification owes it
-    /// no second asking. One that overlapped another taken for alone writes a
-    /// live port off for the other's traffic. The beginnings are raced many
-    /// times over, since which interleaving a run draws is the scheduler's.
+    /// Raced many times, since the interleaving is the scheduler's.
     #[test]
     fn conversations_begun_side_by_side_are_never_alone() {
         const RACES: usize = 500_000;
@@ -153,8 +138,7 @@ mod tests {
                         if visit.leave() {
                             read_alone.fetch_add(1, Ordering::Relaxed);
                         }
-                        // Neither begins the next race until both have left
-                        // this one.
+                        // Both leave before the next race.
                         both_begun.wait();
                     }
                 });
