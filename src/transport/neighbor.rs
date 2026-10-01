@@ -8,25 +8,21 @@
 
 //! # Link-Layer Next-Hop Resolution
 //!
-//! Answers the question a Layer-2 sender has to ask that a raw-IP sender
-//! never does: to put a frame for `dst` on the wire myself, which interface
-//! does it leave by, what source MAC and IP do I stamp on it, and what
-//! *destination* MAC - the next hop's, not the final target's - goes in the
-//! Ethernet header?
+//! Answers what a Layer-2 sender must know to put a frame for `dst` on the wire
+//! itself: which interface it leaves by, which source MAC and IP it carries, and which
+//! *destination* MAC (the next hop's) goes in the Ethernet header.
 //!
 //! The next hop depends on where the target sits:
 //!
-//! - **On-link** (same subnet as one of our interfaces): the next hop *is*
-//!   the target, and its MAC has to be resolved by ARP/NDP.
-//! - **Off-link**: the next hop is the gateway, whose MAC the OS already
-//!   knows from its active default route - `netdev` reads it straight out of
-//!   the neighbor table, so no probe is needed for the common internet-facing
-//!   case.
+//! - **On-link** (same subnet as one of our interfaces): the next hop is the target,
+//!   and its MAC has to be resolved by ARP/NDP.
+//! - **Off-link**: the next hop is the gateway, whose MAC `netdev` reads from the
+//!   neighbour table for the active default route, so the common internet-facing case
+//!   needs no probe.
 //!
-//! This module owns only the *decision* and a resolved-MAC cache; performing
-//! the actual ARP/NDP exchange for an on-link miss is left to the sender,
-//! which is the thing that holds a link-layer channel. Keeping the policy
-//! here, free of any socket, is what makes it unit-testable.
+//! This module owns the decision and a resolved-MAC cache. The ARP/NDP exchange for an
+//! on-link miss is left to the sender, which holds the link-layer channel, so the
+//! policy here stays socket-free and unit-testable.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -43,25 +39,25 @@ use crate::system::interface::probe_route_source;
 pub struct LinkRoute {
     /// Name of the interface the frame leaves by.
     pub interface: String,
-    /// Source IP to stamp on the packet (must match the interface/subnet the
-    /// frame egresses, or the reply won't come back to us).
+    /// Source IP to stamp on the packet. Must belong to the egress interface's subnet,
+    /// or the reply won't come back.
     pub src_ip: IpAddr,
     /// Source MAC for the Ethernet header.
     pub src_mac: MacAddr,
     /// The next hop's IP: the target itself if on-link, otherwise the gateway.
     pub next_hop: IpAddr,
-    /// The next hop's MAC, if already known - resolved from the gateway
-    /// (off-link) or a previous ARP/NDP (on-link, cached). `None` means the
-    /// sender must resolve it before it can build the frame.
+    /// The next hop's MAC, if known: the gateway's (off-link) or one cached from a
+    /// previous ARP/NDP (on-link). `None` means the sender must resolve it before
+    /// building the frame.
     pub next_hop_mac: Option<MacAddr>,
-    /// Whether the next hop is on our own segment (so the sender resolves the
-    /// target's own MAC) rather than the gateway.
+    /// Whether the next hop is on our own segment, so the sender resolves the target's
+    /// own MAC.
     pub on_link: bool,
 }
 
-/// A single interface's addressing, distilled from `netdev` into just what
-/// next-hop resolution needs. Interfaces without a MAC (tunnels, loopback)
-/// are excluded at construction, since the Ethernet sender can't use them.
+/// A single interface's addressing, reduced to what next-hop resolution needs.
+/// Interfaces without a MAC (tunnels, loopback) are excluded, since the Ethernet sender
+/// can't use them.
 #[derive(Debug, Clone)]
 struct InterfaceInfo {
     name: String,
@@ -72,42 +68,39 @@ struct InterfaceInfo {
     gateway_v6: Option<(Ipv6Addr, MacAddr)>,
 }
 
-/// Asks the routing table which local address a packet to a destination would
-/// be sent from, without sending one. The seam a test replaces.
+/// Asks the routing table which local address a packet to a destination would be sent
+/// from, without sending one. The seam a test replaces.
 type KernelRoute = Box<dyn Fn(IpAddr) -> Option<IpAddr> + Send + Sync + UnwindSafe + RefUnwindSafe>;
 
-/// Resolves link-layer routes for destinations and remembers on-link MACs
-/// once the sender has learned them.
+/// Resolves link-layer routes for destinations and remembers on-link MACs once the
+/// sender has learned them.
 ///
-/// **The frame leaves by the interface the packet's source belongs to.** A
-/// segment reaches the Ethernet sender with its source address already chosen,
-/// and chosen from the routing table, or forced by the caller; the checksum is
-/// computed over it. The interface holding that address is the one the kernel
-/// would send it from, so it is the one whose gateway and hardware address the
-/// frame carries. Where no Ethernet interface holds it, because the kernel
-/// routes the destination through a tunnel, there is no Ethernet route: a
-/// frame put on a physical link instead would reach the LAN router with the
-/// tunnel's address in it, bypassing the tunnel for a target only the tunnel
-/// reaches.
+/// **The frame leaves by the interface the packet's source belongs to.** A segment
+/// reaches the Ethernet sender with its source already chosen (from the routing table,
+/// or forced by the caller) and the checksum computed over it. The interface holding
+/// that address is the one the kernel would send from, so its gateway and hardware
+/// address go in the frame. Where no Ethernet interface holds it because the kernel
+/// routes the destination through a tunnel, there is no Ethernet route: a frame put on
+/// a physical link would reach the LAN router with the tunnel's address in it,
+/// bypassing the tunnel.
 ///
-/// A source no interface holds at all is spoofed on purpose, as the idle scan's
-/// is. There the kernel is asked how it would route the destination, and the
-/// frame leaves by that interface if it is Ethernet.
+/// A source no interface holds is spoofed on purpose, as the idle scan's is. Then the
+/// kernel is asked how it would route the destination, and the frame leaves by that
+/// interface if it is Ethernet.
 pub struct NeighborResolver {
     interfaces: Vec<InterfaceInfo>,
     /// Learned on-link MACs, keyed by `(interface, next-hop IP)`.
     cache: HashMap<(String, IpAddr), MacAddr>,
-    /// Every address this host holds on an interface with no Ethernet in front
-    /// of it: tunnels and loopback. Read once, because the question it answers
-    /// is asked for every probe to a tunnel-routed target.
+    /// Every address this host holds on an interface with no Ethernet in front of it:
+    /// tunnels and loopback. Read once, because it is consulted for every probe to a
+    /// tunnel-routed target.
     unframed: Vec<IpAddr>,
     kernel: KernelRoute,
 }
 
 impl NeighborResolver {
-    /// Builds a resolver from the system's current Ethernet-capable
-    /// interfaces, reading each one's addresses and default gateway (with the
-    /// gateway's MAC) from `netdev`.
+    /// Builds a resolver from the system's current Ethernet-capable interfaces,
+    /// reading each one's addresses and default gateway (with its MAC) from `netdev`.
     pub fn from_system() -> Self {
         let mut interfaces = Vec::new();
         let mut unframed = Vec::new();
@@ -139,9 +132,8 @@ impl NeighborResolver {
         }
     }
 
-    /// A resolver for one Ethernet segment with no gateway, `interface`
-    /// holding `address` from `mac`, for a test that frames to neighbours on
-    /// it.
+    /// A resolver for one Ethernet segment with no gateway, `interface` holding
+    /// `address` from `mac`, for tests that frame to neighbours on it.
     #[cfg(test)]
     pub(crate) fn on_segment(interface: &str, mac: MacAddr, address: LinkAddress) -> Self {
         let held = address.address();
@@ -156,20 +148,19 @@ impl NeighborResolver {
         Self::from_interfaces(vec![info], vec![], Box::new(move |_| Some(held)))
     }
 
-    /// Whether any Ethernet-capable interface exists at all. When false, the
-    /// Ethernet sender has nothing to work with and the caller should use the
-    /// raw-IP path instead.
+    /// Whether any Ethernet-capable interface exists. When false, the caller should
+    /// use the raw-IP path.
     pub fn has_ethernet(&self) -> bool {
         !self.interfaces.is_empty()
     }
 
-    /// Resolves the link-layer route to `dst` for a packet sent from the
-    /// address the routing table would choose for it.
+    /// Resolves the link-layer route to `dst` for a packet sent from the address the
+    /// routing table would choose.
     ///
-    /// [`None`] where the routing table sends `dst` through an interface with
-    /// no Ethernet in front of it, such as a VPN's tunnel, and for loopback,
-    /// which no frame reaches. See [`resolve_from`](Self::resolve_from) for a
-    /// packet whose source is already chosen.
+    /// [`None`] where the routing table sends `dst` through an interface with no
+    /// Ethernet in front of it, such as a VPN tunnel, and for loopback. See
+    /// [`resolve_from`](Self::resolve_from) for a packet whose source is already
+    /// chosen.
     #[cfg(test)]
     pub fn resolve(&self, dst: IpAddr) -> Option<LinkRoute> {
         if dst.is_loopback() {
@@ -180,20 +171,17 @@ impl NeighborResolver {
         self.route_via(iface, chosen, dst)
     }
 
-    /// Resolves the link-layer route for a packet from `src` to `dst`: by the
-    /// Ethernet interface holding `src`, or, for a source no interface holds,
-    /// by the one the routing table would send `dst` through. See the type's
-    /// documentation.
+    /// Resolves the link-layer route for a packet from `src` to `dst`: by the Ethernet
+    /// interface holding `src`, or, for a source no interface holds, by the one the
+    /// routing table would send `dst` through. See the type's documentation.
     ///
-    /// On-link routes come back with `next_hop_mac` set only if previously
-    /// learned; off-link routes carry the gateway's MAC directly.
+    /// On-link routes carry `next_hop_mac` only if previously learned; off-link routes
+    /// carry the gateway's MAC.
     ///
-    /// A loopback destination has no such route. It is not on-link on any
-    /// Ethernet interface, so the off-link arm would answer it with the default
-    /// gateway, and a SYN aimed at `127.0.0.1` would go out a physical
-    /// interface for the gateway to drop. Nothing would reply, which a port
-    /// scan reads as no reply: a wrong answer rather than a missing one, and
-    /// the reason it is worth refusing here rather than further out.
+    /// A loopback destination has no route. It is on-link on no Ethernet interface, so
+    /// the off-link arm would answer with the default gateway, and a SYN aimed at
+    /// `127.0.0.1` would go out a physical interface to be dropped. The silence would
+    /// read as a wrong port verdict, so it is refused here.
     pub fn resolve_from(&self, src: IpAddr, dst: IpAddr) -> Option<LinkRoute> {
         if dst.is_loopback() {
             return None;
@@ -201,21 +189,21 @@ impl NeighborResolver {
         if let Some(iface) = self.holding(src) {
             return self.route_via(iface, src, dst);
         }
-        // One of this host's own addresses on a tunnel: the kernel sends from it
-        // through that tunnel, and no frame follows.
+        // One of this host's own tunnel addresses: the kernel sends through the
+        // tunnel, and no frame follows.
         if src.is_loopback() || self.unframed.contains(&src) {
             return None;
         }
-        // Asked per probe, which only a spoofing scan pays: the idle scan sends
-        // one or two probes a port, and a lookup is a `connect` on a UDP socket
-        // that sends nothing.
+        // Asked per probe, which only a spoofing scan pays: the idle scan sends one or
+        // two probes a port, and a lookup is a `connect` on a UDP socket that sends
+        // nothing.
         let chosen = (self.kernel)(dst)?;
         let iface = self.holding(chosen)?;
         self.route_via(iface, chosen, dst)
     }
 
-    /// Records a MAC learned for an on-link next hop, so the next probe to
-    /// that host skips the ARP/NDP round trip.
+    /// Records a MAC learned for an on-link next hop, so the next probe to that host
+    /// skips the ARP/NDP round trip.
     pub fn remember(&mut self, interface: &str, next_hop: IpAddr, mac: MacAddr) {
         self.cache.insert((interface.to_string(), next_hop), mac);
     }
@@ -231,9 +219,9 @@ impl NeighborResolver {
         })
     }
 
-    /// The route to `dst` over `iface`, for a packet from `anchor`, an address
-    /// `iface` holds: `dst` itself where it is on the interface's segment, the
-    /// interface's gateway otherwise.
+    /// The route to `dst` over `iface` for a packet from `anchor`, an address `iface`
+    /// holds: `dst` itself where it is on the interface's segment, the interface's
+    /// gateway otherwise.
     fn route_via(&self, iface: &InterfaceInfo, anchor: IpAddr, dst: IpAddr) -> Option<LinkRoute> {
         if anchor.is_ipv4() != dst.is_ipv4() {
             return None;
@@ -259,9 +247,9 @@ impl NeighborResolver {
                 let (gw_ip, mac) = iface.gateway_v4?;
                 (IpAddr::V4(gw_ip), mac)
             }
-            // A link-local address is valid only on its own segment: a packet
-            // sourced from one and aimed past the router is discarded on the
-            // way, and a reply would have nowhere to go.
+            // A link-local address is valid only on its own segment: a packet from
+            // one aimed past the router is discarded, and a reply would have nowhere
+            // to go.
             (IpAddr::V6(_), IpAddr::V6(from)) if from.is_unicast_link_local() => return None,
             (IpAddr::V6(_), _) => {
                 let (gw_ip, mac) = iface.gateway_v6?;
@@ -269,15 +257,12 @@ impl NeighborResolver {
             }
         };
 
-        // A gateway whose hardware address the OS has not learned reaches this
-        // point as all zeros, `netdev`'s stand-in for "unknown": the neighbour
-        // table has no entry, because the default route was learned over IPv6
-        // while the gateway's MAC is filled from the IPv4 ARP cache alone, or
-        // because the cache had aged the entry out by the time the sender was
-        // built. That address is no destination a frame can carry, so it is not
-        // handed on as one. The gateway takes the same path a cold on-link
-        // neighbour does: its MAC is `None` until an exchange learns it, drawn
-        // from the same cache once it has, and resolved by the sender otherwise.
+        // `netdev` reports a gateway whose MAC the OS has not learned as all zeros:
+        // the default route was learned over IPv6 while the gateway's MAC comes from
+        // the IPv4 ARP cache alone, or the cache entry aged out before the sender was
+        // built. A frame cannot be addressed there, so the gateway is treated like a
+        // cold on-link neighbour: `None` until an exchange learns it, then served
+        // from the cache.
         let next_hop_mac = resolved_gateway_mac(gw_mac)
             .or_else(|| self.cache.get(&(iface.name.clone(), next_hop)).copied());
 
@@ -292,44 +277,38 @@ impl NeighborResolver {
     }
 }
 
-/// How long a hardware address heard for a neighbour stays good enough to
-/// frame a probe to it without asking again.
+/// How long a hardware address heard for a neighbour is trusted for framing probes
+/// without asking again.
 ///
-/// Asking again is not free, and on some links not reliable. A client on
-/// Wi-Fi in power save has an ARP request, which is broadcast, held by the
-/// access point until the next DTIM beacon, a delivery that can take longer
-/// than the whole resolution waits; its replies, which are unicast, come back
-/// at once. Such a host answers a sweep that asks it for seconds and then
-/// fails a resolution that allows half of one, so the address a sweep has just
-/// heard must be the one its port probes use, as the kernel's own table would
-/// serve it.
+/// Asking again is not free, and on some links not reliable. An access point holds a
+/// broadcast ARP request for a Wi-Fi client in power save until the next DTIM beacon,
+/// which can take longer than a resolution waits, while its unicast replies come back
+/// at once. Such a host answers a sweep that waits seconds and fails a resolution that
+/// allows half of one, so port probes must use the address the sweep just heard.
 ///
-/// Two minutes, because the entry has to outlast the gap between a sweep and
-/// every pass that follows it on the same host, and because the one way an
-/// entry goes wrong, the address moving to another machine, is rarer than
-/// that on any segment a scan is run from. The kernels' own tables are no
-/// stricter: Linux goes on framing to an entry for minutes while it
-/// re-confirms it, and macOS keeps one for twenty.
+/// Two minutes: long enough to outlast the gap between a sweep and the passes that
+/// follow on the same host, and the one way an entry goes wrong, the address moving to
+/// another machine, is rarer than that. The kernels are no stricter: Linux keeps
+/// framing to an entry for minutes while it re-confirms it, and macOS keeps one for
+/// twenty.
 const LEARNED_NEIGHBOR_TTL: Duration = Duration::from_secs(120);
 
 /// The hardware addresses this process has heard its neighbours claim, by
 /// `(interface, address)`.
 ///
-/// One table for the whole process rather than one per sender, because what
-/// it holds is a fact about the link and not about any one scan: every
-/// transport a scan opens builds a sender of its own, and each of them asking
-/// afresh for an address the discovery sweep heard a moment ago is both
-/// wasted time and, on a link that delivers broadcast late, a lost host. The
-/// kernel's neighbour table is shared for the same reason.
+/// One table per process, like the kernel's neighbour table, since it holds facts
+/// about the link. Every transport a scan opens builds its own sender, and each asking
+/// again for an address the discovery sweep just heard wastes time and, on a link that
+/// delivers broadcast late, loses a host.
 ///
-/// Written by whatever hears a neighbour give its address, an ARP frame read
-/// by a sweep or a resolution a sender ran, and read by every sender before it
-/// asks. Nothing older than [`LEARNED_NEIGHBOR_TTL`] is framed to; an older
-/// entry says only where to ask first. See [`heard_neighbor`].
+/// Written by whatever hears a neighbour give its address (an ARP frame read by a
+/// sweep, or a sender's resolution) and read by every sender before it asks. Nothing
+/// older than [`LEARNED_NEIGHBOR_TTL`] is framed to; an older entry only says where to
+/// ask first. See [`heard_neighbor`].
 static LEARNED_NEIGHBORS: Mutex<LearnedNeighbors> = Mutex::new(LearnedNeighbors::new());
 
-/// The table behind [`learn_neighbor`] and [`learned_neighbor`], apart from
-/// the process's one instance so it can be tested with a clock of its own.
+/// The table behind [`learn_neighbor`] and [`learned_neighbor`], separate from the
+/// process's instance so it can be tested with its own clock.
 struct LearnedNeighbors {
     heard: Option<HashMap<(String, IpAddr), (MacAddr, Instant)>>,
 }
@@ -356,11 +335,10 @@ impl LearnedNeighbors {
     }
 }
 
-/// Records that `address` on `interface` is held by `mac`, as a neighbour has
-/// just said.
+/// Records that `address` on `interface` is held by `mac`, as a neighbour just said.
 ///
-/// A broadcast or multicast address is not recorded: no neighbour holds one,
-/// and a frame sent to it would reach every host on the segment.
+/// Broadcast and multicast addresses are not recorded: no neighbour holds one, and a
+/// frame sent to it would reach every host on the segment.
 pub(crate) fn learn_neighbor(interface: &str, address: IpAddr, mac: MacAddr) {
     learn_neighbor_at(interface, address, mac, Instant::now());
 }
@@ -376,13 +354,12 @@ pub(crate) fn learn_neighbor_at(interface: &str, address: IpAddr, mac: MacAddr, 
         .learn(interface, address, mac, at);
 }
 
-/// The hardware address a neighbour last gave for `address` on `interface`,
-/// however long ago.
+/// The hardware address a neighbour last gave for `address` on `interface`, however
+/// long ago.
 ///
-/// Not good enough to frame a probe to once it is older than
-/// [`LEARNED_NEIGHBOR_TTL`], which is what [`learned_neighbor`] answers, but
-/// the address to ask the neighbour at when it is asked again: a frame for one
-/// host reaches a client asleep on Wi-Fi sooner than a broadcast does.
+/// Past [`LEARNED_NEIGHBOR_TTL`] it is not used for framing probes (see
+/// [`learned_neighbor`]), but it is where to ask the neighbour again: a unicast frame
+/// reaches a client asleep on Wi-Fi sooner than a broadcast does.
 pub(crate) fn heard_neighbor(interface: &str, address: IpAddr) -> Option<MacAddr> {
     LEARNED_NEIGHBORS
         .lock()
@@ -391,7 +368,7 @@ pub(crate) fn heard_neighbor(interface: &str, address: IpAddr) -> Option<MacAddr
 }
 
 /// The hardware address a neighbour gave for `address` on `interface` within
-/// [`LEARNED_NEIGHBOR_TTL`], if one did.
+/// [`LEARNED_NEIGHBOR_TTL`], if any.
 pub(crate) fn learned_neighbor(interface: &str, address: IpAddr) -> Option<MacAddr> {
     LEARNED_NEIGHBORS
         .lock()
@@ -399,9 +376,9 @@ pub(crate) fn learned_neighbor(interface: &str, address: IpAddr) -> Option<MacAd
         .recall(interface, address, Instant::now())
 }
 
-/// Converts a `netdev` interface into an [`InterfaceInfo`], returning `None`
-/// for interfaces the Ethernet sender can't drive: those without a MAC
-/// (tunnels, loopback) or without any assigned address.
+/// Converts a `netdev` interface into an [`InterfaceInfo`], returning `None` for
+/// interfaces the Ethernet sender can't drive: those without a MAC (tunnels, loopback)
+/// or without any assigned address.
 fn interface_info(iface: netdev::Interface) -> Option<InterfaceInfo> {
     let mac = iface.mac_addr.map(to_pnet_mac)?;
     if iface.ipv4.is_empty() && iface.ipv6.is_empty() {
@@ -440,22 +417,17 @@ fn interface_info(iface: netdev::Interface) -> Option<InterfaceInfo> {
     })
 }
 
-/// The gateway MAC a frame can be addressed to, or `None` when it is still
-/// unknown.
+/// The gateway MAC a frame can be addressed to, or `None` when it is unknown.
 ///
-/// `netdev` reports a gateway whose hardware address it has not resolved as all
-/// zeros rather than as absent. That sentinel is the single fact this converts:
-/// an all-zero address names no station on the segment, so a frame built with it
-/// as its destination is broadcast to no one and answered by no one, while the
-/// send reports success and nothing falls back. Read here as "unknown", the
-/// gateway is resolved by the sender before a frame carries it, exactly as an
-/// on-link neighbour's address is.
+/// `netdev` reports an unresolved gateway's hardware address as all zeros. A frame
+/// addressed there reaches no station and is never answered, while the send reports
+/// success and nothing falls back. Read as unknown, the gateway is resolved by the
+/// sender first, like an on-link neighbour.
 fn resolved_gateway_mac(mac: MacAddr) -> Option<MacAddr> {
     (mac != MacAddr::ZERO).then_some(mac)
 }
 
-/// The same six bytes in the type the packet builders take. Two crates spell one
-/// address, and this is the single place the spelling changes.
+/// The same six bytes in the type the packet builders take.
 fn to_pnet_mac(mac: netdev::MacAddr) -> MacAddr {
     let [a, b, c, d, e, f] = mac.octets();
     MacAddr::new(a, b, c, d, e, f)
@@ -477,7 +449,7 @@ mod tests {
     const IFACE_MAC: MacAddr = MacAddr::new(0x02, 0, 0, 0, 0, 0x01);
     const GW_MAC: MacAddr = MacAddr::new(0x02, 0, 0, 0, 0, 0xFE);
 
-    /// en0's address, and what the tests' kernel sources from by default.
+    /// en0's address, and the tests' kernel's default source.
     const EN0: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
     /// An address only a tunnel holds.
     const TUNNEL: IpAddr = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2));
@@ -538,10 +510,9 @@ mod tests {
         assert_eq!(route.next_hop_mac, None); // must be ARP-resolved
     }
 
-    /// The off-link arm would otherwise answer for loopback with the default
-    /// gateway, and a probe framed to that gateway with `127.0.0.1` in its IP
-    /// header is one nothing ever replies to. A port scan reads that silence as
-    /// `NoReply`, so the wrong answer here reaches the user as a wrong verdict.
+    /// The off-link arm would answer loopback with the default gateway, and a probe
+    /// framed to it with `127.0.0.1` in its IP header is never answered. A port scan
+    /// reads that as `NoReply`, a wrong verdict.
     #[test]
     fn loopback_has_no_ethernet_route() {
         let resolver = resolver(vec![ethernet_iface()]);
@@ -590,11 +561,10 @@ mod tests {
 
     /// **The frame leaves by the interface the packet's source belongs to.**
     ///
-    /// Two Ethernet interfaces with a gateway each, and the probe sourced from
-    /// the second: the kernel would send it out of the second, so the frame
-    /// does. Picking the first interface with a gateway instead puts the second
-    /// interface's address on the first one's wire, where the reply comes back
-    /// to an address that link does not hold.
+    /// Two Ethernet interfaces with a gateway each, and the probe sourced from the
+    /// second: the kernel would send it out of the second, so the frame does. On the
+    /// first interface's wire, the reply would come back to an address that link does
+    /// not hold.
     #[test]
     fn a_probe_leaves_by_the_interface_holding_its_source() {
         let resolver = resolver(vec![ethernet_iface(), second_iface()]);
@@ -608,21 +578,19 @@ mod tests {
 
     /// **A probe the kernel sends through a tunnel has no Ethernet route.**
     ///
-    /// Under a VPN the routing table sends a lab target, or everything, through
-    /// the tunnel, and the scan sources its probe from the tunnel's address.
-    /// Framed onto the physical link instead, the probe reaches the LAN router
-    /// with the tunnel's address in it: the target only the tunnel reaches is
-    /// never asked, and a full tunnel is bypassed without a word. Refused
-    /// here, the send falls back to the socket, and the kernel carries it
-    /// through the tunnel.
+    /// Under a VPN the routing table sends a lab target, or everything, through the
+    /// tunnel, and the scan sources its probe from the tunnel's address. Framed onto
+    /// the physical link, the probe would reach the LAN router with the tunnel's
+    /// address in it, missing the target and silently bypassing a full tunnel. Refused
+    /// here, the send falls back to the socket and the kernel uses the tunnel.
     #[test]
     fn a_probe_sourced_from_a_tunnel_has_no_ethernet_route() {
         let resolver = resolver(vec![ethernet_iface()]);
         assert!(resolver.resolve_from(TUNNEL, v4(10, 10, 11, 23)).is_none());
     }
 
-    /// The same question without a source: where the routing table would send
-    /// the destination through the tunnel, there is no Ethernet route to it.
+    /// The same without a source: where the routing table would send the destination
+    /// through the tunnel, there is no Ethernet route.
     #[test]
     fn a_destination_the_kernel_sends_through_a_tunnel_has_no_ethernet_route() {
         let resolver = resolver_with(vec![ethernet_iface()], Some(TUNNEL));
@@ -632,10 +600,9 @@ mod tests {
         assert_eq!(direct.resolve(v4(1, 1, 1, 1)).unwrap().interface, "en0");
     }
 
-    /// A spoofed source, as the idle scan's zombie address is, belongs to no
-    /// interface. It leaves the way the kernel would route the destination, and
-    /// the route's own address, which an ARP request is sent from, is the
-    /// interface's rather than the spoofed one.
+    /// A spoofed source, such as the idle scan's zombie address, belongs to no
+    /// interface. It leaves the way the kernel would route the destination, and the
+    /// route's own address, which an ARP request is sent from, is the interface's.
     #[test]
     fn a_spoofed_source_leaves_the_way_the_kernel_routes_the_target() {
         let spoofed = v4(198, 51, 100, 77);
@@ -658,25 +625,22 @@ mod tests {
         );
     }
 
-    /// `netdev` reports a gateway whose MAC it has not learned as all zeros, and
-    /// that address is read as "unknown" rather than carried onto the wire.
+    /// `netdev` reports a gateway whose MAC it has not learned as all zeros, which is
+    /// read as unknown.
     #[test]
     fn an_unknown_gateway_mac_is_read_as_unresolved() {
         assert_eq!(resolved_gateway_mac(MacAddr::ZERO), None);
         assert_eq!(resolved_gateway_mac(GW_MAC), Some(GW_MAC));
     }
 
-    /// A gateway with no learned MAC does not send the scan's frames to the
-    /// all-zero address `netdev` fills an unresolved neighbour with.
+    /// A gateway with no learned MAC does not get the scan's frames sent to the
+    /// all-zero address.
     ///
-    /// The default route names the gateway but its hardware address is unknown:
-    /// on macOS an IPv6-only default route learns the gateway over IPv6 while
-    /// the MAC comes from the IPv4 ARP cache, and any gateway aged out of that
-    /// cache when the sender is built looks the same. Carried on as a real next
-    /// hop, the zero address is one every frame is addressed to and none is
-    /// answered from, the send reports success, and no fallback runs, so the
-    /// host reads as down. The route instead comes back asking the sender to
-    /// resolve the gateway, the way an on-link neighbour is resolved.
+    /// On macOS an IPv6-only default route learns the gateway over IPv6 while the MAC
+    /// comes from the IPv4 ARP cache, and a gateway aged out of that cache looks the
+    /// same. Used as a real next hop, the zero address answers nothing, the send
+    /// reports success and no fallback runs, so the host reads as down. The route
+    /// comes back asking the sender to resolve the gateway instead.
     #[test]
     fn an_off_link_gateway_with_an_unknown_mac_is_resolved_not_sent_to_zeros() {
         let mut iface = ethernet_iface();
@@ -698,8 +662,8 @@ mod tests {
         );
     }
 
-    /// Once the gateway's MAC has been learned it comes back from the cache, so
-    /// an unknown-MAC gateway is resolved once and not on every probe after.
+    /// Once learned, the gateway's MAC comes from the cache, so it is resolved once
+    /// and not on every probe.
     #[test]
     fn a_learned_gateway_mac_is_served_from_the_cache() {
         let mut iface = ethernet_iface();
@@ -736,9 +700,8 @@ mod tests {
         );
     }
 
-    /// A link-local address is valid only on its own segment, so an off-link
-    /// probe sourced from one dies at the router; saying so is better than
-    /// sending it.
+    /// A link-local address is valid only on its own segment, so an off-link probe
+    /// sourced from one dies at the router and is refused.
     #[test]
     fn a_link_local_source_has_no_off_link_route() {
         let link_local = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x50));
@@ -761,8 +724,8 @@ mod tests {
         );
     }
 
-    /// An off-link IPv6 route is taken from the global address the probe is
-    /// sourced from, through the interface's IPv6 gateway.
+    /// An off-link IPv6 route is taken from the probe's global source address,
+    /// through the interface's IPv6 gateway.
     #[test]
     fn an_off_link_v6_probe_routes_via_the_v6_gateway() {
         let global = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xb1a0));
@@ -826,8 +789,8 @@ mod tests {
         assert_eq!(table.recall("en1", address, t0), None, "another link");
     }
 
-    /// No neighbour holds a broadcast or multicast address, so neither is
-    /// taken as one; framing a probe to it would reach the whole segment.
+    /// No neighbour holds a broadcast or multicast address, so neither is learned;
+    /// framing a probe to it would reach the whole segment.
     #[test]
     fn a_group_address_is_not_learned_as_a_neighbour() {
         let address = v4(192, 0, 2, 41);

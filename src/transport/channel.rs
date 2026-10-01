@@ -8,23 +8,21 @@
 
 //! # Sending and hearing whole frames on one segment
 //!
-//! What a local sweep holds: somewhere to put Ethernet frames, and the frames
-//! that arrived on the same link.
+//! What a local sweep holds: somewhere to put Ethernet frames, and the frames that
+//! arrived on the same link.
 //!
 //! ## Two handles on one library
 //!
-//! The send half is a [`capture::FrameSender`], a `libpcap` handle that puts
-//! on the wire a frame this crate built byte for byte. The receive half is a
-//! [`capture`], because everything that makes a receive path trustworthy lives
-//! there: a BPF filter the *kernel* applies, the counters saying what the kernel
-//! discarded anyway, and a stop flag every reader thread checks so that
-//! dropping the handle ends them.
+//! The send half is a [`capture::FrameSender`], a `libpcap` handle that puts a frame
+//! this crate built byte for byte on the wire. The receive half is a [`capture`],
+//! which brings a BPF filter the kernel applies, counters for what the kernel
+//! discarded anyway, and a stop flag every reader thread checks so that dropping the
+//! handle ends them.
 //!
-//! Two handles, because a reader thread parked waiting for frames cannot share
-//! a borrow with whoever is sending, and the filter, the counters and the stop
-//! flag are properties of the receive side alone. One library, because a
-//! second one opened on the same link to send would come with a receiver of its
-//! own, and a receiver nobody reads is a kernel buffer nobody drains.
+//! Two handles, because a reader thread parked waiting for frames cannot share a
+//! borrow with the sender. One library, because a second one opened on the link to
+//! send would bring a receiver of its own, and a receiver nobody reads is a kernel
+//! buffer nobody drains.
 
 use crate::system::interface::Link;
 
@@ -33,22 +31,20 @@ use crate::transport::capture::{self, CaptureGuard, CaptureOptions, FrameSink, F
 
 /// How many frames may wait for the consumer at once.
 ///
-/// A sweep reads its queue inside the same loop that paces its probes, so a tick
-/// spent sending is a tick not spent receiving, and the queue is what covers
-/// that gap. Sized for a burst, since every host on a `/24` answering an ARP
-/// sweep at once is a few hundred frames, rather than for a sustained rate, which
-/// the caller's filter is what keeps small.
+/// A sweep reads its queue inside the loop that paces its probes, so the queue covers
+/// the ticks spent sending. Sized for a burst: every host on a `/24` answering an ARP
+/// sweep at once is a few hundred frames. The caller's filter keeps the sustained rate
+/// small.
 const QUEUE_DEPTH: usize = 1024;
 
-/// A live Ethernet channel: somewhere to put frames, and a stream of the frames
-/// that arrived.
+/// A live Ethernet channel: somewhere to put frames, and a stream of the frames that
+/// arrived.
 ///
-/// This is the link-layer counterpart to
-/// [`ProbeTransport`](crate::transport::probe::ProbeTransport), and deliberately
-/// not the same type. A probe transport carries Layer-4 segments with the link
-/// and IP headers already stripped, which is all the SYN and UDP scanners need.
-/// Local discovery needs the whole frame: it identifies a neighbour by the
-/// Ethernet source MAC, and reads ARP, which has no Layer-4 segment to strip to.
+/// The link-layer counterpart to
+/// [`ProbeTransport`](crate::transport::probe::ProbeTransport), which carries Layer-4
+/// segments with the link and IP headers stripped. Local discovery needs the whole
+/// frame: it identifies a neighbour by the Ethernet source MAC, and reads ARP, which
+/// has no Layer-4 segment.
 #[non_exhaustive]
 pub struct EthernetHandle {
     /// Where a frame goes to reach the wire, link header included.
@@ -64,28 +60,23 @@ pub struct EthernetHandle {
 impl EthernetHandle {
     /// What the receive path's kernel buffer has done so far.
     ///
-    /// A sweep reports this alongside its own counters because the two answer
-    /// different halves of one question. The sweep knows how many replies it
-    /// saw; only this knows how many arrived and were discarded before it could.
-    /// A frame lost here is indistinguishable from a host that never answered,
-    /// which makes it the one loss a sweep has to be told about rather than left
-    /// to infer.
+    /// A sweep knows how many replies it saw; only this knows how many arrived and
+    /// were discarded before it could read them. A frame lost here looks exactly like
+    /// a host that never answered, so a sweep reports these counts with its own.
     ///
-    /// `None` for a handle with no capture behind it, so a synthetic frame
-    /// stream never reports a clean receive path it never had.
+    /// `None` for a handle with no capture behind it.
     pub fn capture_counts(&self) -> Option<CaptureCounts> {
         self.capture.counts()
     }
 
-    /// Builds a handle over a caller-supplied sender and frame stream, opening
-    /// no channel and starting no capture.
+    /// Builds a handle over a caller-supplied sender and frame stream, opening no
+    /// channel and starting no capture.
     ///
     /// The link-layer twin of
     /// [`ProbeTransport::from_parts`](crate::transport::probe::ProbeTransport::from_parts):
     /// `tx` observes the frames a scanner emits, and whatever is pushed onto the
-    /// sending half of `rx` arrives as though it had been captured off the
-    /// interface. That is what lets ARP and NDP discovery be tested without an
-    /// interface or the privileges to open one.
+    /// sending half of `rx` arrives as though captured off the interface. Lets ARP and
+    /// NDP discovery be tested without an interface or privileges.
     ///
     /// Requires the `test-support` feature outside this crate.
     #[cfg(any(test, feature = "test-support"))]
@@ -100,17 +91,12 @@ impl EthernetHandle {
 
 /// Why a link-layer channel could not be opened.
 ///
-/// The variants name the interface, because a scan opens one channel per segment
-/// it means to sweep and "opening a channel failed" is not actionable without
-/// knowing which. They name it once: the capture layer's error names the link
-/// too, so what follows the name here is that error's reason alone, and the
-/// whole error stays reachable as the source.
+/// Each variant names the interface once; the capture layer's error, kept as the
+/// source, contributes only its reason to the message.
 ///
-/// Two halves open here and either can refuse, so which one did is the whole of
-/// what this says. Both usually fail for the same underlying reason, that sending
-/// and receiving raw frames needs root everywhere this engine runs, and a person
-/// reading the message needs to know whether their probes would have
-/// left, not only that something went wrong.
+/// Says which half refused. Both usually fail for the same reason, that raw frames
+/// need root everywhere this engine runs, but the reader needs to know whether
+/// probes would have left.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ChannelError {
@@ -128,11 +114,9 @@ pub enum ChannelError {
     },
 
     /// The send half opened but nothing could be captured on the interface, so
-    /// probes would leave and no answer could ever be heard.
+    /// probes would leave and no answer could be heard.
     ///
-    /// Separate from [`Send`](Self::Send) because it fails at a different point
-    /// and costs something different: the link is already carrying this scan's
-    /// frames by the time this happens.
+    /// By the time this happens the link may already be carrying this scan's frames.
     #[error(
         "nothing could be captured on {interface}, so no reply could be heard: {}",
         source.reason()
@@ -147,21 +131,16 @@ pub enum ChannelError {
 }
 
 /// Opens both halves on one interface: a link-layer sender, and a capture of the
-/// frames that link carries which `filter` admits.
+/// frames on that link which `filter` admits.
 ///
-/// The capture is promiscuous and `filter` is what narrows it, two halves of one
-/// decision, argued at
+/// The capture is promiscuous and `filter` narrows it; see
 /// [`CaptureOptions::for_link_traffic`](crate::transport::capture::CaptureOptions::for_link_traffic).
 ///
-/// The filter belongs to the caller, since what a frame is worth is decided by
-/// whoever reads it. This module knows how to open a capture and
-/// nothing about ARP, neighbour discovery or DHCP; a filter written here would
-/// be a scanner's knowledge kept one layer below the scanner, and would go stale
-/// the first time a reader was added without anybody thinking to look down here.
+/// The filter is the caller's, since the reader decides what a frame is worth. This
+/// module knows nothing about ARP, neighbour discovery or DHCP.
 pub fn start_capture(link: &Link, filter: &str) -> Result<EthernetHandle, ChannelError> {
-    // Two handles on the one library, rather than one handle each on two. See
-    // `FrameSender`: a `pnet` channel opened for the sending half would come
-    // with a receiver this discards, leaving a kernel buffer nothing drains.
+    // One library, two handles. See `FrameSender`: a `pnet` channel opened to send
+    // would bring a receiver nothing drains.
     let tx = capture::FrameSender::open(link.name()).map_err(|source| ChannelError::Send {
         interface: link.name().to_owned(),
         source,
@@ -206,10 +185,8 @@ mod tests {
 
     /// A channel that could not hear names its link once, and says why.
     ///
-    /// The capture layer's error names the link as well, and quoted whole it
-    /// made the line read the name twice around a second statement of the same
-    /// failure: `nothing could be captured on en0, so no reply could be heard:
-    /// no link could be captured on, so nothing could be heard: en0: ...`.
+    /// The capture layer's error also names the link; quoting it whole would print
+    /// the name twice around a second statement of the same failure.
     #[test]
     fn a_channel_that_could_not_hear_names_its_link_once() {
         let refused = ChannelError::Receive {

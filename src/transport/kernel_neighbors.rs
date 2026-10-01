@@ -8,35 +8,29 @@
 
 //! # Where the kernel's own address resolution stands
 //!
-//! A raw socket hands a probe to the kernel, and for an on-link destination the
-//! kernel has to learn the neighbour's hardware address before anything leaves.
-//! Linux says nothing to the socket about how that goes. A write to a
-//! neighbour it is still asking for is accepted and queued on the neighbour;
-//! when the asking fails, three unanswered requests a second apart, the queue
-//! is thrown away and the only word of it is an ICMP host unreachable the
-//! kernel addresses to itself. The next write starts the asking over, so a
-//! neighbour that never answers accepts every probe a scan sends it and
-//! delivers none.
+//! A raw socket hands a probe to the kernel, and for an on-link destination the kernel
+//! must learn the neighbour's hardware address before anything leaves. Linux tells the
+//! socket nothing about how that goes. A write to a neighbour still being resolved is
+//! accepted and queued; when resolution fails (three unanswered requests a second
+//! apart) the queue is discarded, and the only trace is an ICMP host unreachable the
+//! kernel sends to itself. The next write starts resolution again, so a neighbour that
+//! never answers accepts every probe a scan sends it and delivers none.
 //!
-//! Two things follow for a scan, and both are wrong without this module. The
-//! probes to a dead neighbour read as silence, which is what a firewall
-//! produces, where the truth is that none of them left. And every queued write
-//! is charged to the socket that made it until the queue is thrown away, so a
-//! scan that keeps writing to a few dead neighbours fills its own send buffer
-//! and the kernel refuses the socket's writes to every host with `ENOBUFS`,
-//! the live ones included.
+//! For a scan this means two things. Probes to a dead neighbour read as silence, as if
+//! filtered, when none of them left. And every queued write is charged to the socket
+//! until the queue is discarded, so a scan that keeps writing to a few dead neighbours
+//! fills its own send buffer and the kernel refuses its writes to every host with
+//! `ENOBUFS`, live ones included.
 //!
-//! The kernel does keep the state it will not report to the socket: the
-//! neighbour table holds each entry's resolution state, and rtnetlink reads it.
-//! [`KernelNeighbors`] is that read, taken as a whole-table snapshot and
-//! remembered, since the question is asked of many addresses at once and a
-//! table is small. A host behind a gateway has no entry of its own, and its
-//! writes queue on the gateway's, so it is read through the gateway the
-//! routing table names for it, asked of rtnetlink the same way.
+//! The kernel's neighbour table does hold each entry's resolution state, and
+//! rtnetlink reads it. [`KernelNeighbors`] takes a whole-table snapshot and remembers
+//! it, since many addresses are asked about at once and the table is small. A host
+//! behind a gateway has no entry of its own and its writes queue on the gateway's, so
+//! it is read through the gateway the routing table names for it, also via rtnetlink.
 //!
-//! Linux only. macOS refuses a write to a neighbour it gave up on with
-//! `EHOSTDOWN`, which the send path reads as a hold-down lasting
-//! [`hold_down`], and the frame path runs its own resolution and remembers it.
+//! Linux only. macOS refuses a write to a neighbour it gave up on with `EHOSTDOWN`,
+//! which the send path treats as a hold-down lasting [`hold_down`], and the frame path
+//! runs and remembers its own resolution.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -47,21 +41,20 @@ use std::time::{Duration, Instant};
 /// kernel's neighbour table says or as a frame sender's own resolution does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum NeighborState {
-    /// The address was asked for and nobody answered (the kernel's
-    /// `FAILED`). A write to it on Linux starts the asking over and is queued
-    /// behind it.
+    /// The address was asked for and nobody answered (the kernel's `FAILED`). On
+    /// Linux a write to it restarts resolution and is queued behind it.
     Failed,
-    /// The address is being asked for and nobody has answered yet (the
-    /// kernel's `INCOMPLETE`). A write to it on Linux is queued, not sent.
+    /// The address is being asked for and nobody has answered yet (the kernel's
+    /// `INCOMPLETE`). On Linux a write to it is queued.
     Resolving,
-    /// A hardware address is held for it, confirmed lately or not. A write to
-    /// it leaves.
+    /// A hardware address is held for it, recently confirmed or not. A write to it
+    /// leaves.
     Resolved,
 }
 
 impl NeighborState {
-    /// Whether a write to a neighbour in this state is held by the kernel
-    /// rather than sent.
+    /// Whether the kernel holds a write to a neighbour in this state instead of
+    /// sending it.
     pub(crate) fn is_unresolved(self) -> bool {
         self != Self::Resolved
     }
@@ -85,10 +78,9 @@ pub(crate) struct KernelNeighbors {
     read: Reader,
     snapshot: Mutex<Option<(Instant, NeighborTable)>>,
     route: Router,
-    /// Each address's next hop as the routing table gave it, asked once per
-    /// address. A scan's routes do not move under it, and one asked about
-    /// thousands of hosts behind one gateway would otherwise ask the kernel
-    /// thousands of times for the same answer.
+    /// Each address's next hop from the routing table, asked once per address.
+    /// Routes do not move during a scan, and thousands of hosts behind one gateway
+    /// would otherwise mean thousands of identical lookups.
     next_hops: Mutex<HashMap<IpAddr, Option<IpAddr>>>,
 }
 
@@ -105,8 +97,8 @@ impl KernelNeighbors {
         }
     }
 
-    /// A table served by `read`: the kernel's, or a test's. No address has a
-    /// next hop until [`routing`](Self::routing) says how to find one.
+    /// A table served by `read`: the kernel's, or a test's. No address has a next
+    /// hop until [`routing`](Self::routing) supplies a lookup.
     #[cfg(any(target_os = "linux", test))]
     pub(crate) fn with_reader(read: Reader) -> Self {
         Self {
@@ -117,12 +109,11 @@ impl KernelNeighbors {
         }
     }
 
-    /// A table standing in for a kernel that asks for a neighbour only once a
-    /// probe is written to it, reading `sent` for the writes: an address in
-    /// `held` is resolved from the start, one in `live` is resolved once
-    /// written to, and any other is still being asked for once written to,
-    /// the kernel's `INCOMPLETE` for a neighbour that does not answer. Before
-    /// its first write an address outside `held` has no entry.
+    /// A table standing in for a kernel that resolves a neighbour only once a probe
+    /// is written to it, reading `sent` for the writes. An address in `held` is
+    /// resolved from the start; one in `live` resolves once written to; any other
+    /// stays `INCOMPLETE` once written to. Before its first write an address outside
+    /// `held` has no entry.
     #[cfg(test)]
     pub(crate) fn asking_on_write(
         sent: std::sync::Arc<Mutex<Vec<crate::transport::probe::SentProbe>>>,
@@ -161,19 +152,15 @@ impl KernelNeighbors {
         self
     }
 
-    /// The neighbour a write to `address` waits on the resolution of: the
-    /// gateway the kernel routes it through, or `address` itself where the
-    /// route has none.
+    /// The neighbour whose resolution a write to `address` waits on: the gateway the
+    /// kernel routes it through, or `address` itself where the route has none.
     ///
-    /// What makes a host behind a gateway readable at all. It has no entry of
-    /// its own in the neighbour table, and its writes queue on the gateway's
-    /// as an on-link host's queue on its own: a gateway that never answers
-    /// takes every probe routed through it, charged to the socket, and throws
-    /// them away three seconds later.
+    /// A host behind a gateway has no neighbour-table entry of its own; its writes
+    /// queue on the gateway's. A gateway that never answers takes every probe routed
+    /// through it, charged to the socket, and discards them three seconds later.
     ///
-    /// `None` where the routing table names no ordinary route for `address`,
-    /// one to this host's own address among them, or could not be read:
-    /// either way no neighbour stands between a write and the wire.
+    /// `None` where the routing table names no ordinary route for `address` (this
+    /// host's own address included) or could not be read.
     pub(crate) fn next_hop(&self, address: IpAddr) -> Option<IpAddr> {
         let mut next_hops = self.next_hops.lock().ok()?;
         *next_hops
@@ -183,17 +170,15 @@ impl KernelNeighbors {
 
     /// What the table says about `address`, as read no earlier than `since`.
     ///
-    /// The remembered snapshot answers when it was taken at or after `since`,
-    /// and the table is read afresh otherwise. So a caller asking about a
-    /// neighbour its own write created passes the instant of that write, and
-    /// is never answered from a table read before the entry existed.
+    /// The remembered snapshot answers if it was taken at or after `since`; otherwise
+    /// the table is read again. A caller asking about a neighbour its own write
+    /// created passes the instant of that write, so it never sees a table read before
+    /// the entry existed.
     ///
-    /// `None` when the table holds no entry for `address`, which is every
-    /// destination reached through a gateway, and also when it could not be
-    /// read: either way there is nothing to go on. An address held on more than
-    /// one interface, as a link-local one can be, reads as its most resolved
-    /// entry, so a doubt about one link never makes a reachable address read
-    /// dead.
+    /// `None` when the table has no entry for `address` (every destination behind a
+    /// gateway) or could not be read. An address held on more than one interface, as a
+    /// link-local one can be, reads as its most resolved entry, so doubt about one
+    /// link never makes a reachable address read dead.
     pub(crate) fn state(&self, address: IpAddr, since: Instant) -> Option<NeighborState> {
         let mut snapshot = self.snapshot.lock().ok()?;
         let fresh = snapshot.as_ref().is_some_and(|(taken, _)| *taken >= since);
@@ -207,20 +192,20 @@ impl KernelNeighbors {
 }
 
 /// How long a kernel that gave up on a neighbour refuses writes to it, as
-/// [`SendError::HeldDown`](crate::transport::probe::SendError::HeldDown),
-/// before it asks for the neighbour again.
+/// [`SendError::HeldDown`](crate::transport::probe::SendError::HeldDown), before it
+/// tries again.
 ///
-/// XNU's own default, the time `arp_lookup_ip` in `bsd/netinet/in_arp.c` adds
-/// to a route it marks `RTF_REJECT` once its asking runs out.
+/// XNU's default: the time `arp_lookup_ip` in `bsd/netinet/in_arp.c` adds to a route
+/// it marks `RTF_REJECT` once resolution runs out.
 const DEFAULT_HOLD_DOWN: Duration = Duration::from_secs(20);
 
 /// The kernel's hold-down on a neighbour it gave up on: macOS's
-/// `net.link.ether.inet.host_down_time`, read once, and [`DEFAULT_HOLD_DOWN`]
-/// where it cannot be read.
+/// `net.link.ether.inet.host_down_time`, read once, or [`DEFAULT_HOLD_DOWN`] where it
+/// cannot be read.
 ///
-/// Counted by the kernel from the moment it gave up, which comes before any
-/// write it refuses, so a write put off this long from a refusal is past the
-/// hold-down, and is what starts the asking over.
+/// The kernel counts it from the moment it gave up, which precedes any refused write,
+/// so a write delayed this long after a refusal is past the hold-down and restarts
+/// resolution.
 pub(crate) fn hold_down() -> Duration {
     static HOLD_DOWN: OnceLock<Duration> = OnceLock::new();
     *HOLD_DOWN.get_or_init(|| host_down_time().unwrap_or(DEFAULT_HOLD_DOWN))
@@ -232,9 +217,9 @@ fn host_down_time() -> Option<Duration> {
     let mut seconds: libc::c_int = 0;
     let mut size = std::mem::size_of::<libc::c_int>();
 
-    // SAFETY: the name is a NUL-terminated string, `seconds` is a live
-    // `c_int` and `size` names its exact size, which is what this integer
-    // sysctl writes. Nothing is written back to the kernel.
+    // SAFETY: the name is NUL-terminated, `seconds` is a live `c_int` and `size` is
+    // its exact size, which this integer sysctl writes. Nothing is written to the
+    // kernel.
     let code = unsafe {
         libc::sysctlbyname(
             c"net.link.ether.inet.host_down_time".as_ptr(),
@@ -259,9 +244,8 @@ fn host_down_time() -> Option<Duration> {
 // The rtnetlink messages, read as bytes
 // ---------------------------------------------------------------------------
 //
-// Parsed by hand rather than through the kernel's structs, so the reading is a
-// pure function a test on any platform can feed. The numbers are the kernel's
-// ABI and do not move.
+// Parsed by hand so the parsing is a pure function a test on any platform can feed.
+// The numbers are the kernel's ABI.
 
 #[cfg(any(target_os = "linux", test))]
 mod wire {
@@ -280,7 +264,7 @@ mod wire {
     pub(super) const NUD_INCOMPLETE: u16 = 0x01;
     /// `NUD_FAILED`.
     pub(super) const NUD_FAILED: u16 = 0x20;
-    /// `NUD_NONE`: an entry with no state yet, which says nothing either way.
+    /// `NUD_NONE`: an entry with no state yet.
     pub(super) const NUD_NONE: u16 = 0x00;
     /// The length of `struct nlmsghdr`.
     pub(super) const NLMSG_HEADER: usize = 16;
@@ -293,8 +277,8 @@ mod wire {
     pub(super) const RTA_DST: u16 = 1;
     /// `RTA_GATEWAY`: the attribute carrying a route's gateway.
     pub(super) const RTA_GATEWAY: u16 = 5;
-    /// `RTN_UNICAST`: an ordinary route, the one kind a write leaves by
-    /// through a neighbour.
+    /// `RTN_UNICAST`: an ordinary route, the one kind a write leaves by through a
+    /// neighbour.
     pub(super) const RTN_UNICAST: u8 = 1;
     /// The length of `struct rtmsg`.
     pub(super) const RTMSG: usize = 12;
@@ -316,9 +300,9 @@ mod wire {
 
     /// Reads one buffer of netlink messages into `table`.
     ///
-    /// Every length here is the kernel's and is bounds-checked anyway: a message
-    /// claiming more than remains ends the walk, and one claiming less than its
-    /// own header does too, so no buffer can walk it off the end or into a loop.
+    /// Every length is bounds-checked: a message claiming more than remains, or less
+    /// than its own header, ends the walk, so no buffer can run it off the end or
+    /// into a loop.
     pub(super) fn parse(buffer: &[u8], table: &mut NeighborTable) -> Batch {
         let mut batch = Batch::default();
         let mut offset = 0;
@@ -339,7 +323,7 @@ mod wire {
                     let errno = body
                         .get(0..4)
                         .map(|bytes| i32::from_ne_bytes(bytes.try_into().expect("four bytes")));
-                    // An error of zero is an acknowledgement, not a failure.
+                    // An error of zero is an acknowledgement.
                     if let Some(errno) = errno.filter(|errno| *errno != 0) {
                         batch.error = Some(errno);
                         batch.done = true;
@@ -374,7 +358,7 @@ mod wire {
 
     /// Reads the answer to one `RTM_GETROUTE`.
     ///
-    /// Bounds-checked as [`parse`] is, so no buffer can walk it off the end.
+    /// Bounds-checked as [`parse`] is.
     pub(super) fn parse_route(buffer: &[u8]) -> Route {
         let mut offset = 0;
         while offset + NLMSG_HEADER <= buffer.len() {
@@ -481,7 +465,7 @@ mod linux {
     };
 
     /// How much of a dump one read takes. The kernel sizes each batch to the
-    /// reader's buffer, and a page's worth of entries per read is plenty.
+    /// reader's buffer; a page of entries per read is plenty.
     const READ_BUFFER: usize = 32 * 1024;
 
     /// The whole neighbour table, both families, over a netlink socket opened
@@ -501,8 +485,8 @@ mod linux {
         let mut table = NeighborTable::new();
         let mut buffer = vec![0u8; READ_BUFFER];
         loop {
-            // SAFETY: `buffer` is `READ_BUFFER` bytes and that is the length
-            // passed, so the kernel writes no more than was allocated.
+            // SAFETY: `buffer` is `READ_BUFFER` bytes and that length is passed,
+            // so the kernel writes no more than was allocated.
             let read = unsafe {
                 libc::recv(
                     socket.as_raw_fd(),
@@ -531,8 +515,8 @@ mod linux {
         }
     }
 
-    /// The neighbour a write to `address` is framed to, as a route lookup
-    /// names it: see [`KernelNeighbors::next_hop`](super::KernelNeighbors::next_hop).
+    /// The neighbour a write to `address` is framed to, from a route lookup; see
+    /// [`KernelNeighbors::next_hop`](super::KernelNeighbors::next_hop).
     pub(super) fn next_hop(address: IpAddr) -> std::io::Result<Option<IpAddr>> {
         // One `nlmsghdr` asking for `RTM_GETROUTE`, an `rtmsg` naming the
         // family and a full-length destination, and the destination itself as
@@ -558,8 +542,8 @@ mod linux {
 
         let mut buffer = vec![0u8; READ_BUFFER];
         let read = loop {
-            // SAFETY: `buffer` is `READ_BUFFER` bytes and that is the length
-            // passed, so the kernel writes no more than was allocated.
+            // SAFETY: `buffer` is `READ_BUFFER` bytes and that length is passed,
+            // so the kernel writes no more than was allocated.
             let read = unsafe {
                 libc::recv(
                     socket.as_raw_fd(),
@@ -583,11 +567,11 @@ mod linux {
         })
     }
 
-    /// Opens a netlink socket to the kernel and sends it `request`, handing
-    /// back the socket its answer is read from.
+    /// Opens a netlink socket, sends it `request`, and returns the socket to read
+    /// the answer from.
     fn ask(request: &[u8]) -> std::io::Result<OwnedFd> {
-        // SAFETY: plain socket creation; the descriptor is owned at once so
-        // every return path below closes it.
+        // SAFETY: plain socket creation; the descriptor is owned at once so every
+        // return path closes it.
         let fd = unsafe {
             libc::socket(
                 libc::AF_NETLINK,
@@ -642,9 +626,8 @@ mod tests {
 
     const ON_LINK: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));
 
-    /// The hold-down is read from the running kernel where it keeps one, so a
-    /// machine tuned away from the default is held for what it holds. A name
-    /// the kernel does not know would fall back to the default without a word.
+    /// The hold-down is read from the running kernel where it keeps one. A name the
+    /// kernel does not know would silently fall back to the default.
     #[cfg(target_os = "macos")]
     #[test]
     fn the_hold_down_is_the_kernel_s_own() {
@@ -683,8 +666,8 @@ mod tests {
                 IpAddr::V4(v4) => v4.octets().to_vec(),
                 IpAddr::V6(v6) => v6.octets().to_vec(),
             };
-            // An attribute the reader passes over on the way, as the kernel
-            // puts the destination and the table first.
+            // An attribute the reader skips, as the kernel puts the destination and
+            // the table first.
             attributes.extend_from_slice(&8u16.to_ne_bytes());
             attributes.extend_from_slice(&RTA_DST.to_ne_bytes());
             attributes.extend_from_slice(&[198, 51, 100, 7]);
@@ -703,9 +686,8 @@ mod tests {
         message
     }
 
-    /// A route lookup's answer names the gateway a write is framed to, or says
-    /// the address is on a link of this host's; any other answer names no
-    /// neighbour, since nothing a write waits on stands there.
+    /// A route lookup names the gateway a write is framed to, or says the address is
+    /// on one of this host's links; any other answer names no neighbour.
     #[test]
     fn a_route_lookup_names_the_gateway_or_the_link() {
         let v4: IpAddr = "192.0.2.254".parse().expect("an address");
@@ -729,9 +711,8 @@ mod tests {
         assert_eq!(parse_route(&refused), Route::Elsewhere(Some(-101)));
     }
 
-    /// Each address's next hop is asked of the routing table once, however
-    /// many probes to it want it: a scan asks about thousands of hosts behind
-    /// one gateway.
+    /// Each address's next hop is looked up once, however many probes to it ask: a
+    /// scan asks about thousands of hosts behind one gateway.
     #[test]
     fn a_next_hop_is_asked_for_once_per_address() {
         let asked = Arc::new(AtomicUsize::new(0));
@@ -757,8 +738,8 @@ mod tests {
         message
     }
 
-    /// The two states a scan acts on are told apart from each other and from
-    /// every state in which a write leaves, over both families.
+    /// The two states a scan acts on are told apart from each other and from every
+    /// state in which a write leaves, in both families.
     #[test]
     fn a_dump_reads_each_neighbours_resolution_state() {
         let v6: IpAddr = "2001:db8::7".parse().expect("an address");
@@ -780,8 +761,7 @@ mod tests {
         assert_eq!(table.get(&stale), Some(&NeighborState::Resolved));
     }
 
-    /// An address held on two links reads as its most resolved entry: a doubt
-    /// about one link is not evidence the address is dead.
+    /// An address held on two links reads as its most resolved entry.
     #[test]
     fn an_address_on_two_links_reads_as_its_most_resolved_entry() {
         let mut buffer = neighbour(ON_LINK, NUD_FAILED);
@@ -794,8 +774,7 @@ mod tests {
         assert_eq!(table.get(&ON_LINK), Some(&NeighborState::Resolved));
     }
 
-    /// The walk ends inside any buffer, whatever its lengths claim, which is
-    /// the property reading the kernel's bytes leans on.
+    /// The walk ends inside any buffer, whatever its lengths claim.
     #[test]
     fn the_walk_survives_any_buffer() {
         let mut state = 0x2545_F491_4F6C_DD1Du64;
@@ -826,9 +805,9 @@ mod tests {
         }
     }
 
-    /// A question about a neighbour this process just wrote to is answered
-    /// from a table read after the write, never from one read before its
-    /// entry existed; a question that allows an older reading shares it.
+    /// A question about a neighbour this process just wrote to is answered from a
+    /// table read after the write; a question that allows an older reading shares
+    /// it.
     #[test]
     fn a_reading_older_than_the_question_is_read_again() {
         let reads = Arc::new(AtomicUsize::new(0));
@@ -866,9 +845,8 @@ mod tests {
         linux::dump().expect("rtnetlink answers a neighbour dump");
     }
 
-    /// The running kernel's routing table answers a lookup where there is
-    /// one: this host's own loopback address, which no neighbour stands in
-    /// front of.
+    /// The running kernel's routing table answers a lookup where there is one, for
+    /// this host's own loopback address.
     #[cfg(target_os = "linux")]
     #[test]
     fn the_running_kernels_routes_can_be_asked() {

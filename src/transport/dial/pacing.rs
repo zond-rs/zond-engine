@@ -8,44 +8,38 @@
 
 //! # The slot every connection and datagram claims before it leaves
 //!
-//! A scan can be told to keep a gap between the probes it aims at one host and
-//! another between any two it sends at all; see
+//! A scan can keep a gap between the probes it aims at one host, and another between
+//! any two it sends; see
 //! [`ZondConfig::host_probe_interval`](crate::config::ZondConfig::host_probe_interval)
-//! and [`ZondConfig::probe_interval`](crate::config::ZondConfig::probe_interval).
-//! Both are kept by one gate on the scan's context, which the raw passes ask
-//! before each frame. The connections and datagrams the operating system sends
-//! for this engine ask the same gate here, because every one of them is opened
-//! through an [`Egress`](super::Egress) the scan handed out, and a socket
-//! method on it takes a [`Slot`] and nothing else will do. A pass written
-//! tomorrow that dials a target has to take a slot to dial at all, so it
-//! cannot be the one that runs a slow scan at full speed.
+//! and [`ZondConfig::probe_interval`](crate::config::ZondConfig::probe_interval). One
+//! gate on the scan's context keeps both, and the raw passes ask it before each frame.
+//! Connections and datagrams the operating system sends for the engine ask the same
+//! gate here: each is opened through an [`Egress`](super::Egress) the scan handed out,
+//! and its socket methods require a [`Slot`]. Any pass that dials a target has to take
+//! a slot, so none can run a slow scan at full speed.
 //!
-//! **One slot is one probe as the target sees it:** one connection attempt,
-//! whose SYN is what arrives, or the first datagram of one exchange. The
-//! conversation over a connection that was answered is not spaced, since it is
-//! what the probe was for, and neither is a datagram's reply. A socket this
-//! machine refused before anything left it gives its slot back; a target's
-//! refusal and a connect that timed out keep theirs.
+//! **One slot is one probe as the target sees it:** one connection attempt, whose SYN
+//! is what arrives, or the first datagram of one exchange. The conversation over an
+//! answered connection is not spaced, and neither is a datagram's reply. A socket this
+//! machine refused before anything left gives its slot back; a target's refusal and a
+//! connect that timed out keep theirs.
 //!
-//! **Waiting is not the target's time.** Every connection and exchange runs on
-//! clocks of its own, a connect budget, a collection ceiling, a detection's
-//! deadline, and a wait for a slot that came out of one of them would turn a
-//! slow preset into lost identifications and false silences. A wait is made
-//! before the clocks of the connection it is for start. The clocks of a
-//! whole conversation, which are already running when one of its later
-//! connections waits, stand still for the wait instead: the async ones read
-//! [`timeout`], and the blocking ones the time [`held_here`] says this thread
-//! has spent waiting.
+//! **Waiting is not the target's time.** Every connection and exchange runs on its own
+//! clocks (a connect budget, a collection ceiling, a detection's deadline), and a wait
+//! for a slot counted against them would turn a slow preset into lost identifications
+//! and false silences. A wait happens before the clocks of its connection start. The
+//! clocks of a whole conversation, already running when a later connection waits,
+//! pause for the wait: the async ones read [`timeout`], and the blocking ones the time
+//! [`held_here`] says this thread spent waiting.
 //!
-//! **A wait ends with the scan.** A scan asked to stop, or past its budget,
-//! ends every wait at once, and a host that outlives its own budget while a
-//! probe to it waits is left there. Either way the probe was never sent, and
-//! the error it comes back with is [`Withheld`], which a caller files as a
-//! question not asked and never as the target's silence.
+//! **A wait ends with the scan.** A scan asked to stop, or past its budget, ends every
+//! wait at once, and a probe still waiting when its host outlives its budget stays
+//! unsent. Either way it returns [`Withheld`], which a caller files as a question not
+//! asked, never as the target's silence.
 //!
-//! A scan that keeps no gap hands out egresses with no gate, and then a slot
-//! is a value holding nothing, taken without a lock or a clock read, and no
-//! timeout here does anything but what [`tokio::time::timeout`] does.
+//! A scan that keeps no gap hands out egresses with no gate. A slot then holds nothing
+//! and is taken without a lock or a clock read, and [`timeout`] behaves exactly as
+//! [`tokio::time::timeout`].
 
 use std::cell::Cell;
 use std::future::Future;
@@ -57,23 +51,19 @@ use std::time::{Duration, Instant};
 
 use crate::system::descriptors;
 
-/// The longest a blocking thread waiting for a slot sleeps before it looks
-/// again, and the longest an async clock held for a wait sleeps before it
-/// reads the wait again.
+/// The longest a blocking thread waiting for a slot sleeps before it looks again, and
+/// the longest an async clock paused for a wait sleeps before it checks the wait again.
 ///
-/// So a scan asked to stop is noticed within this rather than after a gap that
-/// may be minutes long. A tenth of a second is below what anyone waiting on a
-/// stop notices, and a wake that often costs nothing a scan spaced this far
-/// apart could measure.
+/// So a stop is noticed within this, even when the gap is minutes long. A tenth of a
+/// second is below what anyone waiting on a stop notices, and costs nothing a scan
+/// spaced this far apart could measure.
 const SLOT_WAIT_STEP: Duration = Duration::from_millis(100);
 
-/// What a scan answers a probe waiting for its slot: whether the slot is
-/// free, whether the scan has stopped, and whether the probe's host has run
-/// out of its budget.
+/// What a scan answers a probe waiting for its slot: whether the slot is free, whether
+/// the scan has stopped, and whether the probe's host has run out of its budget.
 ///
-/// A trait rather than the scan's context itself, because the context lives
-/// in the layer that runs passes over this one, and this module only asks
-/// it. The scan's context is the one implementation; a test may hold another.
+/// A trait because the scan's context lives in the layer above this one. The context is
+/// the one implementation; a test may supply another.
 pub(crate) trait Pacer: Send + Sync {
     /// Takes the slot of one probe to `peer`, or says when one will be free.
     fn claim(&self, peer: IpAddr) -> Result<Claim, Instant>;
@@ -81,8 +71,8 @@ pub(crate) trait Pacer: Send + Sync {
     /// Gives back the slot `claim` took, for a probe that never left.
     fn refund(&self, claim: Claim);
 
-    /// Whether `peer` has spent its budget, filing it as left early the
-    /// first time it has.
+    /// Whether `peer` has spent its budget, filing it as left early the first time
+    /// it has.
     fn host_expired(&self, peer: IpAddr) -> bool;
 
     /// Whether the scan has been asked to stop, or has outlived its budget.
@@ -92,8 +82,8 @@ pub(crate) trait Pacer: Send + Sync {
     fn stopping(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
 
-/// A slot a [`Pacer`] handed out: the address the probe was aimed at, and the
-/// instant it was let leave, which is what giving it back needs.
+/// A slot a [`Pacer`] handed out: the address the probe was aimed at, and the instant
+/// it was let go, which giving it back needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Claim {
     pub(crate) address: IpAddr,
@@ -102,8 +92,8 @@ pub(crate) struct Claim {
 
 /// The scan an [`Egress`](super::Egress) claims its slots from.
 ///
-/// Built only for a scan that keeps a gap, once per destination a pass
-/// dials, and shared by every connection made there.
+/// Built only for a scan that keeps a gap, once per destination a pass dials, and
+/// shared by every connection made there.
 #[derive(Clone)]
 pub(crate) struct Gate(Arc<dyn Pacer>);
 
@@ -115,9 +105,8 @@ impl Gate {
 
     /// Waits for, and takes, the slot of one probe to `peer`.
     ///
-    /// Not fair: two probes waiting on one slot both wake when it comes free,
-    /// and whichever claims first leaves while the other waits for the next.
-    /// What is bounded is the gap between probes, not the order they leave in.
+    /// Not fair: two probes waiting on one slot both wake when it frees, and whichever
+    /// claims first leaves. The gap between probes is bounded; their order is not.
     async fn wait(&self, peer: IpAddr) -> Result<Claim, Withheld> {
         let pacer = &self.0;
         loop {
@@ -137,11 +126,10 @@ impl Gate {
         }
     }
 
-    /// [`wait`](Self::wait), for a thread that may block, which is how the
-    /// detections run.
+    /// [`wait`](Self::wait) for a thread that may block, as the detections do.
     ///
-    /// Sleeps in steps no longer than [`SLOT_WAIT_STEP`], so a stop is noticed
-    /// within one of them, and adds what it slept to [`held_here`].
+    /// Sleeps in steps no longer than [`SLOT_WAIT_STEP`], so a stop is noticed within
+    /// one, and adds what it slept to [`held_here`].
     fn wait_blocking(&self, peer: IpAddr) -> Result<Claim, Withheld> {
         let pacer = &self.0;
         loop {
@@ -177,26 +165,24 @@ impl PartialEq for Gate {
 
 impl Eq for Gate {}
 
-/// A gate is asked and told one atomic thing at a time, a slot claimed or
-/// given back, under locks that are taken again past a panic rather than
-/// refused, so an unwind through a probe that held one leaves nothing half
-/// done for the next to see. Said here because the scan's context behind it
-/// holds maps and channels the compiler cannot see through, and without it
-/// every probe carrying an egress, a detection's among them, would stop being
-/// one a caller may catch a panic across.
+/// A gate is asked one atomic thing at a time (a slot claimed or given back), under
+/// locks that are retaken past a panic, so an unwind through a probe that held one
+/// leaves nothing half done. Asserted here because the scan's context behind it holds
+/// maps and channels the compiler cannot see through, and without it every probe
+/// carrying an egress, a detection's included, would stop being unwind-safe.
 impl std::panic::UnwindSafe for Gate {}
 impl std::panic::RefUnwindSafe for Gate {}
 
-/// The slot one probe was given: what a socket towards a target is opened
-/// with, and the only way to open one.
+/// The slot one probe was given: what a socket towards a target is opened with, and
+/// the only way to open one.
 ///
-/// Dropping it is how a slot is spent, which is what a probe that reached the
-/// wire does, whatever came back. One this machine refused before anything
-/// left gives it back with [`refund`](Self::refund), or through
-/// [`settle`](Self::settle), which decides from the attempt's outcome.
+/// Dropping it spends the slot, as a probe that reached the wire does, whatever came
+/// back. A probe this machine refused before anything left gives it back with
+/// [`refund`](Self::refund), or through [`settle`](Self::settle), which decides from
+/// the attempt's outcome.
 ///
-/// Holds nothing for a scan that keeps no gap, and for a connection made
-/// outside a scan.
+/// Holds nothing for a scan that keeps no gap, or for a connection made outside a
+/// scan.
 #[must_use = "a slot is a probe the scan has let leave; one that never did gives it back"]
 #[derive(Debug)]
 pub(crate) struct Slot {
@@ -220,8 +206,8 @@ impl Slot {
         }
     }
 
-    /// Gives the slot back where `outcome` is a refusal this machine made
-    /// before anything left it, and spends it otherwise; see [`never_left`].
+    /// Gives the slot back where `outcome` is a refusal this machine made before
+    /// anything left, and spends it otherwise; see [`never_left`].
     pub(crate) fn settle<T>(self, outcome: &io::Result<T>) {
         if let Err(e) = outcome
             && never_left(e)
@@ -241,28 +227,27 @@ impl Slot {
 impl super::Egress {
     /// Waits for the slot of one probe to `peer`, and takes it.
     ///
-    /// Taken before the clocks of the connection or exchange it is for start,
-    /// and before the process's descriptor budget is asked, so neither a
-    /// connect budget nor another pass's socket waits out the gap. Free at
-    /// once for an egress no scan paces.
+    /// Taken before the clocks of its connection or exchange start, and before the
+    /// process's descriptor budget is asked, so neither a connect budget nor another
+    /// pass's socket waits out the gap. Free at once for an egress no scan paces.
     ///
-    /// [`Withheld`] where the scan stopped, or the host ran out of its budget,
-    /// first: the probe was never sent.
+    /// [`Withheld`] where the scan stopped, or the host ran out of its budget, first:
+    /// the probe was never sent.
     pub(crate) async fn slot(&self, peer: IpAddr) -> Result<Slot, Withheld> {
         let Some(gate) = &self.gate else {
             return Ok(Slot::UNPACED);
         };
-        // On the heap: the wait holds two timers and a stop's notification,
-        // and every connection future in the engine holds this one, which a
-        // scan keeping no gap never builds.
+        // Boxed: the wait holds two timers and a stop notification, and every
+        // connection future in the engine holds this one, which a scan keeping no gap
+        // never builds.
         let claim = Box::pin(gate.wait(peer)).await?;
         Ok(Slot {
             claim: Some((gate.clone(), claim)),
         })
     }
 
-    /// [`slot`](Self::slot), for a caller holding a blocking socket; the time
-    /// it waits is added to [`held_here`].
+    /// [`slot`](Self::slot) for a caller holding a blocking socket; the time it waits
+    /// is added to [`held_here`].
     pub(crate) fn slot_blocking(&self, peer: IpAddr) -> Result<Slot, Withheld> {
         let Some(gate) = &self.gate else {
             return Ok(Slot::UNPACED);
@@ -279,15 +264,14 @@ impl super::Egress {
     }
 }
 
-/// Whether `error` is a refusal this machine made before anything left it,
-/// which spends no slot.
+/// Whether `error` is a refusal this machine made before anything left, which spends
+/// no slot.
 ///
-/// Only what no packet can cause: no descriptor, a source that is taken or not
-/// held here, an argument or a route the kernel refused outright, and a connect
-/// that met itself. A missing route and a firewall's reject share their codes
-/// on every platform, and a connect made in one step cannot say which half an
-/// error came from, so those keep their slot. That costs a gap longer than
-/// asked for, where giving it back could cost a shorter one.
+/// Only what no packet can cause: no descriptor, a source taken or not held here, an
+/// argument or route the kernel refused outright, and a connect that met itself. A
+/// missing route and a firewall's reject share their error codes on every platform,
+/// and a one-step connect cannot say which half failed, so those keep their slot. That
+/// risks a longer gap than asked for; giving it back could risk a shorter one.
 pub(crate) fn never_left(error: &io::Error) -> bool {
     descriptors::exhausted(error)
         || super::SourcePortHeld::of(error).is_some()
@@ -334,31 +318,29 @@ thread_local! {
 
 /// How long the calling thread has spent waiting for slots, all told.
 ///
-/// A blocking clock reads it twice, and takes the difference out of what it
-/// has spent: a detection's deadline, and the wait it times on a port to tell
-/// a dead one. Never moves on a thread nothing paces.
+/// A blocking clock reads it twice and deducts the difference from what it has spent:
+/// a detection's deadline, and the wait it times on a port to tell a dead one. Never
+/// moves on a thread nothing paces.
 pub(crate) fn held_here() -> Duration {
     HELD_HERE.with(Cell::get)
 }
 
 tokio::task_local! {
-    /// The time the conversation running on this task has spent waiting for
-    /// slots, which [`timeout`] takes out of every clock it runs inside it.
-    /// `None` inside a conversation nothing paces.
+    /// The time the conversation on this task has spent waiting for slots, which
+    /// [`timeout`] deducts from every clock it runs inside it. `None` inside a
+    /// conversation nothing paces.
     static HELD: Option<Arc<Held>>;
 }
 
-/// Runs `conversation`, with its clocks standing still while any of its
-/// connections waits for a slot where `egress` is paced; see [`timeout`].
+/// Runs `conversation` with its clocks paused while any of its connections waits for a
+/// slot, where `egress` is paced; see [`timeout`].
 ///
-/// Set around a whole conversation, an identification, whose ceiling is
-/// already running when its later connections dial. A conversation nothing
-/// paces never waits, so nothing is kept for it, and its clocks are left as
-/// [`tokio::time::timeout`] runs them.
+/// Set around a whole conversation, such as an identification, whose ceiling is
+/// already running when its later connections dial. An unpaced conversation never
+/// waits, so nothing is tracked and its clocks run as [`tokio::time::timeout`] does.
 ///
-/// A plain function handing back the scope's own future, and one future type
-/// either way, so a caller holds one conversation's state and not a copy of
-/// it in an async body's arguments beside the one it awaits.
+/// A plain function returning the scope's own future, with one future type either way,
+/// so a caller holds one copy of the conversation's state.
 pub(crate) fn holding<F: Future>(
     egress: &super::Egress,
     conversation: F,
@@ -371,8 +353,7 @@ fn held() -> Option<Arc<Held>> {
     HELD.try_with(Option::clone).ok().flatten()
 }
 
-/// The waits for slots made by one conversation's connections, some of which
-/// may overlap.
+/// The waits for slots made by one conversation's connections, which may overlap.
 #[derive(Debug, Default)]
 pub(crate) struct Held {
     state: Mutex<HeldState>,
@@ -385,13 +366,13 @@ struct HeldState {
     total: Duration,
     /// How many waits are under way now.
     waiting: usize,
-    /// When the first of those began, which is when the clocks stopped.
+    /// When the first of those began, which is when the clocks paused.
     since: Option<tokio::time::Instant>,
 }
 
 impl Held {
-    /// The time the conversation has spent with a wait under way, as of now,
-    /// and whether one still is.
+    /// The time the conversation has spent with a wait under way, as of now, and
+    /// whether one still is.
     fn so_far(&self) -> (Duration, bool) {
         let state = self.state.lock().unwrap_or_else(|held| held.into_inner());
         let ongoing = state.since.map_or(Duration::ZERO, |since| since.elapsed());
@@ -399,8 +380,7 @@ impl Held {
     }
 }
 
-/// One wait for a slot, marked on the conversation it is made in while it
-/// lasts.
+/// One wait for a slot, marked on its conversation while it lasts.
 struct Waiting(Option<Arc<Held>>);
 
 impl Waiting {
@@ -436,17 +416,16 @@ impl Drop for Waiting {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Elapsed;
 
-/// [`tokio::time::timeout`], for a clock inside a conversation whose later
-/// connections may wait for their slots: `limit` is time the conversation had
-/// the target, and every wait for a slot made inside it while it ran is added.
+/// [`tokio::time::timeout`] for a clock inside a conversation whose later connections
+/// may wait for their slots: `limit` is time the conversation had the target, and every
+/// slot wait made inside it while it ran is added.
 ///
-/// Outside a paced [`holding`] this runs as `tokio::time::timeout` does, on
-/// the runtime's clock.
+/// Outside a paced [`holding`] this behaves as `tokio::time::timeout`.
 ///
-/// The work is handed over as what makes it, and made inside, so the future
-/// holds it once: an async body keeps its arguments apart from what it awaits,
-/// and an identification's collection is most of the size of every connection
-/// future that carries one.
+/// Takes the closure that makes the work and calls it inside, so the future holds the
+/// work once: an async body keeps its arguments apart from what it awaits, and an
+/// identification's collection is most of the size of every connection future that
+/// carries one.
 pub(crate) async fn timeout<F: Future>(
     limit: Duration,
     work: impl FnOnce() -> F,
@@ -467,8 +446,8 @@ pub(crate) async fn timeout<F: Future>(
         if now >= due && !waiting {
             return Err(Elapsed);
         }
-        // While a wait is under way the due time moves with it, so it is
-        // read again a step later rather than slept to.
+        // While a wait is under way the due time moves with it, so check again a step
+        // later.
         let wake = match waiting {
             true => due.max(now + SLOT_WAIT_STEP),
             false => due,
@@ -490,9 +469,8 @@ mod tests {
 
     const HOST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));
 
-    /// **A scan that keeps no gap hands out the egress it always did**, with
-    /// nothing to claim from, so its connections are made exactly as a scan
-    /// that knew nothing of pacing made them.
+    /// **A scan that keeps no gap hands out an egress with nothing to claim from**, so
+    /// its connections are made without pacing.
     #[tokio::test]
     async fn a_scan_keeping_no_gap_dials_as_ever() {
         let (_session, ctx) = ScanSession::new();
@@ -503,10 +481,9 @@ mod tests {
         assert!(slot.claim.is_none(), "a slot holding a claim");
     }
 
-    /// **A clock inside a paced conversation does not count the conversation's
-    /// wait for a slot**, so a connection held for the scan's gap still has
-    /// the whole of its own time, and the same clock outside a paced one runs
-    /// out as any timeout does.
+    /// **A clock inside a paced conversation does not count the conversation's wait
+    /// for a slot**, so a connection held for the gap keeps all of its own time; the
+    /// same clock outside a paced conversation runs out as any timeout does.
     #[tokio::test]
     async fn a_held_clock_stands_still_while_a_connection_waits_for_its_slot() {
         let gap = Duration::from_millis(400);
@@ -517,8 +494,8 @@ mod tests {
         let first = egress.slot(HOST).await.expect("the first is free");
         drop(first);
 
-        // A limit a quarter of the gap: the second connection's wait for its
-        // slot is four times what the clock allows the conversation.
+        // A limit a quarter of the gap: the second connection's slot wait is four
+        // times what the clock allows.
         let limit = gap / 4;
         let dialled = holding(
             &egress,
@@ -534,8 +511,8 @@ mod tests {
         assert_eq!(unheld, Err(Elapsed), "a clock nothing holds ran on");
     }
 
-    /// **A thread waiting for its slot stops waiting as the scan stops**, and
-    /// its probe is withheld rather than sent, however long the gap.
+    /// **A thread waiting for its slot stops waiting when the scan stops**, and its
+    /// probe is withheld, however long the gap.
     #[test]
     fn a_blocking_wait_ends_with_the_scan() {
         let (_session, ctx) = ScanSession::builder()
@@ -566,8 +543,8 @@ mod tests {
         );
     }
 
-    /// **A probe still waiting when its host runs out of its budget is never
-    /// sent**, and the host is filed as left early, as every pass files one.
+    /// **A probe still waiting when its host runs out of its budget is never sent**,
+    /// and the host is filed as left early, as every pass files one.
     #[tokio::test]
     async fn a_wait_ends_when_the_host_runs_out_of_its_budget() {
         let (_session, ctx) = ScanSession::builder()
@@ -589,8 +566,8 @@ mod tests {
         );
     }
 
-    /// A slot given back leaves the next probe to the host free at once, and
-    /// one spent holds it the whole gap.
+    /// A slot given back leaves the next probe to the host free at once; one spent
+    /// holds it for the whole gap.
     #[tokio::test]
     async fn a_refused_attempt_gives_its_slot_back() {
         let (_session, ctx) = ScanSession::builder()

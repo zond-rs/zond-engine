@@ -8,28 +8,23 @@
 
 //! # Probe Transport
 //!
-//! One handle the raw scanners send probes through and receive replies from,
-//! independent of *how* those packets reach the wire.
+//! One handle the raw scanners send probes through and receive replies from, whatever
+//! carries those packets to the wire.
 //!
-//! Sending and receiving are deliberately split across two mechanisms,
-//! because the constraints differ by direction and by OS:
+//! Sending and receiving use separate mechanisms, because the constraints differ by
+//! direction and by OS:
 //!
 //! - **Receiving** always goes through a `libpcap` capture
-//!   ([`crate::transport::capture`]). A raw Layer-4 socket receives replies on
-//!   Linux but *not* on macOS/BSD, whose kernels never hand TCP/UDP to raw
-//!   sockets; capturing at the link layer is the one path that works
-//!   everywhere.
-//! - **Sending** goes through a [`ProbeSender`]. The default
-//!   [`RawIpSender`] emits segments over a raw Layer-4 socket, which *sends*
-//!   fine on every supported Unix (only receiving that way is broken) and
-//!   lets the kernel handle routing, ARP/NDP, and fragmentation. A future
-//!   Ethernet [`ProbeSender`] can build frames itself for Windows - where
-//!   raw TCP sends are blocked - or for deliberately bypassing the host
-//!   stack, without any scanner having to know the difference.
+//!   ([`crate::transport::capture`]). A raw Layer-4 socket receives replies on Linux
+//!   but not on macOS/BSD, whose kernels never hand TCP/UDP to raw sockets; capturing
+//!   at the link layer works everywhere.
+//! - **Sending** goes through a [`ProbeSender`]. [`RawIpSender`] emits segments over a
+//!   raw Layer-4 socket, which sends fine on every supported Unix and lets the kernel
+//!   handle routing, ARP/NDP and fragmentation. The Ethernet sender builds frames
+//!   itself, for Windows (which blocks raw TCP sends) or to bypass the host stack.
 //!
-//! The trait is what makes that swappable: [`ProbeTransport`] owns a
-//! `Box<dyn ProbeSender>` and a capture-fed receive stream, and every scanner
-//! depends only on those two things.
+//! [`ProbeTransport`] owns a `Box<dyn ProbeSender>` and a capture-fed receive stream,
+//! and every scanner depends only on those two.
 
 use std::fmt;
 use std::net::IpAddr;
@@ -51,15 +46,14 @@ use crate::transport::raw::{self, TransportSenderHandle, TransportType};
 
 /// How many captured segments may wait for a scanner to read them.
 ///
-/// Deep enough that a burst of genuine replies is never what stalls the reader,
-/// and shallow enough that traffic the filter could not narrow cannot grow
-/// without bound: at [`REPLY_SNAP_LEN`](capture::REPLY_SNAP_LEN) a full queue is
-/// a bounded number of megabytes rather than however much the network sends.
-/// See [`capture::segments`] for which filters leave that possible and why.
+/// Deep enough that a burst of real replies never stalls the reader, and shallow
+/// enough that traffic the filter could not narrow stays bounded: at
+/// [`REPLY_SNAP_LEN`](capture::REPLY_SNAP_LEN) a full queue is a few megabytes. See
+/// [`capture::segments`] for which filters leave that possible.
 const REPLY_QUEUE_DEPTH: usize = 4096;
 
-/// The error [`SendMode::from_str`] returns, carrying the names that would have
-/// worked so a front end can print it verbatim.
+/// The error [`SendMode::from_str`] returns, carrying the valid names so a front end
+/// can print it verbatim.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("unknown send mode '{input}', expected one of: auto, raw_socket, ethernet")]
@@ -70,28 +64,26 @@ pub struct UnknownSendMode {
 
 /// How the privileged (raw) scanners put probe packets on the wire.
 ///
-/// Only affects the raw-socket SYN paths; the unprivileged TCP-connect
-/// fallback and the on-link ARP/ICMPv6 [`LocalScanner`](crate::scanner)
-/// discovery are unaffected.
+/// Affects only the raw-socket SYN paths; the unprivileged TCP-connect fallback and
+/// the on-link ARP/ICMPv6 [`LocalScanner`](crate::scanner) discovery ignore it.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SendMode {
-    /// Pick per platform. A raw Layer-4 socket on Linux, which the kernel
-    /// routes, ARPs, and fragments for us, and which works through VPN
-    /// tunnels. Self-built Layer-2 Ethernet frames on Windows, where the OS
-    /// blocks raw-socket TCP sends outright. Frames first with the socket
-    /// behind them on macOS, where a large scan's raw sends are accepted and a
-    /// quarter of them dropped before the wire, and where an unprivileged run
-    /// has no socket to fall back to.
+    /// Pick per platform. On Linux, a raw Layer-4 socket, which the kernel routes,
+    /// ARPs and fragments for, and which works through VPN tunnels. On Windows,
+    /// self-built Layer-2 Ethernet frames, since the OS blocks raw-socket TCP sends.
+    /// On macOS, frames first with the socket behind them: a large scan's raw sends
+    /// are accepted there and a quarter dropped before the wire, and an unprivileged
+    /// run has no socket to fall back to.
     #[default]
     Auto,
     /// Force a raw Layer-4 socket regardless of platform.
     RawSocket,
-    /// Force self-built Layer-2 Ethernet frames, bypassing the host IP stack
-    /// (and the local firewall / connection tracking that a raw-socket send
-    /// still traverses). Requires an Ethernet-capable interface and can't
-    /// reach tunnel-only destinations, or loopback anywhere but macOS, whose
-    /// loopback interface takes a frame too.
+    /// Force self-built Layer-2 Ethernet frames, bypassing the host IP stack (and the
+    /// local firewall and connection tracking a raw-socket send still passes through).
+    /// Requires an Ethernet-capable interface and can't reach tunnel-only
+    /// destinations, or loopback except on macOS, whose loopback interface takes a
+    /// frame too.
     Ethernet,
 }
 impl SendMode {
@@ -107,16 +99,15 @@ impl SendMode {
         }
     }
 
-    /// Whether a transport this process opens in this mode reaches what a
-    /// self-built frame cannot: loopback, this host's own addresses, a target
-    /// the kernel routes through a tunnel, and an IPv6 neighbour.
+    /// Whether a transport this process opens in this mode reaches what a self-built
+    /// frame cannot: loopback, this host's own addresses, a target the kernel routes
+    /// through a tunnel, and an IPv6 neighbour.
     ///
-    /// A raw socket reaches all of it, since the kernel carries the packet, and
-    /// a frame reaches what has Ethernet in front of it. `Auto` is whichever
-    /// this platform opens: the socket on Linux, frames alone on Windows, and on
-    /// macOS frames with the socket behind them, which is there only for a
-    /// process that may open one. An unprivileged run there with the BPF devices
-    /// handed to its group has the frames and nothing behind them.
+    /// A raw socket reaches all of it, since the kernel carries the packet; a frame
+    /// reaches what has Ethernet in front of it. `Auto` is whichever this platform
+    /// opens: the socket on Linux, frames alone on Windows, and on macOS frames with
+    /// the socket behind them for a process allowed to open one. An unprivileged run
+    /// there with the BPF devices given to its group has only the frames.
     pub(crate) fn reaches_past_frames(self) -> bool {
         match self {
             SendMode::RawSocket => true,
@@ -146,9 +137,8 @@ impl fmt::Display for SendMode {
 impl FromStr for SendMode {
     type Err = UnknownSendMode;
 
-    /// Parses a mode name, ignoring case and surrounding whitespace, so a choice
-    /// arriving as text - from an argument, a form field, a settings file -
-    /// needs no mapping table of its own.
+    /// Parses a mode name, ignoring case and surrounding whitespace, so text input (an
+    /// argument, a form field, a settings file) needs no mapping table of its own.
     ///
     /// # Examples
     ///
@@ -170,105 +160,95 @@ impl FromStr for SendMode {
     }
 }
 
-/// Which kind of raw probe traffic a [`ProbeTransport`] carries. Determines
-/// both the raw socket(s) opened for sending and the kernel BPF filter that
-/// decides which captured frames are worth copying to userspace.
+/// Which kind of raw probe traffic a [`ProbeTransport`] carries. Decides both the raw
+/// sockets opened for sending and the kernel BPF filter that picks which captured
+/// frames are copied to userspace.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum ProbeKind {
-    /// TCP SYN probes and their SYN+ACK / RST replies, over IPv4 and IPv6,
-    /// where the sender picks a fresh source port per probe.
+    /// TCP SYN probes and their SYN+ACK / RST replies, over IPv4 and IPv6, where the
+    /// sender picks a fresh source port per probe.
     TcpSyn,
-    /// TCP port probes and their replies, for a scan that sends every probe
-    /// from one source port.
+    /// TCP port probes and their replies, for a scan that sends every probe from one
+    /// source port.
     TcpProbe {
-        /// The port every probe in the scan leaves from, and so the port its
-        /// replies come back to. One fixed port is what makes the TCP half of
-        /// this filter expressible for both address families: `dst port`
-        /// compiles over IPv6 where the flag test in [`ProbeKind::TcpSyn`]
-        /// cannot, so a scan using this kind sees only its own answers instead
-        /// of every IPv6 TCP segment on the host.
+        /// The port every probe in the scan leaves from, and so the port its replies
+        /// come back to. A fixed port makes the TCP half of the filter expressible for
+        /// both families: `dst port` compiles over IPv6 where the flag test in
+        /// [`ProbeKind::TcpSyn`] cannot, so the scan sees only its own answers.
         reply_port: u16,
         /// Whether ICMP destination-unreachable messages are wanted as well.
         ///
-        /// They are how a probe learns it was stopped in the path rather than
-        /// answered, but an ICMP error carries no ports of its own - the probe
-        /// it refers to is quoted in its payload - so admitting them means
-        /// admitting *all* ICMP on every captured interface and matching it in
-        /// userspace. Only a scan whose verdicts actually change on that
+        /// They tell a probe it was stopped in the path, but an ICMP error carries no
+        /// ports of its own (the probe it refers to is quoted in its payload), so
+        /// admitting them means admitting all ICMP on every captured interface and
+        /// matching it in userspace. Only a scan whose verdicts depend on that
         /// evidence should pay for it.
         icmp_errors: bool,
     },
     /// UDP service probes (DNS / mDNS) and their replies, over IPv4.
     UdpResolve,
-    /// ICMP echo requests and the replies and errors they draw, over both
-    /// address families.
+    /// ICMP echo requests and the replies and errors they draw, over both address
+    /// families.
     ///
-    /// The kind a scan uses to ask a host something its TCP stack cannot be made
-    /// to answer. A host with no open and no closed port still answers a ping,
-    /// and what it puts in the reply is a property of the same stack.
+    /// For asking a host something its TCP stack cannot be made to answer. A host
+    /// with no open and no closed port still answers a ping, and the reply reflects
+    /// the same stack.
     IcmpEcho {
-        /// The identifier every echo in the scan carries, and so the one its
-        /// replies carry back.
+        /// The identifier every echo in the scan carries, and so the one its replies
+        /// carry back.
         ///
-        /// RFC 792 and RFC 4443 §4.2 both require a reply to echo the
-        /// identifier and sequence back unchanged, which is the only thing that
-        /// separates this scan's answers from every other ping on the host.
-        /// Unlike a port it cannot be expressed in a kernel filter, since it
-        /// sits past a header whose length is not fixed over IPv6. So it is
-        /// matched in userspace and this field is what a caller matches against.
+        /// RFC 792 and RFC 4443 §4.2 require a reply to echo the identifier and
+        /// sequence unchanged, which is the only thing separating this scan's answers
+        /// from every other ping on the host. It cannot be expressed in a kernel
+        /// filter, since it sits past a header of variable length over IPv6, so it is
+        /// matched in userspace against this field.
         identifier: u16,
     },
     /// SCTP port probes and the chunks they draw, over both address families.
     ///
-    /// One kind for both techniques: an INIT and a COOKIE-ECHO are the same
-    /// protocol from the same port, so the filter that narrows to one narrows to
-    /// the other.
+    /// One kind for both techniques: an INIT and a COOKIE-ECHO are the same protocol
+    /// from the same port, so one filter serves both.
     Sctp {
-        /// The port every probe in the scan leaves from, and so the port its
-        /// answers come back to.
+        /// The port every probe in the scan leaves from, and so the port its answers
+        /// come back to.
         ///
-        /// One fixed port for the same reason [`UdpProbe`](Self::UdpProbe) uses
-        /// one: it is what the kernel filter narrows on, and it is what the
-        /// packet quoted inside an ICMP error is checked against.
+        /// Fixed for the same reason as [`UdpProbe`](Self::UdpProbe)'s: the kernel
+        /// filter narrows on it, and the packet quoted inside an ICMP error is checked
+        /// against it.
         reply_port: u16,
     },
-    /// Bare datagrams of one arbitrary IP protocol, and the ICMP messages they
-    /// draw.
+    /// Bare datagrams of one arbitrary IP protocol, and the ICMP messages they draw.
     ///
     /// What an [IP protocol scan](crate::scanner::strategy::protocols) sends. The
-    /// number is the next-header value the probe goes out under, and it is what
-    /// the scan is asking about rather than a way of reaching something.
+    /// number is the next-header value the probe carries, and is itself what the scan
+    /// asks about.
     ///
-    /// It does not narrow the filter, which is the same expression for every
-    /// number, because there is nothing to narrow on. Most of the protocols
-    /// worth asking about have no header this crate parses, no ports and no
-    /// reply of their own; what answers a probe is the host's ICMP, and an ICMP
-    /// message carries no field naming what provoked it beyond the packet it
-    /// quotes. So the errors are admitted whole and matched against the
-    /// quotation in userspace, the way [`UdpProbe`](Self::UdpProbe) already
-    /// matches its own.
+    /// The number does not narrow the filter, which is the same for every number. Most
+    /// protocols worth asking about have no header this crate parses, no ports and no
+    /// reply of their own; the host's ICMP answers, and an ICMP message names what
+    /// provoked it only in the packet it quotes. So errors are admitted whole and
+    /// matched against the quotation in userspace, as [`UdpProbe`](Self::UdpProbe)
+    /// does.
     IpProtocol {
-        /// The next-header value the probes carry, and the protocol the scan is
-        /// asking whether the host takes delivery of.
+        /// The next-header value the probes carry: the protocol the scan asks whether
+        /// the host accepts.
         number: u8,
     },
     /// UDP port probes and their ICMP unreachable / direct UDP replies.
     UdpProbe {
         /// The source port every probe in the scan is sent from, and so the
-        /// destination port its direct replies come back to. Sending from one
-        /// fixed port is what lets the kernel filter the UDP half down to this
-        /// scan's own traffic; without it the only expressible filter is "all
-        /// UDP", which on a busy host is mostly other people's packets.
+        /// destination port its direct replies come back to. A fixed port lets the
+        /// kernel filter the UDP half down to this scan's own traffic; otherwise the
+        /// only expressible filter is all UDP, mostly other people's packets on a busy
+        /// host.
         reply_port: u16,
     },
 }
 
 impl ProbeKind {
-    /// The kind in words, with its article, as a message names the traffic a
-    /// transport was opened for: `a UDP probe`, `an ICMP echo`. The fields
-    /// are left out, being which port or identifier the traffic is told apart
-    /// by rather than what it is.
+    /// The kind in words, with its article, as a message names the traffic a transport
+    /// was opened for: `a UDP probe`, `an ICMP echo`. The fields are left out.
     pub(crate) const fn spoken(self) -> &'static str {
         match self {
             ProbeKind::TcpSyn => "a TCP SYN",
@@ -281,8 +261,7 @@ impl ProbeKind {
         }
     }
 
-    /// The port a transport for this kind admits replies to, where the kind
-    /// fixes one.
+    /// The port a transport for this kind admits replies to, where the kind fixes one.
     const fn reply_port(self) -> Option<u16> {
         match self {
             ProbeKind::TcpProbe { reply_port, .. }
@@ -295,15 +274,13 @@ impl ProbeKind {
         }
     }
 
-    /// Whether a transport opened for this kind hears the answers a port scan
-    /// of `protocol` reads.
+    /// Whether a transport opened for this kind hears the answers a port scan of
+    /// `protocol` reads.
     ///
-    /// A port scan over a transport that does not reads every answer as
-    /// silence, and silence is a verdict, so the mismatch is refused where it
-    /// would otherwise pass for a network that drops everything. Either TCP
-    /// kind carries a TCP scan: both admit the resets and SYN+ACKs it reads. A
-    /// UDP scan needs its own kind, since the resolver's admits name-service
-    /// replies alone.
+    /// A port scan over a transport that does not would read every answer as silence,
+    /// which is a verdict, so the mismatch is refused. Either TCP kind carries a TCP
+    /// scan: both admit the resets and SYN+ACKs it reads. A UDP scan needs its own
+    /// kind, since the resolver's admits only name-service replies.
     pub(crate) const fn carries_port_scan(self, protocol: Protocol) -> bool {
         match protocol {
             Protocol::Tcp => matches!(self, ProbeKind::TcpSyn | ProbeKind::TcpProbe { .. }),
@@ -323,14 +300,12 @@ impl ProbeKind {
         }
     }
 
-    /// The IP protocol numbers this kind's probes are, one per address family,
-    /// for a sender that writes the IP header itself.
+    /// The IP protocol numbers this kind's probes carry, one per address family, for a
+    /// sender that writes the IP header itself.
     ///
-    /// The raw-socket path never needs this - the kernel derives it from the
-    /// socket's protocol - but a Layer-2 sender builds the header by hand and
-    /// has nothing else to read it from. A wrong number here is invisible
-    /// locally and fatal remotely: the datagram arrives and is handed to the
-    /// wrong protocol handler, so it is simply never answered.
+    /// The raw-socket path takes the number from the socket's protocol; a Layer-2
+    /// sender builds the header and has only this. A wrong number is invisible
+    /// locally: the datagram reaches the wrong protocol handler and is never answered.
     pub(crate) fn ip_protocols(self) -> IpProtocols {
         match self {
             ProbeKind::TcpSyn | ProbeKind::TcpProbe { .. } => {
@@ -340,72 +315,59 @@ impl ProbeKind {
                 IpProtocols::same(IpNextHeaderProtocols::Udp.0)
             }
             ProbeKind::Sctp { .. } => IpProtocols::same(IpNextHeaderProtocols::Sctp.0),
-            // The one kind whose two families are different protocols rather
-            // than one protocol over two address sizes.
+            // The one kind whose two families are different protocols.
             ProbeKind::IcmpEcho { .. } => IpProtocols {
                 v4: IpNextHeaderProtocols::Icmp.0,
                 v6: IpNextHeaderProtocols::Icmpv6.0,
             },
-            // The one kind whose number is the question rather than the means,
-            // and so the one a caller chooses outright.
+            // The one kind whose number is the question itself, so the caller
+            // chooses it.
             ProbeKind::IpProtocol { number } => IpProtocols::same(number),
         }
     }
 
-    /// The `libpcap`/`tcpdump` filter expression compiled into a kernel BPF
-    /// program for the receive half. Narrow by design: only the replies a
-    /// scan can act on ever reach userspace.
+    /// The `libpcap`/`tcpdump` filter expression compiled into a kernel BPF program for
+    /// the receive half. Only the replies a scan can act on reach userspace.
     fn filter(self) -> String {
         match self {
-            // SYN+ACK (open) and RST (closed) both set at least one of the
-            // SYN/RST flag bits; nothing else a SYN probe can elicit does.
+            // SYN+ACK (open) and RST (closed) both set SYN or RST; nothing else a SYN
+            // probe can draw does.
             //
-            // The two families are narrowed differently because only one of
-            // them can be. `tcp[tcpflags]` is `proto[x]` indexing, and an IPv6
-            // next-header chain puts the transport header at no fixed offset,
-            // so libpcap cannot compile it - and does not say so. Written as one
-            // unqualified `tcp`, the expression is silently restricted to IPv4
-            // and every IPv6 frame is rejected at the EtherType, which is what
-            // made routed IPv6 discovery and IPv6 SYN port scanning find nothing
-            // whatsoever. Writing `ip6` in front of the same test does not help;
-            // it fails to compile outright.
+            // Only IPv4 can be narrowed this way. `tcp[tcpflags]` is `proto[x]`
+            // indexing, and an IPv6 next-header chain puts the transport header at no
+            // fixed offset, so libpcap cannot compile it, and does not say so: written
+            // as one unqualified `tcp`, the expression is silently restricted to IPv4
+            // and every IPv6 frame is rejected at the EtherType. Prefixing `ip6` fails
+            // to compile outright.
             //
-            // So the IPv6 half is admitted unnarrowed and the flags are checked
-            // in userspace instead. The cost is that every IPv6 TCP segment on
-            // every captured interface is copied up, not only the two a probe
-            // can draw: on a host with live IPv6 connections that is real
-            // traffic, and it lands in the audit's `off-target` count where it
-            // can be seen. It buys the only IPv6 receive path there is.
+            // So the IPv6 half is admitted unnarrowed and the flags are checked in
+            // userspace. Every IPv6 TCP segment on every captured interface is copied
+            // up; on a host with live IPv6 connections that is real traffic, and it
+            // shows in the audit's `off-target` count. It is the only IPv6 receive
+            // path there is.
             ProbeKind::TcpSyn => {
                 "(ip and tcp and (tcp[tcpflags] & (tcp-syn|tcp-rst)) != 0) or (ip6 and tcp)"
                     .to_string()
             }
-            // Every reply to a probe of this kind is addressed back to the one
-            // port the scan sends from, so that is the whole narrowing - and it
-            // is a narrowing both families get, which the flag test above is
-            // not. What reaches userspace is this scan's own traffic rather
-            // than every segment that happens to carry a SYN or RST bit.
+            // Every reply to this kind comes back to the one port the scan sends
+            // from, so that is the whole narrowing, and both families get it. What
+            // reaches userspace is this scan's own traffic.
             //
-            // The flags are checked in userspace instead. That is not a
-            // concession: a segment answering the right port still has to be
-            // one of the two answers a probe can draw, and has to carry back
-            // the value the probe went out with.
+            // The flags are checked in userspace: a segment to the right port still
+            // has to be one of the two answers a probe can draw, and carry back the
+            // value the probe went out with.
             ProbeKind::TcpProbe {
                 reply_port,
                 icmp_errors,
             } => {
-                // Both directions, not only the replies. The outbound half is
-                // the scan watching its own probes leave, which is the only
-                // thing that distinguishes a port that stayed quiet from one
-                // whose probe the operating system took and threw away: macOS
-                // does exactly that to a raw-socket write under load, returns
-                // success, and leaves a scan reporting silence from a port it
-                // never asked. It costs one captured frame per probe, all of it
-                // this scan's own traffic.
+                // Both directions. The outbound half is the scan watching its own
+                // probes leave, which tells a port that stayed quiet from one whose
+                // probe the OS discarded: macOS does that to raw-socket writes under
+                // load and still returns success. It costs one captured frame per
+                // probe, all of it this scan's own.
                 let tcp = format!("tcp and port {reply_port}");
-                // An ICMP error names no ports of its own; the probe it refers
-                // to is quoted in its payload, so this half cannot be narrowed
-                // here and is matched in userspace.
+                // An ICMP error names no ports; the probe it refers to is quoted in
+                // its payload, so this half is matched in userspace.
                 if icmp_errors {
                     format!("icmp or icmp6 or ({tcp})")
                 } else {
@@ -414,42 +376,35 @@ impl ProbeKind {
             }
             // DNS (53) and mDNS (5353) responses, by source port.
             ProbeKind::UdpResolve => "udp and (src port 53 or src port 5353)".to_string(),
-            // A UDP probe draws two kinds of answer. A direct UDP reply comes
-            // back to the port the scan sent from, so it narrows to exactly
-            // this scan. An ICMP error carries no ports of its own - the probe
-            // it refers to is quoted in its payload - so ICMP cannot be
-            // narrowed here and is matched in userspace instead.
+            // A UDP probe draws two kinds of answer. A direct UDP reply comes back
+            // to the scan's source port, so it narrows to this scan. An ICMP error
+            // carries no ports (the probe is quoted in its payload), so ICMP is
+            // matched in userspace.
             ProbeKind::UdpProbe { reply_port } => {
                 format!("icmp or icmp6 or (udp and dst port {reply_port})")
             }
-            // The ICMP halves of the two filters above, and nothing else. A
-            // protocol probe's answer is an ICMP message about it or no answer
-            // at all, so this admits every error and reads the quotation in
-            // userspace; see [`ProbeKind::IpProtocol`] for what that costs the
-            // pass and why the cost is the protocol landscape rather than this
-            // expression.
+            // The ICMP halves of the two filters above, and nothing else. A protocol
+            // probe's only possible answer is an ICMP message about it, so every
+            // error is admitted and the quotation read in userspace; see
+            // [`ProbeKind::IpProtocol`].
             ProbeKind::IpProtocol { .. } => "icmp or icmp6".to_string(),
-            // The same shape as the UDP filter, and for the same reasons: every
-            // answer an INIT can draw comes back to the one port the scan sends
-            // from, and an ICMP error carries no ports of its own, so the error
-            // half is admitted whole and matched against the quoted probe in
-            // userspace.
+            // The same shape as the UDP filter, for the same reasons: every answer an
+            // INIT can draw comes back to the scan's one port, and an ICMP error
+            // carries no ports, so the error half is admitted whole and matched
+            // against the quoted probe in userspace.
             ProbeKind::Sctp { reply_port } => {
                 format!("icmp or icmp6 or (sctp and dst port {reply_port})")
             }
-            // Unnarrowed, and it has to be. The identifier that separates this
-            // scan's replies from every other ping on the host sits four bytes
-            // into the ICMP message, which is `proto[x]` indexing: expressible
-            // over IPv4 and not over IPv6, whose next-header chain puts the
-            // message at no fixed offset. Narrowing one family and not the other
-            // would make the IPv6 half of every scan silently different from the
-            // IPv4 half, which is the shape of defect that cost this crate its
-            // whole IPv6 receive path once already. So both halves come up whole
-            // and the identifier is matched in userspace.
+            // Unnarrowed. The identifier that separates this scan's replies from
+            // other pings sits four bytes into the ICMP message, which is `proto[x]`
+            // indexing: expressible over IPv4 but not IPv6, whose next-header chain
+            // puts the message at no fixed offset. Narrowing only one family would
+            // make the two behave differently without any visible reason, so both
+            // come up whole and the identifier is matched in userspace.
             //
-            // The errors are wanted as well as the replies: a host answering an
-            // echo with "administratively prohibited" has said something, and it
-            // did not come from the host's own stack.
+            // The errors are wanted as well: a host answering an echo with
+            // "administratively prohibited" has said something, and it did not come
+            // from the host's own stack.
             ProbeKind::IcmpEcho { .. } => "icmp or icmp6".to_string(),
         }
     }
@@ -457,74 +412,64 @@ impl ProbeKind {
 
 /// Why one probe could not be put on the wire.
 ///
-/// Split by whose fact the failure is, because each calls for a different
-/// response. [`Unroutable`](Self::Unroutable) and
-/// [`Unresolved`](Self::Unresolved) are facts about the destination: the
-/// address was asked about and cannot be reached from here, and the sender is
-/// still working. [`HeldDown`](Self::HeldDown) is one too, for as long as the
-/// kernel holds it: asked again after that, the address may answer. [`Unsupported`](Self::Unsupported) is a fact about this
-/// transport that will be just as true for the next probe, so retrying is
-/// pointless and a scan should give up on the path. [`Refused`](Self::Refused)
-/// came from this host and may not hold next time: a full send buffer clears.
-/// [`is_unroutable`](Self::is_unroutable) is the test a scan reports by.
+/// Split by whose fact the failure is, since each calls for a different response.
+/// [`Unroutable`](Self::Unroutable) and [`Unresolved`](Self::Unresolved) are facts
+/// about the destination: it cannot be reached from here, and the sender still works.
+/// [`HeldDown`](Self::HeldDown) is one too, while the kernel holds it; asked again
+/// after that, the address may answer. [`Unsupported`](Self::Unsupported) is a fact
+/// about this transport that holds for the next probe too, so a scan should give up on
+/// the path. [`Refused`](Self::Refused) came from this host and may not recur: a full
+/// send buffer clears. [`is_unroutable`](Self::is_unroutable) is the test a scan
+/// reports by.
 ///
-/// The refusal carries the operating system's own words rather than a
-/// classification of them. "No route to host" and "Permission denied" call for
-/// completely different responses from whoever is reading the report, and no
-/// enum this crate could write would keep pace with what a kernel actually says.
+/// A refusal carries the operating system's own words. "No route to host" and
+/// "Permission denied" call for completely different responses from the reader, and
+/// no enum could keep pace with what kernels say.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum SendError {
     /// This host has no route to that address.
     ///
-    /// Separated from [`Refused`](Self::Refused) because it is a fact about the
-    /// *destination* rather than about this scanner or its socket, and the two
-    /// call for opposite responses. A send path that will not work is a strategy
-    /// that did not run, and a caller has to be told the scan covered less than
-    /// it was asked to. An address with no route is ordinary: a dual-stack name
-    /// on an IPv4-only network resolves to an AAAA nobody here can reach, and
-    /// reporting that as a broken scan makes every such scan look partial.
+    /// A fact about the destination, not about this scanner, and the two call for
+    /// opposite responses. A send path that does not work is a strategy that did not
+    /// run, and the caller must be told the scan covered less than asked. An address
+    /// with no route is ordinary: a dual-stack name on an IPv4-only network resolves
+    /// to an AAAA nobody here can reach, and calling that a broken scan would make
+    /// every such scan look partial.
     ///
-    /// Still an error and still reported, the address having been asked about and
-    /// not covered, but as something known about that address.
+    /// Still an error and still reported, as something known about that address.
     #[error("{0}")]
     Unroutable(String),
 
-    /// The neighbour this probe had to be framed to was asked for its hardware
-    /// address and did not answer.
+    /// The neighbour this probe had to be framed to was asked for its hardware address
+    /// and did not answer.
     ///
-    /// A dead host on the local segment, or a gateway that is not there. Read
-    /// as [`Unroutable`](Self::Unroutable) is, as a fact about the destination,
-    /// and kept apart from it for the one reader that must not treat the two
-    /// alike: a sender holding a second path. No route from one path says
-    /// nothing about another, and is the reason to try it. An unanswered
-    /// resolution is an answer about the destination itself, and a second path
-    /// would only ask the same neighbour the same question again, at a pace and
-    /// with a memory of its own that decide per probe whether it is accepted,
-    /// queued or refused. See [`SendMode::Auto`] on macOS.
+    /// A dead host on the local segment, or a missing gateway. A fact about the
+    /// destination like [`Unroutable`](Self::Unroutable), kept separate for a sender
+    /// holding a second path. No route on one path is a reason to try another. An
+    /// unanswered resolution is an answer about the destination, and a second path
+    /// would only ask the same neighbour again, with its own pace and memory deciding
+    /// per probe whether it is accepted, queued or refused. See [`SendMode::Auto`] on
+    /// macOS.
     #[error("{0}")]
     Unresolved(String),
 
-    /// The kernel would not send to this neighbour because a resolution of it
-    /// failed lately, and it will not ask again until a hold-down of its own
-    /// has passed.
+    /// The kernel will not send to this neighbour because a recent resolution failed,
+    /// and will not ask again until its own hold-down has passed.
     ///
-    /// What macOS says, as `EHOSTDOWN`, to every write to an on-link neighbour
-    /// for twenty seconds, by default, after it has asked for the neighbour
-    /// five times and heard nothing (`net.link.ether.inet.host_down_time` and
-    /// `maxtries`); it asks at most once a second, and only when a write needs
-    /// it. The write it gives up on is refused with `EHOSTUNREACH`, as is
-    /// every write through a gateway it holds down, so this is the one refusal
-    /// that names a hold-down. Linux keeps none: its sockets take every write
-    /// to a neighbour it gave up on, and the write starts the asking over.
+    /// macOS returns this, as `EHOSTDOWN`, to every write to an on-link neighbour for
+    /// twenty seconds by default after five unanswered requests
+    /// (`net.link.ether.inet.host_down_time` and `maxtries`); it asks at most once a
+    /// second, and only when a write needs it. The write it gives up on is refused with
+    /// `EHOSTUNREACH`, as is every write through a gateway it holds down, so this is
+    /// the one refusal that names a hold-down. Linux keeps none: its sockets take every
+    /// write to a neighbour it gave up on, and the write restarts resolution.
     ///
-    /// A fact about the destination, as [`Unresolved`](Self::Unresolved) is,
-    /// and kept apart from it because it answers a different question. That
-    /// one is a resolution this sender asked for and waited out. This one is a
-    /// kernel declining to ask, on the strength of a failure it remembers from
-    /// whoever asked last, which may be another process, or a moment the
-    /// neighbour was asleep and is no longer. The same question put after the
-    /// hold-down is asked afresh.
+    /// A fact about the destination, like [`Unresolved`](Self::Unresolved), but that
+    /// one is a resolution this sender asked for and waited out. This one is a kernel
+    /// declining to ask, based on a failure it remembers from whoever asked last,
+    /// possibly another process, or a moment the neighbour was asleep. Asked after the
+    /// hold-down, the question is new.
     #[error("{0}")]
     HeldDown(String),
 
@@ -532,18 +477,16 @@ pub enum SendError {
     #[error("{0}")]
     Refused(String),
 
-    /// This transport cannot express the probe it was handed, and will not be
-    /// able to next time either.
+    /// This transport cannot express the probe it was handed, and never will.
     #[error("this transport cannot send that probe: {0}")]
     Unsupported(&'static str),
 
-    /// This process, or the system, had no descriptor left to open what the
-    /// send needed: a socket, or a link's handle for frames.
+    /// This process, or the system, had no descriptor left to open what the send
+    /// needed: a socket, or a link's handle for frames.
     ///
-    /// A fact about this machine, as a [`Refused`](Self::Refused) is, and
-    /// apart from it because it is the one whose words say the least: every
-    /// layer the open passed through adds its own, around the one fact a
-    /// reader can act on, which is the file limit.
+    /// A fact about this machine, like [`Refused`](Self::Refused), but separate because
+    /// every layer the open passed through wraps its own words around the one fact a
+    /// reader can act on: the file limit.
     #[error("file limit reached")]
     OutOfDescriptors,
 }
@@ -551,20 +494,18 @@ pub enum SendError {
 impl SendError {
     /// Classifies a failure from a lower layer, keeping its whole cause chain.
     ///
-    /// Walks `source()` rather than a single message, so a wrapper naming which
-    /// probe failed does not hide the operating system's own explanation
-    /// underneath it. `thiserror`'s `#[error]` strings already interpolate their
-    /// source, so the text is the whole chain.
+    /// Walks `source()`, so a wrapper naming which probe failed does not hide the
+    /// operating system's explanation. `thiserror`'s `#[error]` strings already
+    /// interpolate their source, so the text is the whole chain.
     ///
-    /// Reads the operating system's own error kind rather than matching on the
-    /// text of its message, which differs per platform and per locale. Only the
-    /// unreachable kinds are singled out; everything else stays a refusal,
-    /// including the ones that look similar: a full send buffer or a permission
+    /// Reads the operating system's error kind, since message text differs per
+    /// platform and locale. Only the unreachable kinds are singled out; everything
+    /// else stays a refusal, including lookalikes: a full send buffer or a permission
     /// failure says nothing about whether the destination exists.
     ///
-    /// `EHOSTDOWN` has no [`ErrorKind`](std::io::ErrorKind) of its own and is
-    /// read by number, as [`HeldDown`](Self::HeldDown). Read as a refusal, it
-    /// would have a scan of one dead address report itself broken.
+    /// `EHOSTDOWN` has no [`ErrorKind`](std::io::ErrorKind) of its own and is read by
+    /// number, as [`HeldDown`](Self::HeldDown). As a refusal, it would make a scan of
+    /// one dead address report itself broken.
     pub(crate) fn from_io<E: std::error::Error + 'static>(error: E) -> Self {
         let chain = || {
             std::iter::successors(Some(&error as &dyn std::error::Error), |cause| {
@@ -589,23 +530,22 @@ impl SendError {
         }
     }
 
-    /// A probe not sent because the routing table gave no answer to the
-    /// lookup of its source, in the words the lookup failed with.
+    /// A probe not sent because the routing table gave no answer to the lookup of its
+    /// source, in the lookup's own words.
     ///
-    /// A refusal whatever those words are, never read by
-    /// [`from_io`](Self::from_io): a lookup that failed says nothing about
-    /// the destination, and an `EHOSTDOWN` read there would file the host as
-    /// one whose neighbour did not answer.
+    /// Always a refusal, never read by [`from_io`](Self::from_io): a failed lookup says
+    /// nothing about the destination, and an `EHOSTDOWN` read there would file the host
+    /// as one whose neighbour did not answer.
     pub(crate) fn unanswered_route(error: &std::io::Error) -> Self {
         Self::Refused(format!("route lookup failed: {error}"))
     }
 
-    /// Whether this failure is about the destination rather than about the
-    /// sending host: no route to it, or no answer from the neighbour a route
-    /// leads through, lately or just now.
+    /// Whether this failure is about the destination instead of the sending host: no
+    /// route to it, or no answer from the neighbour a route leads through, lately or
+    /// just now.
     ///
-    /// What separates "the scan could not run" from "that address is not
-    /// reachable from here", which are reported differently and should be.
+    /// Separates "the scan could not run" from "that address is not reachable from
+    /// here", which are reported differently.
     pub fn is_unroutable(&self) -> bool {
         matches!(
             self,
@@ -614,9 +554,9 @@ impl SendError {
     }
 }
 
-/// Whether `error` is the kernel's `EHOSTDOWN`: the next hop's address
-/// resolution failed lately, and the kernel is refusing sends to it rather
-/// than ask again yet. See [`SendError::HeldDown`].
+/// Whether `error` is the kernel's `EHOSTDOWN`: the next hop's address resolution
+/// failed lately, and the kernel refuses sends to it for now. See
+/// [`SendError::HeldDown`].
 pub(crate) fn host_is_down(error: &std::io::Error) -> bool {
     #[cfg(unix)]
     {
@@ -629,44 +569,41 @@ pub(crate) fn host_is_down(error: &std::io::Error) -> bool {
     }
 }
 
-/// What a caller decides about the IP header carrying a probe, as opposed to
-/// what the packet itself decides.
+/// What a caller decides about the IP header carrying a probe.
 ///
-/// Addresses, protocol number, lengths and checksums all follow from the probe
-/// and its destination, so a sender derives them. What is left is the handful of
-/// header fields nothing downstream can infer, and today that is exactly one:
-/// how far the probe may travel.
+/// Addresses, protocol number, lengths and checksums follow from the probe and its
+/// destination, so a sender derives them. What is left are the header fields nothing
+/// downstream can infer: the hop limit, and on the link-layer path a spoofed source
+/// hardware address and fragmentation.
 ///
-/// It is a value rather than a bare `u8` because it is the seam every remaining
-/// per-probe header choice arrives through, whether fragmentation or IP options
-/// or a deliberately wrong checksum, and each of those should widen this struct
-/// rather than the signature of every sender in the crate a second time.
+/// A struct so further per-probe header choices (IP options, a deliberately wrong
+/// checksum) can be added without changing every sender's signature.
 ///
-/// Both backends can honour it, by different means: the link-layer sender is
-/// already building the header and simply writes the field, while the raw-socket
-/// sender sets it on the socket before the send, under the lock that serialises
-/// sends anyway. See `raw::TransportSenderHandle::send_to`.
+/// Both backends honour the hop limit: the link-layer sender writes the field in the
+/// header it builds, and the raw-socket sender sets it on the socket before the send,
+/// under the lock that serialises sends anyway. See
+/// `raw::TransportSenderHandle::send_to`.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Emission {
-    /// How many hops the probe may cross before a router discards it and
-    /// reports having done so.
+    /// How many hops the probe may cross before a router discards it and reports
+    /// having done so.
     pub hop_limit: u8,
-    /// The hardware address the frame claims to come from, or `None` for the
-    /// sending interface's own. Only a self-built Ethernet frame can carry it,
-    /// so an emission with this set cannot be sent over a raw socket. See
+    /// The hardware address the frame claims to come from, or `None` for the sending
+    /// interface's own. Only a self-built Ethernet frame can carry it, so an emission
+    /// with this set cannot go over a raw socket. See
     /// [`requires_link_layer`](Self::requires_link_layer).
     pub source_mac: Option<MacAddr>,
-    /// The largest each IP fragment this probe is split into may be, in bytes,
-    /// or `None` to send it whole. Only a self-built Ethernet frame carries
-    /// fragments this engine chose, for either address family. See
+    /// The largest size in bytes of each IP fragment this probe is split into, or
+    /// `None` to send it whole. Only a self-built Ethernet frame carries fragments
+    /// this engine chose, for either address family. See
     /// [`requires_link_layer`](Self::requires_link_layer).
     pub fragment: Option<u16>,
 }
 
 impl Emission {
-    /// What an ordinary probe wants: far enough for any path on the public
-    /// internet. See [`ip::HOP_LIMIT_ROUTED`](crate::protocols::ip::HOP_LIMIT_ROUTED).
+    /// What an ordinary probe wants: far enough for any path on the public internet.
+    /// See [`ip::HOP_LIMIT_ROUTED`](crate::protocols::ip::HOP_LIMIT_ROUTED).
     pub const fn routed() -> Self {
         Self {
             hop_limit: crate::protocols::ip::HOP_LIMIT_ROUTED,
@@ -675,12 +612,11 @@ impl Emission {
         }
     }
 
-    /// A probe built to die `hops` routers away, so that the router which
-    /// discards it names itself in the error it must send back.
+    /// A probe built to expire `hops` routers away, so the router that discards it
+    /// names itself in the error it sends back.
     ///
-    /// The whole of how a path is measured. A hop limit of zero would be
-    /// discarded by this host's own stack before it reached a wire, so it is
-    /// raised to one, the first router, rather than silently sending nothing.
+    /// This is how a path is measured. A hop limit of zero would be discarded by this
+    /// host's own stack, so it is raised to one, the first router.
     pub const fn at_hop(hops: u8) -> Self {
         Self {
             hop_limit: if hops == 0 { 1 } else { hops },
@@ -689,9 +625,8 @@ impl Emission {
         }
     }
 
-    /// The same emission with its hop limit replaced. Carries an evasion
-    /// profile's chosen hop limit; path measurement sets its own with
-    /// [`at_hop`](Self::at_hop) instead.
+    /// The same emission with its hop limit replaced. Carries an evasion profile's
+    /// hop limit; path measurement uses [`at_hop`](Self::at_hop).
     #[must_use]
     pub const fn with_hop_limit(mut self, hop_limit: u8) -> Self {
         self.hop_limit = hop_limit;
@@ -707,18 +642,18 @@ impl Emission {
         self
     }
 
-    /// The same emission split into IP fragments no larger than `mtu` bytes.
-    /// Only a self-built Ethernet frame can carry the fragments, for either
-    /// address family; see [`requires_link_layer`](Self::requires_link_layer).
+    /// The same emission split into IP fragments of at most `mtu` bytes. Only a
+    /// self-built Ethernet frame can carry the fragments, for either address family;
+    /// see [`requires_link_layer`](Self::requires_link_layer).
     #[must_use]
     pub const fn with_fragment(mut self, mtu: u16) -> Self {
         self.fragment = Some(mtu);
         self
     }
 
-    /// Whether this emission can only leave as a self-built Ethernet frame,
-    /// because it sets a field a raw socket cannot place: a spoofed source
-    /// hardware address, or fragments this engine chose rather than the kernel.
+    /// Whether this emission can only leave as a self-built Ethernet frame, because it
+    /// sets a field a raw socket cannot place: a spoofed source hardware address, or
+    /// fragments this engine chose.
     #[must_use]
     pub const fn requires_link_layer(&self) -> bool {
         self.source_mac.is_some() || self.fragment.is_some()
@@ -733,22 +668,20 @@ impl Default for Emission {
 
 /// Sends an already-built Layer-4 `segment` to `dst`.
 ///
-/// `src` is the source address the segment's checksum was computed against;
-/// a raw-socket sender lets the kernel stamp it into the IP header, while a
-/// link-layer sender uses it to build the header itself. `emission` is what the
-/// caller decides about that header; see [`Emission`]. Implementations must be
-/// safe to share across threads.
+/// `src` is the source address the segment's checksum was computed against; a
+/// raw-socket sender lets the kernel stamp it into the IP header, while a link-layer
+/// sender uses it to build the header. `emission` is what the caller decides about
+/// that header; see [`Emission`]. Implementations must be safe to share across
+/// threads.
 pub trait ProbeSender: Send + Sync {
-    /// Emits one probe, or names why it did not leave.
+    /// Emits one probe, or says why it did not leave.
     ///
-    /// `zone` is the interface a link-local `dst` is valid on, and `None` for
-    /// every address that identifies its host on its own. `fe80::1` names a
-    /// different machine on every segment, so a sender given one without a zone
-    /// has no destination it can reach.
+    /// `zone` is the interface a link-local `dst` is valid on, and `None` for every
+    /// address that identifies its host on its own. `fe80::1` names a different
+    /// machine on every segment, so without a zone it is unreachable.
     ///
-    /// [`SendError::Unroutable`] says something about `dst` rather than about
-    /// this sender: that address was asked about and not covered, while the
-    /// sender itself is still working.
+    /// [`SendError::Unroutable`] is about `dst`: that address was not covered, while
+    /// the sender still works.
     fn send(
         &self,
         segment: &[u8],
@@ -761,10 +694,9 @@ pub trait ProbeSender: Send + Sync {
 
 /// The IP protocol number a kind's probes carry, per address family.
 ///
-/// A pair rather than one value because [`ProbeKind::IcmpEcho`] is two
-/// protocols: ICMP is next-header 1 and ICMPv6 is 58. Every other kind names the
-/// same protocol twice, which [`same`](Self::same) says out loud rather than
-/// leaving to a reader to notice.
+/// A pair because [`ProbeKind::IcmpEcho`] is two protocols: ICMP is next-header 1 and
+/// ICMPv6 is 58. Every other kind names the same protocol twice; see
+/// [`same`](Self::same).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IpProtocols {
     /// What an IPv4 header carrying this kind's probes says it carries.
@@ -793,10 +725,9 @@ impl IpProtocols {
 
 /// Why a probe transport could not be opened.
 ///
-/// Named by the half that failed, because the two halves fail for different
-/// reasons and only one of them has an alternative. A scan that cannot capture
-/// has nowhere to hear an answer and is over; a scan that cannot open its send
-/// socket may still have a link-layer path, which is what [`SendMode`] selects.
+/// Named by the half that failed, since only one has an alternative. A scan that
+/// cannot capture cannot hear answers and is over; a scan that cannot open its send
+/// socket may still have a link-layer path, which [`SendMode`] selects.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
@@ -804,21 +735,20 @@ pub enum TransportError {
     #[error("the reply capture could not be started: {0}")]
     Capture(#[from] capture::CaptureError),
 
-    /// The raw send socket could not be opened. Needs root, and on Windows raw
-    /// TCP sends are blocked outright whatever the privileges.
+    /// The raw send socket could not be opened. Needs root, and on Windows raw TCP
+    /// sends are blocked whatever the privileges.
     #[error("the raw send socket could not be opened: {0}")]
     RawSocket(String),
 
-    /// Layer-2 sending was asked for and this host has nothing to send from,
-    /// holding only tunnels or loopback. The raw-socket path works here.
+    /// Layer-2 sending was asked for and this host has nothing to send from, holding
+    /// only tunnels or loopback. The raw-socket path works here.
     #[error("no Ethernet-capable interface for Layer-2 send: {0}")]
     NoEthernetInterface(String),
 }
 
-/// A borrowed Layer-4 segment presented as a `pnet` packet, so raw bytes can
-/// be handed straight to a `TransportSender` without a copy or a typed
-/// wrapper. The whole slice is the packet; it has no distinct payload of its
-/// own as far as the transport is concerned.
+/// A borrowed Layer-4 segment presented as a `pnet` packet, so raw bytes can be handed
+/// straight to a `TransportSender` without a copy. The whole slice is the packet; it
+/// has no separate payload as far as the transport is concerned.
 struct RawSegment<'a>(&'a [u8]);
 
 impl Packet for RawSegment<'_> {
@@ -830,9 +760,9 @@ impl Packet for RawSegment<'_> {
     }
 }
 
-/// The default sender: emits segments over a raw Layer-4 socket and lets the
-/// kernel route them. Correct on Linux and macOS alike, for both on-link and
-/// off-link destinations, with no ARP/NDP or gateway bookkeeping of its own.
+/// The default sender: emits segments over a raw Layer-4 socket and lets the kernel
+/// route them. Works on Linux and macOS for on-link and off-link destinations, with no
+/// ARP/NDP or gateway bookkeeping of its own.
 pub struct RawIpSender {
     handle: TransportSenderHandle,
 }
@@ -854,11 +784,9 @@ impl ProbeSender for RawIpSender {
         zone: Option<u32>,
         emission: Emission,
     ) -> Result<(), SendError> {
-        // The kernel builds the IP header and the frame around it here, so a
-        // field only a self-built frame can carry, such as a spoofed hardware
-        // address, cannot be honoured. Refused with the reason rather than sent
-        // without
-        // it, so a scan that reports it spoofed did.
+        // The kernel builds the IP header and the frame here, so a field only a
+        // self-built frame can carry, such as a spoofed hardware address, cannot be
+        // honoured. Refused with the reason, so a scan that reports a spoof did one.
         if emission.requires_link_layer() {
             return Err(SendError::Unsupported(
                 "this emission sets a field only a self-built Ethernet frame can carry",
@@ -871,34 +799,31 @@ impl ProbeSender for RawIpSender {
     }
 }
 
-/// Builds its own Ethernet frames, and falls back to the raw socket for the
-/// destinations [`EthernetSender`] cannot frame: on-link IPv6 (no NDP) and
-/// tunnels. Loopback it frames, to the loopback interface.
+/// Builds its own Ethernet frames, and falls back to the raw socket for destinations
+/// [`EthernetSender`] cannot frame: on-link IPv6 (no NDP) and tunnels. Loopback it
+/// frames, to the loopback interface.
 ///
-/// The macOS default. There the raw socket accepts a quarter of a large scan's
-/// sends and drops them before the wire, where a self-built frame goes out.
+/// The macOS default. There the raw socket accepts a large scan's sends and drops a
+/// quarter of them before the wire, where a self-built frame goes out.
 ///
-/// Two failures are final rather than a reason to try the socket. An emission
-/// only a frame can carry would leave the socket as a different probe than the
-/// one asked for. And a neighbour that did not answer its address resolution
-/// ([`SendError::Unresolved`]) was reachable by a frame and asked: the socket
-/// would hand the kernel the same question about the same neighbour, and the
-/// kernel answers it in its own time. macOS takes the first few writes while it
-/// asks and discards them later, then refuses the rest for twenty seconds once
-/// it has given up, so a port's verdict would record where the kernel was in
-/// that cycle when its probe left. Refused here, every probe to the address is
-/// refused alike, and the scan reads one absent host.
+/// Two failures are final. An emission only a frame can carry would leave the socket
+/// as a different probe from the one asked for. And a neighbour that did not answer
+/// its address resolution ([`SendError::Unresolved`]) was reachable by a frame and
+/// asked: the socket would hand the kernel the same question, which it answers in its
+/// own time. macOS takes the first few writes while it asks and discards them, then
+/// refuses the rest for twenty seconds once it gives up, so each port's verdict would
+/// depend on where the kernel was in that cycle. Refusing here treats every probe to
+/// the address alike, and the scan reads one absent host.
 ///
-/// Generic over its two senders so the rule is tested on this type rather
-/// than on a copy of it; the transport only ever builds the one pairing.
+/// Generic over its two senders so the rule is tested on this type; the transport
+/// only builds the one pairing.
 struct LinkLayerFirst<L = EthernetSender, S = RawIpSender> {
     link: L,
-    /// [`None`] when this process may inject frames but not open a raw socket,
-    /// which is an unprivileged run on macOS with the BPF devices handed to a
-    /// group. The fallback is what goes missing, not the scan: a destination
-    /// with Ethernet in front of it is reached by the frame either way, as is
-    /// loopback, and only tunnel-only addresses and IPv6 neighbours needed the
-    /// socket.
+    /// [`None`] when this process may inject frames but not open a raw socket: an
+    /// unprivileged run on macOS with the BPF devices given to a group. Only the
+    /// fallback goes missing: anything with Ethernet in front of it, and loopback, is
+    /// still reached by frame; only tunnel-only addresses and IPv6 neighbours needed
+    /// the socket.
     socket: Option<S>,
 }
 
@@ -921,17 +846,16 @@ impl<L: ProbeSender, S: ProbeSender> ProbeSender for LinkLayerFirst<L, S> {
         }
         match &self.socket {
             Some(socket) => socket.send(segment, src, dst, zone, emission),
-            // The frame's own error rather than one about a missing socket,
-            // because it is the reason this destination went unreached.
+            // The frame's own error, since it is why this destination went
+            // unreached.
             None => framed,
         }
     }
 }
 
-/// A sender that refuses to send. Paired with a capture for receive-only
-/// transports (the DNS/mDNS resolver only listens), so no raw send socket is
-/// opened just to be thrown away - and a stray send attempt fails loudly
-/// rather than silently doing nothing.
+/// A sender that refuses to send. Paired with a capture for receive-only transports
+/// (the DNS/mDNS resolver only listens), so no raw send socket is opened needlessly,
+/// and a stray send fails loudly.
 struct NoopSender;
 
 impl ProbeSender for NoopSender {
@@ -947,88 +871,81 @@ impl ProbeSender for NoopSender {
     }
 }
 
-/// A probe transport: a swappable sender paired with a capture-fed receive
-/// stream. Scanners hold one of these and depend only on [`ProbeTransport::tx`]
-/// and [`ProbeTransport::rx`], never on how either is realized.
+/// A probe transport: a swappable sender paired with a capture-fed receive stream.
+/// Scanners hold one of these and depend only on [`ProbeTransport::tx`] and
+/// [`ProbeTransport::rx`].
 #[non_exhaustive]
 pub struct ProbeTransport {
-    /// The send half. Boxed so the backend (raw socket today, Ethernet later)
-    /// can vary without touching callers.
+    /// The send half, boxed so the backend can vary without touching callers.
     pub tx: Box<dyn ProbeSender>,
-    /// Parsed replies ([`capture::CapturedSegment`]), merged across every
-    /// captured interface.
+    /// Parsed replies ([`capture::CapturedSegment`]), merged across every captured
+    /// interface.
     pub rx: CaptureStream,
-    /// Keeps the capture threads alive for this transport's lifetime, and holds
-    /// the counters they publish.
+    /// Keeps the capture threads alive for this transport's lifetime, and holds the
+    /// counters they publish.
     capture: CaptureGuard,
-    /// Where the send half's address resolution stands, for a scan that holds
-    /// a host's probes while its neighbour is asked for. See [`NeighborWatch`].
-    /// `None` where a neighbour that does not answer is refused at the send,
-    /// with nothing to read beforehand: a raw socket on macOS.
+    /// Where the send half's address resolution stands, for a scan that holds a host's
+    /// probes while its neighbour is resolved. See [`NeighborWatch`]. `None` where an
+    /// unanswering neighbour is refused at the send with nothing to read beforehand: a
+    /// raw socket on macOS.
     ///
-    /// Boxed so the watch's locks sit behind a pointer rather than inside the
-    /// transport, whose auto traits are public and would otherwise carry them.
+    /// Boxed so the watch's locks sit behind a pointer; the transport's auto traits are
+    /// public and would otherwise carry them.
     neighbors: Option<Box<NeighborWatch>>,
-    /// The kind this transport was opened for, which decides what its capture
-    /// admits and so what a scan over it can hear. `None` for one built from
-    /// parts, whose receive stream carries whatever is pushed onto it. See
-    /// [`reply_port`](Self::reply_port) and
-    /// [`mismatched_for`](Self::mismatched_for).
+    /// The kind this transport was opened for, which decides what its capture admits
+    /// and so what a scan over it can hear. `None` for one built from parts, whose
+    /// receive stream carries whatever is pushed onto it. See
+    /// [`reply_port`](Self::reply_port) and [`mismatched_for`](Self::mismatched_for).
     kind: Option<ProbeKind>,
 }
 
-/// Where the address resolution a transport's sends depend on stands, read by
-/// a scan before it hands a probe over.
+/// Where the address resolution a transport's sends depend on stands, read by a scan
+/// before it hands a probe over.
 ///
-/// Two kinds, because who asks for a neighbour decides what a scan can see of
-/// it and when the asking starts.
+/// Two kinds, because who resolves a neighbour decides what a scan can see of it and
+/// when resolution starts.
 pub(crate) enum NeighborWatch {
     /// The kernel's own resolution, behind a raw socket on Linux. A write to a
-    /// neighbour starts it, and the kernel says nothing to the socket of how
-    /// it went; its table does. See [`KernelNeighbors`].
+    /// neighbour starts it, and the kernel tells the socket nothing of how it went;
+    /// its table does. See [`KernelNeighbors`].
     Kernel(KernelNeighbors),
-    /// A frame sender's own resolution. Asking where it stands starts it, and
-    /// a send to a neighbour still being resolved waits for it. See
-    /// [`LinkNeighbors`].
+    /// A frame sender's own resolution. Asking where it stands starts it, and a send
+    /// to a neighbour still being resolved waits for it. See [`LinkNeighbors`].
     Frames(LinkNeighbors),
 }
 
 impl ProbeTransport {
-    /// What the receive path's kernel buffers have done so far, summed over
-    /// every interface this transport captures on.
+    /// What the receive path's kernel buffers have done so far, summed over every
+    /// interface this transport captures on.
     ///
-    /// A scanner reports this alongside its own counters because the two answer
-    /// different halves of the same question. The scanner knows how many replies
-    /// it saw; only this knows how many arrived and were thrown away before it
-    /// could. `None` for a transport with no capture behind it, so a synthetic
-    /// receive stream never reports a clean receive path it never had.
+    /// The scanner knows how many replies it saw; only this knows how many arrived and
+    /// were discarded before it could read them, so a scanner reports both. `None` for
+    /// a transport with no capture behind it.
     pub fn capture_counts(&self) -> Option<CaptureCounts> {
         self.capture.counts()
     }
 
-    /// Where the address resolution this transport's sends wait on stands.
-    /// See [`NeighborWatch`].
+    /// Where the address resolution this transport's sends wait on stands. See
+    /// [`NeighborWatch`].
     pub(crate) fn neighbors(&self) -> Option<&NeighborWatch> {
         self.neighbors.as_deref()
     }
 
-    /// The port this transport's capture admits replies to, where the kind it
-    /// was opened for fixes one: [`ProbeKind::TcpProbe`], [`ProbeKind::UdpProbe`]
-    /// and [`ProbeKind::Sctp`]. `None` for a kind that fixes none, and for a
-    /// transport built from parts, whose receive stream carries whatever is
-    /// pushed onto it.
+    /// The port this transport's capture admits replies to, where the kind it was
+    /// opened for fixes one: [`ProbeKind::TcpProbe`], [`ProbeKind::UdpProbe`] and
+    /// [`ProbeKind::Sctp`]. `None` for a kind that fixes none, and for a transport
+    /// built from parts.
     ///
-    /// A scan over this transport sends from this port, whatever port it was
-    /// handed beside it: its probes' answers come back to the port they left
-    /// from, and an answer to any other is filtered out before the scan could
-    /// read it. The port a transport was opened for is the one fact both halves
-    /// act on, so it is kept here, where the capture that filters on it is.
+    /// A scan over this transport sends from this port, whatever port it was handed
+    /// beside it: answers come back to the port their probes left from, and the
+    /// capture filters out answers to any other. So the port lives here, with the
+    /// capture that filters on it.
     pub fn reply_port(&self) -> Option<u16> {
         self.kind.and_then(ProbeKind::reply_port)
     }
 
-    /// The kind this transport was opened for, where its capture filters on
-    /// one, if that kind cannot carry a port scan of `protocol`.
+    /// The kind this transport was opened for, where its capture filters on one, if
+    /// that kind cannot carry a port scan of `protocol`.
     ///
     /// A transport built from parts filters nothing, so it carries anything.
     pub(crate) fn mismatched_for(&self, protocol: Protocol) -> Option<ProbeKind> {
@@ -1063,21 +980,20 @@ impl ProbeTransport {
 
     /// Opens a transport for `kind`, choosing the send backend per `mode`.
     ///
-    /// All modes pair with a filtered `libpcap` capture on every currently-up
-    /// interface. Capturing on all of them (loopback included) means a reply
-    /// is caught whichever interface the kernel routed the probe out of - the
-    /// egress path can differ per destination, especially with a VPN in play,
-    /// so binding to a single guessed interface would silently miss replies.
+    /// Every mode pairs with a filtered `libpcap` capture on every interface that is
+    /// up, loopback included, so a reply is caught whichever interface the kernel
+    /// routed the probe out of. The egress path can differ per destination,
+    /// especially under a VPN.
     pub fn open_with(kind: ProbeKind, mode: SendMode) -> Result<Self, TransportError> {
         Self::open_capturing(kind, mode, &capturable_interfaces())
     }
 
     /// [`open_with`](Self::open_with), capturing on `links` alone.
     ///
-    /// For a scan that knows where its targets are: each capture holds a
-    /// device of the system's own, which on macOS is one of a fixed number of
-    /// BPF devices every process shares, and a capture on a link no reply can
-    /// arrive by holds one for nothing. See [`capture_links_toward`].
+    /// For a scan that knows where its targets are. Each capture holds a system
+    /// device, on macOS one of a fixed number of BPF devices shared by every process,
+    /// and a capture on a link no reply can arrive by wastes one. See
+    /// [`capture_links_toward`].
     pub(crate) fn open_capturing(
         kind: ProbeKind,
         mode: SendMode,
@@ -1086,9 +1002,9 @@ impl ProbeTransport {
         match mode {
             SendMode::Ethernet => Self::open_ethernet_capturing(kind, links),
             SendMode::RawSocket => Self::open_on(kind, links),
-            // Windows blocks raw-socket TCP sends; macOS accepts them and drops
-            // a quarter silently. Elsewhere the raw socket reaches everything
-            // without ARP. See [`LinkLayerFirst`].
+            // Windows blocks raw-socket TCP sends; macOS accepts them and silently
+            // drops a quarter. Elsewhere the raw socket reaches everything without
+            // ARP. See [`LinkLayerFirst`].
             SendMode::Auto => {
                 #[cfg(windows)]
                 {
@@ -1124,9 +1040,9 @@ impl ProbeTransport {
         })
     }
 
-    /// A `LinkLayerFirst` transport: frames what it can, raw socket for the
-    /// rest. The macOS default. A host with no Ethernet interface gets the
-    /// plain raw-socket transport, which is all the fallback would do anyway.
+    /// A `LinkLayerFirst` transport: frames what it can, raw socket for the rest. The
+    /// macOS default. A host with no Ethernet interface gets the plain raw-socket
+    /// transport.
     pub fn open_link_first(kind: ProbeKind) -> Result<Self, TransportError> {
         Self::open_link_first_capturing(kind, &capturable_interfaces())
     }
@@ -1145,10 +1061,9 @@ impl ProbeTransport {
         Ok(Self {
             tx: Box::new(LinkLayerFirst {
                 link,
-                // Not `?`: a process that may inject frames and not open a raw
-                // socket still scans everything with Ethernet in front of it,
-                // and refusing to open here would give that run connect
-                // scanning with the link-layer path sitting unused.
+                // Not `?`: a process that may inject frames but not open a raw socket
+                // still scans everything with Ethernet in front of it; failing here
+                // would fall back to connect scanning with the link-layer path unused.
                 socket: RawIpSender::open(kind).ok(),
             }),
             rx,
@@ -1158,13 +1073,12 @@ impl ProbeTransport {
         })
     }
 
-    /// Opens a transport whose send half builds and emits Ethernet frames
-    /// directly (`EthernetSender`) instead of using a raw socket.
+    /// Opens a transport whose send half builds and emits Ethernet frames directly
+    /// (`EthernetSender`).
     ///
-    /// For Windows (where raw TCP sends are blocked) and for deliberately
-    /// bypassing the host stack. Fails if the host has no Ethernet-capable
-    /// interface - only a tunnel or loopback - in which case the raw-IP
-    /// transport from [`open`](Self::open) is the correct choice.
+    /// For Windows (where raw TCP sends are blocked) and for bypassing the host stack.
+    /// Fails if the host has no Ethernet-capable interface, only tunnels or loopback;
+    /// then use [`open`](Self::open).
     pub fn open_ethernet(kind: ProbeKind) -> Result<Self, TransportError> {
         Self::open_ethernet_capturing(kind, &capturable_interfaces())
     }
@@ -1194,13 +1108,12 @@ impl ProbeTransport {
         })
     }
 
-    /// Opens a receive-only transport: a filtered capture on every up
-    /// interface, with a sender that refuses to send.
+    /// Opens a receive-only transport: a filtered capture on every up interface, with
+    /// a sender that refuses to send.
     ///
-    /// For consumers that only listen - the passive DNS/mDNS resolver never
-    /// emits raw packets - so no raw send socket is opened. That drops an
-    /// unnecessary privilege requirement and failure mode (a host that blocks
-    /// raw sockets can still resolve hostnames).
+    /// For consumers that only listen, such as the passive DNS/mDNS resolver. No raw
+    /// send socket is opened, so a host that blocks raw sockets can still resolve
+    /// hostnames.
     pub fn open_receiver(kind: ProbeKind) -> Result<Self, TransportError> {
         Self::open_receiver_capturing(kind, &capturable_interfaces())
     }
@@ -1224,14 +1137,13 @@ impl ProbeTransport {
         })
     }
 
-    /// Builds a transport from an explicit sender and receive stream, opening
-    /// no socket and no capture.
+    /// Builds a transport from an explicit sender and receive stream, opening no
+    /// socket and no capture.
     ///
-    /// This is the seam that lets a test stand a scanner up against a synthetic
-    /// network: `tx` observes the probes the scanner emits, and whatever is
-    /// pushed onto the sending half of `rx` arrives as though it had been
-    /// captured off the wire. Because no capture threads exist, the transport
-    /// holds an inert [`CaptureGuard`] and dropping it stops nothing.
+    /// Lets a test run a scanner against a synthetic network: `tx` observes the probes
+    /// the scanner emits, and whatever is pushed onto the sending half of `rx` arrives
+    /// as though captured off the wire. With no capture threads, the transport holds an
+    /// inert [`CaptureGuard`].
     ///
     /// Requires the `test-support` feature outside this crate.
     #[cfg(any(test, feature = "test-support"))]
@@ -1245,8 +1157,8 @@ impl ProbeTransport {
         }
     }
 
-    /// [`from_parts`](Self::from_parts) with a capture already stopped, for a
-    /// test of what a scanner makes of a receive path that went deaf.
+    /// [`from_parts`](Self::from_parts) with a capture already stopped, for testing
+    /// what a scanner makes of a receive path that went deaf.
     #[cfg(test)]
     pub(crate) fn from_parts_deaf(tx: Box<dyn ProbeSender>, rx: CaptureStream) -> Self {
         Self {
@@ -1259,22 +1171,18 @@ impl ProbeTransport {
     }
 }
 
-/// The interfaces a capture should listen on: every interface that's up, and
-/// loopback whether or not it admits to being.
+/// The interfaces a capture should listen on: every interface that is up, and
+/// loopback whether or not it reports being up.
 ///
-/// Loopback needs naming separately because
-/// [`is_up`](crate::system::interface::Link::is_up) wants a carrier as well as
-/// an administrative flag, and loopback has no carrier to report - Linux leaves
-/// its operational state `unknown` for the life of the machine. That conjunction
-/// is the right question for deciding what to *probe out of*, which is what it
-/// was written for; here the question is only what to listen on, and answering
-/// the first one drops `lo`, so every localhost probe goes out and none is ever
-/// heard back.
+/// [`is_up`](crate::system::interface::Link::is_up) wants a carrier as well as the
+/// administrative flag, and loopback has no carrier: Linux leaves its operational
+/// state `unknown` for the life of the machine. That is the right test for what to
+/// probe out of, but here, deciding what to listen on, it would drop `lo`, and every
+/// localhost probe would go out with none heard back.
 ///
-/// Each is named as a [`Zone`], carrying the index alongside the name. The
-/// index costs nothing to keep here, the interface table having been read to find
-/// the name, and it is what a finding scoped to a link needs, since a
-/// link-local address names a different machine on every one of them.
+/// Each is named as a [`Zone`], carrying the index with the name. The interface table
+/// was already read, and a finding scoped to a link needs the index, since a
+/// link-local address names a different machine on every link.
 pub(crate) fn capturable_interfaces() -> Vec<Zone> {
     capturable(&crate::system::interface::interfaces_or_none())
 }
@@ -1288,33 +1196,28 @@ fn capturable(links: &[Link]) -> Vec<Zone> {
         .collect()
 }
 
-/// The links a reply to a probe of `targets` can arrive by, sent from
-/// `forced` where the scan pins its source: what a scan that knows its
-/// targets captures on.
+/// The links a reply to a probe of `targets` can arrive by, sent from `forced` where
+/// the scan pins its source: what a scan that knows its targets captures on.
 ///
-/// A reply comes back to the address its probe was sent from, so it arrives
-/// by the link that holds that address. For a target on a segment this host
-/// is on, that is the segment's link; for a routed one, the link holding the
-/// source the routing table picks, which is the tunnel's own link where a VPN
-/// carries it; for this host's own addresses and loopback's, loopback. A
-/// pinned source is asked of both the pin and the routing table, since the
-/// probe may still leave by the route while its answer comes back to the pin.
+/// A reply comes back to the address its probe was sent from, so it arrives by the
+/// link holding that address. For a target on one of this host's segments, that is
+/// the segment's link; for a routed one, the link holding the source the routing table
+/// picks, which is the tunnel's own link under a VPN; for this host's own addresses
+/// and loopback's, loopback. A pinned source is checked against both the pin and the
+/// routing table, since the probe may leave by the route while its answer comes back
+/// to the pin.
 ///
-/// Every link that is up where the routing cannot say: an address with no
-/// route, or a source no link holds. A capture on a link nothing arrives by
-/// costs a device and nothing else, and one missing from the link a reply
-/// does arrive by loses the reply, so the doubt is resolved toward listening.
-/// So too for a plan with more addresses to route one at a time than
-/// [`MAX_ENUMERABLE_ADDRESSES`]: its phases route each of them anyway, and
-/// asking again here would double the one cost of planning that grows with
-/// the plan.
+/// Every link that is up where routing cannot say: an address with no route, or a
+/// source no link holds. An extra capture costs a device, a missing one loses the
+/// reply, so doubt resolves toward listening. Likewise for a plan with more addresses
+/// than [`MAX_ENUMERABLE_ADDRESSES`]: its phases route each one anyway, and routing
+/// them again here would double the one planning cost that grows with the plan.
 ///
 /// [`MAX_ENUMERABLE_ADDRESSES`]: crate::system::interface::MAX_ENUMERABLE_ADDRESSES
 ///
-/// Worth narrowing because each capture holds a device of the system's own:
-/// on macOS one of a fixed pool of BPF devices every process shares, which a
-/// few scans capturing on every link of a machine with dozens of them
-/// exhaust.
+/// Worth narrowing because each capture holds a system device: on macOS one of a fixed
+/// pool of BPF devices shared by every process, which a few scans capturing on every
+/// link of a machine with dozens of links exhaust.
 pub(crate) fn capture_links_toward(targets: &IpSet, forced: &[IpAddr]) -> Vec<Zone> {
     use crate::system::interface::{
         MAX_ENUMERABLE_ADDRESSES, is_enumerable, map_ips_to_interfaces,
@@ -1322,8 +1225,8 @@ pub(crate) fn capture_links_toward(targets: &IpSet, forced: &[IpAddr]) -> Vec<Zo
     };
 
     let links = crate::system::interface::interfaces_or_none();
-    // What the routing below would walk address by address: every IPv4
-    // range, and the IPv6 ones small enough to walk at all.
+    // What the routing below would walk address by address: every IPv4 range, and
+    // the IPv6 ones small enough to walk.
     let mut routed_one_by_one = IpSet::new();
     for range in targets.v4() {
         routed_one_by_one.push_v4_range(*range);
@@ -1341,8 +1244,8 @@ pub(crate) fn capture_links_toward(targets: &IpSet, forced: &[IpAddr]) -> Vec<Zo
     links_replies_reach(&links, &routings).unwrap_or_else(|| capturable(&links))
 }
 
-/// The links among `links` a reply to what `routings` planned arrives by, or
-/// `None` where one of them cannot be named; see [`capture_links_toward`].
+/// The links among `links` a reply to what `routings` planned arrives by, or `None`
+/// where one cannot be named; see [`capture_links_toward`].
 fn links_replies_reach(links: &[Link], routings: &[RoutedTargets]) -> Option<Vec<Zone>> {
     let loopback: Vec<&Link> = links.iter().filter(|link| link.is_loopback()).collect();
     let mut reached: Vec<Zone> = Vec::new();
@@ -1384,14 +1287,13 @@ fn links_replies_reach(links: &[Link], routings: &[RoutedTargets]) -> Option<Vec
 #[cfg(test)]
 pub type SentProbe = (Vec<u8>, IpAddr, IpAddr);
 
-/// A [`ProbeSender`] that records what it was asked to send instead of
-/// touching a socket, so transport wiring and scanner logic can be exercised
-/// without root. Available crate-wide under `cfg(test)`.
+/// A [`ProbeSender`] that records what it was asked to send, so transport wiring and
+/// scanner logic can be tested without root. Available crate-wide under `cfg(test)`.
 #[cfg(test)]
 #[derive(Clone, Default)]
 pub struct MockSender {
-    /// Every probe handed to [`send`](ProbeSender::send), oldest first. Shared,
-    /// so a clone of the sender given to a scanner reads the same list.
+    /// Every probe handed to [`send`](ProbeSender::send), oldest first. Shared, so a
+    /// clone of the sender given to a scanner reads the same list.
     pub sent: std::sync::Arc<std::sync::Mutex<Vec<SentProbe>>>,
 }
 
@@ -1443,13 +1345,12 @@ mod tests {
         ]
     }
 
-    /// Each port scan is carried by the kinds whose capture admits its
-    /// answers and by no other, and a transport built from parts, which
-    /// filters nothing, carries every one.
+    /// Each port scan is carried by the kinds whose capture admits its answers and no
+    /// other, and a transport built from parts, which filters nothing, carries every
+    /// one.
     ///
-    /// The UDP resolver's kind is the near miss: the same protocol, but a
-    /// capture that admits name-service replies alone, so a UDP port scan over
-    /// it would hear nothing.
+    /// The UDP resolver's kind is the near miss: the same protocol, but a capture that
+    /// admits only name-service replies, so a UDP port scan over it would hear nothing.
     #[test]
     fn a_transport_carries_the_port_scans_its_capture_admits_answers_to() {
         use Protocol::{Sctp, Tcp, Udp};
@@ -1495,13 +1396,10 @@ mod tests {
 
     /// **A scan captures only on the links a reply to it can arrive by.**
     ///
-    /// Every capture holds a device, and on macOS the devices are a fixed
-    /// pool every process shares: a scan capturing on each of a machine's
-    /// dozens of links leaves a handful of scans to exhaust it. A reply comes
-    /// back to its probe's source, so to the segment an on-link target is on,
-    /// to the link holding a routed target's source, which is the tunnel's
-    /// where a VPN carries the route, and over loopback for this host's own
-    /// addresses.
+    /// Every capture holds a device, and on macOS the devices are a fixed pool shared
+    /// by every process. A reply comes back to its probe's source: on the segment of an
+    /// on-link target, on the link holding a routed target's source (the tunnel's,
+    /// under a VPN), and over loopback for this host's own addresses.
     #[test]
     fn a_capture_listens_where_replies_to_its_targets_arrive() {
         let links = machine();
@@ -1535,9 +1433,9 @@ mod tests {
         assert_eq!(on(ours), Some(vec!["lo0".to_owned()]), "this host's own");
     }
 
-    /// Where the routing cannot name the link a reply arrives by, a capture
-    /// listens on every link, since one missing from that link loses the
-    /// reply and one too many costs only a device.
+    /// Where routing cannot name the link a reply arrives by, a capture listens on
+    /// every link, since missing that link loses the reply and an extra costs only a
+    /// device.
     #[test]
     fn a_capture_whose_replies_the_routing_cannot_place_listens_everywhere() {
         let links = machine();
@@ -1557,10 +1455,10 @@ mod tests {
         assert_eq!(links_replies_reach(&links, &[unheld_source]), None);
     }
 
-    /// A raw socket reaches whatever the kernel carries and a frame what has
-    /// Ethernet in front of it, on every platform. What `Auto` reaches belongs
-    /// to the platform and, on macOS, to the process, so there it is checked
-    /// against the process's own answer rather than asserted.
+    /// A raw socket reaches whatever the kernel carries and a frame what has Ethernet
+    /// in front of it, on every platform. What `Auto` reaches depends on the platform
+    /// and, on macOS, on the process, so there it is checked against the process's own
+    /// answer.
     #[test]
     fn a_socket_reaches_past_frames_and_a_frame_does_not() {
         assert!(SendMode::RawSocket.reaches_past_frames());
@@ -1598,7 +1496,7 @@ mod tests {
         let sent = recorded.lock().unwrap().clone();
         assert_eq!(sent, vec![(vec![0xAA, 0xBB], src, dst)]);
 
-        // A reply pushed onto the capture stream is observed on rx unchanged.
+        // A reply pushed onto the capture stream arrives on rx unchanged.
         let reply = CapturedSegment::synthetic(
             dst,
             pnet_packet::ip::IpNextHeaderProtocols::Udp.0,
@@ -1608,10 +1506,9 @@ mod tests {
         assert_eq!(transport.rx.recv().await, Some(reply));
     }
 
-    /// The fallback is what keeps the macOS default from costing reach. The
-    /// frame path cannot resolve an on-link IPv6 neighbour and has no route to
-    /// loopback or into a tunnel, and those destinations have to keep working:
-    /// they were the reason the raw socket was the default everywhere.
+    /// The fallback keeps the macOS default from losing reach. The frame path cannot
+    /// resolve an on-link IPv6 neighbour and has no route to loopback or into a
+    /// tunnel, and those destinations must keep working.
     #[test]
     fn a_destination_the_frame_path_cannot_reach_goes_through_the_socket() {
         for cannot in [
@@ -1632,9 +1529,9 @@ mod tests {
         }
     }
 
-    /// A probe carrying a field only a self-built frame can express is not
-    /// retried through the socket. Sending it that way would put a different
-    /// probe on the wire and report it as the one that was asked for.
+    /// A probe carrying a field only a self-built frame can express is not retried
+    /// through the socket, which would send a different probe and report it as the
+    /// one asked for.
     #[test]
     fn a_probe_only_a_frame_can_carry_is_never_retried_through_the_socket() {
         let socket = MockSender::default();
@@ -1659,12 +1556,11 @@ mod tests {
         );
     }
 
-    /// A neighbour the frame path asked for and heard nothing from is not asked
-    /// again through the kernel. The kernel would put the same question to the
-    /// same neighbour and accept or refuse each probe by where it had got to,
-    /// so the ports of one dead address would come back part silent and part
-    /// unasked. The frame's answer stands, and it stands as a fact about the
-    /// destination.
+    /// A neighbour the frame path asked and heard nothing from is not asked again
+    /// through the kernel. The kernel would ask the same neighbour and accept or refuse
+    /// each probe depending on its progress, so one dead address's ports would come
+    /// back part silent and part unasked. The frame's answer stands, as a fact about
+    /// the destination.
     #[test]
     fn a_neighbour_that_did_not_answer_is_not_asked_again_through_the_socket() {
         let socket = MockSender::default();
@@ -1722,10 +1618,9 @@ mod tests {
         sender.send(&[0xAA], src, dst, None, emission)
     }
 
-    /// A Layer-2 sender writes the IP header itself and has nothing but this to
-    /// read the protocol number from. Announcing a UDP probe as TCP is
-    /// invisible locally and fatal remotely - the target's stack hands it to
-    /// the wrong protocol handler, so it is simply never answered.
+    /// A Layer-2 sender writes the IP header itself and reads the protocol number only
+    /// from this. A UDP probe announced as TCP is invisible locally; the target's stack
+    /// hands it to the wrong protocol handler and it is never answered.
     #[test]
     fn every_probe_kind_carries_its_own_ip_protocol() {
         assert_eq!(
@@ -1750,13 +1645,12 @@ mod tests {
         );
     }
 
-    /// ICMP is the one kind whose families are different protocols, and the
-    /// number is chosen by the destination rather than by the kind.
+    /// ICMP is the one kind whose families are different protocols, so the destination
+    /// chooses the number.
     ///
-    /// Pinned because getting it wrong is silent: an ICMPv6 message announced as
-    /// protocol 1 is delivered to a handler that will not recognise it, and the
-    /// probe simply goes unanswered. A scan reading that as "the host did not
-    /// reply" is wrong about the host.
+    /// Getting it wrong is silent: an ICMPv6 message announced as protocol 1 goes to a
+    /// handler that will not recognise it, the probe goes unanswered, and a scan wrongly
+    /// concludes the host did not reply.
     #[test]
     fn an_icmp_probe_names_a_different_protocol_per_family() {
         let protocols = ProbeKind::IcmpEcho { identifier: 1 }.ip_protocols();
@@ -1774,12 +1668,9 @@ mod tests {
 
     /// The ICMP filter admits both families whole.
     ///
-    /// The echo identifier is what separates this scan's replies from every
-    /// other ping on the host, and it cannot be expressed here: it sits past a
-    /// header whose length is not fixed over IPv6. Narrowing the IPv4 half alone
-    /// would leave the two families behaving differently for no reason a reader
-    /// could see, which is exactly how this crate lost its IPv6 receive path
-    /// once before.
+    /// The echo identifier cannot be expressed in the filter, since it sits past a
+    /// header of variable length over IPv6. Narrowing only the IPv4 half would make
+    /// the two families behave differently without any visible reason.
     #[test]
     fn the_icmp_filter_admits_both_families() {
         assert_eq!(
@@ -1788,8 +1679,8 @@ mod tests {
         );
     }
 
-    /// The UDP filter must narrow direct replies to the scan's own source port,
-    /// while leaving ICMP unnarrowed - an ICMP error carries no port to match on.
+    /// The UDP filter must narrow direct replies to the scan's own source port, and
+    /// leave ICMP unnarrowed, since an ICMP error carries no port to match.
     #[test]
     fn udp_probe_filter_narrows_replies_to_the_scan_source_port() {
         let filter = ProbeKind::UdpProbe { reply_port: 54_321 }.filter();
@@ -1801,22 +1692,18 @@ mod tests {
 // Filter conformance
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// What each [`ProbeKind`]'s filter actually admits, judged by `libpcap` rather
-/// than by reading the expression.
+/// What each [`ProbeKind`]'s filter admits, judged by `libpcap` itself.
 ///
-/// These are the only tests in the crate that exercise the receive path's real
-/// gatekeeper. Every scanner test drives a synthetic transport through
-/// [`ProbeTransport::from_parts`], which opens no capture and therefore compiles
-/// no filter: a reply pushed onto that stream arrives whatever the filter would
-/// have done with it. So a scanner test can pass against a simulated network
-/// while the same scan on a real one sees nothing at all, and the only way to
-/// tell is to compile the expression and put a frame through it.
+/// The only tests in the crate that exercise the receive path's real gatekeeper. Every
+/// scanner test drives a synthetic transport through [`ProbeTransport::from_parts`],
+/// which compiles no filter, so a scanner test can pass against a simulated network
+/// while the same scan on a real one sees nothing. The only check is to compile the
+/// expression and put a frame through it.
 ///
-/// The evaluation is `libpcap`'s own `pcap_offline_filter` running the compiled
-/// program - the same program the kernel is handed - over a frame built by this
-/// crate's own packet builders. Nothing here re-implements a filter or a parser,
-/// which is the point: an instrument that made the same assumptions as the code
-/// it measures would confirm whatever the code already believed.
+/// The evaluation is `libpcap`'s `pcap_offline_filter` running the compiled program,
+/// the same program the kernel gets, over a frame built by this crate's packet
+/// builders. Nothing here reimplements a filter or a parser, since an instrument
+/// sharing the code's assumptions would confirm them.
 #[cfg(test)]
 mod filter_conformance {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -1842,14 +1729,14 @@ mod filter_conformance {
     const TCP_HDR_LEN: usize = 20;
     const ICMPV6_UNUSED_LEN: usize = 4;
 
-    /// The single port a [`ProbeKind::TcpProbe`] scan sends from, and so the
-    /// port its answers come back to.
+    /// The single port a [`ProbeKind::TcpProbe`] scan sends from, and so the port its
+    /// answers come back to.
     const SCAN_PORT: u16 = 50_000;
 
     /// Whether `filter`, compiled for an Ethernet link, admits `frame`.
     ///
-    /// A dead capture is a compiler with no interface behind it, so this needs
-    /// neither privileges nor a network.
+    /// A dead capture is a compiler with no interface behind it, so this needs neither
+    /// privileges nor a network.
     fn admits(filter: &str, frame: &[u8]) -> bool {
         admits_on(pcap::Linktype::ETHERNET, filter, frame)
     }
@@ -1864,14 +1751,13 @@ mod filter_conformance {
         program.filter(frame)
     }
 
-    /// An Ethernet-framed TCP segment carrying `flags`, over whichever family
-    /// `src` and `dst` are, addressed back to the port a scan sent from.
+    /// An Ethernet-framed TCP segment carrying `flags`, over whichever family `src`
+    /// and `dst` are, addressed back to the port a scan sent from.
     fn tcp_frame(src: IpAddr, dst: IpAddr, flags: u8) -> Vec<u8> {
         tcp_frame_to(src, dst, flags, SCAN_PORT)
     }
 
-    /// [`tcp_frame`] addressed to an explicit port, for the filters that narrow
-    /// on one.
+    /// [`tcp_frame`] addressed to an explicit port, for filters that narrow on one.
     fn tcp_frame_to(src: IpAddr, dst: IpAddr, flags: u8, dst_port: u16) -> Vec<u8> {
         let mut segment = vec![0u8; TCP_HDR_LEN];
         {
@@ -1892,15 +1778,15 @@ mod filter_conformance {
         frame(src, dst, IpNextHeaderProtocols::Udp, &segment)
     }
 
-    /// An Ethernet-framed SCTP packet between the given ports, carrying the
-    /// chunk a probe draws back.
+    /// An Ethernet-framed SCTP packet between the given ports, carrying the chunk a
+    /// probe draws back.
     fn sctp_frame(src: IpAddr, dst: IpAddr, src_port: u16, dst_port: u16) -> Vec<u8> {
         let packet = crate::protocols::sctp::build_init_probe(src_port, dst_port, 0xDEAD_BEEF);
         frame(src, dst, IpNextHeaderProtocols::Sctp, &packet)
     }
 
-    /// An Ethernet-framed ICMPv6 destination-unreachable, the shape a UDP probe
-    /// draws from a closed port over IPv6.
+    /// An Ethernet-framed ICMPv6 destination-unreachable, the shape a UDP probe draws
+    /// from a closed port over IPv6.
     fn icmpv6_error_frame(src: IpAddr, dst: IpAddr) -> Vec<u8> {
         let mut segment = vec![0u8; MutableIcmpv6Packet::minimum_packet_size() + ICMPV6_UNUSED_LEN];
         {
@@ -1931,15 +1817,13 @@ mod filter_conformance {
         .expect("building an Ethernet frame")
     }
 
-    /// The two send failures that call for opposite responses are told apart by
-    /// the operating system's error kind, not by its wording.
+    /// The two send failures that call for opposite responses are told apart by the
+    /// operating system's error kind, not its wording.
     ///
-    /// A message's text differs per platform and per locale, and matching on it
-    /// is how a classification silently stops working on somebody else's
-    /// machine. Only the two unreachable kinds are singled out: a full buffer or
-    /// a permission failure says nothing about whether the destination exists,
-    /// and treating either as unroutable would hide a scan that genuinely could
-    /// not run.
+    /// Message text differs per platform and locale, so matching on it breaks silently
+    /// on other machines. Only the two unreachable kinds are singled out: a full buffer
+    /// or a permission failure says nothing about whether the destination exists, and
+    /// treating either as unroutable would hide a scan that could not run.
     #[test]
     fn a_destination_with_no_route_is_not_a_broken_send_path() {
         use super::SendError;
@@ -1970,17 +1854,16 @@ mod filter_conformance {
         }
     }
 
-    /// The kernel's own word for a neighbour it gave up on lately is a fact
-    /// about the destination, and named as the hold-down it is rather than as
-    /// a resolution this sender waited out.
+    /// The kernel's word for a neighbour it gave up on lately is a fact about the
+    /// destination, named as a hold-down, distinct from a resolution this sender waited
+    /// out.
     ///
-    /// macOS answers every probe to such a neighbour with `EHOSTDOWN` for as
-    /// long as it remembers the failure, and `std` has no error kind for it, so
-    /// it is the one case read by number. Read as a refusal it would file a
-    /// dead address as a scanner that broke; read as an unanswered resolution,
-    /// a failure from before the scan asked would stand as the scan's verdict.
-    /// A full send buffer is the case that must stay a refusal beside it, as
-    /// it is this host's.
+    /// macOS answers every probe to such a neighbour with `EHOSTDOWN` while it
+    /// remembers the failure, and `std` has no error kind for it, so it is read by
+    /// number. As a refusal it would file a dead address as a broken scanner; as an
+    /// unanswered resolution, a failure from before the scan asked would become the
+    /// scan's verdict. A full send buffer must stay a refusal beside it, since it is
+    /// this host's.
     #[cfg(unix)]
     #[test]
     fn a_neighbour_the_kernel_gave_up_on_is_not_a_broken_send_path() {
@@ -1998,9 +1881,8 @@ mod filter_conformance {
         assert!(!error.is_unroutable(), "a full buffer is this host's");
     }
 
-    /// A send refused for want of a descriptor is named by the one fact a
-    /// reader can act on, whatever layers it was opened through, rather than
-    /// in the words each of them wrapped around it.
+    /// A send refused for want of a descriptor is named by the one fact a reader can
+    /// act on, whatever layers it was opened through.
     #[cfg(unix)]
     #[test]
     fn a_send_refused_for_want_of_a_descriptor_says_the_file_limit() {
@@ -2034,8 +1916,8 @@ mod filter_conformance {
         );
     }
 
-    /// The filter exists to keep unrelated traffic out of userspace, so an
-    /// established connection's segments must not reach the scanner.
+    /// The filter keeps unrelated traffic out of userspace, so an established
+    /// connection's segments must not reach the scanner.
     #[test]
     fn the_syn_filter_rejects_established_traffic_over_ipv4() {
         assert!(!admits(
@@ -2044,16 +1926,12 @@ mod filter_conformance {
         ));
     }
 
-    /// The gap this module was written to expose, and the assertion that says
-    /// it is closed.
-    ///
-    /// `tcp[tcpflags]` is `proto[x]` indexing, which `libpcap` cannot compile
-    /// over IPv6 - the next-header chain makes the offset non-constant. It does
-    /// not report that; written unqualified it silently narrows the whole
-    /// expression to IPv4, and the compiled program jumps straight to `ret #0`
-    /// on EtherType `0x86dd`. Since the capture is the only receive path, that
-    /// left routed IPv6 discovery and IPv6 SYN port scanning seeing no replies
-    /// whatsoever.
+    /// `tcp[tcpflags]` is `proto[x]` indexing, which `libpcap` cannot compile over
+    /// IPv6, where the next-header chain makes the offset non-constant. It does not
+    /// report that: written unqualified it silently narrows the whole expression to
+    /// IPv4, and the compiled program jumps straight to `ret #0` on EtherType
+    /// `0x86dd`. With the capture as the only receive path, routed IPv6 discovery and
+    /// IPv6 SYN port scanning would see no replies.
     #[test]
     fn the_syn_filter_admits_the_same_answers_over_ipv6() {
         let filter = ProbeKind::TcpSyn.filter();
@@ -2062,15 +1940,12 @@ mod filter_conformance {
         assert!(admits(&filter, &tcp_frame(SRC_V6, DST_V6, RST | ACK)));
     }
 
-    /// What admitting the IPv6 half unnarrowed actually costs, stated as a
-    /// property rather than discovered later in a packet count.
+    /// What admitting the IPv6 half unnarrowed costs.
     ///
-    /// An established IPv6 connection's segments reach userspace, where the
-    /// IPv4 equivalent is dropped by the kernel. Nothing can be done about that
-    /// at the filter - see [`libpcap_cannot_narrow_tcp_flags_over_ipv6`] - so
-    /// the scanners re-check the flags themselves, and this test exists so that
-    /// asymmetry is written down where the filter is, not inferred from a
-    /// scanner three modules away.
+    /// An established IPv6 connection's segments reach userspace, where the IPv4
+    /// equivalent is dropped by the kernel. The filter cannot help (see
+    /// [`libpcap_cannot_narrow_tcp_flags_over_ipv6`]), so the scanners re-check the
+    /// flags themselves; this test records the asymmetry next to the filter.
     #[test]
     fn the_ipv6_half_of_the_syn_filter_is_not_narrowed_to_probe_replies() {
         let filter = ProbeKind::TcpSyn.filter();
@@ -2085,12 +1960,11 @@ mod filter_conformance {
         );
     }
 
-    /// Why the test above cannot be fixed by asking for IPv6 explicitly, and
-    /// the constraint any replacement expression has to work around.
+    /// Why the test above cannot be fixed by asking for IPv6 explicitly, and the
+    /// constraint any replacement expression must work around.
     ///
-    /// This is the standing record of a `libpcap` limitation the engine has to
-    /// design around rather than a choice it made. Should a future `libpcap`
-    /// learn to index into IPv6, this test is what notices.
+    /// Records a `libpcap` limitation the engine designs around. If `libpcap` learns
+    /// to index into IPv6, this test will notice.
     #[test]
     fn libpcap_cannot_narrow_tcp_flags_over_ipv6() {
         let narrowed = "ip6 and tcp and (tcp[tcpflags] & (tcp-syn|tcp-rst)) != 0";
@@ -2134,15 +2008,14 @@ mod filter_conformance {
         }
     }
 
-    /// What narrowing on the scan's own port buys over narrowing on flags, and
-    /// the reason a TCP port scan sends every probe from one port.
+    /// What narrowing on the scan's own port buys over narrowing on flags, and why a
+    /// TCP port scan sends every probe from one port.
     ///
     /// A flag test cannot be compiled over IPv6 (see
-    /// [`libpcap_cannot_narrow_tcp_flags_over_ipv6`]), so
-    /// [`ProbeKind::TcpSyn`] admits every IPv6 TCP segment on every captured
-    /// interface and sorts them out in userspace. A destination port compiles
-    /// for both families, so this filter rejects the host's other conversations
-    /// in the kernel over IPv6 exactly as it does over IPv4.
+    /// [`libpcap_cannot_narrow_tcp_flags_over_ipv6`]), so [`ProbeKind::TcpSyn`] admits
+    /// every IPv6 TCP segment on every captured interface and sorts them in userspace.
+    /// A destination port compiles for both families, so this filter rejects the
+    /// host's other conversations in the kernel over IPv6 as over IPv4.
     #[test]
     fn the_tcp_probe_filter_rejects_traffic_addressed_elsewhere_over_both_families() {
         let filter = tcp_probe_filter(false);
@@ -2156,15 +2029,13 @@ mod filter_conformance {
         }
     }
 
-    /// What this filter narrows on is the conversation, not the flags, so a
-    /// segment carrying neither of the two answers a probe can draw still
-    /// reaches userspace if it is addressed to the scan's port.
+    /// This filter narrows on the conversation, not the flags, so a segment carrying
+    /// neither answer a probe can draw still reaches userspace if addressed to the
+    /// scan's port.
     ///
-    /// Stated here rather than left to be discovered in a packet count. The
-    /// scan's port is drawn from the high ephemeral range precisely so nothing
-    /// else on the host is holding a conversation on it, and the scanner
-    /// re-checks the flags itself either way - so this costs a check per
-    /// segment, not a wrong verdict.
+    /// The scan's port is drawn from the high ephemeral range so nothing else on the
+    /// host is using it, and the scanner re-checks the flags either way, so this costs
+    /// a check per segment, not a wrong verdict.
     #[test]
     fn the_tcp_probe_filter_narrows_on_the_conversation_rather_than_the_flags() {
         let filter = tcp_probe_filter(false);
@@ -2173,10 +2044,9 @@ mod filter_conformance {
         assert!(admits(&filter, &tcp_frame(SRC_V6, DST_V6, ACK)));
     }
 
-    /// ICMP is admitted only when a technique's verdicts actually turn on it,
-    /// because an ICMP error names no ports and so cannot be narrowed at all:
-    /// asking for it means every ICMP packet on every captured interface is
-    /// copied to userspace.
+    /// ICMP is admitted only when a technique's verdicts depend on it, because an ICMP
+    /// error names no ports and cannot be narrowed: asking for it copies every ICMP
+    /// packet on every captured interface to userspace.
     #[test]
     fn the_tcp_probe_filter_admits_icmp_errors_only_when_asked() {
         let error = icmpv6_error_frame(SRC_V6, DST_V6);
@@ -2185,8 +2055,8 @@ mod filter_conformance {
         assert!(admits(&tcp_probe_filter(true), &error));
     }
 
-    /// Asking for ICMP must not cost the answers the scan is actually waiting
-    /// for, nor widen what it accepts on the TCP half.
+    /// Asking for ICMP must not lose the answers the scan is waiting for, nor widen
+    /// what it accepts on the TCP half.
     #[test]
     fn asking_for_icmp_changes_nothing_about_the_tcp_half() {
         let filter = tcp_probe_filter(true);
@@ -2200,8 +2070,8 @@ mod filter_conformance {
 
     // ─── UDP ─────────────────────────────────────────────────────────────────
 
-    /// The resolver's filter is family-agnostic, and has to stay that way: a
-    /// DNS or mDNS answer over IPv6 names hosts just as well as one over IPv4.
+    /// The resolver's filter is family-agnostic, as it must be: a DNS or mDNS answer
+    /// over IPv6 names hosts as well as one over IPv4.
     #[test]
     fn the_resolve_filter_admits_dns_answers_over_both_families() {
         let filter = ProbeKind::UdpResolve.filter();
@@ -2215,9 +2085,8 @@ mod filter_conformance {
         );
     }
 
-    /// Both answers a UDP probe can draw, over both families. `icmp6` is what
-    /// carries the IPv6 half here, and it is the reason UDP port scanning is the
-    /// one raw path that already works over IPv6.
+    /// Both answers a UDP probe can draw, over both families. `icmp6` carries the IPv6
+    /// half here.
     #[test]
     fn the_udp_probe_filter_admits_direct_replies_and_icmp_errors_over_both_families() {
         const REPLY_PORT: u16 = 40_000;
@@ -2235,12 +2104,11 @@ mod filter_conformance {
         );
     }
 
-    /// The SCTP filter, held to the same three claims the UDP one is: both
-    /// families admitted, ICMP errors admitted whole, and somebody else's
-    /// association kept out.
+    /// The SCTP filter, held to the same three claims as the UDP one: both families
+    /// admitted, ICMP errors admitted whole, and other associations kept out.
     ///
-    /// `sctp` is a protocol keyword libpcap has to know for this to compile at
-    /// all, and a filter that fails to compile is a scanner that reads nothing.
+    /// `sctp` is a protocol keyword libpcap has to know for this to compile, and a
+    /// filter that fails to compile is a scanner that reads nothing.
     #[test]
     fn the_sctp_filter_admits_answers_to_the_scan_over_both_families() {
         const REPLY_PORT: u16 = 40_000;
@@ -2269,9 +2137,9 @@ mod filter_conformance {
     /// The data-link type `libpcap` opens a PPP link as, `DLT_LINUX_SLL`.
     const LINUX_SLL: pcap::Linktype = pcap::Linktype(113);
 
-    /// `frame`, an Ethernet frame, as a PPP link captures the same packet: the
-    /// Ethernet header replaced by the pseudo-header Linux writes there, laid
-    /// out from `pcap/sll.h` and naming the same EtherType.
+    /// `frame`, an Ethernet frame, as a PPP link captures the same packet: the Ethernet
+    /// header replaced by the pseudo-header Linux writes there, laid out from
+    /// `pcap/sll.h` and naming the same EtherType.
     fn as_cooked(frame: &[u8]) -> Vec<u8> {
         let (ethernet, packet) = frame.split_at(crate::protocols::sizes::ETH_HDR_LEN);
         let mut cooked = vec![
@@ -2285,16 +2153,15 @@ mod filter_conformance {
         cooked
     }
 
-    /// Every filter judges a packet arriving over PPP as it judges the same
-    /// packet arriving over Ethernet.
+    /// Every filter judges a packet arriving over PPP as it judges the same packet
+    /// over Ethernet.
     ///
     /// A filter is compiled for the link it is opened on, and on a cooked link
-    /// `libpcap` finds the protocol and the IP header at offsets of its own. An
-    /// expression reaching below IP, through an `ether` qualifier or an offset
-    /// counted from the start of the frame, would compile to something else
-    /// there or fail to compile, and a scan through a PPP VPN would hear
-    /// nothing through it. Only `DLT_LINUX_SLL` is compiled for, being what a
-    /// capture of one named link comes up as.
+    /// `libpcap` finds the protocol and IP header at its own offsets. An expression
+    /// reaching below IP, through an `ether` qualifier or an offset from the start of
+    /// the frame, would compile differently there or fail to compile, and a scan
+    /// through a PPP VPN would hear nothing. Only `DLT_LINUX_SLL` is compiled for, as
+    /// what a capture of one named link comes up as.
     #[test]
     fn every_filter_judges_a_packet_on_a_cooked_link_as_it_does_on_ethernet() {
         const REPLY_PORT: u16 = 40_000;

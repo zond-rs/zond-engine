@@ -8,54 +8,45 @@
 
 //! # How often Windows may resend a connection's SYN
 //!
-//! A connect probe reads a closed port from the refusal its connect returns,
-//! and on Unix that refusal comes back with the first reset. Windows does not
-//! take a reset to a SYN as final: it resends the SYN, about every half second,
-//! until its SYN retransmissions run out, and reports the refusal only after
-//! the last one is reset too. With the stack's default count that is around two
-//! seconds per closed port, past
-//! [`CONNECT_PROBE_TIMEOUT`](crate::config::limits::CONNECT_PROBE_TIMEOUT), so
-//! every closed port would be recorded as a silent one, `NoReply`.
+//! A connect probe reads a closed port from the refusal its connect returns, and on
+//! Unix that comes with the first reset. Windows resends a SYN that drew a reset,
+//! about every half second, until its SYN retransmissions run out, and reports the
+//! refusal only after the last one is reset too. With the default count that is about
+//! two seconds per closed port, past
+//! [`CONNECT_PROBE_TIMEOUT`](crate::config::limits::CONNECT_PROBE_TIMEOUT), so every
+//! closed port would be recorded as `NoReply`.
 //!
-//! Every other connection the engine makes waits on a budget of the same size
-//! and reads a refusal the same way. The service pass dials ports the scan
-//! found open, and one that closed in between has to read as refused rather
-//! than as silence; a TLS enumeration and a detection's exchange end a walk on
-//! a refusal they would otherwise wait out. So the limit goes on every TCP
-//! socket the engine opens, which is why it is set where they are all built.
+//! Every other connection the engine makes waits on a budget of the same size and
+//! reads a refusal the same way: the service pass dials ports found open, which may
+//! have closed since, and a TLS enumeration or a detection's exchange ends a walk on a
+//! refusal. So the limit is set on every TCP socket the engine opens, where they are
+//! all built.
 //!
-//! The count is the one thing to change, and `SIO_TCP_INITIAL_RTO` sets it per
-//! socket, before the connect, without privilege. The same count also governs
-//! a SYN that is genuinely lost, and that retransmission is the one the
-//! connect budget exists to wait for. So each connection keeps exactly one
-//! retransmission:
-//! a lost SYN is resent at the stack's first retransmission timeout as it
-//! would be on Unix, the retransmissions given up would all have left after
-//! the budget had expired, and a refusal comes back at the second reset rather
-//! than the last. Only loopback gives the one up, because loopback has no
-//! medium to lose a SYN on: there a retransmission can only ever be answered by
-//! the reset the first one got, so the refusal is taken at once.
+//! `SIO_TCP_INITIAL_RTO` sets the count per socket, before the connect, without
+//! privilege. The count also governs a SYN that is really lost, which is the
+//! retransmission the connect budget waits for, so each connection keeps exactly one:
+//! a lost SYN is resent at the first retransmission timeout as on Unix, the dropped
+//! retransmissions would all have left after the budget expired, and a refusal comes
+//! back at the second reset. Loopback keeps none, since it cannot lose a SYN: a
+//! retransmission there can only draw another reset.
 //!
-//! The round trip estimate the retransmission timeout is computed from is left
-//! as the host's administrator configured it, since that timeout is the one the
-//! connect budget is set against.
+//! The round trip estimate the retransmission timeout is computed from stays as the
+//! administrator configured it, since the connect budget is set against that timeout.
 //!
-//! `TCP_MAXRT`, the other per-socket knob, is the wrong tool: it caps the
-//! connect attempt in whole seconds and ends it as a timeout, so a refused port
-//! would still fail as silence, only sooner.
+//! `TCP_MAXRT`, the other per-socket knob, caps the connect in whole seconds and ends
+//! it as a timeout, so a refused port would still read as silence, only sooner.
 
 use std::net::IpAddr;
 
-/// The `MaxSynRetransmissions` value that asks for no SYN retransmission at
-/// all, `TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS` in `mstcpip.h`.
+/// The `MaxSynRetransmissions` value that asks for no SYN retransmission,
+/// `TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS` in `mstcpip.h`.
 ///
-/// The header spells it as a 16-bit `-2` while the field it goes in is a byte,
-/// so what reaches the stack is its low byte. Zero cannot say "none": to the
-/// stack a zero asks for the system default.
+/// The header spells it as a 16-bit `-2` while the field is a byte, so the stack sees
+/// its low byte. Zero would ask for the system default.
 const NO_SYN_RETRANSMISSIONS: u8 = 0xFE;
 
-/// How many times the stack may resend a connection's SYN to `target` before
-/// it gives the connect up.
+/// How many times the stack may resend a connection's SYN to `target` before it gives
+/// up the connect.
 fn syn_retransmissions(target: IpAddr) -> u8 {
     if target.to_canonical().is_loopback() {
         0
@@ -72,14 +63,11 @@ fn max_syn_retransmissions(count: u8) -> u8 {
     }
 }
 
-/// Limits the SYN retransmissions of `socket`, about to connect to `target`,
-/// to the count [`syn_retransmissions`] gives.
+/// Limits the SYN retransmissions of `socket`, about to connect to `target`, to the
+/// count [`syn_retransmissions`] gives.
 ///
-/// A stack that refuses the request leaves the socket as it was, and the
-/// connection goes ahead on the stack's own count: a connect that reports
-/// closed ports as silent is still a better answer than none. That is said
-/// once per process, as a decision behind the result, since every connection
-/// after the first would only repeat it.
+/// If the stack refuses, the connection goes ahead on its own count: a connect that
+/// reports closed ports as silent is better than none. Logged once per process.
 #[cfg(windows)]
 pub(super) fn limit(socket: &socket2::Socket, target: IpAddr) {
     use std::os::windows::io::AsRawSocket;
@@ -91,7 +79,7 @@ pub(super) fn limit(socket: &socket2::Socket, target: IpAddr) {
     const _: () = assert!(TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS & 0xFF == 0xFE);
 
     /// `TCP_INITIAL_RTO_UNSPECIFIED_RTT`: leave the round trip estimate to the
-    /// administrator's setting. `windows-sys` does not carry it.
+    /// administrator's setting. Missing from `windows-sys`.
     const UNSPECIFIED_RTT: u16 = u16::MAX;
 
     let parameters = TCP_INITIAL_RTO_PARAMETERS {
@@ -100,11 +88,10 @@ pub(super) fn limit(socket: &socket2::Socket, target: IpAddr) {
     };
     let mut returned = 0u32;
 
-    // SAFETY: the socket is live for the call, the input buffer is a local of
-    // the layout the control code expects and its size is passed with it, the
-    // output buffer is empty as the control code requires, and `returned` is a
-    // valid out-pointer. No overlapped structure is passed, so the call
-    // completes before it returns and nothing outlives it.
+    // SAFETY: the socket is live for the call, the input buffer is a local with the
+    // layout the control code expects and its size is passed with it, the output
+    // buffer is empty as required, and `returned` is a valid out-pointer. No
+    // overlapped structure is passed, so the call completes before it returns.
     let result = unsafe {
         WSAIoctl(
             socket.as_raw_socket() as SOCKET,
@@ -135,8 +122,8 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    /// Loopback cannot lose a SYN, so a retransmission there only buys a
-    /// second reset and delays a closed port's refusal past the probe budget.
+    /// Loopback cannot lose a SYN, so a retransmission there only buys a second reset
+    /// and delays a closed port's refusal past the probe budget.
     #[test]
     fn a_loopback_probe_takes_its_refusal_from_the_first_reset() {
         for target in [
@@ -149,9 +136,9 @@ mod tests {
         }
     }
 
-    /// Across a real link the first SYN can be lost, and the probe budget is
-    /// set to wait for exactly one retransmission of it. Zero would report
-    /// every briefly slow host as silent; more would only delay a refusal.
+    /// Across a real link the first SYN can be lost, and the probe budget waits for
+    /// exactly one retransmission. Zero would report every briefly slow host as
+    /// silent; more would only delay a refusal.
     #[test]
     fn a_remote_probe_keeps_one_retransmission() {
         for target in [
@@ -162,8 +149,8 @@ mod tests {
         }
     }
 
-    /// The stack reads a zero as "the system default", which on Windows means
-    /// several retransmissions; asking for none takes the dedicated value.
+    /// The stack reads zero as the system default, which on Windows means several
+    /// retransmissions; asking for none takes the dedicated value.
     #[test]
     fn no_retransmission_is_asked_for_by_its_own_value_rather_than_zero() {
         assert_eq!(max_syn_retransmissions(0), NO_SYN_RETRANSMISSIONS);

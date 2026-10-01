@@ -8,62 +8,50 @@
 
 //! # The sockets the engine opens towards a target
 //!
-//! Everything that talks to a scanned host through the operating system's own
-//! TCP and UDP, rather than through a raw socket or a self-built frame, opens
-//! its socket here: the connect scan and its sweep, the service pass, the
-//! fingerprint engine's second connections and its analyzers, a TLS
-//! enumeration, a detection's exchange, and the single datagrams asked of mDNS
-//! and SNMP agents.
+//! Everything that talks to a scanned host through the operating system's own TCP and
+//! UDP opens its socket here: the connect scan and its sweep, the service pass, the
+//! fingerprint engine's second connections and its analyzers, a TLS enumeration, a
+//! detection's exchange, and the single datagrams sent to mDNS and SNMP agents.
 //!
-//! One place because what a socket has to carry before it connects is not a
-//! property of the caller, and there are three such things.
+//! One place, because three things a socket must carry before it connects do not
+//! depend on the caller.
 //!
-//! **Where it leaves from.** A scan forced to a source, to leave by a LAN
-//! interface when a VPN holds the default route, has its raw probes sent from
-//! that source and by the link that holds it. Its connections have to leave
-//! the same way, or the probe finds a port by one link and every conversation
-//! that follows goes out by the other, from another address, through the
-//! tunnel the scan was pinned out of. Which connections that applies to is an
-//! [`Egress`], decided per destination by the scan's [`ForcedSources`].
+//! **Where it leaves from.** A scan forced to a source, to leave by a LAN interface
+//! while a VPN holds the default route, sends its raw probes from that source by the
+//! link that holds it. Its connections must leave the same way, or the probe finds a
+//! port by one link and every conversation after it goes out by the other, from
+//! another address, through the tunnel the scan was pinned out of. Which connections
+//! that applies to is an [`Egress`], decided per destination by the scan's
+//! [`ForcedSources`].
 //!
 //! **What Windows needs set.** Windows resends a refused SYN until its SYN
-//! retransmissions run out, which outlasts every connect budget this engine
-//! sets, so on Windows every TCP socket needs its retransmissions limited
-//! before the connect, whoever is connecting and whatever it wants to learn;
-//! see `dial/syn_retries.rs`, compiled for Windows and for the tests only.
+//! retransmissions run out, which outlasts every connect budget this engine sets, so
+//! every TCP socket there needs its retransmissions limited before the connect; see
+//! `dial/syn_retries.rs`, compiled for Windows and for the tests only.
 //!
-//! **When it may leave.** A scan that keeps a gap between its probes keeps it
-//! between these too: every socket here is opened with the [`Slot`] one probe
-//! was given, which the scan's egress hands out only once the gap allows, so a
-//! pass cannot dial a target without asking. See [`pacing`].
+//! **When it may leave.** A scan that keeps a gap between its probes keeps it between
+//! these too: every socket here is opened with the [`Slot`] one probe was given, which
+//! the scan's egress hands out only once the gap allows. See [`pacing`].
 //!
-//! Another thing is not the caller's either: a socket refused because the
-//! process's descriptor table is full says nothing about the target, so it is
-//! asked for again for a while rather than handed back as the connection's
-//! outcome; see [`descriptors`]. How many sockets a scan holds at once is not
-//! decided here. Each pass takes its share of the process's budget for the
-//! connections it makes.
+//! A socket refused because the process's descriptor table is full says nothing about
+//! the target, so it is asked for again for a while before the refusal is returned as
+//! the outcome; see [`descriptors`]. How many sockets a scan holds at once is decided
+//! elsewhere: each pass takes its share of the process's budget.
 //!
-//! A caller that opened its own socket would be the one that forgot any of
-//! these.
+//! How long a conversation over one of these sockets waits is the caller's choice, set
+//! for a path that costs nothing. What a measured path adds to each wait is a
+//! [`PathAllowance`], sized as the port scans size their own probes.
 //!
-//! How long a conversation over one of these sockets waits is the caller's,
-//! set for a path that costs nothing, and what a path the scan measured adds
-//! to each of those waits is a [`PathAllowance`], sized as the port scans size
-//! their own probes.
+//! What a caller does choose is [`Shaping`]: a source port and a hop limit, carried
+//! only by the connect scanner's probes, since an evasion profile shapes a scan's
+//! probes and not the conversations after them; see [`crate::evasion`] for why the
+//! source port rules out the rest. With nothing forced, nothing chosen, and on a
+//! platform that needs nothing set, a connect is a plain [`TcpStream::connect`] and a
+//! datagram socket a plain ephemeral bind, so the kernel sees what any other program
+//! would send.
 //!
-//! What a caller does choose is [`Shaping`]: a source port and a hop limit,
-//! which only the connect scanner's probes carry, since an evasion profile
-//! shapes a scan's probes and not the conversations that follow them; see
-//! [`crate::evasion`] for why the source port rules out the rest. With nothing
-//! forced, nothing chosen, and on a platform that needs nothing set, a connect
-//! is exactly a plain [`TcpStream::connect`] and a datagram socket a plain
-//! ephemeral bind, so the kernel sees what it would have seen from any other
-//! program.
-//!
-//! `tests/hygiene/dialling.rs` holds the rest of the crate to this: a TCP or
-//! UDP socket opened anywhere else has to say why it is not a connection to a
-//! target.
+//! `tests/hygiene/dialling.rs` enforces this: a TCP or UDP socket opened anywhere else
+//! has to say why it is not a connection to a target.
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
@@ -88,17 +76,15 @@ pub(crate) use allowance::UNMEASURED_PATH_WAIT;
 pub(crate) mod pacing;
 pub(crate) use pacing::Slot;
 
-/// How many TCP connections this process has begun to each destination, for
-/// a test that has to know a pass asked a port nothing.
+/// How many TCP connections this process has begun to each destination, for tests
+/// that must know a pass sent a port nothing.
 ///
-/// Counted here, where every connection to a target is begun, rather than at
-/// the port, because this is the one count another process cannot move. A
-/// service on loopback tells a connection for this process's by its far end,
-/// the local end of a socket this process holds, and a connection closed
-/// before the service took it has no far end left to tell it by: a connect
-/// scan's closes at once, and so does another scanner's sweep of loopback. A
-/// connection is counted as it is begun, so one refused, or closed the moment
-/// it completed, counts all the same.
+/// Counted here, where every connection to a target begins, because no other process
+/// can move this count. A loopback service tells this process's connections by their
+/// far end, and a connection closed before the service accepted it has no far end left:
+/// a connect scan's closes at once, and so does another scanner's sweep of loopback. A
+/// connection counts as it begins, so a refused one, or one closed the moment it
+/// completed, counts too.
 #[cfg(test)]
 pub(crate) mod dialled {
     use std::collections::HashMap;
@@ -125,10 +111,9 @@ pub(crate) mod dialled {
         DIALLED.lock().unwrap().get(&addr).map_or(0, Vec::len)
     }
 
-    /// When this process began each of its connections to `addr`, for a test
-    /// that has to know how far apart they left. Read here rather than off an
-    /// accept, which a connection closed the moment it completed may never
-    /// reach as this process's.
+    /// When this process began each of its connections to `addr`, for tests that
+    /// must know how far apart they left. An accept may never see a connection that
+    /// closed the moment it completed.
     pub(crate) fn times(addr: SocketAddr) -> Vec<Instant> {
         DIALLED
             .lock()
@@ -138,15 +123,14 @@ pub(crate) mod dialled {
             .unwrap_or_default()
     }
 
-    /// The error each connection begun to an address is refused with, and
-    /// how many more are.
+    /// The error each connection begun to an address is refused with, and how many
+    /// more are.
     static REFUSED: LazyLock<Mutex<HashMap<SocketAddr, (i32, usize)>>> =
         LazyLock::new(Mutex::default);
 
-    /// Has the next `times` connections begun to `addr` refused before
-    /// anything leaves, with the operating system's error `code`, as a kernel
-    /// refuses them for reasons a test cannot arrange: a hold-down on a
-    /// neighbour, say.
+    /// Makes the next `times` connections begun to `addr` fail before anything leaves
+    /// with the operating system's error `code`, for kernel refusals a test cannot
+    /// arrange, such as a neighbour hold-down.
     #[cfg(unix)]
     pub(crate) fn refuse(addr: SocketAddr, code: i32, times: usize) {
         REFUSED.lock().unwrap().insert(addr, (code, times));
@@ -161,13 +145,13 @@ pub(crate) mod dialled {
     }
 }
 
-/// What a caller has chosen about a socket beyond where it is going: a source
-/// port to leave from and a hop limit to carry.
+/// What a caller has chosen about a socket beyond where it is going: a source port to
+/// leave from and a hop limit to carry.
 ///
-/// Both are ordinary socket options that need no privilege. They are what an
-/// evasion profile can ask of a connection the kernel builds; the rest of a
-/// profile, a spoofed address, fragments, decoys, a padded or mangled segment,
-/// needs a segment this process writes itself, and there is none here.
+/// Both are ordinary socket options needing no privilege, and the only parts of an
+/// evasion profile a kernel-built connection can carry. The rest (a spoofed address,
+/// fragments, decoys, a padded or mangled segment) needs a segment this process writes
+/// itself.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Shaping {
     /// The source port the socket binds to, or `None` to let the OS choose one.
@@ -177,8 +161,8 @@ pub(crate) struct Shaping {
 }
 
 impl Shaping {
-    /// Whether either field departs from what the OS would pick, so a plain
-    /// socket can be taken when it does not.
+    /// Whether either field departs from what the OS would pick; when neither does, a
+    /// plain socket is used.
     pub(crate) fn is_active(self) -> bool {
         self.source_port.is_some() || self.hop_limit.is_some()
     }
@@ -186,37 +170,33 @@ impl Shaping {
 
 /// The sources a scan forced, and what they apply to.
 ///
-/// A forced source is for a target the routing table would send out by the
-/// wrong link. So it applies where the scan's plan applies it (see
-/// `map_ips_to_interfaces_forced`), and nowhere else: not to loopback or this
-/// host's own addresses, which no link reaches; not to an IPv4 address written
-/// inside IPv6, which no wire carries; not to a link-local address, which is
-/// on the link its zone names; and not to a target inside a prefix a link here
-/// holds, which that link reaches directly, a segment by its neighbours and a
-/// tunnel's prefix through the tunnel. A connection to any of those is the
-/// routing table's, as the probe before it was.
+/// A forced source is for a target the routing table would send out by the wrong link,
+/// so it applies exactly where the scan's plan applies it (see
+/// `map_ips_to_interfaces_forced`). It does not apply to loopback or this host's own
+/// addresses, which no link reaches; to an IPv4 address embedded in IPv6, which no wire
+/// carries; to a link-local address, which is on the link its zone names; or to a
+/// target inside a prefix a local link holds, which that link reaches directly (a
+/// segment by its neighbours, a tunnel's prefix through the tunnel). Connections to
+/// those follow the routing table, as their probes did.
 ///
-/// One source per family, and a source speaks for its own family only. A
-/// target of a family the scan forced nothing for is left to the routing table
-/// here as it is in the plan, since a v4 source cannot carry a v6 connection,
-/// and refusing the target would make a connection behave differently from
-/// the probe it follows.
+/// One source per family, each speaking for its own family only. A target of a family
+/// with no forced source is left to the routing table, as in the plan, since a v4
+/// source cannot carry a v6 connection.
 ///
-/// Read from the host once, when the scan starts, as the plan is. Empty, which
-/// is every scan that forced nothing, it reads nothing at all and every
-/// connection is the routing table's.
+/// Read from the host once, when the scan starts, as the plan is. When empty it reads
+/// nothing and every connection follows the routing table.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ForcedSources {
     /// One pin per family the scan forced a source for.
     pins: Vec<Pin>,
-    /// Every address a link that could carry a connection holds, whose prefixes
-    /// are reached directly and never by a forced source.
+    /// Every address held by a link that could carry a connection; their prefixes are
+    /// reached directly, never by a forced source.
     held: Vec<LinkAddress>,
 }
 
 impl ForcedSources {
-    /// The sources in `forced`, one per family at most, as they apply to the
-    /// links this host has now.
+    /// The sources in `forced`, at most one per family, as they apply to the links
+    /// this host has now.
     pub(crate) fn new(forced: &[IpAddr]) -> Self {
         if forced.is_empty() {
             return Self::default();
@@ -254,8 +234,8 @@ impl ForcedSources {
             pins.push(Pin { source, interface });
         }
 
-        // The links the plan classifies against: up, not loopback, and holding
-        // an address. A prefix on a link that is down reaches nothing.
+        // The links the plan classifies against: up, not loopback, and holding an
+        // address. A prefix on a down link reaches nothing.
         let held = links
             .iter()
             .filter(|link| link.is_up() && !link.is_loopback())
@@ -288,31 +268,30 @@ impl ForcedSources {
     }
 }
 
-/// Where one connection leaves from: where the routing table says, or pinned
-/// to a forced source.
+/// Where one connection leaves from: where the routing table says, or pinned to a
+/// forced source.
 ///
-/// A pinned socket is bound to the source address, so the kernel writes that
-/// address into every packet, and to the interface holding it, so the packets
-/// leave by that link whatever the default route says. The address alone is
-/// not enough on Linux or macOS, which pick the outgoing link by destination
-/// and would send a packet carrying the LAN address down the tunnel. Windows
-/// picks the link from the source address, so there the address is all it
-/// takes. Bound to an interface, Linux and macOS look the route up among that
-/// link's routes alone, which finds the LAN's own gateway: a VPN that takes
-/// the default route over leaves that one beneath its own.
+/// A pinned socket is bound to the source address, so the kernel writes it into every
+/// packet, and to the interface holding it, so packets leave by that link whatever the
+/// default route says. The address alone is not enough on Linux or macOS, which pick
+/// the outgoing link by destination and would send a packet carrying the LAN address
+/// down the tunnel. Windows picks the link from the source address, so the address is
+/// enough there. Bound to an interface, Linux and macOS look up the route among that
+/// link's routes alone, which finds the LAN's own gateway beneath a VPN's default
+/// route.
 ///
-/// Cloned into every phase that dials, so the choice made once for a
-/// destination travels with it to every connection made there.
+/// Cloned into every phase that dials, so the choice made once for a destination
+/// applies to every connection made there.
 ///
-/// It carries the scan's pacing too, where the scan keeps a gap between its
-/// probes: every socket method here takes the [`Slot`] one probe was given,
-/// which only [`slot`](Self::slot) hands out, and a scan's egress hands one
-/// out only once its gate lets the probe leave. See [`pacing`].
+/// It also carries the scan's pacing, where the scan keeps a gap between probes: every
+/// socket method here takes the [`Slot`] one probe was given, which only
+/// [`slot`](Self::slot) hands out, once the scan's gate lets the probe leave. See
+/// [`pacing`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Egress {
     pin: Option<Pin>,
-    /// The scan whose gaps this egress's probes keep, or `None` for a scan
-    /// that keeps none and for a connection made outside a scan.
+    /// The scan whose gaps this egress's probes keep, or `None` for a scan that keeps
+    /// none and for a connection made outside a scan.
     gate: Option<pacing::Gate>,
 }
 
@@ -320,9 +299,8 @@ pub(crate) struct Egress {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Pin {
     source: IpAddr,
-    /// `None` where no interface here holds the source, which leaves the bind
-    /// to fail and the connection to be reported as one this host could not
-    /// make, rather than made from somewhere else.
+    /// `None` where no interface here holds the source. The bind then fails and the
+    /// connection is reported as one this host could not make.
     interface: Option<NonZeroU32>,
 }
 
@@ -333,10 +311,10 @@ impl Egress {
         gate: None,
     };
 
-    /// The same egress, its probes held to the gaps `gate` keeps between
-    /// them, or to none where there is no gate.
+    /// The same egress, its probes held to the gaps `gate` keeps, or to none where
+    /// there is no gate.
     ///
-    /// A scan that keeps no gap gives none, and then its slots are free.
+    /// A scan that keeps no gap gives none, and its slots are free.
     pub(crate) fn paced_by(mut self, gate: Option<pacing::Gate>) -> Self {
         self.gate = gate;
         self
@@ -345,20 +323,17 @@ impl Egress {
     /// Connects to `addr` for the probe `slot` was given, waiting out a full
     /// descriptor table first, and giving the connection itself `timeout`.
     ///
-    /// A socket refused because the process holds too many is asked for again
-    /// for up to [`descriptors::patience`] rather than returned as a failed
-    /// connection, which a caller would read as something the target did; see
-    /// [`descriptors::patiently`]. Past that the refusal is returned, and
-    /// [`descriptors::exhausted`] names it. Every attempt is the one probe,
-    /// since none before the last left this machine, and the slot is given
-    /// back where the last did not either; see [`Slot::settle`].
+    /// A socket refused because the process holds too many is retried for up to
+    /// [`descriptors::patience`], since a caller would read a failed connection as
+    /// something the target did; see [`descriptors::patiently`]. Past that the refusal
+    /// is returned, and [`descriptors::exhausted`] names it. All attempts are the one
+    /// probe, since none before the last left this machine, and the slot is given back
+    /// if the last did not either; see [`Slot::settle`].
     ///
-    /// The budget is the connection's and not the wait's: each attempt is
-    /// timed on its own, and one refused a socket is refused before its clock
-    /// has run. A connection that outlasts it comes back as
-    /// [`ErrorKind::TimedOut`](io::ErrorKind::TimedOut), the stack giving up
-    /// first and the budget running out being the same outcome, a SYN out and
-    /// nothing back.
+    /// `timeout` is per attempt; a socket refusal comes before the clock starts. A
+    /// connection that outlasts it comes back as
+    /// [`ErrorKind::TimedOut`](io::ErrorKind::TimedOut), the same outcome as the stack
+    /// giving up first: a SYN out and nothing back.
     pub(crate) async fn connect_timed(
         &self,
         slot: Slot,
@@ -376,20 +351,17 @@ impl Egress {
         connected
     }
 
-    /// Connects to `addr` once, honouring `shaping`, for the probe `slot` was
-    /// given.
+    /// Connects to `addr` once, honouring `shaping`, for the probe `slot` was given.
     ///
-    /// One attempt, a refusal of a socket included, for a caller that waits
-    /// out a full table itself, or has to know which of its attempts a full
-    /// table refused. The slot stays the caller's, since a refusal of a
-    /// socket leaves the probe unsent and the next attempt is the same probe;
-    /// the caller settles it with the outcome of the last. Every other caller
-    /// takes [`connect_timed`](Self::connect_timed).
+    /// One attempt, socket refusal included, for a caller that waits out a full table
+    /// itself or must know which attempt a full table refused. The slot stays the
+    /// caller's, since a socket refusal leaves the probe unsent and the next attempt is
+    /// the same probe; the caller settles it with the last outcome. Other callers use
+    /// [`connect_timed`](Self::connect_timed).
     ///
-    /// Unpinned, unshaped and on Unix this is exactly [`TcpStream::connect`],
-    /// so a connection that chose nothing sends the SYN it always would, byte
-    /// for byte. Windows needs an option on every TCP socket before it
-    /// connects, so there the socket is always built.
+    /// Unpinned, unshaped and on Unix this is exactly [`TcpStream::connect`], so the
+    /// SYN is byte for byte the default one. Windows needs an option on every TCP
+    /// socket before it connects, so there the socket is always built.
     pub(crate) async fn connect_shaped(
         &self,
         slot: &Slot,
@@ -400,8 +372,8 @@ impl Egress {
         self.connect_once(addr, shaping).await
     }
 
-    /// [`connect_shaped`](Self::connect_shaped), for a caller in this module
-    /// that holds the slot itself.
+    /// [`connect_shaped`](Self::connect_shaped) for a caller in this module that holds
+    /// the slot itself.
     async fn connect_once(&self, addr: SocketAddr, shaping: Shaping) -> io::Result<TcpStream> {
         #[cfg(test)]
         dialled::note(addr);
@@ -415,30 +387,26 @@ impl Egress {
             .await
     }
 
-    /// Starts a connect to `addr`, honouring `shaping`, and returns once its
-    /// SYN is the kernel's to send.
+    /// Starts a connect to `addr`, honouring `shaping`, and returns once its SYN is the
+    /// kernel's to send.
     ///
-    /// [`connect_shaped`](Self::connect_shaped) in two halves, for the connect
-    /// scanner, because the two fail for different reasons and the reason is
-    /// the port's verdict. An error from here is this machine refusing before
-    /// anything left it: no socket, no route, no source, no local port. An
-    /// error from [`Connecting::finish`] came after the SYN was handed over: a
-    /// refusal, an ICMP error the kernel matched to the connection, or nothing
-    /// back at all. The operating system names both halves with the same
-    /// codes, `EHOSTUNREACH` for a missing route here as for a firewall's
-    /// rejection on the far side, so only where an error surfaces tells them
-    /// apart.
+    /// [`connect_shaped`](Self::connect_shaped) in two halves, for the connect scanner,
+    /// because which half fails decides the port's verdict. An error from here is this
+    /// machine refusing before anything left: no socket, no route, no source, no local
+    /// port. An error from [`Connecting::finish`] came after the SYN was handed over: a
+    /// refusal, an ICMP error the kernel matched to the connection, or nothing back.
+    /// The operating system uses the same codes for both (`EHOSTUNREACH` for a missing
+    /// route here and for a firewall's rejection on the far side), so only where the
+    /// error surfaces tells them apart.
     ///
-    /// The socket carries nothing the caller did not choose, as
-    /// [`connect_shaped`](Self::connect_shaped)'s does, so an unshaped connect
-    /// sends the SYN any other program would.
+    /// Like [`connect_shaped`](Self::connect_shaped), the socket carries only what the
+    /// caller chose, so an unshaped connect sends the SYN any other program would.
     ///
-    /// A connect that met itself is refused here on the platforms that refuse
-    /// one outright, and comes back from [`Connecting::finish`] on the ones
-    /// that complete it; [`met_itself`] names it either way.
+    /// A connect that met itself is refused here on platforms that refuse it outright,
+    /// and comes back from [`Connecting::finish`] on those that complete it;
+    /// [`met_itself`] names it either way.
     ///
-    /// The slot stays the caller's, as [`connect_shaped`](Self::connect_shaped)'s
-    /// does, and every error here is one that spends none.
+    /// The slot stays the caller's, and no error here spends it.
     pub(crate) fn start_connect(
         &self,
         slot: &Slot,
@@ -460,9 +428,9 @@ impl Egress {
             #[cfg(unix)]
             Err(e) if e.raw_os_error() == Some(libc::EINPROGRESS) => {}
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-            // macOS refuses a connect given the target's own port as its
-            // source, with `EINVAL` over IPv4 and `EADDRINUSE` over IPv6 from
-            // a wildcard bind, and leaves that port bound to say so.
+            // macOS refuses a connect whose source is the target's own port, with
+            // `EINVAL` over IPv4 and `EADDRINUSE` over IPv6 from a wildcard bind, and
+            // leaves that port bound.
             Err(e)
                 if matches!(
                     e.kind(),
@@ -475,10 +443,10 @@ impl Egress {
             {
                 return Err(io::Error::other(MetItself));
             }
-            // The bind above let the pinned port be shared, so a refusal here
-            // is the whole four-tuple taken: macOS says it is in use, Linux
-            // that it is not available. What holds it is almost always this
-            // same connection made a moment ago, still closing.
+            // The bind above let the pinned port be shared, so a refusal here means
+            // the whole four-tuple is taken: macOS says in use, Linux not available.
+            // Almost always it is this same connection made a moment ago, still
+            // closing.
             Err(e)
                 if matches!(
                     e.kind(),
@@ -487,16 +455,13 @@ impl Egress {
             {
                 return Err(SourcePortHeld::error(shaping, e, Holder::Closing));
             }
-            // Linux refuses a connect by the type of the route that matched,
-            // and names each type by its own code: no route, or an
-            // `unreachable` one, as a network or host it cannot reach, a
-            // `prohibit` route as permission denied and a `blackhole` route as
-            // an invalid argument. The last two are routes somebody wrote to
-            // say nothing goes there, as much a fact about the destination as
-            // the first, so they are handed on as the host this machine cannot
-            // reach, in the kernel's own words. A security module denying the
-            // connect is read the same way, and is the same fact from where
-            // this process stands: nothing it sends may go there.
+            // Linux refuses a connect by the type of the matched route, each with its
+            // own code: no route or an `unreachable` one as network or host
+            // unreachable, a `prohibit` route as permission denied, a `blackhole`
+            // route as an invalid argument. The last two are routes someone wrote to
+            // say nothing goes there, so they are passed on as an unreachable host, in
+            // the kernel's own words. A security module denying the connect means the
+            // same thing from this process's view.
             #[cfg(target_os = "linux")]
             Err(e) if matches!(e.raw_os_error(), Some(libc::EACCES | libc::EINVAL)) => {
                 return Err(io::Error::new(io::ErrorKind::HostUnreachable, e));
@@ -508,17 +473,15 @@ impl Egress {
         })
     }
 
-    /// Connects to `addr` on the calling thread for the probe `slot` was
-    /// given, giving the connection `timeout` and a full descriptor table
-    /// `patience`.
+    /// Connects to `addr` on the calling thread for the probe `slot` was given,
+    /// giving the connection `timeout` and a full descriptor table `patience`.
     ///
-    /// For a caller that holds a blocking socket, which is a detection running
-    /// on the blocking pool. The same socket [`connect_timed`](Self::connect_timed) would
-    /// build, connected the way [`std::net::TcpStream::connect_timeout`]
-    /// connects one, a full descriptor table waited out the same way before
-    /// it, outside `timeout`, and the slot settled the same way after. The
-    /// patience is the caller's, because a detection's exchange has a clock of
-    /// its own that a wait for a socket cannot outlast.
+    /// For a caller holding a blocking socket, such as a detection on the blocking
+    /// pool. Builds the same socket as [`connect_timed`](Self::connect_timed), connects
+    /// it as [`std::net::TcpStream::connect_timeout`] does, waits out a full descriptor
+    /// table the same way beforehand (outside `timeout`) and settles the slot the same
+    /// way after. The patience is the caller's, because a detection's exchange has its
+    /// own clock that a wait for a socket cannot outlast.
     pub(crate) fn connect_within(
         &self,
         slot: Slot,
@@ -541,14 +504,13 @@ impl Egress {
         connected
     }
 
-    /// A UDP socket bound for `peer`, ready to be connected to it, for the
-    /// exchange `slot` was given, with a full descriptor table waited out for
-    /// `patience`, as [`connect_timed`](Self::connect_timed) waits it out for
-    /// [`PATIENCE`](descriptors::PATIENCE).
+    /// A UDP socket bound for `peer`, ready to be connected to it, for the exchange
+    /// `slot` was given, with a full descriptor table waited out for `patience` (as
+    /// [`connect_timed`](Self::connect_timed) waits for
+    /// [`PATIENCE`](descriptors::PATIENCE)).
     ///
-    /// The slot stays the caller's: the probe leaves with the first datagram
-    /// sent on the socket, which is the caller's to send, and a socket this
-    /// machine refused, or a send it did, is the caller's to settle.
+    /// The slot stays the caller's: the probe leaves with the first datagram the caller
+    /// sends, and the caller settles it after a refused socket or send.
     pub(crate) async fn udp(
         &self,
         slot: &Slot,
@@ -561,16 +523,16 @@ impl Egress {
         .await
     }
 
-    /// A UDP socket bound for `peer` and honouring `shaping`, ready to be
-    /// connected to it, for the exchange `slot` was given.
+    /// A UDP socket bound for `peer` and honouring `shaping`, ready to be connected to
+    /// it, for the exchange `slot` was given.
     ///
     /// One attempt, for the connect scanner's own wait; see
     /// [`connect_shaped`](Self::connect_shaped).
     ///
-    /// Unpinned and unshaped, this is the plain ephemeral bind. Otherwise the
-    /// socket carries its pin, the chosen hop limit, and the chosen source port
-    /// or an ephemeral one. Bound on the calling task, which a bind never
-    /// waits on, and handed to the runtime it is called on.
+    /// Unpinned and unshaped, this is the plain ephemeral bind. Otherwise the socket
+    /// carries its pin, the chosen hop limit, and the chosen or an ephemeral source
+    /// port. Bound on the calling task, since a bind never waits, and registered with
+    /// the current runtime.
     pub(crate) fn udp_shaped(
         &self,
         slot: &Slot,
@@ -586,9 +548,8 @@ impl Egress {
         UdpSocket::from_std(socket)
     }
 
-    /// [`udp`](Self::udp), for a caller holding a blocking socket, waiting
-    /// out a full descriptor table for `patience`; see
-    /// [`connect_within`](Self::connect_within).
+    /// [`udp`](Self::udp) for a caller holding a blocking socket, waiting out a full
+    /// descriptor table for `patience`; see [`connect_within`](Self::connect_within).
     pub(crate) fn udp_blocking(
         &self,
         slot: &Slot,
@@ -604,30 +565,26 @@ impl Egress {
         })
     }
 
-    /// Whether a TCP socket carrying `shaping` can be left to
-    /// [`TcpStream::connect`] to open, because nothing has to be set on it
-    /// first.
+    /// Whether a TCP socket carrying `shaping` can be opened by
+    /// [`TcpStream::connect`], because nothing must be set on it first.
     ///
-    /// Never on Windows, where every TCP socket carries the SYN retransmission
-    /// limit.
+    /// Never on Windows, where every TCP socket carries the SYN retransmission limit.
     fn tcp_is_plain(&self, shaping: Shaping) -> bool {
         self.pin.is_none() && !shaping.is_active() && cfg!(not(windows))
     }
 
-    /// Opens a socket towards `target` and sets on it everything that has to
-    /// be in force before its first packet: the pin, `shaping`, and on
-    /// Windows, for TCP, the SYN retransmission limit.
+    /// Opens a socket towards `target` and sets everything that must be in force before
+    /// its first packet: the pin, `shaping`, and on Windows, for TCP, the SYN
+    /// retransmission limit.
     ///
-    /// Bound where something about its source was chosen, since TCP binds only
-    /// to pin an address or a port and UDP must bind before it can send at
-    /// all. Left blocking; an async caller switches it before handing it to
-    /// the runtime.
+    /// Bound where something about its source was chosen, since TCP binds only to pin
+    /// an address or a port and UDP must bind before it can send. Left blocking; an
+    /// async caller switches it before handing it to the runtime.
     ///
-    /// The hop limit goes on with the option the address family uses (`IP_TTL`
-    /// or `IPV6_UNICAST_HOPS`). Address reuse is what lets the many probes a
-    /// scan runs at once each bind one pinned source port: every one still
-    /// carries a distinct four-tuple through its destination, so the kernel
-    /// keeps their replies apart.
+    /// The hop limit uses the family's option (`IP_TTL` or `IPV6_UNICAST_HOPS`).
+    /// Address reuse lets the many concurrent probes of a scan each bind one pinned
+    /// source port: each still has a distinct four-tuple through its destination, so
+    /// the kernel keeps their replies apart.
     fn socket(&self, target: IpAddr, protocol: Protocol, shaping: Shaping) -> io::Result<Socket> {
         let domain = match target {
             IpAddr::V4(_) => Domain::IPV4,
@@ -646,8 +603,8 @@ impl Egress {
         }
         if shaping.source_port.is_some() {
             socket.set_reuse_address(true)?;
-            // Unix only, and both supported platforms are: without it a second
-            // socket on the pinned port is refused rather than bound alongside.
+            // Unix only, as both supported platforms are: without it a second socket
+            // on the pinned port is refused.
             #[cfg(unix)]
             socket.set_reuse_port(true)?;
         }
@@ -666,8 +623,8 @@ impl Egress {
             None => Ok(()),
         };
         match bound {
-            // Refused although this socket shares the port, so another holds
-            // it without sharing.
+            // Refused although this socket shares the port, so another holds it
+            // without sharing.
             Err(e) if e.kind() == io::ErrorKind::AddrInUse && shaping.source_port.is_some() => {
                 Err(SourcePortHeld::error(shaping, e, Holder::Socket))
             }
@@ -677,18 +634,16 @@ impl Egress {
     }
 }
 
-/// A connection or datagram refused its pinned source port, because something
-/// on this machine already held it.
+/// A connection or datagram was refused its pinned source port because something on
+/// this machine already held it.
 ///
-/// Named apart from every other refusal because the remedy is the caller's and
-/// specific. A port pinned for every probe is taken by each of them in turn,
-/// and a connection keeps its four-tuple in `TIME_WAIT` after it ends, a
-/// minute on Linux and half that on macOS, so the same port asked again inside
-/// that wait from the same pinned port is refused. Nothing is sent, the port
-/// is left unasked, and a scan run again once the wait is over asks it.
-/// Waiting it out here would stall the scan on every such port, and ending
-/// each connection with a reset to skip the wait would change what every
-/// pinned probe puts on the wire.
+/// A separate error because the remedy is the caller's. A port pinned for every probe
+/// is taken by each in turn, and a connection keeps its four-tuple in `TIME_WAIT`
+/// after it ends (a minute on Linux, half that on macOS), so asking the same port again
+/// from the same pinned port within that wait is refused. Nothing is sent and the port
+/// is left unasked; a later run asks it. Waiting here would stall the scan on every
+/// such port, and ending each connection with a reset would change what every pinned
+/// probe puts on the wire.
 #[derive(Debug)]
 pub(crate) struct SourcePortHeld {
     /// The pinned port.
@@ -702,16 +657,15 @@ pub(crate) struct SourcePortHeld {
 /// What held a pinned source port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Holder {
-    /// A connection from the port to the same destination, as a rule this
-    /// scan's own, still in its closing wait.
+    /// A connection from the port to the same destination, usually this scan's own,
+    /// still in its closing wait.
     Closing,
     /// Another socket on this machine, bound to the port without sharing it.
     Socket,
 }
 
 impl SourcePortHeld {
-    /// The refusal `cause`, of `shaping`'s pinned port, as an error that says
-    /// so.
+    /// The refusal `cause` of `shaping`'s pinned port, as an error that says so.
     fn error(shaping: Shaping, cause: io::Error, holder: Holder) -> io::Error {
         let kind = cause.kind();
         io::Error::new(
@@ -747,21 +701,19 @@ impl std::error::Error for SourcePortHeld {
 /// See [`Egress::start_connect`] for why a connect is made in two halves.
 #[derive(Debug)]
 pub(crate) struct Connecting {
-    /// The socket, registered with the runtime while its handshake is under
-    /// way, so its readiness is what says the handshake is over.
+    /// The socket, registered with the runtime while its handshake is under way, so
+    /// its readiness signals the end of the handshake.
     stream: TcpStream,
 }
 
 impl Connecting {
-    /// Waits for the handshake to finish, and returns the connection or what
-    /// ended it.
+    /// Waits for the handshake to finish, and returns the connection or what ended it.
     ///
-    /// Unbounded, as a connect is; the caller holds the clock. Every error
-    /// here came after the SYN was handed to the kernel, so it is something
-    /// that happened on the way to the target or at it: a reset, an ICMP error
-    /// the kernel matched to the connection, the stack giving up. A connection
-    /// that met itself comes back as an error [`met_itself`] names, and is
-    /// closed as it is dropped.
+    /// Unbounded, as a connect is; the caller holds the clock. Every error here came
+    /// after the SYN was handed to the kernel, so it happened on the way to the target
+    /// or at it: a reset, an ICMP error the kernel matched to the connection, the stack
+    /// giving up. A connection that met itself comes back as an error [`met_itself`]
+    /// names, and is closed when dropped.
     pub(crate) async fn finish(self) -> io::Result<TcpStream> {
         self.stream.writable().await?;
         if let Some(error) = self.stream.take_error()? {
@@ -774,22 +726,19 @@ impl Connecting {
     }
 }
 
-/// A connect that reached its own socket rather than anything listening.
+/// A connect that reached its own socket.
 ///
-/// A connect to one of this machine's own addresses can be given the port it
-/// is aimed at as its own ephemeral source, when nothing holds that port, and
-/// then its SYN arrives at the socket that sent it. Linux completes the
-/// handshake as a simultaneous open, as macOS does over IPv6 from a socket
-/// bound to the address; macOS otherwise refuses the connect. A full-range
-/// scan of loopback meets it once or twice a run, at whichever ports the
-/// kernel happens to draw.
+/// A connect to one of this machine's own addresses can be given the target port as
+/// its ephemeral source when nothing holds that port, and its SYN then arrives at the
+/// socket that sent it. Linux completes the handshake as a simultaneous open, as macOS
+/// does over IPv6 from a socket bound to the address; macOS otherwise refuses the
+/// connect. A full-range scan of loopback meets it once or twice a run.
 ///
-/// Neither outcome is an answer about the port. The completed one is a
-/// conversation with nobody, which read as a handshake would file a port with
-/// no listener as open and identify its service by the scanner's own
-/// questions echoed back; the refused one was never sent. What it does prove
-/// is that nothing held the port when the kernel chose it, which is why a
-/// fresh socket, given another source, is the way to the verdict.
+/// Neither outcome answers anything about the port. The completed one is a
+/// conversation with nobody: read as a handshake, it would file a port with no listener
+/// as open and identify its service from the scanner's own questions echoed back. The
+/// refused one was never sent. It does prove nothing held the port when the kernel
+/// chose it, so a fresh socket with another source gets the verdict.
 #[derive(Debug)]
 struct MetItself;
 
@@ -801,18 +750,18 @@ impl std::fmt::Display for MetItself {
 
 impl std::error::Error for MetItself {}
 
-/// Whether `error` is a connect that reached its own socket rather than
-/// anything listening; see [`Egress::start_connect`].
+/// Whether `error` is a connect that reached its own socket; see
+/// [`Egress::start_connect`].
 pub(crate) fn met_itself(error: &io::Error) -> bool {
     error.get_ref().is_some_and(|inner| inner.is::<MetItself>())
 }
 
 impl Pin {
-    /// Binds `socket`, about to reach `target`, to this pin's source and
-    /// `port`, and to the interface holding the source.
+    /// Binds `socket`, about to reach `target`, to this pin's source and `port`, and to
+    /// the interface holding the source.
     ///
-    /// A link-local source is bound with its interface as its scope, the only
-    /// way a bare `fe80::` names one address.
+    /// A link-local source is bound with its interface as its scope, the only way a
+    /// bare `fe80::` address names one address.
     fn bind(self, socket: &Socket, target: IpAddr, port: u16) -> io::Result<()> {
         if self.source.is_ipv4() != target.is_ipv4() {
             return Err(io::Error::new(
@@ -848,12 +797,10 @@ enum Protocol {
     Udp,
 }
 
-/// The unspecified address of `family`'s address family, carrying `port`
-/// (`0` lets the OS pick one).
+/// The unspecified address of `family`, carrying `port` (`0` lets the OS pick one).
 ///
-/// A socket bound to `0.0.0.0` cannot reach an IPv6 destination, the connect
-/// fails outright, so binding the family the target belongs to is what makes a
-/// v6 target reachable at all rather than silently unprobed.
+/// A socket bound to `0.0.0.0` cannot connect to an IPv6 destination, so binding the
+/// target's family is what makes a v6 target reachable.
 fn wildcard(family: IpAddr, port: u16) -> SocketAddr {
     match family {
         IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port),
@@ -879,14 +826,13 @@ mod tests {
     #[cfg(unix)]
     const CONNECT_TO: &str = "ZOND_TEST_CONNECT_TO";
 
-    /// The count a test reads to know a pass asked a port nothing moves for
-    /// every connection this process begins to the port, however soon it
-    /// closes, and for none another process opens.
+    /// The count a test reads to know a pass sent a port nothing moves for every
+    /// connection this process begins to the port, however soon it closes, and for none
+    /// another process opens.
     ///
-    /// Another scanner on the machine can sweep loopback at any moment, and
-    /// its connections close as soon as they complete, as a connect scan's
-    /// do. A port cannot tell whose such a connection was, so a count kept
-    /// at the port charges it to the test's pass; this one never sees it.
+    /// Another scanner on the machine can sweep loopback at any moment, and its
+    /// connections close as soon as they complete. A count kept at the port cannot tell
+    /// whose they were and would charge them to the test's pass.
     #[cfg(unix)]
     #[tokio::test]
     async fn the_dial_count_moves_for_this_processs_connections_alone() {
@@ -926,8 +872,8 @@ mod tests {
     }
 
     /// Not a check of its own: the other process
-    /// [`the_dial_count_moves_for_this_processs_connections_alone`] needs,
-    /// connecting once where [`CONNECT_TO`] says and closing at once.
+    /// [`the_dial_count_moves_for_this_processs_connections_alone`] needs, connecting
+    /// once where [`CONNECT_TO`] says and closing at once.
     #[cfg(unix)]
     #[test]
     #[ignore = "the connector another test runs in a process of its own"]
@@ -944,9 +890,8 @@ mod tests {
         assert!(wildcard(IpAddr::V6(Ipv6Addr::LOCALHOST), 0).is_ipv6());
     }
 
-    /// A connection that chose nothing is the kernel's own, so a scan that
-    /// asked for no evasion sends what any other program would. Windows is the
-    /// exception, and the reason this module exists.
+    /// A connection that chose nothing is the kernel's own, so a scan with no evasion
+    /// sends what any other program would. Windows is the exception.
     #[test]
     fn an_unshaped_connect_is_left_to_the_kernel_except_on_windows() {
         assert_eq!(
@@ -974,13 +919,11 @@ mod tests {
         );
     }
 
-    /// A shaped connect leaves from the chosen source port and carries the
-    /// chosen hop limit: proven where it counts, on the wire, against a peer
-    /// that reads both back.
+    /// A shaped connect leaves from the chosen source port and carries the chosen hop
+    /// limit, checked on the wire against a peer that reads both back.
     ///
-    /// The peer's view of the source port is the bind end to end. A version
-    /// that ignored the source port would show an ephemeral one here; one that
-    /// skipped the hop limit would show the OS default, not `9`.
+    /// Ignoring the source port would show an ephemeral one here; skipping the hop
+    /// limit would show the OS default instead of `9`.
     #[tokio::test]
     async fn a_shaped_connect_pins_its_source_port_and_hop_limit() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1021,12 +964,10 @@ mod tests {
         );
     }
 
-    /// A shaped UDP socket leaves from the chosen source port, read back off
-    /// the datagram the far side receives.
+    /// A shaped UDP socket leaves from the chosen source port, read back off the
+    /// datagram the far side receives.
     ///
-    /// The UDP socket is built by its own path, so it earns its own guard: one
-    /// that bound an ephemeral port instead of the pinned one would show a
-    /// different source port to the receiver.
+    /// The UDP socket is built by its own path, so it gets its own test.
     #[tokio::test]
     async fn a_shaped_udp_socket_pins_its_source_port() {
         let server = UdpSocket::bind("127.0.0.1:0")
@@ -1060,8 +1001,8 @@ mod tests {
         );
     }
 
-    /// The blocking connect a detection makes reaches a listener in either
-    /// family, through the same socket the async one would build.
+    /// The blocking connect a detection makes reaches a listener in either family,
+    /// through the same socket the async one would build.
     #[test]
     fn a_blocking_connect_reaches_a_listener_in_either_family() {
         for ip in [
@@ -1120,14 +1061,12 @@ mod tests {
         ]
     }
 
-    /// A forced source carries a connection to a target only the routing table
-    /// could have sent the wrong way, and leaves every other to it, as the plan
-    /// leaves the probes before them.
+    /// A forced source carries a connection only to a target the routing table could
+    /// send the wrong way, and leaves every other to it, as the plan does for probes.
     ///
-    /// Each case is a way to get this wrong: pinning a neighbour on the LAN to
-    /// the LAN is harmless, but pinning a tunnel peer to the LAN takes it off
-    /// the only link that reaches it, and pinning loopback to a LAN interface
-    /// reaches nothing.
+    /// Pinning a LAN neighbour to the LAN is harmless; pinning a tunnel peer to the LAN
+    /// takes it off the only link that reaches it, and pinning loopback to a LAN
+    /// interface reaches nothing.
     #[test]
     fn a_forced_source_carries_only_what_no_link_here_reaches_directly() {
         let sources =
@@ -1163,9 +1102,8 @@ mod tests {
         }
     }
 
-    /// A source speaks for its own family, and a scan that forced none for a
-    /// family leaves that family's connections where the plan leaves its
-    /// probes: to the routing table.
+    /// A source speaks for its own family, and a family with no forced source leaves
+    /// its connections to the routing table, as the plan does its probes.
     #[test]
     fn a_forced_source_speaks_for_its_own_family_only() {
         let only_v4 = ForcedSources::with_links(&[v4(192, 0, 2, 10)], &laptop());
@@ -1184,13 +1122,12 @@ mod tests {
         );
     }
 
-    /// The same rule the probes were planned by, asked of this machine's own
-    /// interfaces: a connection is pinned exactly where the plan paired its
-    /// target with the forced source.
+    /// The rule the probes were planned by, applied to this machine's own interfaces: a
+    /// connection is pinned exactly where the plan paired its target with the forced
+    /// source.
     ///
-    /// The rule is written twice, there in the classifier and here, and this
-    /// is what keeps the two from drifting. Skipped on a host holding no IPv4
-    /// address outside loopback, which has nothing to force.
+    /// The rule is written twice, in the classifier and here, and this keeps the two
+    /// in step. Skipped on a host with no IPv4 address outside loopback.
     #[test]
     fn a_connection_is_pinned_exactly_where_the_plan_pinned_its_probe() {
         use crate::model::ip::set::IpSet;
@@ -1244,9 +1181,8 @@ mod tests {
         }
     }
 
-    /// A source no interface here holds is kept as asked, and the connection
-    /// fails to bind rather than going out from an address the routing table
-    /// picked instead.
+    /// A source no interface here holds is kept as asked, and the connection fails to
+    /// bind instead of going out from an address the routing table picked.
     #[tokio::test]
     async fn a_source_this_host_does_not_hold_fails_the_connection_rather_than_moving_it() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1271,13 +1207,12 @@ mod tests {
         );
     }
 
-    /// The loopback interface, and an address on it to leave from that the
-    /// routing table would not have picked for a connection to `127.0.0.1`,
-    /// where the host has one.
+    /// The loopback interface, and an address on it to leave from that the routing
+    /// table would not pick for a connection to `127.0.0.1`, where the host has one.
     ///
-    /// Linux answers for the whole of `127.0.0.0/8`. macOS holds `127.0.0.1`
-    /// alone unless somebody added an alias, and there the source is the
-    /// kernel's own choice and only the interface can be told apart.
+    /// Linux answers for the whole of `127.0.0.0/8`. macOS holds `127.0.0.1` alone
+    /// unless an alias was added, and there the source is the kernel's choice and only
+    /// the interface can be told apart.
     fn loopback_pin() -> (Egress, u32) {
         let lo = crate::system::interface::interfaces()
             .expect("this machine's interfaces")
@@ -1297,13 +1232,13 @@ mod tests {
         (pinned(source, lo.index()), lo.index())
     }
 
-    /// A pinned connection leaves from its source and is bound to its
-    /// interface, read back where each is visible: the source off the peer's
-    /// accept, the interface off the socket itself.
+    /// A pinned connection leaves from its source and is bound to its interface, read
+    /// back where each is visible: the source off the peer's accept, the interface off
+    /// the socket.
     ///
-    /// The unpinned connection beside it is the control. Where the host has a
-    /// second loopback address the two sources differ, so the pin is what
-    /// moved it; everywhere, only the pinned socket is bound to a device.
+    /// The unpinned connection beside it is the control. Where the host has a second
+    /// loopback address the two sources differ; everywhere, only the pinned socket is
+    /// bound to a device.
     #[tokio::test]
     async fn a_pinned_connection_leaves_from_its_source_and_by_its_interface() {
         let (egress, index) = loopback_pin();
@@ -1355,9 +1290,8 @@ mod tests {
         let _ = (pinned, plain, index);
     }
 
-    /// The datagram and the blocking connection are built by their own paths,
-    /// so each earns its own guard: one that skipped the pin would show the
-    /// kernel's source to the peer.
+    /// The datagram and the blocking connection are built by their own paths, so each
+    /// gets its own test: skipping the pin would show the kernel's source to the peer.
     #[tokio::test]
     async fn a_pinned_datagram_and_blocking_connection_leave_from_the_source() {
         let (egress, _) = loopback_pin();
@@ -1382,10 +1316,9 @@ mod tests {
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a listener");
         let addr = listener.local_addr().expect("its address");
-        // The accepted stream is handed back rather than dropped with the
-        // thread: closed at once, it can reach the connecting side as a hang-up
-        // before the connect has seen its handshake finish, which macOS reports
-        // as a failed connect.
+        // Return the accepted stream instead of dropping it with the thread: closed at
+        // once, it can reach the connecting side as a hang-up before the connect has
+        // seen its handshake finish, which macOS reports as a failed connect.
         let handle = std::thread::spawn(move || {
             let accepted = from_this_process(&listener).next().expect("an accept");
             let peer = accepted.peer_addr()?;

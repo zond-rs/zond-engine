@@ -8,41 +8,35 @@
 
 //! # Link-Layer Framing
 //!
-//! Turns captured link-layer frames into transport-layer segments, and
-//! transport-layer segments into fully-formed Ethernet frames, without either
-//! side of the scanner having to know what kind of link it's running over.
+//! Turns captured link-layer frames into transport-layer segments, and transport-layer
+//! segments into complete Ethernet frames, so the scanner never needs to know what
+//! kind of link it runs over.
 //!
 //! ## Receive
 //!
-//! A `pcap` capture hands back whatever the interface's *data-link type*
-//! (DLT) prescribes: a 14-byte Ethernet header on `en0`/`eth0`, a 4-byte
-//! address-family word on a VPN `utun`/`tun` or loopback link, a 16-byte
-//! pseudo-header Linux writes on a PPP link, or nothing at all on a raw-IP
-//! link. [`strip_to_ip`] normalizes all of these down to the IP packet, and
-//! [`parse_ip_segment`] then extracts the source address and the Layer-4
-//! payload the scanners actually care about.
+//! A `pcap` capture returns whatever the interface's *data-link type* (DLT) prescribes:
+//! a 14-byte Ethernet header on `en0`/`eth0`, a 4-byte address-family word on a VPN
+//! `utun`/`tun` or loopback link, a 16-byte pseudo-header Linux writes on a PPP link,
+//! or nothing on a raw-IP link. [`strip_to_ip`] reduces all of these to the IP packet,
+//! and [`parse_ip_segment`] extracts the addresses and the Layer-4 payload.
 //!
-//! Crucially, once the link header is stripped, the IP version is read from
-//! the packet itself (the version nibble) rather than trusting the link
-//! layer's `AF_*` tag - those constants differ across BSD variants (macOS
-//! `AF_INET6` is 30, FreeBSD 28, NetBSD/OpenBSD 24), and reading the IP
-//! header directly sidesteps that entirely.
+//! Once the link header is stripped, the IP version is read from the packet's version
+//! nibble. The link layer's `AF_*` tag is unreliable for this: macOS `AF_INET6` is 30,
+//! FreeBSD 28, NetBSD/OpenBSD 24.
 //!
-//! The same parse is reused for the IP packet *quoted inside* an ICMP error,
-//! which is how a UDP scan learns which probe an unreachable message answers.
-//! That path parses bytes chosen by a remote host, so every length here is
-//! taken from the packet and bounds-checked rather than assumed.
+//! The same parse reads the IP packet *quoted inside* an ICMP error, which is how a UDP
+//! scan learns which probe an unreachable message answers. Those bytes are chosen by a
+//! remote host, so every length is taken from the packet and bounds-checked.
 //!
 //! ## Send
 //!
-//! [`build_ethernet_frame`] wraps an already-built Layer-4 segment in IP and
-//! Ethernet headers for a Layer-2 send, and [`build_fragmented_ethernet_frames`]
-//! does the same while splitting the IP packet across fragments when a scan
-//! asked to. The raw-IP send path (tunnel and loopback links) doesn't use these,
-//! because there the kernel writes the IP header. The loopback interface on
-//! macOS, which takes a frame through BPF, is handed what
-//! `build_null_loop_frames` makes: the same packet behind the four-byte
-//! family word its captures carry.
+//! [`build_ethernet_frame`] wraps a built Layer-4 segment in IP and Ethernet headers
+//! for a Layer-2 send, and [`build_fragmented_ethernet_frames`] does the same while
+//! splitting the IP packet into fragments. The raw-IP send path (tunnel and loopback
+//! links) does not use these, since the kernel writes the IP header there. The macOS
+//! loopback interface, which takes a frame through BPF, gets what
+//! `build_null_loop_frames` makes: the same packet behind the four-byte family word its
+//! captures carry.
 
 use std::net::IpAddr;
 
@@ -59,9 +53,9 @@ use crate::protocols::ethernet;
 use crate::protocols::ip;
 use crate::protocols::sizes::{ETH_HDR_LEN, IP_V4_HDR_LEN, IP_V6_HDR_LEN};
 
-/// The subset of `pcap` data-link types this crate knows how to strip down to
-/// an IP packet. Anything else is [`LinkType::Unsupported`] and the caller
-/// must refuse to capture on that interface rather than misparse its frames.
+/// The `pcap` data-link types this crate can strip down to an IP packet. Anything else
+/// is [`LinkType::Unsupported`], and the caller must refuse to capture on that
+/// interface.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkType {
@@ -73,41 +67,41 @@ pub enum LinkType {
     NullLoop,
     /// `DLT_RAW`: the captured buffer *is* the IP packet, with no link header.
     Raw,
-    /// `DLT_LINUX_SLL`: a 16-byte pseudo-header Linux writes in place of a link
-    /// header it will not hand over, naming what follows by EtherType.
+    /// `DLT_LINUX_SLL`: a 16-byte pseudo-header Linux writes in place of a link header
+    /// it will not hand over, naming what follows by EtherType.
     ///
-    /// What `libpcap` opens a PPP link as, which is how a PPP VPN's tunnel is
-    /// captured, and what it falls back to for any link whose hardware type it
-    /// has no mapping for, GRE and IPv6 tunnels among them.
+    /// `libpcap` opens a PPP link (and so a PPP VPN's tunnel) as this, and falls back
+    /// to it for any link whose hardware type it cannot map, GRE and IPv6 tunnels
+    /// among them.
     LinuxSll,
-    /// `DLT_LINUX_SLL2`: the 20-byte successor to [`LinuxSll`](Self::LinuxSll),
-    /// the same fields reordered with the interface's index added.
+    /// `DLT_LINUX_SLL2`: the 20-byte successor to [`LinuxSll`](Self::LinuxSll), the
+    /// same fields reordered with the interface's index added.
     ///
     /// What `tcpdump -i any` writes. A capture of one named link comes up as
-    /// [`LinuxSll`](Self::LinuxSll) unless it asks for this, so it reaches this
-    /// crate in a capture somebody else took rather than in one of its own.
+    /// [`LinuxSll`](Self::LinuxSll) unless it asks for this, so it reaches this crate
+    /// in captures taken by other tools.
     LinuxSll2,
-    /// A data-link type this crate can't parse; the numeric DLT is preserved
-    /// for diagnostics.
+    /// A data-link type this crate can't parse; the numeric DLT is kept for
+    /// diagnostics.
     Unsupported(i32),
 }
 
-/// The width of the pseudo-header `DLT_NULL`/`DLT_LOOP` links prepend: a
-/// single 32-bit address-family word.
+/// The width of the pseudo-header `DLT_NULL`/`DLT_LOOP` links prepend: a single 32-bit
+/// address-family word.
 const NULL_LOOP_HDR_LEN: usize = 4;
 
 /// The width of the pseudo-header a `DLT_LINUX_SLL` link prepends.
 ///
-/// Public to the crate for the capture's snapshot floor, which has to leave
-/// room for the deepest link header this module strips.
+/// Crate-visible for the capture's snapshot floor, which must leave room for the
+/// deepest link header this module strips.
 pub(crate) const SLL_HDR_LEN: usize = 16;
 
 /// The width of the pseudo-header a `DLT_LINUX_SLL2` link prepends. See
 /// [`SLL_HDR_LEN`].
 pub(crate) const SLL2_HDR_LEN: usize = 20;
 
-// libpcap data-link type numbers. Kept local rather than pulled from a
-// dependency so the mapping is auditable in one place.
+// libpcap data-link type numbers, kept local so the mapping is auditable in one
+// place.
 const DLT_NULL: i32 = 0;
 const DLT_EN10MB: i32 = 1;
 const DLT_LOOP: i32 = 108;
@@ -117,8 +111,8 @@ const DLT_LINUX_SLL: i32 = 113;
 const DLT_LINUX_SLL2: i32 = 276;
 
 impl LinkType {
-    /// Maps a raw libpcap DLT number (as returned by `Capture::get_datalink`)
-    /// onto a [`LinkType`].
+    /// Maps a raw libpcap DLT number (as returned by `Capture::get_datalink`) onto a
+    /// [`LinkType`].
     pub fn from_dlt(dlt: i32) -> Self {
         match dlt {
             DLT_EN10MB => LinkType::Ethernet,
@@ -131,24 +125,22 @@ impl LinkType {
     }
 }
 
-/// The don't-fragment and more-fragments bits within an IPv4 header's
-/// three-bit flags field, as `pnet` hands it back. The mirror of
-/// [`ipv4_flags`](crate::protocols::craft::ipv4_flags) on the send side, named
-/// here rather than shared because reading a captured header and writing one
-/// are different jobs and only one of them may write a value that is wrong.
+/// The don't-fragment and more-fragments bits within an IPv4 header's three-bit flags
+/// field, as `pnet` returns it. The read-side mirror of
+/// [`ipv4_flags`](crate::protocols::craft::ipv4_flags), kept separate because only the
+/// writer may produce a wrong value on purpose.
 const IPV4_DONT_FRAGMENT: u8 = 0b010;
 const IPV4_MORE_FRAGMENTS: u8 = 0b001;
 
-/// Strips `frame`'s link-layer header according to `link`, returning the IP
-/// packet within, or `None` if the frame is too short, carries a non-IP
-/// payload (ARP on an Ethernet link, a non-IP address family on a tunnel), or
-/// rides an unsupported link type.
+/// Strips `frame`'s link-layer header according to `link`, returning the IP packet
+/// within, or `None` if the frame is too short, carries a non-IP payload (ARP on an
+/// Ethernet link, a non-IP address family on a tunnel), or uses an unsupported link
+/// type.
 ///
-/// Every link type that carries a protocol label is held to it. The Ethernet
-/// arm reads the EtherType, the tunnel arm reads the address-family word, and
-/// the cooked arms read the protocol field. Skipped, the word would let a
-/// `DLT_NULL` frame carrying something else through as an IP packet, refused
-/// only if its first nibble happened not to be 4 or 6.
+/// Every link type that carries a protocol label is held to it: the Ethernet arm reads
+/// the EtherType, the tunnel arm the address-family word, and the cooked arms the
+/// protocol field. Otherwise a `DLT_NULL` frame carrying something else would pass as
+/// IP whenever its first nibble happened to be 4 or 6.
 pub fn strip_to_ip(link: LinkType, frame: &[u8]) -> Option<&[u8]> {
     match link {
         LinkType::Ethernet => strip_ethernet(frame),
@@ -162,28 +154,25 @@ pub fn strip_to_ip(link: LinkType, frame: &[u8]) -> Option<&[u8]> {
 
 /// What a Linux cooked pseudo-header says, from either version of it.
 ///
-/// Linux writes one of these in place of a link header `libpcap` has no use
-/// for, as on a PPP link. The two versions carry the same fields in different
-/// places and at different widths, so each is read by its own constructor and
-/// everything after that reads this.
+/// Linux writes one of these in place of a link header `libpcap` has no use for, as on
+/// a PPP link. The two versions carry the same fields at different places and widths,
+/// so each has its own constructor and everything after reads this.
 ///
 /// # What is not read
 ///
-/// The packet-type field, which says whether the frame arrived or left. A probe
-/// this host sent is captured leaving on a cooked link just as it is on every
-/// other link, and that is wanted rather than tolerated. A port scan admits
-/// both directions and counts its own probes leaving, which is how it tells a
-/// port that stayed silent from one whose probe never reached the wire, and it
-/// tells the two directions apart by address. Discarding outgoing frames here
-/// would make every probe through a PPP link look unsent.
+/// The packet-type field, which says whether the frame arrived or left. A probe this
+/// host sent is captured leaving on a cooked link as on every other link, and that is
+/// wanted: a port scan admits both directions and counts its own probes leaving, which
+/// is how it tells a silent port from one whose probe never reached the wire.
+/// Discarding outgoing frames would make every probe through a PPP link look unsent.
 struct Cooked<'a> {
     /// What the payload is. An EtherType on every link that carries IP.
     protocol: u16,
-    /// The kernel's `ARPHRD_` value for the link, which is what says what kind
-    /// of address [`address`](Self::address) holds.
+    /// The kernel's `ARPHRD_` value for the link, which says what kind of address
+    /// [`address`](Self::address) holds.
     hardware_type: u16,
-    /// How long the sender's address is, which may be more than the eight
-    /// bytes the header has room for, or none at all.
+    /// How long the sender's address is, which may exceed the eight bytes the header
+    /// has room for, or be zero.
     address_len: usize,
     /// The sender's address, padded or cut to eight bytes.
     address: &'a [u8; 8],
@@ -191,14 +180,13 @@ struct Cooked<'a> {
     payload: &'a [u8],
 }
 
-/// The kernel's `ARPHRD_` value for an Ethernet link: the one hardware type
-/// whose address a cooked header's address field holds as a hardware address
-/// this crate reads.
+/// The kernel's `ARPHRD_` value for an Ethernet link: the one hardware type whose
+/// cooked-header address this crate reads as a hardware address.
 const ARPHRD_ETHER: u16 = 1;
 
 impl<'a> Cooked<'a> {
-    /// Reads a `DLT_LINUX_SLL` header: packet type, hardware type, address
-    /// length, eight bytes of address, then the protocol, all in network order.
+    /// Reads a `DLT_LINUX_SLL` header: packet type, hardware type, address length,
+    /// eight bytes of address, then the protocol, all in network order.
     fn sll(frame: &'a [u8]) -> Option<Self> {
         let (header, payload) = frame.split_first_chunk::<SLL_HDR_LEN>()?;
         Some(Self {
@@ -210,9 +198,9 @@ impl<'a> Cooked<'a> {
         })
     }
 
-    /// Reads a `DLT_LINUX_SLL2` header: the protocol first, two reserved bytes,
-    /// the interface index, the hardware type, then a one-byte packet type and
-    /// a one-byte address length ahead of the same eight bytes of address.
+    /// Reads a `DLT_LINUX_SLL2` header: the protocol first, two reserved bytes, the
+    /// interface index, the hardware type, then a one-byte packet type and a one-byte
+    /// address length ahead of the same eight bytes of address.
     fn sll2(frame: &'a [u8]) -> Option<Self> {
         let (header, payload) = frame.split_first_chunk::<SLL2_HDR_LEN>()?;
         Some(Self {
@@ -232,11 +220,11 @@ impl<'a> Cooked<'a> {
         }
     }
 
-    /// The sender's hardware address, where the header says it holds one.
+    /// The sender's hardware address, where the header holds one.
     ///
-    /// Only an Ethernet link's six bytes are one. A PPP link or a tunnel reports
-    /// no address at all, and any other hardware type's address is that link's
-    /// own notion of one, which six bytes read as a MAC would misname.
+    /// Only an Ethernet link's six bytes count. A PPP link or a tunnel reports no
+    /// address, and any other hardware type's address is that link's own kind, which
+    /// read as a MAC would be misnamed.
     fn hardware_address(&self) -> Option<MacAddr> {
         if self.hardware_type != ARPHRD_ETHER || self.address_len != 6 {
             return None;
@@ -246,20 +234,16 @@ impl<'a> Cooked<'a> {
     }
 }
 
-/// Reads the address-family word a `DLT_NULL`/`DLT_LOOP` link prepends and
-/// returns the IP packet behind it, or `None` for a family this does not parse.
+/// Reads the address-family word a `DLT_NULL`/`DLT_LOOP` link prepends and returns the
+/// IP packet behind it, or `None` for a family this does not parse.
 ///
-/// The word's byte order is not fixed, which is why this reads it both ways
-/// rather than picking one. `DLT_NULL` writes the host's own order, so the same
-/// capture file means different things on two machines; `DLT_LOOP` was defined
-/// later precisely to settle that, and writes network order. `libpcap` reports
-/// them as different link types and this crate maps both to
-/// [`NullLoop`](LinkType::NullLoop), so the value has to be recognised whichever
-/// way round it arrived.
+/// The word's byte order is not fixed, so it is read both ways. `DLT_NULL` writes the
+/// host's own order, so a capture file means different things on different machines;
+/// `DLT_LOOP` was defined later to settle that and writes network order. This crate
+/// maps both to [`NullLoop`](LinkType::NullLoop).
 ///
-/// That is safe to do rather than sloppy: the four families involved are small
-/// numbers whose byte-swapped forms are enormous, so no reading of one is a
-/// valid reading of another.
+/// Reading both ways is safe: the families involved are small numbers whose
+/// byte-swapped forms are enormous, so no reading of one is a valid reading of another.
 fn strip_null_loop(frame: &[u8]) -> Option<&[u8]> {
     let word = u32::from_ne_bytes(*frame.first_chunk::<NULL_LOOP_HDR_LEN>()?);
     if !IP_ADDRESS_FAMILIES.contains(&word) && !IP_ADDRESS_FAMILIES.contains(&word.swap_bytes()) {
@@ -269,24 +253,19 @@ fn strip_null_loop(frame: &[u8]) -> Option<&[u8]> {
     frame.get(NULL_LOOP_HDR_LEN..)
 }
 
-/// The address-family numbers a `DLT_NULL`/`DLT_LOOP` word may carry for an IP
-/// packet.
+/// The address-family numbers a `DLT_NULL`/`DLT_LOOP` word may carry for an IP packet.
 ///
-/// `AF_INET` is 2 everywhere. `AF_INET6` is not: 30 on macOS and the BSDs, 28 on
-/// FreeBSD, 10 on Linux, and 24 on OpenBSD. A tunnel link is read on whichever
-/// of those wrote it, and a capture written on one machine may be read on
-/// another, so all four are recognised rather than the running platform's alone.
+/// `AF_INET` is 2 everywhere. `AF_INET6` is 30 on macOS and the BSDs, 28 on FreeBSD,
+/// 10 on Linux, and 24 on OpenBSD. A capture written on one machine may be read on
+/// another, so all four are recognised.
 const IP_ADDRESS_FAMILIES: [u32; 5] = [2, 30, 28, 10, 24];
 
-/// Walks an Ethernet header, transparently skipping any VLAN tags, and returns
-/// the payload only if the EtherType marks it as IPv4 or IPv6.
+/// Walks an Ethernet header, skipping any VLAN tags, and returns the payload only if
+/// the EtherType marks it as IPv4 or IPv6.
 ///
-/// The tag walk is [`ethernet::parse`]'s rather than a second copy of it. Two
-/// implementations of one rule come to disagree in the ordinary course of
-/// things, and here the disagreement would be silent: a copy that understood
-/// one tag where the original understands a stack would find a second tag
-/// where it expected an IP EtherType, and discard every reply that arrived
-/// double-tagged as though no reply had come.
+/// The tag walk is [`ethernet::parse`]'s. A second copy could drift silently: one that
+/// understood a single tag where the original understands a stack would discard every
+/// double-tagged reply as though none had come.
 fn strip_ethernet(frame: &[u8]) -> Option<&[u8]> {
     let parsed = ethernet::parse(frame).ok()?;
     match EtherType(parsed.ethertype()) {
@@ -297,35 +276,31 @@ fn strip_ethernet(frame: &[u8]) -> Option<&[u8]> {
 
 /// The hardware address a captured frame came from, where the link has one.
 ///
-/// # What this is for, and what it is not for
+/// # What this is for
 ///
-/// It answers whether a reply came from the host whose address it claims, which
-/// is a question the source IP structurally cannot answer. Anything answering in
-/// a host's place, whether a transparent proxy, a DNS interceptor or a
-/// firewall resetting on a host's behalf, uses that host's address, so the IP
-/// header of a forged answer and a real one are identical. The hardware address
-/// is not, and on an on-link segment it settles the matter outright.
+/// It answers whether a reply came from the host whose address it claims, which the
+/// source IP cannot. Anything answering in a host's place (a transparent proxy, a DNS
+/// interceptor, a firewall resetting on a host's behalf) uses that host's address, so
+/// a forged answer's IP header is identical to a real one. On an on-link segment the
+/// hardware address settles it.
 ///
-/// It is a poor basis for vendor attribution, which is the use it looks like it
-/// has. A reply from off-link carries the last-hop router's address rather than
-/// the sender's, and the two are indistinguishable from here, so an OUI lookup
-/// against this would confidently report the router's manufacturer as the host's.
-/// Where a vendor is actually wanted, it belongs to the on-link discovery path
-/// ([`crate::system::neighbor_cache`] and the local scanner), which knows a neighbour
-/// is a neighbour.
+/// It is a poor basis for vendor attribution. A reply from off-link carries the
+/// last-hop router's address, indistinguishable here from the sender's, so an OUI
+/// lookup would report the router's manufacturer as the host's. Vendor lookup belongs
+/// to the on-link discovery path ([`crate::system::neighbor_cache`] and the local
+/// scanner), which knows a neighbour is a neighbour.
 ///
-/// `None` where there is genuinely nothing to read: a `DLT_NULL`/`DLT_LOOP`
-/// tunnel or loopback link prepends an address-family word and no addresses at
-/// all, a `DLT_RAW` link prepends nothing, a cooked header names a hardware
-/// address only for an Ethernet link, and a frame too short to hold its header
-/// describes nothing. `None` never means "the sender had no hardware address".
+/// `None` where there is nothing to read: a `DLT_NULL`/`DLT_LOOP` tunnel or loopback
+/// link prepends only an address-family word, a `DLT_RAW` link prepends nothing, a
+/// cooked header names a hardware address only for an Ethernet link, and a frame too
+/// short for its header describes nothing. `None` does not mean the sender had no
+/// hardware address.
 pub fn source_mac(link: LinkType, frame: &[u8]) -> Option<MacAddr> {
     match link {
-        // Offsets 0..6 destination, 6..12 source, then the EtherType. A VLAN tag
-        // sits after both addresses, so unlike the payload offset this one does
-        // not move for a tagged frame. That is the mistake to avoid: a
-        // tag-shifted read lands in the middle of the EtherType and the start of
-        // the IP header and yields a plausible-looking address.
+        // Offsets 0..6 destination, 6..12 source, then the EtherType. A VLAN tag sits
+        // after both addresses, so this offset does not move for a tagged frame. A
+        // tag-shifted read would land across the EtherType and the IP header and
+        // yield a plausible-looking address.
         LinkType::Ethernet => Some(MacAddr::new(
             *frame.get(6)?,
             *frame.get(7)?,
@@ -340,19 +315,16 @@ pub fn source_mac(link: LinkType, frame: &[u8]) -> Option<MacAddr> {
     }
 }
 
-/// One parsed IP packet: its endpoints, the Layer-4 protocol it carries, and
-/// that Layer-4 segment.
+/// One parsed IP packet: its endpoints, the Layer-4 protocol it carries, and that
+/// Layer-4 segment.
 ///
-/// The protocol travels with the bytes because a Layer-4 segment is *not*
-/// self-describing. `UdpPacket::new` succeeds on any eight bytes, so an ICMP
-/// error read as UDP yields a header full of plausible nonsense - a reader
-/// that has to guess will eventually guess wrong. Carrying the IP header's
-/// answer removes the guess.
+/// The protocol travels with the bytes because a Layer-4 segment is not
+/// self-describing. `UdpPacket::new` succeeds on any eight bytes, so an ICMP error read
+/// as UDP yields a plausible but meaningless header.
 ///
-/// Both endpoints are kept, not just the source. A reply's source is who sent
-/// it, but an ICMP error's *quoted* packet identifies the probe by its
-/// destination - and the router that reports the error is not the host the
-/// probe was aimed at.
+/// Both endpoints are kept. A reply's source is who sent it, but an ICMP error's quoted
+/// packet identifies the probe by its destination, and the router reporting the error
+/// is not the host the probe was aimed at.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IpSegment<'a> {
@@ -367,41 +339,31 @@ pub struct IpSegment<'a> {
     pub payload: &'a [u8],
     /// What the rest of the IP header said about the stack that wrote it.
     ///
-    /// Kept because the header is parsed here and nowhere else. Everything
-    /// downstream sees a Layer-4 segment with the IP header already gone, so a
-    /// field dropped at this line is not recoverable at any later one, and three
-    /// of these are among the cheapest identifying signals a reply carries. They
-    /// cost six bytes to keep and a second packet to re-obtain.
+    /// The header is parsed only here; everything downstream sees a Layer-4 segment, so
+    /// a field dropped here cannot be recovered. Three of these are among the cheapest
+    /// identifying signals a reply carries, at six bytes to keep.
     pub observation: IpObservation,
 }
 
-/// Parses an IP packet into its endpoints, protocol, and Layer-4 segment,
-/// dispatching on the version nibble so it works regardless of how the link
-/// layer labeled the packet.
+/// Parses an IP packet into its endpoints, protocol, and Layer-4 segment, dispatching
+/// on the version nibble so the link layer's label does not matter.
 ///
-/// Returns `None` for a truncated packet, an implausible header length, an
-/// unrecognized IP version, or an IPv6 chain that names no Layer-4 segment at
-/// all (see `walk_ipv6_headers`).
+/// Returns `None` for a truncated packet, an implausible header length, an unknown IP
+/// version, or an IPv6 chain that names no Layer-4 segment (see `walk_ipv6_headers`).
 pub fn parse_ip_segment(ip_bytes: &[u8]) -> Option<IpSegment<'_>> {
     match ip_bytes.first()? >> 4 {
         4 => {
             let packet = Ipv4Packet::new(ip_bytes)?;
-            // IHL is four bits of remote-chosen data. Anything below the fixed
-            // header size would slice back into the header itself, so reject it
-            // rather than hand out a payload that overlaps the addresses.
+            // IHL is four bits of remote-chosen data. Anything below the fixed header
+            // size would slice back into the header, overlapping the addresses.
             let header_len = packet.get_header_length() as usize * 4;
             if header_len < IP_V4_HDR_LEN {
                 return None;
             }
-            // Only the first fragment of a fragmented datagram carries the
-            // Layer-4 header a caller is looking for. In any other, what follows
-            // the IP header is the middle of somebody's payload, and handing it
-            // out is handing out a header full of plausible nonsense.
-            // `walk_ipv6_headers` refuses the same thing on the other family.
-            // Reading the flags and never the offset would let a non-initial
-            // fragment through as a segment, with an `IpObservation` answering
-            // `is_fragment()` from the More Fragments bit, which the *last*
-            // fragment does not set.
+            // Only the first fragment of a datagram carries the Layer-4 header; in any
+            // other, what follows the IP header is the middle of a payload.
+            // `walk_ipv6_headers` refuses the same on IPv6. The offset must be checked,
+            // not just the flags: the last fragment does not set More Fragments.
             if packet.get_fragment_offset() != 0 {
                 return None;
             }
@@ -442,27 +404,23 @@ pub fn parse_ip_segment(ip_bytes: &[u8]) -> Option<IpSegment<'_>> {
 
 /// How many extension headers to walk before giving up.
 ///
-/// A chain this long is not a packet anyone sends; it is someone seeing how long
-/// this loop will run. Eight is past anything legitimate and bounds the work per
-/// frame at a constant.
+/// No legitimate packet has a chain this long. Eight bounds the work per frame at a
+/// constant.
 const MAX_EXTENSION_HEADERS: usize = 8;
 
 /// Follows an IPv6 next-header chain from `protocol` at `offset`, returning the
 /// Layer-4 protocol and the offset its segment starts at.
 ///
-/// The fixed header's next-header field is not the transport protocol; it is
-/// only the first link of a chain, and each extension header names the next.
-/// Reading it as the transport protocol hands out an extension header as though
-/// it were a TCP or ICMPv6 segment - a header full of plausible nonsense that
-/// parses cleanly and means nothing.
+/// The fixed header's next-header field is only the first link of a chain; each
+/// extension header names the next. Read as the transport protocol, it would hand out
+/// an extension header as a TCP or ICMPv6 segment that parses cleanly and means
+/// nothing.
 ///
-/// `None` where there is no Layer-4 segment to point at: a chain that runs past
-/// the end of the packet, one longer than [`MAX_EXTENSION_HEADERS`], an explicit
-/// no-next-header, or a non-initial fragment, whose bytes are the middle of
-/// somebody's datagram rather than the start of a header. Every length here is
-/// read from the packet and bounds-checked, because these bytes are chosen by a
-/// remote host - and by a hostile one, in the packet quoted inside an ICMP
-/// error.
+/// `None` where there is no Layer-4 segment: a chain that runs past the end of the
+/// packet, one longer than [`MAX_EXTENSION_HEADERS`], an explicit no-next-header, or a
+/// non-initial fragment, whose bytes are the middle of a datagram. Every length is read
+/// from the packet and bounds-checked, because a remote host chooses these bytes, and a
+/// hostile one in the packet quoted inside an ICMP error.
 fn walk_ipv6_headers(
     bytes: &[u8],
     protocol: IpNextHeaderProtocol,
@@ -475,19 +433,17 @@ fn walk_ipv6_headers(
 
     for _ in 0..MAX_EXTENSION_HEADERS {
         let length = match protocol {
-            // Explicitly nothing follows, so there is no segment to return.
+            // Explicitly nothing follows.
             Protocols::Ipv6NoNxt => return None,
-            // The common shape: a next-header byte, a length in 8-octet units
-            // not counting the first, then options.
+            // The common shape: a next-header byte, a length in 8-octet units not
+            // counting the first, then options.
             Protocols::Hopopt | Protocols::Ipv6Route | Protocols::Ipv6Opts => {
                 (usize::from(*bytes.get(offset + 1)?) + 1) * 8
             }
-            // The authentication header counts in 4-octet units, not 8, and
-            // excludes two rather than one.
+            // The authentication header counts in 4-octet units and excludes two.
             Protocols::Ah => (usize::from(*bytes.get(offset + 1)?) + 2) * 4,
             // Fixed at eight bytes. Only the first fragment carries the Layer-4
-            // header the caller is looking for; in any other the offset field is
-            // non-zero and what follows is payload.
+            // header; in any other the offset is non-zero and what follows is payload.
             Protocols::Ipv6Frag => {
                 let fragment_offset =
                     u16::from_be_bytes([*bytes.get(offset + 2)?, *bytes.get(offset + 3)?]) >> 3;
@@ -496,8 +452,8 @@ fn walk_ipv6_headers(
                 }
                 8
             }
-            // Anything else is the Layer-4 protocol, including the payloads
-            // (ESP) this cannot see past.
+            // Anything else is the Layer-4 protocol, including payloads (ESP) this
+            // cannot see past.
             transport => return Some((transport, offset)),
         };
 
@@ -512,30 +468,26 @@ fn walk_ipv6_headers(
     None
 }
 
-/// Convenience over [`strip_to_ip`] + [`parse_ip_segment`]: takes a captured
-/// frame and its link type and yields the [`IpSegment`] within.
+/// [`strip_to_ip`] followed by [`parse_ip_segment`]: takes a captured frame and its
+/// link type and yields the [`IpSegment`] within.
 pub fn parse_captured_segment(link: LinkType, frame: &[u8]) -> Option<IpSegment<'_>> {
     parse_ip_segment(strip_to_ip(link, frame)?)
 }
 
-/// The [`IpSegment`] within a captured frame, and the hardware address the frame
-/// came from where the link has one.
+/// The [`IpSegment`] within a captured frame, and the hardware address the frame came
+/// from where the link has one.
 ///
-/// The two answers a receive path wants from one frame, taken in one pass.
-/// Asking for them separately walks the link header twice, once to reach the IP
-/// packet and once to reach an address six bytes into the same header, for every
-/// frame a capture admits.
+/// Both answers in one pass over the link header, for every frame a capture admits.
 ///
-/// `None` on the same terms [`parse_captured_segment`] is: the source address is
-/// absent for a link that carries none (see [`source_mac`]) and never a reason to
-/// refuse the segment.
+/// `None` on the same terms as [`parse_captured_segment`]. The source address is absent
+/// for a link that carries none (see [`source_mac`]), which never refuses the segment.
 pub fn parse_captured(link: LinkType, frame: &[u8]) -> Option<(IpSegment<'_>, Option<MacAddr>)> {
     let segment = parse_captured_segment(link, frame)?;
     Some((segment, source_mac(link, frame)))
 }
 
-/// Everything a frame needs except its payload: where it goes at both layers,
-/// what it carries, and how far it may travel.
+/// Everything a frame needs except its payload: where it goes at both layers, what it
+/// carries, and how far it may travel.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct FrameSpec {
@@ -543,26 +495,24 @@ pub struct FrameSpec {
     pub src_mac: MacAddr,
     /// The next hop's address on this segment.
     pub dst_mac: MacAddr,
-    /// The source address written into the IP header. Must agree in family with
+    /// The source address written into the IP header. Must match the family of
     /// [`dst`](Self::dst).
     pub src: IpAddr,
     /// The destination address written into the IP header.
     pub dst: IpAddr,
     /// What the IP header says it carries, by its IANA number.
     pub protocol: u8,
-    /// IPv4's TTL or IPv6's hop limit, whichever the family calls it, so one
-    /// caller decides it once for both. It lives here rather than with the
-    /// kernel because this is the backend that can honour it exactly, the header
-    /// being built in this module; see
+    /// IPv4's TTL or IPv6's hop limit, so one caller decides it once for both. This
+    /// backend builds the header and so honours it exactly; see
     /// [`Emission`](crate::transport::probe::Emission).
     pub hop_limit: u8,
 }
 
-/// Everything an IP packet needs except its payload, for a link with no
-/// hardware addresses to name.
+/// Everything an IP packet needs except its payload, for a link with no hardware
+/// addresses.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct IpSpec {
-    /// The source address written into the IP header. Must agree in family with
+    /// The source address written into the IP header. Must match the family of
     /// [`dst`](Self::dst).
     pub(crate) src: IpAddr,
     /// The destination address written into the IP header.
@@ -574,8 +524,8 @@ pub(crate) struct IpSpec {
 }
 
 impl FrameSpec {
-    /// The IP half of this spec, which is the whole of a packet with no link
-    /// header in front of it.
+    /// The IP half of this spec, which is a whole packet on a link with no link
+    /// header.
     fn ip(&self) -> IpSpec {
         IpSpec {
             src: self.src,
@@ -586,19 +536,19 @@ impl FrameSpec {
     }
 }
 
-/// The IP packets a probe becomes before any link header goes in front of
-/// them: the one datagram, or with `mtu` set, one per fragment no larger than
-/// `mtu` bytes. A datagram that already fits `mtu` comes back whole.
+/// The IP packets a probe becomes before any link header: the one datagram, or with
+/// `mtu` set, one per fragment of at most `mtu` bytes. A datagram that already fits
+/// `mtu` comes back whole.
 ///
-/// What [`build_ethernet_frame`], [`build_fragmented_ethernet_frames`] and
-/// [`build_null_loop_frames`] put a link header in front of, so the IP a
-/// probe carries is built one way whatever link carries it.
+/// [`build_ethernet_frame`], [`build_fragmented_ethernet_frames`] and
+/// [`build_null_loop_frames`] put a link header in front of these, so a probe's IP is
+/// built the same way on every link.
 ///
 /// # Errors
 ///
-/// Refuses a mismatched address pair, a payload longer than the length field
-/// holds, and, through the two fragmenters, an MTU too small to carry a
-/// fragment or a datagram larger than the family's offset field can address.
+/// Refuses a mismatched address pair, a payload longer than the length field holds,
+/// and, through the two fragmenters, an MTU too small to carry a fragment or a datagram
+/// larger than the family's offset field can address.
 pub(crate) fn build_ip_packets(
     spec: &IpSpec,
     segment: &[u8],
@@ -631,8 +581,8 @@ pub(crate) fn build_ip_packets(
         };
     }
 
-    // Counted before the family is known, so the header this will be added to
-    // has no size yet and the bound is the width of the field alone.
+    // Counted before the family is known, so the bound is the width of the field
+    // alone.
     let payload_len = u16::try_from(segment.len())
         .map_err(|_| PacketError::too_long("an IP payload length", 0, segment.len()))?;
     let header = match (src, dst) {
@@ -654,14 +604,12 @@ pub(crate) fn build_ip_packets(
 /// [`build_ip_packets`] makes, behind the address-family word a `DLT_NULL` link
 /// carries, in this machine's byte order.
 ///
-/// The word is macOS's own numbering, `AF_INET` 2 and `AF_INET6` 30, since that
-/// is the one platform whose loopback a frame is written to; see
-/// [`IP_ADDRESS_FAMILIES`] for the others a capture reads. It is written
-/// because the handle a frame leaves by marks its header complete, as it has to
-/// for an Ethernet frame to leave with the source address it was built with,
-/// and a loopback interface told the header is complete reads the family from
-/// the first four bytes. Without the word the kernel takes the IP header's
-/// first bytes as the family and drops the packet unread.
+/// The word uses macOS numbering (`AF_INET` 2, `AF_INET6` 30), since macOS is the one
+/// platform whose loopback a frame is written to; see [`IP_ADDRESS_FAMILIES`] for the
+/// others a capture reads. The sending handle marks its header complete, as it must for
+/// an Ethernet frame to keep the source address it was built with, and a loopback
+/// interface told that reads the family from the first four bytes. Without the word,
+/// the kernel reads the IP header's first bytes as the family and drops the packet.
 pub(crate) fn build_null_loop_frames(
     spec: &IpSpec,
     segment: &[u8],
@@ -680,8 +628,8 @@ pub(crate) fn build_null_loop_frames(
         .collect())
 }
 
-/// Each of `packets` behind an Ethernet header from `src_mac` to `dst_mac`,
-/// labelled with the family of `dst`.
+/// Each of `packets` behind an Ethernet header from `src_mac` to `dst_mac`, labelled
+/// with the family of `dst`.
 fn behind_ethernet(
     packets: Vec<Vec<u8>>,
     src_mac: MacAddr,
@@ -704,11 +652,11 @@ fn behind_ethernet(
         .collect()
 }
 
-/// Wraps a finished Layer-4 `segment` in IP and Ethernet headers, producing a
-/// frame ready to hand to a Layer-2 send.
+/// Wraps a finished Layer-4 `segment` in IP and Ethernet headers, producing a frame
+/// ready for a Layer-2 send.
 ///
-/// The IP version comes from the spec's address pair, which must agree. A
-/// mismatch is an error rather than a silent wrong-family packet.
+/// The IP version comes from the spec's address pair, which must agree; a mismatch is
+/// an error.
 pub fn build_ethernet_frame(spec: &FrameSpec, segment: &[u8]) -> Result<Vec<u8>, PacketError> {
     let packets = build_ip_packets(&spec.ip(), segment, None)?;
     let frames = behind_ethernet(packets, spec.src_mac, spec.dst_mac, spec.dst);
@@ -718,23 +666,22 @@ pub fn build_ethernet_frame(spec: &FrameSpec, segment: &[u8]) -> Result<Vec<u8>,
         .expect("an unfragmented packet is one"))
 }
 
-/// The Ethernet frames a probe becomes once its IP packet is split into
-/// fragments no larger than `mtu` bytes each: one frame per fragment, in order,
-/// each ready to put on the wire.
+/// The Ethernet frames a probe becomes once its IP packet is split into fragments of at
+/// most `mtu` bytes: one frame per fragment, in order.
 ///
-/// The counterpart of [`build_ethernet_frame`] for a caller who chose to
-/// fragment. It builds the same packet, splits it with [`ip::fragment_ipv4`]
-/// or [`ip::fragment_ipv6`], and wraps each fragment in an Ethernet header.
+/// The fragmenting counterpart of [`build_ethernet_frame`]. It builds the same packet,
+/// splits it with [`ip::fragment_ipv4`] or [`ip::fragment_ipv6`], and wraps each
+/// fragment in an Ethernet header.
 ///
-/// Both families. IPv4 splits the header itself; IPv6 keeps its base header and
-/// carries the fragmentation in an extension header. A datagram that already
-/// fits `mtu` comes back as a single frame either way.
+/// IPv4 splits the header itself; IPv6 keeps its base header and carries the
+/// fragmentation in an extension header. A datagram that already fits `mtu` comes back
+/// as a single frame either way.
 ///
 /// # Errors
 ///
-/// Refuses a mismatched address pair, and, through the two fragmenters, an MTU
-/// too small to carry a fragment or a datagram larger than the family's offset
-/// field can address.
+/// Refuses a mismatched address pair, and, through the two fragmenters, an MTU too
+/// small to carry a fragment or a datagram larger than the family's offset field can
+/// address.
 pub fn build_fragmented_ethernet_frames(
     spec: &FrameSpec,
     segment: &[u8],
@@ -764,18 +711,17 @@ mod tests {
 
     /// A tunnel link labels what it carries, and the label is read.
     ///
-    /// An arm skipping the four bytes without looking at them would hand a
-    /// frame carrying something other than IP on as an IP packet, refused only
-    /// where its first nibble happened not to be 4 or 6. The Ethernet arm
-    /// beside it reads its EtherType the same way.
+    /// Skipping the four bytes unread would pass a non-IP frame on as IP whenever its
+    /// first nibble happened to be 4 or 6. The Ethernet arm reads its EtherType the
+    /// same way.
     #[test]
     fn a_tunnel_frame_is_held_to_the_family_it_names() {
         let packet = [
             0x45u8, 0, 0, 20, 0, 0, 0, 0, 64, 6, 0, 0, 203, 0, 113, 1, 203, 0, 113, 2,
         ];
 
-        // AF_INET is 2 on every platform, and a tunnel writes the word in
-        // whichever order the machine that captured it uses.
+        // AF_INET is 2 on every platform, and a tunnel writes the word in the
+        // capturing machine's byte order.
         for word in [2u32.to_ne_bytes(), 2u32.to_be_bytes(), 2u32.to_le_bytes()] {
             let frame = [&word[..], &packet[..]].concat();
             assert_eq!(
@@ -785,14 +731,14 @@ mod tests {
             );
         }
 
-        // AF_INET6 differs by platform, and a capture is read on whichever
-        // machine happens to have it rather than the one that wrote it.
+        // AF_INET6 differs by platform, and a capture may be read on a different
+        // machine from the one that wrote it.
         for family in [30u32, 28, 10, 24] {
             let frame = [&family.to_ne_bytes()[..], &packet[..]].concat();
             assert_eq!(strip_to_ip(LinkType::NullLoop, &frame), Some(&packet[..]));
         }
 
-        // And a family this does not read is refused rather than handed on.
+        // A family this does not read is refused.
         for family in [1u32, 17, 0xDEAD_BEEF] {
             let frame = [&family.to_ne_bytes()[..], &packet[..]].concat();
             assert_eq!(
@@ -806,11 +752,11 @@ mod tests {
         assert_eq!(strip_to_ip(LinkType::NullLoop, &[0, 0, 0]), None);
     }
 
-    /// A loopback frame is the family word a capture of that link reads back
-    /// as the packet it carries, whole or in fragments, for both families.
+    /// A loopback frame's family word and packet are read back by a capture of that
+    /// link, whole or in fragments, for both families.
     ///
-    /// A frame whose word the loopback interface does not read as IP is
-    /// dropped unread, which a scan sees as a port that never answered.
+    /// A frame whose word the loopback interface does not read as IP is dropped, which
+    /// a scan sees as a port that never answered.
     #[test]
     fn a_loopback_frame_reads_back_as_the_packet_it_carries() {
         let payload = [0xABu8; 128];
@@ -849,8 +795,8 @@ mod tests {
         }
     }
 
-    /// One walk of the link header answers both questions a receive path asks
-    /// of a frame, and gives the same answers the two separate walks did.
+    /// One walk of the link header answers both questions a receive path asks of a
+    /// frame, with the same answers as the separate functions.
     #[test]
     fn one_pass_yields_the_segment_and_the_address_the_two_passes_did() {
         let mut frame = vec![
@@ -935,15 +881,12 @@ mod tests {
         assert_eq!(parsed.payload, &payload);
     }
 
-    /// The fields a stack is identified by, read out of bytes laid out by hand
-    /// from RFC 791 rather than by this crate's own writer.
+    /// The fields a stack is identified by, read from bytes laid out by hand from RFC
+    /// 791.
     ///
-    /// Written as literal bytes on purpose. Building the fixture with
-    /// [`crate::protocols::craft`] would check that this parser agrees with that
-    /// builder, which is two views of one understanding, the same shape of
-    /// mistake as a simulator that emits what the parser already accepts. The
-    /// offsets below come from the specification, so a field read from the wrong
-    /// place fails here instead of shipping as a signature nobody can match.
+    /// Literal bytes, because a fixture built with [`crate::protocols::craft`] would
+    /// only check that this parser agrees with that builder. The offsets come from the
+    /// specification, so a field read from the wrong place fails here.
     #[test]
     fn an_ipv4_header_yields_the_fields_its_stack_chose() {
         let mut packet = vec![0u8; IP_V4_HDR_LEN];
@@ -967,19 +910,14 @@ mod tests {
         assert_eq!(observed.ecn, 3);
     }
 
-    /// A fragment that is not the first carries no Layer-4 header, so there is
-    /// no segment to hand out and this refuses to.
+    /// A fragment that is not the first carries no Layer-4 header, so there is no
+    /// segment to hand out.
     ///
-    /// The IPv6 path has refused the same thing since it was written, in
-    /// `walk_ipv6_headers`, and this arm read the flags and never the offset.
-    /// Two things came of that. The bytes after the header were handed out as a
-    /// transport segment, when they are the middle of somebody's payload. And
-    /// [`IpObservation::is_fragment`] answers with the More Fragments bit, which
-    /// the *last* fragment does not set, so the one piece of a datagram whose
-    /// segment fields belong to a different piece was the one piece reported as
-    /// whole. `os_series` reads that flag before folding a reply's IP identifier
-    /// into a sequence, which is the analysis a terminal fragment would have
-    /// been admitted to.
+    /// The bytes after its header are the middle of a payload. And
+    /// [`IpObservation::is_fragment`] answers from the More Fragments bit, which the
+    /// last fragment does not set, so reading the flags alone would report the last
+    /// piece as whole. `os_series` reads that flag before folding a reply's IP
+    /// identifier into a sequence.
     #[test]
     fn a_later_ipv4_fragment_is_not_a_segment() {
         let fragment = |flag_and_offset: u16| {
@@ -993,11 +931,11 @@ mod tests {
 
         // A middle fragment: more-fragments set, offset past the start.
         assert!(parse_ip_segment(&fragment(0b0010_0000_0000_0000 | 185)).is_none());
-        // And the last one, which sets no flag at all and is the case the More
-        // Fragments bit cannot see.
+        // And the last one, which sets no flag and which the More Fragments bit
+        // cannot see.
         assert!(parse_ip_segment(&fragment(185)).is_none());
 
-        // The first fragment does carry a header, and still parses.
+        // The first fragment does carry a header, and parses.
         let first_bytes = fragment(0b0010_0000_0000_0000);
         let first =
             parse_ip_segment(&first_bytes).expect("the first fragment holds the Layer-4 header");
@@ -1006,17 +944,16 @@ mod tests {
             "the first fragment says it is one"
         );
 
-        // And a whole datagram is not a fragment, which is the other half of
-        // what `is_fragment` has to get right.
+        // A whole datagram is not a fragment, the other half of what `is_fragment`
+        // must get right.
         let whole_bytes = fragment(0);
         let whole = parse_ip_segment(&whole_bytes).expect("a whole datagram");
         assert!(!whole.observation.is_fragment());
     }
 
-    /// Don't-fragment and more-fragments are adjacent bits of one three-bit
-    /// field, and swapping them is invisible: both readings parse, both produce
-    /// a plausible packet, and the only symptom is a stack rule that never
-    /// matches. This pins each bit to the meaning RFC 791 gives it.
+    /// Don't-fragment and more-fragments are adjacent bits of one three-bit field, and
+    /// swapping them is invisible: both readings parse and the only symptom is a stack
+    /// rule that never matches. This pins each bit to its RFC 791 meaning.
     #[test]
     fn the_two_fragment_bits_are_not_each_other() {
         let observe = |flag_byte: u8| {
@@ -1042,9 +979,9 @@ mod tests {
         );
     }
 
-    /// Traffic class and flow label share a 32-bit word with the version nibble
-    /// and neither is byte-aligned, so both are read with a shift and a mask and
-    /// both are easy to read one nibble out. Hand-laid bytes per RFC 8200.
+    /// Traffic class and flow label share a 32-bit word with the version nibble and
+    /// neither is byte-aligned, so both are easy to read one nibble off. Hand-laid
+    /// bytes per RFC 8200.
     #[test]
     fn an_ipv6_header_yields_the_fields_across_its_first_word() {
         let mut packet = vec![0u8; IP_V6_HDR_LEN];
@@ -1062,13 +999,12 @@ mod tests {
         assert_eq!(observed.flow_label, 0x12345);
     }
 
-    /// A header length below the fixed 20 bytes would slice back into the
-    /// header itself. Remote hosts choose this field inside a quoted ICMP
-    /// packet, so it is rejected rather than trusted.
+    /// A header length below the fixed 20 bytes would slice back into the header.
+    /// Remote hosts choose this field inside a quoted ICMP packet, so it is rejected.
     #[test]
     fn implausible_ipv4_header_length_is_rejected() {
         let mut packet = ipv4_packet(Ipv4Addr::new(203, 0, 113, 1), &[1, 2, 3, 4]);
-        // Version 4, IHL 3 (12 bytes - shorter than the fixed header).
+        // Version 4, IHL 3 (12 bytes, shorter than the fixed header).
         packet[0] = 0x43;
         assert!(parse_ip_segment(&packet).is_none());
     }
@@ -1103,9 +1039,8 @@ mod tests {
         )
         .unwrap();
 
-        // Rebuilt frame should round-trip back to source + payload. The IP
-        // header inside carries a different total length than `ip_packet`'s
-        // only if lengths diverge; here they match, so compare the segment.
+        // The rebuilt frame round-trips back to source and payload; compare the
+        // segment.
         let _ = ip_packet;
         let parsed = parse_captured_segment(LinkType::Ethernet, &frame).unwrap();
         assert_eq!(parsed.source, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5)));
@@ -1219,8 +1154,8 @@ mod tests {
                 TCP,
                 "the fragment header carries the upper-layer protocol"
             );
-            // pnet models the fragment header's own payload as zero-length, so
-            // the piece is the base-header payload past the eight-byte extension.
+            // pnet models the fragment header's own payload as zero-length, so the
+            // piece is the base-header payload past the eight-byte extension.
             reassembled.extend_from_slice(&packet.payload()[8..]);
         }
         assert_eq!(
@@ -1255,10 +1190,9 @@ mod tests {
     }
 
     /// The addresses sit before the EtherType, so a VLAN tag does not move them,
-    /// unlike the payload offset which it does move. Reading them at a
-    /// tag-shifted offset lands across the EtherType and the start of the IP
-    /// header and yields a perfectly plausible-looking address, which is why both
-    /// framings are pinned here rather than only the plain one.
+    /// though it moves the payload offset. A tag-shifted read lands across the
+    /// EtherType and the IP header and yields a plausible address, so both framings
+    /// are tested.
     #[test]
     fn the_source_hardware_address_does_not_move_for_a_vlan_tag() {
         let sender = MacAddr::new(0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01);
@@ -1288,10 +1222,9 @@ mod tests {
         assert_eq!(source_mac(LinkType::Ethernet, &tagged), Some(sender));
     }
 
-    /// A link that prepends no addresses has none to report, and that is not the
-    /// same claim as "the sender had none". Every one of these carries IP traffic
-    /// this engine captures on, so each has to answer `None` deliberately rather
-    /// than by reading six bytes of somebody's IP header.
+    /// A link that prepends no addresses has none to report, which is not the same as
+    /// the sender having none. Each of these carries IP traffic this engine captures,
+    /// so each must answer `None` without reading six bytes of an IP header.
     #[test]
     fn a_link_without_hardware_addresses_reports_none() {
         let packet = ipv4_packet(Ipv4Addr::new(203, 0, 113, 1), &[1, 2, 3, 4]);
@@ -1306,8 +1239,8 @@ mod tests {
 
         assert!(source_mac(LinkType::Unsupported(42), &packet).is_none());
 
-        // Too short to hold an Ethernet header. Reading past it would be a
-        // panic on a frame chosen by whoever is on the wire.
+        // Too short to hold an Ethernet header. Reading past it would panic on a
+        // frame chosen by whoever is on the wire.
         assert!(source_mac(LinkType::Ethernet, &[0u8; 8]).is_none());
     }
 
@@ -1319,42 +1252,41 @@ mod tests {
 
     // ─── Linux cooked capture ────────────────────────────────────────────────
 
-    /// The data-link types `libpcap` reports for a cooked capture, as
-    /// `pcap/dlt.h` numbers them. Written out here rather than borrowed from the
-    /// module, so a wrong constant there fails against these.
+    /// The data-link types `libpcap` reports for a cooked capture, as `pcap/dlt.h`
+    /// numbers them. Written out here so a wrong constant in the module fails against
+    /// these.
     const DLT_SLL: i32 = 113;
     const DLT_SLL2: i32 = 276;
 
-    /// The packet types a cooked header carries, from `pcap/sll.h`, which
-    /// takes them from the kernel's `PACKET_` values.
+    /// The packet types a cooked header carries, from `pcap/sll.h`, which takes them
+    /// from the kernel's `PACKET_` values.
     const TO_US: u8 = 0;
     const FROM_US: u8 = 4;
 
-    /// Hardware types, the kernel's `ARPHRD_` values: an Ethernet link, a PPP
-    /// link, and a GRE tunnel.
+    /// Hardware types, the kernel's `ARPHRD_` values: an Ethernet link, a PPP link,
+    /// and a GRE tunnel.
     const ARPHRD_ETHER: u16 = 1;
     const ARPHRD_PPP: u16 = 512;
     const ARPHRD_IPGRE: u16 = 778;
 
-    /// An IPv4 packet from 203.0.113.1 to 203.0.113.2 carrying an empty TCP
-    /// payload, laid out by hand.
+    /// An IPv4 packet from 203.0.113.1 to 203.0.113.2 carrying an empty TCP payload,
+    /// laid out by hand.
     const COOKED_V4: [u8; 20] = [
         0x45, 0, 0, 20, 0, 0, 0, 0, 64, 6, 0, 0, 203, 0, 113, 1, 203, 0, 113, 2,
     ];
 
-    /// An IPv6 packet from 2001:db8::1 to 2001:db8::2 carrying an empty TCP
-    /// payload, laid out by hand.
+    /// An IPv6 packet from 2001:db8::1 to 2001:db8::2 carrying an empty TCP payload,
+    /// laid out by hand.
     const COOKED_V6: [u8; 40] = [
         0x60, 0, 0, 0, 0, 0, 6, 64, // version, no payload length, TCP, hop limit
         0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, // source
         0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, // destination
     ];
 
-    /// A cooked frame of either version carrying `payload`, with its header laid
-    /// out by hand from `pcap/sll.h` rather than by anything in this crate.
+    /// A cooked frame of either version carrying `payload`, with its header laid out by
+    /// hand from `pcap/sll.h`.
     ///
-    /// The two versions hold the same fields in different places and at
-    /// different widths, which is the whole reason there are two:
+    /// The two versions hold the same fields at different places and widths:
     ///
     /// ```text
     /// SLL,  16 bytes: packet type (2) · hardware type (2) · address length (2)
@@ -1364,8 +1296,8 @@ mod tests {
     ///                 · address length (1) · address (8)
     /// ```
     ///
-    /// Every multi-byte field is in network order. The address is padded to
-    /// eight bytes whatever its length says.
+    /// Every multi-byte field is in network order. The address is padded to eight
+    /// bytes whatever its length says.
     fn cooked(
         dlt: i32,
         packet_type: u8,
@@ -1404,9 +1336,9 @@ mod tests {
         frame
     }
 
-    /// A PPP or tunnel link hands `libpcap` no header it can use, so Linux
-    /// writes one of its own, and behind it is the IP packet the protocol field
-    /// names, in both families and both versions of the header.
+    /// A PPP or tunnel link gives `libpcap` no usable header, so Linux writes its own,
+    /// and behind it is the IP packet the protocol field names, in both families and
+    /// both header versions.
     #[test]
     fn a_cooked_frame_yields_the_ip_packet_its_protocol_field_names() {
         for dlt in [DLT_SLL, DLT_SLL2] {
@@ -1427,15 +1359,13 @@ mod tests {
         }
     }
 
-    /// A probe this host sent is read off a cooked link exactly as an answer
-    /// arriving on it is, which is the same thing every other link does.
+    /// A probe this host sent is read off a cooked link exactly as an arriving answer
+    /// is, as on every other link.
     ///
-    /// The packet-type field would let the capture drop its own traffic, and
-    /// dropping it would be a defect rather than a tidying. A port scan admits
-    /// both directions on purpose and counts its own probes leaving: that is how
-    /// it tells a port that stayed silent from one whose probe this machine
-    /// never put on the wire. Discarded here, every probe through a PPP link
-    /// would look unsent and every port behind it would be recorded unasked.
+    /// A port scan admits both directions and counts its own probes leaving, to tell a
+    /// silent port from one whose probe never reached the wire. Dropping outgoing
+    /// frames by packet type would make every probe through a PPP link look unsent and
+    /// every port behind it unasked.
     #[test]
     fn a_probe_leaving_a_cooked_link_is_read_like_an_answer_arriving() {
         for dlt in [DLT_SLL, DLT_SLL2] {
@@ -1451,10 +1381,10 @@ mod tests {
         }
     }
 
-    /// The protocol field is read, as the EtherType and the address-family word
-    /// are on the other links, so a cooked frame carrying something other than
-    /// IP is refused rather than passed on because its first nibble happens to
-    /// be 4 or 6. And a frame too short for its header describes nothing.
+    /// The protocol field is read, as the EtherType and the address-family word are on
+    /// other links, so a cooked frame carrying something other than IP is refused even
+    /// if its first nibble is 4 or 6. A frame too short for its header describes
+    /// nothing.
     #[test]
     fn a_cooked_frame_carrying_anything_but_ip_is_refused() {
         for dlt in [DLT_SLL, DLT_SLL2] {
@@ -1484,11 +1414,9 @@ mod tests {
         }
     }
 
-    /// A cooked header names the address the frame came from, and names what
-    /// kind of address it is. Only an Ethernet link's six bytes are a hardware
-    /// address. A PPP link has none, and an address any other hardware type
-    /// reports is that link's own kind, which six bytes read as a MAC would
-    /// misname.
+    /// A cooked header names the address the frame came from and what kind of address
+    /// it is. Only an Ethernet link's six bytes are a hardware address. A PPP link has
+    /// none, and any other hardware type's address is that link's own kind.
     #[test]
     fn a_cooked_frame_names_a_hardware_address_only_where_its_header_says_it_holds_one() {
         let sender = [0x02, 0, 0, 0, 0, 0x2A];
@@ -1507,8 +1435,7 @@ mod tests {
             for (hardware_type, address) in [
                 (ARPHRD_PPP, &[][..]),
                 (ARPHRD_IPGRE, &[198, 51, 100, 1][..]),
-                // An Ethernet link claiming an address of the wrong length is
-                // not one to read six bytes of.
+                // An Ethernet link claiming an address of the wrong length is not read.
                 (ARPHRD_ETHER, &[0x02, 0, 0, 0, 0, 0x2A, 0, 0][..]),
             ] {
                 let frame = cooked(dlt, TO_US, hardware_type, address, 0x0800, &COOKED_V4);
@@ -1523,17 +1450,15 @@ mod tests {
         }
     }
 
-    /// The instrument for the tests above, checked against something outside
-    /// this crate.
+    /// Checks the tests above against something outside this crate.
     ///
-    /// The frames those tests build are hand-laid from `pcap/sll.h`, and a
-    /// parser agreeing with a fixture written by the same understanding proves
-    /// only that the two agree. `libpcap` compiles `ip` and `ip6` for a cooked
-    /// link to a read of the protocol field at the offset it knows, so its own
-    /// program admitting each frame for the family it carries, and refusing it
-    /// for the other, pins the layout to the library that writes these headers.
-    /// The PPP header is pinned to the wire as well, against bytes a real link
-    /// was captured writing.
+    /// Their frames are hand-laid from `pcap/sll.h`, and a parser agreeing with a
+    /// fixture written from the same understanding proves only that the two agree.
+    /// `libpcap` compiles `ip` and `ip6` for a cooked link to a read of the protocol
+    /// field at the offset it knows, so its own program admitting each frame for its
+    /// family and refusing it for the other pins the layout to the library that writes
+    /// these headers. The PPP header is also checked against bytes captured from a real
+    /// link.
     #[test]
     fn libpcap_reads_the_protocol_where_these_cooked_frames_put_it() {
         for dlt in [DLT_SLL, DLT_SLL2] {
@@ -1555,9 +1480,9 @@ mod tests {
             );
         }
 
-        // And the header built for a PPP link is, byte for byte, the one a
-        // Linux PPP link was captured writing ahead of an IPv6 packet leaving
-        // it: sent by this host, hardware type 512, no address.
+        // The header built for a PPP link is, byte for byte, the one a Linux PPP link
+        // was captured writing ahead of an outgoing IPv6 packet: sent by this host,
+        // hardware type 512, no address.
         let captured = [0, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x86, 0xDD];
         assert_eq!(
             cooked(DLT_SLL, FROM_US, ARPHRD_PPP, &[], 0x86DD, &[]),
@@ -1568,7 +1493,7 @@ mod tests {
     // ─── IPv6 extension headers ──────────────────────────────────────────────
 
     /// An IPv6 packet whose fixed header names `first`, followed by `chain`
-    /// (already-encoded extension headers) and then `segment`.
+    /// (encoded extension headers) and then `segment`.
     fn ipv6_chain(first: IpNextHeaderProtocol, chain: &[u8], segment: &[u8]) -> Vec<u8> {
         let payload_len = (chain.len() + segment.len()) as u16;
         ip::build_ipv6_header(
@@ -1584,8 +1509,8 @@ mod tests {
         .collect()
     }
 
-    /// One extension header in the common shape: next protocol, length in
-    /// 8-octet units past the first, then padding to that length.
+    /// One extension header in the common shape: next protocol, length in 8-octet
+    /// units past the first, then padding to that length.
     fn extension(next: IpNextHeaderProtocol, units_past_first: u8) -> Vec<u8> {
         let mut header = vec![0u8; (usize::from(units_past_first) + 1) * 8];
         header[0] = next.0;
@@ -1593,10 +1518,9 @@ mod tests {
         header
     }
 
-    /// The defect this walking exists to prevent. Read as the transport
-    /// protocol, the fixed header's next-header field hands a destination-options
-    /// header to a caller expecting TCP - and `TcpPacket::new` accepts it, so
-    /// nothing downstream can notice.
+    /// Read as the transport protocol, the fixed header's next-header field would hand
+    /// a destination-options header to a caller expecting TCP, and `TcpPacket::new`
+    /// accepts it, so nothing downstream could notice.
     #[test]
     fn a_chain_of_extension_headers_yields_the_transport_behind_it() {
         let segment = [0xAB, 0xCD, 0xEF, 0x01];
@@ -1627,8 +1551,8 @@ mod tests {
         assert_eq!(parsed.payload, &segment);
     }
 
-    /// A later fragment does not. Its bytes are the middle of somebody's
-    /// datagram, and handing them over as a TCP header invents a segment.
+    /// A later fragment does not. Its bytes are the middle of a datagram, and handing
+    /// them over as a TCP header invents a segment.
     #[test]
     fn a_later_fragment_yields_nothing() {
         let mut fragment = vec![0u8; 8];
@@ -1640,9 +1564,9 @@ mod tests {
         assert!(parse_ip_segment(&packet).is_none());
     }
 
-    /// Remote-chosen lengths, so each of these has to be refused rather than
-    /// trusted: a header claiming to extend past the packet, a chain long enough
-    /// to be a denial of service, and an explicit end with nothing after it.
+    /// Remote-chosen lengths, each refused: a header claiming to extend past the
+    /// packet, a chain long enough to be a denial of service, and an explicit end with
+    /// nothing after it.
     #[test]
     fn implausible_extension_chains_are_refused() {
         let overrunning = ipv6_chain(
@@ -1662,7 +1586,7 @@ mod tests {
         assert!(parse_ip_segment(&nothing_follows).is_none());
     }
 
-    /// A payload this cannot see past is reported as itself, not guessed at.
+    /// A payload this cannot see past is reported as itself.
     #[test]
     fn an_encrypted_payload_is_reported_as_esp() {
         let packet = ipv6_chain(IpNextHeaderProtocols::Esp, &[], &[9, 9, 9, 9]);
