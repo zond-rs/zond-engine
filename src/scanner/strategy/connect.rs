@@ -3311,8 +3311,9 @@ mod tests {
         (0..count)
             .map(|_| {
                 let listener = std::net::TcpListener::bind((ip, 0)).expect("bind a listener");
-                let port = listener.local_addr().expect("its address").port();
-                (listener, port)
+                let addr = listener.local_addr().expect("its address");
+                crate::testing::loopback::note_opened(addr);
+                (listener, addr.port())
             })
             .unzip()
     }
@@ -3545,6 +3546,7 @@ mod tests {
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let listener = std::net::TcpListener::bind((ip, 0)).expect("bind a listener");
         let addr = listener.local_addr().expect("an inet address");
+        crate::testing::loopback::note_opened(addr);
         crate::transport::dial::dialled::refuse(addr, libc::EHOSTDOWN, 1);
         let (session, ctx) = crate::scanner::session::ScanSession::new();
 
@@ -3576,6 +3578,7 @@ mod tests {
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let listener = std::net::TcpListener::bind((ip, 0)).expect("bind a listener");
         let addr = listener.local_addr().expect("an inet address");
+        crate::testing::loopback::note_opened(addr);
         crate::transport::dial::dialled::refuse(addr, libc::EHOSTDOWN, 2);
         let (session, ctx) = crate::scanner::session::ScanSession::new();
 
