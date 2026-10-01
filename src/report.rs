@@ -11,48 +11,37 @@
 //! The finished record of a scan: what was asked for, what came back, what went
 //! wrong on the way, and under which settings.
 //!
-//! During a scan a caller watches [`ScanSession`](crate::scanner::session::ScanSession) -
-//! a live store plus an event stream, both of which describe the present moment
-//! and keep no history. A [`ScanReport`] is the other half of that pair. It is
-//! produced once, when the scan is over, and it is the only thing that can
-//! answer a question asked afterwards: how long the sweep took, whether a
-//! strategy failed part way through, how many addresses were actually in scope,
-//! which retry budget produced this particular set of hosts.
+//! During a scan a caller watches [`ScanSession`](crate::scanner::session::ScanSession),
+//! a live store and event stream that keep no history. A [`ScanReport`] is produced once
+//! the scan is over and answers the questions asked afterwards: how long the sweep
+//! took, whether a strategy failed part way, how many addresses were in scope, which
+//! retry budget produced these hosts.
 //!
-//! That distinction matters because a bare list of hosts is not a result anyone
-//! can act on. "Nine hosts on a /24" means one thing after a
-//! [`Thorough`](crate::config::ScanEffort::Thorough) privileged
-//! sweep and quite another after an unprivileged connect fallback that lost its
-//! routed scanner to a permissions error. The hosts are identical in both; only
-//! the report separates them.
+//! "Nine hosts on a /24" means one thing after a
+//! [`Thorough`](crate::config::ScanEffort::Thorough) privileged sweep and another after
+//! an unprivileged connect fallback that lost its routed scanner to a permissions
+//! error. Only the report tells them apart.
 //!
 //! ## Phases
 //!
-//! Discovery and port scanning are separate engine calls, and a caller that
-//! runs both is describing one job, not two. A report therefore holds a list of
-//! [`ScanPhase`] records rather than a single set of metadata, and
-//! [`ScanReport::merge`] folds the second call into the first: hosts are
-//! merged by [`Host::merge`], phases are appended in the order they ran. A
-//! single-phase report is simply the common case of that shape, not a different
-//! type.
+//! Discovery and port scanning are separate calls, but a caller running both describes
+//! one job. A report holds a list of [`ScanPhase`] records, and [`ScanReport::merge`]
+//! folds the second call into the first: hosts merge by [`Host::merge`] and phases
+//! append in the order they ran.
 //!
 //! ## Findings and instrumentation
 //!
-//! A phase carries two different kinds of record and they must not be read as
-//! one. The hosts and their ports are findings *about the network*. The
-//! [`ProbeStats`] a raw scanner files are measurements *about the scan* - how
-//! many probes went out, how many segments came back, why the loop stopped -
-//! and they exist to bound how much the findings can be trusted. A sweep that
-//! stopped on [`StopReason::DeadlineExpired`] while replies were still arriving
-//! found fewer hosts than the network holds, and nothing in the host list says
-//! so.
+//! Hosts and ports are findings *about the network*. The [`ProbeStats`] a raw scanner
+//! files are measurements *about the scan* (probes sent, segments received, why the
+//! loop stopped) that bound how far the findings can be trusted. A sweep that stopped
+//! on [`StopReason::DeadlineExpired`] while replies were still arriving found fewer
+//! hosts than the network holds, and the host list cannot show it.
 //!
-//! ## What is stored and what is derived
+//! ## Stored and derived
 //!
-//! Only measurements are stored. Every count a consumer might want - hosts up,
-//! open ports, services identified - is computed by [`ScanReport::summary`] from
-//! the hosts themselves, so a summary cannot drift out of step with the data it
-//! describes.
+//! Only measurements are stored. Counts such as hosts up, open ports and services
+//! identified are computed from the hosts by [`ScanReport::summary`], so they cannot
+//! drift.
 //!
 //! Hosts are held in a [`BTreeMap`] keyed by primary IP, so two scans of the
 //! same network serialize in the same order and their outputs can be diffed.
@@ -88,16 +77,13 @@ pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 // What a scan was asked to do
 // --------------------------------------------------------------------------
 //
-// The request, as the report has to record it. A reader asks these of a result
-// before they ask what it found: over what range, on which ports, under which
-// technique, with how much patience.
+// The request as the report records it: range, ports, technique, patience.
 
 /// Which of the two scan phases a [`ScanPhase`] records.
 ///
-/// These are the engine's two entry points, [`discover`](crate::scanner::discover)
-/// and [`scan`](crate::scanner::scan), not the individual strategies each one
-/// spawns. Which strategies ran is a property of the host and its privileges;
-/// see [`ScannerKind`] for the granularity at which failures are reported.
+/// The engine's entry points ([`discover`](crate::scanner::discover),
+/// [`scan`](crate::scanner::scan), and listening), not the strategies each spawns; see
+/// [`ScannerKind`] for those.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ScanKind {
@@ -107,21 +93,15 @@ pub enum ScanKind {
     PortScan,
     /// Reading what a link already carries, having sent nothing.
     ///
-    /// Unlike the other two, this phase covers no address. see
-    /// [`TargetScope::listening_on`]. It can raise a claim and never lower one:
-    /// having sent nothing, it cannot have timed anything out, so silence from
-    /// an address proves nothing about it.
+    /// Covers no address; see [`TargetScope::listening_on`]. It can raise a claim but
+    /// never lower one, since silence proves nothing when nothing was sent.
     Listen,
 }
 
 impl ScanKind {
     /// Every phase kind this build knows, in declaration order.
     ///
-    /// Here for the reason [`Protocol::ALL`](crate::model::port::Protocol::ALL)
-    /// gives: the enum is `#[non_exhaustive]`, and the export conformance suite
-    /// reads this list against the published schema's own and fails unless they hold
-    /// the same names. A variant added without a place in the schema is a value this
-    /// engine writes and no consumer's validator accepts.
+    /// The export conformance suite checks this against the published schema.
     pub const ALL: &'static [Self] = &[Self::Discovery, Self::PortScan, Self::Listen];
 }
 
@@ -137,14 +117,10 @@ impl fmt::Display for ScanKind {
 
 /// Why a port phase ran with no liveness pass in front of it.
 ///
-/// A port scan ordinarily asks each address whether anything is there before
-/// it probes the address's ports, and records that pass as a
-/// [`Discovery`](ScanKind::Discovery) phase of its own. A phase carrying one of
-/// these ran without it, and which one changes what the phase's findings mean:
-/// the caller's choice and the technique's both probed every address on trust,
-/// while the engine's own decision probed every address because asking first
-/// would have cost as much as the probes did, and read the probes' answers as
-/// the liveness question's.
+/// A port scan ordinarily runs a liveness pass first, recorded as its own
+/// [`Discovery`](ScanKind::Discovery) phase. A phase carrying one of these ran without
+/// it. The first two probed every address on trust; the third read the probes' answers
+/// as the liveness answer, since asking first would have cost as much.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LivenessSkip {
@@ -155,38 +131,28 @@ pub enum LivenessSkip {
     /// probe from its zombie, and a liveness pass would have been this host
     /// asking the target directly.
     IdleScan,
-    /// The engine dropped the pass because the scan named no more ports per
-    /// address than the pass would have asked, so probing them cost no more
-    /// than asking first. An answer on any port, open or closed, is what found
-    /// a host, and an address that answered on none is named in the phase's
-    /// [`silent`](ScanPhase::silent) list rather than listed as a host.
+    /// The scan named no more ports per address than the pass would have asked. An
+    /// answer on any port found a host, and an address that answered on none is in the
+    /// phase's [`silent`](ScanPhase::silent) list.
     PortsNoDearer,
 }
 
 impl LivenessSkip {
-    /// Every reason this build records, in declaration order.
-    ///
-    /// Here for the reason [`ScanKind::ALL`] is: the enum is
-    /// `#[non_exhaustive]`, and the export conformance suite reads this list
-    /// against the published schema's own.
+    /// Every reason this build records, in declaration order. Checked against the
+    /// published schema, as [`ScanKind::ALL`] is.
     pub const ALL: &'static [Self] = &[Self::AssumeUp, Self::IdleScan, Self::PortsNoDearer];
 }
 
 /// A pass a scan runs over what its probes found, named for what a stop can
 /// cut short.
 ///
-/// A phase's probes decide which hosts are there and which ports answer. The
-/// passes run afterwards over those findings, and each asks something the
-/// caller chose to have asked: what service is behind a port, what the
-/// detections find there, what a TLS port accepts, what the host runs, the
-/// route to it, the filter in front of it, the IP protocols its stack takes.
-/// A scan stopped once its probes are done, by its budget or by the caller,
-/// leaves every one of them it had not finished with nothing to say, and a
-/// report that did not name them would read as one whose ports had nothing
-/// more to tell. See [`ScanPhase::passes_cut`].
+/// The passes that run after a phase's probes, each asking something the caller chose:
+/// services, detections, TLS acceptance, operating system, route, filter, IP protocols.
+/// A scan stopped after its probes leaves unfinished passes with nothing to say, and the
+/// report names them so the ports do not read as having nothing more to tell. See
+/// [`ScanPhase::passes_cut`].
 ///
-/// Declared in the order a scan runs them, which is the order a report lists
-/// them in.
+/// In the order a scan runs them.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Pass {
@@ -207,11 +173,8 @@ pub enum Pass {
 }
 
 impl Pass {
-    /// Every pass this build names, in the order a scan runs them.
-    ///
-    /// Here for the reason [`ScanKind::ALL`] is: the enum is
-    /// `#[non_exhaustive]`, and the export conformance suite reads this list
-    /// against the published schema's own.
+    /// Every pass this build names, in the order a scan runs them. Checked against the
+    /// published schema, as [`ScanKind::ALL`] is.
     pub const ALL: &'static [Self] = &[
         Self::Services,
         Self::Detections,
@@ -239,35 +202,25 @@ impl fmt::Display for Pass {
 
 /// Which ports a phase walked, and whether it walked the same ones everywhere.
 ///
-/// A scope records the addresses a phase covered, and for a port scan that is
-/// only half the answer: an address is covered *for some ports*, and a consumer
-/// asking whether one endpoint was probed needs to know which. This is that
-/// second half.
+/// A scope records the addresses a phase covered; for a port scan, an address is
+/// covered *for some ports*, and this says which.
 ///
-/// The four variants are the four honest answers, and the distinctions between
-/// them are the whole reason this is not a bare `Option<PortSet>`.
+/// [`Every`](Self::Every) against [`Mixed`](Self::Mixed): `192.0.2.0/24:80,443`
+/// alongside `198.51.100.0/24:8080` has no single set true of every address, so the
+/// union is labelled as one, and a consumer will not conclude `192.0.2.5` was probed
+/// on 8080.
 ///
-/// [`Every`](Self::Every) against [`Mixed`](Self::Mixed): a phase can be given
-/// different ports for different addresses: `192.0.2.0/24:80,443` alongside
-/// `198.51.100.0/24:8080` is one job with two units, and there is no single set
-/// that is true of every address in it. Publishing the union as though there
-/// were would have a consumer conclude that `192.0.2.5` was probed on 8080,
-/// which nothing did. So the union is published as a union and labelled one.
-///
-/// [`NoPorts`](Self::NoPorts) against [`Unstated`](Self::Unstated): a discovery
-/// sweep walked no ports, which is a fact, and a record that does not say which
-/// ports were walked is an absence of one. Only the first supports concluding
-/// that an endpoint was not probed. Nothing this engine builds is `Unstated`;
-/// it is what a report from another tool, or from a build older than this
-/// field, reads back as.
+/// [`NoPorts`](Self::NoPorts) against [`Unstated`](Self::Unstated): a discovery sweep
+/// walked no ports, which is a fact; a record that does not say is an absence of one.
+/// This engine never builds `Unstated`; reports from other tools, or records without
+/// the field, read back as it.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PortScope {
     /// The record does not say which ports were walked.
     ///
-    /// Nothing may be concluded about any endpoint. The default, because a
-    /// scope rebuilt from a record that predates this field knows nothing about
-    /// ports and must not pretend otherwise.
+    /// Nothing may be concluded about any endpoint. The default, for a record that does
+    /// not carry this field.
     #[default]
     Unstated,
     /// The phase paired no ports with its addresses, which is what a discovery
@@ -276,16 +229,14 @@ pub enum PortScope {
     NoPorts,
     /// Every address the phase walked was walked for these ports.
     ///
-    /// The ordinary case for a port scan, and the only variant from which a
-    /// consumer may conclude that a particular endpoint of a covered address was
-    /// probed.
+    /// The ordinary case for a port scan, and the only variant from which a consumer
+    /// may conclude that an endpoint of a covered address was probed.
     Every(PortSet),
     /// Addresses were walked for differing sets of ports, and this is their
     /// union.
     ///
-    /// A port here was walked for at least one address and not necessarily for
-    /// any given one. A port *not* here was walked for none, which is the one
-    /// conclusion this variant does support.
+    /// A port here was walked for at least one address, not necessarily any given one.
+    /// A port *not* here was walked for none.
     Mixed(PortSet),
 }
 
@@ -305,10 +256,8 @@ impl PortScope {
     /// Whether the phase walked `port` on `protocol`, for every address it
     /// covered.
     ///
-    /// `None` is "the record cannot say", which is both a scope that recorded no
-    /// ports and one whose addresses were walked for differing sets with this
-    /// port among them. `Some(false)` is a real negative: no address in the
-    /// phase was walked for this endpoint.
+    /// `None` means the record cannot say (no ports recorded, or a mixed scope including
+    /// this port). `Some(false)` is a real negative.
     pub fn covers(&self, port: u16, protocol: Protocol) -> Option<bool> {
         match self {
             PortScope::Unstated => None,
@@ -351,33 +300,23 @@ impl PortScope {
 
 /// What a phase was asked to cover, and what it was forbidden to.
 ///
-/// The ranges are the canonical, merged form the engine actually iterated, not
-/// the text a user typed. Overlapping arguments have already been coalesced, so
-/// `addresses` is a count of distinct addresses rather than a sum of what was
-/// requested, and a report can be trusted when it says a sweep covered 254
-/// hosts.
+/// The ranges are the merged form the engine iterated, so `addresses` counts distinct
+/// addresses and a report saying a sweep covered 254 hosts can be trusted.
 ///
-/// [`ranges`](Self::ranges) is what was walked *after* the exclusion policy was
-/// applied, and [`excluded`](Self::excluded) is that policy. The two together
-/// are what makes a report evidence of scope rather than a list of findings: one
-/// says where the scan went, the other says where it was told not to, and no
-/// host in the report may fall inside the second.
+/// [`ranges`](Self::ranges) is what was walked after the exclusion policy, and
+/// [`excluded`](Self::excluded) is the policy. Together they make the report evidence
+/// of scope: no host in it may fall inside the excluded ranges.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetScope {
     ranges: Vec<IpRange>,
     links: Vec<Zone>,
     /// Links whose traffic was read without anything being sent to them.
     ///
-    /// Deliberately not [`links`](Self::links), which means *swept*: a probe
-    /// went out that everything on the link was obliged to answer, so a host
-    /// there and not in the report is a host that was not there. Nothing of the
-    /// kind follows from having listened: a machine that said nothing during
-    /// the window is indistinguishable from one that is absent, and there is no
-    /// experiment that separates them.
+    /// Separate from [`links`](Self::links), which means *swept*: everything on the link
+    /// had to answer, so a missing host was not there. A machine that said nothing while
+    /// a listener ran may still be there.
     ///
-    /// Recorded because a reader still wants to know where a phase was
-    /// standing. It never contributes to coverage, which is what keeps a quiet
-    /// host from reading as one that went away.
+    /// Recorded to show where the phase stood; never counted as coverage.
     listened: Vec<Zone>,
     addresses: u128,
     probes: Option<u128>,
@@ -390,16 +329,12 @@ pub struct TargetScope {
 impl TargetScope {
     /// The scope of a discovery sweep, which has no port dimension.
     ///
-    /// Canonicalizes the set, so the recorded ranges are the merged ones the
-    /// sweep iterates rather than the raw arguments it was built from.
+    /// Canonicalizes the set, so the recorded ranges are the merged ones the sweep
+    /// iterates.
     ///
-    /// `ips` comes back narrowed, with everything `exclusions` forbids taken
-    /// out of it, and the scope records what that cost. Applying the policy and
-    /// recording it are one call because doing either without the other is the
-    /// bug: a scope recorded before the subtraction overstates what was covered,
-    /// and a subtraction with no scope to record it leaves a report that cannot
-    /// show the exclusion was honoured. There is no way to write one and forget
-    /// the other, which is the whole reason this takes `&mut`.
+    /// `ips` comes back with everything `exclusions` forbids removed, and the scope
+    /// records what that cost. Applying and recording are one call (hence `&mut`) so
+    /// neither can happen without the other.
     ///
     /// Pass [`Exclusions::none`] where no policy is in force.
     pub fn from_ip_set(ips: &mut IpSet, exclusions: &Exclusions) -> Self {
@@ -424,19 +359,12 @@ impl TargetScope {
 
     /// The scope of a phase that sent nothing and read what `links` carried.
     ///
-    /// Covers no address, and says so. A listener did not probe, so it
-    /// cannot have timed anything out, so there is no address it can report as
-    /// empty. The count is zero and the ranges are none, which is not a
-    /// missing measurement but the honest one, and it is what stops a
-    /// comparison reading a host that stayed quiet as a host that disappeared.
+    /// Covers no address: a listener sent nothing, so it can report no address as empty,
+    /// and a comparison will not read a quiet host as one that disappeared. The links
+    /// are recorded as [`listened`](Self::listened), not [`links`](Self::links).
     ///
-    /// The links are recorded as [`listened`](Self::listened) rather than as
-    /// [`links`](Self::links), and the distinction is the whole of the above.
-    ///
-    /// `exclusions` is recorded so the report still shows the policy a passive
-    /// phase was run under: it withholds nothing here, because nothing was
-    /// enumerated for it to withhold, and it is enforced where it matters at
-    /// the point findings are recorded.
+    /// `exclusions` is recorded to show the policy; it is enforced where findings are
+    /// recorded.
     pub fn listening_on(links: Vec<Zone>, exclusions: &Exclusions) -> Self {
         Self {
             ranges: Vec::new(),
@@ -453,14 +381,11 @@ impl TargetScope {
 
     /// The scope of a port scan, which pairs addresses with ports.
     ///
-    /// `probes` counts address/port/protocol combinations, the unit a port scan
-    /// is actually billed in. It is `None` when the target map is large enough
-    /// to overflow that count, which is a failure to measure and is reported as
-    /// one rather than as a plausible-looking number.
+    /// `probes` counts address, port and protocol combinations, or is `None` when the
+    /// count overflows.
     ///
-    /// `targets` comes back narrowed, on the same terms and for the same
-    /// reasons as [`from_ip_set`](Self::from_ip_set). A unit left holding no
-    /// address at all is dropped.
+    /// `targets` comes back narrowed, as in [`from_ip_set`](Self::from_ip_set); a unit
+    /// left with no address is dropped.
     pub fn from_target_map(targets: &mut TargetMap, exclusions: &Exclusions) -> Self {
         let withheld = exclusions.withhold_targets(targets);
 
@@ -513,44 +438,31 @@ impl TargetScope {
 
     /// The links this phase swept whole, by the interface each is on.
     ///
-    /// [`ranges`](Self::ranges) is what a target set named, and for a sweep of a
-    /// local segment that is only part of what was covered: an all-nodes
-    /// solicitation is one probe every IPv6 neighbour on the link is required to
-    /// answer, and it reaches hosts holding addresses nobody could have named in
-    /// advance.
+    /// A sweep of a local segment covers more than [`ranges`](Self::ranges): every IPv6
+    /// neighbour must answer an all-nodes solicitation, including hosts nobody could
+    /// name in advance.
     ///
-    /// A link is not an address range and is not recorded as one.
-    /// `fe80::/64` would be the obvious thing to put in `ranges`, and it
-    /// would make [`addresses`](Self::addresses) read eighteen quintillion:
-    /// destroying the one property that type has, that a report saying it
-    /// covered 254 hosts can be believed. A link is named by its interface, so
-    /// that is what is recorded.
+    /// Recorded by interface, since `fe80::/64` in `ranges` would make
+    /// [`addresses`](Self::addresses) read eighteen quintillion.
     ///
-    /// Empty for a phase that swept no segment, which is every port scan and
-    /// every sweep of a routed range.
+    /// Empty for every port scan and every sweep of a routed range.
     pub fn links(&self) -> &[Zone] {
         &self.links
     }
 
     /// The links this phase read traffic from without probing them.
     ///
-    /// Never coverage. See the field's own documentation, and
-    /// [`listening_on`](Self::listening_on).
+    /// Never coverage. See [`listening_on`](Self::listening_on).
     pub fn listened(&self) -> &[Zone] {
         &self.listened
     }
 
     /// Whether this phase swept the link a host was found on.
     ///
-    /// The question is about the link, not about the addresses on it. An
-    /// all-nodes solicitation reaches every IPv6 host on the segment whatever
-    /// addresses it holds, and a host that answers one is routinely keyed under
-    /// a global address: this engine prefers a routable address over a
-    /// link-local one when both are known. Asking whether the *address* is
-    /// link-local would then miss exactly the hosts this exists to cover.
+    /// Asked of the link, not the address: a host answering an all-nodes solicitation is
+    /// often keyed under a global address.
     ///
-    /// `zone` is the interface the host was found on, which a record carries
-    /// whenever a local scanner put it there. A host with no zone was not found
+    /// `zone` is the interface the host was found on. A host with no zone was not found
     /// on a link and is not claimed.
     pub fn swept(&self, zone: Option<&Zone>) -> bool {
         let Some(zone) = zone else {
@@ -562,10 +474,8 @@ impl TargetScope {
 
     /// Records that this phase swept a link whole.
     ///
-    /// Called once a phase is over, because which links its strategies reached
-    /// is only knowable then: the scope itself is fixed before a probe goes
-    /// out. See
-    /// [`PhaseRecorder::finish`](crate::scanner::recorder::PhaseRecorder::finish).
+    /// Called once a phase is over, since which links were reached is only known then.
+    /// See [`PhaseRecorder::finish`](crate::scanner::recorder::PhaseRecorder::finish).
     pub(crate) fn record_sweeps(&mut self, links: Vec<Zone>) {
         for link in links {
             if !self.links.iter().any(|held| held.name() == link.name()) {
@@ -581,15 +491,11 @@ impl TargetScope {
     /// kept from a sweep that would have taken them as candidates. See
     /// [`Exclusions::hardware_in`](crate::model::exclusion::Exclusions::hardware_in).
     ///
-    /// Called once a phase is over, for the reason
-    /// [`record_sweeps`](Self::record_sweeps) is. Both join
-    /// [`excluded`](Self::excluded). [`withheld`](Self::withheld) gains each
-    /// address the phase would have asked or recorded but for the policy and
-    /// did not already count: every neighbour kept from the sweep, and every
-    /// address heard from an excluded machine's hardware during the phase,
-    /// which is one the excluded ranges did not yet hold. An address the
-    /// tables tied to a machine before the phase began is among those ranges
-    /// already, and was counted with the targets if the phase was handed it.
+    /// Called once a phase is over, like [`record_sweeps`](Self::record_sweeps). Both
+    /// join [`excluded`](Self::excluded). [`withheld`](Self::withheld) gains each
+    /// address not already counted: every neighbour kept from the sweep, and every
+    /// address heard from an excluded machine's hardware during the phase. Addresses
+    /// tied before the phase began were counted with the targets.
     pub(crate) fn record_withheld(&mut self, machines: Vec<IpAddr>, neighbours: Vec<IpAddr>) {
         let mut excluded = IpSet::new();
         for range in self.excluded.drain(..) {
@@ -614,9 +520,8 @@ impl TargetScope {
     /// Which ports the phase walked, and whether it walked the same ones for
     /// every address.
     ///
-    /// [`probes`](Self::probes) counts the address-and-port combinations in
-    /// scope; this says which ports they were. The two are separate because a
-    /// count survives a target set too large to enumerate and a set does not.
+    /// [`probes`](Self::probes) counts the combinations; this says which ports they
+    /// were.
     pub fn ports(&self) -> &PortScope {
         &self.ports
     }
@@ -624,26 +529,19 @@ impl TargetScope {
     /// The transport protocols the phase was asked about, deduplicated and in
     /// ascending [`Protocol`] order, which puts TCP before UDP.
     ///
-    /// Empty for a discovery sweep, whose probes are the strategy's choice
-    /// rather than the caller's.
+    /// Empty for a discovery sweep, whose probes the strategy chooses.
     pub fn protocols(&self) -> &[Protocol] {
         &self.protocols
     }
 
     /// The address ranges the phase was forbidden to probe, in ascending order.
     ///
-    /// The exclusion policy that was in force, merged, whether or not it
-    /// overlapped anything this phase would have covered. Empty means no policy
-    /// was set: not that one was set and did nothing, which is
-    /// [`withheld`](Self::withheld) returning zero and is a different fact.
+    /// The exclusion policy in force, merged. Empty means no policy was set; a policy
+    /// that withheld nothing shows as [`withheld`](Self::withheld) returning zero.
     ///
-    /// This is the half of the record a reader can check the engine against.
-    /// Every range here is ground the report promises it did not cover, and no
-    /// host in the report may fall inside one.
+    /// No host in the report may fall inside these ranges, which a reader can check.
     ///
-    /// Beside what the policy named are the other addresses of a machine it
-    /// names that the phase heard, at the hardware address the policy's own
-    /// address answers from; see
+    /// Also holds other addresses of an excluded machine heard during the phase; see
     /// [the machine an address names](crate::model::exclusion#an-address-names-a-machine).
     pub fn excluded(&self) -> &[IpRange] {
         &self.excluded
@@ -651,19 +549,14 @@ impl TargetScope {
 
     /// How many addresses the exclusion policy took out of this phase.
     ///
-    /// The overlap between the policy and what this phase would have asked,
-    /// not the size of the policy: the targets it was handed that the policy
-    /// names or ties to a machine it names; the addresses a sweep would have
-    /// taken from this host's neighbour table as candidates and the policy
-    /// kept from it; and the addresses heard from an excluded machine's
-    /// hardware during the phase, whose findings it withheld. Each of these
-    /// is an address the report lists among the excluded or one its targets
-    /// named, so the count and the list agree. Zero from a policy that named
-    /// ground this phase was never going to walk, and zero again from a phase
-    /// whose input an earlier one had already narrowed.
+    /// The overlap between the policy and what this phase would have asked: targets the
+    /// policy names or ties to an excluded machine, neighbour-table candidates it kept
+    /// from a sweep, and addresses heard from an excluded machine's hardware. Each is
+    /// among the excluded or the targets, so the count and the list agree. Zero for a
+    /// policy naming ground the phase would never walk, or for input an earlier phase
+    /// already narrowed.
     ///
-    /// It is the difference between a scope document that was applied and one
-    /// that was merely configured, and those look identical without it.
+    /// Tells a policy that was applied from one merely configured.
     pub fn withheld(&self) -> u128 {
         self.withheld
     }
@@ -678,12 +571,9 @@ fn ip_set_ranges(ips: &IpSet) -> Vec<IpRange> {
 
 /// What a scan changed about the packets it sent, to read a finding against.
 ///
-/// Each field holds the value the scan used for one evasion technique, or `None`
-/// where it left the default alone: a scan that pinned a source port but not the
-/// hop limit has [`source_port`](Self::source_port) set and [`ttl`](Self::ttl)
-/// `None`. A port's state under a probe from source port 53 is a different fact
-/// than the same state under an ordinary probe, and this is where a reader tells
-/// the two apart.
+/// Each field holds the value the scan used for one evasion technique, or `None` where
+/// it kept the default. A port's state under a probe from source port 53 is a different
+/// fact from the same state under an ordinary probe.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvasionRecord {
@@ -733,16 +623,9 @@ impl EvasionRecord {
 
 /// The settings that shaped what a phase did.
 ///
-/// A subset of [`ZondConfig`]: the fields here are the ones that
-/// change which packets went out and how long the engine waited for answers, so
-/// they are the ones needed to interpret - or reproduce - a result. The rest of
-/// the config drives presentation (banner, verbosity, key handling) and has no
-/// bearing on the finding, so recording it would only invite a reader to treat
-/// a quieter terminal as a different scan.
-///
-/// Keeping this separate from [`ZondConfig`] also means the two can evolve
-/// independently: a new interface knob does not silently become part of every
-/// exported report.
+/// The [`ZondConfig`] fields that change which packets went out and how long the engine
+/// waited, which are what is needed to interpret or reproduce a result. A separate type,
+/// so a new config field does not silently join every exported report.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScanSettings {
@@ -750,16 +633,13 @@ pub struct ScanSettings {
     pub send_mode: SendMode,
     /// Which segment each TCP port probe carried, and so what its answers mean.
     ///
-    /// Two ports both reported `Closed` are different findings depending on
-    /// this: one refused a connection attempt, the other reset a segment that
-    /// was not one. A report without it cannot be read.
+    /// Two `Closed` ports differ by this: one refused a connection attempt, the other
+    /// reset a segment that was not one.
     pub tcp_technique: TcpScanTechnique,
     /// Which chunk each SCTP port probe carried, and so what its answers mean.
     ///
-    /// Recorded for the reason [`tcp_technique`](Self::tcp_technique) is. An
-    /// SCTP port reported `OpenOrNoReply` came from a COOKIE-ECHO scan, which
-    /// cannot report one open at all; the same port under an INIT scan would
-    /// have been settled either way.
+    /// An `OpenOrNoReply` SCTP port came from a COOKIE-ECHO scan, which cannot report
+    /// open; an INIT scan would have settled it.
     pub sctp_technique: SctpScanTechnique,
     /// The retransmission budget and patience in force.
     pub retry: RetryConfig,
@@ -768,42 +648,31 @@ pub struct ScanSettings {
     /// The probe-rate floor, or `None` if the scan was free to settle wherever
     /// it liked.
     ///
-    /// Recorded because it bounds a reading of the traffic as much as the
-    /// ceiling does. A scan that emitted more packets than its targets were
-    /// answering did so because it was told to finish, and a reader comparing
-    /// two runs needs the floor in front of them before concluding the network
-    /// got noisier.
+    /// A scan that emitted more than its targets answered may have been told to finish;
+    /// compare floors before concluding a network got noisier.
     pub min_probe_rate: Option<std::num::NonZeroU32>,
     /// The shortest gap kept between two probes at one host, or `None` if none
     /// was asked for.
     ///
-    /// Recorded because it bounds how long a phase's own numbers took to reach.
-    /// A sweep of a thousand addresses spaced a tenth of a second apart cannot
-    /// have finished in under a hundred seconds, and a reader comparing two runs
-    /// needs to see the spacing before reading the slower one as a slower
-    /// network.
+    /// Bounds how long a phase took: a thousand addresses a tenth of a second apart take
+    /// at least a hundred seconds.
     pub host_probe_interval: Option<Duration>,
     /// The shortest gap kept between any two probes the scan sent, or `None`
     /// if none was asked for.
     ///
-    /// Recorded for the reason [`host_probe_interval`](Self::host_probe_interval)
-    /// is, and more so: a thousand ports a second apart cannot have been asked
-    /// in under a quarter of an hour, whatever the network did.
+    /// Like [`host_probe_interval`](Self::host_probe_interval): a thousand ports a second
+    /// apart take at least a quarter of an hour.
     pub probe_interval: Option<Duration>,
     /// The wall-clock budget each host was given, or `None` if none was set.
     ///
-    /// Recorded because it bounds what a host's entry can say. A machine with
-    /// three open ports out of a thousand is a different finding depending on
-    /// whether the other nine hundred and ninety-seven were asked; which hosts
-    /// actually ran out is [`ScanPhase::timed_out`].
+    /// Bounds what a host's entry can say; which hosts ran out is
+    /// [`ScanPhase::timed_out`].
     pub host_timeout: Option<Duration>,
     /// The wall-clock budget the whole phase was given, or `None` if none was
     /// set.
     ///
-    /// Recorded for the same reason as [`host_timeout`](Self::host_timeout),
-    /// one level up: a phase that stopped on this covered less than it was
-    /// asked to, and a reader comparing two runs of the same schedule needs to
-    /// know the bound was there before concluding the network changed.
+    /// Like [`host_timeout`](Self::host_timeout), one level up: a phase stopped by it
+    /// covered less than asked.
     pub scan_timeout: Option<Duration>,
     /// Whether name resolution was permitted to generate traffic.
     pub dns_enabled: bool,
@@ -811,110 +680,76 @@ pub struct ScanSettings {
     pub redact: bool,
     /// How far the phase went to identify the operating system behind each host.
     ///
-    /// A host reported without one is a different finding depending on this: at
-    /// [`OsDetection::Off`] nothing looked, and at any other level something
-    /// looked and found nothing conclusive. The level also bounds how much of
-    /// this phase's traffic the engine originated. see
+    /// At [`OsDetection::Off`] nothing looked; at other levels something looked and
+    /// found nothing conclusive. Also bounds the traffic the engine originated; see
     /// [`OsDetection::is_active`].
     pub os_detection: OsDetection,
     /// How far the phase went to identify what was listening behind each open
     /// port.
     ///
-    /// A port reported with no service is a different finding depending on
-    /// this: at [`ServiceDetection::Off`] nothing asked, and at any other level
-    /// something asked and could not tell. It also says whether the phase
-    /// completed a connection to each open port at all, which is what a target's
-    /// application logs would have recorded.
+    /// At [`ServiceDetection::Off`] nothing asked; at other levels something asked and
+    /// could not tell. Also says whether connections were completed, which a target's
+    /// application logs would record.
     pub service_detection: ServiceDetection,
 
     /// How intrusive a detection the phase was permitted to run over the services
     /// it identified.
     ///
-    /// Recorded because it decides which findings could appear at all: a port
-    /// with no vulnerability finding is one thing when the envelope permitted the
-    /// detection that would have found one, and another when it withheld it. The
-    /// report says which, so a reader is not left to guess whether a clean port
-    /// was probed or spared.
+    /// Decides which findings could appear, so a clean port can be read as probed or
+    /// spared.
     pub detection: DetectionEnvelope,
 
     /// Whether the phase measured the route to each host that answered.
     ///
-    /// Recorded because a host with no path is two different findings: a scan
-    /// that did not look, and a scan that looked and got nothing back. Only this
-    /// separates them.
+    /// Tells a host with no path because nobody looked from one where nothing came back.
     pub traceroute: bool,
 
     /// Whether the phase characterised the filter in front of each host that
     /// answered.
     ///
-    /// Recorded for the same reason as [`traceroute`](Self::traceroute): a host
-    /// with no filtering finding is two things, a scan that did not look, and
-    /// one that looked and the filter showed nothing, and only this tells them
-    /// apart.
+    /// As with [`traceroute`](Self::traceroute), tells not looking from finding nothing.
     pub characterise: bool,
 
     /// Which IP protocols the phase asked each host that answered about,
     /// ascending.
     ///
-    /// Recorded for the reason [`characterise`](Self::characterise) is, and it
-    /// carries the numbers rather than a flag because the question is per
-    /// protocol: a host with no verdict for 47 is one the pass never named, and
-    /// only this says which those were.
+    /// Per protocol, so a host with no verdict for 47 can be read as never asked.
     pub ip_protocols: Vec<u8>,
 
-    /// Whether the phase established what each TLS port accepts, rather than
-    /// only what one handshake negotiated.
+    /// Whether the phase established what each TLS port accepts.
     ///
-    /// Recorded for the reason [`characterise`](Self::characterise) is. A port
-    /// whose security block names one version and lists no accepted suites is
-    /// two different findings: a scan that never enumerated, and one that did
-    /// and found an endpoint refusing every offer it was given.
+    /// Tells a port that was never enumerated from one that refused every offer.
     pub tls_enumeration: bool,
 
     /// The TCP ports the phase connected to and listened on and sent nothing,
     /// ascending.
     ///
-    /// Recorded because an open port here with no service beyond its number's
-    /// is not a port that would not say: it was left unprobed on purpose, and
-    /// probing it may make a printer print. See
-    /// [`ZondConfig::listen_only_ports`] for the rule, and
-    /// [`listened_only_to`](Self::listened_only_to) for the question a reader
-    /// asks of one port.
+    /// An open port here with only its number's name was left unprobed on purpose. See
+    /// [`ZondConfig::listen_only_ports`] and [`listened_only_to`](Self::listened_only_to).
     pub listen_only_ports: Vec<u16>,
 
     /// The ports the phase sent nothing to on any target, empty where none
     /// were excluded.
     ///
-    /// Recorded as the policy rather than read off the scope, because the
-    /// scope's ports say what was walked and cannot say why a port is missing:
-    /// a port a caller never named and one a caller named and excluded look
-    /// the same there. It also bounds the probes a phase picked for itself, a
-    /// liveness pass's ports among them, which no scope lists. See
-    /// [`ZondConfig::excluded_ports`] for what it holds a scan to.
+    /// Recorded as the policy, since the scope cannot tell a port never named from one
+    /// excluded, and it also covers ports a phase picked itself. See
+    /// [`ZondConfig::excluded_ports`].
     pub excluded_ports: PortSet,
 
-    /// What the scan changed about the packets it sent, or `None` if it changed
-    /// nothing. A port that drew no reply to a probe from a trusted source port
-    /// is a different fact than the same port found with an ordinary probe; see
+    /// What the scan changed about the packets it sent, or `None` if nothing; see
     /// [`EvasionRecord`].
     pub evasion: Option<EvasionRecord>,
 
-    /// The zombie a TCP port scan read its verdicts through, or `None` for an
-    /// ordinary scan. Its presence is what tells a reader the ports were inferred
-    /// from a third party's counter rather than from the target's own replies,
-    /// which changes what an `open` or a `ClosedOrNoReply` means. See
-    /// [`IdleScan`].
+    /// The zombie a TCP port scan read its verdicts through, or `None`. Its presence
+    /// means the ports were inferred from a third party's counter. See [`IdleScan`].
     pub idle_scan: Option<IdleScan>,
 
     /// Whether the capture kept ICMP errors for a technique that did not need
     /// them for its verdict.
     ///
-    /// Recorded because it decides what a silence means. Without it a refusal
-    /// is never heard, so a
-    /// [`NoReply`](crate::model::port::PortState::NoReply) port may be one a
-    /// filter refused in words; with it, such a port would have read
-    /// [`Blocked`](crate::model::port::PortState::Blocked), and only this says
-    /// which reading a silent port allows.
+    /// Without it, a [`NoReply`](crate::model::port::PortState::NoReply) port may be one
+    /// a filter refused; with it, that port would read
+    /// [`Blocked`](crate::model::port::PortState::Blocked).
     pub icmp_evidence: bool,
 }
 
@@ -942,15 +777,9 @@ impl ScanSettings {
 impl From<&ZondConfig> for ScanSettings {
     /// What a phase records about the request behind it.
     ///
-    /// Destructured with every field named rather than read through `cfg.`,
-    /// which is the same technique
-    /// [`ProbeTuning`](crate::config::ProbeTuning) uses on this type and for
-    /// the same reason: a field added to [`ZondConfig`] is then a compile error
-    /// here rather than a setting the report quietly stops carrying. What this
-    /// records is the whole of why a report exists, nine hosts after a
-    /// thorough privileged sweep and nine after an unprivileged fallback are the
-    /// same nine hosts and not the same result, so a field going missing here
-    /// costs more than it does anywhere else the config is read.
+    /// Destructured with every field named, as for
+    /// [`ProbeTuning`](crate::config::ProbeTuning), so a new [`ZondConfig`] field fails
+    /// to compile here until it is handled.
     fn from(cfg: &ZondConfig) -> Self {
         let ZondConfig {
             send_mode,
@@ -978,22 +807,16 @@ impl From<&ZondConfig> for ScanSettings {
             idle_scan,
             icmp_evidence,
 
-            // Recorded elsewhere, and named so that dropping one is a decision
-            // rather than an omission. The exclusion policy and whether the
-            // sweep went beyond its targets are both properties of what a phase
-            // *covered*, which is `TargetScope`'s to say; `assume_up` is
-            // visible in the phase list, since a scan that skipped the liveness
-            // pass records no discovery phase.
+            // Recorded elsewhere. The exclusion policy and segment sweep are
+            // coverage, `TargetScope`'s to say; `assume_up` shows as a missing
+            // discovery phase.
             exclusions: _,
             segment_sweep: _,
             assume_up: _,
-            // What each address was asked as, which the hosts' own names
-            // record; the journal keeps it with the job's options.
+            // The hosts' names record it; the journal keeps it with the options.
             target_names: _,
 
-            // Not recorded: which local source a scan was pinned to is transport
-            // plumbing the findings do not turn on. Unlike `send_mode` it names
-            // host-specific addresses, so it waits for a reader that needs it.
+            // Not recorded: transport plumbing naming host-specific addresses.
             send_source: _,
         } = cfg;
 
@@ -1030,46 +853,36 @@ impl From<&ZondConfig> for ScanSettings {
 // What a scan measured about itself
 // --------------------------------------------------------------------------
 //
-// Instrumentation, not findings. These bound how much the host list can be
-// trusted: a sweep that stopped on a deadline while replies were still arriving
-// found fewer hosts than the network holds, and nothing in the hosts says so.
+// Instrumentation, not findings: these bound how far the host list can be trusted.
 
 /// Upper bounds, in milliseconds, of the discovery-time histogram buckets in
 /// [`ProbeStats::found_at`]. A final bucket catches everything later than the
 /// last bound.
 ///
-/// These measure how far into the run a host was first credited, **not** its
-/// round trip. The two diverge exactly where it matters: a host found at 700 ms
-/// because its third attempt went out at 690 ms has a 10 ms round trip, and
-/// reading the bucket as latency turns a retry schedule into an imaginary slow
-/// path. Round trips are reported per host, not here.
+/// These measure how far into the run a host was first credited, **not** its round
+/// trip: a host found at 700 ms because its third attempt went out at 690 ms has a
+/// 10 ms round trip. Round trips are reported per host.
 ///
-/// Spaced roughly logarithmically because the question being asked spans three
-/// orders of magnitude: a same-segment reply lands under a millisecond, a
-/// healthy internet round trip in the tens, and a host recovered by a late
-/// retry in the hundreds. A linear scale would put every interesting answer in
-/// one bucket.
+/// Roughly logarithmic, spanning a same-segment reply under a millisecond, an internet
+/// round trip in the tens, and a late retry in the hundreds.
 pub const BUCKET_BOUNDS_MS: &[u64] = &[1, 2, 5, 10, 25, 50, 100, 250, 1_000];
 
 /// How many attempts [`ProbeStats::answered_on`] counts separately before the
 /// rest are lumped together.
 ///
-/// Sized past the largest budget any path runs (five, under
-/// [`ScanEffort::Thorough`](crate::config::ScanEffort)), so the
-/// distribution is reported in full for every configuration that ships and a
-/// hand-raised budget still has somewhere to land.
+/// Above the largest budget any path runs (five, under
+/// [`ScanEffort::Thorough`](crate::config::ScanEffort)), so a hand-raised budget still
+/// has somewhere to land.
 pub const ATTEMPTS_COUNTED: usize = 6;
 
 /// Why a scanner's receive loop stopped.
 ///
-/// This is the single most informative field in an audit: a run that ends in
-/// [`AllResponded`](StopReason::AllResponded) was not cut short by anything, and
-/// one that ends in [`DeadlineExpired`](StopReason::DeadlineExpired) with
-/// replies still arriving near the end almost certainly was.
+/// The most informative field in an audit: a run ending in
+/// [`AllResponded`](StopReason::AllResponded) was not cut short, and one ending in
+/// [`DeadlineExpired`](StopReason::DeadlineExpired) with replies still arriving almost
+/// certainly was.
 ///
-/// There is no "still running" variant. A scan loop yields its
-/// reason as the value it breaks with, so every exit path has to name one and
-/// the audit cannot report a reason the code never took.
+/// A scan loop breaks with its reason, so every exit path names one.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StopReason {
@@ -1077,11 +890,8 @@ pub enum StopReason {
     Aborted,
     /// Every target answered.
     AllResponded,
-    /// Nothing is left outstanding: every target either answered or was asked
-    /// as many times as the retry budget allows. Like
-    /// [`AllResponded`](StopReason::AllResponded) this is a scan that finished
-    /// rather than one that ran out of time, and waiting longer could not have
-    /// changed what it found.
+    /// Every target either answered or was asked as often as the retry budget allows.
+    /// Like [`AllResponded`](StopReason::AllResponded), the scan finished.
     AttemptsSpent,
     /// The adaptive deadline expired: either the hard budget ran out or the
     /// silence tolerance did.
@@ -1092,24 +902,16 @@ pub enum StopReason {
     /// every strategy wound down where it stood. See
     /// [`ZondConfig::scan_timeout`](crate::config::ZondConfig::scan_timeout).
     ///
-    /// Apart from [`Aborted`](StopReason::Aborted) because the two answer a
-    /// scheduled run's first question differently: one says somebody was there
-    /// and stopped it, the other says the scan was given less time than the
-    /// network needed. Apart from
-    /// [`DeadlineExpired`](StopReason::DeadlineExpired) because that one is the
-    /// engine's own pacing running out against a single receive loop, which is
-    /// a fact about one strategy rather than about the run.
+    /// Unlike [`Aborted`](StopReason::Aborted), nobody stopped it: the scan was given
+    /// less time than the network needed. Unlike
+    /// [`DeadlineExpired`](StopReason::DeadlineExpired), which is one receive loop's
+    /// own pacing, this is about the whole run.
     TimedOut,
 }
 
 impl StopReason {
-    /// Every reason a receive loop stops this build knows, in declaration order.
-    ///
-    /// Here for the reason [`Protocol::ALL`](crate::model::port::Protocol::ALL)
-    /// gives: the enum is `#[non_exhaustive]`, and the export conformance suite
-    /// reads this list against the published schema's own and fails unless they hold
-    /// the same names. A variant added without a place in the schema is a value this
-    /// engine writes and no consumer's validator accepts.
+    /// Every reason a receive loop stops, in declaration order. Checked against the
+    /// published schema.
     pub const ALL: &'static [Self] = &[
         Self::Aborted,
         Self::AllResponded,
@@ -1122,9 +924,8 @@ impl StopReason {
     /// Whether the loop stopped because it had nothing left to do, rather than
     /// because something cut it short.
     ///
-    /// A run that ends complete found everything it was ever going to find;
-    /// waiting longer or sending more could not have changed it. One that does
-    /// not is a result with a known upper bound on its own trustworthiness.
+    /// A complete run found everything it was going to; waiting longer could not have
+    /// changed it.
     pub fn is_complete(&self) -> bool {
         matches!(self, StopReason::AllResponded | StopReason::AttemptsSpent)
     }
@@ -1146,9 +947,8 @@ impl fmt::Display for StopReason {
 
 /// `sends` over `elapsed`, per second, or `None` where no time passed.
 ///
-/// The one division behind both a report's
-/// [`achieved_send_rate`](ProbeStats::achieved_send_rate) and a scanner's audit
-/// line, so the two cannot disagree about what a run managed.
+/// Shared by [`achieved_send_rate`](ProbeStats::achieved_send_rate) and a scanner's
+/// audit line, so they agree.
 pub(crate) fn send_rate(sends: u64, elapsed: Duration) -> Option<f64> {
     let seconds = elapsed.as_secs_f64();
     (seconds > 0.0).then(|| sends as f64 / seconds)
@@ -1156,33 +956,27 @@ pub(crate) fn send_rate(sends: u64, elapsed: Duration) -> Option<f64> {
 
 /// What one raw scanner observed about its own run.
 ///
-/// A host count on its own cannot say why a sweep came back short, and the three
-/// possible answers call for opposite fixes. Probes or replies may have been
-/// lost, which is what retransmission exists for; replies may have arrived
-/// after the scan had already **stopped**, which makes the deadline wrong rather
-/// than the network; or they may have arrived and gone **unrecognized**, which
-/// no amount of extra time or extra packets would help.
+/// A short sweep has three possible causes with different fixes: probes or replies
+/// were lost (retransmission's job); replies arrived after the scan **stopped** (the
+/// deadline is wrong); or replies arrived and went **unrecognized** (more time or
+/// packets will not help).
 ///
-/// These counters separate those. [`sends_attempted`](Self::sends_attempted)
+/// These counters separate them. [`sends_attempted`](Self::sends_attempted)
 /// against [`segments_seen`](Self::segments_seen) bounds the first,
 /// [`stop_reason`](Self::stop_reason) against
 /// [`last_reply`](Self::last_reply) bounds the second, and
 /// [`segments_off_target`](Self::segments_off_target) with
 /// [`replies_without_rtt`](Self::replies_without_rtt) bounds the third.
 ///
-/// One bound is not measurable from inside a scanner at all: a reply the kernel
-/// discards because the capture buffer was full never reaches any counter here,
-/// so loss on the receive path and loss on the network read identically.
-/// [`capture`](Self::capture) is carried for that reason - it is the only place
-/// the difference is visible.
+/// A reply the kernel discards because the capture buffer was full reaches no counter
+/// here, so [`capture`](Self::capture) is carried to tell receive-path loss from
+/// network loss.
 ///
-/// This is instrumentation about the scan, not a finding about the network.
-/// Nothing here changes what a scan reports about a host.
+/// Instrumentation about the scan; nothing here changes what is reported about a host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeStats {
-    // Written by `ProbeAudit`, which lives in another module and so cannot use
-    // private fields. Read-only to the outside world through the accessors
-    // below: a consumer must never be able to edit a measurement.
+    // `pub(crate)` for `ProbeAudit` in another module; consumers read through the
+    // accessors and cannot edit a measurement.
     pub(crate) scanner: ScannerKind,
     pub(crate) targets: u128,
     pub(crate) stop_reason: StopReason,
@@ -1235,19 +1029,14 @@ impl ProbeStats {
     /// [`sends_attempted`](Self::sends_attempted) over
     /// [`elapsed`](Self::elapsed). `None` for a run with no time to divide by.
     ///
-    /// Read against the rate the scan was configured for. A scanner's send
-    /// timer never makes up a tick it missed while the loop was busy with
-    /// replies, since catching up would release the burst pacing exists to
-    /// prevent, so a busy run sends slower than asked. This is what it managed,
-    /// and the gap is otherwise hidden in the elapsed time.
+    /// Compare with the configured rate. The send timer never makes up a missed tick,
+    /// since catching up would be a burst, so a busy run sends slower than asked.
     pub fn achieved_send_rate(&self) -> Option<f64> {
         send_rate(self.sends_attempted, self.elapsed)
     }
 
-    /// Of those, ones that never left this host: the sender refused them, or
-    /// could not reach their address. A non-zero count means the shortfall
-    /// starts at home, before the network is implicated at all. The addresses
-    /// it could not reach are named in the phase's
+    /// Of those, ones that never left this host: the sender refused them or could not
+    /// reach their address. Unreachable addresses are in the phase's
     /// [`unroutable`](ScanPhase::unroutable) list.
     pub fn sends_failed(&self) -> u64 {
         self.sends_failed
@@ -1267,13 +1056,9 @@ impl ProbeStats {
 
     /// What this run's congestion window did, for a scanner paced by one.
     ///
-    /// The difference between "these ports drop probes" and "this scan was
-    /// outrun and cannot tell". A run whose window bottomed out and still left
-    /// most of its probes unanswered did not establish that anything is
-    /// dropping them; it established that it could not ask. Nothing else in these
-    /// counters distinguishes the two, and a consumer that renders one as the
-    /// other is publishing a claim about somebody's firewall that is really a
-    /// claim about a saturated link.
+    /// Tells "these ports drop probes" from "this scan was outrun". A run whose window
+    /// bottomed out with most probes unanswered could not ask, which says nothing about
+    /// a firewall.
     ///
     /// `None` for a scanner that paces itself some other way.
     pub fn window(&self) -> Option<WindowSummary> {
@@ -1296,29 +1081,22 @@ impl ProbeStats {
     /// ICMP refusals among [`replies_without_rtt`](Self::replies_without_rtt)
     /// that quoted too little of the probe to name its attempt.
     ///
-    /// A refusal names a port by the ports alone, which anybody who knows this
-    /// scan's source port can supply, so one that cannot name the attempt as
-    /// well settles nothing: the port it quotes keeps whatever its own retries
-    /// conclude, usually no reply. This count is what says a refusal was
-    /// heard for some of those ports all the same. A sender quoting only the
-    /// eight bytes RFC 792 guarantees leaves an ACK, window or Maimon scan's
-    /// nonce out, and every INIT's.
+    /// Anyone who knows the source port can forge a refusal naming the ports, so one
+    /// that cannot name the attempt settles nothing, and the port keeps what its retries
+    /// conclude. This counts them. A sender quoting only the eight bytes RFC 792
+    /// guarantees omits an ACK, window or Maimon scan's nonce, and every INIT's.
     pub fn refusals_unattributed(&self) -> u64 {
         self.refusals_unattributed
     }
 
     /// Targets a reply resolved, counted once each.
     ///
-    /// The unit is whatever the scanner's targets are, which is also the unit of
-    /// [`targets`](Self::targets), so the two read together as answered against
-    /// asked: a host for a discovery sweep, an `(address, port)` probe for a port
-    /// scan. Named for the first of those because discovery was the first
-    /// strategy to carry an audit.
+    /// In the unit of [`targets`](Self::targets): a host for a discovery sweep, an
+    /// `(address, port)` probe for a port scan.
     ///
-    /// This is the number a run is judged on. Read against `targets` it is
-    /// coverage; read against [`stop_reason`](Self::stop_reason) and
-    /// [`last_reply`](Self::last_reply) it says whether the run was still finding
-    /// things when it ended.
+    /// Against `targets` it is coverage; against [`stop_reason`](Self::stop_reason) and
+    /// [`last_reply`](Self::last_reply) it says whether the run was still finding things
+    /// when it ended.
     pub fn hosts_found(&self) -> u64 {
         self.hosts_found
     }
@@ -1329,9 +1107,7 @@ impl ProbeStats {
     /// attempt [`ATTEMPTS_COUNTED`] *or later*, so a hand-raised retry budget
     /// still has somewhere to land.
     ///
-    /// This is what says whether retransmission is earning its traffic. A host
-    /// found on its first attempt needed only for the scan to still be
-    /// listening; one found on its third needed the packet to be sent again.
+    /// Shows whether retransmission earns its traffic.
     pub fn answered_on(&self) -> &[u64] {
         &self.answered_on
     }
@@ -1363,9 +1139,7 @@ impl ProbeStats {
         &self.found_at
     }
 
-    /// What the kernel capture reported, where there was one to ask. A scanner
-    /// driven by a synthetic receive stream has no kernel buffer, and reports
-    /// `None` rather than a clean-looking zero.
+    /// What the kernel capture reported. `None` for a synthetic receive stream.
     pub fn capture(&self) -> Option<CaptureCounts> {
         self.capture
     }
@@ -1375,30 +1149,18 @@ impl ProbeStats {
 // What a scan did not cover
 // --------------------------------------------------------------------------
 //
-// Two kinds, and the difference is whether anything went wrong. A strategy that
-// could not run is a `ScannerFailure`; ground the engine declined before sending
-// anything is a `Refusal`. Both narrow a result and only one of them is a fault,
-// so a reader who cannot tell them apart learns to ignore both.
+// A strategy that could not run is a `ScannerFailure`; ground the engine declined
+// before sending anything is a `Refusal`. Both narrow a result; only one is a fault.
 
 /// Ground a scan decided not to cover, and why.
 ///
-/// Not a failure, and kept apart from one for the reason
-/// [`unroutable`](ScanPhase::unroutable) is kept apart from both: nothing broke.
-/// The engine worked out before sending anything that some part of what it was
-/// asked for had no strategy behind it, and said so. A raw socket that would not
-/// open is a [`ScannerFailure`]; an SCTP port named by a scan with no way to
-/// probe one is this.
+/// Nothing broke: before sending anything, the engine found part of the request had no
+/// strategy behind it. A raw socket that would not open is a [`ScannerFailure`]; an
+/// SCTP port named by a scan with no way to probe one is this. A failure might clear
+/// next time; a refusal will recur until the scan changes.
 ///
-/// A reader has to be able to tell them apart because the remedies are
-/// opposite. A failure means something is wrong with the machine or the
-/// network and the same scan might work next time. A refusal means the scan as
-/// written cannot answer the question, and running it again will refuse it
-/// again.
-///
-/// The live form is [`RefusedStep`](crate::scanner::plan::RefusedStep), which a
-/// plan carries before anything runs. This is the recorded form, on the same
-/// terms [`ScannerFailure`] is the recorded form of
-/// [`StrategyError`](crate::scanner::strategy::StrategyError).
+/// The recorded form of [`RefusedStep`](crate::scanner::plan::RefusedStep), as
+/// [`ScannerFailure`] is of [`StrategyError`](crate::scanner::strategy::StrategyError).
 #[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
@@ -1428,22 +1190,15 @@ impl Refusal {
 
 /// A scanning strategy that did not run to completion.
 ///
-/// A scan continues with whatever strategies remain when one of them fails, so
-/// a report that carries failures still carries results - just narrower ones
-/// than the caller asked for. This is the record that lets a consumer tell a
-/// genuinely empty network from a sweep whose raw scanner never started.
+/// A scan continues with the remaining strategies when one fails, so a report with
+/// failures still has narrower results. This tells an empty network from a sweep whose
+/// raw scanner never started.
 ///
-/// Two kinds share this record, told apart by
-/// [`is_cut_short`](Self::is_cut_short). A strategy that failed met a fault: a
-/// socket that would not open, a capture that closed, a task that panicked,
-/// and the same scan might go through next time. One that was cut short ran as
-/// designed and stopped against a limit before it was done: a budget it was
-/// given, the process's file limit, a pinned source port still in use. Both
-/// leave the same ground unanswered, which is why they are one list and why
-/// [`ScanReport::is_partial`] counts both. The remedies differ, the first
-/// being to look for what broke and the second to raise or wait out the limit
-/// the reason names, so a reader told a scanner failed when nothing broke goes
-/// looking for a fault that is not there.
+/// [`is_cut_short`](Self::is_cut_short) tells two kinds apart. A failure met a fault
+/// (a socket that would not open, a capture that closed, a panic). A cut-short strategy
+/// stopped against a limit (a budget, the file limit, a pinned source port in use).
+/// Both leave ground unanswered, so [`ScanReport::is_partial`] counts both, but the
+/// remedies differ.
 #[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScannerFailure {
@@ -1464,9 +1219,8 @@ impl ScannerFailure {
         }
     }
 
-    /// Records, as having happened now, work `scanner` stopped short of
-    /// because a limit it runs under was reached rather than because anything
-    /// broke. `reason` names the limit.
+    /// Records, as having happened now, work `scanner` stopped short of because a limit
+    /// was reached. `reason` names the limit.
     pub fn cut_short(scanner: ScannerKind, reason: impl Into<String>) -> Self {
         Self {
             cut_short: true,
@@ -1476,8 +1230,8 @@ impl ScannerFailure {
 
     /// Whether this is work a limit cut short rather than a fault stopped.
     ///
-    /// False for a record read from a document that predates the distinction,
-    /// which reads every entry as a failure, the conservative reading.
+    /// False for a record from a document without the distinction, which reads every
+    /// entry as a failure.
     pub fn is_cut_short(&self) -> bool {
         self.cut_short
     }
@@ -1494,9 +1248,8 @@ impl ScannerFailure {
 
     /// Restores the time this failure was recorded.
     ///
-    /// [`new`](Self::new) stamps the current time, which is what a running scan
-    /// wants. A failure restored from a journal happened when it happened, not
-    /// when the record of it was read.
+    /// For a failure restored from a journal; [`new`](Self::new) stamps the current
+    /// time.
     pub fn recorded_at(mut self, at: SystemTime) -> Self {
         self.at = at;
         self
@@ -1509,14 +1262,9 @@ impl ScannerFailure {
 
     /// Whether the failure cost the scan ground it set out to cover.
     ///
-    /// Every strategy's does. A [`Journal`](ScannerKind::Journal) that could
-    /// not be written does not: it probed nothing and dropped no answer, and
-    /// what it costs is how much a resume of the scan would ask again. So it
-    /// is kept in the report, to say the journal fell behind, and does not
-    /// make a scan that covered everything read as one that did not. Nor does
-    /// a [`Resolver`](ScannerKind::Resolver) that failed: every target was
-    /// still asked and every answer kept, and what is missing is the names,
-    /// which the failure says.
+    /// Every strategy's does. A [`Journal`](ScannerKind::Journal) that could not be
+    /// written did not: it probed nothing and costs only what a resume would ask again.
+    /// Nor does a failed [`Resolver`](ScannerKind::Resolver), which costs only names.
     pub(crate) fn narrows_coverage(&self) -> bool {
         !matches!(self.scanner, ScannerKind::Journal | ScannerKind::Resolver)
     }
@@ -1537,18 +1285,13 @@ impl fmt::Display for ScannerFailure {
 // Rebuilding what was recorded
 // --------------------------------------------------------------------------
 //
-// Each `*Parts` struct is followed by the `from_parts` that consumes it, rather
-// than sitting with the type it rebuilds. The pairs are the path a report takes
-// coming back off a disk, and reading them together is the only way to see that
-// path whole. It is also why `impl ScanPhase` appears below before
-// `struct ScanPhase` does, and why `TargetScope` and `ProbeStats` each have a
-// second impl block here rather than one block each.
+// Each `*Parts` struct is followed by the `from_parts` that consumes it, so the path
+// a report takes back off disk reads in one place. Hence `impl ScanPhase` before
+// `struct ScanPhase`, and second impl blocks for `TargetScope` and `ProbeStats`.
 
 /// Everything a [`TargetScope`] holds, for rebuilding one that was recorded.
 ///
-/// A plain struct rather than positional arguments: two `u128` counts and two
-/// range lists sit next to each other, and nothing would diagnose them being
-/// swapped.
+/// A struct, since two `u128` counts and two range lists are easy to swap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeParts {
     /// The ranges that were walked, after exclusions.
@@ -1574,9 +1317,8 @@ pub struct ScopeParts {
 impl TargetScope {
     /// Rebuilds a scope from what was recorded of it.
     ///
-    /// Unlike [`from_ip_set`](Self::from_ip_set), this applies no policy and
-    /// narrows nothing: the exclusions were applied when the scope was first
-    /// computed, and this restores the result rather than repeating the work.
+    /// Applies no policy, unlike [`from_ip_set`](Self::from_ip_set): the exclusions
+    /// were applied when the scope was first computed.
     pub fn from_parts(parts: ScopeParts) -> Self {
         Self {
             listened: parts.listened,
@@ -1594,11 +1336,9 @@ impl TargetScope {
 
 /// Everything a [`ProbeStats`] holds, for rebuilding one that was recorded.
 ///
-/// The two distributions are lists rather than arrays, because their lengths
-/// are [`ATTEMPTS_COUNTED`] and one more than [`BUCKET_BOUNDS_MS`], and either
-/// may grow: as an array a caller naming every field would break on the day
-/// one did. [`ProbeStats::from_parts`] reads each for the slots this build
-/// counts.
+/// The two distributions are lists, since their lengths ([`ATTEMPTS_COUNTED`] and one
+/// more than [`BUCKET_BOUNDS_MS`]) may grow. [`ProbeStats::from_parts`] reads each for
+/// the slots this build counts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeStatsParts {
     /// Which strategy this describes.
@@ -1647,14 +1387,9 @@ pub struct ProbeStatsParts {
 impl ProbeStats {
     /// Rebuilds probe statistics from what was recorded of them.
     ///
-    /// Each distribution is read for the slots this build counts: a slot past
-    /// them is dropped, and one short of them reads as nothing counted there.
-    /// A record written by a build that counted more attempts, or bucketed by
-    /// more bounds, is read for what this one understands rather than
-    /// refused, since the rest of the report it sits in is worth reading
-    /// whatever its histograms say, and a rebuild that could fail would have
-    /// every caller handle a failure for a detail. A caller building these by
-    /// hand sizes them from the two constants.
+    /// Each distribution is read for the slots this build counts: extra slots are
+    /// dropped and missing ones read as zero, so a record from a build with more slots
+    /// still reads. A caller building these by hand sizes them from the two constants.
     pub fn from_parts(parts: ProbeStatsParts) -> Self {
         Self {
             scanner: parts.scanner,
@@ -1694,30 +1429,20 @@ fn fitted<const N: usize>(from: &[u64]) -> [u64; N] {
 // One phase of a scan
 // --------------------------------------------------------------------------
 //
-// A phase is one engine call: a sweep, a port scan, a watch. A report holds a
-// list of them rather than one set of metadata, because a caller who runs
-// discovery and then a port scan is describing one job.
+// A phase is one engine call: a sweep, a port scan, a watch. A report holds a list
+// of them, since discovery then a port scan is one job.
 
 /// Which switch port the machine running a phase was plugged into.
 ///
-/// Not a finding about any host in the report: a relation between *this*
-/// machine and somebody else's equipment, learned from an announcement the
-/// equipment sends unprompted (see [`crate::protocols::lldp`] and
-/// [`crate::protocols::cdp`]). No probe obtains it, and nothing else in a scan
-/// answers the question it answers: **where, physically, was this run from.**
+/// A relation between *this* machine and the equipment it is plugged into, learned
+/// from an unprompted announcement (see [`crate::protocols::lldp`] and
+/// [`crate::protocols::cdp`]). It answers **where, physically, this was run from.**
 ///
-/// # Why it hangs on the phase
+/// On the phase, like [`PhaseOrigin`], because a [`merge`](crate::merge) may fold
+/// phases run from several vantage points, each with its own true answer.
 ///
-/// For the reason [`PhaseOrigin`] does. A [`merge`](crate::merge) folds phases
-/// measured from several vantage points into one report, and each of them ran
-/// somewhere different. Recorded once for the whole report, two machines'
-/// attachments would have to be arbitrated: a contest with no right answer,
-/// since both are true. On the phase, each keeps the vantage it was actually
-/// observed from and nothing has to be decided.
-///
-/// A phase may carry several: one per link it captured on, and another whenever
-/// the answer changed while it ran, which for a listener running for days is a
-/// cable somebody moved.
+/// A phase may carry several: one per link it captured on, and another whenever the
+/// answer changed, as when someone moves a cable during a long listen.
 #[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attachment {
@@ -1733,12 +1458,9 @@ pub struct Attachment {
 
 /// Which protocol an [`Attachment`] was read from.
 ///
-/// Carried because the two do not cover the same ground: Cisco equipment runs
-/// CDP by default and LLDP only when somebody enables it, so a network that
-/// answers on one and not the other is saying something about what it is made
-/// of. It is also the honest answer to "why does this say VLAN 40": the two
-/// protocols carry that field in different places and not every device sends
-/// either.
+/// Cisco equipment runs CDP by default and LLDP only when enabled, so which one a
+/// network answers on says something about it. The two also carry fields such as the
+/// VLAN in different places.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AttachmentSource {
@@ -1749,13 +1471,8 @@ pub enum AttachmentSource {
 }
 
 impl AttachmentSource {
-    /// Every announcement protocol this build knows, in declaration order.
-    ///
-    /// Here for the reason [`Protocol::ALL`](crate::model::port::Protocol::ALL)
-    /// gives: the enum is `#[non_exhaustive]`, and the export conformance suite
-    /// reads this list against the published schema's own and fails unless they hold
-    /// the same names. A variant added without a place in the schema is a value this
-    /// engine writes and no consumer's validator accepts.
+    /// Every announcement protocol this build knows, in declaration order. Checked
+    /// against the published schema.
     pub const ALL: &'static [Self] = &[Self::Lldp, Self::Cdp];
 }
 
@@ -1777,9 +1494,7 @@ impl Attachment {
 
     /// Names the device by the hardware address it identified its chassis with.
     ///
-    /// The field worth having above the name: it is what ties this attachment to
-    /// a [`Host`] elsewhere in the same report, where a name is a string two
-    /// devices may share.
+    /// Ties this attachment to a [`Host`] in the same report, which a name may not.
     pub fn with_device_mac(mut self, mac: MacAddr) -> Self {
         self.device_mac = Some(mac);
         self
@@ -1847,9 +1562,7 @@ impl Attachment {
 
     /// When the announcement this was read from arrived.
     ///
-    /// Worth recording separately from the phase's own span, because a phase
-    /// that runs for days may see the answer change, which is somebody moving
-    /// a cable, and is only legible if the two answers can be ordered.
+    /// Separate from the phase's span, so changes during a long phase can be ordered.
     pub fn observed_at(&self) -> SystemTime {
         self.observed_at
     }
@@ -1857,19 +1570,14 @@ impl Attachment {
 
 /// Which document a phase came from, for a report folded out of several.
 ///
-/// A report merged from an archived nmap file, last night's journal and a scan
-/// that just finished holds all of their phases, and each phase's scope, timing
-/// and settings describe one of the three. This says which. Without it a merged
-/// report states what it covered and cannot say on whose word.
+/// A report merged from an archived nmap file, last night's journal and a fresh scan
+/// holds all their phases; this says which document each came from.
 ///
-/// `None` on a phase this process measured, which needs no attribution: it is
-/// the report's own.
+/// `None` on a phase this process measured.
 ///
-/// The label is the caller's. The engine opens no files and has no word for
-/// one, so whoever read the document passes the name it used for it: a path, a
-/// record id, a bucket key. [`merge`](crate::merge) is the only thing that
-/// writes a `PhaseOrigin`, and it takes the version from the source report's own
-/// attribution.
+/// The label is the caller's (a path, a record id, a bucket key), since the engine
+/// opens no files. Only [`merge`](crate::merge) writes a `PhaseOrigin`, taking the
+/// version from the source report's own attribution.
 #[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhaseOrigin {
@@ -1897,9 +1605,8 @@ impl PhaseOrigin {
         self.label.as_deref()
     }
 
-    /// What produced the phase, as that scanner attributed itself. `nmap 7.94`
-    /// for a report read out of nmap's XML, and no evidence this crate ran
-    /// anything.
+    /// What produced the phase, as that scanner attributed itself: `nmap 7.94` for a
+    /// report read from nmap's XML.
     pub fn engine_version(&self) -> &str {
         &self.engine_version
     }
@@ -1907,10 +1614,8 @@ impl PhaseOrigin {
 
 /// Everything a [`ScanPhase`] holds, for rebuilding one that was recorded.
 ///
-/// Mirrors the phase field for field, without a default: a
-/// field added to [`ScanPhase`] is added here too, and every place that builds
-/// one stops compiling until it says what the new field should be. That is what
-/// keeps a journal from quietly losing what a phase gained.
+/// Mirrors the phase field for field, without a default, so a field added to
+/// [`ScanPhase`] fails to compile everywhere one is built until it is handled.
 #[derive(Debug, Clone)]
 pub struct PhaseParts {
     /// Which entry point the phase recorded.
@@ -1979,10 +1684,8 @@ pub struct PhaseParts {
 impl ScanPhase {
     /// Rebuilds a phase from what was recorded of it.
     ///
-    /// For restoring an earlier sitting of a resumed scan, so its report
-    /// describes both rather than presenting the second as the whole job. A
-    /// phase a scan is currently running comes from
-    /// [`PhaseRecorder`](crate::scanner::recorder::PhaseRecorder) instead, which measures it.
+    /// For restoring an earlier sitting of a resumed scan. A running phase comes from
+    /// [`PhaseRecorder`](crate::scanner::recorder::PhaseRecorder).
     pub fn from_parts(parts: PhaseParts) -> Self {
         Self {
             kind: parts.kind,
@@ -2019,8 +1722,7 @@ impl ScanPhase {
 
     /// Attributes this phase to the document it was read from.
     ///
-    /// Used by [`merge`](crate::merge) as it folds a source in, which is the one
-    /// place that knows both the document's name and what produced it.
+    /// Used by [`merge`](crate::merge), which knows the document's name and producer.
     pub fn attribute(&mut self, origin: PhaseOrigin) {
         self.origin = Some(origin);
     }
@@ -2040,47 +1742,33 @@ pub struct ScanPhase {
     /// route or source address led to them, or they are neighbours on a local
     /// segment that never answered address resolution.
     ///
-    /// Distinct from a host that answered nothing, and the distinction is the
-    /// whole reason it is recorded: an address that went unprobed because there
-    /// is no path to it is not one that stayed silent, and the two call for
-    /// different things from a reader. Telling somebody to scan an unreachable
-    /// address on trust is advice that cannot work.
+    /// Distinct from a host that answered nothing: scanning an unreachable address on
+    /// trust cannot help.
     unroutable: Vec<IpAddr>,
     /// The addresses among `unroutable` that this host's routing table
     /// refuses. See [`refused_by_route`](Self::refused_by_route).
     refused_by_route: Vec<IpAddr>,
     /// Ground this phase declined before sending anything, and why.
     ///
-    /// Beside `unroutable` rather than inside `failures`, on the reasoning
-    /// [`Refusal`] gives: both of these are the scan saying what it did not
-    /// cover, and neither is the scan saying something went wrong.
+    /// Not a failure; see [`Refusal`].
     refusals: Vec<Refusal>,
     /// Addresses the phase stopped working on because their own budget ran out.
     ///
-    /// Beside `unroutable` for the reason that one is beside `failures`: this
-    /// is the phase saying what it did not finish covering, and nothing here
-    /// went wrong. The distinction it carries is the one a reader cannot make
-    /// otherwise, since a host left early is reported with the ports it never
-    /// reached taking the scan's silence verdict, and a page of silent ports
-    /// looks the same whether the scan asked and heard nothing or ran out of
-    /// time to ask.
+    /// Not a failure. Without it, a host left early looks the same as one that stayed
+    /// silent.
     timed_out: Vec<IpAddr>,
     /// Addresses whose ICMP errors the phase found rate-limited.
     ///
-    /// Beside `unroutable` for the reason `timed_out` is: the phase qualifying
-    /// what it covered. See [`icmp_rate_limited`](Self::icmp_rate_limited).
+    /// See [`icmp_rate_limited`](Self::icmp_rate_limited).
     icmp_rate_limited: Vec<IpAddr>,
     /// Addresses this phase reached by TCP connect although it held the
     /// privilege its raw strategies need.
     ///
-    /// Beside `unroutable` for the same reason `timed_out` is: this is the
-    /// phase qualifying what it covered, not reporting that anything broke. See
-    /// [`reached_by_connect`](Self::reached_by_connect).
+    /// See [`reached_by_connect`](Self::reached_by_connect).
     reached_by_connect: Vec<IpRange>,
     /// Addresses in scope whose presence the phase reached no verdict on.
     ///
-    /// Beside `unroutable` for the reason `timed_out` is: the phase qualifying
-    /// what it covered. See [`undecided`](Self::undecided).
+    /// See [`undecided`](Self::undecided).
     undecided: Vec<IpRange>,
     /// Why this port phase ran with no liveness pass in front of it, or `None`.
     /// See [`liveness_skipped`](Self::liveness_skipped).
@@ -2120,10 +1808,7 @@ impl ScanPhase {
     /// Where the machine running this phase was plugged in, as the equipment on
     /// the far end of the cable announced itself.
     ///
-    /// Empty for a phase that heard no such announcement, which is every phase
-    /// on an unmanaged network and every phase this engine ran before it
-    /// learned to listen for one. Never a claim that the machine is attached to
-    /// nothing.
+    /// Empty for a phase that heard no announcement, as on an unmanaged network.
     pub fn attachments(&self) -> &[Attachment] {
         &self.attachments
     }
@@ -2147,12 +1832,8 @@ impl ScanPhase {
     /// unprivileged phase reached its targets over plain TCP connect attempts,
     /// which see less and are more visible to the target.
     ///
-    /// `None` for a phase this engine did not measure. The question is about
-    /// *these* strategies and the sockets *they* need, and a scan another
-    /// program ran answers it about its own. Recording `false` there said an
-    /// nmap sweep performed over ARP as root had no raw sockets: a claim about
-    /// this engine that no document supports, printed under findings that
-    /// plainly contradicted it.
+    /// `None` for a phase this engine did not measure, such as one imported from
+    /// another scanner's report.
     pub fn privilege(&self) -> Option<Privilege> {
         self.privilege
     }
@@ -2171,10 +1852,8 @@ impl ScanPhase {
     /// ascending: no route or source address led to them, or they are
     /// neighbours on a local segment that never answered address resolution.
     ///
-    /// Not [`failures`](Self::failures): no strategy broke, and the result is
-    /// not partial because of these. An address here was never probed, which
-    /// is a different finding from one probed that stayed silent, and why
-    /// scanning it on trust cannot reach it either.
+    /// Not [`failures`](Self::failures), and not counted as partial. An address here was
+    /// never probed.
     pub fn unroutable(&self) -> &[IpAddr] {
         &self.unroutable
     }
@@ -2182,22 +1861,15 @@ impl ScanPhase {
     /// The addresses among [`unroutable`](Self::unroutable) that this host's
     /// own routing table refuses, ascending.
     ///
-    /// A route an administrator added over an address, `prohibit`,
-    /// `blackhole` or `unreachable`, or the rules a VPN's kill switch keeps a
-    /// network out with, is the host's policy, and every program on it
-    /// honours it: ping, a connect, and this engine, which sends such an
-    /// address nothing. Named apart from the rest of the unreachable because
-    /// the remedy is on this machine rather than on the path: the route, not
-    /// the network, is why the address was not asked.
+    /// A `prohibit`, `blackhole` or `unreachable` route, or a VPN kill switch's rules,
+    /// is host policy that every program honours, so the engine sends such an address
+    /// nothing. Named apart because the remedy is on this machine.
     ///
-    /// Named where the engine can tell a route refused: a neighbour on one of
-    /// this host's segments, whose connected route only a policy overrides,
-    /// whether the scan frames its probes or connects; and any address the
-    /// kernel refuses in words only a policy uses, the permission denied of a
-    /// `prohibit` route or the invalid argument of a `blackhole` one, where
-    /// Linux has them. An `unreachable` route anywhere else answers as a
-    /// missing route does, and its address is among the unreachable without
-    /// being named here.
+    /// Named where the engine can tell: a neighbour on one of this host's segments,
+    /// whose connected route only a policy overrides; and any address the kernel
+    /// refuses with an error only a policy produces (permission denied for `prohibit`,
+    /// invalid argument for `blackhole`, on Linux). An `unreachable` route elsewhere
+    /// looks like a missing route and is not named here.
     pub fn refused_by_route(&self) -> &[IpAddr] {
         &self.refused_by_route
     }
@@ -2206,33 +1878,22 @@ impl ScanPhase {
     /// per-host budget in
     /// [`ScanSettings::host_timeout`](ScanSettings::host_timeout) ran out.
     ///
-    /// Empty for a phase that set no budget, and for one where every host fitted
-    /// inside it. A host named here still carries every port the phase managed
-    /// to ask about; what it does not carry is the rest of them.
+    /// A host named here still carries every port the phase managed to ask.
     pub fn timed_out(&self) -> &[IpAddr] {
         &self.timed_out
     }
 
     /// Addresses whose ICMP errors this phase found rate-limited, ascending.
     ///
-    /// A closed UDP port is known only by the ICMP port unreachable its host
-    /// sends, and hosts ration those: Linux answers a burst and then about
-    /// one a second. Against a host here the scan had no answer for most of
-    /// the closed ports it asked, and they read `OpenOrNoReply`, silence being
-    /// all it heard, beside the few that read `Closed`. Its open-or-no-reply
-    /// ports are therefore mostly closed ones, which a page of them does not
-    /// say without this list; a longer scan reads more of them, at about one
-    /// a second.
+    /// A closed UDP port is known only by its host's ICMP port unreachable, which hosts
+    /// ration (Linux: a burst, then about one a second). On a host here most closed ports
+    /// read `OpenOrNoReply`, so its open-or-no-reply ports are mostly closed.
     ///
-    /// Read from the host's own answers: a port answered closed only when
-    /// asked again, after others answered at once, while more of its ports
-    /// stayed silent than answered, which a filter dropping ports does not
-    /// produce.
+    /// Inferred from the host's answers: a port answered closed only when asked again,
+    /// after others answered at once, while more ports stayed silent than answered,
+    /// which a filter does not produce.
     ///
-    /// Only a phase that asks a port more than once can see it, which is a
-    /// scan with raw sockets. A scan without them asks each UDP port once,
-    /// over a connected socket that meets the same ration, and has no retry
-    /// for a late answer to arrive at, so it names no host here.
+    /// Needs a port asked more than once, so only raw-socket scans name hosts here.
     pub fn icmp_rate_limited(&self) -> &[IpAddr] {
         &self.icmp_rate_limited
     }
@@ -2240,25 +1901,17 @@ impl ScanPhase {
     /// Addresses this phase reached by TCP connect although it held the
     /// privilege its raw strategies need, ascending.
     ///
-    /// A raw probe goes where this process can put a packet of its own, and
-    /// some addresses are beyond that whatever the privilege: loopback, and an
-    /// address nothing routes to. A process that can inject frames and holds no
-    /// raw socket, which is an unprivileged run on macOS with the BPF devices
-    /// handed to its group, also cannot reach this host's own addresses,
-    /// anything the kernel routes through a tunnel, or, for its port probes, an
-    /// IPv6 neighbour. The phase probed those the way an unprivileged phase
-    /// would, and what it found there is connect evidence under a phase whose
-    /// [`privilege`](Self::privilege) reads as raw: a port that answered
-    /// nothing may have been told nothing by the local stack, and no port was
-    /// asked with the technique the settings name.
+    /// Some addresses are beyond a raw probe whatever the privilege: loopback, and
+    /// anything with no route. A process that can inject frames but holds no raw socket
+    /// (an unprivileged macOS run with BPF access) also cannot reach this host's own
+    /// addresses, anything routed through a tunnel, or, for port probes, an IPv6
+    /// neighbour. Those were probed by connect, so their evidence is connect evidence
+    /// although [`privilege`](Self::privilege) reads raw, and the configured technique
+    /// was not used.
     ///
-    /// An address handed to connect that no probe could leave for is not
-    /// here: it is [unroutable](Self::unroutable), and holds no evidence of
-    /// either kind.
+    /// An address no probe could leave for is [unroutable](Self::unroutable) instead.
     ///
-    /// Empty for most phases, and for every phase at
-    /// [`Privilege::Connect`], which reached everything this way and says so
-    /// once.
+    /// Empty for most phases, and for every [`Privilege::Connect`] phase.
     pub fn reached_by_connect(&self) -> &[IpRange] {
         &self.reached_by_connect
     }
@@ -2266,49 +1919,34 @@ impl ScanPhase {
     /// Addresses in this phase's scope whose presence it reached no verdict on,
     /// ascending.
     ///
-    /// A discovery phase settles an address one of two ways: something answered
-    /// it, or it was asked as many times as the phase's policy allows and
-    /// nothing did. An address here is neither. The phase stopped before it
-    /// asked, stopped while the address was still owed attempts, had no
-    /// strategy that could ask, was refused the range, or ran out of the
-    /// address's own time budget. None of those is silence, so none of these
-    /// is a host found down: a port scan leaves their ports unprobed and
-    /// unsettled, and a resumed job asks them again.
+    /// A discovery phase settles an address when something answers or the retry budget
+    /// is spent. An address here is neither: the phase stopped before or while asking,
+    /// had no strategy that could ask, was refused the range, or ran out the address's
+    /// time budget. None is a host found down; a port scan leaves their ports unsettled
+    /// and a resumed job asks again. Without this list, an address never asked would
+    /// look like one that stayed silent.
     ///
-    /// What sets the list apart from a scope minus the hosts found is the whole
-    /// reason it is recorded. Without it an address the phase never asked and
-    /// one that stayed silent when asked are the same absence, and a reader
-    /// counts the first as the second.
+    /// Disjoint from [`unroutable`](Self::unroutable). An address can be here and in
+    /// [`timed_out`](Self::timed_out), which says why.
     ///
-    /// Disjoint from [`unroutable`](Self::unroutable), which names the addresses
-    /// nothing could be sent to. An address left by its budget can be here and
-    /// in [`timed_out`](Self::timed_out) both, which says why.
+    /// A port phase standing in for a dropped liveness pass (see
+    /// [`LivenessSkip::PortsNoDearer`]) names here addresses it heard nothing from
+    /// without finishing asking; the report lists no host for them and a resumed job
+    /// asks their ports again. If such a phase never closed, it names every address it
+    /// had not yet decided.
     ///
-    /// A port phase standing in for a liveness pass the engine dropped (see
-    /// [`LivenessSkip::PortsNoDearer`]) answers presence as that pass would,
-    /// and names here what it heard nothing from without finishing asking: a
-    /// port it never reached, a probe it cut off, or the address's own budget
-    /// running out. As the pass would have made no host of such an address,
-    /// the report lists none; a resumed job asks its ports again. Such a phase
-    /// that never closed, its sitting killed, names here every address of a
-    /// record it had not decided yet, for the same reason; a resumed job asks
-    /// what it left there and decides the record with it.
-    ///
-    /// Empty for a phase that reached a verdict on everything it was asked
-    /// about, and for every other phase: another port scan settles ports
-    /// rather than presence, and a listener covers no address.
+    /// Empty for other port scans, which settle ports rather than presence, and for
+    /// listeners.
     pub fn undecided(&self) -> &[IpRange] {
         &self.undecided
     }
 
     /// Why this port phase ran with no liveness pass in front of it.
     ///
-    /// `None` for a port phase a liveness pass preceded, which the report
-    /// carries as a [`Discovery`](ScanKind::Discovery) phase of its own, and for
-    /// every phase that is not a [`PortScan`](ScanKind::PortScan). Recorded
-    /// rather than left to be inferred from the missing discovery phase, since
-    /// the three reasons read the same from the phase list and differ in what
-    /// the findings mean; see [`LivenessSkip`].
+    /// `None` when a liveness pass preceded it (recorded as its own
+    /// [`Discovery`](ScanKind::Discovery) phase), and for every phase that is not a
+    /// [`PortScan`](ScanKind::PortScan). The reasons differ in what the findings mean;
+    /// see [`LivenessSkip`].
     pub fn liveness_skipped(&self) -> Option<LivenessSkip> {
         self.liveness_skipped
     }
@@ -2316,19 +1954,14 @@ impl ScanPhase {
     /// Addresses this port phase asked on every port it named and heard
     /// nothing from at all, ascending.
     ///
-    /// Filled only where the phase stood in for a liveness pass the engine
-    /// dropped as no cheaper than the ports; see
-    /// [`LivenessSkip::PortsNoDearer`]. There the port probes answer the
-    /// liveness question, and an address that drew no open port, no closed one
-    /// and no ICMP error is what the pass would have found silent: it is not
-    /// listed as a host, as the pass would not have listed it, and it is named
-    /// here instead, so the report still accounts for it. Its ports were
-    /// asked, so it is neither [`undecided`](Self::undecided) nor owed another
-    /// sitting, and a comparison reads it as covered and quiet.
+    /// Filled only where the phase stood in for a dropped liveness pass; see
+    /// [`LivenessSkip::PortsNoDearer`]. An address that drew no open port, closed port
+    /// or ICMP error is named here, not listed as a host. Its ports were asked, so it is
+    /// not [`undecided`](Self::undecided), and a comparison reads it as covered and
+    /// quiet.
     ///
-    /// Empty for every other phase. A caller who declined the pass with
-    /// [`ZondConfig::assume_up`] asked for every address as a host, and gets
-    /// each one with the silence its ports drew.
+    /// Empty for every other phase. With [`ZondConfig::assume_up`] every address is a
+    /// host.
     pub fn silent(&self) -> &[IpRange] {
         &self.silent
     }
@@ -2338,18 +1971,12 @@ impl ScanPhase {
     /// out ([`TimedOut`](StopReason::TimedOut)).
     ///
     /// `None` for a phase that ended on its own, and for every
-    /// [`Listen`](ScanKind::Listen) phase, since stopping is how a watch ends
-    /// rather than something that cut one short.
+    /// [`Listen`](ScanKind::Listen) phase, which always ends by being stopped.
     ///
-    /// A marker, not a verdict on the findings. A phase stopped once it had
-    /// asked everything and run every pass over the answers is as complete as
-    /// one that was not, and a stop that did cut it short shows as what it
-    /// cut: [`unreached`](Self::unreached) targets, unasked ports, undecided
-    /// addresses and [`passes_cut`](Self::passes_cut), which is what
-    /// [`ScanReport::is_partial`] reads. What this adds is the reason, which
-    /// none of those carries: a reader told the scan was stopped knows a
-    /// short count for the budget or the interruption it was, rather than
-    /// having to guess it from the probe counters.
+    /// A marker, not a verdict: what a stop cut shows as [`unreached`](Self::unreached)
+    /// targets, unasked ports, undecided addresses and
+    /// [`passes_cut`](Self::passes_cut), which [`ScanReport::is_partial`] reads. This
+    /// adds the reason.
     pub fn stopped(&self) -> Option<StopReason> {
         self.stopped
     }
@@ -2358,37 +1985,25 @@ impl ScanPhase {
     /// short, in the order a scan runs them. Empty for a phase no stop cut,
     /// and for one stopped before any pass had work to do.
     ///
-    /// Only a pass the scan was asked to run and had something to run over:
-    /// a scan with TLS enumeration off, or with no TLS port found, names no
-    /// TLS pass here however it was stopped. Such a pass is as much ground
-    /// the phase covered less of than it set out to as a port it never
-    /// asked, which is why [`ScanReport::is_partial`] counts it: a scan whose
-    /// budget ran out as the last port answered, before one service was
-    /// identified, has findings narrower than it was asked for.
+    /// Only passes the scan was asked to run and had work for: with TLS enumeration
+    /// off, or no TLS port found, no TLS pass is named. [`ScanReport::is_partial`]
+    /// counts these.
     ///
-    /// A pass a detection's own budget or the file limit cut short on some
-    /// ports is not here: that is a [failure](Self::failures) marked cut
-    /// short, naming the port. This names the pass a stop of the whole scan
-    /// left, which has no one port to name.
+    /// A pass cut short on some ports by a detection's budget or the file limit is a
+    /// [failure](Self::failures) marked cut short, naming the port.
     pub fn passes_cut(&self) -> &[Pass] {
         &self.passes_cut
     }
 
-    /// Whether this is the phase as it stood before it closed: a record its
-    /// sitting kept as it ran, for a sitting killed outright, which never
-    /// reaches the close that records a phase whole.
+    /// Whether this is the phase as it stood before it closed: a record kept as it ran,
+    /// for a sitting killed outright.
     ///
-    /// Read from a journal, an open phase is one whose sitting was killed, or
-    /// was still running when the journal was read. It says what the phase
-    /// opened with, how long it had run and what failed in it, and claims
-    /// nothing only its close establishes: no [stop](Self::stopped), no
-    /// [unreached](Self::unreached) target, no [pass cut](Self::passes_cut).
-    /// Those read as a phase that ran to its end, and this is what says it
-    /// did not, which is why [`ScanReport::is_partial`] counts it.
+    /// From a journal, an open phase was killed or still running when read. It records
+    /// what the phase opened with, how long it ran and what failed, but nothing only its
+    /// close establishes (no [stop](Self::stopped), [unreached](Self::unreached) target
+    /// or [pass cut](Self::passes_cut)), so [`ScanReport::is_partial`] counts it.
     ///
-    /// Not a [`StopReason`]. Those are what a running scan names as it
-    /// stops; nothing running names a kill, and a phase that is open was not
-    /// stopped by anything it could name.
+    /// Not a [`StopReason`]: nothing running names a kill.
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -2399,22 +2014,16 @@ impl ScanPhase {
     /// verdict on, and the ones left unasked at an address it then listed no
     /// host at, being [`undecided`](Self::undecided).
     ///
-    /// A count and not a list. A scan walks its plan in a permutation, so what
-    /// a stop leaves is scattered across every address, and naming each target
-    /// would cost a record per probe the scan never sent; a `/16` on every port
-    /// stopped a minute in would write billions. They are not on any host as
-    /// [`Unasked`](crate::model::port::PortState::Unasked) for the same
-    /// reason. What this count adds to those is the rest of the plan: every
-    /// target this phase was handed was probed, which its hosts and
-    /// [`unheard_probes`](Self::unheard_probes) count, is on its host
-    /// unasked, is counted here, or was settled without a probe for an
-    /// address its liveness pass found silent, could not reach, or the
-    /// exclusions withheld.
+    /// A count, since a permuted walk scatters what a stop leaves across every address,
+    /// and a `/16` on every port stopped a minute in would list billions. Every target
+    /// the phase was handed was probed (counted by its hosts and
+    /// [`unheard_probes`](Self::unheard_probes)), is on its host
+    /// [`Unasked`](crate::model::port::PortState::Unasked), is counted here, or was
+    /// settled without a probe (silent, unreachable, or excluded).
     ///
-    /// Unsettled, so a resumed job asks every one of them. Zero for a phase
-    /// that asked everything it was handed, and for every phase that is not a
-    /// [`PortScan`](ScanKind::PortScan). See [`ScanReport::unreached`] for
-    /// what a report holding several sittings has left.
+    /// A resumed job asks every one of them. Zero for a phase that asked everything,
+    /// and for every non-[`PortScan`](ScanKind::PortScan) phase. See
+    /// [`ScanReport::unreached`] for several sittings.
     pub fn unreached(&self) -> u128 {
         self.unreached
     }
@@ -2424,24 +2033,14 @@ impl ScanPhase {
     /// [`silent`](Self::silent), and the ports it reached of the ones it names
     /// [`undecided`](Self::undecided).
     ///
-    /// Those addresses' records are dropped, so the ports they were asked are
-    /// on no host, and a count of the ports a scan probed read off its hosts
-    /// comes up short by exactly this. It cannot be read off the scope
-    /// instead: a phase given differing ports for different addresses records
-    /// their union, which says nothing of what any one address was asked, and
-    /// an undecided address was asked only part of its ports. So the phase
-    /// counts them as it drops them.
+    /// Those addresses' records are dropped, so a count of probed ports read off the
+    /// hosts comes up short by exactly this. The scope cannot supply it, since a mixed
+    /// scope records a union and an undecided address was asked only part of its ports.
     ///
-    /// Each sitting of a resumed job counts its own. A target asked and
-    /// answered by silence is settled and never asked again, so the counts of
-    /// several sittings add up rather than overlap. A phase that never closed
-    /// counts the probes of the addresses it names silent; those it sent the
-    /// ones it names undecided are counted by the sitting that decides them,
-    /// which restores their records, or by none if the job is not resumed. Zero for every phase that
-    /// did not stand in for a liveness pass, and in a record written before
-    /// the count was kept, where a reader that needs the number can derive it
-    /// from the silent addresses only if the phase walked one port set for
-    /// every address.
+    /// Each sitting of a resumed job counts its own, and the counts add up. A phase that
+    /// never closed counts the probes of its silent addresses; the sitting that decides
+    /// the undecided ones counts theirs. Zero for every phase that did not stand in for
+    /// a liveness pass, and in a record without the count.
     pub fn unheard_probes(&self) -> u128 {
         self.unheard_probes
     }
@@ -2453,18 +2052,16 @@ impl ScanPhase {
 
     /// Ground this phase declined to cover, and why.
     ///
-    /// Read beside [`failures`](Self::failures) rather than instead of it:
-    /// together they are everything the phase was asked for and did not answer,
-    /// and apart they say whether anything went wrong. See [`Refusal`].
+    /// With [`failures`](Self::failures), everything the phase did not answer. See
+    /// [`Refusal`].
     pub fn refusals(&self) -> &[Refusal] {
         &self.refusals
     }
 
     /// What each instrumented scanner observed about its own run.
     ///
-    /// Empty where no strategy in this phase carries instrumentation, which is
-    /// not the same as a phase whose scanners saw nothing. Only the raw paths
-    /// count packets; the TCP-connect fallback has no capture to audit.
+    /// Empty where no strategy carries instrumentation; the TCP-connect fallback has no
+    /// capture to audit.
     pub fn probe_stats(&self) -> &[ProbeStats] {
         &self.probes
     }
@@ -2474,21 +2071,15 @@ impl ScanPhase {
 // The report itself
 // --------------------------------------------------------------------------
 //
-// What the phases and the hosts add up to. Every count here is computed from the
-// hosts on demand rather than stored, so a summary cannot drift out of step with
-// the data it describes.
+// What the phases and hosts add up to. Counts are computed from the hosts on demand.
 
 /// Counts derived from a report's hosts.
 ///
-/// Computed on demand by [`ScanReport::summary`] rather than stored, so it
-/// cannot disagree with the hosts it describes.
+/// Computed on demand by [`ScanReport::summary`].
 ///
-/// Both headline counts are paired with a full distribution. `hosts_alive` and
-/// `ports_open` are the numbers a person reads first, but collapsing the
-/// remaining states into a single "not found" bucket would throw away the
-/// distinction the scanner worked hardest to establish - a blocked port is
-/// evidence of a firewall, a closed one is evidence of a live host, and neither
-/// is silence.
+/// `hosts_alive` and `ports_open` each come with a full distribution, since a blocked
+/// port is evidence of a firewall and a closed one of a live host, and neither is
+/// silence.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScanSummary {
@@ -2506,19 +2097,14 @@ pub struct ScanSummary {
     pub ports_by_state: BTreeMap<PortState, usize>,
     /// Ports whose service was identified by fingerprinting.
     ///
-    /// A name read off the port number is not counted: every scan path seeds
-    /// a port, closed and silent ones included, with the name its number is
-    /// registered under, and that label says nothing about what is listening
-    /// (see [`Service::is_inferred`](crate::model::port::Service::is_inferred)).
+    /// A name read off the port number is not counted (see
+    /// [`Service::is_inferred`](crate::model::port::Service::is_inferred)).
     pub services_identified: usize,
     /// How many hosts were reachable at an IPv4 address, at an IPv6 one, and at
     /// both.
     ///
-    /// Counted per host rather than per address, and the three do not sum to
-    /// [`hosts_total`](Self::hosts_total): a dual-stack host appears in
-    /// `ipv4`, in `ipv6` and in `dual_stack`. That is what makes the numbers
-    /// answer the question they are asked, "how much of this network did I see
-    /// over IPv6", where a partition into three would answer a different one.
+    /// Per host. The three overlap and do not sum to
+    /// [`hosts_total`](Self::hosts_total): a dual-stack host counts in all three.
     pub hosts_by_family: FamilyCounts,
 }
 
@@ -2542,40 +2128,23 @@ pub struct FamilyCounts {
 #[derive(Debug, Clone)]
 #[must_use = "a report is the record of the scan that just ran; dropping it discards it"]
 pub struct ScanReport {
-    /// Which build produced the findings, rather than which build is holding
-    /// them. A report read back from a journal carries the version recorded
-    /// with it, so it is borrowed for a scan this build ran and owned for one
-    /// it is only reading.
+    /// Which build produced the findings. Borrowed for a scan this build ran, owned for
+    /// one read back.
     engine_version: Cow<'static, str>,
     phases: Vec<ScanPhase>,
-    /// Keyed by [`ScopedIp`] rather than by the bare address.
-    ///
-    /// A host is keyed by the address it is reported under, and for an IPv6
-    /// link-local that address is not an identity on its own: `fe80::1` names a
-    /// different machine on every segment, and a scanner watching two of them
-    /// finds two hosts under one number. Keyed by the bare `IpAddr` the second
-    /// silently replaced the first, so a report could hold fewer hosts than were
-    /// found and say nothing about it.
-    ///
-    /// [`ScopedIp::scoped`] drops the zone from every address that does not need
-    /// one, so this is the ordinary bare address for every host but that case,
-    /// and the map still orders by address: the zone only breaks ties between
-    /// identically-numbered link-locals. Iteration order is plain address order
-    /// for every report that does not contain one.
-    ///
-    /// This is the same distinction [`pairing`](crate::diff::pairing) draws when
-    /// it decides which records are one host, so a fold that correctly separates
-    /// two link-locals has somewhere to put them both.
+    /// Keyed by [`ScopedIp`], since `fe80::1` names a different machine on every segment.
+    /// The zone is dropped from addresses that do not need one, so ordering is by
+    /// address with the zone breaking ties. [`pairing`](crate::diff::pairing) draws the
+    /// same distinction.
     hosts: BTreeMap<ScopedIp, Host>,
 }
 
 impl ScanReport {
     /// Builds a single-phase report over the hosts a scan produced.
     ///
-    /// Hosts are keyed by the address they are reported under, carrying the
-    /// interface where that address needs one, so a host that gained addresses
-    /// during the scan appears once rather than once per address and two
-    /// link-locals on different segments stay two hosts.
+    /// Hosts are keyed by their reported address (with interface where needed), so a host
+    /// with several addresses appears once and two link-locals on different segments stay
+    /// two.
     pub fn new(phase: ScanPhase, hosts: impl IntoIterator<Item = Host>) -> Self {
         let mut report = Self {
             engine_version: Cow::Borrowed(ENGINE_VERSION),
@@ -2588,13 +2157,11 @@ impl ScanReport {
 
     /// A report over the phases of a job that ran in more than one sitting.
     ///
-    /// The counterpart of [`new`](Self::new) for a resumed scan, whose earlier
-    /// sittings are restored from a journal rather than measured. `phases` is
-    /// kept in the order given, which is the order they ran.
+    /// For a resumed scan, whose earlier sittings are restored from a journal. `phases`
+    /// is kept in the order given.
     ///
-    /// The report is attributed to this build, because this build is the one
-    /// continuing the job. Use [`recorded`](Self::recorded) to rebuild a report
-    /// nothing is continuing.
+    /// Attributed to this build, which is continuing the job. Use
+    /// [`recorded`](Self::recorded) to rebuild a report nothing is continuing.
     pub fn from_phases(phases: Vec<ScanPhase>, hosts: impl IntoIterator<Item = Host>) -> Self {
         Self::attributed(Cow::Borrowed(ENGINE_VERSION), phases, hosts)
     }
@@ -2602,12 +2169,9 @@ impl ScanReport {
     /// A report rebuilt from what an earlier scan wrote down, attributed to the
     /// engine that ran it.
     ///
-    /// For reading a finished scan back, out of a journal, or out of a report
-    /// this engine exported, where no new probing is happening. The version
-    /// comes from the record rather than from this build, so a scan run by
-    /// 0.11 still says 0.11 when 0.12 reads it. Every other constructor here
-    /// describes a scan this build is part of, and names this build for that
-    /// reason.
+    /// For reading a finished scan back from a journal or an exported report. The
+    /// version comes from the record, so a scan run by 0.11 still says 0.11 when 0.12
+    /// reads it.
     pub fn recorded(
         engine_version: impl Into<String>,
         phases: Vec<ScanPhase>,
@@ -2637,10 +2201,9 @@ impl ScanReport {
 
     /// The phases that contributed to this report, in the order they ran.
     ///
-    /// A report a scan produced always has at least one, since a phase
-    /// completing is what produces it. One rebuilt with
-    /// [`recorded`](Self::recorded) can have none, which is what a scan that
-    /// stopped before it wrote a phase down reads back as.
+    /// A report a scan produced has at least one. One rebuilt with
+    /// [`recorded`](Self::recorded) can have none, if the scan stopped before writing
+    /// a phase.
     pub fn phases(&self) -> &[ScanPhase] {
         &self.phases
     }
@@ -2648,19 +2211,12 @@ impl ScanReport {
     /// Whether this report was folded out of documents rather than measured by
     /// one run.
     ///
-    /// True when any phase carries a [`PhaseOrigin`], which is what
-    /// [`merge`](crate::merge) stamps on every phase it folds in and what
-    /// nothing else writes.
+    /// True when any phase carries a [`PhaseOrigin`], which only
+    /// [`merge`](crate::merge) writes.
     ///
-    /// The distinction matters to anything that reads a report as an account of
-    /// a single job, and to one thing in particular:
-    /// [`elapsed`](Self::elapsed) is a sum over the phases, so for a merged
-    /// report it is the working time of several scanners across arbitrary
-    /// moments. That is a real quantity and it is not a length of time anything
-    /// took, so presenting it as a duration would describe a scan that never
-    /// ran. The span such a report draws on is
-    /// [`finished_at`](Self::finished_at) less
-    /// [`started_at`](Self::started_at) instead.
+    /// For a merged report [`elapsed`](Self::elapsed) sums several scanners' working
+    /// time and is not the duration of anything; the span is
+    /// [`finished_at`](Self::finished_at) less [`started_at`](Self::started_at).
     pub fn is_merged(&self) -> bool {
         self.phases.iter().any(|phase| phase.origin().is_some())
     }
@@ -2672,12 +2228,9 @@ impl ScanReport {
 
     /// Every host recorded, to be changed in place.
     ///
-    /// Crate-private, because a report is a record and letting a consumer edit
-    /// one would make it a mutable document that still claims to describe a scan
-    /// that happened. The one thing that legitimately runs over a finished
-    /// report is a pass adding what the scan already knew but had not been asked
-    /// to conclude, and [`cve::correlate_report`](crate::cve::correlate_report)
-    /// is the whole of that today.
+    /// Crate-private, since a report is a record. Used by
+    /// [`cve::correlate_report`](crate::cve::correlate_report), which adds conclusions
+    /// from what the scan already knew.
     pub(crate) fn hosts_mut(&mut self) -> impl Iterator<Item = &mut Host> {
         self.hosts.values_mut()
     }
@@ -2689,10 +2242,8 @@ impl ScanReport {
 
     /// Looks up a host by the address it is reported under.
     ///
-    /// Where a report holds two link-locals at the same number on different
-    /// segments this answers with the first, since a bare address cannot say
-    /// which was meant. [`host_scoped`](Self::host_scoped) is the lookup that
-    /// can.
+    /// For two link-locals with the same number on different segments, this answers
+    /// with the first; [`host_scoped`](Self::host_scoped) can tell them apart.
     pub fn host(&self, ip: &IpAddr) -> Option<&Host> {
         self.hosts
             .range(ScopedIp::unscoped(*ip)..)
@@ -2704,18 +2255,16 @@ impl ScanReport {
     /// Looks up a host by the address it is reported under, together with the
     /// interface that address is valid on.
     ///
-    /// The exact lookup, and the one to use for a link-local: `fe80::1%en0` and
-    /// `fe80::1%en1` are two hosts and this is what tells them apart.
+    /// The exact lookup, for a link-local: `fe80::1%en0` and `fe80::1%en1` are two
+    /// hosts.
     pub fn host_scoped(&self, ip: &ScopedIp) -> Option<&Host> {
         self.hosts.get(ip)
     }
 
     /// Takes this report's phases, consuming it.
     ///
-    /// For a caller assembling a new report out of several, which needs the
-    /// phases themselves rather than a copy of each. The hosts are read through
-    /// [`hosts`](Self::hosts) before this is called, since folding them is what
-    /// the new report is for.
+    /// For assembling a new report out of several. Read the hosts through
+    /// [`hosts`](Self::hosts) first.
     pub fn into_phases(self) -> Vec<ScanPhase> {
         self.phases
     }
@@ -2731,29 +2280,14 @@ impl ScanReport {
 
     /// When the latest phase stopped looking.
     ///
-    /// The moment this report's findings are *as of*, which is what anything
-    /// judging them against a clock wants: a certificate's remaining validity,
-    /// how stale a record is, which of two reports is the later word. A phase's
-    /// end is its own `started_at + elapsed`, since `elapsed` is measured
-    /// monotonically over that one phase; the report-wide
-    /// [`elapsed`](Self::elapsed) is a sum and cannot be added to a start.
+    /// The moment the findings are *as of*, for judging them against a clock: a
+    /// certificate's remaining validity, staleness, which report is later. Each phase
+    /// ends at its own `started_at + elapsed`.
     ///
-    /// Distinct from [`started_at`](Self::started_at), which answers when the
-    /// job began. The two differ by a scan's duration for an ordinary report and
-    /// by however long the sources span for a merged one.
-    /// A phase whose end cannot be represented is placed at its start. The
-    /// addition is checked because a phase's `elapsed` is not always something
-    /// this engine measured: a report read out of another scanner's document
-    /// carries whatever that document claimed, and nmap's `elapsed` is a decimal
-    /// number of seconds with no bound on it. A [`Duration`] holds five hundred
-    /// billion years quite happily, a [`SystemTime`] does not, and `+` panics on
-    /// the difference: in a method a consumer calls to ask when a report is as
-    /// of.
-    ///
-    /// Placing such a phase at its start understates it, which is the safe
-    /// direction: taken with the `max` below it still says the report had not
-    /// finished before its latest phase began, and that much is true whatever
-    /// the document claimed.
+    /// A phase whose end cannot be represented is placed at its start. An imported
+    /// document's `elapsed` (nmap's is unbounded decimal seconds) may exceed what a
+    /// [`SystemTime`] holds, and the checked addition avoids a panic; the understatement
+    /// is safe.
     pub fn finished_at(&self) -> SystemTime {
         self.phases
             .iter()
@@ -2769,22 +2303,14 @@ impl ScanReport {
 
     /// The moment this report is judged to have happened.
     ///
-    /// A report's findings are as of when it stopped looking, so a report with
-    /// phases is placed by [`finished_at`](Self::finished_at) rather than by
-    /// when its first phase began. For an ordinary scan the two differ by the
-    /// scan's own duration, which no certificate threshold can notice. For a
-    /// report merged out of several they differ by however long the sources
-    /// span, and taking the earliest would judge tonight's certificates against
-    /// last quarter.
+    /// [`finished_at`](Self::finished_at) for a report with phases. For a merged report,
+    /// taking the earliest start would judge tonight's certificates against last
+    /// quarter.
     ///
-    /// A report without phases, a foreign scanner's output, or a scan that
-    /// ended before it wrote a phase down, is placed by the latest time any of
-    /// its hosts was seen, which is the only other thing in the record that is a
-    /// time the scan happened rather than the time it is being read.
+    /// A report without phases is placed by the latest time any host was seen.
     ///
-    /// This is the clock [`merge`](crate::merge) folds sources by and
-    /// [`diff`](crate::diff) places its two sides by, and it is public so that a
-    /// caller can order documents the way those will before handing them over.
+    /// The clock [`merge`](crate::merge) and [`diff`](crate::diff) order documents by;
+    /// public so a caller can order them the same way.
     pub fn observed_at(&self) -> SystemTime {
         if !self.phases.is_empty() {
             return self.finished_at();
@@ -2798,12 +2324,9 @@ impl ScanReport {
 
     /// How long the engine spent scanning, summed over the phases.
     ///
-    /// This is time the engine was working, not the span from the first phase
-    /// starting to the last one ending. The two differ by whatever the caller
-    /// did between phases - rendering a table, waiting for a confirmation - and
-    /// attributing that to the scan would make the engine look slower than it
-    /// is. For the wall-clock span, take the difference between
-    /// [`started_at`](Self::started_at) and the last phase's end.
+    /// Working time, excluding whatever the caller did between phases. For the
+    /// wall-clock span, use [`finished_at`](Self::finished_at) less
+    /// [`started_at`](Self::started_at).
     pub fn elapsed(&self) -> Duration {
         self.phases.iter().map(ScanPhase::elapsed).sum()
     }
@@ -2824,41 +2347,24 @@ impl ScanReport {
         self.phases.iter().flat_map(ScanPhase::probe_stats)
     }
 
-    /// Whether the findings are narrower than the caller asked for, which is
-    /// what a reader of this one flag takes it to answer.
+    /// Whether the findings are narrower than the caller asked for.
     ///
-    /// True wherever the record says part of what was asked went unanswered:
-    /// a strategy that did not run to completion, ground a phase declined
-    /// ([`refusals`](Self::refusals)), a host its own budget left early and no
-    /// phase finished ([`timed_out`](Self::timed_out)), an address no phase
-    /// reached a verdict on ([`undecided`](Self::undecided)), a port
-    /// recorded [`Unasked`](crate::model::port::PortState::Unasked), a
-    /// target never asked that no host holds ([`unreached`](Self::unreached)),
-    /// a pass over the findings a stop left ([`passes_cut`](Self::passes_cut)),
-    /// or a phase whose sitting was killed before it closed
-    /// ([`ScanPhase::is_open`]). Each of those is the report covering less
-    /// than it set out to, and a consumer handed `false` for any of them would
-    /// take a cut-short run as a complete one.
+    /// True wherever part of the request went unanswered: a strategy that did not
+    /// complete, a [refusal](Self::refusals), a host its budget left early that no
+    /// phase finished ([`timed_out`](Self::timed_out)), an address with no verdict
+    /// ([`undecided`](Self::undecided)), a port recorded
+    /// [`Unasked`](crate::model::port::PortState::Unasked), a target never asked that
+    /// no host holds ([`unreached`](Self::unreached)), a pass a stop left
+    /// ([`passes_cut`](Self::passes_cut)), or a phase killed before it closed
+    /// ([`ScanPhase::is_open`]).
     ///
-    /// Read over the report rather than phase by phase, where the report
-    /// holds more than one account of the same ground: a resumed job carries
-    /// the stopped sitting's phases beside the one that finished, and a merge
-    /// holds every source's. What one phase left open and another closed is
-    /// closed. A failure and a refusal stand whatever came after, since
-    /// neither says which ground it cost, and a refusal recurs on every
-    /// sitting of the scan as written.
+    /// Read over the whole report: what one phase left open and another (a resumed
+    /// sitting, a merged source) closed is closed. Failures and refusals always count,
+    /// since neither says which ground it cost.
     ///
-    /// Two things narrow a result and are not counted, because neither is
-    /// coverage that fell short. An address this host could not reach
-    /// ([`ScanPhase::unroutable`]) was never coverable from here, and a port
-    /// left unasked on one is the same fact; an address an exclusion policy
-    /// withheld was never asked for. Counting either would leave a sweep of a
-    /// range with a gap in it, or under any policy at all, never complete.
-    ///
-    /// Nor is a journal that could not be written, which narrows nothing: it
-    /// is filed as a failure so the report says so, and costs only what a
-    /// resume would ask again. Counted, a full disk under a long scan would
-    /// report every host it covered as a scan that fell short.
+    /// Not counted: unreachable addresses ([`ScanPhase::unroutable`]) and their unasked
+    /// ports, addresses an exclusion withheld, and a journal that could not be written,
+    /// none of which is coverage that fell short.
     pub fn is_partial(&self) -> bool {
         self.phases.iter().any(|phase| {
             phase.failures.iter().any(ScannerFailure::narrows_coverage)
@@ -2875,9 +2381,7 @@ impl ScanReport {
     /// of its kind from the same account closed: the report of a job whose
     /// last sitting was killed, or is still running.
     ///
-    /// On the terms [`passes_cut`](Self::passes_cut) gives: a resumed job's
-    /// next sitting asks what the killed one did not settle, so one that
-    /// closes is what the killed sitting left, done.
+    /// On the terms [`passes_cut`](Self::passes_cut) gives.
     pub fn left_open(&self) -> bool {
         self.phases.iter().enumerate().any(|(at, phase)| {
             phase.open
@@ -2890,13 +2394,9 @@ impl ScanReport {
     /// The passes a stop left that no later sitting of the same account ran,
     /// in the order a scan runs them.
     ///
-    /// Stands until a later phase of the same kind from the same account, on
-    /// the terms [`unreached`](Self::unreached) gives: a resumed job's next
-    /// sitting runs the passes over every host the stopped one found, since
-    /// a sitting stopped before its end leaves its hosts owed them, so what
-    /// that sitting left is closed unless it too was cut. Across accounts a
-    /// pass stands, since another document's scan of the same ground says
-    /// nothing about which hosts its passes reached.
+    /// Stands until a later phase of the same kind from the same account, as with
+    /// [`unreached`](Self::unreached): a resumed sitting runs the passes over every host
+    /// the stopped one found. Across accounts a pass stands.
     pub fn passes_cut(&self) -> Vec<Pass> {
         let mut passes: Vec<Pass> = self
             .phases
@@ -2917,18 +2417,12 @@ impl ScanReport {
     /// How many port targets this report's phases never asked and hold on no
     /// host, and no later sitting of the same account took up.
     ///
-    /// A phase's [`unreached`](ScanPhase::unreached) count stands until a
-    /// later phase of the same kind from the same account: a resumed job's
-    /// next sitting walks what the earlier one left, so what it left is the
-    /// job's remainder in its place, and the earlier count is not added to
-    /// it. The account is the document a phase came from, or this engine's
-    /// own run for a phase with no [`origin`](ScanPhase::origin), which is
-    /// every sitting of a job resumed from its journal.
+    /// A phase's [`unreached`](ScanPhase::unreached) count is replaced by a later phase
+    /// of the same kind from the same account, since a resumed sitting walks what the
+    /// earlier one left. The account is the document a phase came from, or this engine's
+    /// own run for a phase with no [`origin`](ScanPhase::origin).
     ///
-    /// Across accounts a count stands. It names no targets, so a report
-    /// merged from another document's scan of the same ground cannot say
-    /// which of them that scan covered, and reading them as covered would
-    /// call the merge complete on no evidence.
+    /// Across accounts a count stands, since it names no targets.
     pub fn unreached(&self) -> u128 {
         self.phases
             .iter()
@@ -2947,13 +2441,10 @@ impl ScanReport {
     /// ascending: named [`undecided`](ScanPhase::undecided) by some phase, and
     /// decided by none.
     ///
-    /// A phase decided an address it walked and did not name as undecided,
-    /// and the report decided one it holds a live host at or that some phase
-    /// could not reach. So the second sitting of a resumed job closes what
-    /// the first left open, and so does a later sweep merged with a stopped
-    /// one. Each phase keeps its own list as the record of that phase; this is
-    /// what the report as a whole left open, and what
-    /// [`is_partial`](Self::is_partial) and a comparison read.
+    /// An address is decided by a phase that walked it without naming it undecided, by
+    /// a live host at it, or by some phase finding it unreachable. So a resumed sitting
+    /// or a later merged sweep closes what an earlier one left open. Read by
+    /// [`is_partial`](Self::is_partial) and comparisons.
     pub fn undecided(&self) -> Vec<IpRange> {
         let mut open = IpSet::new();
         let mut decided = IpSet::new();
@@ -2979,8 +2470,7 @@ impl ScanReport {
         open.subtract(&decided);
         open.canonicalize();
 
-        // Last, and only the live hosts' addresses still open, since those
-        // are the only ones that can change what is left.
+        // Last: only the live hosts' addresses still open can change the result.
         let alive = listed_within(self.hosts.values().filter(|host| host.is_alive()), &open);
         open.subtract(&alive);
         open.canonicalize();
@@ -2992,14 +2482,9 @@ impl ScanReport {
     /// The addresses a phase's own time budget left early and no phase
     /// finished, ascending.
     ///
-    /// A phase finished an address where it walked it and did not run out of
-    /// time on it, and it has to be a phase of the same kind: a sweep that
-    /// found a host says nothing of the ports a port scan left unasked there.
-    /// So a resumed job whose second sitting finished a host the first
-    /// sitting's budget cut short has left nothing early, while one whose
-    /// second sitting ran out of time on it again has. Each phase keeps its
-    /// own [`timed_out`](ScanPhase::timed_out) list as the record of that
-    /// phase.
+    /// A phase of the same kind that walked an address without running out of time
+    /// finishes it; a sweep says nothing about ports a port scan left unasked. Each
+    /// phase keeps its own [`timed_out`](ScanPhase::timed_out) list.
     pub fn timed_out(&self) -> Vec<IpAddr> {
         let walked: Vec<IpSet> = self
             .phases
@@ -3034,13 +2519,10 @@ impl ScanReport {
     /// [`Unasked`](crate::model::port::PortState::Unasked): named by the scan,
     /// and never probed.
     ///
-    /// A host every one of whose addresses a phase names as unroutable is left
-    /// out, since a port there went unasked because nothing could be sent to
-    /// it, which [`is_partial`](Self::is_partial) does not count.
+    /// A host whose every address a phase names unroutable is left out, as
+    /// [`is_partial`](Self::is_partial) does not count it.
     ///
-    /// The ports are read first, and an address only of a host with a port
-    /// unasked: a report that left nothing unasked, which is nearly every
-    /// report, reads no address and gathers no unroutable one.
+    /// Ports are read first, so a report with nothing unasked reads no addresses.
     pub(crate) fn left_ports_unasked(&self) -> bool {
         let mut unasked = self
             .hosts
@@ -3096,11 +2578,8 @@ impl ScanReport {
 
     /// The hosts this report found alive, as targets for a port scan.
     ///
-    /// The join between the engine's two phases, which is the whole economy of
-    /// having two: sweep a range cheaply, then spend the expensive phase only on
-    /// what answered. Without this a caller has to walk the hosts, filter them,
-    /// and assemble four types by hand to say something the report already
-    /// knows.
+    /// The join between the two phases: sweep a range cheaply, then port-scan only what
+    /// answered.
     ///
     /// ```no_run
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -3112,8 +2591,7 @@ impl ScanReport {
     /// let (_, sweep) = discover(to_set(&["192.0.2.0/24"], None, None)?, &cfg).await?;
     /// let mut report = sweep.join().await?;
     ///
-    /// // The sweep already established these hosts answer, so the scan is told
-    /// // to take them on trust rather than probe for liveness a second time.
+    /// // The sweep established these hosts answer, so skip a second liveness pass.
     /// let mut scanning = cfg.clone();
     /// scanning.assume_up = true;
     /// let targets = report.alive_targets(PortSet::try_from("22,80,443")?);
@@ -3123,21 +2601,13 @@ impl ScanReport {
     /// # }
     /// ```
     ///
-    /// Only hosts that answered. [`Host::is_alive`] is the filter, so a host
-    /// recorded as [`Down`](HostStatus::Down), a router said it was
-    /// unreachable, or [`Unknown`](HostStatus::Unknown) is left out. Probing an
-    /// address nothing answered for costs a full port scan's worth of silence to
-    /// learn what the sweep already established.
+    /// Only hosts for which [`Host::is_alive`] holds, so [`Down`](HostStatus::Down) and
+    /// [`Unknown`](HostStatus::Unknown) hosts are left out.
     ///
-    /// One address per host, the one it is reported under. A dual-stack host
-    /// is one machine and is scanned once, at the address
-    /// [`Host::primary_ip`] picked; scanning both would report it twice, keyed
-    /// separately, which is the outcome that ranking exists to prevent. A caller
-    /// who does want every address can build the set from [`Host::ips`] instead.
+    /// One address per host, [`Host::primary_ip`], so a dual-stack host is scanned
+    /// once. Build the set from [`Host::ips`] to scan every address.
     ///
-    /// A link-local address carries the interface it was found on, because it is
-    /// meaningless without one: `fe80::1` names a different machine on every
-    /// segment, and the sweep that found it is the only thing that knows which.
+    /// A link-local address carries the interface it was found on.
     pub fn alive_targets(&self, ports: PortSet) -> TargetMap {
         let mut ips = IpSet::new();
 
@@ -3149,10 +2619,7 @@ impl ScanReport {
                     }
                 }
                 IpAddr::V6(v6) => {
-                    // The zone is kept for exactly the addresses that cannot be
-                    // reached without one, and dropped for the rest for the
-                    // reason `ScopedIp` drops it: the same global address
-                    // through two interfaces is one address, not two.
+                    // Kept only for addresses that need it, as `ScopedIp` does.
                     let zone = v6
                         .is_unicast_link_local()
                         .then(|| host.zone().and_then(Zone::index))
@@ -3167,10 +2634,7 @@ impl ScanReport {
         ips.canonicalize();
 
         let mut targets = TargetMap::new();
-        // An empty unit is not the same as no unit: a `TargetMap` holding a set
-        // with no addresses would have a port dimension and nothing to apply it
-        // to, and `scan` would report a phase that covered nothing rather than
-        // one there was nothing to do.
+        // No empty unit, or `scan` would report a phase that covered nothing.
         if !ips.is_empty() {
             targets.add_unit(TargetSet::new(ips, ports));
         }
@@ -3183,9 +2647,7 @@ impl ScanReport {
     /// discovered in the first phase keeps its MAC and telemetry when the second
     /// adds its ports. Phases and their failures are appended in call order.
     ///
-    /// The engine version is left as this report's. Two reports from different
-    /// engine builds are not part of one job, and silently averaging their
-    /// provenance would be worse than keeping the first.
+    /// The engine version is left as this report's.
     pub fn merge(&mut self, other: ScanReport) {
         self.fold(other, Host::merge);
     }
@@ -3193,15 +2655,10 @@ impl ScanReport {
     /// Folds `later`, a report closed against the same live hosts as this one
     /// and after it, into this report.
     ///
-    /// For a scan that closes one phase and goes on with the store it closed
-    /// against: a host in both reports is one host copied twice, and the later
-    /// copy holds every round trip the earlier did, as far as its window
-    /// reaches. Folded as two accounts with nothing in common, each of those
-    /// counts twice, and the window the report keeps is the newest half of
-    /// them twice over rather than the store's own. So the later's round
-    /// trips are taken in place of these, as a journal's later record's are;
-    /// see [`Host::merge_later_account`]. Everything else folds as
-    /// [`merge`](Self::merge) folds it.
+    /// For a scan that closes one phase and continues with the same store: a host in
+    /// both reports is one host copied twice, and its round trips would count twice. So
+    /// the later's round trips replace these; see [`Host::merge_later_account`].
+    /// Everything else folds as [`merge`](Self::merge) does.
     pub(crate) fn merge_later_copy(&mut self, later: ScanReport) {
         self.fold(later, Host::merge_later_account);
     }
@@ -3224,12 +2681,8 @@ impl ScanReport {
     /// Drops every host nothing was heard from at an address a phase names
     /// [`silent`](ScanPhase::silent).
     ///
-    /// Applied wherever a report is assembled, from a scan, from a journal and
-    /// from a merge, rather than once where the scan ends. A journal writes
-    /// hosts down as they change, so a record of an address later found silent
-    /// can already be on disk, and a resumed job restores it beside the later
-    /// sittings' phases. Read against every phase the report holds, the answer
-    /// is the same however the report came together. See [`Unheard`].
+    /// Applied wherever a report is assembled (scan, journal, merge), since a journal
+    /// may already hold a record of an address later found silent. See [`Unheard`].
     fn forget_the_silent(&mut self) {
         let unheard = Unheard::of(&self.phases);
         if unheard.is_empty() {
@@ -3244,16 +2697,10 @@ impl ScanReport {
 /// [`silent`](ScanPhase::silent), and what it named
 /// [`undecided`](ScanPhase::undecided).
 ///
-/// One reading for every place a record of such an address is dropped: a
-/// report as it is assembled, a journal as it restores an earlier sitting's
-/// findings, and a journal's findings file as a sitting ends. A journal writes
-/// hosts down as they change, before the phase has decided which it heard
-/// nothing from, so each of those meets records the others would drop, and
-/// they agree because they read this.
+/// Shared by every place such a record is dropped (report assembly, journal restore,
+/// a journal's findings file at the end of a sitting), so they agree.
 ///
-/// What a port phase standing in for a liveness pass left undecided is no host
-/// either, for the reason `ScanPhase::undecided` gives. A discovery phase's
-/// undecided addresses are left alone: nothing of its own is listed there.
+/// A discovery phase's undecided addresses are left alone.
 pub(crate) struct Unheard(IpSet);
 
 impl Unheard {
@@ -3266,13 +2713,9 @@ impl Unheard {
     /// never closed has yet to decide: what a sitting continuing the job
     /// leaves out of what it restores.
     ///
-    /// A port phase standing in for a liveness pass, killed before its end,
-    /// names undecided every address of a record it had not reached a verdict
-    /// on, so the job's report makes no host of one. The next sitting asks
-    /// what that phase left there and decides the record with it: restored,
-    /// the ports asked of it stay on the host an answer proves, and are
-    /// counted where the address proves silent. What the phase named silent
-    /// it had decided, and is left out here too.
+    /// A killed port phase standing in for liveness names every undecided address; the
+    /// next sitting restores those records and decides them. Silent addresses were
+    /// decided and stay out.
     #[cfg(feature = "journal-format")]
     pub(crate) fn decided<'a>(phases: impl IntoIterator<Item = &'a ScanPhase>) -> Self {
         Self::reading(phases, false)
@@ -3304,8 +2747,7 @@ impl Unheard {
     /// Whether `host` is a record to drop: one still
     /// [`Unknown`](HostStatus::Unknown) at an address heard nothing from.
     ///
-    /// One that answered in any phase, or in any document merged in, carries
-    /// that evidence and is a host whatever another phase heard.
+    /// A host that answered in any phase or merged document stays.
     pub(crate) fn drops(&self, host: &Host) -> bool {
         host.status() == HostStatus::Unknown && host.ips().iter().any(|ip| self.0.contains(ip))
     }
@@ -3313,11 +2755,8 @@ impl Unheard {
 
 /// The addresses `hosts` are listed at that fall inside `within`.
 ///
-/// Those are the only ones that can change what subtracting the hosts from
-/// `within` leaves, and a host list is as long as its report is large: a set
-/// of every address on it is a second copy of the largest thing in the report,
-/// held for a subtraction the addresses outside `within` take no part in.
-/// `within` is asked once per address, so a caller hands it merged.
+/// Only these affect subtracting the hosts from `within`, and collecting every address
+/// would copy the largest thing in the report. `within` should be merged.
 fn listed_within<'h>(hosts: impl Iterator<Item = &'h Host>, within: &IpSet) -> IpSet {
     let mut listed = IpSet::new();
     if within.is_empty() {
@@ -3343,11 +2782,7 @@ fn append(into: &mut IpSet, from: &IpSet) {
 
 /// Keys hosts by the address each is reported under.
 ///
-/// Folds rather than replaces where two records key the same, which is what a
-/// caller means by handing over two records of one host: the live store already
-/// folds them, and a caller assembling a report by hand should not lose a
-/// finding for having done it in two pieces. Replacing was the previous
-/// behaviour and it discarded whichever record arrived first, silently.
+/// Two records with the same key are folded, as the live store does.
 fn index(hosts: impl IntoIterator<Item = Host>) -> BTreeMap<ScopedIp, Host> {
     let mut indexed: BTreeMap<ScopedIp, Host> = BTreeMap::new();
 
@@ -3376,14 +2811,9 @@ fn index(hosts: impl IntoIterator<Item = Host>) -> BTreeMap<ScopedIp, Host> {
 // Naming the strategies
 // --------------------------------------------------------------------------
 //
-// Which strategy a failure, a refusal or a set of counters belongs to. Last
-// because everything above refers to it and nothing it refers to is here.
+// Which strategy a failure, refusal or set of counters belongs to.
 
 /// Which scanning strategy a [`ScanEvent::ScannerFailed`](crate::scanner::session::ScanEvent::ScannerFailed) refers to.
-///
-/// Marked `#[non_exhaustive]`: strategies are added as the engine learns to
-/// probe in new ways, and a consumer matching on this enum should pay for that
-/// with a recompile rather than a major version.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScannerKind {
@@ -3391,22 +2821,16 @@ pub enum ScannerKind {
     Local,
     /// Reading a link's own traffic, having sent nothing.
     ///
-    /// The one strategy here that puts no packet on the wire, which changes
-    /// what its counters mean. `sends_attempted` is zero for it and always
-    /// will be; what it saw is bounded by what the network happened to carry
-    /// rather than by anything this engine chose, so a quiet run says the
-    /// segment was quiet and never that a host was absent.
+    /// Sends nothing, so `sends_attempted` is always zero, and a quiet run means a quiet
+    /// segment, not an absent host.
     Passive,
     /// Raw TCP SYN discovery for gateway-routed targets.
     Routed,
     /// The same sweep asking over SCTP: one INIT per address, for a scan whose
     /// ports name SCTP.
     ///
-    /// Named apart from [`Routed`](Self::Routed) because it is a different
-    /// question put to the network and it fails for its own reasons. A host
-    /// behind a filter that passes SCTP and drops TCP answers this and nothing
-    /// else, and a report attributing that finding to the SYN sweep would
-    /// describe a packet which drew silence.
+    /// Separate from [`Routed`](Self::Routed): a host behind a filter that passes SCTP
+    /// and drops TCP answers only this.
     RoutedSctp,
     /// Raw TCP SYN port scanning (the port-scan phase, distinct from [`Routed`]
     /// host discovery).
@@ -3416,10 +2840,8 @@ pub enum ScannerKind {
     /// Raw TCP port scanning with a probe that is not a SYN - a FIN, a flagless
     /// segment, a bare ACK.
     ///
-    /// The same scanner as [`SynPort`], asking a different question. They are
-    /// named apart because a report saying `syn_port` should mean a half-open
-    /// connection attempt was made, and for these it was not; which technique
-    /// ran is in the phase's settings.
+    /// The same scanner as [`SynPort`], named apart because no half-open connection was
+    /// attempted. The technique is in the phase's settings.
     ///
     /// [`SynPort`]: ScannerKind::SynPort
     TcpPort,
@@ -3428,11 +2850,8 @@ pub enum ScannerKind {
     Connect,
     /// Unprivileged UDP fallback.
     ///
-    /// Named apart from [`Connect`] because a report has to be able to say which
-    /// half of an unprivileged scan failed. The two send different datagrams,
-    /// read different answers, and fail for different reasons: a host that
-    /// refuses one may be perfectly happy with the other, and one name for both
-    /// makes that indistinguishable.
+    /// Separate from [`Connect`], so a report says which half of an unprivileged scan
+    /// failed.
     ///
     /// [`Connect`]: ScannerKind::Connect
     ConnectUdp,
@@ -3441,46 +2860,34 @@ pub enum ScannerKind {
     /// Privileged raw SCTP port scanning: an INIT chunk per port, classified by
     /// the chunk that answers it.
     ///
-    /// Named apart from the others because there is no unprivileged form of it
-    /// to fall back to and no service pass behind it, so a report saying this
-    /// step failed is saying the SCTP ports went unprobed entirely.
+    /// No unprivileged fallback and no service pass, so its failure means the SCTP ports
+    /// went unprobed.
     SctpPort,
     /// The active operating-system echo probe, sent at the hosts the passive
     /// sources could not name.
     ///
-    /// Named apart from the port scanners because it answers a different
-    /// question about a different dimension: not which ports a host has, but
-    /// which stack answered the ping. A report attributing an echo probe to any
-    /// other strategy would describe traffic nobody sent.
+    /// Establishes no port state; it asks which stack answers the ping.
     OsEcho,
     /// The active operating-system series probe: one host asked the same
     /// question several times, so the policies behind its counters become
     /// visible.
     ///
-    /// Named apart from [`SynPort`] though it sends the same segment, because
-    /// what it is doing with the answers is a different activity and a report
-    /// that filed it as a port scan would describe traffic nobody asked for:
-    /// these probes revisit ports whose state is already settled, and none of
-    /// their replies changes one.
+    /// Sends the same segment as [`SynPort`] but revisits settled ports, and no reply
+    /// changes a port's state.
     ///
     /// [`SynPort`]: ScannerKind::SynPort
     OsSeries,
     /// The active operating-system management probe: one SNMP `GetRequest` at a
     /// host whose kernel is not otherwise known.
     ///
-    /// Named apart from the port scanners because it establishes no port state.
-    /// It asks one question of one service and files the answer against the
-    /// *host*; whether anything is listening on 161 is the port scan's to
-    /// report, and this phase does not.
+    /// Establishes no port state; the answer is filed against the *host*.
     OsSnmp,
     /// The idle (zombie) TCP port scan: port states read off a third party's
     /// IP-ID counter rather than from any reply the target sent this scanner.
     ///
-    /// Named apart from [`SynPort`](Self::SynPort) though the forged probe is a
-    /// SYN, because what it produces and what can go wrong are its own: a
-    /// verdict is `Open` or `ClosedOrNoReply` and nothing finer, and a run is
-    /// refused for want of a suitable zombie or an Ethernet path where a raw SYN
-    /// scan would simply have proceeded.
+    /// Separate from [`SynPort`](Self::SynPort): verdicts are only `Open` or
+    /// `ClosedOrNoReply`, and a run is refused without a suitable zombie or an Ethernet
+    /// path.
     Idle,
     /// Composite scanner that delegates to protocol-specific scanners.
     Composite,
@@ -3490,50 +2897,36 @@ pub enum ScannerKind {
     /// port open on, wherever what it left is about services rather than
     /// states.
     ///
-    /// Named apart from [`Connect`] though it makes the same kind of
-    /// connection, because a report has to be able to say which pass lost work.
-    /// A connect scan that failed means port *states* are missing; this failing
-    /// means the states stand and the services behind them were not identified,
-    /// which is a narrower and differently actionable result. Filed as
-    /// `connect`, a scan that ran no connect strategy at all reported one as
-    /// having broken.
+    /// Separate from [`Connect`]: a connect failure loses port *states*; this losing
+    /// work leaves states standing and services unidentified.
     ///
     /// [`Connect`]: ScannerKind::Connect
     Service,
     /// The detection pass, which runs the authored corpus over the services the
     /// scan identified.
     ///
-    /// Named apart from [`Service`] because it depends on it and can fail
-    /// alone: with the services named and this pass broken, the report carries
-    /// every port and none of the findings a detection would have drawn.
+    /// Separate from [`Service`], since it can fail alone and lose only findings.
     ///
     /// [`Service`]: ScannerKind::Service
     Detection,
     /// The journal a scan was writing itself into.
     ///
-    /// Not a strategy, and here because it is the one channel a library
-    /// consumer reads without opting in. A checkpoint that could not be written
-    /// costs nothing a scan found and everything a *resume* would have skipped,
-    /// so it is a fact about the disk rather than about the network, and
-    /// filing it as a scanning strategy would tell a caller that ports had gone
-    /// unprobed when none had.
+    /// Not a strategy; here because failures are the channel every consumer reads. A
+    /// failed checkpoint costs only what a *resume* would have skipped.
     Journal,
     /// The hostname resolver a scan names its hosts with: the passive one
     /// that reads a link's DNS and mDNS, or the reverse lookups asked of the
     /// system's resolver.
     ///
-    /// Named apart because what it loses is names and nothing else. Without
-    /// a failure filed under it, a scan whose resolver never started reports
-    /// hosts with no hostname, which reads as hosts that have none.
+    /// Loses only names; without this, missing hostnames would read as hosts that have
+    /// none.
     Resolver,
 }
 
 /// What a `CongestionWindow` did over one run.
 ///
-/// Instrumentation rather than telemetry: it says whether pacing engaged and how
-/// hard, which is the difference between "this host is firewalled" and "this
-/// host was asked too fast", and that difference is otherwise invisible in
-/// everything else a scan reports.
+/// Says whether pacing engaged and how hard, which tells "this host is firewalled" from
+/// "this host was asked too fast".
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowSummary {
@@ -3547,11 +2940,8 @@ pub struct WindowSummary {
     pub adaptive: bool,
     /// Whether it finished cut back as far as it is permitted to go.
     ///
-    /// The controller having run out of room, which is the one state worth
-    /// telling an operator about: it means the scan was still being outrun when
-    /// it stopped, so what it recorded as silence may be loss rather than
-    /// filtering, and the remedy is a narrower scan rather than a different
-    /// setting.
+    /// The scan was still being outrun when it stopped, so recorded silence may be loss.
+    /// The remedy is a narrower scan.
     pub at_floor: bool,
 }
 
@@ -3577,13 +2967,8 @@ impl WindowSummary {
 }
 
 impl ScannerKind {
-    /// Every strategy this build knows, in declaration order.
-    ///
-    /// Here for the reason [`Protocol::ALL`](crate::model::port::Protocol::ALL)
-    /// gives: the enum is `#[non_exhaustive]`, and the export conformance suite
-    /// reads this list against the published schema's own and fails unless they hold
-    /// the same names. A variant added without a place in the schema is a value this
-    /// engine writes and no consumer's validator accepts.
+    /// Every strategy this build knows, in declaration order. Checked against the
+    /// published schema.
     pub const ALL: &'static [Self] = &[
         Self::Local,
         Self::Passive,
@@ -3608,13 +2993,8 @@ impl ScannerKind {
 
     /// What a raw TCP scan carrying `technique` reports itself as.
     ///
-    /// One function because the answer has to be the same everywhere it is
-    /// asked, and it is asked twice: once by the plan, to attribute a step that
-    /// could not open its socket, and once by the running scanner, to attribute
-    /// anything that went wrong afterwards. Two spellings meant one strategy
-    /// filed its failures under two names depending on when it failed, and the
-    /// planning half called every technique [`SynPort`](Self::SynPort) whether
-    /// or not a SYN was involved.
+    /// Shared by the plan and the running scanner, so a strategy files its failures
+    /// under one name.
     pub const fn for_raw_tcp(technique: TcpScanTechnique) -> Self {
         match technique {
             TcpScanTechnique::Syn => Self::SynPort,
@@ -3642,9 +3022,7 @@ impl fmt::Display for WindowSummary {
 #[cfg(test)]
 mod tests {
 
-    /// A scanner's achieved rate is its sends over its run, and a run with no
-    /// time to divide by has none rather than an infinite one or a zero that
-    /// reads as a scan that sent nothing.
+    /// A run with no elapsed time has no achieved rate.
     #[test]
     fn a_scanners_achieved_send_rate_is_its_sends_over_its_run() {
         let mut stats = crate::export::fixture::probe_stats();
@@ -3656,12 +3034,8 @@ mod tests {
         assert_eq!(stats.achieved_send_rate(), None);
     }
 
-    /// A phase counts every address its policy kept out of it, not only the
-    /// targets it was handed: the neighbours a sweep would have taken from the
-    /// tables, and the addresses an excluded machine answered from during the
-    /// phase, each once. The report lists all of them among the excluded, and
-    /// a count short of that list reads as the policy meeting fewer addresses
-    /// than the list shows it met.
+    /// A phase counts every address its policy kept out, each once, including neighbours
+    /// and addresses an excluded machine answered from.
     #[test]
     fn a_phase_counts_every_address_its_policy_withheld_once() {
         let address = |text: &str| -> IpAddr { text.parse().expect("literal") };
@@ -3679,8 +3053,7 @@ mod tests {
         scope.record_withheld(
             // Tied before the phase, and heard during it.
             vec![address("2001:db8::5"), address("fe80::5")],
-            // Kept from the sweep, which would have taken the tied address
-            // from the neighbour table as a candidate.
+            // Kept from the sweep's neighbour-table candidates.
             vec![address("2001:db8::5")],
         );
 
@@ -3704,9 +3077,7 @@ mod tests {
         );
     }
 
-    /// A phase given one port set for every address can say a particular
-    /// endpoint was probed. One given different sets cannot, and the union it
-    /// publishes says so.
+    /// A uniform port set can say an endpoint was probed; a mixed one cannot.
     #[test]
     fn a_scope_says_whether_its_addresses_agree_about_ports() {
         use crate::model::parse::ip::to_set;
@@ -3747,8 +3118,7 @@ mod tests {
         );
     }
 
-    /// A sweep walks addresses, and that is a fact about its endpoints rather
-    /// than an absence of one.
+    /// A sweep's scope is `NoPorts`, not `Unstated`.
     #[test]
     fn a_discovery_sweep_walked_no_ports_and_says_so() {
         let mut ips = crate::model::parse::ip::to_set(&["192.0.2.0/30"], None, None).unwrap();
@@ -3819,12 +3189,8 @@ mod tests {
         host
     }
 
-    /// **What the report left undecided is closed by a live host inside it,
-    /// and only the hosts inside it are gathered to find out.** A host list
-    /// is as long as its report is large, and a copy of every address on it,
-    /// held to subtract from a handful the phases left open, is a second copy
-    /// of the report. The answer is the same either way, so what is gathered is
-    /// counted where a set takes each address in.
+    /// **A live host inside an undecided range closes it, and only hosts inside are
+    /// gathered.**
     #[test]
     fn only_a_live_host_inside_what_was_left_open_is_gathered_to_close_it() {
         use crate::model::ip::set::ranges_added;
@@ -3868,9 +3234,7 @@ mod tests {
         Ipv4Addr::new(203, 0, 113, last)
     }
 
-    /// A report reads a host's addresses for ports left unasked only where the
-    /// host has one, and a host every address of which some phase could not
-    /// route to does not count.
+    /// Unasked ports count only on hosts that some phase could route to.
     #[test]
     fn ports_left_unasked_count_only_on_a_host_the_scan_could_reach() {
         let unasked = |last| {
@@ -3890,11 +3254,8 @@ mod tests {
         assert!(!ScanReport::new(sweep, [asked]).left_ports_unasked());
     }
 
-    /// **A report that left no port unasked reads no host's addresses to say
-    /// so, and one that left some reads only the hosts holding one.** Nearly
-    /// every report leaves nothing unasked, and asking whether a report is
-    /// partial asks this, so a walk over every address of every host would be
-    /// paid in full to find nothing.
+    /// **A report with no port unasked reads no host addresses; one with some reads only
+    /// the hosts holding one.**
     #[test]
     fn ports_left_unasked_are_looked_for_without_reading_every_host() {
         use crate::model::host::address_reads;
@@ -3933,15 +3294,10 @@ mod tests {
         );
     }
 
-    /// An address a port phase asked on every port and heard nothing from is
-    /// not a host, as the liveness pass that phase stood in for would not have
-    /// made it one. A host that answered is kept, and so is an unanswering one
-    /// at an address the phase does not name, which is what a caller asking
-    /// for every address as a host gets.
-    /// An address a port phase standing in for liveness left undecided is no
-    /// host either, and a record of it read back from a journal is dropped by
-    /// the same list; an address a discovery phase left undecided keeps
-    /// whatever record another phase filed there.
+    /// A silent or undecided address of a port phase standing in for liveness is not a
+    /// host. A host that answered is kept, as is an unanswering one at an address the
+    /// phase does not name, and a discovery phase's undecided addresses keep their
+    /// records.
     #[test]
     fn a_host_nothing_answered_at_an_undecided_address_is_not_a_host() {
         let mut ports = standing_in(&[]);
@@ -3980,10 +3336,7 @@ mod tests {
         );
     }
 
-    /// Read back from a journal, a record the first sitting wrote down before
-    /// the phase found its address silent comes back beside that phase, and is
-    /// dropped all the same: the answer is the report's, not the order a
-    /// record reached the disk in.
+    /// A journal record written before its address was found silent is still dropped.
     #[test]
     fn a_journalled_record_at_a_silent_address_is_dropped_on_read_back() {
         let resumed = ScanReport::from_phases(vec![standing_in(&[5])], [unheard(5)]);
@@ -3993,9 +3346,8 @@ mod tests {
         assert!(recorded.host(&ip(5)).is_none());
     }
 
-    /// A host another phase or document heard from stays a host after a merge
-    /// with one that found its address silent: that evidence is not undone by
-    /// a later silence, which says only that it was quiet then.
+    /// A host heard from elsewhere stays a host after a merge with a phase that found
+    /// its address silent.
     #[test]
     fn a_host_heard_elsewhere_survives_a_phase_that_found_it_silent() {
         let mut up = Host::new(ip(5));
@@ -4012,19 +3364,9 @@ mod tests {
         );
     }
 
-    /// A duration no clock can add to is a phase to place at its start, not a
-    /// process to end.
-    ///
-    /// `finished_at` cannot add a phase's `elapsed` to its start with `+`,
-    /// which panics on overflow, because a phase's `elapsed` is not always
-    /// something this engine measured: a report read out of nmap's XML carries
-    /// whatever `<finished elapsed="...">` claimed, and that is a decimal number
-    /// of seconds with no bound on it. A `Duration` holds five hundred billion
-    /// years and a `SystemTime` does not.
-    ///
-    /// The panic would take the process down from inside `ScanDiff::between`,
-    /// which is what a nightly comparison calls on every report it reads, and
-    /// `elapsed="1222222222…"` is enough to cause it.
+    /// A phase whose end overflows `SystemTime` is placed at its start, without
+    /// panicking. An nmap XML `elapsed="1222222222…"` is enough to reach it, through
+    /// `ScanDiff::between`.
     #[test]
     fn a_phase_claiming_more_time_than_a_clock_holds_does_not_end_the_process() {
         let mut absurd = phase(ScanKind::PortScan);
@@ -4042,7 +3384,7 @@ mod tests {
             "the phase that could be placed is the one that should place the report"
         );
 
-        // And the comparison that reads it, which is where the panic surfaced.
+        // The comparison that reads it.
         assert!(crate::diff::ScanDiff::between(&report, &report).is_empty());
     }
 
@@ -4059,8 +3401,7 @@ mod tests {
 
         let scope = TargetScope::from_ip_set(&mut ips, &Exclusions::none());
 
-        // The second range is wholly inside the first, so the scope covers one
-        // /24 rather than the 384 addresses the two arguments add up to.
+        // The second range is inside the first, so the scope is one /24.
         assert_eq!(scope.ranges().len(), 1);
         assert_eq!(scope.addresses(), 256);
         assert_eq!(scope.probes(), None);
@@ -4085,15 +3426,7 @@ mod tests {
         assert_eq!(scope.protocols(), &[Protocol::Tcp, Protocol::Udp]);
     }
 
-    /// A phase's settings are what a reader needs to interpret its findings, so
-    /// a run that put something different on the wire has to record something
-    /// different.
-    ///
-    /// The other half of this, that a run differing only in how it was
-    /// *displayed* records the same settings, holds by construction:
-    /// presentation is the front end's and no field of [`ZondConfig`] is about
-    /// it, so there is nothing that could leak into a report and nothing for a
-    /// test to catch.
+    /// A run that put something different on the wire records different settings.
     #[test]
     fn settings_record_what_changed_the_scan() {
         let scanning = ZondConfig {
@@ -4136,10 +3469,7 @@ mod tests {
         assert_eq!(summary.services_identified, 1);
     }
 
-    /// Every scan path seeds a port with the name its number is registered
-    /// under, closed and silent ones included, so counting ports that carry
-    /// a service would report hundreds of identifications on a host with a
-    /// handful of open ports. Only a name something answered for is one.
+    /// Names inferred from port numbers are not counted as identified.
     #[test]
     fn summary_counts_no_name_read_off_a_port_number_as_identified() {
         let mut host = Host::new(ip(1));
@@ -4159,9 +3489,7 @@ mod tests {
         assert_eq!(summary.services_identified, 1);
     }
 
-    /// The whole economy of running discovery first: a host that never answered
-    /// costs a full port scan's worth of silence to learn what the sweep already
-    /// established.
+    /// Only alive hosts become port-scan targets.
     #[test]
     fn only_hosts_that_answered_become_port_scan_targets() {
         let mut up = Host::new(ip(1));
@@ -4176,15 +3504,12 @@ mod tests {
 
         let targets = report.alive_targets(PortSet::from_iter([(80, Protocol::Tcp)]));
 
-        // Up and Blocked are both alive - something is there, whether or not it
-        // is answering for itself. Down and Unknown are not.
+        // Up and Blocked are alive; Down and Unknown are not.
         assert_eq!(targets.gross_ips().expect("countable"), 2);
         assert_eq!(targets.gross_targets().expect("countable"), 2);
     }
 
-    /// A dual-stack host is one machine. Scanning it at every address it holds
-    /// would report it once per address, keyed separately - which is exactly
-    /// what `consider_primary_ip`'s ranking exists to prevent.
+    /// A dual-stack host is scanned once, at its primary address.
     #[test]
     fn a_dual_stack_host_is_scanned_once() {
         let mut dual = Host::new(ip(1));
@@ -4197,10 +3522,7 @@ mod tests {
         assert_eq!(targets.gross_ips().expect("countable"), 1);
     }
 
-    /// `fe80::1` names a different machine on every segment, and a socket cannot
-    /// be opened to one without the interface's scope id. The sweep that found
-    /// it is the only thing that knows which, so the target has to carry it or
-    /// the port scan cannot reach the host discovery just found.
+    /// A link-local target carries the zone the sweep found it on.
     #[test]
     fn a_link_local_target_keeps_the_interface_it_was_found_on() {
         let lla: IpAddr = "fe80::10".parse().unwrap();
@@ -4219,8 +3541,7 @@ mod tests {
         assert_eq!(zones, vec![Some(7)]);
     }
 
-    /// A sweep that found nothing yields no work, not an empty unit carrying a
-    /// port dimension with nothing to apply it to.
+    /// A sweep that found nothing yields no units.
     #[test]
     fn a_sweep_that_found_nothing_yields_no_targets() {
         let report = ScanReport::new(phase(ScanKind::Discovery), [Host::new(ip(1))]);
@@ -4252,8 +3573,8 @@ mod tests {
 
         first.merge(second);
 
-        // The port scan's record of .1 carried no status and no telemetry; the
-        // merge must not let that erase what discovery established.
+        // The port scan's record of .1 has no status or telemetry; the merge keeps
+        // discovery's.
         let host = first.host(&ip(1)).expect("host survives the merge");
         assert_eq!(host.status(), HostStatus::Up);
         assert_eq!(host.port_count(), 1);
@@ -4287,9 +3608,7 @@ mod tests {
         assert_eq!(report.failures().count(), 1);
     }
 
-    /// Work a limit cut short left its ground as unanswered as a failure
-    /// does, so it makes the report partial the same way, and only the mark
-    /// tells the two apart.
+    /// Work cut short by a limit makes the report partial, like a failure.
     #[test]
     fn work_a_limit_cut_short_narrows_the_report_as_a_failure_does() {
         let mut phase = phase(ScanKind::PortScan);
@@ -4305,10 +3624,8 @@ mod tests {
         assert!(!ScannerFailure::new(ScannerKind::Connect, "refused").is_cut_short());
     }
 
-    /// A pass over the findings a stop left makes the report partial, since
-    /// the scan covered less than it was asked to, and a later sitting of the
-    /// same job, which runs the passes again over every host the stopped one
-    /// found, closes it. Another document's scan of the same ground does not.
+    /// A cut pass makes the report partial until a later sitting of the same job runs
+    /// it; another document's scan does not close it.
     #[test]
     fn a_pass_a_stop_cut_makes_a_scan_partial_until_a_later_sitting_runs_it() {
         let stopped = |passes: Vec<Pass>, origin: Option<PhaseOrigin>| {
@@ -4341,10 +3658,6 @@ mod tests {
 
     /// A journal that could not be written is kept in the report and does not
     /// make a scan that covered everything read as partial.
-    ///
-    /// A journal failure probed nothing and dropped no answer. Counted as a
-    /// shortfall, a scan that filled its disk six hours in reported every host
-    /// it covered as a run that fell short, and exited as one.
     #[test]
     fn a_journal_that_could_not_be_written_does_not_make_a_scan_partial() {
         let mut phase = phase(ScanKind::PortScan);
@@ -4358,11 +3671,8 @@ mod tests {
         assert!(!report.is_partial());
     }
 
-    /// **A rebuild reads each distribution for the slots this build counts.**
-    /// A list from a build that counted one more attempt, or bucketed by one
-    /// more bound, loses the slot this one has no place for, and a shorter
-    /// list reads as nothing counted in the slots it lacks, so neither a
-    /// longer nor a shorter record is refused or read out of place.
+    /// **A rebuild reads each distribution for the slots this build counts**, dropping
+    /// extra slots and zeroing missing ones.
     #[test]
     fn a_rebuild_fits_each_distribution_to_the_slots_this_build_counts() {
         let parts = |answered_on: Vec<u64>, found_at: Vec<u64>| ProbeStatsParts {
@@ -4407,8 +3717,7 @@ mod tests {
         assert_eq!(shorter.found_at()[..3], [3, 4, 0]);
     }
 
-    /// A phase whose scanners carry no instrumentation reports no counters,
-    /// which must not be confused with a scanner that measured zero.
+    /// A phase without instrumentation reports no counters, not zeros.
     #[test]
     fn an_uninstrumented_phase_reports_no_probe_stats() {
         let report = ScanReport::new(phase(ScanKind::PortScan), []);
@@ -4427,10 +3736,7 @@ mod tests {
         assert!(!StopReason::TimedOut.is_complete());
     }
 
-    /// **A run whose only host a time budget left early is partial.** The
-    /// host is named in `timed_out` and carries only what the scan reached,
-    /// and a consumer reading the one flag that answers "is this complete"
-    /// was told it was.
+    /// **A run whose only host a time budget left early is partial.**
     #[test]
     fn a_run_that_left_a_host_early_is_partial() {
         let mut left = phase(ScanKind::PortScan);
@@ -4439,10 +3745,8 @@ mod tests {
         assert!(ScanReport::new(left, [Host::new(ip(1))]).is_partial());
     }
 
-    /// **A port phase whose walk a stop cut short leaves its report
-    /// partial.** The targets it never reached are on no host, so nothing else
-    /// in the record says they went unasked: a caller that aborts a scan
-    /// between two batches, with nothing queued, was told the run was complete.
+    /// **A port phase whose walk a stop cut short leaves its report partial**, though
+    /// the unreached targets are on no host.
     #[test]
     fn a_phase_that_never_reached_part_of_its_plan_is_partial() {
         let mut stopped = phase(ScanKind::PortScan);
@@ -4455,8 +3759,7 @@ mod tests {
         assert_eq!(report.unreached(), 6_600);
     }
 
-    /// A stop is a marker and not a shortfall: a phase stopped once its walk
-    /// had reached everything covered all it set out to.
+    /// A phase stopped after reaching everything is not partial.
     #[test]
     fn a_phase_stopped_with_nothing_left_unreached_is_not_partial() {
         let mut stopped = phase(ScanKind::PortScan);
@@ -4465,10 +3768,7 @@ mod tests {
         assert!(!ScanReport::new(stopped, []).is_partial());
     }
 
-    /// **A later sitting of the same job takes up what an earlier one never
-    /// reached.** It walks what the earlier left, so its own count is the
-    /// job's remainder: none where it finished, and not the two added where it
-    /// was stopped again.
+    /// **A later sitting of the same job replaces an earlier one's unreached count.**
     #[test]
     fn a_later_sitting_takes_up_what_an_earlier_one_never_reached() {
         let mut first = phase(ScanKind::PortScan);
@@ -4489,8 +3789,7 @@ mod tests {
         assert_eq!(stopped_twice.unreached(), 1_200);
     }
 
-    /// Across documents a count stands: it names no targets, so another
-    /// document's scan cannot be read as having covered them.
+    /// Across documents an unreached count stands.
     #[test]
     fn another_documents_scan_does_not_take_up_a_count() {
         let mut first = phase(ScanKind::PortScan);
@@ -4518,12 +3817,8 @@ mod tests {
         }
     }
 
-    /// **A host a later sitting finished is not left early.** A resumed job's
-    /// report carries the stopped sitting's phase beside the one that
-    /// finished, and the first still names the host its budget cut short. The
-    /// second walked that host and did not run out of time on it, so the job
-    /// finished it, and a report partial on the first sitting's word would
-    /// stay partial however the resume went.
+    /// **A host a later sitting finished is not left early**, though the first sitting
+    /// still names it.
     #[test]
     fn a_host_a_later_sitting_finished_is_not_left_early() {
         let mut report = ScanReport::new(walked(1, "203.0.113.1", &[ip(1)]), []);
@@ -4537,8 +3832,7 @@ mod tests {
         assert!(again.is_partial());
     }
 
-    /// Every way the record says a run covered less than it set out to makes
-    /// it partial, and ground that was never coverable from here does not.
+    /// Every shortfall makes a report partial; uncoverable ground does not.
     #[test]
     fn every_recorded_shortfall_is_partial_and_an_unreachable_address_is_not() {
         let refused = {
@@ -4617,10 +3911,7 @@ mod tests {
 
     /// A dual-stack host is one host, counted under both families.
     ///
-    /// These counts answer "how much of this network did I see over IPv6",
-    /// which is a different question from "how do the hosts partition", so
-    /// they do not sum to `hosts_total`, and a test that asserted
-    /// they did would be pinning the wrong contract.
+    /// The counts do not sum to `hosts_total`.
     #[test]
     fn family_counts_record_a_dual_stack_host_under_both() {
         let mut dual = Host::new(ip(1));
