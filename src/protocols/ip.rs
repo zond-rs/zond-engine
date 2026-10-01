@@ -9,25 +9,18 @@
 //! # IP headers, and reading what a frame carries
 //!
 //! The network layer: the two headers this engine writes, the hop limits it
-//! writes into them, and the readers that pull an address or a payload back out
-//! of a captured frame.
+//! writes into them, and the readers that pull an address or a payload out of a
+//! captured frame.
 //!
-//! ## The kernel is not in this path
+//! These headers go straight onto the wire over a link-layer send, so nothing
+//! downstream fills in a length, fixes a checksum or picks a fragmentation flag,
+//! and a receiver silently drops what it cannot parse. The builders compute
+//! their own checksums and refuse a length that will not fit its field.
 //!
-//! These headers go straight onto the wire over a link-layer send, so every
-//! field has to be right here. Nothing downstream fills in a length, corrects a
-//! checksum or picks a fragmentation flag, and a receiver silently drops what
-//! it cannot parse. That is why the builders compute their own checksums and
-//! why a length that will not fit its field is refused rather than truncated.
-//!
-//! ## The readers decline rather than guess
-//!
-//! Everything that reads a captured frame here stops at the fixed header: an
-//! IPv6 packet carrying extension headers is reported as not-ICMPv6 rather than
-//! walked, and a fragmented IPv4 packet is not reassembled. That is the safe
-//! direction for discovery, which would rather miss a frame than credit a host
-//! on a reading it is not sure of, and none of the probes this engine sends
-//! elicit either shape.
+//! The readers stop at the fixed header: an IPv6 packet carrying extension
+//! headers is reported as not-ICMPv6, and a fragmented IPv4 packet is not
+//! reassembled. Discovery would rather miss a frame than credit a host on an
+//! uncertain reading, and none of the engine's probes elicit either shape.
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -56,10 +49,9 @@ const FRAGMENT_HEADER_LEN: usize = 8;
 /// The smallest MTU [`fragment_ipv4`] will split a datagram to: a header and one
 /// whole eight-byte unit.
 ///
-/// Public because a caller choosing a fragment size can be told before a scan
-/// runs rather than on every probe it sends, and because two numbers for one
-/// bound is how they come to disagree. [`EvasionProfile::validate`] is the
-/// caller that reads it.
+/// Public so a caller choosing a fragment size, such as
+/// [`EvasionProfile::validate`], checks against the same bound before a scan
+/// runs.
 ///
 /// [`EvasionProfile::validate`]: crate::evasion::EvasionProfile::validate
 pub const SMALLEST_FRAGMENT_MTU: u16 = (IP_V4_HDR_LEN + FRAGMENT_UNIT) as u16;
@@ -67,31 +59,27 @@ pub const SMALLEST_FRAGMENT_MTU: u16 = (IP_V4_HDR_LEN + FRAGMENT_UNIT) as u16;
 /// The smallest MTU [`fragment_ipv6`] will split a datagram to: the base header,
 /// the fragment extension header, and one whole eight-byte unit.
 ///
-/// Larger than [`SMALLEST_FRAGMENT_MTU`] by the extension header and by the
-/// wider base header, because a v6 fragment carries both where a v4 fragment
-/// carries neither. A caller sizing a fragment for a target whose family it
-/// knows chooses against whichever of the two applies.
+/// Larger than [`SMALLEST_FRAGMENT_MTU`] by the extension header and the wider
+/// base header.
 pub const SMALLEST_FRAGMENT_MTU_V6: u16 =
     (IP_V6_HDR_LEN + FRAGMENT_HEADER_LEN + FRAGMENT_UNIT) as u16;
 
 /// Builds a 20-byte IPv4 header (no options) for a packet carrying
 /// `payload_length` bytes of `next_protocol` from `src_addr` to `dst_addr`.
 ///
-/// The header checksum is computed over the finished header, because nothing
-/// downstream will do it; see the module documentation.
+/// The header checksum is computed here; see the module documentation.
 ///
-/// `ttl` is a parameter for the same reason its IPv6 counterpart's `hop_limit`
-/// is, and for one more: a probe sent to expire on purpose is how a path is
-/// measured. [`HOP_LIMIT_ROUTED`] is what an ordinary probe passes;
+/// `ttl` is a parameter because a probe sent to expire on purpose is how a path
+/// is measured. [`HOP_LIMIT_ROUTED`] is what an ordinary probe passes;
 /// [`traceroute`](crate::scanner::strategy::topology::traceroute) passes each
 /// value in turn and reads the errors that come back.
 ///
 /// # Errors
 ///
-/// [`PacketError::TooLong`] when the payload and the header together exceed
-/// what the 16-bit total-length field can describe, which is 65 515 bytes of
-/// payload. Refused rather than truncated: a wrapped value describes a packet
-/// shorter than its own header, and every receiver drops it.
+/// [`PacketError::TooLong`] when the payload and header together exceed the
+/// 16-bit total-length field, i.e. more than 65 515 bytes of payload. A wrapped
+/// value would describe a packet shorter than its own header, which every
+/// receiver drops.
 pub fn build_ipv4_header(
     src_addr: Ipv4Addr,
     dst_addr: Ipv4Addr,
@@ -109,45 +97,38 @@ pub fn build_ipv4_header(
 /// Splits an IPv4 datagram into fragments that each fit within `mtu` bytes.
 ///
 /// `header` is the IPv4 header the caller would otherwise send whole, and
-/// `payload` is the finished Layer-4 segment behind it, a TCP or UDP segment
-/// whose checksum was computed over the whole. The segment is split as opaque
-/// bytes and never re-checksummed: only the first fragment carries the Layer-4
-/// header, and the rest are the middle of a datagram the receiver puts back
-/// together.
+/// `payload` the finished Layer-4 segment, checksummed over the whole. The
+/// segment is split as opaque bytes and never re-checksummed: only the first
+/// fragment carries the Layer-4 header, and the receiver reassembles the rest.
 ///
-/// Each returned packet is a complete IPv4 packet, meaning header bytes sized and
-/// checksummed for its own piece followed by that piece, ready to hand to a
-/// link-layer send. This is where the engine picks the fragmentation flags the
-/// module documentation promises it does:
-/// [`MORE_FRAGMENTS`](craft::ipv4_flags::MORE_FRAGMENTS) on every fragment but
-/// the last, [`DONT_FRAGMENT`](craft::ipv4_flags::DONT_FRAGMENT) cleared on all
-/// of them, and a [`fragment_offset`](craft::Ipv4::fragment_offset) counting
-/// eight-byte units from the start of the payload.
+/// Each returned packet is a complete IPv4 packet, header sized and checksummed
+/// for its own piece, ready for a link-layer send.
+/// [`MORE_FRAGMENTS`](craft::ipv4_flags::MORE_FRAGMENTS) is set on every
+/// fragment but the last, [`DONT_FRAGMENT`](craft::ipv4_flags::DONT_FRAGMENT)
+/// is cleared on all, and [`fragment_offset`](craft::Ipv4::fragment_offset)
+/// counts eight-byte units from the start of the payload.
 ///
-/// Every fragment shares one [`identification`](craft::Ipv4::identification): a
-/// caller's [`Field::Exact`](craft::Field::Exact) is kept, a
-/// [`Computed`](craft::Field::Computed) is resolved to a single random value
-/// once and stamped on all of them, because a receiver groups fragments by that
-/// field and a per-fragment identifier reassembles into nothing.
+/// Every fragment shares one [`identification`](craft::Ipv4::identification):
+/// a caller's [`Field::Exact`](craft::Field::Exact) is kept, a
+/// [`Computed`](craft::Field::Computed) one is resolved to a single random
+/// value, since a receiver groups fragments by that field.
 ///
-/// A datagram that already fits `mtu` comes back as one packet with the caller's
-/// own flags untouched, don't-fragment included.
+/// A datagram that already fits `mtu` comes back as one packet with the
+/// caller's flags untouched, don't-fragment included.
 ///
 /// # Errors
 ///
-/// [`PacketError::HeaderHasOptions`] when `header` carries options: whether an
-/// option is copied into every fragment or kept on the first is a per-option
-/// bit this does not yet honour, so an option-bearing header is refused rather
-/// than split into fragments a receiver would reassemble wrongly.
+/// [`PacketError::HeaderHasOptions`] when `header` carries options: each
+/// option's copy-into-every-fragment bit is not honoured, so a split would
+/// reassemble wrongly.
 ///
-/// [`PacketError::MtuTooSmall`] when `mtu` cannot hold the header and at least
-/// one eight-byte unit of payload. A fragment carrying less makes no forward
-/// progress, and refusing is the only alternative to an unbounded run of them.
+/// [`PacketError::MtuTooSmall`] when `mtu` cannot hold the header and one
+/// eight-byte unit of payload, since smaller fragments would never make
+/// progress.
 ///
-/// [`PacketError::TooLong`] when the datagram is larger than the 16-bit
-/// total-length field can describe, the same limit [`build_ipv4_header`]
-/// refuses at. Past it the last fragment's start would also overflow the
-/// thirteen-bit fragment-offset field, so the two limits are really one.
+/// [`PacketError::TooLong`] when the datagram exceeds the 16-bit total-length
+/// field, as in [`build_ipv4_header`]. That also keeps the last fragment's
+/// start inside the thirteen-bit offset field.
 pub fn fragment_ipv4(header: &craft::Ipv4, payload: &[u8], mtu: u16) -> Result<Vec<Vec<u8>>> {
     if !header.options.is_empty() {
         return Err(PacketError::HeaderHasOptions {
@@ -158,9 +139,8 @@ pub fn fragment_ipv4(header: &craft::Ipv4, payload: &[u8], mtu: u16) -> Result<V
     let header_len = IP_V4_HDR_LEN;
     let mtu = mtu as usize;
 
-    // The one limit that governs the whole datagram: past it the reassembled
-    // length cannot be described, and with header plus payload at most 65 535 no
-    // fragment can start beyond what the offset field holds either.
+    // Past 65 535 bytes the reassembled length cannot be described, and below
+    // it no fragment can start beyond what the offset field holds.
     if header_len + payload.len() > u16::MAX as usize {
         return Err(PacketError::too_long(
             "the IPv4 total length",
@@ -169,16 +149,14 @@ pub fn fragment_ipv4(header: &craft::Ipv4, payload: &[u8], mtu: u16) -> Result<V
         ));
     }
 
-    // The whole datagram fits: hand it back as the caller described it, flags
-    // and all, rather than fragmenting what needs no fragmenting.
     if header_len + payload.len() <= mtu {
         let mut packet = header.header_bytes(payload.len() as u16)?;
         packet.extend_from_slice(payload);
         return Ok(vec![packet]);
     }
 
-    // Every fragment but the last carries a whole number of eight-byte units,
-    // since the offset counts in those; the last carries the remainder.
+    // Every fragment but the last carries whole eight-byte units, the offset's
+    // unit; the last carries the remainder.
     let max_chunk = (mtu.saturating_sub(header_len) / FRAGMENT_UNIT) * FRAGMENT_UNIT;
     if max_chunk == 0 {
         return Err(PacketError::MtuTooSmall {
@@ -187,9 +165,8 @@ pub fn fragment_ipv4(header: &craft::Ipv4, payload: &[u8], mtu: u16) -> Result<V
         });
     }
 
-    // One identification for the whole datagram, resolved from the caller's
-    // field once rather than rolled afresh per fragment, which would leave a
-    // receiver with pieces it cannot group.
+    // One identification for the whole datagram, so a receiver can group the
+    // pieces.
     let identification = header.identification.exact().unwrap_or_else(rand::random);
 
     let mut fragments = Vec::new();
@@ -206,9 +183,7 @@ pub fn fragment_ipv4(header: &craft::Ipv4, payload: &[u8], mtu: u16) -> Result<V
                 0
             },
             fragment_offset: (offset / FRAGMENT_UNIT) as u16,
-            // Re-derived for each fragment: the length and the checksum both
-            // move with the piece, so a caller's exact values would be right for
-            // at most one of them.
+            // Re-derived per fragment: the length and checksum move with the piece.
             total_length: craft::Field::Computed,
             checksum: craft::Field::Computed,
             ..header.clone()
@@ -226,58 +201,45 @@ pub fn fragment_ipv4(header: &craft::Ipv4, payload: &[u8], mtu: u16) -> Result<V
 
 /// Splits an IPv6 datagram into fragments that each fit within `mtu` bytes.
 ///
-/// The v6 counterpart of [`fragment_ipv4`], and the reason
-/// [`EvasionProfile::fragment`](crate::evasion::EvasionProfile::fragment) is no
-/// longer a v4-only setting. It differs from
-/// its twin in where the fragmentation lives: IPv6 keeps its base header fixed
-/// and carries the offset, the flag and the identification in a fragment
-/// extension header (RFC 8200 §4.5) that sits between the base header and the
-/// piece. So each returned packet is the base header, then eight bytes of
-/// fragment header, then the piece.
+/// Like [`fragment_ipv4`], but IPv6 keeps its base header fixed and carries
+/// the offset, flag and identification in a fragment extension header (RFC 8200
+/// §4.5). Each returned packet is the base header, eight bytes of fragment
+/// header, then the piece. Used by
+/// [`EvasionProfile::fragment`](crate::evasion::EvasionProfile::fragment) for
+/// IPv6 targets.
 ///
-/// `header` is the IPv6 header the caller would otherwise send whole, and
-/// `payload` is the finished Layer-4 segment behind it. The segment is split as
-/// opaque bytes and never re-checksummed: a v6 checksum covers a pseudo-header
-/// that names the datagram's own length once, and reassembly restores it, so the
-/// sum a receiver verifies is the one the whole segment was signed with.
+/// `payload` is the finished Layer-4 segment, split as opaque bytes and never
+/// re-checksummed: the v6 pseudo-header names the datagram's own length, which
+/// reassembly restores.
 ///
-/// The base header each fragment repeats points at the fragment header
-/// ([`Ipv6Frag`](IpNextHeaderProtocols::Ipv6Frag)), and the fragment header
-/// carries the upper-layer protocol the base header would otherwise have named.
-/// A [`Computed`](craft::Field::Computed) next header resolves the way
-/// [`header_bytes`](craft::Ipv6::header_bytes) would resolve it with no inner
-/// layer, to TCP, which is what every fragmenting caller in this crate is in
-/// fact carrying.
+/// Each base header points at the fragment header
+/// ([`Ipv6Frag`](IpNextHeaderProtocols::Ipv6Frag)), which carries the
+/// upper-layer protocol. A [`Computed`](craft::Field::Computed) next header
+/// resolves as [`header_bytes`](craft::Ipv6::header_bytes) would with no inner
+/// layer: to TCP, which every fragmenting caller in this crate carries.
 ///
-/// Every fragment shares one 32-bit identification, generated once. Unlike
-/// IPv4's, it is not a field a caller can set: it exists only to group a
-/// datagram's fragments, and nothing outside fragmentation reads it.
+/// Every fragment shares one 32-bit identification, generated once; unlike
+/// IPv4's, a caller cannot set it.
 ///
 /// A datagram that already fits `mtu` comes back as one ordinary IPv6 packet
-/// with no fragment header at all, the way [`fragment_ipv4`] returns an
-/// unfragmented datagram: a probe that needed no splitting should not carry the
-/// evidence that it was split.
+/// with no fragment header, so an unsplit probe carries no sign of
+/// fragmentation.
 ///
 /// # Errors
 ///
 /// [`PacketError::MtuTooSmall`] when `mtu` cannot hold the base header, the
-/// fragment header and at least one eight-byte unit of payload. The floor is
-/// [`SMALLEST_FRAGMENT_MTU_V6`], higher than the v4 floor by exactly those two
-/// headers.
+/// fragment header and one eight-byte unit of payload; the floor is
+/// [`SMALLEST_FRAGMENT_MTU_V6`].
 ///
-/// [`PacketError::TooLong`] when the payload is larger than a thirteen-bit
-/// offset counting eight-byte units can address. A v6 base header cannot itself
-/// overflow on a length this holds, so unlike [`fragment_ipv4`] the bound is the
-/// offset field rather than the length field; the two happen to be the same
-/// number of payload bytes.
+/// [`PacketError::TooLong`] when the payload is beyond what a thirteen-bit
+/// offset in eight-byte units can address. Here the offset field is the bound;
+/// it allows the same number of payload bytes as IPv4's length field.
 pub fn fragment_ipv6(header: &craft::Ipv6, payload: &[u8], mtu: u16) -> Result<Vec<Vec<u8>>> {
     let mtu = mtu as usize;
 
-    // The offset field addresses eight-byte units in thirteen bits, so no
-    // fragment may begin beyond 65 528 bytes into the payload. Every segment
-    // this engine fragments is far below that; the guard refuses a larger one
-    // rather than wrapping its final offset, the way fragment_ipv4 guards its
-    // own length field.
+    // The offset addresses eight-byte units in thirteen bits, so no fragment
+    // may begin beyond 65 528 bytes into the payload. A larger payload is
+    // refused, not wrapped.
     if payload.len() > u16::MAX as usize {
         return Err(PacketError::too_long(
             "the IPv6 fragmentable payload",
@@ -286,16 +248,15 @@ pub fn fragment_ipv6(header: &craft::Ipv6, payload: &[u8], mtu: u16) -> Result<V
         ));
     }
 
-    // The whole datagram fits: hand it back as an ordinary IPv6 packet, no
-    // fragment header, rather than fragmenting what needs no fragmenting.
+    // Fits: an ordinary IPv6 packet, no fragment header.
     if IP_V6_HDR_LEN + payload.len() <= mtu {
         let mut packet = header.header_bytes(payload.len() as u16);
         packet.extend_from_slice(payload);
         return Ok(vec![packet]);
     }
 
-    // Every fragment but the last carries a whole number of eight-byte units,
-    // and each carries the fragment header on top of the base one.
+    // Every fragment but the last carries whole eight-byte units, plus the
+    // fragment header on top of the base one.
     let overhead = IP_V6_HDR_LEN + FRAGMENT_HEADER_LEN;
     let max_chunk = (mtu.saturating_sub(overhead) / FRAGMENT_UNIT) * FRAGMENT_UNIT;
     if max_chunk == 0 {
@@ -306,19 +267,17 @@ pub fn fragment_ipv6(header: &craft::Ipv6, payload: &[u8], mtu: u16) -> Result<V
     }
 
     // The upper-layer protocol moves into the fragment header; the base header
-    // points at the fragment header instead. Resolved once for the whole
-    // datagram.
+    // points at the fragment header.
     let upper = header
         .next_header
         .exact()
         .unwrap_or(IpNextHeaderProtocols::Tcp.0);
 
-    // One identification for the whole datagram, so a receiver can group the
-    // pieces. Thirty-two bits here, against IPv4's sixteen.
+    // One identification for the whole datagram, thirty-two bits in IPv6.
     let identification: u32 = rand::random();
 
-    // The base header each fragment repeats: pointing at the fragment header,
-    // with a payload length re-derived per piece.
+    // The base header each fragment repeats, with a payload length re-derived
+    // per piece.
     let base = craft::Ipv6 {
         next_header: craft::Field::Exact(IpNextHeaderProtocols::Ipv6Frag.0),
         payload_length: craft::Field::Computed,
@@ -339,11 +298,10 @@ pub fn fragment_ipv6(header: &craft::Ipv6, payload: &[u8], mtu: u16) -> Result<V
                 .expect("an eight-byte buffer holds a fragment header");
             fragment.set_next_header(IpNextHeaderProtocol(upper));
             fragment.set_reserved(0);
-            // The offset occupies the top thirteen bits and the More Fragments
-            // flag bit zero, with the two reserved bits between them left clear.
-            // Written as the one field the wire carries rather than through
-            // pnet's `set_fragment_offset`, which masks on a two-bit boundary
-            // and would need the value pre-shifted to mean the same thing.
+            // Offset in the top thirteen bits, More Fragments in bit zero, the two
+            // reserved bits clear. Written as one field because pnet's
+            // `set_fragment_offset` masks on a two-bit boundary and would need a
+            // pre-shifted value.
             let units = (offset / FRAGMENT_UNIT) as u16;
             fragment.set_fragment_offset_with_flags((units << 3) | u16::from(more_fragments));
             fragment.set_id(identification);
@@ -360,45 +318,35 @@ pub fn fragment_ipv6(header: &craft::Ipv6, payload: &[u8], mtu: u16) -> Result<V
 
 /// How far a packet meant for this segment may travel.
 ///
-/// One hop, so a router discards it rather than forwarding it. Link-local
-/// traffic is required to carry this (RFC 4291 §2.5.6), and for the multicast
-/// probes local discovery sends it is also what keeps a sweep of one segment
-/// from leaking onto the next.
+/// One hop, so a router discards it. Link-local traffic must carry this (RFC
+/// 4291 §2.5.6), and it keeps local discovery's multicast probes on the
+/// segment.
 pub const HOP_LIMIT_ON_LINK: u8 = 1;
 
 /// How far a neighbor discovery message may travel: not at all, verifiably.
 ///
 /// RFC 4861 §7.1.1 requires a receiver to **discard** any neighbor discovery
-/// message that did not arrive with a hop limit of 255. Since a router
-/// decrements the field, arriving at the maximum is proof the message was never
-/// forwarded, which is what stops an off-link attacker from injecting neighbour
-/// entries. It is the one on-link case where [`HOP_LIMIT_ON_LINK`] is wrong, and
-/// wrong invisibly: every conformant neighbour ignores the probe, and a segment
-/// full of them is indistinguishable from an empty one.
+/// message that did not arrive with a hop limit of 255. A router decrements the
+/// field, so 255 proves the message was not forwarded. [`HOP_LIMIT_ON_LINK`] is
+/// silently wrong here: every conformant neighbour would ignore the probe.
 pub const HOP_LIMIT_NDP: u8 = 255;
 
 /// How far a packet meant for somewhere else may travel.
 ///
-/// The conventional default, and enough for any path on the public internet:
-/// the longest routes in practice are well under half of it. What matters is
-/// only that it is not [`HOP_LIMIT_ON_LINK`]. A routed probe sent with a hop
-/// limit of one is discarded by the first router, which looks from here like a
-/// host that did not answer.
+/// The conventional default; the longest routes in practice are well under
+/// half of it. A routed probe with [`HOP_LIMIT_ON_LINK`] would be discarded by
+/// the first router and look like a host that did not answer.
 pub const HOP_LIMIT_ROUTED: u8 = 64;
 
 /// Builds a 40-byte IPv6 header for a packet carrying `payload_length` bytes of
 /// `next_protocol` from `src_addr` to `dst_addr`.
 ///
-/// `hop_limit` is a parameter rather than a constant because the two callers
-/// need opposite values and neither can be inferred from the addresses: local
-/// discovery's multicast probes must not leave the segment, while a routed probe
-/// must survive every router between here and its target. Getting it wrong is
-/// silent in one direction, since an on-link probe with a large hop limit still
-/// works, and total in the other.
+/// `hop_limit` is a parameter because local discovery's multicast probes must
+/// not leave the segment while a routed probe must survive every router, and
+/// the addresses do not say which applies.
 ///
-/// Infallible, unlike its IPv4 counterpart: the payload length is its own
-/// field here rather than a total that has to include the header, so every
-/// `u16` a caller can pass is one the field can hold.
+/// Infallible: the payload length is its own field and does not include the
+/// header, so every `u16` fits.
 pub fn build_ipv6_header(
     src_addr: Ipv6Addr,
     dst_addr: Ipv6Addr,
@@ -443,17 +391,13 @@ fn ipv6_packet<'a>(frame: &Frame<'a>) -> Result<Ipv6Packet<'a>> {
 /// The IPv6 packet inside `frame`, when the frame carries one and the packet
 /// carries `protocol`.
 ///
-/// The walk every ICMPv6 reader here starts with, shared so the ethertype is
-/// checked once rather than per reader. A frame that arrived under another
-/// ethertype is not an IPv6 packet however its bytes read, and a reader that
-/// starts at the payload without asking will happily find an IPv6 header in the
-/// middle of an ARP one.
+/// The walk every ICMPv6 reader here starts with. The EtherType is checked
+/// first: a reader starting at the payload without asking would find an IPv6
+/// header in the middle of an ARP one.
 ///
-/// Reads the fixed header's next-header field rather than walking the extension
-/// chain, so a packet carrying one is reported as not carrying `protocol`. That
-/// is the safe direction for a discovery check: it declines to credit a frame it
-/// cannot read rather than guessing at its type, and the probes whose replies
-/// this interprets elicit no extension headers.
+/// Reads the fixed header's next-header field without walking the extension
+/// chain, so a packet carrying extension headers is reported as not carrying
+/// `protocol`. The probes whose replies this reads elicit none.
 pub(crate) fn ipv6_carrying<'a>(
     frame: &Frame<'a>,
     protocol: IpNextHeaderProtocol,
@@ -468,10 +412,9 @@ pub(crate) fn ipv6_carrying<'a>(
 
 /// `packet`, a bare IPv6 packet, when it carries `protocol`.
 ///
-/// [`ipv6_carrying`] for the form a link with no Ethernet header delivers, a
-/// tunnel's or a PPP link's. There is no ethertype to ask, so the version is
-/// checked instead: such a link carries both families and says which only
-/// there. The extension chain is not walked, for the reason given there.
+/// [`ipv6_carrying`] for a link with no Ethernet header, such as a tunnel or
+/// PPP. With no EtherType, the version nibble is checked instead. The extension
+/// chain is not walked.
 pub(crate) fn ipv6_carrying_in(
     packet: &[u8],
     protocol: IpNextHeaderProtocol,
@@ -486,11 +429,8 @@ pub(crate) fn ipv6_carrying_in(
 /// The ICMPv6 message type an Ethernet-framed IPv6 packet carries, by number, or
 /// `None` if the frame is not that or is too short to say.
 ///
-/// The ethertype is checked before anything is read, so a frame that arrived
-/// under another one is declined however its bytes happen to look. The fixed
-/// header's next-header field is read rather than the extension chain walked, so
-/// a packet carrying one is reported as not ICMPv6: the safe direction for a
-/// discovery check, and no probe whose replies this interprets elicits one.
+/// The EtherType is checked first. The extension chain is not walked, so a
+/// packet carrying extension headers is reported as not ICMPv6.
 pub fn icmpv6_type(frame: &Frame<'_>) -> Option<u8> {
     let packet = ipv6_carrying(frame, IpNextHeaderProtocols::Icmpv6)?;
     Some(Icmpv6Packet::new(packet.payload())?.get_icmpv6_type().0)
@@ -499,10 +439,8 @@ pub fn icmpv6_type(frame: &Frame<'_>) -> Option<u8> {
 /// The identifier and sequence number an Ethernet-framed ICMPv6 echo reply
 /// carries back, or `None` if the frame is not one or is too short to say.
 ///
-/// RFC 4443 requires a reply to echo both fields from the request unchanged,
-/// which is what lets a scanner recognize the answer to a particular probe of
-/// its own. Without them an echo reply proves only that its sender exists;
-/// with them it also says when the question was asked.
+/// RFC 4443 requires a reply to echo both fields unchanged, which lets a
+/// scanner match the answer to its own probe and time it.
 pub fn icmpv6_echo_token(frame: &Frame<'_>) -> Option<(u16, u16)> {
     echo_token(&ipv6_carrying(frame, IpNextHeaderProtocols::Icmpv6)?)
 }
@@ -527,26 +465,19 @@ fn echo_token(packet: &Ipv6Packet<'_>) -> Option<(u16, u16)> {
 /// The payload of a UDP datagram carried in `frame` and sent from `port`, over
 /// either address family, or `None` if the frame is not that.
 ///
-/// Reads the fixed IPv6 header's next-header field rather than walking the
-/// extension chain, and reads an IPv4 packet only where it is the whole
-/// datagram. Both are the conservative direction this module's documentation
-/// promises: a frame that cannot be read plainly is declined rather than
-/// guessed at.
+/// Reads the fixed IPv6 header's next-header field without walking the
+/// extension chain, and an IPv4 packet only where it is the whole datagram.
 ///
-/// A fragment is declined rather than read. Only the first piece of a
-/// fragmented datagram carries a UDP header, so a later one whose protocol field
-/// still says UDP has the middle of somebody's payload where the ports should
-/// be. Nothing here reassembles, so a datagram that arrived in pieces is one
-/// this cannot read.
+/// Fragments are declined: only the first piece carries a UDP header, so a
+/// later one still marked UDP has payload bytes where the ports should be.
 ///
-/// A header length below the five words a header occupies is declined too.
-/// It comes off the wire like everything else, and a smaller one puts the
-/// datagram's start inside the header that named it.
+/// A header length below the five words a header occupies is declined too,
+/// since it would put the datagram's start inside the header.
 pub fn udp_payload<'a>(frame: &Frame<'a>, port: u16) -> Option<&'a [u8]> {
     let packet = frame.payload();
 
-    // Offsets rather than `packet.payload()`, because a pnet view owns the
-    // slice it hands back and the caller needs one borrowed from the frame.
+    // Offsets, because a pnet view owns the slice it hands back and the caller
+    // needs one borrowed from the frame.
     let (header_len, next) = match EtherType(frame.ethertype()) {
         EtherTypes::Ipv6 => (IP_V6_HDR_LEN, Ipv6Packet::new(packet)?.get_next_header()),
         EtherTypes::Ipv4 => {
@@ -576,18 +507,13 @@ pub fn udp_payload<'a>(frame: &Frame<'a>, port: u16) -> Option<&'a [u8]> {
 
 /// Whether an IPv4 packet holds a whole Layer-4 datagram at a readable offset.
 ///
-/// Two questions with one answer, because a reader that gets either wrong reads
-/// bytes that are not the header it thinks it has.
-///
 /// A packet with a non-zero fragment offset is the middle of a datagram and
-/// carries no Layer-4 header at all; one with more-fragments set is the start of
-/// a datagram whose rest has not arrived, which is readable at its own header
-/// and not beyond it. Only the first is refused here, since the header is what
-/// this reads.
+/// carries no Layer-4 header. One with more-fragments set is the start of an
+/// incomplete datagram and is readable at its own header, so only the first is
+/// refused.
 ///
-/// A header length below five words cannot be true: the fixed header is five
-/// words and the field counts them. `pnet` reads the field and does not judge
-/// it, so this does.
+/// A header length below five words cannot be true, and `pnet` does not check
+/// it.
 fn carries_a_whole_datagram(packet: &Ipv4Packet<'_>) -> bool {
     packet.get_header_length() >= (IP_V4_HDR_LEN / WORD_LEN) as u8
         && packet.get_fragment_offset() == 0
@@ -625,16 +551,11 @@ mod tests {
     const V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
 
     /// The largest payload the total-length field can describe, and the first
-    /// one it cannot.
+    /// it cannot.
     ///
-    /// The field counts the header as well, so it runs out twenty bytes before
-    /// the payload does. Past that an unchecked addition wraps: in release a
-    /// payload of 65 516 would produce a header claiming a total length of zero,
-    /// and 65 535 one claiming nineteen, which is shorter than the header
-    /// itself. A receiver drops both, and the scan reads that as a firewall.
-    ///
-    /// In debug the same addition panics instead, so the two build profiles
-    /// would disagree about whether this is a crash or a wrong answer.
+    /// The field counts the header too, so it runs out twenty bytes before the
+    /// payload does. An unchecked addition would wrap in release (65 516 giving a
+    /// total length of zero, 65 535 giving nineteen) and panic in debug.
     #[test]
     fn a_payload_too_large_for_the_length_field_is_refused_rather_than_wrapped() {
         let largest = u16::MAX as usize - IP_V4_HDR_LEN;
@@ -667,12 +588,8 @@ mod tests {
         }
     }
 
-    // ── The readers ──────────────────────────────────────────────────────────
-    //
-    // Everything here is the reading half, covering the module's six readers.
-
-    /// Reads bytes that are known to be a frame, since every one below is built
-    /// by `frame_of` two lines down.
+    /// Reads bytes known to be a frame, as every one below is built by
+    /// `frame_of`.
     fn read(bytes: &[u8]) -> Frame<'_> {
         crate::protocols::ethernet::parse(bytes).expect("a frame")
     }
@@ -686,8 +603,7 @@ mod tests {
     }
 
     /// An IPv4 packet with the header fields a reader looks at, and `body`
-    /// behind it. `ihl` and `fragment_offset` are the two that come off the wire
-    /// and decide where the body starts.
+    /// behind it. `ihl` and `fragment_offset` decide where the body starts.
     fn ipv4_packet(ihl: u8, fragment_offset: u16, protocol: u8, body: &[u8]) -> Vec<u8> {
         let mut ip = vec![0u8; IP_V4_HDR_LEN];
         ip[0] = (4 << 4) | ihl;
@@ -707,7 +623,7 @@ mod tests {
         udp
     }
 
-    /// The ordinary case, which everything below is a departure from.
+    /// The ordinary case.
     #[test]
     fn a_whole_datagram_from_the_right_port_yields_its_payload() {
         let bytes = frame_of(
@@ -721,13 +637,8 @@ mod tests {
     }
 
     /// Only the first piece of a fragmented datagram carries a UDP header. A
-    /// later one still says protocol 17, and reading it hands the middle of
-    /// somebody's payload to a caller expecting a datagram.
-    ///
-    /// The module documentation says a frame that cannot be read plainly is
-    /// declined rather than guessed at; this is the input a reader is most
-    /// tempted to guess at. `local.rs` passes what comes back straight to
-    /// `mdns::extract_hosts`.
+    /// later one still says protocol 17 and would hand the middle of somebody's
+    /// payload to `mdns::extract_hosts` via `local.rs`.
     #[test]
     fn a_fragment_carries_no_datagram_and_is_declined() {
         let body = udp_datagram(5353, b"the payload");
@@ -749,16 +660,13 @@ mod tests {
         }
     }
 
-    /// The header length is four bits off the wire and the fixed header is five
-    /// words, so anything under five is a claim no header can honour. Trusting
-    /// it put the datagram's start inside the header that named it: with an IHL
-    /// of zero the "source port" is the version nibble and the type of service.
+    /// A header length under five words cannot be honoured: with an IHL of zero
+    /// the "source port" would be the version nibble and the type of service.
     #[test]
     fn a_header_length_below_the_minimum_is_declined() {
-        // The first two bytes have to read as the source port being looked for,
-        // or the walk stops on the port check and this proves nothing. Byte 0 is
-        // the version and header length and byte 1 the type of service, so
-        // version 0 with an IHL of 0 and a TOS of 0x35 spells port 53.
+        // The first two bytes must read as the source port being looked for, or
+        // the port check stops the walk first. Version 0, IHL 0 and a TOS of 0x35
+        // spell port 53.
         let mut packet = ipv4_packet(0, 0, 17, b"not a datagram at all");
         packet[0] = 0x00;
         packet[1] = 0x35;
@@ -771,8 +679,7 @@ mod tests {
         let bytes = frame_of(EtherTypes::Ipv4.0, &packet);
         assert_eq!(udp_payload(&read(&bytes), 53), None);
 
-        // Five words is the floor and is legal: the refusal must not start one
-        // word too high.
+        // Five words is the floor and is legal.
         let honest = frame_of(
             EtherTypes::Ipv4.0,
             &ipv4_packet(5, 0, 17, &udp_datagram(53, b"a datagram")),
@@ -780,13 +687,9 @@ mod tests {
         assert_eq!(udp_payload(&read(&honest), 53), Some(&b"a datagram"[..]));
     }
 
-    /// A frame that arrived under another ethertype is not an IPv6 packet
-    /// however its bytes read.
-    ///
-    /// Starting at the payload without asking, `icmpv6_type` and
-    /// `icmpv6_echo_token` would report an ICMPv6 type for an ARP frame padded
-    /// to look like an IPv6 header. Both read through the walk `ndp` checks
-    /// with, so all three share the check.
+    /// A frame under another EtherType is not an IPv6 packet however its bytes
+    /// read. `icmpv6_type` and `icmpv6_echo_token` share the walk `ndp` uses, so
+    /// an ARP frame padded to look like IPv6 is declined by all three.
     #[test]
     fn a_frame_of_another_ethertype_carries_no_icmpv6() {
         let mut packet = vec![0u8; IP_V6_HDR_LEN];
@@ -848,8 +751,6 @@ mod tests {
         }
     }
 
-    // ── Fragmentation ────────────────────────────────────────────────────────
-
     /// Parses one emitted fragment into the four things a receiver reads to put
     /// a datagram back together: its offset in eight-byte units, whether more
     /// follow, whether fragmentation was forbidden, and the piece it carries.
@@ -864,10 +765,9 @@ mod tests {
         )
     }
 
-    /// The heart of it, over three fragments: each starts one run of eight-byte
-    /// units past the one before, more-fragments is set on every piece but the
-    /// last, and don't-fragment is cleared on all of them even though the
-    /// caller's header set it.
+    /// Over three fragments: each starts one run of eight-byte units past the
+    /// one before, more-fragments is set on all but the last, and don't-fragment
+    /// is cleared on all though the caller's header set it.
     #[test]
     fn offsets_and_flags_march_across_three_fragments() {
         // Header 20, MTU 48 leaves 28 bytes, floored to 24 (three units), so a
@@ -893,9 +793,8 @@ mod tests {
         }
     }
 
-    /// The two size invariants over a longer, ragged split: an MTU that is not
-    /// the header plus a whole number of units still yields non-last pieces that
-    /// are whole units, and no packet exceeds the MTU.
+    /// Over a ragged split: an MTU that is not the header plus whole units still
+    /// yields whole-unit non-last pieces, and no packet exceeds the MTU.
     #[test]
     fn every_non_last_piece_is_whole_units_and_within_the_mtu() {
         // MTU 45 leaves 25 bytes, floored to 24; 100 bytes splits 24×4 + 4.
@@ -921,8 +820,8 @@ mod tests {
         }
     }
 
-    /// A datagram that already fits comes back whole: one packet, with the
-    /// caller's flags, don't-fragment among them, left as they were.
+    /// A datagram that already fits comes back whole with the caller's flags,
+    /// don't-fragment included.
     #[test]
     fn a_datagram_that_fits_is_returned_whole() {
         let payload = vec![0xABu8; 100];
@@ -937,9 +836,8 @@ mod tests {
         assert_eq!(body, payload, "and the payload arrives intact");
     }
 
-    /// A receiver groups fragments of one datagram by identification, so every
-    /// fragment has to carry the same one, resolved from the caller's computed
-    /// field once rather than rolled afresh per fragment.
+    /// Every fragment carries the same identification, resolved once from the
+    /// caller's computed field.
     #[test]
     fn every_fragment_shares_one_identification() {
         let payload = vec![0u8; 200];
@@ -956,9 +854,8 @@ mod tests {
         );
     }
 
-    /// An MTU with no room for a header and one eight-byte unit is refused
-    /// rather than split into a run of headers that never reaches the payload.
-    /// The floor is exact: one byte more is enough for a unit.
+    /// An MTU with no room for a header and one eight-byte unit is refused. The
+    /// floor is exact.
     #[test]
     fn an_mtu_with_no_room_to_progress_is_refused() {
         let payload = vec![0u8; 40];
@@ -973,8 +870,7 @@ mod tests {
     }
 
     /// A datagram larger than the total-length field can describe is refused,
-    /// the same limit a whole header is, and the limit that keeps the last
-    /// fragment's start inside its thirteen-bit offset field.
+    /// which also keeps the last fragment's start inside the offset field.
     #[test]
     fn a_datagram_too_large_for_the_length_field_is_refused() {
         let largest = u16::MAX as usize - IP_V4_HDR_LEN;
@@ -989,9 +885,8 @@ mod tests {
         );
     }
 
-    /// A header carrying options is refused: whether each option rides every
-    /// fragment or only the first is a per-option bit this does not yet read,
-    /// and a blind split reassembles into the wrong header.
+    /// A header carrying options is refused: the per-option copy bit is not
+    /// read, and a blind split reassembles into the wrong header.
     #[test]
     fn a_header_with_options_is_refused() {
         let with_options = craft::Ipv4 {
@@ -1007,11 +902,10 @@ mod tests {
     }
 
     proptest! {
-        /// The single most valuable check: over any payload and any workable
-        /// MTU, the fragments' payloads in offset order are exactly the original
-        /// bytes, each non-last piece is a whole number of eight-byte units,
-        /// every packet fits the MTU, and only the last clears more-fragments.
-        /// That is the whole of what a receiver relies on to reassemble.
+        /// Over any payload and workable MTU: the fragments' payloads in offset
+        /// order are exactly the original bytes, each non-last piece is whole
+        /// eight-byte units, every packet fits the MTU, and only the last clears
+        /// more-fragments. That is what a receiver relies on to reassemble.
         #[test]
         fn fragments_reassemble_into_the_original_datagram(
             payload in prop::collection::vec(any::<u8>(), 0..4096usize),
@@ -1020,8 +914,8 @@ mod tests {
             let fragments = fragment_ipv4(&craft::Ipv4::new(V4, V4), &payload, mtu)
                 .expect("a workable MTU fragments");
 
-            // A datagram that fit comes back as one packet with the caller's own
-            // flags; only when it is actually split are the flags this rewrites.
+            // A datagram that fit keeps the caller's flags; only a split rewrites
+            // them.
             let split = fragments.len() > 1;
 
             let mut reassembled = Vec::new();
@@ -1044,8 +938,8 @@ mod tests {
                 if !last {
                     prop_assert_eq!(body.len() % FRAGMENT_UNIT, 0, "a non-last fragment is whole units");
                 }
-                // The offset is in eight-byte units from the payload's start,
-                // which is exactly how many bytes precede this piece.
+                // The offset in eight-byte units is exactly how many bytes precede this
+                // piece.
                 prop_assert_eq!(
                     packet.get_fragment_offset() as usize * FRAGMENT_UNIT,
                     reassembled.len()
@@ -1056,14 +950,12 @@ mod tests {
         }
     }
 
-    // ── IPv6 fragmentation ─────────────────────────────────────────────────────
-
     /// Reads one emitted v6 fragment into what a receiver needs to reassemble:
     /// its offset in eight-byte units, whether more follow, the upper-layer
     /// protocol the fragment header names, and the piece it carries.
     ///
     /// The piece is the base-header payload past the eight-byte extension, since
-    /// pnet models the fragment header's own payload as zero-length.
+    /// pnet models the fragment header's own payload as empty.
     fn parse_v6(fragment: &[u8]) -> (u16, bool, IpNextHeaderProtocol, Vec<u8>) {
         use pnet_packet::ipv6::FragmentPacket;
 
@@ -1083,10 +975,9 @@ mod tests {
         )
     }
 
-    /// The heart of it in v6, over three fragments: each starts one run of
-    /// eight-byte units past the one before, more-fragments is set on every piece
-    /// but the last, and every fragment header names the upper-layer protocol the
-    /// base header gave up.
+    /// Over three fragments in v6: each starts one run of eight-byte units past
+    /// the one before, more-fragments is set on all but the last, and every
+    /// fragment header names the upper-layer protocol.
     #[test]
     fn offsets_and_flags_march_across_three_fragments_v6() {
         // Base 40 and fragment header 8 leave, at MTU 72, 24 bytes (three units),
@@ -1166,10 +1057,8 @@ mod tests {
         );
     }
 
-    /// An MTU with no room for the two headers and one eight-byte unit is refused
-    /// rather than split into a run of headers that never reaches the payload.
-    /// The floor is exact, and higher than the v4 floor by the extension header
-    /// and the wider base header.
+    /// An MTU with no room for the two headers and one eight-byte unit is
+    /// refused. The floor is exact.
     #[test]
     fn an_mtu_with_no_room_to_progress_is_refused_v6() {
         let payload = vec![0u8; 40];
@@ -1183,8 +1072,8 @@ mod tests {
             .expect("the floor is one unit of room");
     }
 
-    /// A payload larger than a thirteen-bit offset can address is refused rather
-    /// than wrapped into a final fragment that claims the wrong place.
+    /// A payload larger than a thirteen-bit offset can address is refused, not
+    /// wrapped.
     #[test]
     fn a_payload_too_large_for_the_offset_field_is_refused_v6() {
         let largest = u16::MAX as usize;
@@ -1199,10 +1088,9 @@ mod tests {
     }
 
     proptest! {
-        /// The v6 counterpart of the reassembly check: over any payload and any
-        /// workable MTU, the fragments' pieces in offset order are exactly the
-        /// original bytes, each non-last piece is a whole number of eight-byte
-        /// units, every packet fits the MTU, and only the last clears
+        /// The v6 reassembly check: over any payload and workable MTU, the pieces
+        /// in offset order are exactly the original bytes, each non-last piece is
+        /// whole eight-byte units, every packet fits the MTU, and only the last clears
         /// more-fragments.
         #[test]
         fn fragments_reassemble_into_the_original_datagram_v6(
@@ -1243,16 +1131,13 @@ mod tests {
     }
 
     /// **Every fragment fits its MTU, and the pieces put the datagram back
-    /// together**, for both families and whatever MTU is asked for.
+    /// together**, for both families and any MTU.
     ///
-    /// Fragmentation is arithmetic over a length field, an offset counted in
-    /// eight-byte units, and a header repeated per piece — three places an
-    /// off-by-one hides and none of them crashes. A test that only asserted "no
-    /// panic" would pass over all of them, so the oracle is reassembly: the
-    /// concatenated payloads have to equal what went in, exactly.
-    ///
-    /// 170 combinations, including every MTU too small to carry a fragment at
-    /// all, where the answer is a refusal rather than a piece nothing can send.
+    /// Length fields, offsets in eight-byte units and repeated headers all hide
+    /// off-by-ones that do not crash, so the oracle is reassembly: the
+    /// concatenated payloads must equal the input exactly. 170 combinations,
+    /// including every MTU too small for a fragment, where the answer is a
+    /// refusal.
     #[test]
     fn every_fragment_fits_its_mtu_and_the_pieces_reassemble() {
         let v4_header = craft::Ipv4::new(
@@ -1264,9 +1149,8 @@ mod tests {
             "2001:db8::2".parse().expect("literal"),
         );
 
-        // Around every boundary that decides something: the two header sizes,
-        // the fragment header, the eight-byte unit, and the smallest MTU each
-        // family will accept.
+        // Around every deciding boundary: the two header sizes, the fragment
+        // header, the eight-byte unit, and each family's smallest MTU.
         let mtus = [
             0u16, 1, 7, 8, 20, 21, 27, 28, 39, 40, 47, 48, 55, 56, 64, 1280, 1500,
         ];
