@@ -950,6 +950,91 @@ mod tests {
         ));
     }
 
+    /// The SMB1 header of a NEGOTIATE response with status zero, as MS-CIFS
+    /// lays it out; the parameter words follow it.
+    const SMB1_NEGOTIATE_RESPONSE_HEADER: &[u8] = b"\xffSMB\x72\x00\x00\x00\x00\x98\x53\xc8\
+        \x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xfe\x00\x00\x01\x00";
+
+    /// `header` and `body` as one NetBIOS session message.
+    fn netbios(header: &[u8], body: &[u8]) -> Vec<u8> {
+        let length = u32::try_from(header.len() + body.len()).expect("a short message");
+        let mut message = length.to_be_bytes().to_vec();
+        message.extend_from_slice(header);
+        message.extend_from_slice(body);
+        message
+    }
+
+    /// **The SMBv1 probe is a well-formed NEGOTIATE.** Its NetBIOS length is the
+    /// message's, its ByteCount the dialect bytes', and each dialect is a
+    /// buffer-format `0x02` and a NUL-terminated name, as MS-CIFS 2.2.4.52.1
+    /// requires. A malformed one draws no answer from a server that has SMB1.
+    #[test]
+    fn the_smbv1_probe_is_a_well_formed_negotiate() {
+        let mut probe = Echo {
+            sent: Vec::new(),
+            reply: Vec::new(),
+        };
+        run(&flow("smbv1-enabled"), "", &seed(), &mut probe);
+        let sent = probe.sent.first().expect("the flow sent its negotiate");
+
+        let netbios_length =
+            usize::try_from(u32::from_be_bytes([sent[0], sent[1], sent[2], sent[3]]))
+                .expect("a short message");
+        assert_eq!(
+            netbios_length,
+            sent.len() - 4,
+            "the NetBIOS length is not the message's"
+        );
+
+        let smb = &sent[4..];
+        assert_eq!(&smb[..5], b"\xffSMB\x72", "not an SMB1 NEGOTIATE");
+        assert_eq!(smb[32], 0, "a NEGOTIATE request carries no parameter words");
+        let byte_count = usize::from(u16::from_le_bytes([smb[33], smb[34]]));
+        let dialects = &smb[35..];
+        assert_eq!(
+            byte_count,
+            dialects.len(),
+            "the ByteCount is not the dialect bytes'"
+        );
+
+        let names: Vec<&[u8]> = dialects
+            .split_inclusive(|&byte| byte == 0)
+            .map(|dialect| {
+                assert_eq!(dialect[0], 0x02, "a dialect without its buffer-format byte");
+                &dialect[1..dialect.len() - 1]
+            })
+            .collect();
+        assert_eq!(names, [b"NT LM 0.12".as_slice()]);
+    }
+
+    /// **Only a chosen SMB1 dialect is SMBv1 enabled.** Samba with SMB1 off
+    /// still answers the NEGOTIATE in SMB1, with status zero and DialectIndex
+    /// 0xFFFF; that is SMB1 refused, not spoken.
+    #[test]
+    fn smbv1_enabled_fires_on_a_chosen_dialect_and_not_on_none_chosen() {
+        let smbv1 = flow("smbv1-enabled");
+        let fires = |reply: Vec<u8>| !run(&smbv1, "", &seed(), &mut Canned(reply)).is_empty();
+
+        // NT LM 0.12 chosen, extended security: WordCount 17, DialectIndex 0,
+        // the security mode, limits, capabilities and time, then the GUID.
+        let mut chosen = vec![0x11, 0x00, 0x00, 0x03, 0x32, 0x00, 0x01, 0x00];
+        chosen.extend_from_slice(&[0x04, 0x41, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00]);
+        chosen.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0xfd, 0xf3, 0x01, 0x80]);
+        chosen.extend_from_slice(&[0x00; 10]);
+        chosen.extend_from_slice(&[0x00, 0x10, 0x00]);
+        chosen.extend_from_slice(&[0x5a; 16]);
+        assert!(fires(netbios(SMB1_NEGOTIATE_RESPONSE_HEADER, &chosen)));
+
+        // No dialect chosen: WordCount 1, DialectIndex 0xFFFF, ByteCount 0.
+        assert!(
+            !fires(netbios(
+                SMB1_NEGOTIATE_RESPONSE_HEADER,
+                &[0x01, 0xff, 0xff, 0x00, 0x00]
+            )),
+            "smbv1-enabled read a refusal of every SMB1 dialect as SMBv1 enabled"
+        );
+    }
+
     /// The four enumeration flows against a same-protocol denial: FTP refusing
     /// anonymous, a rejected LDAP bind, VNC offering only a password, and DNS
     /// returning no answer. None may fire.

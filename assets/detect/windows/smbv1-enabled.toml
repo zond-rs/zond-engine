@@ -1,15 +1,20 @@
 # SMBv1 still enabled. SMBv1 is the obsolete file-sharing dialect behind
 # EternalBlue and the WannaCry and NotPetya outbreaks, retired by every current
-# Windows. The probe offers the oldest dialect; a server that answers with an
-# SMBv1 header (0xff 'SMB') rather than upgrading to SMB2 (0xfe 'SMB') still speaks
-# it. One negotiate; nothing authenticates.
+# Windows. One negotiate; nothing authenticates.
+#
+# The probe is an SMB1 NEGOTIATE offering only NT LM 0.12, the dialect every SMB1
+# server since NT 4 speaks, and no SMB2 dialect, so a server cannot answer by
+# upgrading. A server with SMB1 enabled replies in SMB1 with status zero and
+# DialectIndex 0, the dialect it chose. One with SMB1 disabled drops the
+# connection, or, as Samba does, answers in SMB1 with DialectIndex 0xFFFF, no
+# dialect chosen; the pattern holds the index to 0 so that answer is not a match.
 #
 # The payload is a single-quoted TOML literal string so its byte escapes reach
 # the interpreter rather than the TOML parser.
 
 [detection]
 id      = "smbv1-enabled"
-version = "1.0.0"
+version = "1.1.0"
 title   = "SMBv1 is enabled"
 
 [detection.when]
@@ -23,12 +28,12 @@ max_bytes  = 4096
 max_millis = 3000
 
 [[step]]
-send   = '\x00\x00\x00\x2f\xff\x53\x4d\x42\x72\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x50\x43\x20\x4e\x45\x54\x57\x4f\x52\x4b\x20\x50\x52\x4f\x47\x52\x41\x4d\x20\x31\x2e\x30\x00'
-expect = '(?s)^\x00\x00\x00.\xff\x53\x4d\x42\x72\x00\x00\x00\x00'
+send   = '\x00\x00\x00\x2f\xff\x53\x4d\x42\x72\x00\x00\x00\x00\x18\x01\xc8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xfe\x00\x00\x01\x00\x00\x0c\x00\x02\x4e\x54\x20\x4c\x4d\x20\x30\x2e\x31\x32\x00'
+expect = '(?s)\A\x00.{3}\xff\x53\x4d\x42\x72\x00\x00\x00\x00.{23}[\x01-\xff]\x00\x00'   # status 0, DialectIndex 0
   [[step.finding]]
   when         = "matched"
   severity     = "high"
   summary      = "The server negotiated the obsolete SMBv1 dialect"
-  detail       = "The server answered the negotiate with an SMBv1 header rather than upgrading to SMB2, so the dialect behind EternalBlue and WannaCry is still enabled and should be disabled."
+  detail       = "The server chose an SMBv1 dialect when offered one, so the dialect behind EternalBlue and WannaCry is still enabled and should be disabled."
   references   = [{ cwe = 477 }]
   excerpt_from = "$response"
