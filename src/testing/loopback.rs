@@ -291,6 +291,18 @@ fn already_ended(sock: &mut std::net::TcpStream) -> Option<Vec<u8>> {
     }
 }
 
+/// When this process last opened a [`SilentPort`] at each address.
+static OPENED: std::sync::LazyLock<
+    Mutex<std::collections::HashMap<SocketAddr, std::time::Instant>>,
+> = std::sync::LazyLock::new(Mutex::default);
+
+/// When this process last opened a [`SilentPort`] at `addr`, for a count of
+/// connections begun there to start from: tests share a process, and one begun
+/// earlier went to whatever held the port then, often an earlier test's listener.
+pub(crate) fn opened_at(addr: SocketAddr) -> Option<std::time::Instant> {
+    OPENED.lock().unwrap().get(&addr).copied()
+}
+
 impl SilentPort {
     /// Opens one on an unused loopback port.
     ///
@@ -303,9 +315,25 @@ impl SilentPort {
     /// hanging up within moments of the handshake without waiting for a reply.
     /// Scanners that ask wait on an answer, and ones that only knock write
     /// nothing.
+    ///
+    /// Its address is noted as [opened](opened_at), since a connection begun
+    /// there earlier went to whatever held the port then.
     pub(crate) fn open() -> Self {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds loopback");
+        Self::listening(std::net::TcpListener::bind("127.0.0.1:0").expect("binds loopback"))
+    }
+
+    /// [`open`](Self::open), on `addr`, for a test that must reuse a port.
+    pub(crate) fn open_at(addr: SocketAddr) -> Self {
+        Self::listening(std::net::TcpListener::bind(addr).expect("binds the port"))
+    }
+
+    /// One serving `listener`.
+    fn listening(listener: std::net::TcpListener) -> Self {
         let addr = listener.local_addr().expect("a local address");
+        OPENED
+            .lock()
+            .unwrap()
+            .insert(addr, std::time::Instant::now());
         let heard = Arc::new((Mutex::new(Vec::<Connection>::new()), Condvar::new()));
         let log = Arc::clone(&heard);
         std::thread::spawn(move || {

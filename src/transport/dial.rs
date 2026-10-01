@@ -106,21 +106,29 @@ pub(crate) mod dialled {
             .push(Instant::now());
     }
 
-    /// How many connections this process has begun to `addr`.
+    /// How many connections this process has begun to `addr`, since a
+    /// [`SilentPort`](crate::testing::loopback::SilentPort) last opened there.
     pub(crate) fn to(addr: SocketAddr) -> usize {
-        DIALLED.lock().unwrap().get(&addr).map_or(0, Vec::len)
+        times(addr).len()
     }
 
     /// When this process began each of its connections to `addr`, for tests that
     /// must know how far apart they left. An accept may never see a connection that
     /// closed the moment it completed.
+    ///
+    /// Only those since a [`SilentPort`](crate::testing::loopback::SilentPort) last
+    /// opened at `addr`, which were to that port.
     pub(crate) fn times(addr: SocketAddr) -> Vec<Instant> {
+        let since = crate::testing::loopback::opened_at(addr);
         DIALLED
             .lock()
             .unwrap()
             .get(&addr)
-            .cloned()
-            .unwrap_or_default()
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|&begun| since.is_none_or(|opened| begun >= opened))
+            .collect()
     }
 
     /// The error each connection begun to an address is refused with, and how many
@@ -868,6 +876,36 @@ mod tests {
             dialled::to(addr),
             1,
             "a connection this process closed at once was not counted"
+        );
+    }
+
+    /// A port opened where an earlier connection went is charged none of it.
+    ///
+    /// Tests share one process, and a port an earlier test connected to,
+    /// listening or closed, is free for the next to bind. Its count would then
+    /// read as the later test's pass having asked the port.
+    #[tokio::test]
+    async fn a_port_opened_afresh_is_charged_no_earlier_connection() {
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("binds loopback")
+            .local_addr()
+            .expect("a local address");
+        // Refused, since the listener is gone, and counted all the same.
+        let _ = Egress::KERNEL
+            .connect_timed(Slot::unpaced(), addr, Duration::from_secs(30))
+            .await;
+        assert_eq!(
+            dialled::to(addr),
+            1,
+            "the earlier connection was not counted"
+        );
+
+        let reopened = crate::testing::loopback::SilentPort::open_at(addr);
+
+        assert_eq!(
+            dialled::to(reopened.addr()),
+            0,
+            "a connection begun before the port opened was charged to it"
         );
     }
 
