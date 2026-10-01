@@ -8,13 +8,10 @@
 
 //! # Running one test in a process of its own
 //!
-//! A test binary runs its tests side by side in one process, and some tests
-//! reach past their own share of it. One that fills the process's descriptor
-//! table takes every test beside it down with it. One that scans all of
-//! loopback's ports reaches every service the tests beside it stand up, and
-//! its connections are this process's, which is the one thing those services
-//! tell their own test's pass by; see [`loopback`](super::loopback). Such a
-//! test re-runs its binary on itself alone and runs its body there.
+//! For tests that affect the whole process: one that fills the descriptor table,
+//! or one that scans all of loopback and would reach the services of tests beside
+//! it (which accept this process's connections; see [`loopback`](super::loopback)).
+//! Such a test re-runs its binary on itself alone.
 
 /// The variable a re-run finds itself under, naming the test it is.
 const OWN_PROCESS: &str = "ZOND_TEST_IN_OWN_PROCESS";
@@ -22,8 +19,8 @@ const OWN_PROCESS: &str = "ZOND_TEST_IN_OWN_PROCESS";
 /// Whether this is the process the test `name`, in the module `module` (its
 /// `module_path!()`), should run its body in.
 ///
-/// The first call re-runs this binary on that one test and fails if the
-/// re-run does, and the re-run is the call that answers `true`.
+/// The first call re-runs this binary on that one test, fails if the re-run
+/// does, and returns `false`; in the re-run it returns `true`.
 pub(crate) fn in_a_process_of_its_own(module: &str, name: &str) -> bool {
     if std::env::var(OWN_PROCESS).is_ok_and(|running| running == name) {
         return true;

@@ -8,45 +8,31 @@
 
 //! # Loopback services that hear only this process
 //!
-//! The engine's tests, the crate's own and the tiers under `tests/` alike,
-//! stand services up on loopback for a pass to talk to, and loopback belongs
-//! to the whole machine. Any other scanner running on it reaches every port
-//! listening there: a scan of all of loopback's ports connects to the test's
-//! service as readily as to anything else, and asks it what it asks every
-//! open port. A service that answered it, or counted what it sent, would be
-//! telling its test about a pass that was not the test's. What a test's
-//! service reports has to be what the test's own pass sent, so the services
-//! here take connections from this process and close any other unread.
+//! Loopback is shared by the whole machine, so another scanner running on it
+//! reaches the services tests stand up. The services here take connections only
+//! from this process and close any other unread, so what they report is what the
+//! test's own pass sent.
 //!
-//! A connection is told for this process's by its far end: the local end of a
-//! socket this process holds. It is looked for when the connection is
-//! accepted, and every pass a service here answers keeps its connection open
-//! for at least the wait on the answer, half a second or more, after
-//! connecting, which an accept on loopback is well inside. A connection this
-//! process closes sooner, as a connect scan closes the one its handshake
-//! completed, is closed unread with any other process's, which a connection
-//! that asks nothing never notices. [`SilentPort`], which answers nothing and
-//! keeps a record of what reached it, keeps those too.
+//! A connection is this process's when its far end is the local end of a socket
+//! this process holds, checked at accept. Every pass a service here answers keeps
+//! its connection open for half a second or more while waiting on the answer,
+//! well past an accept on loopback. A connection closed sooner (a connect scan's)
+//! is closed unread like a foreign one; [`SilentPort`] keeps those too.
 //!
-//! A datagram is told the same way, by its source: the local end of a
-//! datagram socket this process holds. Every pass that sends one waits on the
-//! socket for the answer, so the socket is still held when a peer here reads
-//! what it sent. A peer that answers nothing and is only read once the pass
-//! has given up and let its socket go cannot tell a pass's datagram from
-//! another process's that way, so [`SilentUdpPort`] reads each one as it
-//! arrives, from a thread of its own, and keeps it for when it is asked.
+//! A datagram is this process's when its source is the local end of a datagram
+//! socket this process holds. A pass waits on its socket for the answer, so the
+//! socket is still held when a peer reads. [`SilentUdpPort`], which answers
+//! nothing, reads each datagram on arrival from its own thread for the same
+//! reason.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-/// Whether `endpoint` is the local end of a socket this process holds, which
-/// is what a connection from this process to one of its own listeners has at
-/// its far end.
+/// Whether `endpoint` is the local end of a socket this process holds.
 ///
-/// Every descriptor the process has open is asked for its local address.
-/// One closed or reused meanwhile answers for whatever it is by then, which
-/// is no socket of the pass's either way.
+/// Every open descriptor is asked for its local address. One closed or reused
+/// meanwhile is no socket of the pass's either way.
 #[cfg(unix)]
 pub(crate) fn held_here(endpoint: SocketAddr) -> bool {
     let Ok(descriptors) = std::fs::read_dir("/dev/fd") else {
@@ -57,15 +43,10 @@ pub(crate) fn held_here(endpoint: SocketAddr) -> bool {
         .any(|fd| local_end(fd) == Some(endpoint))
 }
 
-/// Whether `source` is the local end of a datagram socket this process holds,
-/// which is where a datagram from this process to one of its own peers was
-/// sent from.
+/// Whether `source` is the local end of a datagram socket this process holds.
 ///
-/// A socket bound to the unspecified address is held at every address of its
-/// family, so one that sent from it matches at its port alone: a resolver's
-/// socket bound to `0.0.0.0` sends to loopback from `127.0.0.1`. Only datagram
-/// sockets are asked, since a stream socket at the same number is no sender of
-/// datagrams.
+/// A socket bound to the unspecified address matches by port alone: one bound
+/// to `0.0.0.0` sends to loopback from `127.0.0.1`. Stream sockets are skipped.
 #[cfg(unix)]
 pub(crate) fn sent_here(source: SocketAddr) -> bool {
     let Ok(descriptors) = std::fs::read_dir("/dev/fd") else {
@@ -82,8 +63,8 @@ pub(crate) fn sent_here(source: SocketAddr) -> bool {
         })
 }
 
-/// Anywhere without a directory of the process's descriptors, every datagram
-/// counts as this process's, as every connection does in [`held_here`].
+/// Without `/dev/fd`, every datagram counts as this process's, as in
+/// [`held_here`].
 #[cfg(not(unix))]
 pub(crate) fn sent_here(_source: SocketAddr) -> bool {
     true
@@ -109,9 +90,8 @@ fn is_datagram_socket(fd: libc::c_int) -> bool {
     asked == 0 && kind == libc::SOCK_DGRAM
 }
 
-/// Anywhere without a directory of the process's descriptors, every
-/// connection counts as this process's, so a scanner running beside the test
-/// there can still reach its services.
+/// Without `/dev/fd`, every connection counts as this process's, so another
+/// scanner can still reach the services there.
 #[cfg(not(unix))]
 pub(crate) fn held_here(_endpoint: SocketAddr) -> bool {
     true
@@ -189,10 +169,8 @@ pub(crate) fn recv_from_this_process_blocking(
     }
 }
 
-/// A TLS acceptor keeping a certificate for `name` alone, as a server holding
-/// its sites by name keeps one per site, so a handshake naming nothing, or
-/// another name, is refused. The certificate is minted per call, so no key
-/// lives in the tree.
+/// A TLS acceptor with a certificate for `name` alone, so a handshake naming
+/// nothing or another name is refused. Minted per call, so no key is in the tree.
 pub(crate) fn tls_by_name(name: &str) -> tokio_rustls::TlsAcceptor {
     use rustls::server::ResolvesServerCertUsingSni;
     use rustls::sign::CertifiedKey;
@@ -220,11 +198,10 @@ pub(crate) fn tls_by_name(name: &str) -> tokio_rustls::TlsAcceptor {
     tokio_rustls::TlsAcceptor::from(Arc::new(config))
 }
 
-/// A loopback HTTPS site held by `name`, as a server holding several sites at
-/// one address holds one: a handshake that does not name it is refused, and a
-/// request whose `Host` is not `name` and the port is answered `404`, as the
-/// default site would. A request for the site is answered `200` with the body
-/// `page` gives for it, or `404` where it gives none.
+/// A loopback HTTPS site named `name`, as on a virtual-hosting server: a handshake
+/// that does not name it is refused, and a request whose `Host` is not `name` and
+/// the port gets `404`. A request for the site gets `200` with the body `page`
+/// gives, or `404` where it gives none.
 pub(crate) async fn https_site(name: &str, page: fn(&str) -> Option<&'static str>) -> SocketAddr {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -267,18 +244,15 @@ pub(crate) async fn https_site(name: &str, page: fn(&str) -> Option<&'static str
     addr
 }
 
-/// A loopback port that says nothing and keeps a record of each connection
-/// this process opens to it and everything it sends, standing in for a
-/// service that waits to be spoken to first, for a printer's raw-print port,
-/// or for a port a pass has promised not to reach.
+/// A loopback port that says nothing and records each connection this process
+/// opens to it and what it sends. Stands in for a service that waits to be spoken
+/// to, a printer's raw-print port, or a port a pass must not reach.
 ///
-/// Served from threads of its own, so what it hears does not wait on the
-/// runtime a pass runs on.
+/// Served from its own threads, independent of the pass's runtime.
 pub(crate) struct SilentPort {
     addr: SocketAddr,
     heard: Arc<(Mutex<Vec<Connection>>, Condvar)>,
-    /// The far ends of the connections its counts opened to it, which are
-    /// no pass's and are left out of every later count.
+    /// The far ends of its own marker connections, left out of every count.
     markers: Mutex<Vec<SocketAddr>>,
 }
 
@@ -290,21 +264,17 @@ struct Connection {
     sent: Vec<u8>,
     /// Whether it has been read to its close.
     closed: bool,
-    /// Whether it was told for this process's by its far end, which it was
-    /// unless that end had hung up by the time the port took it.
+    /// Whether its far end identified it as this process's; false where that
+    /// end had hung up before the accept.
     told: bool,
 }
 
-/// How long [`SilentPort::heard`] waits for the connections before it to
-/// close, which a pass that has returned has closed already. Long enough
-/// that only a connection left open runs it out.
+/// How long [`SilentPort::heard`] waits for earlier connections to close. Only
+/// a connection left open runs it out.
 const CLOSE_PATIENCE: Duration = Duration::from_secs(60);
 
-/// Everything `sock` was sent, where its far end had hung up by the time it
-/// was accepted, or `None` where the far end still holds it open.
-///
-/// A connection from this process that ended that soon is no longer told for
-/// this process's by its far end; see [`SilentPort::open`].
+/// Everything `sock` was sent if its far end had hung up by the accept, or `None`
+/// where it is still open. See [`SilentPort::open`].
 fn already_ended(sock: &mut std::net::TcpStream) -> Option<Vec<u8>> {
     use std::io::{ErrorKind, Read};
     sock.set_nonblocking(true).ok()?;
@@ -324,30 +294,15 @@ fn already_ended(sock: &mut std::net::TcpStream) -> Option<Vec<u8>> {
 impl SilentPort {
     /// Opens one on an unused loopback port.
     ///
-    /// Its record differs from what [`from_this_process`] serves in one case:
-    /// a connection whose far end had hung up before it was accepted. No
-    /// socket holds that end any more, so which process opened it cannot be
-    /// told, and the record keeps it as this process's. A pass that connects
-    /// and at once lets go, the way a pass that ought to have connected to
-    /// nothing is likeliest to, is then still counted, where a service that
-    /// answered would only have been spared a connection it had nothing to
-    /// say to. Another process's connection is kept by mistake only if it
-    /// ends that soon too, and one that ends having sent nothing adds
-    /// nothing but itself to the record.
+    /// Unlike [`from_this_process`], it keeps a connection whose far end hung up
+    /// before the accept, since its owner can no longer be told. A pass that
+    /// connects and at once lets go, or writes and hangs up as a print job does,
+    /// is then still caught by [`heard`](Self::heard).
     ///
-    /// What such a connection sent is kept with it, and a test reading
-    /// [`heard`](Self::heard) as nothing leans on that: a pass that ought to
-    /// have written nothing and writes and hangs up at once, as a print job
-    /// does, is caught there alone. So another process moves what the record
-    /// holds in one way only: by connecting, writing and hanging up before the
-    /// port has read whether the connection's far end is still held, which on
-    /// loopback is within moments of the handshake. A scanner that asks a port
-    /// anything waits on its answer, or on a greeting before it, and one that
-    /// only knocks writes nothing, so it takes a process writing to a port it
-    /// has never been answered on and hanging up without a reply. Bytes have no
-    /// count another process cannot reach, as connections have where the crate
-    /// begins them: a pass writes wherever it holds its stream, and the crate
-    /// has no one place every write goes through.
+    /// So another process can affect the record only by connecting, writing and
+    /// hanging up within moments of the handshake without waiting for a reply.
+    /// Scanners that ask wait on an answer, and ones that only knock write
+    /// nothing.
     pub(crate) fn open() -> Self {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds loopback");
         let addr = listener.local_addr().expect("a local address");
@@ -413,15 +368,14 @@ impl SilentPort {
     /// Every byte this process has sent it, once each connection opened to it
     /// before the call has been read to its close.
     ///
-    /// A connection closed before the port took it can no longer be told for
-    /// this process's, and what it sent is counted all the same, as another
-    /// process's that ended as soon would be; see [`open`](Self::open).
+    /// What a connection closed before the accept sent is counted too; see
+    /// [`open`](Self::open).
     pub(crate) fn heard(&self) -> usize {
         self.settled().iter().map(|(sent, _)| sent.len()).sum()
     }
 
-    /// The bytes [`heard`](Self::heard) counts, a connection's after the one
-    /// before it, in the order the port took them.
+    /// The bytes [`heard`](Self::heard) counts, in the order the port accepted
+    /// their connections.
     pub(crate) fn received(&self) -> Vec<u8> {
         self.settled()
             .into_iter()
@@ -433,28 +387,19 @@ impl SilentPort {
     /// open when the port took them, once each opened before the call has been
     /// read to its close, whether or not they sent anything.
     ///
-    /// Only this process moves this count, and a pass whose connections stay
-    /// open while it asks, as an identification's stay open for its walk, is
-    /// counted here in full. A connection whose far end had hung up before
-    /// the port took it is left out, since no process can be told for it, and
-    /// another scanner's connect sweep of loopback makes such connections at
-    /// any moment. A test that has to see a connection closed at once, a
-    /// connect scan's, counts where the crate begins its connections instead,
-    /// which is a count no other process reaches.
+    /// Only this process moves this count. Connections that hung up before the
+    /// accept are left out, since another scanner's connect sweep makes those at
+    /// any moment; a test that must see a connect scan's connections counts where
+    /// the crate opens them.
     pub(crate) fn connections_told(&self) -> usize {
         self.settled().iter().filter(|(_, told)| *told).count()
     }
 
-    /// What each connection this process opened before the call sent, other
-    /// than the counts' own, once each has been read to its close, and
-    /// whether it was told for this process's rather than kept for having
-    /// ended too soon to be told.
+    /// What each connection opened before the call sent (markers excluded), once
+    /// each is read to its close, and whether it was told for this process's.
     ///
-    /// A pass that has returned has closed its connections, but what it sent
-    /// on them may still be on its way to being read. A connection of the
-    /// call's own is accepted after all of theirs, since a listener takes
-    /// connections in the order they arrive, so once it is, which of theirs
-    /// remain open is known, and each is waited on until it closes.
+    /// A marker connection is accepted after every earlier one, so once it is,
+    /// the earlier ones still open are known and each is waited on.
     fn settled(&self) -> Vec<(Vec<u8>, bool)> {
         let marker = std::net::TcpStream::connect(self.addr).expect("connects to loopback");
         let from = marker.local_addr().expect("a local address");
@@ -491,21 +436,15 @@ impl SilentPort {
     }
 }
 
-/// A loopback UDP port that answers nothing and keeps each datagram this
-/// process sends it, standing in for a name server that is not there or a
-/// server a pass has promised not to ask.
+/// A loopback UDP port that answers nothing and keeps each datagram this process
+/// sends it. Stands in for an absent name server or a server a pass must not ask.
 ///
-/// Read from a thread of its own the moment a datagram arrives, while the
-/// pass that sent it is still waiting on its socket for the answer, so a
-/// datagram's source is still one this process holds when it is looked at:
-/// the check [`recv_from_this_process`] makes, made in time for a peer that
-/// is only read once the pass has returned. Any other process's datagram is
-/// read and dropped.
+/// Its own thread reads each datagram on arrival, while the sender still holds its
+/// socket, so the [`recv_from_this_process`] check works. Other processes'
+/// datagrams are dropped.
 ///
-/// Dropping it stops the thread and closes the port before the drop returns,
-/// so a test run holding many of them one after another holds one descriptor
-/// at a time rather than one for every port it ever opened, which a run under
-/// a low descriptor limit would run out of.
+/// Dropping it stops the thread and closes the port before returning, so tests
+/// under a low descriptor limit do not run out.
 pub(crate) struct SilentUdpPort {
     addr: SocketAddr,
     heard: Arc<(Mutex<Heard>, Condvar)>,
@@ -519,8 +458,7 @@ pub(crate) struct SilentUdpPort {
 struct Heard {
     /// Each datagram's source and payload, in the order they arrived.
     datagrams: Vec<(SocketAddr, Vec<u8>)>,
-    /// The sources of the datagrams its own reads sent it, which are no
-    /// pass's and are left out of everything it reports.
+    /// The sources of its own marker datagrams, left out of every report.
     markers: Vec<SocketAddr>,
 }
 
@@ -534,8 +472,8 @@ impl Heard {
     }
 }
 
-/// How long [`SilentUdpPort`] waits for datagrams it was told to expect.
-/// Long enough that only one never sent runs it out.
+/// How long [`SilentUdpPort`] waits for expected datagrams. Only one never sent
+/// runs it out.
 const DATAGRAM_PATIENCE: Duration = Duration::from_secs(30);
 
 impl SilentUdpPort {
@@ -573,9 +511,8 @@ impl SilentUdpPort {
     /// Every datagram this process sent it before the call, in the order they
     /// arrived.
     ///
-    /// A datagram on loopback is queued at the port by the time its send
-    /// returns, so one of the call's own sent after them is read after all of
-    /// them, and once it has been, everything before it is in the record.
+    /// A loopback datagram is queued by the time its send returns, so once a
+    /// marker sent now has been read, everything before it is recorded.
     pub(crate) fn datagrams(&self) -> Vec<Vec<u8>> {
         let marker = std::net::UdpSocket::bind("127.0.0.1:0").expect("binds loopback");
         let from = marker.local_addr().expect("a local address");
@@ -620,11 +557,9 @@ impl SilentUdpPort {
 }
 
 impl Drop for SilentUdpPort {
-    /// Stops the thread and closes the port. The thread waits in a read, and a
-    /// datagram is what ends a read on every platform, so one is sent from a
-    /// socket held until the thread has read it and returned, which is also
-    /// what the thread asks of a datagram before it reads one as this
-    /// process's.
+    /// Stops the thread and closes the port. A datagram is what ends a blocking
+    /// read on every platform, so one is sent from a socket held until the thread
+    /// returns (which also makes it pass the this-process check).
     fn drop(&mut self) {
         self.stopping
             .store(true, std::sync::atomic::Ordering::Release);
@@ -651,22 +586,17 @@ impl Drop for SilentUdpPort {
 /// `count` TCP ports at `ip`, a loopback address, that refuse a connection now
 /// and go on refusing one for as long as the test runs, highest first.
 ///
-/// A port found by binding one and letting it go is not closed for long: the
-/// system hands it straight back to the next socket that asks for any port,
-/// which in a test run is another test's service, and the scan counted on a
-/// refusal connects to that service instead and is answered or counted there.
-/// These are taken from below the range the system hands such a socket, where
-/// no test binds, counting down from the top of the ports the system keeps for
-/// its own services. Each is asked first and kept only if it refuses, since
-/// one may hold a service of the machine's.
+/// A port found by binding and releasing one is soon handed to another test's
+/// service. These count down from 1023, below the ephemeral range where no test
+/// binds, and each is kept only if it refuses, since the machine may serve on it.
 ///
 /// # Panics
 ///
 /// Where fewer than `count` of those ports refuse, which is a machine serving
 /// on nearly all of them.
 pub(crate) fn refused_ports(ip: std::net::IpAddr, count: usize) -> Vec<u16> {
-    // Long enough for a refusal from a stack that retries a reset handshake
-    // before giving up, and only ever spent on a port that holds a service.
+    // Long enough for a stack that retries a reset handshake; only spent on a
+    // port that holds a service.
     const REFUSAL_PATIENCE: Duration = Duration::from_secs(3);
 
     let refused: Vec<u16> = (1..1024u16)
@@ -688,19 +618,13 @@ pub(crate) fn refused_port(ip: std::net::IpAddr) -> SocketAddr {
     SocketAddr::new(ip, refused_ports(ip, 1)[0])
 }
 
-/// A UDP port at a loopback address that nothing listens on and that this
-/// process holds for as long as the value lives, so a datagram sent there
-/// draws the system's port-unreachable and no other socket can take the port
-/// meanwhile.
+/// A loopback UDP port that draws the system's port-unreachable and that no other
+/// socket can take while the value lives.
 ///
-/// Held by a socket connected to a second one, [`ClosedUdpPort::open`] binds
-/// both. A connected datagram socket takes only what its peer sends, so the
-/// system finds no socket for a datagram from anywhere else and answers it as
-/// it answers a closed port; and a port a socket is bound to is one the
-/// system never hands to a socket asking for any port, which is how a port
-/// found by binding one and letting it go ends up another test's service
-/// between the letting go and the probe. The peer is held too, since it is
-/// the one source whose datagrams the port would take.
+/// Held by a socket connected to a second one, both bound by
+/// [`ClosedUdpPort::open`]. A connected datagram socket takes only its peer's
+/// datagrams, so anything else is answered as at a closed port, and the bound port
+/// is never handed out. The peer is held too, since its datagrams would be taken.
 pub(crate) struct ClosedUdpPort {
     port: u16,
     _held: [std::net::UdpSocket; 2],
@@ -726,28 +650,18 @@ impl ClosedUdpPort {
     }
 }
 
-/// A TCP port at a loopback address that nothing listens on and that this
-/// process holds for as long as the value lives, bound the way a scan binds a
-/// source port it was told to use, so a scan can use it as one.
+/// A loopback TCP port that nothing listens on, held while the value lives and
+/// bound so a scan can also use it as its pinned source port. For tests needing
+/// source and target to be one number.
 ///
-/// For a test that needs a scan's source port and its target port to be one
-/// number. A port found by binding one and letting it go can be handed to
-/// another socket before the scan binds it, where this one cannot: the socket
-/// holding it is bound and never listens, so nothing accepts a connection
-/// there, and it asks for port reuse, as the scan's own socket does, so the
-/// scan binds beside it and a socket that does not ask for it is refused.
-/// What a connection from elsewhere meets is the system's to say: Linux
-/// refuses it, and macOS drops it unanswered, as it does anything sent to a
-/// bound socket that is not listening.
+/// The holder is bound, never listens, and sets `SO_REUSEPORT` as the scan's socket
+/// does, so the scan binds beside it and other sockets are refused. A connection
+/// to it is refused on Linux and dropped unanswered on macOS.
 ///
-/// It asks for port reuse alone and not for address reuse. Linux lets two
-/// sockets that both ask for address reuse share a port while neither
-/// listens, and a listener asks for it as a matter of course, so a holder
-/// asking for it too would let the next listener bound to that number take
-/// the port and answer the scan. Port reuse is shared only between sockets
-/// that both ask for it, on Linux and macOS alike. Windows has no port reuse,
-/// and there a socket asking for address reuse, as the scan's does, binds
-/// beside any other whatever that one asked for.
+/// It does not set `SO_REUSEADDR`: Linux lets two sockets that both set it share a
+/// port while neither listens, and listeners set it, so the next listener would
+/// take the port. Windows has no port reuse; there the scan's address reuse binds
+/// beside any socket.
 pub(crate) struct HeldTcpPort {
     port: u16,
     _held: socket2::Socket,
@@ -786,17 +700,10 @@ impl HeldTcpPort {
 mod tests {
     use super::*;
 
-    /// **A silent port stops reading and lets go of its port when dropped.**
-    /// Its thread held the socket until the test process exited, and a run
-    /// under a descriptor limit of 256 that opened one per test would have run
-    /// out.
+    /// A silent UDP port lets go of its port when dropped.
     ///
-    /// Free for a bind soon after the drop rather than the instant it returns.
-    /// A process a test beside this one spawns holds a copy of every descriptor
-    /// this process has until the spawn has put the new program in place, close
-    /// on exec or not, and the system hands the port out again only once the
-    /// last copy is closed. That is microseconds; a port still taken after
-    /// seconds was never let go.
+    /// Polled, since a process spawned by a concurrent test briefly holds a copy
+    /// of every descriptor until its exec, close-on-exec or not.
     #[test]
     fn a_silent_udp_port_lets_go_of_its_port_when_dropped() {
         const RELEASE_PATIENCE: Duration = Duration::from_secs(10);
@@ -819,10 +726,8 @@ mod tests {
         }
     }
 
-    /// **A closed UDP port refuses a datagram for as long as it is held, and
-    /// no other socket can take it meanwhile.** What a test probing it
-    /// counts on is the refusal, and what makes the refusal last is that the
-    /// port is not free to be handed out.
+    /// A closed UDP port refuses a datagram while held, and no other socket can
+    /// take it.
     #[test]
     fn a_closed_udp_port_refuses_and_stays_taken_while_held() {
         for ip in [
@@ -852,10 +757,9 @@ mod tests {
         }
     }
 
-    /// **A held TCP port admits a socket bound the way a scan binds a pinned
-    /// source port**, where a listener asking for the port is refused it. The
-    /// listener asks with the address reuse the standard library's listeners
-    /// ask for on Unix, which is what another test's service would bring.
+    /// A held TCP port admits a socket bound as a scan binds a pinned source
+    /// port, and refuses a standard-library listener (which sets address reuse
+    /// on Unix).
     #[test]
     fn a_held_tcp_port_stays_taken_and_admits_a_pinned_source() {
         use socket2::{Domain, Socket, Type};
@@ -890,9 +794,7 @@ mod tests {
         }
     }
 
-    /// A connection's far end is one of this process's sockets while this
-    /// process holds it and not once it lets go, which is the difference a
-    /// service here tells this process's connections from another's by.
+    /// A connection's far end is this process's while held and not once let go.
     #[cfg(unix)]
     #[test]
     fn a_connection_is_this_processs_while_it_holds_the_far_end() {
@@ -908,19 +810,16 @@ mod tests {
         );
     }
 
-    /// A refused port refuses, and is none a socket asking for any port is
-    /// handed, however many ask.
-    ///
-    /// Found by binding a port and letting it go, a closed port is the next
-    /// one handed out, and a test's scan connects to whichever service took it.
+    /// A refused port refuses and is never handed to a socket asking for any
+    /// port.
     #[test]
     fn a_refused_port_is_never_handed_to_a_socket_asking_for_any() {
         let ip = std::net::IpAddr::from([127, 0, 0, 1]);
         let refused = refused_ports(ip, 2);
         assert_ne!(refused[0], refused[1], "two ports, not one twice");
 
-        // Held together, so each is handed a port none of the others holds;
-        // few enough for a run under a low descriptor limit.
+        // Held together, so each gets a distinct port; few enough for a low
+        // descriptor limit.
         let asking: Vec<std::net::TcpListener> = (0..32)
             .map(|_| std::net::TcpListener::bind((ip, 0)).expect("binds loopback"))
             .collect();
@@ -938,10 +837,9 @@ mod tests {
         }
     }
 
-    /// A datagram's source is one of this process's sockets while this
-    /// process holds it, bound to loopback or to every address, and not once
-    /// it lets go; and a stream socket at the same number is not taken for
-    /// the sender.
+    /// A datagram's source is this process's while held, bound to loopback or
+    /// to every address, and not once let go; a stream socket at the same number
+    /// does not count.
     #[cfg(unix)]
     #[test]
     fn a_datagram_is_this_processs_while_it_holds_the_socket_it_came_from() {
@@ -956,7 +854,7 @@ mod tests {
             drop(sender);
             assert!(!sent_here(source), "a socket let go of was taken for one");
 
-            // A listener that took the number over is no sender of datagrams.
+            // A listener on the same number is not a datagram sender.
             if let Ok(listener) = std::net::TcpListener::bind(source) {
                 assert!(!sent_here(source), "a stream socket was taken for one");
                 drop(listener);
@@ -983,10 +881,7 @@ mod tests {
         assert_eq!(source, here.local_addr().unwrap());
     }
 
-    /// What was sent before the count is counted, all of it and nothing
-    /// else: the count waits for every earlier connection to be read to its
-    /// close, and the connections the counts open are neither heard nor
-    /// counted as connections.
+    /// Everything sent before the count is counted, and the markers are not.
     #[test]
     fn a_silent_port_hears_everything_sent_before_it_is_asked() {
         use std::io::Write;
@@ -997,8 +892,8 @@ mod tests {
             .map(|bytes| {
                 let mut sock = std::net::TcpStream::connect(silent.addr()).unwrap();
                 sock.write_all(bytes).unwrap();
-                // Closed for writing and still held, as a pass holds a
-                // connection until it has waited on the answer.
+                // Closed for writing and still held, as a pass waiting on an
+                // answer holds it.
                 sock.shutdown(std::net::Shutdown::Write).unwrap();
                 sock
             })
@@ -1019,11 +914,8 @@ mod tests {
     #[cfg(unix)]
     const SEND_TO: &str = "ZOND_TEST_DATAGRAM_TO";
 
-    /// A silent UDP port keeps what this process sent it, even once the
-    /// socket it came from has been let go, and nothing another process sent.
-    /// A pass has usually given its socket up by the time its test asks what
-    /// reached the port, and another scanner on the machine can send to the
-    /// port at any moment.
+    /// A silent UDP port keeps what this process sent it, even after the
+    /// sending socket is let go, and nothing another process sent.
     #[cfg(unix)]
     #[test]
     fn a_silent_udp_port_keeps_this_processs_datagrams_and_no_others() {
@@ -1055,9 +947,9 @@ mod tests {
         );
     }
 
-    /// Not a check of its own: the other process
-    /// [`a_silent_udp_port_keeps_this_processs_datagrams_and_no_others`]
-    /// needs, sending one datagram where [`SEND_TO`] says.
+    /// The other process for
+    /// [`a_silent_udp_port_keeps_this_processs_datagrams_and_no_others`]: sends
+    /// one datagram to [`SEND_TO`].
     #[cfg(unix)]
     #[test]
     #[ignore = "the sender another test runs in a process of its own"]

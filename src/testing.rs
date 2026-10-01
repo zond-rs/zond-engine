@@ -8,13 +8,10 @@
 
 //! # Fixtures the crate's tests share
 //!
-//! What more than one module's tests stand up, kept in one place rather than
-//! copied to each. A fixture here reads nothing of the crate's own, so the
-//! integration tiers under `tests/` load the same file by path and their
-//! services behave exactly as the unit tests' do.
+//! Fixtures used by more than one module's tests. They depend on nothing else in
+//! the crate, so the integration tiers under `tests/` load the same files by path.
 
 pub(crate) mod loopback;
-// Unix alone here, where the only tests that need it run; the tiers load it
-// by path on every platform.
+// Unix only here, where the tests that need it run; the tiers load it by path.
 #[cfg(unix)]
 pub(crate) mod own_process;
