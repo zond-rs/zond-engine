@@ -8,15 +8,13 @@
 
 //! # The Rhai backend
 //!
-//! The first [`ComputeRuntime`], over [Rhai](https://rhai.rs), a small,
-//! embeddable, pure-Rust scripting language. It is sandboxed by the principle the
-//! whole subsystem turns on: Rhai has no I/O of its own, so a script reaches
-//! nothing but the host functions this backend registers, and those are exactly
-//! the [capability](Capabilities) verbs the grant permits. A `passive` grant
-//! registers none, so a passive module cannot reach the network, not because a
-//! call is refused, but because there is no `speak` to call.
+//! A [`ComputeRuntime`] over [Rhai](https://rhai.rs), a small embeddable
+//! pure-Rust scripting language. Rhai has no I/O of its own, so a script reaches
+//! only the host functions registered here, which are the
+//! [capability](Capabilities) verbs the grant permits. A `passive` grant
+//! registers none, so there is no `speak` to call.
 //!
-//! ## A module is a compiled script; an instance is an engine that serves it
+//! ## Module and instance
 //!
 //! [`load`](RhaiRuntime::load) compiles the source to a shared, reusable `AST`.
 //! [`instantiate`](RhaiRuntime::instantiate) builds an [`Engine`] configured with
@@ -28,18 +26,14 @@
 //! ## Reaching the per-run capabilities from a registered function
 //!
 //! Rhai's registered functions are `'static`, so they cannot borrow the
-//! [`Capabilities`] a `run` was handed. The bridge is a thread-local raw pointer,
-//! set by a guard for the exact span of one `run` and cleared when it returns:
-//! the capability functions read it, and because a run holds the blocking thread
-//! to itself and never touches its capabilities by any other path while the guest
-//! executes, the pointer is the sole live reference and never outlives the borrow.
-//! This is the one place unsafe is warranted, and it is confined to
-//! [`with_capabilities`].
+//! [`Capabilities`] a `run` was handed. A guard sets a thread-local raw pointer
+//! for the exact span of one `run`. A run holds its thread and touches its
+//! capabilities by no other path while the guest executes, so the pointer is
+//! the only live reference and never outlives the borrow. The `unsafe` is
+//! confined to [`with_capabilities`].
 //!
-//! The one part of that a caller could break is re-entry, since `Capabilities`
-//! is implementable outside this crate. [`ActiveRun`] refuses a second run on a
-//! thread already serving one, so the soundness argument does not rest on an
-//! implementation nobody here wrote keeping a rule.
+//! `Capabilities` is implementable outside this crate, so [`ActiveRun`] also
+//! refuses a re-entrant second run on the same thread.
 
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
@@ -67,19 +61,14 @@ use super::runtime::{ComputeRuntime, LoadError, ModuleBody};
 /// unbounded recursion independent of the work budget.
 const MAX_CALL_LEVELS: usize = 32;
 
-/// How many operations pass between wall-clock deadline checks in the engine's
-/// progress callback. Reading the clock every operation would cost more than the
-/// work it guards; a few thousand keeps the check off the hot path while still
-/// tripping the deadline within a millisecond of expiry.
+/// How many operations pass between wall-clock deadline checks in the progress
+/// callback: off the hot path, yet within a millisecond of expiry.
 const PROGRESS_STRIDE: u64 = 8192;
 
-/// The deepest an expression may nest, bounding the parser's own recursion so a
-/// pathologically nested module cannot overflow the stack at compile. A real
-/// detection nests only a few deep, so this is kept near [`MAX_CALL_LEVELS`]: the
-/// bound has to trip before the parser's own recursion exhausts a worker thread's
-/// stack, and a bound set for headroom rather than for stack safety overflows a
-/// smaller stack before it fires. The same bound applies to a function body and to
-/// an expression outside one.
+/// The deepest an expression may nest, bounding the parser's recursion so a
+/// pathological module cannot overflow the stack at compile. Kept near
+/// [`MAX_CALL_LEVELS`] so it trips before a worker thread's stack runs out.
+/// Applies inside and outside function bodies.
 const MAX_PARSE_DEPTH: usize = 64;
 
 thread_local! {
@@ -89,11 +78,9 @@ thread_local! {
     /// The abnormal outcome a capability recorded when it ended the run, a budget
     /// or policy refusal the guest cannot catch. Read once the guest returns.
     static ABORT: RefCell<Option<RunOutcome>> = const { RefCell::new(None) };
-    /// When the running module's wall-clock budget expires, read by the engine's
-    /// progress callback so a run that never speaks is still bounded in time,
-    /// and how long this thread had waited for probe slots when the run began:
-    /// what it waits for them during the run is the scan's time and moves the
-    /// deadline, see [`held_here`].
+    /// When the run's wall-clock budget expires, read by the progress callback,
+    /// and this thread's pacing wait when the run began; later pacing waits
+    /// extend the deadline (see [`held_here`]).
     static RUN_DEADLINE: Cell<Option<(Instant, Duration)>> = const { Cell::new(None) };
 }
 
@@ -112,29 +99,20 @@ impl ActiveRun {
     /// untouched by any other path, until this guard is dropped, which the sole
     /// caller ([`run`](RhaiRuntime::run)) guarantees.
     ///
-    /// `None` when a run is already active on this thread, which can only happen
-    /// if a [`Capabilities`] implementation re-entered the runtime.
+    /// `None` when a run is already active on this thread, which only a
+    /// re-entrant [`Capabilities`] implementation causes.
     ///
-    /// Two things carry the safety here, and it is worth naming both rather than
-    /// the refusal alone, because the refusal is the weaker of them.
+    /// Safety rests on two facts:
     ///
-    /// **`ACTIVE_CAPS` is per-thread.** It is a `thread_local!` and not a
-    /// static, so a thread the guest spawns cannot reach the pointer this
-    /// installed — which is what makes the erased lifetime sound across a thread
-    /// boundary at all. That matters because [`Capabilities`] is `Send`, so a
-    /// reader who checks will find that the borrow *could* travel; what stops it
-    /// being observed elsewhere is this and nothing else.
+    /// **`ACTIVE_CAPS` is a `thread_local!`**, so a thread the guest spawns
+    /// cannot reach the pointer, although [`Capabilities`] is `Send`.
     ///
-    /// **A second `&mut` to one capability set cannot exist in safe code.**
-    /// [`run`](RhaiRuntime::run) takes a borrow, so aliasing needs the same value
-    /// borrowed twice, which the borrow checker refuses. A re-entrant call
-    /// carrying a *different* set would not alias anything — it would shadow the
-    /// thread-local, and [`Drop`] would put it back.
+    /// **A second `&mut` to one capability set cannot exist in safe code**: the
+    /// borrow checker refuses borrowing it twice, and a re-entrant call with a
+    /// different set only shadows the thread-local until [`Drop`] restores it.
     ///
-    /// So the refusal below is defence in depth against an implementation that
-    /// reaches for `unsafe` to do what safe code cannot, rather than the thing
-    /// that makes the ordinary case sound. `Capabilities` is implementable
-    /// outside this crate, which is why it is worth having.
+    /// The refusal of re-entry is defence in depth against an implementation
+    /// using `unsafe`.
     fn new(caps: *mut dyn Capabilities, deadline: Instant) -> Option<Self> {
         if ACTIVE_CAPS.with(|cell| cell.get().is_some()) {
             return None;
@@ -192,9 +170,8 @@ pub struct RhaiInstance {
 
 /// The Rhai [`ComputeRuntime`].
 pub struct RhaiRuntime {
-    /// A bare engine used only to parse a module at load. Compilation resolves no
-    /// capability calls, those are late-bound at run, so this needs none of them
-    /// registered.
+    /// A bare engine used only to parse a module at load. Capability calls are
+    /// late-bound at run, so none are registered here.
     compiler: Engine,
 }
 
@@ -202,12 +179,9 @@ impl RhaiRuntime {
     /// A new Rhai runtime.
     pub fn new() -> Self {
         let mut compiler = Engine::new();
-        // Parsing is the one place this engine works, so its recursion is bounded
-        // here; the run engine never re-parses a compiled module.
+        // Parsing happens only here; the run engine never re-parses.
         compiler.set_max_expr_depths(MAX_PARSE_DEPTH, MAX_PARSE_DEPTH);
-        // Harden the compiler too: this is where `eval` is refused, at load, before
-        // any port is touched. The other two are function shadows the run engine
-        // needs; here they are inert but harmless.
+        // Refuses `eval` at load; the other shadows are inert here.
         harden(&mut compiler);
         Self { compiler }
     }
@@ -230,8 +204,7 @@ impl ComputeRuntime for RhaiRuntime {
             .compile(source)
             .map_err(|error| LoadError::Compile(error.to_string()))?;
 
-        // A module that cannot be entered is rejected here, before any port is
-        // touched, rather than faulting once per port at run.
+        // A module with no entry point is rejected at load.
         let has_entry = ast
             .iter_functions()
             .any(|function| function.name == "analyze" && function.params.len() == 2);
@@ -251,32 +224,24 @@ impl ComputeRuntime for RhaiRuntime {
     ) -> Result<Self::Instance, LoadError> {
         let mut engine = Engine::new();
 
-        // A detection has no business writing to the host; neuter the output verbs
-        // so a module cannot use them as a side channel.
+        // Neuter the output verbs so they cannot be a side channel.
         engine.on_print(|_| {});
         engine.on_debug(|_, _, _| {});
 
-        // The work and allocation bounds. The byte and connection budgets are
-        // enforced inside the capabilities that serve the I/O; the wall-clock
-        // deadline is enforced here, by the progress callback below, so a run doing
-        // work but never speaking is bounded in time all the same.
+        // Work and allocation bounds. Bytes and connections are enforced by the
+        // capabilities; the deadline by the progress callback below.
         engine.set_max_operations(grant.budget.fuel);
         engine.set_max_string_size(grant.budget.max_memory);
         engine.set_max_array_size(grant.budget.max_memory);
         engine.set_max_map_size(grant.budget.max_memory);
         engine.set_max_call_levels(MAX_CALL_LEVELS);
 
-        // Refuse the stock symbols again on the engine that runs the code, so the
-        // containment does not rest on the compiler alone.
+        // Again on the run engine, so containment does not rest on the compiler.
         harden(&mut engine);
 
-        // The wall-clock deadline, enforced independently of the I/O seam. Rhai
-        // calls this between operations, so a run that does work but never speaks,
-        // a passive module, still stops when its time is spent, where a deadline
-        // read only inside `speak` never would. A run past its deadline is
-        // terminated, which `classify` reads back as `BudgetTrap::Deadline`.
-        // The time the run's exchanges waited for their slots under the scan's
-        // pacing is not the run's, and moves the deadline by as much.
+        // The deadline, checked between operations so a run that never speaks
+        // still stops; `classify` reads the termination as `BudgetTrap::Deadline`.
+        // Pacing waits during the run extend the deadline.
         engine.on_progress(|operations| {
             if operations % PROGRESS_STRIDE == 0
                 && RUN_DEADLINE
@@ -291,14 +256,11 @@ impl ComputeRuntime for RhaiRuntime {
             }
         });
 
-        // The pure helpers, always available and never a capability: they touch
-        // nothing outside the values handed to them, so registering them for every
-        // grant leaves safety, metering and replay exactly where they were.
+        // Pure helpers, for every grant; they touch nothing outside their arguments.
         register_helpers(&mut engine);
 
-        // The class becomes the served set here: only the granted verbs are
-        // registered, so an ungranted one is not refused but absent. `now` is
-        // always available, an injected clock touches nothing.
+        // Only granted verbs are registered, so an ungranted one is absent. `now`
+        // is always available.
         engine.register_fn("now", capability_now);
         if grant.speak {
             engine.register_fn("speak", capability_speak);
@@ -321,10 +283,9 @@ impl ComputeRuntime for RhaiRuntime {
         responses: &[&[u8]],
         caps: &mut dyn Capabilities,
     ) -> Result<Vec<Finding>, RunOutcome> {
-        // Erase the borrow to a raw pointer for the eval, and with it the
-        // lifetime, so the thread-local can hold it. `caps` is not touched again
-        // until the guard drops, and the guest runs entirely within this call, so
-        // the pointer is the sole access path and never outlives the real borrow.
+        // Erase the borrow and its lifetime so the thread-local can hold it.
+        // `caps` is not touched again until the guard drops, and the guest runs
+        // entirely within this call.
         let caps: *mut (dyn Capabilities + '_) = caps;
         // SAFETY: the two pointer types are identical fat pointers differing only
         // in the pointee's lifetime, which `ActiveRun` bounds to this call.
@@ -347,9 +308,7 @@ impl ComputeRuntime for RhaiRuntime {
         match result {
             Ok(value) => collect_findings(value, &instance.grant),
             Err(error) => match active.taken_abort() {
-                // A capability ended the run: a budget or policy refusal the guest
-                // could not catch. That recorded outcome is the truth, not the
-                // generic termination error it surfaced as.
+                // A capability ended the run; its recorded outcome is the cause.
                 Some(outcome) => Err(outcome),
                 None => Err(classify(&error)),
             },
@@ -359,39 +318,28 @@ impl ComputeRuntime for RhaiRuntime {
 
 /// Registers the pure helper library every module holds, whatever its grant.
 ///
-/// None of these is a capability: each is a total function of its arguments that
-/// reaches nothing outside them, so a `passive` module holds them exactly as an
-/// `active` one does and none of the four properties the seam guarantees is
-/// touched. They are the standard library a detection would otherwise hand-roll,
-/// the byte and encoding work that reading a real protocol out of a reply takes.
+/// None is a capability: each is a total function of its arguments, so every
+/// grant gets them.
 ///
 /// - `text(blob) -> string` decodes bytes as Latin-1, so every byte is its own
 ///   code point and a binary reply is not mangled; `bytes(string) -> blob` is its
 ///   inverse, for turning a built string back into a probe payload.
 /// - `hex_encode`/`hex_decode` and `b64_encode`/`b64_decode` convert between a
-///   blob and its Base16 or Base64 text: an SNMP OID to read, a `Basic` header or
-///   a JWT segment to decode. Decoding is lenient, a malformed string yields an
-///   empty blob rather than a fault, so a module branches on what it got back
-///   rather than being killed by a reply it did not choose.
+///   blob and its Base16 or Base64 text. A malformed string decodes to an empty
+///   blob, not a fault.
 /// - `json(string)` parses a JSON reply into the map, array, and scalar values a
-///   module indexes, or unit `()` when the text is not JSON. It runs through the
-///   engine's own parser, so the same allocation limits that bound the module
-///   bound the parse.
+///   module indexes, or unit `()` when the text is not JSON. The engine's
+///   allocation limits apply.
 /// - `re_is_match`/`re_find`/`re_capture` run a regular expression over a string:
 ///   whether it matches, the whole match, or the first capturing group (the whole
-///   match when the pattern has no group). The engine is the linear-time
-///   [`regex`] crate, not the backtracking matcher the fingerprint corpus uses, so
-///   a pattern a module builds from a reply cannot run away past the wall-clock
-///   budget the way a catastrophic backtrack would. A pattern that will not
-///   compile matches nothing rather than faulting.
+///   match when the pattern has no group). Uses the linear-time [`regex`] crate,
+///   so a pattern built from a reply cannot backtrack catastrophically. A pattern
+///   that will not compile matches nothing.
 fn register_helpers(engine: &mut Engine) {
     engine.register_fn("text", |bytes: Blob| -> String {
         bytes.iter().map(|&byte| byte as char).collect()
     });
-    // The inverse of `text`: the low byte of each code point, so a string `text`
-    // produced round-trips exactly. A code point past 0xff is truncated to its
-    // low byte, which never arises for a string that came from `text` and is the
-    // one sensible reading for one a module built to send.
+    // The inverse of `text`: the low byte of each code point.
     engine.register_fn("bytes", |string: ImmutableString| -> Blob {
         string.chars().map(|c| c as u8).collect()
     });
@@ -400,8 +348,7 @@ fn register_helpers(engine: &mut Engine) {
         data_encoding::HEXLOWER.encode(&bytes)
     });
     engine.register_fn("hex_decode", |string: ImmutableString| -> Blob {
-        // Permissive so an upper- or mixed-case digest string decodes; a
-        // malformed or odd-length string is not ours to fault over.
+        // Accepts any case; malformed input decodes to nothing.
         data_encoding::HEXLOWER_PERMISSIVE
             .decode(string.as_bytes())
             .unwrap_or_default()
@@ -416,10 +363,8 @@ fn register_helpers(engine: &mut Engine) {
             .unwrap_or_default()
     });
 
-    // Wrapping the value in a one-field object lets any top-level JSON — object,
-    // array, or bare scalar — parse through `parse_json`, whose result is
-    // otherwise an object alone. The parse runs on the same engine, so the
-    // module's allocation limits bound it; malformed text is unit, not a fault.
+    // Wrapped in a one-field object so `parse_json`, which returns only objects,
+    // accepts any top-level JSON. Malformed text is unit.
     engine.register_fn(
         "json",
         |ctx: NativeCallContext, source: ImmutableString| -> Dynamic {
@@ -451,8 +396,7 @@ fn register_helpers(engine: &mut Engine) {
             let Some(re) = guest_regex(&pattern) else {
                 return String::new();
             };
-            // The first capturing group if the pattern has one, else the whole
-            // match, so a group-less pattern behaves as `re_find`.
+            // The first group, or the whole match where there is none.
             re.captures(&text)
                 .and_then(|caps| caps.get(1).or_else(|| caps.get(0)))
                 .map_or(String::new(), |m| m.as_str().to_string())
@@ -471,8 +415,7 @@ fn register_helpers(engine: &mut Engine) {
         map.insert("status".into(), (i64::from(response.status)).into());
         map.insert("reason".into(), response.reason.into());
 
-        // Fold a repeated header into one value, as RFC 7230 permits, so a lookup
-        // returns a string and not an array a module would have to special-case.
+        // Fold repeated headers into one value, as RFC 7230 permits.
         let mut folded: Vec<(String, String)> = Vec::new();
         for (name, value) in response.headers {
             match folded.iter_mut().find(|(existing, _)| *existing == name) {
@@ -537,44 +480,23 @@ fn register_helpers(engine: &mut Engine) {
 /// Removes the stock-engine symbols and the stock resolver the sandbox's
 /// contracts cannot survive.
 ///
-/// `Engine::new` ships a standard library the capability model does not account
-/// for: `sleep` parks the thread doing no work, so it spends no fuel and holds
-/// the thread past the wall-clock bound, which is checked only between
-/// operations; `timestamp` reads the real clock, which the injected
-/// [`now`](Capabilities::now) exists to keep a module away from so a run
-/// replays identically; and `eval` re-parses a string at run, turning response
-/// text a module interpolates into executed source. None is a capability verb,
-/// so a module loses nothing it was meant to hold.
+/// From `Engine::new`'s standard library: `sleep` parks the thread without
+/// spending fuel, past the deadline checked between operations; `timestamp`
+/// reads the real clock, which would break replay; `eval` would turn reply text
+/// into executed source.
 ///
-/// `eval` is a keyword, so disabling the symbol refuses a module that names it at
-/// compile. `sleep` and `timestamp` are ordinary library functions, which the
-/// symbol machinery does not reach, so they are shadowed by registrations that
-/// fault: the call is refused rather than served, `sleep` never parks the thread
-/// and `timestamp` never reads the wall clock.
+/// `eval` is a keyword, so disabling the symbol refuses it at compile. `sleep`
+/// and `timestamp` are library functions the symbol machinery does not reach, so
+/// they are shadowed by registrations that fault.
 ///
-/// # The module resolver, which is the one that reaches a file
+/// # The module resolver
 ///
 /// `Engine::new` also installs `FileModuleResolver` (rhai 1.26.0
-/// `engine.rs:294-300`), gated only on `no_module`, `no_std` and wasm, none of
-/// which apply here. With it, a module's `import` is resolved against the
-/// filesystem, relative to the process's working directory or by absolute path,
-/// and the resolved file is compiled and run. That is a module reaching the world
-/// by a path the host injected nothing for, which is the one thing the capability
-/// argument in [`detect`](crate::detect) says cannot happen.
-///
-/// The stock resolver is easy to mistake for rhai's `DummyModuleResolver`:
-/// `import "secrets" as s` fails with `Module not found`, but only because no
-/// `./secrets.rhai` exists, which is what `FileModuleResolver` says about a
-/// path it cannot open. A probe naming a file that *does* exist loads and runs
-/// it, under a `passive` grant holding no verbs at all.
-/// `a_module_cannot_import_a_file_that_exists` is that probe, and it names a
-/// real file for exactly this reason: one naming an absent path passes either
-/// way and proves nothing.
-///
-/// So the resolver is replaced rather than configured. `DummyModuleResolver`
-/// refuses every import, which is right for a module body: a detection is one
-/// self-contained source, and there is nowhere legitimate for it to import
-/// *from*.
+/// `engine.rs:294-300`), so `import` would load and run any file the process can
+/// read, even under a `passive` grant. An import of a missing file fails either
+/// way, so `a_module_cannot_import_a_file_that_exists` imports a real one. It is
+/// replaced with `DummyModuleResolver`, which refuses every import; a detection
+/// is one self-contained source.
 fn harden(engine: &mut Engine) {
     engine.disable_symbol("eval");
     engine.set_module_resolver(::rhai::module_resolvers::DummyModuleResolver::new());
@@ -597,7 +519,7 @@ fn disabled_symbol(name: &str) -> Box<EvalAltResult> {
     ))
 }
 
-// ── The capability verbs, as Rhai host functions ─────────────────────────────
+// The capability verbs, as Rhai host functions.
 
 /// `speak(bytes) -> bytes`. A budget or policy refusal ends the run; an ordinary
 /// I/O failure is handed back to the module, which may catch it.
@@ -645,7 +567,7 @@ fn outcome_for(error: &CapError, capability: Capability) -> RunOutcome {
         }),
         CapError::OutOfDescriptors => RunOutcome::OutOfDescriptors,
         CapError::Withheld => RunOutcome::Withheld,
-        // The non-fatal errors are handed back to the module, never here.
+        // Non-fatal errors go back to the module, not here.
         other => RunOutcome::Faulted(ModuleFault::Runtime(other.to_string())),
     }
 }
@@ -656,8 +578,8 @@ fn record_abort(outcome: RunOutcome) {
     ABORT.with(|cell| *cell.borrow_mut() = Some(outcome));
 }
 
-/// An uncatchable termination, the vehicle for ending a run on a fatal capability
-/// error, the recorded [`RunOutcome`] carries the real cause.
+/// An uncatchable termination for a fatal capability error; the recorded
+/// [`RunOutcome`] carries the cause.
 fn terminated() -> Box<EvalAltResult> {
     Box::new(EvalAltResult::ErrorTerminated(
         Dynamic::UNIT,
@@ -687,41 +609,28 @@ fn classify(error: &EvalAltResult) -> RunOutcome {
     }
 }
 
-/// Whether a not-found function signature names a capability the class withheld,
-/// as opposed to an ordinary typo in the module.
+/// Whether a not-found function signature names a withheld capability.
 fn names_capability(signature: &str) -> bool {
     signature.starts_with("speak")
         || signature.starts_with("resolve")
         || signature.starts_with("now")
 }
 
-// ── Marshalling between the model and Rhai values ────────────────────────────
+// Marshalling between the model and Rhai values.
 
 /// The port context, as the object map a module reads: `ctx.port`,
 /// `ctx.protocol`, `ctx.addr`, `ctx.hostname`, the name a target reached the
 /// address by where it named a host, and `ctx.exposure`.
 ///
-/// Each of the first four is unit where the context holds none. The name is
-/// what a module writing a URL or a certificate check needs: the site a server
-/// holding several at one address was asked for, which the address alone does
-/// not say.
+/// Each of the first four is unit where the context holds none.
 ///
-/// `ctx.exposure` is the one that is never unit, and it is how this tier asks
-/// the question the other two answer declaratively. A [flow](crate::detect::flow)
-/// and a [host correlation](crate::detect::host) state a severity per
-/// [`Exposure`] rung and the engine resolves it; a
-/// module is code, so it is handed the rung and decides for itself, which is the
-/// same division of labour that puts a computed verdict in this tier at all. It
-/// reads `"local"`, `"internal"` or `"internet"`, by
-/// [`Exposure::label`](crate::model::ip::Exposure::label), so a module and a
-/// report spell it one way.
-///
-/// A context holding no address reads `"internet"`, which is
-/// [`Exposure::of`](crate::model::ip::Exposure::of)'s own fallback and not a
-/// separate rule: the widest audience is what a severity means before anything
-/// narrower is established, so a module comparing against it grades as its author
-/// wrote it. Never unit, so a module needs no branch for the case, and the one
-/// thing a missing address cannot do is silently reduce a rating.
+/// `ctx.exposure` is never unit. Where a [flow](crate::detect::flow) or a
+/// [host correlation](crate::detect::host) states a severity per [`Exposure`]
+/// rung, a module reads the rung and grades its finding itself. It reads
+/// `"local"`, `"internal"` or `"internet"`
+/// ([`Exposure::label`](crate::model::ip::Exposure::label)). With no address it
+/// is `"internet"`, as in [`Exposure::of`](crate::model::ip::Exposure::of), so a
+/// missing address never lowers a rating.
 fn build_context(ctx: &PortContext) -> Map {
     let mut map = Map::new();
     map.insert("port".into(), (i64::from(ctx.port)).into());
@@ -776,8 +685,7 @@ fn collect_findings(value: Dynamic, grant: &Grant) -> Result<Vec<Finding>, RunOu
 }
 
 /// Builds one [`Finding`] from a module's finding map. Provenance and class come
-/// from the grant, never the module; the rest is the module's own verdict,
-/// re-validated through the constructor exactly as any other finding is.
+/// from the grant; the rest is validated through the constructor.
 fn finding_from_map(map: &Map, grant: &Grant) -> Result<Finding, RunOutcome> {
     let severity = map_str(map, "severity")
         .as_deref()
@@ -805,8 +713,7 @@ fn finding_from_map(map: &Map, grant: &Grant) -> Result<Finding, RunOutcome> {
     )
     .map_err(|error| bad_output(&error.to_string()))?;
 
-    // From the grant, beside the provenance: a module states what it found, and
-    // which detections cover a weakness between them is not its to state.
+    // The group comes from the grant, not the module.
     if let Some(group) = grant.group.clone() {
         finding = finding.with_group(group);
     }
@@ -882,21 +789,9 @@ mod tests {
     use std::net::IpAddr;
     use std::time::Duration;
 
-    /// A capabilities implementation that serves canned replies and records what
-    /// the module did, the offline path that is also the replay path.
-    /// The guard that makes the no-re-entry rule hold rather than merely be
-    /// written down, and it holds in a release build: the runtime refuses the
-    /// second run instead of trusting an implementation it did not write.
+    /// A second run on one thread is refused, in release builds too.
     ///
-    /// `Capabilities` is implementable outside this crate, so the rule is one
-    /// somebody else's code has to keep, and a re-entrant implementation would
-    /// put two live `&mut` on one value, the borrow this runtime erases to a
-    /// raw pointer for the span of a run.
-    ///
-    /// Two guards are asked for and no verb is ever called, so no `&mut` is
-    /// reconstituted from either pointer and the test is sound even as it stages
-    /// the thing the refusal exists to catch. A real re-entry reaches this same
-    /// check one frame deeper.
+    /// No verb is called, so no `&mut` is reconstituted from either pointer.
     #[test]
     fn a_second_run_on_one_thread_is_refused_before_it_can_alias() {
         let mut caps = RecordedCaps::new(Vec::new());
@@ -917,6 +812,8 @@ mod tests {
         );
     }
 
+    /// A capabilities implementation that serves canned replies and records what
+    /// the module sent.
     struct RecordedCaps {
         replies: VecDeque<Result<Vec<u8>, CapError>>,
         sent: Vec<Vec<u8>>,
@@ -1000,11 +897,6 @@ mod tests {
     }
 
     /// **A module reads who can reach the port, and decides for itself.**
-    ///
-    /// The compute tier's half of the exposure mechanism. A flow states a severity
-    /// per rung and the engine resolves it; a module is code, so it is handed the
-    /// rung and grades its own finding, which is the same reason a computed verdict
-    /// lives in this tier at all.
     #[test]
     fn a_module_reads_the_exposure_of_the_address_it_ran_against() {
         let source = r#"
@@ -1040,17 +932,12 @@ mod tests {
         assert_eq!(summary(Some("198.51.100.7")), "reached over internet");
         assert_eq!(summary(Some("192.168.0.1")), "reached over internal");
         assert_eq!(summary(Some("127.0.0.1")), "reached over local");
-        // No address is the widest audience, never unit: a module needs no branch
-        // for it, and a missing address cannot quietly reduce a rating.
+        // No address reads as `internet`.
         assert_eq!(summary(None), "reached over internet");
     }
 
     /// A module reads the name a target reached the address by, and unit where
     /// the address was named.
-    ///
-    /// A module writing a URL, or checking what a server says it is, needs the
-    /// site it was asked for; on an address shared by several sites the address
-    /// alone does not say which one answered.
     #[test]
     fn a_module_reads_the_host_name_a_target_named() {
         let source = r#"
@@ -1105,7 +992,7 @@ mod tests {
         assert_eq!(finding.severity(), Severity::High);
         assert_eq!(finding.confidence(), Confidence::Probable);
         assert_eq!(finding.title(), "port 6379 answered");
-        // Provenance is the grant's, not the module's, a module cannot forge it.
+        // Provenance comes from the grant.
         assert_eq!(finding.detection().id(), "test-detection");
         assert_eq!(finding.detection().content_hash(), "hash");
         assert!(
@@ -1113,17 +1000,13 @@ mod tests {
                 .references()
                 .any(|r| matches!(r, Reference::Cwe(306)))
         );
-        // The module sent exactly the one empty probe it asked to.
+        // Exactly the one empty probe.
         assert_eq!(caps.sent, vec![Vec::<u8>::new()]);
     }
 
     #[test]
     fn the_pure_helpers_encode_and_decode_without_a_grant() {
-        // A passive module (no speak, no resolve) still holds the whole helper
-        // library. It decodes a Base64 header, re-encodes it as hex, and turns a
-        // built string back into bytes, then reports what each step produced. The
-        // point is that a module never handed a capability can still do the byte
-        // work reading a protocol takes.
+        // A passive module still holds the helper library.
         let source = r#"
             fn analyze(ctx, responses) {
                 let raw = b64_decode("aGk=");           // "hi"
@@ -1147,9 +1030,7 @@ mod tests {
 
     #[test]
     fn json_parses_an_object_an_array_and_reports_bad_input_as_unit() {
-        // A passive module reads a JSON reply the way a real one does: index an
-        // object, index into a nested array, and fall back cleanly when the body
-        // is not JSON at all.
+        // Index an object and a nested array, and get unit for non-JSON.
         let source = r#"
             fn analyze(ctx, responses) {
                 let obj = json("{\"version\":\"7.2.4\",\"tags\":[\"a\",\"b\"]}");
@@ -1194,9 +1075,7 @@ mod tests {
 
     #[test]
     fn a_module_builds_a_request_and_reads_a_response_through_the_http_helpers() {
-        // The web-detection shape end to end in the sandbox: build a request to
-        // the scanned host, speak it, parse the reply, and grade a header. The
-        // canned reply stands in for the socket.
+        // Build a request, speak it, parse the canned reply, grade a header.
         let source = r#"
             fn analyze(ctx, responses) {
                 let request = http_request(#{
@@ -1243,8 +1122,7 @@ mod tests {
 
     #[test]
     fn an_uncompilable_pattern_matches_nothing_rather_than_faulting() {
-        // A pattern a module builds from a reply may be malformed; that must read
-        // as no match, not kill the run.
+        // A malformed pattern is no match, not a fault.
         let source = r#"
             fn analyze(ctx, responses) {
                 let broken = re_is_match("(unclosed", "anything");
@@ -1260,9 +1138,7 @@ mod tests {
 
     #[test]
     fn a_malformed_decode_is_an_empty_blob_not_a_fault() {
-        // A reply a module did not choose must not be able to kill it: a string
-        // that is not valid Base64 decodes to nothing, and the module reads the
-        // empty length rather than trapping.
+        // Invalid Base64 decodes to an empty blob.
         let source = r#"
             fn analyze(ctx, responses) {
                 let decoded = b64_decode("not valid base64!!");
@@ -1278,8 +1154,7 @@ mod tests {
 
     #[test]
     fn a_module_that_computes_without_end_is_trapped_at_its_fuel_bound() {
-        // Without a work bound this hangs the scan; the test terminating at all is
-        // half the proof, the typed outcome the other half.
+        // Terminating at all, with a typed outcome.
         let source = r#"
             fn analyze(ctx, responses) {
                 let n = 0;
@@ -1297,8 +1172,7 @@ mod tests {
 
     #[test]
     fn a_passive_module_cannot_reach_the_network_because_speak_is_absent() {
-        // The security property: a passive grant registers no `speak`, so the call
-        // is not refused but unnameable, and no byte reaches the capabilities.
+        // A passive grant has no `speak`; no byte reaches the capabilities.
         let source = r#"
             fn analyze(ctx, responses) {
                 speak(blob());
@@ -1318,9 +1192,7 @@ mod tests {
 
     #[test]
     fn a_byte_budget_refusal_ends_the_run_and_the_module_cannot_catch_it() {
-        // The capability refuses on budget grounds; the module wraps the call in a
-        // catch, but a budget end is uncatchable, so the run still ends as a trap
-        // and emits nothing.
+        // A budget refusal is uncatchable, even inside `try`/`catch`.
         let source = r#"
             fn analyze(ctx, responses) {
                 try { speak(blob()); } catch (err) { }
@@ -1366,9 +1238,7 @@ mod tests {
 
     #[test]
     fn eval_is_refused_at_load() {
-        // `eval` re-parses text at run, which is how attacker-controlled response
-        // bytes a module interpolates could become executed source. It is a
-        // keyword, so a module naming it is refused at compile, before any port.
+        // `eval` is refused at compile.
         let runtime = RhaiRuntime::new();
         let source = "fn analyze(ctx, responses) { let x = eval(\"1\"); [] }".to_string();
         assert!(
@@ -1382,15 +1252,8 @@ mod tests {
 
     /// The probe that names a file which **exists**.
     ///
-    /// An import of an absent path fails whichever resolver is installed, so a
-    /// test written that way passes against `FileModuleResolver` and proves
-    /// nothing, which makes the stock resolver look inert. This one writes a
-    /// module to disk first and imports it by absolute path, so the only thing
-    /// that can refuse it is the resolver [`harden`] installs.
-    ///
-    /// The grant is `passive` with no verbs: the class whose whole security
-    /// property is that the network verb is absent rather than refused. Under
-    /// the stock resolver it reads and runs the file anyway.
+    /// It writes a module to disk and imports it by absolute path, so only the
+    /// resolver [`harden`] installs can refuse it. The grant is `passive`.
     #[test]
     fn a_module_cannot_import_a_file_that_exists() {
         let dir = std::env::temp_dir().join(format!("zond-rhai-import-{}", std::process::id()));
@@ -1398,8 +1261,7 @@ mod tests {
         let smuggled = dir.join("smuggled.rhai");
         std::fs::write(&smuggled, "fn smuggled_value() { 4242 }\n").expect("a module on disk");
 
-        // Without the extension: `FileModuleResolver` appends its own, and this is
-        // the spelling a module would use.
+        // Without the extension, as a module would write it.
         let path = dir.join("smuggled").to_string_lossy().replace('\\', "/");
         let source = format!(
             r#"
@@ -1423,9 +1285,7 @@ mod tests {
 
     #[test]
     fn sleep_and_timestamp_fault_rather_than_parking_or_reading_the_clock() {
-        // `sleep` would park the worker unmetered and `timestamp` would read the
-        // real wall clock and break replay. Both are shadowed to fault, so a module
-        // that calls one is refused the call rather than served it.
+        // `sleep` and `timestamp` fault.
         for call in ["sleep(1);", "sleep(1.5);", "let t = timestamp();"] {
             let source = format!("fn analyze(ctx, responses) {{ {call} [] }}");
             let mut caps = RecordedCaps::new(Vec::new());
@@ -1439,9 +1299,7 @@ mod tests {
 
     #[test]
     fn a_passive_module_that_runs_without_end_is_bounded_by_its_wall_clock() {
-        // A passive grant registers no `speak`, so a deadline read only inside the
-        // I/O seam would never be consulted. The progress callback consults it
-        // regardless, so a passive module doing endless work still stops in time.
+        // A passive module doing endless work stops at the deadline.
         let source = r#"
             fn analyze(ctx, responses) {
                 let n = 0;
@@ -1471,12 +1329,7 @@ mod tests {
 
     /// A run installed on one thread is not reachable from another.
     ///
-    /// The property the erased lifetime rests on across a thread boundary, and
-    /// the first `ActiveRun::new` names: `Capabilities` is `Send`, so the borrow
-    /// *could* travel, and what stops the pointer being observed elsewhere is
-    /// that `ACTIVE_CAPS` is a `thread_local!` rather than a static. A spawned
-    /// thread sees no run, and installs its own without being refused —
-    /// correctly, since it had to produce its own borrow to get here.
+    /// A spawned thread sees no run and may install its own.
     #[test]
     fn a_run_is_not_reachable_from_another_thread() {
         let mut caps = RecordedCaps::new(Vec::new());
@@ -1508,9 +1361,7 @@ mod tests {
 
     /// A guest that panics leaves nothing installed.
     ///
-    /// `ActiveRun::drop` runs during unwind, and all three thread-locals have to
-    /// come back with it: a stale pointer would be read by the next run on this
-    /// thread, and a stale abort or deadline would be attributed to it.
+    /// `ActiveRun::drop` restores all three thread-locals during unwind.
     #[test]
     fn a_panicking_run_restores_every_thread_local() {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
