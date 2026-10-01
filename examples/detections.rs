@@ -15,9 +15,8 @@
 //! cargo run --example detections
 //! ```
 //!
-//! Runs anywhere, needs no privileges and touches no network. Every detection
-//! here is compiled through the same builder a scan uses, and the bundle is
-//! signed and verified with a key generated on the spot.
+//! Needs no privileges or network. Detections are compiled through the builder a
+//! scan uses, and the bundle is signed with a key generated on the spot.
 //!
 //! ## Two tiers, and the choice between them
 //!
@@ -35,20 +34,15 @@
 //!
 //! Every detection declares a class: `passive` sends nothing, `active-benign`
 //! exchanges bytes with the one scanned socket, and `active-mutating`, `exploit`
-//! and `dos` each do more to the target than the one before. That is a request.
-//! The operator's [envelope](zond_engine::config::envelope::DetectionEnvelope)
-//! is the grant, and it defaults to `active-benign`, so a detection above it is
-//! compiled and then never run until somebody raises the ceiling.
-//!
-//! Nothing a detection says about itself changes what it is handed.
+//! and `dos` each do more than the one before. That is a request. The operator's
+//! [envelope](zond_engine::config::envelope::DetectionEnvelope) is the grant,
+//! defaulting to `active-benign`; a detection above it compiles but does not run.
 //!
 //! ## Detections that cover one weakness between them
 //!
-//! Some weaknesses arrive in pieces. Four detections read one SSH KEXINIT and
-//! each reports a different weak algorithm in it: four findings, separately
-//! true and separately fixed, and one sentence to the person reading the scan.
-//!
-//! An optional `[detection.group]` is where the detections say so themselves:
+//! Four detections read one SSH KEXINIT and each reports a different weak
+//! algorithm: four findings, fixed separately, summarised as one. An optional
+//! `[detection.group]` declares that:
 //!
 //! ```toml
 //! [detection.group]
@@ -57,11 +51,9 @@
 //! ```
 //!
 //! Every member repeats the same `id`, and `summary` is a plural noun phrase a
-//! count can lead, so that four of them read as *4 weak SSH algorithms offered*.
-//! Nothing here merges anything: the group reaches each finding as it is
-//! produced, every file format carries all four, and what a front end does with
-//! the fact is the front end's to decide. The build rejects a group that names
-//! only one of the two.
+//! count can lead: *4 weak SSH algorithms offered*. Nothing is merged; each
+//! finding carries the group and a front end decides what to do with it. The
+//! build rejects a group with only one of the two keys.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -74,9 +66,8 @@ use zond_engine::signature::{Domain, Signing, SigningKey};
 //
 // The shape most detections take. One probe, one match, one finding.
 //
-// `[detection.when]` is the gate: this runs only against a port the scan
-// identified as Redis over TCP, so a scan of a network with no Redis on it
-// spends nothing on this detection at all.
+// `[detection.when]` is the gate: this runs only against a port identified as
+// Redis over TCP.
 //
 // `bind` captures out of the reply into a variable, and `{version}` in the
 // finding is that capture. A step that does not match halts the flow unless it
@@ -110,13 +101,11 @@ bind   = { version = "redis_version:(?<version>[0-9.]+)" }
   references = [{ cwe = 306 }]
 "##;
 
-// A flow written about software nobody else will ever ship a check for, which is
-// the case that makes this whole mechanism worth having.
+// A flow for in-house software nobody else will ship a check for.
 //
-// `speaks = "http"` gates on the protocol rather than on a product name. The
-// fingerprint corpus gives a recognised application its own service name, so a
-// gate naming `http` would skip every port the corpus could put a better name
-// to; asking for what a service *speaks* covers both.
+// `speaks = "http"` gates on the protocol. The fingerprint corpus gives a
+// recognised application its own service name, so gating on the name `http`
+// would skip those ports.
 const IN_HOUSE: &str = r#"
 [detection]
 id      = "example-metrics-pprof"
@@ -148,8 +137,7 @@ bind   = { build = "X-Acme-Build: (?<build>[0-9a-f]{7,40})" }
 
 // ── Tier 2: a compute module ────────────────────────────────────────────────
 //
-// This one earns its tier: the verdict is a count folded into a severity, which
-// a single match cannot express.
+// The verdict is a count folded into a severity, which a match cannot express.
 //
 // The entry point is `analyze(ctx, responses)`, returning an array of findings.
 // `responses` is what the scan already gathered, and `text` decodes a blob. A
@@ -198,10 +186,8 @@ fn analyze(ctx, responses) {
         return [];
     }
 
-    // The count drives the grade, which is what earns the tier. Both rungs sit
-    // below `medium`: an absent header is an absent mitigation rather than a way
-    // in, and a finding that fires on every web server at the rank meant for work
-    // somebody schedules is a finding nobody reads.
+    // Both rungs sit below `medium`: a missing header is a missing mitigation,
+    // not a way in, and fires on most web servers.
     [ #{
         severity: if missing.len() >= 3 { "low" } else { "info" },
         summary: "the server omits " + missing.len() + " baseline security headers",
@@ -213,16 +199,12 @@ fn analyze(ctx, responses) {
 
 // ── The host tier ───────────────────────────────────────────────────────────
 //
-// A conclusion drawn from what a host presents as a whole rather than from any
-// one port. It sends nothing, so it declares no class.
+// A conclusion drawn from a host as a whole. It sends nothing, so it declares no
+// class.
 //
-// It is also where `severity` is most often written as a table rather than a
-// single word. A host correlation names a *shape*, and a shape is read against
-// who can see it: a domain controller's three ports reachable from the internet
-// is a domain exposed to strangers, and the same three on the network it serves
-// is the controller doing its job. `internet` is the rung a bare severity already
-// means, so it is required; `internal` and `local` fall back to it when a
-// detection has no separate reading for them.
+// `severity` is a table here, read against exposure: a domain controller's ports
+// reachable from the internet are a problem, and on its own network they are
+// normal. `internet` is required; `internal` and `local` fall back to it.
 const DOMAIN_CONTROLLER: &str = r#"
 [detection]
 id      = "example-domain-controller"
@@ -251,10 +233,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Adding detections the caller wrote, one at a time.
 ///
-/// Each call validates and compiles as it goes, so a source the build would have
-/// refused is refused here with the same objection. The corpus that comes out is
-/// what a scan runs: pass it to
-/// [`scan`](zond_engine::scanner::scan) alongside the config.
+/// Each call validates and compiles, refusing what the build would refuse. Pass
+/// the corpus to [`scan`](zond_engine::scanner::scan) alongside the config.
 fn written_by_hand(out: &mut dyn Write) -> Result<(), Box<dyn std::error::Error>> {
     writeln!(out, "== written by hand ==")?;
 
@@ -271,8 +251,7 @@ fn written_by_hand(out: &mut dyn Write) -> Result<(), Box<dyn std::error::Error>
         corpus.listing().len()
     )?;
 
-    // The other half of the API: the shipped detections left out, so a scan runs
-    // only what was named. What an author wants while getting one file right.
+    // Without the shipped detections, so a scan runs only what was named.
     let mine = Detections::builder()
         .without_embedded()
         .flow(IN_HOUSE, &content_hash(IN_HOUSE))?
@@ -285,16 +264,13 @@ fn written_by_hand(out: &mut dyn Write) -> Result<(), Box<dyn std::error::Error>
 
 /// Adding a whole directory at once, which is what a front end does.
 ///
-/// The engine opens nothing: `sources` takes names and contents, and where they
-/// came from is the caller's business. A name ending `.toml` is a detection and
-/// the tier comes out of the document; anything else is a body a `[compute]`
-/// section may reference by name, which is how a module keeps its code in a file
-/// of its own with editor support.
+/// The engine opens nothing: `sources` takes names and contents. A name ending
+/// `.toml` is a detection; anything else is a body a `[compute]` section may
+/// reference by name, so a module's code can live in its own file.
 fn read_as_files(out: &mut dyn Write) -> Result<(), Box<dyn std::error::Error>> {
     writeln!(out, "== read as files ==")?;
 
-    // What a directory read would have produced. Substitute `std::fs::read_dir`
-    // and `read_to_string` and nothing else changes.
+    // What `std::fs::read_dir` and `read_to_string` would produce.
     let mut sources = BTreeMap::new();
     sources.insert("redis-unauth.toml".to_string(), REDIS.to_string());
     sources.insert(
@@ -334,8 +310,7 @@ body     = "headers.rhai"
         corpus.listing().len()
     )?;
 
-    // An objection names the document that drew it, which is what makes a
-    // directory of thirty files debuggable.
+    // An objection names the document that drew it.
     let mut broken = BTreeMap::new();
     broken.insert(
         "typo.toml".to_string(),
@@ -355,17 +330,14 @@ body     = "headers.rhai"
 /// Publishing a set for somebody else to run, and loading one somebody else
 /// published.
 ///
-/// The three calls above take bytes the caller chose, which is their own act.
-/// This is the other door, and it is the only way a stranger's detections enter a
-/// corpus: the manifest names every detection and the hash of its source, a
-/// signature covers the manifest, and the caller names the key they trust. An
-/// attacker serving the files cannot drop the one that would have found them,
-/// because membership is inside the signature and not merely the bytes.
+/// The only way a stranger's detections enter a corpus. The manifest names every
+/// detection and its source hash, a signature covers the manifest, and the caller
+/// names the trusted key. Membership is signed, so whoever serves the files cannot
+/// drop one.
 fn published_as_a_bundle(out: &mut dyn Write) -> Result<(), Box<dyn std::error::Error>> {
     writeln!(out, "== published as a bundle ==")?;
 
-    // The publisher's side. A real one keeps its key somewhere better than a
-    // local variable and writes the three files out for distribution.
+    // The publisher's side, which would write the three files for distribution.
     let mut sources = BTreeMap::new();
     sources.insert(
         "redis-unauth.toml".to_string(),
@@ -390,9 +362,8 @@ fn published_as_a_bundle(out: &mut dyn Write) -> Result<(), Box<dyn std::error::
         sources.len()
     )?;
 
-    // The recipient's side. The key arrives by some route other than the bundle:
-    // verifying against the key named inside the document being verified accepts
-    // anything an attacker re-signed.
+    // The recipient's side. The key must arrive by another route than the
+    // bundle, or a re-signed bundle verifies.
     let trusted = key.public_key();
 
     let delivered: BTreeMap<String, String> = sources
@@ -412,9 +383,8 @@ fn published_as_a_bundle(out: &mut dyn Write) -> Result<(), Box<dyn std::error::
         corpus.listing().len()
     )?;
 
-    // A signature says who published a detection, never that it is well-formed.
-    // One from a trusted key is held to exactly the validation a hand-written
-    // source is, and a tampered source never reaches the compiler at all.
+    // A signed detection is validated like a hand-written one, and a tampered
+    // source never reaches the compiler.
     let mut tampered: BTreeMap<String, String> = sources
         .iter()
         .map(|(name, (_, source))| (name.clone(), source.clone()))
@@ -434,9 +404,8 @@ fn published_as_a_bundle(out: &mut dyn Write) -> Result<(), Box<dyn std::error::
 
 /// What a scan would run, which is what a front end lists and an author checks.
 ///
-/// A detection in the listing is one the corpus compiled. Whether it *runs* is
-/// decided twice more: by its class against the operator's envelope, and then by
-/// its gate against each port.
+/// A listed detection compiled. Whether it *runs* depends on its class against
+/// the envelope and its gate against each port.
 fn listed(out: &mut dyn Write) -> Result<(), Box<dyn std::error::Error>> {
     writeln!(out, "== what a scan would run ==")?;
 
@@ -481,9 +450,7 @@ fn listed(out: &mut dyn Write) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 parts.join(", ")
             }
-            // `Gate` is non-exhaustive: a tier added later gates on something
-            // this arm has not seen, and a listing should print it as unknown
-            // rather than stop compiling.
+            // `Gate` is non-exhaustive.
             _ => "?".to_string(),
         };
 

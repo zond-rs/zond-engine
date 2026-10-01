@@ -9,20 +9,17 @@
 //! # Getting results out of the engine
 //!
 //! Everything the `export` module can write, in the order it is likely to be
-//! needed. Runs anywhere, needs no privileges and touches no network: the report
-//! is built through the public API and every document is written into a
-//! `Vec<u8>`, through the same code path a file would take.
+//! needed. Needs no privileges or network: the report is built through the public
+//! API and every document is written into a `Vec<u8>`, as it would be to a file.
 //!
 //! ```text
 //! cargo run --example export                        # JSON, the default
 //! cargo run --example export --features export-all  # every format
 //! ```
 //!
-//! ## The one thing to understand first
+//! ## Writers, not paths
 //!
-//! An exporter writes into a `dyn Write`. Nothing in the module returns a
-//! `String`, and nothing in it opens a file, creates a directory or decides
-//! where a report lands. The caller supplies the destination:
+//! An exporter writes into a `dyn Write`; the caller supplies the destination:
 //!
 //! ```no_run
 //! # use std::fs::File;
@@ -35,14 +32,10 @@
 //! # }
 //! ```
 //!
-//! All three receive the same bytes, because there is one implementation and it
-//! cannot tell them apart. A /16 with a host on every address is a document
-//! larger than anything worth holding in memory, and writing as the report is
-//! walked means whatever sits on the other end of a pipe sees the first host
-//! long before the last one is rendered.
+//! All three receive the same bytes. Output streams as the report is walked, so
+//! a large document is never held in memory and a pipe sees the first host early.
 //!
-//! Buffer the destination. An exporter issues many small writes, and an
-//! unbuffered `File` turns each of them into a syscall.
+//! Buffer the destination: an exporter issues many small writes.
 
 use std::io::{self, Write};
 use std::net::IpAddr;
@@ -102,15 +95,11 @@ fn main() {
 
 /// The whole report, as one JSON document.
 ///
-/// This is the format everything else is measured against. Every field the
-/// engine records is in it, nothing is summarized away, and the other four are
-/// narrower views of the same data. When a question comes up about what a
-/// report contains, this is where the answer is.
+/// Every field the engine records is in it; the other formats are narrower views.
 ///
-/// Indented by default, since the usual destination is a file somebody opens and
-/// a report that diffs line by line is worth more than one that saves bytes.
-/// [`compact`](zond_engine::export::json::JsonExporter::compact) is for a
-/// destination that is going to be parsed and never read.
+/// Indented by default, so it diffs line by line.
+/// [`compact`](zond_engine::export::json::JsonExporter::compact) is for machine
+/// consumers.
 #[cfg(feature = "export-json")]
 fn the_canonical_document(report: &ScanReport) {
     use zond_engine::export::JsonExporter;
@@ -140,24 +129,16 @@ fn the_canonical_document(_report: &ScanReport) {
 
 /// The conventions a consumer learns once and can then rely on everywhere.
 ///
-/// [`schema`](zond_engine::export::schema) states them in full. This is the same
-/// list held against real output.
+/// [`schema`](zond_engine::export::schema) states them in full.
 ///
-/// - Timestamps are RFC 3339 in UTC, to microsecond precision. Never epoch
-///   floats.
+/// - Timestamps are RFC 3339 in UTC, to microsecond precision.
 /// - Durations are integers of microseconds, in a field whose name ends `_us`.
-///   The unit is in the name because a bare `timeout` field is a support ticket
-///   waiting to happen.
-/// - A count that can exceed 2^53 is a decimal string. An IPv6 sweep's address
-///   count does not survive being a JSON number in a browser, and a count that
-///   rounds silently is worse than one that needs parsing.
-/// - Objects have a fixed shape. A field with no value is present and `null`, a
-///   list with nothing in it is present and empty, and absence means only that
-///   the scan did not do the thing at all.
-/// - Order is deterministic. Hosts sort by address, ports by number. Two scans
-///   that found the same things produce documents that diff cleanly.
-/// - Unknown fields may appear. Adding one does not bump `schema_version`, so a
-///   consumer has to ignore what it does not recognise.
+/// - A count that can exceed 2^53 is a decimal string, since a JSON number loses
+///   precision in a browser.
+/// - Objects have a fixed shape. A field with no value is `null`, an empty list is
+///   `[]`, and absence means the scan did not do the thing at all.
+/// - Order is deterministic: hosts by address, ports by number.
+/// - Unknown fields may appear without a `schema_version` bump; ignore them.
 #[cfg(feature = "export-json")]
 fn what_the_document_promises(report: &ScanReport) {
     use zond_engine::export::JsonExporter;
@@ -195,16 +176,10 @@ fn what_the_document_promises(_report: &ScanReport) {
     skipped("export-json");
 }
 
-/// A front end resolves a destination to a format rather than asking twice.
+/// [`ExportFormat::from_path`] reads the format off a destination's extension, and
+/// [`ExportFormat::all`] names the formats this build can write.
 ///
-/// `-o report.json` has already said what the user wants, so
-/// [`ExportFormat::from_path`] reads it off the extension, and
-/// [`ExportFormat::all`] names the formats this build can write, which is what a
-/// help text should list. A binary compiled without `export-html` that offers
-/// HTML is worse than one that never mentions it.
-///
-/// An extension no compiled-in format claims resolves to `None`, never to a
-/// quiet fallback to JSON in a file named something else.
+/// An extension no compiled-in format claims resolves to `None`.
 fn choosing_a_format(report: &ScanReport) {
     println!("this build can write:");
     for format in ExportFormat::all() {
@@ -226,10 +201,8 @@ fn choosing_a_format(report: &ScanReport) {
         }
     }
 
-    // The same resolution in one call, for a front end that has a path and a
-    // writer and nothing to decide. The report goes to `out` and never to
-    // `path`: opening the destination, and judging whether overwriting it is
-    // acceptable, stays with the caller.
+    // The same resolution in one call. The report goes to `out`; `path` only
+    // picks the format, and opening it stays with the caller.
     let mut out = Vec::new();
     let written = zond_engine::export::export_to(
         std::path::Path::new("scan.json"),
@@ -246,22 +219,14 @@ fn choosing_a_format(report: &ScanReport) {
     }
 }
 
-/// Redaction happens on the way out, at the one point where data leaves the
-/// process.
+/// Redaction happens on the way out, where data leaves the process.
 ///
-/// A report going to a client, an auditor or a bug tracker is masked here rather
-/// than by the caller afterwards, because afterwards is where it gets forgotten.
+/// [`Redaction::Standard`] masks what names a person or a device. A hostname keeps
+/// its first and last two characters, so devices stay distinguishable; a hardware
+/// address keeps its OUI, so the vendor survives.
 ///
-/// [`Redaction::Standard`] masks the two things that name a person or a device.
-/// A hostname keeps its first and last two characters, so two devices stay
-/// distinguishable without either being readable; a hardware address keeps its
-/// OUI, so the vendor survives and the individual NIC does not.
-///
-/// Addresses are left alone. A report is a list of hosts, and a scheme that
-/// hides which host is which turns ten records on a /24 into ten copies of the
-/// same string. One residual leak is worth knowing about: an IPv6 address formed
-/// the old EUI-64 way embeds the hardware address that is masked elsewhere, so a
-/// report from such a network carries hardware identifiers however this is set.
+/// Addresses are left alone, since hosts must stay distinguishable. An IPv6
+/// address formed by EUI-64 embeds the hardware address, so it still leaks there.
 fn masking_identifiers(report: &ScanReport) {
     let mac = MacAddr::new(0x2c, 0xcf, 0x67, 0x00, 0x00, 0x01);
 
@@ -272,8 +237,7 @@ fn masking_identifiers(report: &ScanReport) {
         println!("  the address  -> {}", policy.mac(&mac));
     }
 
-    // The policy travels in the options, so it reaches every format rather than
-    // the one a front end remembered to mask.
+    // The policy travels in the options, so it reaches every format.
     let masked = ExportOptions::new().with_redaction(Redaction::Standard);
 
     println!();
@@ -292,22 +256,14 @@ fn masking_identifiers(report: &ScanReport) {
 
 /// The same data as the JSON document, one record per line.
 ///
-/// A JSON document is only valid when it is complete. Lose the pipe half way
-/// through writing a /16 and what is on disk is not a shorter report but a file
-/// that is not JSON, with every host already written unreadable. Here a
-/// truncated file is a complete file with fewer hosts in it, and `grep`, `head`,
-/// `split` and `wc -l` all work on it.
+/// A truncated JSON document is not JSON; a truncated stream is a complete file
+/// with fewer hosts, and `grep`, `head`, `split` and `wc -l` work on it.
 ///
-/// Every line is an object with a `type` field saying what it is, and its other
-/// fields are the ones the same thing carries in the document. Strip `type` from
-/// a `host` line and it is byte-identical to an element of the document's
-/// `hosts` array, so one parser reads both formats.
+/// Every line has a `type` field. Without it, a `host` line is byte-identical to
+/// an element of the document's `hosts` array, so one parser reads both formats.
 ///
-/// The `report` record carries everything the document has except the hosts, and
-/// comes first, so a consumer reading progressively knows what it is reading
-/// before it reads it. The tag is a field rather than a position, since a line
-/// that has to come first to mean anything cannot be grepped out or
-/// concatenated.
+/// The `report` record carries everything except the hosts and comes first. Its
+/// tag is a field, so lines can be grepped out or concatenated.
 #[cfg(feature = "export-jsonl")]
 fn one_record_per_line(report: &ScanReport) {
     use zond_engine::export::JsonLinesExporter;
@@ -321,8 +277,7 @@ fn one_record_per_line(report: &ScanReport) {
         println!("  {}", ellipsis(line, 92));
     }
 
-    // Cut the stream mid-line, the way a killed process or a full disk would,
-    // and read back what survived.
+    // Cut the stream mid-line, as a killed process would, and read it back.
     let kept = stream.len().saturating_sub(220);
     let truncated = String::from_utf8_lossy(&stream.as_bytes()[..kept]);
     let whole = truncated
@@ -346,20 +301,15 @@ fn one_record_per_line(_report: &ScanReport) {
 /// One row per host and port, for the people who are going to open this in a
 /// spreadsheet.
 ///
-/// A report is a tree and a table is not, so this throws things away: the
-/// phases, the settings, the probe instrumentation, the full address list of a
-/// multi-homed host. Adding columns until the file is unreadable would cost the
-/// format the thing that makes it worth having, and
-/// [`json`](zond_engine::export::json) is where the whole record lives.
+/// A table drops the phases, settings, probe instrumentation and secondary
+/// addresses; [`json`](zond_engine::export::json) has the whole record.
 ///
-/// A host with no ports still gets a row with the port columns empty, or a
-/// discovery sweep would export an empty file. The column list is
+/// A host with no ports gets a row with empty port columns. The column list is
 /// [`format::csv::COLUMNS`](zond_engine::format::csv::COLUMNS), shared with the
-/// reader behind `import-csv` so the two cannot drift.
+/// `import-csv` reader.
 ///
-/// The dialect is RFC 4180 quoting with LF line endings, since every spreadsheet
-/// accepts LF and CRLF leaves a stray carriage return for the Unix tools that
-/// are the other half of this format's audience.
+/// RFC 4180 quoting with LF line endings, which every spreadsheet accepts and
+/// Unix tools prefer.
 #[cfg(feature = "export-csv")]
 fn a_table_for_the_spreadsheet(report: &ScanReport) {
     use zond_engine::export::CsvExporter;
@@ -377,9 +327,8 @@ fn a_table_for_the_spreadsheet(report: &ScanReport) {
     println!();
     println!("the swept host has no ports, so its last {PORT_COLUMNS} cells are empty.");
 
-    // Excel on Windows reads unmarked UTF-8 as the system code page and mangles
-    // every non-ASCII vendor name. The mark is opt-in because it makes the first
-    // column header unrecognisable to a parser that does not expect it.
+    // Excel on Windows reads unmarked UTF-8 as the system code page. Opt-in,
+    // since the mark confuses parsers that do not expect it.
     let marked = render(
         &CsvExporter::new(ExportOptions::new()).with_excel_bom(),
         report,
@@ -396,30 +345,17 @@ fn a_table_for_the_spreadsheet(_report: &ScanReport) {
     skipped("export-csv");
 }
 
-/// A scan report is full of text the scanned network chose, and each format has
-/// to survive it.
+/// Hostnames, banners and certificate subjects are chosen by whoever runs the
+/// device: `=cmd|'/c calc'!A1` attacks a CSV reader, `<script>` a page reader.
+/// These guards are always on.
 ///
-/// Hostnames, service banners and certificate subjects are written by whoever
-/// runs the device. A device named `=cmd|'/c calc'!A1` is a working attack on
-/// whoever opens the CSV, and one named `<script>` is a working attack on
-/// whoever opens the page. None of these guards can be turned off, and none of
-/// them is the caller's to remember.
-///
-/// - CSV prefixes a cell starting with a formula character with an apostrophe,
-///   the escape spreadsheets themselves use for text, and the reader behind
-///   `import-csv` takes exactly that back off. A guarded cell is quoted as well,
-///   so the apostrophe is unambiguously part of the cell rather than of the
-///   file. It guards the six characters that make a spreadsheet execute a cell
-///   and carries everything else through, so a consumer who needs the bytes as
-///   the scanner saw them has JSON.
-/// - HTML escapes the five characters that carry markup and renders a control
-///   character as its code point. That covers the bidirectional overrides, which
-///   reorder the text after them and are how a report is made to display one
-///   address while carrying another.
-/// - Nmap XML escapes the same five and drops what XML 1.0 cannot carry at all.
-///   Most C0 controls are forbidden from the document outright, and a numeric
-///   reference to one is forbidden just as firmly, so there is no escape to
-///   write instead.
+/// - CSV prefixes a cell starting with one of six formula characters with an
+///   apostrophe and quotes it; the `import-csv` reader removes it. JSON keeps the
+///   bytes as seen.
+/// - HTML escapes the five markup characters and renders control characters,
+///   including bidirectional overrides, as code points.
+/// - Nmap XML escapes the same five and drops C0 controls, which XML 1.0 forbids
+///   even as numeric references.
 fn text_the_network_chose() {
     let report = hostile_report();
 
@@ -472,21 +408,14 @@ fn text_the_network_chose() {
 
 /// One file, opened in a browser, read by a person.
 ///
-/// The stylesheet is inlined and there is no image, no font, no favicon and no
-/// request of any kind to anywhere. A report travels as a mail attachment, as an
-/// artifact on a ticket, as a file on a share, and in each of those a request to
-/// a CDN either fails and leaves the reader with unstyled text or succeeds and
-/// tells a third party that the report was opened, when, and from where.
+/// Self-contained: inline stylesheet, no external requests, so it renders offline
+/// and tells no third party it was opened.
 ///
-/// There is no JavaScript either, not merely none from a third party, because
-/// the places a security tool's output gets read are the places scripts are
-/// blocked. Sorting and filtering the host list are the price, and
-/// [`csv`](zond_engine::export::csv) exists for the person who wants to sort,
-/// in the tool they would sort with. The light and dark switch is CSS.
+/// No JavaScript, since scripts are often blocked where reports are read. For
+/// sorting, use [`csv`](zond_engine::export::csv). The light and dark switch is
+/// CSS.
 ///
-/// There is no PDF exporter, since a PDF crate costs more than a lightweight
-/// engine should spend. An `@media print` stylesheet does that job instead, so
-/// `Ctrl-P` produces the document that goes in the appendix.
+/// An `@media print` stylesheet makes printing to PDF work.
 #[cfg(feature = "export-html")]
 fn a_page_for_a_person(report: &ScanReport) {
     use zond_engine::export::HtmlExporter;
@@ -501,8 +430,7 @@ fn a_page_for_a_person(report: &ScanReport) {
         );
     }
 
-    // The engine never knows what a scan was for. A front end that does can say
-    // so, and the heading is also the page's title.
+    // A front end can set a heading, which is also the page's title.
     let titled = render(
         &HtmlExporter::new(ExportOptions::new()).with_heading("Acme engagement, week 32"),
         report,
@@ -521,24 +449,17 @@ fn a_page_for_a_person(_report: &ScanReport) {
 
 /// Nmap-compatible XML, for the ingest pipelines that already exist.
 ///
-/// DefectDojo, Metasploit, Faraday and Dradis all read nmap's XML and none of
-/// them read this engine's JSON, so this is the file that puts a zond scan into
-/// somebody's existing workflow without asking them to change it. That is the
-/// whole justification: a narrower description in somebody else's vocabulary,
-/// earning its place by being understood downstream.
+/// DefectDojo, Metasploit, Faraday and Dradis read nmap's XML, so this puts a scan
+/// into an existing workflow.
 ///
-/// It says `scanner="zond"`, never `scanner="nmap"`. A scan report is evidence,
-/// and a document claiming to be nmap's output when it is not is a fabricated
-/// record. `xmloutputversion` stays nmap's, since that names the format and this
-/// document really is in it. Measured against nmap 7.99's DTD, the scanner name
-/// is the only thing that does not validate, and no honest producer of the
-/// format can do better: the DTD declares an enumeration with one member in it.
+/// It says `scanner="zond"`, since a report is evidence and must not claim to be
+/// nmap's. `xmloutputversion` is nmap's, naming the format. Against nmap 7.99's
+/// DTD the scanner name is the only failure, as the DTD's enumeration has one
+/// member.
 ///
-/// Where the two vocabularies disagree the document says less rather than
-/// something false. Port states map one to one but for nmap's `filtered`, which
-/// covers both blocked and no reply, told apart in the `reason`. Host status is
-/// flattened onto nmap's three, so a host this engine calls `blocked` is
-/// exported `up` with the distinction carried in the `reason`.
+/// Where the vocabularies disagree the document says less. Nmap's `filtered`
+/// covers both blocked and no reply, told apart in `reason`; a `blocked` host is
+/// exported `up`, with the distinction in `reason`.
 ///
 /// `examples/nmap_dump.rs` writes one of these to standard output, for holding
 /// against a real DTD with `xmllint`.
@@ -568,24 +489,14 @@ fn somebody_elses_pipeline(_report: &ScanReport) {
 
 /// [`Exporter`] is public, and so is every type the document is made of.
 ///
-/// A consumer who wants PDF output, or their own branded HTML, or a line
-/// protocol for a metrics system, writes an exporter in their own crate with
-/// their own dependencies, and this crate takes none of them on. There is no
-/// plugin system: dynamic loading inside a process holding raw-socket privileges
-/// buys nothing a trait does not.
+/// A PDF, branded HTML or metrics exporter lives in its own crate with its own
+/// dependencies. There is no plugin system; a trait is enough.
 ///
-/// Two things move to the implementer along with the trait. Escaping, since the
-/// destination format's rules are now theirs; and streaming, since an exporter
-/// that collects the hosts first costs a network's worth of memory instead of a
-/// host's.
+/// The implementer owns escaping for the destination format, and streaming.
 ///
-/// The name functions in [`schema`](zond_engine::export::schema) are the reason
-/// not to invent a second vocabulary for the same things. A port that is `open`
-/// in the JSON should be `open` here, and
-/// [`port_state_name`](zond_engine::export::schema::port_state_name) is what
-/// keeps that true when a state is added. The DTOs are public and `Serialize`
-/// for the same reason: an exporter that wants the engine's own field names does
-/// not have to restate them.
+/// Use the name functions in [`schema`](zond_engine::export::schema), such as
+/// [`port_state_name`](zond_engine::export::schema::port_state_name), to keep the
+/// engine's vocabulary. The DTOs are public and `Serialize` for the same reason.
 fn writing_an_exporter(report: &ScanReport) {
     use zond_engine::export::schema::{port_state_name, protocol_name};
 
@@ -620,20 +531,15 @@ fn writing_an_exporter(report: &ScanReport) {
 
 /// The two failures an export can hit, and why they are separate variants.
 ///
-/// [`ExportError::Io`] is the destination refusing the write: a full disk, a
-/// closed pipe, a permissions problem. Retrying against a different destination
-/// can fix it.
+/// [`ExportError::Io`] is the destination refusing the write (full disk, closed
+/// pipe, permissions); another destination may work.
 ///
-/// [`ExportError::Render`] is the report not fitting the format. It names the
-/// format and what could not be represented, and retrying anywhere produces the
-/// same thing, so a front end should say so rather than offer to try again. It
-/// is reachable: `serde_json` reports a failed write and an unrepresentable
-/// value through one error type, and the JSON writers sort the two apart rather
-/// than passing on whichever it was handed.
+/// [`ExportError::Render`] is the report not fitting the format; it names what
+/// could not be represented, and retrying will not help. The JSON writers separate
+/// it from I/O errors that `serde_json` reports through the same type.
 ///
-/// An exporter writes as it walks, so a failure part way through leaves a
-/// partial document at the destination. Write somewhere disposable and move it
-/// into place if a truncated file would be mistaken for a complete one.
+/// A failure part way leaves a partial document. Write to a temporary file and
+/// move it into place if that matters.
 fn when_the_destination_gives_out(report: &ScanReport) {
     /// A pipe whose reader has gone, which is what `| head` looks like from this
     /// end.
@@ -683,19 +589,13 @@ fn when_the_destination_gives_out(report: &ScanReport) {
 ///
 /// [`export::diff`](zond_engine::export::diff) is to a
 /// [`ScanDiff`](zond_engine::diff::ScanDiff) what [`export`](zond_engine::export)
-/// is to a report. A comparison that only reaches a terminal serves the person
-/// who ran it and nobody downstream, and downstream is where a nightly job earns
-/// its keep, in an alerting rule or a ticket or a review queue.
+/// is to a report, for alerting rules, tickets and review queues.
 ///
-/// Every change in the document is one scalar fact, `{kind, before, after}`, so
-/// a rule engine needs one code path rather than a parser per variant. A host
-/// that gained three addresses produces three changes rather than one carrying a
-/// list.
+/// Every change is one scalar fact, `{kind, before, after}`: a host that gained
+/// three addresses produces three changes.
 ///
-/// The field not to drop is `confirmed`. It says how much of a count the other
-/// scan is known to have looked for, and a comparison that ignores it reports
-/// hosts as gone every time a scan is narrowed. It is derived, and stated anyway,
-/// because re-deriving it is the step somebody will skip.
+/// Keep `confirmed`: how much of a count the other scan is known to have looked
+/// for. Ignoring it reports hosts as gone whenever a scan is narrowed.
 #[cfg(feature = "export-json")]
 fn what_changed(baseline: &ScanReport) {
     use zond_engine::diff::ScanDiff;
@@ -748,22 +648,17 @@ fn what_changed(_baseline: &ScanReport) {
 
 /// Three hosts, chosen for what they make the formats say.
 ///
-/// A gateway described as fully as the schema allows, a host a discovery sweep
-/// saw and nothing port-scanned, and a host whose path refused a probe on its
-/// behalf. A real report comes out of [`scanner::scan`](zond_engine::scanner);
-/// this one is assembled through the same public API a consumer has, so nothing
-/// here needs a network.
+/// A fully described gateway, a host only a discovery sweep saw, and a host whose
+/// path refused a probe. Assembled through the public API, so no network is
+/// needed; a real one comes from [`scanner::scan`](zond_engine::scanner).
 fn report() -> ScanReport {
     ScanReport::new(phase(), vec![gateway(), swept(), quiet()])
 }
 
 /// What the scan was asked for and what it was set to.
 ///
-/// A phase is a third of the exported document, and a report a scan produced
-/// always has at least one, since a phase completing is what produces it. It is
-/// also where a comparison's `confirmed` comes from: the scope says what this
-/// scan looked at, so the next one can tell a host that went away from a host it
-/// did not ask about.
+/// A scan's report always has at least one phase. Its scope is where a
+/// comparison's `confirmed` comes from.
 fn phase() -> ScanPhase {
     let scope = TargetScope::from_parts(ScopeParts {
         addresses: 256,
@@ -788,17 +683,15 @@ fn phase() -> ScanPhase {
         origin: None,
         probes: Vec::new(),
         failures: Vec::new(),
-        // A scan that declined nothing. The field is left out of the document
-        // entirely rather than written as an empty list, which is what a
-        // consumer reading `refusals` has to expect.
+        // A scan that declined nothing. The field is then omitted from the
+        // document, not written as an empty list.
         refusals: Vec::new(),
         attachments: Vec::new(),
         unroutable: Vec::new(),
         refused_by_route: Vec::new(),
         timed_out: Vec::new(),
         icmp_rate_limited: Vec::new(),
-        // Every target reached with the packets the scan chose. Left out of the
-        // document too, as `refusals` is.
+        // Every target reached with the packets the scan chose; omitted too.
         reached_by_connect: Vec::new(),
         undecided: Vec::new(),
         liveness_skipped: None,
@@ -887,8 +780,7 @@ fn tonight() -> ScanReport {
     ScanReport::new(phase(), vec![gateway, swept(), arrival])
 }
 
-/// Three hosts named by somebody who would rather the report ran than described
-/// them.
+/// Three hosts with hostile names.
 fn hostile_report() -> ScanReport {
     let mut formula = Host::new(ip(101));
     formula.set_status(HostStatus::Up);
@@ -913,10 +805,8 @@ fn ip(last: u8) -> IpAddr {
     IpAddr::from([203, 0, 113, last])
 }
 
-/// Exports into memory, which is what makes this file runnable anywhere.
-///
-/// A real caller passes a [`BufWriter`](std::io::BufWriter) over a file, a
-/// response body, or a locked handle to standard output.
+/// Exports into memory. A real caller passes a [`BufWriter`](std::io::BufWriter)
+/// over a file, a response body, or locked standard output.
 fn render(exporter: &dyn Exporter, report: &ScanReport) -> String {
     let mut out = Vec::new();
     exporter
@@ -934,11 +824,8 @@ fn survives(document: &str, value: &str) -> &'static str {
     }
 }
 
-/// Spells out the characters a terminal would swallow or obey, and leaves every
-/// other character as it is.
-///
-/// Printing a report's own text raw is how a demonstration of a reordering
-/// attack becomes a victim of one.
+/// Spells out the characters a terminal would swallow or obey, so printing
+/// hostile text does not reorder the output.
 fn visible(text: &str) -> String {
     text.chars()
         .map(|character| match character {

@@ -9,20 +9,18 @@
 //! # Getting targets into the engine
 //!
 //! Everything the `import` module can read, in the order it is likely to be
-//! needed. Runs anywhere, needs no privileges and touches no network: every
-//! document below is a string in this file, read through the same code path a
-//! real file would take.
+//! needed. Needs no privileges or network: every document is a string in this
+//! file, read through the same path a real file takes.
 //!
 //! ```text
 //! cargo run --example import                     # the list format
 //! cargo run --example import --features import-all   # every format
 //! ```
 //!
-//! ## The one thing to understand first
+//! ## Readers, not paths
 //!
-//! An importer reads from a `BufRead` rather than from a path. The engine never
-//! opens a file, never touches standard input, and never looks anywhere on its
-//! own. The caller hands it a reader:
+//! An importer reads from a `BufRead`. The engine opens no files and reads no
+//! standard input; the caller hands it a reader:
 //!
 //! ```no_run
 //! # use std::io::BufReader;
@@ -35,9 +33,8 @@
 //! # }
 //! ```
 //!
-//! All three parse identically, because there is one implementation and it
-//! cannot tell them apart. That is what makes this usable from a CLI, a web
-//! service and a TUI without any of them being the one it was written for.
+//! All three parse identically, so the same code serves a CLI, a web service or
+//! a TUI.
 
 use std::io::Cursor;
 
@@ -76,9 +73,8 @@ fn main() {
 /// The common case: one target per line, `#` starting a comment.
 ///
 /// Blank lines, comments, indentation, both line endings and a byte-order mark
-/// left behind by a Windows editor are all skipped over. What is not tolerated is
-/// anything that would silently change the scan: a line too long, or bytes that
-/// are not UTF-8, are errors naming the line rather than a truncation.
+/// are skipped. A line too long, or bytes that are not UTF-8, are errors naming
+/// the line.
 fn a_list_of_addresses() {
     let file = "\
 # staging, 2026-02
@@ -106,10 +102,8 @@ fn a_list_of_addresses() {
 /// A target can carry its own ports, and the grammar is the same one a command
 /// line uses.
 ///
-/// The rule worth knowing before writing an IPv6 target: a bare address with two
-/// or more colons is an address, never an address and a port. `2001:db8::1:80` is
-/// a valid IPv6 address and is read as one. Brackets exist for this, so
-/// `[2001:db8::1]:80` is how a port is meant.
+/// A bare address with two or more colons is an address, never an address and a
+/// port: `2001:db8::1:80` is an IPv6 address. Write `[2001:db8::1]:80` for a port.
 fn ports_per_target() {
     let file = "\
 192.0.2.1:22,443            # two TCP ports
@@ -125,8 +119,7 @@ fn ports_per_target() {
         .read(&mut Cursor::new(file), &options)
         .expect("the list is well formed");
 
-    // One unit per distinct port specification, not one per line. A file of
-    // sixty-five thousand bare addresses is one unit, not sixty-five thousand.
+    // One unit per distinct port specification, however many lines share it.
     println!("{} distinct port specifications:", imported.map.units.len());
     for unit in &imported.map.units {
         println!(
@@ -144,8 +137,8 @@ fn ports_per_target() {
 /// - [`zond_engine::scanner::discover`] takes an `IpSet`: it asks only whether a
 ///   host is there at all, so it has no use for ports.
 ///
-/// `into_ip_set` is the bridge, and it merges: a host named under two different
-/// port specifications is two pieces of work to scan and one host to sweep.
+/// `into_ip_set` bridges them: a host under two port specifications is two units
+/// to scan and one host to sweep.
 fn both_entry_points() {
     let file = "192.0.2.1:22\n192.0.2.1:443\n192.0.2.2:22\n";
     let options = ImportOptions::new(ports("80"));
@@ -172,15 +165,10 @@ fn both_entry_points() {
 
 /// A five-thousand-line target list with one typo in it.
 ///
-/// The default is to stop at the first bad expression and say which line it was
-/// on, because a caller who has not thought about the question should be told
-/// about the typo rather than handed a scan that quietly covers less than it was
-/// given.
+/// By default import stops at the first bad expression and names its line.
 ///
-/// [`OnRefusal::Collect`] is the other answer, for when a person is watching and
-/// wants the other four thousand nine hundred and ninety-nine. It hands the
-/// refusals back rather than swallowing them, and there is no third option where
-/// the scan silently shrinks.
+/// [`OnRefusal::Collect`] keeps the other 4,999 lines and hands the refusals back.
+/// There is no option that drops them silently.
 fn surviving_a_bad_line() {
     let file = "\
 192.0.2.1
@@ -215,14 +203,10 @@ not-a-host-or-an-address
 
 /// A target file from a client is input nobody vouches for.
 ///
-/// [`ImportLimits`] is part of the options rather than a constant, and every
-/// default is far past anything an honest file reaches. The one that earns its
-/// keep is `max_addresses`, defaulting to 2^32: the whole of IPv4, and the
-/// largest scan that can be completed.
-///
-/// `::/0` is one short line and names more addresses than any scan will ever
-/// finish. Without the budget, the first sign of trouble is a progress bar that
-/// never moves.
+/// [`ImportLimits`] is part of the options, and every default is far past what an
+/// honest file reaches. The important one is `max_addresses`, defaulting to 2^32
+/// (all of IPv4), since `::/0` is one short line naming more addresses than any
+/// scan finishes.
 fn bounding_untrusted_input() {
     let options = ImportOptions::new(ports("80"));
 
@@ -231,8 +215,7 @@ fn bounding_untrusted_input() {
         Err(error) => println!("refused: {error}"),
     }
 
-    // The whole of IPv4 is inside the default ceiling, because it is a scan
-    // somebody might really run.
+    // The whole of IPv4 is inside the default ceiling.
     let imported = ImportFormat::List
         .read(&mut Cursor::new("0.0.0.0/0\n"), &options)
         .expect("the whole of IPv4 is a scan");
@@ -261,12 +244,9 @@ fn bounding_untrusted_input() {
 /// down a pipe with no name at all. `resolve` does the first and falls back to
 /// the second.
 ///
-/// Sniffing is timid on purpose. It separates a structured document from a list
-/// and nothing more, and anything ambiguous is a list, since a list is the format
-/// that cannot be wrong about a bare address. A leading `[` is not taken as JSON,
-/// since `[2001:db8::1]:443` is an ordinary first line, and a comma is never
-/// evidence of CSV, since `192.0.2.1,192.0.2.2` means something quite
-/// different read as a table.
+/// Sniffing only separates structured documents from lists; anything ambiguous is
+/// a list. A leading `[` is not JSON (`[2001:db8::1]:443`), and a comma is not CSV
+/// (`192.0.2.1,192.0.2.2`).
 fn working_out_the_format() {
     for (name, document) in [
         ("a plain list", "192.0.2.1\n192.0.2.2\n"),
@@ -287,13 +267,12 @@ fn working_out_the_format() {
 /// Scan, export, feed the report back in: the same hosts, on the ports they
 /// were found on.
 ///
-/// Reads both the JSON document and the record-per-line form. A host the previous
-/// scan found no ports on comes back on the caller's default ports, which is what
-/// makes re-importing a discovery sweep useful.
+/// Reads both the JSON document and the record-per-line form. A host with no
+/// ports comes back on the caller's default ports, so a discovery sweep can be
+/// re-imported.
 #[cfg(feature = "import-json")]
 fn rescanning_a_report() {
-    // What `zond_engine::export::json` writes, abbreviated to the fields a
-    // rescan actually reads.
+    // What `zond_engine::export::json` writes, cut to the fields a rescan reads.
     let report = r#"{
         "schema_version": 1,
         "engine": { "name": "zond-engine", "version": "0.10.0" },
@@ -333,16 +312,14 @@ fn rescanning_a_report() {
 
 /// The file somebody already has.
 ///
-/// `-oX` output from a previous engagement becomes the target list for the next
-/// one, hosts and per-host ports together. This engine writes the same format,
-/// so it reads its own output here too.
+/// nmap XML from a previous engagement becomes the next target list, hosts and
+/// per-host ports together. This engine writes the same format.
 ///
-/// The parser accepts nmap's real preamble, meaning the XML declaration and the
-/// bare `<!DOCTYPE nmaprun>` and the stylesheet instruction, and refuses
-/// everything that makes XML dangerous: no entity declaration is accepted, no
-/// DOCTYPE with an internal subset or an external identifier, and no entity
-/// reference that is not one of the five predefined. Billion laughs and external
-/// entity disclosure are not mitigated here; they are unrepresentable.
+/// The parser accepts nmap's preamble (XML declaration, bare
+/// `<!DOCTYPE nmaprun>`, stylesheet instruction) and refuses entity declarations,
+/// DOCTYPEs with an internal subset or external identifier, and entity references
+/// other than the five predefined. Billion laughs and external entity disclosure
+/// are unrepresentable.
 #[cfg(feature = "import-nmap")]
 fn reading_an_nmap_file() {
     let document = concat!(
@@ -392,16 +369,12 @@ fn reading_an_nmap_file() {
 
 /// Defaults a user sets once, and named profiles to switch between.
 ///
-/// A quality-of-life feature. Everything here can be done by setting fields on
-/// `ZondConfig` directly, and this exists so a user does not type the same six
-/// flags every time.
+/// Everything here can also be done by setting `ZondConfig` fields directly.
 ///
-/// Nothing reads a filesystem unless asked to. `paths::user()` computes where a
-/// settings file would be and touches nothing, `provision` creates one only if
-/// there is none and never edits or overwrites an existing file, and `resolve`
-/// reads the files that exist. No scanner calls any of them, which is what keeps
-/// this crate safe to embed in a service whose behaviour should not change
-/// because of a file in somebody's home directory.
+/// Nothing touches the filesystem unless asked. `paths::user()` only computes a
+/// path, `provision` creates a file only where none exists, and `resolve` reads
+/// existing files. No scanner calls any of them, so an embedding service is not
+/// affected by files in a home directory.
 #[cfg(feature = "import-settings")]
 fn settings_and_profiles() {
     use zond_engine::config::ZondConfig;
@@ -420,8 +393,7 @@ fn settings_and_profiles() {
 
     let loaded = settings::parse(document).expect("the document is well formed");
 
-    // A profile layers onto the defaults: it speaks only about the keys it
-    // mentions, and silence is not an opinion.
+    // A profile overrides only the keys it mentions.
     let stealth = loaded
         .document
         .resolve(Some("stealth"))
@@ -439,8 +411,7 @@ fn settings_and_profiles() {
     );
     println!("  no_dns        {}", config.no_dns);
 
-    // Asking for a profile nobody defined is an error listing the ones that
-    // exist, rather than a silent fall back to the defaults.
+    // An undefined profile is an error listing the ones that exist.
     match loaded.document.resolve(Some("quiet")) {
         Ok(_) => unreachable!(),
         Err(error) => println!("\n{error}"),
@@ -469,9 +440,7 @@ fn ports(specification: &str) -> PortSet {
 
 /// A port set in a line, however many ports it holds.
 ///
-/// `PortSet::iter` yields every individual port, which is the right API and the
-/// wrong thing to print: `1-1024` is one specification and a thousand lines of
-/// output.
+/// `PortSet::iter` yields every port, too many to print for `1-1024`.
 fn describe(set: &PortSet) -> String {
     const SHOWN: usize = 4;
 

@@ -16,31 +16,21 @@
 //! xmllint --dtdvalid /path/to/nmap.dtd --noout zond.xml
 //! ```
 //!
-//! Against nmap 7.99's DTD that reports one error, the intended one:
-//! `scanner="zond"` is not `scanner="nmap"`. Substituting the name and nothing
-//! else validates clean. Run the same check on real nmap output first, since it
-//! passes, and that is what makes the instrument worth trusting.
+//! Against nmap 7.99's DTD that reports one intended error: `scanner="zond"`
+//! is not `scanner="nmap"`. With the name substituted it validates clean. Run
+//! the check on real nmap output first to confirm the setup.
 //!
-//! ## Why this is an example and not a test
+//! ## Why an example
 //!
-//! It asserts nothing, and it cannot: no assertion inside this crate can say
-//! the output is XML a stranger will open, because every one of them compares
-//! the document against strings the exporter itself wrote. That proves
-//! consistency, not validity. The thing that answers the real question is
-//! `xmllint` and a DTD, both outside the crate.
+//! Validity needs an outside validator; assertions in the crate compare against
+//! strings the exporter wrote. As an example it is compiled by
+//! `cargo check --all-targets`.
 //!
-//! It lived behind `#[ignore]` in `export::nmap`'s tests, where it read as a
-//! coverage claim the repository never cashed. An example is compiled by
-//! `cargo check --all-targets`, so it cannot rot, and it runs without a test
-//! harness flag.
+//! ## Coverage
 //!
-//! ## What it covers
-//!
-//! A report built here through the public API, which is smaller than the
-//! fixture the crate's own export tests use. It carries hosts that are up and
-//! blocked, TCP and UDP, open and closed ports, and identified services, which
-//! is the part of the DTD an exported document exercises. A field only the
-//! internal fixture reaches is a field this check does not validate.
+//! A report built through the public API: hosts up and blocked, TCP and UDP,
+//! open and closed ports, identified services. Fields only the crate's internal
+//! export fixture reaches are not validated here.
 
 use std::net::IpAddr;
 

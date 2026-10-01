@@ -20,25 +20,17 @@
 //!
 //! Run from the crate root, since it reads `assets/` by relative path.
 //!
-//! ## Why an example rather than a build artifact
+//! ## Why an example
 //!
-//! `build.rs` already parses and validates all of this, so emitting the index
-//! there would cost nothing extra. It would also land in `OUT_DIR`, inside
-//! `target/`, keyed by a hash, which is a poor place to fetch a deliverable from
-//! and a worse one to put in a pipeline. The index is an output somebody asks
-//! for, not something every build of the crate should produce.
+//! Emitted from `build.rs`, the index would land in a hashed `OUT_DIR`, and every
+//! build would produce it. As an example it is produced on request and still
+//! compiled by `cargo check --all-targets`.
 //!
-//! An example is compiled by `cargo check --all-targets`, so this cannot rot
-//! against a schema change, which is the property that made `nmap_dump` an
-//! example too.
+//! ## Facets are derived
 //!
-//! ## Facets are derived, never authored
-//!
-//! Every filter this emits is computed from what a rule already says. Nothing
-//! here is a tag somebody has to remember to write, because a hand-maintained
-//! taxonomy over four thousand rules goes stale and then quietly misfiles things,
-//! which is worse than having no filter at all. A facet that stops being true
-//! stops being emitted on the next run.
+//! Every filter is computed from what a rule already says, so a facet that stops
+//! being true stops being emitted. A hand-maintained taxonomy over four thousand
+//! rules would go stale.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -58,14 +50,14 @@ use zond_engine::fingerprint::{
 struct Index {
     /// The engine release these corpora shipped with.
     engine_version: &'static str,
-    /// How many of each kind of entry follow, so a reader can check a truncated
-    /// download rather than silently searching half a corpus.
+    /// How many of each kind of entry follow, so a reader can detect a truncated
+    /// download.
     counts: BTreeMap<&'static str, usize>,
     entries: Vec<Entry>,
 }
 
-/// One searchable thing. Flat and denormalised on purpose: a search index wants
-/// one document shape it can facet over, not a graph it has to walk.
+/// One searchable thing, flat and denormalised so a search index can facet over
+/// one shape.
 #[derive(Serialize)]
 struct Entry {
     /// Which corpus this came from: `rule`, `probe`, `os_rule` or `detection`.
@@ -119,8 +111,7 @@ struct Entry {
     /// take. Carried so a catalogue can say why a rule does not fire.
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<&'static str>,
-    /// Computed filters. See the module documentation on why none of these is
-    /// authored.
+    /// Computed filters; see the module documentation.
     facets: BTreeSet<String>,
 }
 
@@ -158,10 +149,8 @@ fn category_of(slug: &str) -> String {
 
 /// What the collection path does with the field a rule reads.
 ///
-/// Delegates to the register in `fingerprint::context`, which is the same
-/// declaration `build.rs` refuses an unclassified field against, so the index
-/// and the build can never disagree about which rules can fire. A table of its
-/// own here would be wrong the moment a decoder landed.
+/// Delegates to the register in `fingerprint::context`, which `build.rs` also
+/// checks against, so the index and the build agree on which rules can fire.
 fn reachability_of(context: Option<&str>) -> &'static str {
     reach_of(context)
         .unwrap_or_else(|| {
@@ -204,8 +193,7 @@ fn service_entries(entries: &mut Vec<Entry>) -> (usize, usize) {
     let (mut rules, mut probes) = (0, 0);
 
     for path in toml_files(root) {
-        // The operating-system rules sit under the same root and are a different
-        // schema entirely, so they are read separately below.
+        // The operating-system rules share the root but not the schema; read below.
         if path.starts_with(root.join("os")) {
             continue;
         }
@@ -357,8 +345,7 @@ fn os_entries(entries: &mut Vec<Entry>) -> usize {
         }
         entry.cpe = def.os.cpe.clone();
 
-        // `Provenance` is `#[non_exhaustive]`, so a kind added later reaches the
-        // index as its own name rather than being folded into one of these two.
+        // `Provenance` is `#[non_exhaustive]`; other kinds keep their own name.
         let provenance = match def.provenance {
             Provenance::Measured => "measured".to_string(),
             Provenance::Published => "published".to_string(),
@@ -381,8 +368,8 @@ fn os_entries(entries: &mut Vec<Entry>) -> usize {
     count
 }
 
-/// The detections, read from the compiled corpus rather than re-parsed, so the
-/// index describes what actually ships rather than what is on disk beside it.
+/// The detections, read from the compiled corpus so the index describes what
+/// ships.
 fn detection_entries(entries: &mut Vec<Entry>) -> usize {
     let listing = Detections::embedded().listing();
     let count = listing.len();
@@ -398,10 +385,8 @@ fn detection_entries(entries: &mut Vec<Entry>) -> usize {
             .facets
             .insert(format!("class:{}", summary.class.label()));
 
-        // The gate goes into the same columns a signature rule fills, so one
-        // query for `redis` finds the signature that names it and the detection
-        // that fires on it. A debug rendering of the gate would be neither
-        // searchable nor stable.
+        // The gate fills the same columns a signature rule does, so one query for
+        // `redis` finds both the signature and the detection.
         let mut services = Vec::new();
         match &summary.gate {
             Gate::Port(rule) => {

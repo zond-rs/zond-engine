@@ -18,23 +18,21 @@
 //!     feeds/CVE-*.json.xz > assets/cve/nvd.toml
 //! ```
 //!
-//! Run from the crate root. A path ending in `.xz` is read through `xz -dc`,
-//! which has to be on the `PATH`: a year of the feed is several hundred
-//! megabytes decompressed, and piping it means none of that is written to disk.
-//! Pass the years in order, since the output keeps the order it was given and
-//! a regeneration is reviewed as a diff against the last one.
+//! Run from the crate root. A path ending in `.xz` is piped through `xz -dc`
+//! (on the `PATH`), so the several hundred megabytes per year never touch disk.
+//! Pass the years in order; the output keeps it, and a regeneration is reviewed
+//! as a diff.
 //!
 //! ## Why a year at a time
 //!
-//! A converted document is capped at the catalogue reader's
+//! A converted document is capped at
 //! [`MAX_DOCUMENT_BYTES`](zond_engine::cve::MAX_DOCUMENT_BYTES), and the whole
-//! history converts to more than that. The shipped file is compiled by
-//! `build.rs` rather than read through that cap, so it can hold every year; a
-//! single conversion cannot, and `import::nvd` says so rather than truncating.
+//! history exceeds it. The shipped file is compiled by `build.rs`, which has no
+//! cap, so it holds every year.
 //!
-//! The filter is the shipped fingerprint corpus, as `import::nvd::to_document`
-//! applies it, so a regeneration after the corpus learns to version a product
-//! is what gives that product its rows.
+//! Entries are filtered by the shipped fingerprint corpus
+//! (`import::nvd::to_document`), so a product gains rows once the corpus
+//! versions it and the catalogue is regenerated.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
@@ -96,8 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for path in &paths {
         let document = convert(path)?;
 
-        // Every year of one release carries the same timestamp, and the newest
-        // is the honest one to put on the whole should they ever differ.
+        // The years share one timestamp; should they differ, the newest is used.
         let stated = document
             .lines()
             .find_map(|line| line.strip_prefix("version = "))
