@@ -8,21 +8,15 @@
 
 //! # Replies that carry text behind a few bytes of framing
 //!
-//! A group of UDP services answer with something a signature can read directly,
-//! wrapped in a header that a regex cannot see past. The SQL Server Browser puts
-//! three bytes in front of its instance list; memcached over UDP puts eight in
-//! front of the same `VERSION` line it sends over TCP. Handing the matcher the
-//! datagram reaches none of the rules, and handing it nothing loses a service
-//! that named itself.
+//! Some services answer with readable text behind a binary header: the SQL
+//! Server Browser puts three bytes before its instance list, and memcached over
+//! UDP puts eight before the `VERSION` line it sends over TCP.
 //!
-//! Each reader here takes a datagram and hands back the text inside it, or
-//! [`None`] where the datagram is not the reply it was written for.
-//! [`from_datagram`](super::extract::from_datagram) is what pairs each with its
-//! port.
-//!
-//! These are readers, not decoders. Nothing here parses a protocol further than
-//! finding where its text begins and ends: a service whose answer needs real
-//! decoding, an SNMP varbind or a DNS answer section, has a module of its own.
+//! Each reader takes a reply and returns the text inside it, or [`None`] where
+//! it is not the reply it was written for.
+//! [`from_datagram`](super::extract::from_datagram) pairs each with its port.
+//! Answers that need real decoding (SNMP varbinds, DNS answers) have their own
+//! modules.
 
 use crate::model::host::{HostName, NameKind, NameSource};
 
@@ -46,9 +40,8 @@ const MEMCACHED_FRAME_BYTES: usize = 8;
 /// ServerName;WIN-DB01;InstanceName;SQLEXPRESS;IsClustered;No;Version;15.0.2000.5;tcp;1433;;
 /// ```
 ///
-/// Worth more than the version it carries. `tcp;1433` is the port that instance
-/// actually listens on, and a named instance is very often not on 1433 at all,
-/// so this answers a question a port scan would otherwise have to guess at.
+/// `tcp;1433` is the port the instance listens on; a named instance is often
+/// not on 1433.
 ///
 /// [`None`] for a datagram that is not a Browser response, or whose stated
 /// length disagrees with the bytes that follow it.
@@ -60,18 +53,15 @@ pub(super) fn sql_server_browser(datagram: &[u8]) -> Option<&str> {
     let stated = u16::from_le_bytes([*datagram.get(1)?, *datagram.get(2)?]) as usize;
     let body = datagram.get(BROWSER_HEADER_BYTES..)?;
 
-    // A length longer than the datagram is a truncated reply rather than a
-    // malicious one, since the Browser sends a single datagram. Read what
-    // arrived.
+    // A length past the datagram is a truncated reply; read what arrived.
     let body = body.get(..stated.min(body.len()))?;
     std::str::from_utf8(body).ok().map(str::trim_end)
 }
 
 /// The command response inside a memcached UDP frame.
 ///
-/// The frame is eight bytes and the rest is what the same command returns over
-/// TCP, so the corpus rule written for the TCP banner reads this
-/// unchanged.
+/// After the eight-byte frame comes what the command returns over TCP, so the
+/// TCP banner rule reads it unchanged.
 ///
 /// [`None`] for a datagram too short to hold the frame, or whose body is not
 /// text.
@@ -85,13 +75,11 @@ pub(super) fn memcached_udp(datagram: &[u8]) -> Option<&str> {
 
 /// What an XDMCP display manager says when asked whether it is willing.
 ///
-/// A Willing response carries three counted strings: the authentication name it
-/// would use, the host it manages, and a free-text status. The status is the one
-/// worth reading, since a display manager writes its own name and often the
-/// machine's into it.
+/// A Willing response carries three counted strings: the authentication name,
+/// the host it manages, and a free-text status in which a display manager
+/// usually names itself.
 ///
-/// Returned as `host: status` where both are present, because either alone is
-/// half an answer: the host names the machine and the status names the software.
+/// Returned as `host: status` where both are present.
 ///
 /// [`None`] for anything that is not a Willing response, or whose counted
 /// lengths run past the datagram.
@@ -125,9 +113,8 @@ pub(super) fn xdmcp_willing(datagram: &[u8]) -> Option<String> {
 
 /// What a Source engine server answers a query with.
 ///
-/// Two replies are possible and both identify the service. `I` is the info
-/// response, which names the server, its game and its build. `A` is the
-/// challenge Valve added in 2020, which carries no detail but is sent by
+/// `I` is the info response, naming the server, its game and its build. `A` is
+/// the challenge Valve added in 2020, which carries no detail but is sent by
 /// nothing else.
 ///
 /// The info response is a header, a protocol byte, and then four NUL-terminated
@@ -167,9 +154,8 @@ pub(super) fn source_engine(datagram: &[u8]) -> Option<String> {
 /// The reply is the out-of-band header every Valve datagram carries, the
 /// response type `f` and a line feed, and then a run of six-byte entries, an
 /// IPv4 address and a port each, which a master pages through and closes with
-/// the unspecified address. The entries are other hosts' game servers and
-/// describe nothing about the one that answered, so none is read: the reply
-/// yields the words `server list`, which is what identifies a master.
+/// the unspecified address. The entries are other hosts' servers and are not
+/// read; the reply yields `server list`.
 ///
 /// [`None`] for a datagram without the header, or whose body is not whole
 /// entries.
@@ -194,9 +180,7 @@ pub(super) fn steam_master_list(datagram: &[u8]) -> Option<&'static str> {
 /// Edition, message of the day, protocol number, version, players, capacity, and
 /// then the level. The version is the fourth field and is what a rule reads.
 ///
-/// [`None`] for a datagram that is not a pong, or that does not repeat the
-/// magic. The magic is what separates this from any other protocol that happens
-/// to start with the same byte.
+/// [`None`] for a datagram that is not a pong or does not repeat the magic.
 #[must_use]
 pub(super) fn raknet_pong(datagram: &[u8]) -> Option<&str> {
     const UNCONNECTED_PONG: u8 = 0x1C;
@@ -230,13 +214,10 @@ pub(super) fn raknet_pong(datagram: &[u8]) -> Option<&str> {
 /// </sensors/temp>;rt="temperature";if="sensor",</actuators/led>;rt="light"
 /// ```
 ///
-/// Worth more than a version string on a device that has none. It is the
-/// closest thing the protocol has to a directory listing, and the resource
-/// names are what say whether this is a sensor, a lock or a light.
+/// The resource names say whether this is a sensor, a lock or a light.
 ///
 /// [`None`] for a reply that is not CoAP, or that carries no payload. Options
-/// are walked rather than skipped by a fixed offset, since their count and
-/// length vary with what the endpoint chose to say.
+/// vary in count and length, so they are walked.
 #[must_use]
 pub(super) fn coap_payload(datagram: &[u8]) -> Option<&str> {
     /// The byte separating the options from the payload.
@@ -291,17 +272,14 @@ pub(super) fn coap_payload(datagram: &[u8]) -> Option<&str> {
 /// nfs 3 tcp 2049, mountd 3 udp 20048, nlockmgr 4 tcp 46283
 /// ```
 ///
-/// Programs are named where the number is one of the handful worth naming, and
-/// left as their number where it is not. That is the identifying half: a host
-/// running `nfs` and `mountd` is a file server, and the ports they are on are
-/// very often not the registered ones.
+/// A handful of well-known programs are named; the rest keep their number. The
+/// ports are often not the registered ones.
 ///
 /// [`None`] for a reply that is not an accepted RPC response, or whose record
 /// chain runs past the datagram.
 #[must_use]
 pub(super) fn rpc_program_dump(datagram: &[u8]) -> Option<String> {
-    /// The programs worth spelling. Everything else keeps its number, which is
-    /// still what somebody would look up.
+    /// The programs spelled by name.
     const NAMED: &[(u32, &str)] = &[
         (100000, "portmapper"),
         (100003, "nfs"),
@@ -338,8 +316,7 @@ pub(super) fn rpc_program_dump(datagram: &[u8]) -> Option<String> {
         };
         entries.push(format!("{name} {version} {transport} {port}"));
 
-        // A portmapper on a busy host registers dozens; the identifying part is
-        // which programs, not how many times each is bound.
+        // A busy host registers dozens; cap the list.
         if entries.len() >= 64 {
             break;
         }
@@ -351,9 +328,7 @@ pub(super) fn rpc_program_dump(datagram: &[u8]) -> Option<String> {
 /// What versions of a program an RPC server says it supports.
 ///
 /// The probe calls a version nothing implements, so an accepted reply is a
-/// mismatch carrying the range the server does support. That says more than a
-/// success would: a call that worked would confirm only the version it was made
-/// with.
+/// mismatch carrying the supported range.
 ///
 /// ```text
 /// versions 3-4
@@ -384,8 +359,8 @@ pub(super) fn rpc_version_range(datagram: &[u8]) -> Option<String> {
 ///
 /// Over TCP, RFC 5531 §11 splits a message into fragments, each behind a
 /// four-byte mark whose top bit says it is the last and whose other bits give
-/// its length. What is left once the marks are gone is the message a datagram
-/// would have carried, so the readers written for UDP read it unchanged.
+/// its length. Without the marks it is the datagram's message, so the UDP
+/// readers apply.
 ///
 /// [`None`] for a stream that ends before its last fragment does, which is
 /// either not RPC or more than one read of it.
@@ -461,9 +436,8 @@ fn accepted_rpc_reply(datagram: &[u8]) -> Option<&[u8]> {
 
 /// The accept status of an RPC reply and whatever follows it.
 ///
-/// Walks the header rather than indexing past it, because the verifier between
-/// the reply status and the accept status is variable length and a server may
-/// send one.
+/// Walks the header, since the verifier before the accept status has variable
+/// length.
 fn rpc_reply_status(datagram: &[u8]) -> Option<(u32, &[u8])> {
     const MSG_TYPE_REPLY: u32 = 1;
     const MSG_ACCEPTED: u32 = 0;
@@ -489,9 +463,8 @@ fn rpc_reply_status(datagram: &[u8]) -> Option<(u32, &[u8])> {
 ///
 /// A Get Channel Authentication Capabilities response states the IPMI version
 /// the channel speaks and, in its status byte, whether it will accept a session
-/// with no user name and whether the null user is enabled. Either is worth
-/// reporting: a management controller that authenticates nobody is reachable by
-/// anybody who can route to it.
+/// with no user name and whether the null user is enabled. Either means anyone
+/// who can route to it can log in.
 ///
 /// ```text
 /// IPMI-2.0 anonymous-login null-user
@@ -511,8 +484,7 @@ pub(super) fn ipmi_auth_capabilities(datagram: &[u8]) -> Option<String> {
     if *datagram.first()? != 0x06 || *datagram.get(3)? != CLASS_IPMI {
         return None;
     }
-    // A non-zero completion code means the BMC refused the command rather than
-    // answering it, and the bytes after it mean nothing.
+    // A non-zero completion code means the BMC refused the command.
     if *datagram.get(DATA_AT - 1)? != 0x00 {
         return None;
     }
@@ -532,10 +504,8 @@ pub(super) fn ipmi_auth_capabilities(datagram: &[u8]) -> Option<String> {
     if status & 0b0000_0010 != 0 {
         said.push("null-user");
     }
-    // Bit 2 says non-null user names are enabled, which is the ordinary state
-    // of a controller somebody configured. It is not reported: it says nothing
-    // a reader would act on, and `non-null-user` contains `null-user`, so a
-    // rule reading the second matched a controller that had neither problem.
+    // Bit 2 (non-null user names enabled) is the ordinary state and is not
+    // reported; `non-null-user` would also match a rule for `null-user`.
 
     Some(said.join(" "))
 }
@@ -550,19 +520,15 @@ pub(super) fn ipmi_auth_capabilities(datagram: &[u8]) -> Option<String> {
 /// version="ntpd 4.2.8p15@1.3728-o Wed May 12", processor="x86_64", system="Linux/6.1.0"
 /// ```
 ///
-/// This is what the corpus's largest block of otherwise unreachable rules is
-/// written against. The ordinary client probe on this port draws a packet of
-/// timestamps with nothing in it to read, which leaves them unreached: the
-/// field is not a decoding problem, the client probe asks the wrong question.
+/// Many imported rules read this; the ordinary client probe's reply holds only
+/// timestamps.
 ///
-/// Line breaks are folded to spaces and nothing else is touched. A daemon wraps
-/// this text for a terminal, and the imported rules match across the wrap with
-/// `.*`, which does not cross a newline. Spacing around the commas is left
-/// exactly as sent, because the rules distinguish products by it.
+/// Line breaks are folded to spaces, since a daemon wraps this text and the
+/// rules match across the wrap with `.*`. Spacing around commas is kept, since
+/// rules distinguish products by it.
 ///
 /// [`None`] for a reply that is not a mode 6 response, or that carries no data.
-/// A response split across several packets is read as far as the first, which
-/// is where a daemon puts these three variables.
+/// Only the first packet is read; daemons put these variables there.
 #[must_use]
 pub(super) fn ntp_control_variables(datagram: &[u8]) -> Option<String> {
     /// Bit 7 of the second byte, set on a response.
@@ -587,9 +553,7 @@ pub(super) fn ntp_control_variables(datagram: &[u8]) -> Option<String> {
     let data = datagram.get(HEADER_BYTES..HEADER_BYTES + count)?;
     let text = std::str::from_utf8(data).ok()?;
 
-    // A run of line-break characters becomes one space, not one space each: a
-    // daemon wraps with CRLF, and turning that into two spaces would put a gap
-    // where a rule expects `", processor=`.
+    // A run of line breaks becomes one space, so CRLF does not become two.
     let mut folded = String::with_capacity(text.len());
     let mut breaking = false;
     for character in text.chars() {
@@ -611,18 +575,14 @@ pub(super) fn ntp_control_variables(datagram: &[u8]) -> Option<String> {
 
 /// What a STUN server calls itself.
 ///
-/// A binding response carries attributes, and `SOFTWARE` is the one that names
-/// the implementation. Most servers send it; the ones that do not are still
-/// identified as STUN by the reply's own shape, which is what the second return
-/// covers.
+/// `SOFTWARE` names the implementation. A server that omits it is still
+/// identified as STUN by the reply's shape.
 ///
-/// The mapped address is deliberately not read. It is the address the *client*
-/// appears to come from, which says something about the network between here
-/// and there rather than about the host being scanned.
+/// The mapped address describes the client's apparent address, not the host,
+/// and is not read.
 ///
-/// [`None`] for a datagram that is not a binding response. The magic cookie is
-/// what establishes that: without it this is RFC 3489 and the type field alone
-/// is too weak to key on.
+/// [`None`] for a datagram that is not a binding response with the RFC 5389
+/// magic cookie; the type field alone is too weak to key on.
 #[must_use]
 pub(super) fn stun_binding(datagram: &[u8]) -> Option<String> {
     /// The value RFC 5389 fixed so a response can be told from anything else.
@@ -667,15 +627,12 @@ pub(super) fn stun_binding(datagram: &[u8]) -> Option<String> {
 
 /// What an IKE responder announces about itself.
 ///
-/// A gateway answers a proposal with its own payload chain, and the Vendor ID
-/// payloads in it are the fingerprint: an implementation puts a fixed value
-/// there, usually a hash of its own name and version, and no two products send
-/// the same one. They are returned as hex, lowercase and space separated, which
-/// is what a rule can be written against.
+/// The Vendor ID payloads in a gateway's answer are fixed per implementation,
+/// usually a hash of its name and version. Returned as lowercase hex, space
+/// separated.
 ///
-/// A responder that liked none of the proposal answers with a Notify instead.
-/// That is a reply too, and it still proves an IKE daemon is listening, so it
-/// comes back named rather than dropped.
+/// A responder that liked none of the proposal answers with a Notify, which
+/// still proves an IKE daemon and is returned named.
 ///
 /// [`None`] for a datagram too short to be ISAKMP, or whose payload chain runs
 /// past its end.
@@ -692,8 +649,8 @@ pub(super) fn ike_response(datagram: &[u8]) -> Option<String> {
     if datagram.len() < HEADER_BYTES {
         return None;
     }
-    // The responder cookie is zero in a request and set in every reply, which
-    // is what separates an answer from this engine's own probe echoed back.
+    // The responder cookie is zero in a request (such as our own probe echoed
+    // back) and set in every reply.
     if datagram.get(8..16)? == [0u8; 8] {
         return None;
     }
@@ -752,10 +709,8 @@ const PROBE_REALM: &str = "ZOND-SCAN";
 /// krb-error 6 CLIENT_NOT_FOUND
 /// ```
 ///
-/// The realm it names is not among them. On a domain controller that realm is
-/// the Active Directory domain, which names the organisation, and a service's
-/// description reaches a report unmasked; [`kerberos_realm`] reads it as one
-/// of the host's names instead, which a report masks where it is asked to.
+/// The realm is not included, since reports do not mask service descriptions;
+/// [`kerberos_realm`] reads it as a host name.
 ///
 /// [`None`] for anything that is not a `KRB-ERROR`.
 #[must_use]
@@ -773,18 +728,14 @@ pub(super) fn kerberos_error(datagram: &[u8]) -> Option<String> {
 ///
 /// ## Why the realm is usually absent
 ///
-/// A realm has to be named in the request and a scanner does not know the
-/// target's, so the probe invents one. Measured against MIT krb5 on Debian 12:
-/// the KDC repeats that invented realm back in both `crealm` and `realm`, so
-/// what looks like a discovered domain is this engine's own guess reflected.
+/// The probe must name a realm and invents one. MIT krb5 on Debian 12 repeats
+/// it in both `crealm` and `realm`, so the realm is read only when it differs
+/// from [`PROBE_REALM`].
 ///
-/// The realm is therefore read only when it differs from [`PROBE_REALM`].
-/// RFC 4120 has a KDC that serves a different realm answer
-/// `KDC_ERR_WRONG_REALM` and name the right one, and that case is worth the
-/// whole probe: on a domain controller it is the Active Directory domain, from
-/// one unauthenticated datagram. It was not reproduced here, MIT answered
-/// `KDC_ERR_C_PRINCIPAL_UNKNOWN` for a realm it does not serve, so the branch
-/// is written from the specification rather than from a measurement.
+/// RFC 4120 has a KDC serving another realm answer `KDC_ERR_WRONG_REALM` and
+/// name the right one, which on a domain controller is the Active Directory
+/// domain. That branch follows the specification; MIT answered
+/// `KDC_ERR_C_PRINCIPAL_UNKNOWN` instead.
 ///
 /// [`None`] for anything that is not a `KRB-ERROR`, and for one naming no
 /// realm but the probe's.
@@ -888,19 +839,15 @@ fn der_unsigned(bytes: &[u8]) -> u32 {
 
 /// What an L2TP concentrator says about itself when a tunnel is proposed.
 ///
-/// An `SCCRQ` draws an `SCCRP`, and the reply carries the two attributes worth
-/// reading: the vendor name, which identifies the implementation and is this
-/// text, and the host name, which is the machine's own and is not.
+/// An `SCCRQ` draws an `SCCRP` carrying the vendor name, returned here, and the
+/// host name, which [`l2tp_host_name`] reads.
 ///
 /// ```text
 /// vendor=xelerance.com
 /// ```
 ///
-/// Measured against `xl2tpd` on Debian 12, which fills in both. The host name
-/// is read by [`l2tp_host_name`] as one of the host's names, which a report
-/// masks where it is asked to; a service's description reaches a report
-/// unmasked, and a rule capturing the name from this text would carry it
-/// there. A reply naming no vendor still says an L2TP daemon answered.
+/// `xl2tpd` on Debian 12 fills in both. A reply naming no vendor still says an
+/// L2TP daemon answered.
 ///
 /// [`None`] for a datagram that is not a control message, whose attribute
 /// chain runs past its end, or that carries no attributes at all.
@@ -908,8 +855,7 @@ fn der_unsigned(bytes: &[u8]) -> u32 {
 pub(super) fn l2tp_control(datagram: &[u8]) -> Option<String> {
     Some(match L2tpControl::read(datagram)?.vendor {
         Some(vendor) => format!("vendor={vendor}"),
-        // Some other control message, or one naming only the host: a refusal
-        // names no vendor and is still an L2TP daemon answering.
+        // No vendor named, but still an L2TP daemon.
         None => "l2tp".to_string(),
     })
 }
@@ -963,8 +909,7 @@ impl<'a> L2tpControl<'a> {
         let mut attributes = 0usize;
         while at + ATTRIBUTE_HEADER_BYTES <= datagram.len() {
             attributes += 1;
-            // The top six bits are flags and the low ten are the length, which
-            // counts this header along with the value.
+            // Six flag bits, then a ten-bit length that includes this header.
             let length = (u16::from_be_bytes([datagram[at], datagram[at + 1]]) & 0x03FF) as usize;
             if length < ATTRIBUTE_HEADER_BYTES {
                 return None;
@@ -986,12 +931,8 @@ impl<'a> L2tpControl<'a> {
             at += length;
         }
 
-        // A control message carrying no attributes at all is a zero-length
-        // body, which acknowledges a message rather than answering one. A
-        // concentrator sends it for a repeat of a tunnel request it has already
-        // seen, so a scan that probes this port twice gets the real answer once
-        // and an acknowledgement after. Reading that as a service would name
-        // L2TP from a datagram that says nothing.
+        // No attributes is a ZLB acknowledgement, which a concentrator sends for
+        // a repeated tunnel request (the scan probes twice). It says nothing.
         (attributes > 0).then_some(read)
     }
 }
@@ -1006,31 +947,17 @@ impl<'a> L2tpControl<'a> {
 /// Samba 4.17.12-Debian
 /// ```
 ///
-/// Each is returned on its own, because the corpus rules are anchored at both
-/// ends of one field: `^Windows 6.1$` matches the first of those and nothing
-/// that contains it.
+/// Each is returned on its own, since the corpus rules anchor on one field
+/// (`^Windows 6.1$`). Eighty-five imported rules read these, which arrive only
+/// in answer to a session setup.
 ///
-/// This is what eighty-five imported rules are written against. A probe that
-/// stops at a protocol negotiate leaves every one of them unread, since a
-/// negotiate response carries none of these: they arrive only in answer to a
-/// session setup, which is a second message on the same connection.
+/// The domain, third, is read by [`smb_session_names`] as a host name.
 ///
-/// The domain the server names third is not returned. It names the
-/// organisation, which a report masks where it is asked to and a service's
-/// description does not; [`smb_session_names`] reads it as one of the host's
-/// names instead.
+/// The stream holds a negotiate response and then the session setup, each
+/// behind a four-byte NetBIOS length; this walks to the second.
 ///
-/// ## Why this reads a stream rather than a datagram
-///
-/// The reply is several SMB messages back to back, each behind a four-byte
-/// NetBIOS length. Both of the probe's messages are answered, so the stream
-/// holds a negotiate response and then the session setup, and this walks to the
-/// second.
-///
-/// Empty where no session setup was accepted, which includes a server that
-/// refused the null session and one that speaks no SMB1 at all. Windows has
-/// shipped with SMB1 off since 2017 and Samba since 4.11, so silence here is
-/// the ordinary answer from anything current.
+/// Empty where no session setup was accepted, including any current server
+/// with SMB1 off (Windows since 2017, Samba since 4.11).
 #[must_use]
 pub(super) fn smb_session_setup(stream: &[u8]) -> Vec<String> {
     SessionSetup::read(stream)
@@ -1081,11 +1008,8 @@ impl SessionSetup {
     /// each ended by a NUL, behind one byte of padding where the strings are
     /// UTF-16 and would otherwise start at an odd offset from the header. The
     /// extended-security form, MS-SMB 2.2.4.6.2, adds a fourth word giving the
-    /// length of a security blob that comes before the padding. Read by
-    /// position because the position is what says which string is which: a
-    /// server that sends its operating system empty would otherwise have its
-    /// LAN manager read as the operating system, and its domain as the LAN
-    /// manager.
+    /// length of a security blob before the padding. Read by position, so an
+    /// empty operating system does not shift the other two.
     fn read(stream: &[u8]) -> Option<Self> {
         /// `SESSION_SETUP_ANDX`.
         const SESSION_SETUP: u8 = 0x73;
@@ -1203,20 +1127,15 @@ fn oem_string(bytes: &[u8]) -> (String, &[u8]) {
 /// Windows 10.0 Build 20348
 /// ```
 ///
-/// The first is the negotiate response (MS-SMB2 2.2.4): the dialect the server
-/// chose from the ones offered, and whether it insists on signing. A server
-/// that does not is one whose sessions can be relayed to it.
+/// The first is from the negotiate response (MS-SMB2 2.2.4): the chosen dialect
+/// and whether signing is required. Without required signing, sessions can be
+/// relayed to the server.
 ///
-/// The second is the `Version` of the NTLM challenge the session setup draws
-/// (MS-NLMP 2.2.1.2), which Windows fills with its own major and minor version
-/// and build before anything is authenticated. It is left out where the build
-/// is zero, which is what Samba sends beside a version it does not run, so
-/// that a Samba server is not read as a Windows release.
+/// The second is the `Version` of the NTLM challenge (MS-NLMP 2.2.1.2), which
+/// Windows fills before authentication. Left out where the build is zero, as
+/// Samba sends it.
 ///
-/// The challenge also names the machine and its domain, and those are not
-/// returned here. They are the host's names, which a report masks where it is
-/// asked to, and a service's description is not masked; [`smb2_names`] reads
-/// them into the record that is.
+/// The machine and domain names in the challenge are read by [`smb2_names`].
 ///
 /// Empty for a stream that holds no SMB2 message.
 #[must_use]
@@ -1320,8 +1239,8 @@ fn smb2_messages(stream: &[u8]) -> impl Iterator<Item = &[u8]> {
 /// The security buffer of an SMB2 SESSION_SETUP response (MS-SMB2 2.2.6),
 /// where the server's NTLM challenge travels.
 ///
-/// Read whatever the status, since the challenge comes back under one saying
-/// more is needed, which is the answer and not a refusal.
+/// Read whatever the status: the challenge arrives under
+/// `STATUS_MORE_PROCESSING_REQUIRED`.
 fn smb2_session_token(message: &[u8]) -> Option<&[u8]> {
     const SESSION_SETUP: u16 = 1;
 
@@ -1336,8 +1255,7 @@ fn smb2_session_token(message: &[u8]) -> Option<&[u8]> {
 
 /// The NTLM CHALLENGE_MESSAGE inside `token`, from its signature to the end.
 ///
-/// Found by its signature rather than by unwrapping the SPNEGO around it,
-/// which a server may or may not send.
+/// Found by its signature, since a server may or may not wrap it in SPNEGO.
 fn ntlm_challenge(token: &[u8]) -> Option<&[u8]> {
     const CHALLENGE: &[u8] = b"NTLMSSP\0\x02\0\0\0";
 
@@ -1430,15 +1348,9 @@ fn ntlm_target_names(token: &[u8]) -> Vec<HostName> {
 
 /// The `Server` value of an RTSP response.
 ///
-/// An `OPTIONS` request draws a reply whose status line is `RTSP/1.0` rather
-/// than `HTTP/1.1`, so the HTTP reader declines it, and the header carries what
-/// twelve imported rules are anchored on: `GStreamer RTSP server`,
-/// `Wowza Streaming Engine 4.7.7`, `AvigilonOnvifNvt/2.6.0.130`. Cameras,
-/// recorders and streaming servers, which is most of what answers this port.
-///
-/// The value alone rather than the response, for the reason every other rule of
-/// this shape has: they are anchored at both ends of the header value and match
-/// nothing that merely contains it.
+/// The HTTP reader declines a `RTSP/1.0` status line. Twelve imported rules
+/// anchor on this value: `GStreamer RTSP server`, `Wowza Streaming Engine
+/// 4.7.7`, `AvigilonOnvifNvt/2.6.0.130`.
 ///
 /// [`None`] for a reply that is not RTSP, or that names no server.
 #[must_use]
@@ -1467,10 +1379,9 @@ pub(super) fn rtsp_server(stream: &[u8]) -> Option<String> {
 /// A Windows machine says `Device Computer`, a printer says `PrintDeviceType`,
 /// and a camera says `NetworkVideoTransmitter`.
 ///
-/// The namespace prefixes are stripped, because a responder picks its own and
-/// two devices of the same kind will not agree on them. `wsdp:Device
-/// pub:Computer` and `a:Device b:Computer` both read as `Device Computer`, which
-/// is what a rule can be written against.
+/// Namespace prefixes are stripped, since responders choose their own:
+/// `wsdp:Device pub:Computer` and `a:Device b:Computer` both read as
+/// `Device Computer`.
 ///
 /// [`None`] where the reply carries no such element. Nothing here parses XML
 /// further than one element's text.
@@ -1491,8 +1402,7 @@ pub(super) fn wsd_types(datagram: &[u8]) -> Option<String> {
 /// The text of the first `<...:name>` element in `xml`, whatever prefix it
 /// carries.
 ///
-/// Enough for reading one known element out of a small SOAP message, and no more
-/// than that: it does not resolve namespaces, handle CDATA, or decode entities.
+/// Does not resolve namespaces, handle CDATA, or decode entities.
 fn element_text<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
     let mut search = xml;
     loop {
@@ -1541,8 +1451,7 @@ mod tests {
         assert_eq!(sql_server_browser(&browser(INSTANCES)), Some(INSTANCES));
     }
 
-    /// The Browser answers one datagram, so a stated length past its end is a
-    /// truncated reply. What arrived is still read.
+    /// A stated length past the end is a truncated reply, still read.
     #[test]
     fn a_length_past_the_datagram_reads_what_arrived() {
         let mut short = browser(INSTANCES);
@@ -1570,9 +1479,8 @@ mod tests {
         assert!(memcached_udp(b"\x00\x01\x00\x00\x00\x01\x00\x00").is_none());
     }
 
-    /// What a Windows machine answers a Probe with, cut to the element that is
-    /// read. Two different prefixes for the same two types, which is the case
-    /// stripping them exists for.
+    /// A Windows machine's ProbeMatches, cut to the element read, with two
+    /// different prefixes.
     #[test]
     fn a_probe_match_yields_its_types_without_prefixes() {
         let reply = r#"<?xml version="1.0"?><s:Envelope><s:Body><d:ProbeMatches>
@@ -1634,8 +1542,8 @@ mod tests {
         assert!(xdmcp_willing(&willing("", "", "")).is_none());
     }
 
-    /// A Query echoed back by a reflector is not a Willing, and a counted length
-    /// past the datagram is refused rather than read through.
+    /// A Query echoed back is not a Willing, and a length past the datagram is
+    /// refused.
     #[test]
     fn anything_that_is_not_a_willing_response_yields_nothing() {
         assert!(xdmcp_willing(b"\x00\x01\x00\x02\x00\x01\x00").is_none());
@@ -1659,8 +1567,7 @@ mod tests {
         );
     }
 
-    /// The challenge Valve added in 2020, which carries no detail and is still
-    /// proof of what answered.
+    /// The challenge reply still names the service.
     #[test]
     fn a_source_challenge_is_recognised_as_one() {
         let reply = [0xFF, 0xFF, 0xFF, 0xFF, b'A', 0x11, 0x22, 0x33, 0x44];
@@ -1716,8 +1623,7 @@ mod tests {
         assert_eq!(raknet_pong(&pong(MOTD)), Some(MOTD));
     }
 
-    /// The magic is what separates a pong from an unrelated datagram that
-    /// happens to start with the same byte.
+    /// Without the magic it is not a pong.
     #[test]
     fn a_datagram_without_the_magic_is_not_a_pong() {
         let mut wrong = pong(MOTD);
@@ -1760,9 +1666,8 @@ mod tests {
         out
     }
 
-    /// A pre-login answer names the build, and one cut short anywhere, or
-    /// whose version option points past its end, names nothing rather than
-    /// reading out of bounds.
+    /// A pre-login answer names the build; one cut short, or whose version
+    /// option points past its end, names nothing.
     #[test]
     fn a_prelogin_answer_names_its_build_and_a_short_one_nothing() {
         let answer: &[u8] = b"\x04\x01\x00\x1a\x00\x00\x01\x00\
@@ -1828,8 +1733,7 @@ mod tests {
         );
     }
 
-    /// A program number nothing names keeps its number, which is still what
-    /// somebody would look up.
+    /// An unnamed program keeps its number.
     #[test]
     fn an_unnamed_program_keeps_its_number() {
         let mut body = 1u32.to_be_bytes().to_vec();
@@ -1843,8 +1747,7 @@ mod tests {
         );
     }
 
-    /// The probe calls a version nothing implements, so the useful reply is the
-    /// mismatch carrying the range the server does support.
+    /// The mismatch reply carries the supported range.
     #[test]
     fn a_version_mismatch_yields_the_range_the_server_supports() {
         let mut body = 3u32.to_be_bytes().to_vec();
@@ -1855,8 +1758,8 @@ mod tests {
         );
     }
 
-    /// A server that does not run the program at all answers with a different
-    /// status, and there is no range in it to read.
+    /// A server not running the program answers with another status and no
+    /// range.
     #[test]
     fn anything_but_a_mismatch_yields_no_range() {
         assert!(rpc_version_range(&rpc_reply(0, &[])).is_none());
@@ -1865,8 +1768,8 @@ mod tests {
         assert!(rpc_program_dump(&rpc_reply(1, &[])).is_none());
     }
 
-    /// A call echoed back by a reflector is not a reply, and a chain that runs
-    /// past the datagram is refused rather than read through.
+    /// A call echoed back is not a reply, and a chain past the datagram is
+    /// refused.
     #[test]
     fn an_rpc_call_is_not_read_as_a_reply() {
         let mut call = 0x7a6f6e64u32.to_be_bytes().to_vec();
@@ -1904,9 +1807,8 @@ mod tests {
         );
     }
 
-    /// A controller with neither weakness names its version and stops. Bit 2 is
-    /// the ordinary state and is not reported, which is also what keeps
-    /// `non-null-user` from being read as `null-user`.
+    /// A controller with neither weakness names only its version; bit 2 is not
+    /// reported.
     #[test]
     fn a_bmc_that_requires_a_real_user_says_only_what_it_speaks() {
         assert_eq!(
@@ -1915,8 +1817,7 @@ mod tests {
         );
     }
 
-    /// A completion code the BMC set is a refusal, and the bytes behind it mean
-    /// nothing.
+    /// A non-zero completion code is a refusal.
     #[test]
     fn a_refused_ipmi_command_yields_nothing() {
         let mut refused = ipmi(0b1000_0000, 0b0000_0001);
@@ -1951,9 +1852,7 @@ mod tests {
         );
     }
 
-    /// A daemon wraps this text for a terminal. The imported rules match across
-    /// the wrap with `.*`, which does not cross a newline, so the breaks are
-    /// folded and the spacing around the commas is left alone.
+    /// Line breaks are folded; spacing around commas is kept.
     #[test]
     fn line_breaks_are_folded_and_nothing_else_is_touched() {
         let wrapped =
@@ -1964,8 +1863,7 @@ mod tests {
         );
     }
 
-    /// The ordinary client reply on this port, which is what a client-mode probe
-    /// draws: forty-eight bytes of timestamps and nothing to read.
+    /// The ordinary client reply: forty-eight bytes of timestamps.
     #[test]
     fn a_client_mode_reply_is_not_a_control_response() {
         let mut client = vec![0x24];
@@ -1999,12 +1897,10 @@ mod tests {
         );
     }
 
-    /// A server naming no software is still STUN, which the magic cookie and the
-    /// response type together establish.
+    /// A server naming no software is still STUN.
     #[test]
     fn a_binding_response_without_software_is_still_stun() {
-        // A mapped address, which is read for nothing: it describes the network
-        // between here and there, not the host.
+        // A mapped address, which is not read.
         let mut attributes = 0x0020u16.to_be_bytes().to_vec();
         attributes.extend_from_slice(&8u16.to_be_bytes());
         attributes.extend_from_slice(&[0x00, 0x01, 0x2B, 0x3C, 0x5E, 0x12, 0xA4, 0x43]);
@@ -2057,8 +1953,7 @@ mod tests {
         );
     }
 
-    /// A responder that liked none of the proposal still proves an IKE daemon
-    /// is listening.
+    /// A Notify still proves an IKE daemon.
     #[test]
     fn a_notify_is_a_reply_rather_than_a_refusal_to_answer() {
         assert_eq!(
@@ -2067,8 +1962,7 @@ mod tests {
         );
     }
 
-    /// This engine's own probe echoed back carries a zero responder cookie, and
-    /// a reflector must not be read as a gateway.
+    /// Our own probe echoed back (zero responder cookie) is not a gateway.
     #[test]
     fn a_request_echoed_back_is_not_a_response() {
         let mut echoed = isakmp(&[(13, vec![0xaa; 8])]);
@@ -2079,11 +1973,8 @@ mod tests {
 
     /// A zero-length body is an acknowledgement, not an answer.
     ///
-    /// A concentrator sends one for a repeat of a tunnel request it has already
-    /// seen, and a scan sends the same probe twice: once to establish the port
-    /// is open, once to identify it. Reading these twelve bytes as a service
-    /// would name L2TP from a datagram that says nothing, and a scan of xl2tpd
-    /// would report the port with no product.
+    /// A concentrator sends one for a repeated tunnel request, and a scan sends
+    /// the probe twice.
     #[test]
     fn a_zero_length_body_is_an_acknowledgement_and_not_an_answer() {
         let zlb = [0xC8u8, 0x02, 0x00, 0x0C, 0x7A, 0x6F, 0, 0, 0, 0, 0, 1];
@@ -2104,10 +1995,7 @@ mod tests {
         message
     }
 
-    /// The Host Name attribute is the machine's own name, so it is recorded
-    /// as one, masked where a report is, and never written into the text the
-    /// corpus reads, where a rule capturing it would carry it into a report
-    /// unmasked.
+    /// The Host Name attribute becomes a host name, not corpus text.
     #[test]
     fn the_host_name_is_a_name_of_the_host_and_not_text() {
         let reply = sccrp("xelerance.com", "lns01.example.net");
@@ -2133,8 +2021,7 @@ mod tests {
         assert_eq!(l2tp_control(&message).as_deref(), Some("l2tp"));
     }
 
-    /// Anything at all, without panicking. Each of these reads a datagram from
-    /// an unauthenticated stranger.
+    /// No reader panics on arbitrary input.
     #[test]
     fn arbitrary_bytes_are_refused_rather_than_read() {
         for bytes in [
