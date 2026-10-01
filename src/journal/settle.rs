@@ -8,19 +8,16 @@
 
 //! # What became of a target, and whether a resume may skip it
 //!
-//! A raw port scan gives the same verdict to a target whose retry budget ran out
-//! and to one still mid-schedule when the scan stopped. Both were asked and
-//! neither answered; how many times the question was repeated is the difference,
-//! and a report reads them as one silence. A target no probe was sent to is
-//! recorded [`PortState::Unasked`](crate::model::port::PortState::Unasked)
-//! instead, since it is a fact about the scan rather than a reading of silence.
+//! A raw port scan gives the same verdict to a target whose retry budget ran out and to
+//! one still mid-schedule when the scan stopped: both were asked and neither answered. A
+//! target no probe was sent to is recorded
+//! [`PortState::Unasked`](crate::model::port::PortState::Unasked), since that is a fact about
+//! the scan.
 //!
-//! A resume can afford neither blurring. A cursor advanced over a target nobody
-//! probed produces a second sitting that skips it and a merged report claiming
-//! coverage it never had.
-//!
-//! [`Outcome`] makes the distinction unforgeable. Only the settled variants carry
-//! a position, and a position is the only thing a cursor can advance over.
+//! A resume has to tell these apart. A cursor advanced over a target nobody probed produces
+//! a second sitting that skips it and a merged report claiming coverage it never had.
+//! [`Outcome`] makes the distinction unforgeable: only the settled variants carry a
+//! position, and a position is the only thing a cursor can advance over.
 //!
 //! | Outcome | Decided at | Position |
 //! |---|---|---|
@@ -34,8 +31,8 @@
 //! | [`Undecided`](Outcome::Undecided) | the liveness pass reached no verdict | no |
 //! | [`Unroutable`](Outcome::Unroutable) | no scanner for the protocol, or a send refused | no |
 //!
-//! Unsettled outcomes are counted, not stored. Their total is worth reporting;
-//! which targets they were is not, since every one is re-probed anyway.
+//! Unsettled outcomes are counted, not stored. Every one is re-probed, so only their
+//! total is worth reporting.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -45,17 +42,14 @@ use crate::model::order::Permutation;
 
 /// The two outcomes a probe earns, before the position is attached.
 ///
-/// A caller that has earned a verdict says which of these it earned, and
-/// something that knows the plan attaches the position. See
+/// A caller that earned a verdict says which, and something that knows the plan
+/// attaches the position; see
 /// [`ScanContext::settle_address`](crate::scanner::session::ScanContext::settle_address),
 /// which is how a sweep settles an address it does not know the number of.
 ///
-/// Not every settled outcome is here, since not every one is earned by a probe.
-/// [`Skipped`](Outcome::Skipped) is the liveness pass deciding no probe was owed,
-/// and whatever reaches that conclusion already knows the position, so it builds
-/// the outcome directly. The unsettled outcomes carry no position, so there is
-/// nothing to attach and they are recorded straight through
-/// [`Settlements::record`].
+/// [`Skipped`](Outcome::Skipped) is not here because no probe earns it, and whatever decides
+/// it already knows the position. The unsettled outcomes carry no position and go straight
+/// through [`Settlements::record`].
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Settled {
@@ -88,9 +82,8 @@ pub enum Outcome {
         position: u64,
     },
 
-    /// The retry budget was spent without an answer: silence, asked for as many
-    /// times as the policy allows. Settled, since waiting longer could not have
-    /// changed it.
+    /// The retry budget was spent without an answer. Settled, since waiting longer could
+    /// not have changed it.
     Exhausted {
         /// Its position in the plan.
         position: u64,
@@ -98,65 +91,50 @@ pub enum Outcome {
 
     /// Its host answered nothing in the liveness pass, so no probe was owed.
     ///
-    /// Settled, and the one settled outcome no probe was sent for. The evidence
-    /// is still earned: the scan asked whether the host was there as many
-    /// times as its policy allows and heard nothing, so declining to spend a
-    /// probe per port on it is work decided against rather than work missed.
-    /// That is the difference between this and
-    /// [`Undecided`](Outcome::Undecided), where the pass never reached that
-    /// verdict.
+    /// Settled, and the one settled outcome no probe was sent for. The scan asked
+    /// whether the host was there as many times as its policy allows and heard nothing, which
+    /// is what separates this from [`Undecided`](Outcome::Undecided).
     ///
-    /// So a resumed scan does not revisit those ports even if the host answers
-    /// next time. A resume continues one job, and that job's finding about the
-    /// host was that it was down; asking again is a new scan, which is what
-    /// [`JournalManifest`](crate::journal::manifest::JournalManifest) says about
-    /// a plan that has moved.
-    /// [`ZondConfig::assume_up`](crate::config::ZondConfig::assume_up) is how a
-    /// caller declines the bargain.
+    /// A resumed scan does not revisit these ports even if the host answers next time: the job
+    /// found the host down, and asking again is a new scan, as
+    /// [`JournalManifest`](crate::journal::manifest::JournalManifest) says about a plan that has
+    /// moved. [`ZondConfig::assume_up`](crate::config::ZondConfig::assume_up) opts out.
     Skipped {
         /// Its position in the plan.
         position: u64,
     },
 
-    /// Its address answers from the hardware of a machine the exclusion
-    /// policy names, so no probe was allowed.
+    /// Its address answers from the hardware of a machine the exclusion policy names,
+    /// so no probe was allowed.
     ///
-    /// Settled, and like [`Skipped`](Outcome::Skipped) sent nothing. The
-    /// policy names an address and means the machine answering at it, and
-    /// this host's neighbour tables tied the target's address to that machine
-    /// before anything was sent; see
+    /// Settled, and like [`Skipped`](Outcome::Skipped) sent nothing. This host's neighbour
+    /// tables tied the address to that machine before anything was sent; see
     /// [the machine an address names](crate::model::exclusion#an-address-names-a-machine).
-    /// A resume does not ask it either, whatever the tables say by then,
-    /// since the one direction an exclusion may err in is withholding more.
+    /// A resume does not ask it either, whatever the tables say by then, since an exclusion may
+    /// only err towards withholding more.
     Withheld {
         /// Its position in the plan.
         position: u64,
     },
 
-    /// Its address was filed as one this machine cannot reach: no route or
-    /// source address led there, a route refused by its type, or the
-    /// neighbour never answered address resolution.
+    /// Its address was filed as one this machine cannot reach: no route or source
+    /// address led there, a route was refused by its type, or the neighbour never answered
+    /// address resolution.
     ///
-    /// Settled, though nothing was sent. The refusal is this machine's routing
-    /// answering for the address, and asking again within the job would draw
-    /// the same answer, as asking a silent host again would; left unsettled,
-    /// every target at such an address kept a finished job resumable and was
-    /// asked again by every sitting. A resume continues one job, so a route
-    /// that appears later is a reason for a new scan, as a host that comes up
-    /// is under [`Skipped`](Outcome::Skipped).
+    /// Settled, though nothing was sent. Asking again within the job would draw the same answer
+    /// from this machine's routing, and left unsettled every target at such an address would
+    /// keep a finished job resumable. A route that appears later is a reason for a new scan.
     ///
-    /// Recorded when the address is filed, over every target the plan numbers
-    /// at it, which is why it is apart from [`Unroutable`](Outcome::Unroutable):
-    /// that is the one target a scanner could not send, counted as it happens.
-    /// See
+    /// Recorded when the address is filed, over every target the plan numbers at it. That is
+    /// what separates it from [`Unroutable`](Outcome::Unroutable), the one target a scanner
+    /// could not send, counted as it happens. See
     /// [`ScanContext::record_unroutable`](crate::scanner::session::ScanContext::record_unroutable).
     Unreachable {
         /// Its position in the plan.
         position: u64,
     },
 
-    /// Outstanding mid-retry-schedule when the scan stopped. The schedule was
-    /// cut off rather than spent.
+    /// Outstanding mid-retry-schedule when the scan stopped.
     Interrupted,
 
     /// No probe was sent: the target was still queued when the scan stopped, its
@@ -164,27 +142,23 @@ pub enum Outcome {
     /// the send.
     Unasked,
 
-    /// No scanner spoke its protocol, or this machine refused to send the
-    /// probe. Usually a missing privilege or a local fault rather than a fact
-    /// about the target, and those can differ between sittings. A target whose
-    /// address the scan then files as one no route leads to is settled over
-    /// this, as [`Unreachable`](Outcome::Unreachable).
+    /// No scanner spoke its protocol, or this machine refused to send the probe.
+    /// Usually a missing privilege or a local fault, which can differ between sittings. A target
+    /// whose address the scan then files as unreachable is settled over this, as
+    /// [`Unreachable`](Outcome::Unreachable).
     Unroutable,
 
-    /// The liveness pass reached no verdict on its host, so it was neither
-    /// probed nor written off.
+    /// The liveness pass reached no verdict on its host, so it was neither probed nor
+    /// written off.
     ///
-    /// The pass stopped before it asked, stopped while it was still asking, had
-    /// no strategy that could ask, or was refused the range. None of those is
-    /// silence, and settling one as [`Skipped`](Outcome::Skipped) would have a
-    /// resume skip a host nobody asked about and report it down. Unsettled, so
-    /// the next sitting's liveness pass asks about the host again.
+    /// The pass stopped before or while asking, had no strategy that could ask, or was refused
+    /// the range. None of those is silence, so it stays unsettled and the next sitting's
+    /// liveness pass asks about the host again.
     Undecided,
 }
 
 impl Outcome {
-    /// The position a resume may skip, or `None` where the scan did not earn
-    /// one.
+    /// The position a resume may skip, or `None` where the scan did not earn one.
     pub fn settled_position(self) -> Option<u64> {
         match self {
             Outcome::Answered { position }
@@ -222,9 +196,8 @@ impl Outcome {
 /// How a sitting ended for each of its targets: a cursor over what settled, and
 /// counts of what did not.
 ///
-/// Memory follows how far out of order the scan settled, never how many targets
-/// it had: a handful of positions for a plan settled in plan order or in the
-/// order it was walked. See [`cursor`](super::cursor).
+/// Memory follows how far out of order the scan settled, not how many targets it
+/// had. See [`cursor`](super::cursor).
 #[derive(Debug, Default)]
 pub struct Settlements {
     cursor: Mutex<Cursor>,
@@ -240,8 +213,7 @@ pub struct Settlements {
 }
 
 impl Settlements {
-    /// Begins from a checkpoint, so a resumed sitting keeps what the first
-    /// settled.
+    /// Begins from a checkpoint, keeping what earlier sittings settled.
     pub fn resuming(checkpoint: &Checkpoint) -> Self {
         Self {
             cursor: Mutex::new(Cursor::from_checkpoint(checkpoint)),
@@ -249,9 +221,8 @@ impl Settlements {
         }
     }
 
-    /// Begins from a checkpoint, counting along `order` as well where the
-    /// scan asks its targets in one. See [`Cursor::walking`] for what that
-    /// saves.
+    /// Begins from a checkpoint, also counting along `order` when the scan asks its
+    /// targets in one. See [`Cursor::walking`] for what that saves.
     pub(crate) fn walking(checkpoint: &Checkpoint, order: Option<Permutation>) -> Self {
         let cursor = Cursor::from_checkpoint(checkpoint);
         Self {
@@ -263,14 +234,12 @@ impl Settlements {
         }
     }
 
-    /// Counts along `order` as well, from here on, where nothing has given
-    /// this count a walk yet.
+    /// Counts along `order` as well from here on, unless this count already has a walk
+    /// (see [`Cursor::along`]).
     ///
-    /// For the stream that takes the walk to name it. A session built without
-    /// a plan cannot know the walk its dispatcher will take, and a count kept
-    /// in plan order alone of targets asked along a walk holds nearly every
-    /// settled position above its watermark: half the plan at the halfway
-    /// mark. A count that already has a walk keeps it; see [`Cursor::along`].
+    /// For the stream that takes the walk. A session built without a plan cannot know its
+    /// dispatcher's walk, and counting a walked scan in plan order alone holds nearly every
+    /// settled position above the watermark: half the plan at the halfway mark.
     pub(crate) fn walk_along(&self, order: Permutation) {
         self.with_cursor(|cursor| *cursor = std::mem::take(cursor).along(order));
     }
@@ -284,18 +253,15 @@ impl Settlements {
         }
     }
 
-    /// Whether the target at `position` is settled, by this sitting or an
-    /// earlier one.
+    /// Whether the target at `position` is settled, by this sitting or an earlier one.
     pub(crate) fn is_settled(&self, position: u64) -> bool {
         self.with_cursor(|cursor| cursor.is_settled(position))
     }
 
-    /// Records `outcome`, a settled one, unless its target is settled
-    /// already.
+    /// Records `outcome`, a settled one, unless its target is settled already.
     ///
-    /// For an account given after the fact over every target at an address,
-    /// some of which earned a verdict of their own first: those keep it, and
-    /// are not counted twice.
+    /// For an account given after the fact over every target at an address: targets that
+    /// earned a verdict of their own first keep it and are not counted twice.
     pub(crate) fn record_unsettled(&self, outcome: Outcome) {
         let Some(position) = outcome.settled_position() else {
             return;
@@ -312,11 +278,9 @@ impl Settlements {
 
     /// Records `count` targets ending the same way.
     ///
-    /// For the unsettled outcomes, which are counted rather than stored. A sweep
-    /// cut short can leave millions of addresses unasked, and they are one fact
-    /// rather than a million. A settled outcome names one position, so repeating
-    /// it here would count one target many times; those go through
-    /// [`record`](Self::record) one at a time.
+    /// For the unsettled outcomes, which are counted, not stored: a sweep cut short can
+    /// leave millions of addresses unasked. A settled outcome names one position, so it goes
+    /// through [`record`](Self::record).
     pub fn record_many(&self, outcome: Outcome, count: u64) {
         debug_assert!(
             !outcome.is_settled(),
@@ -335,8 +299,8 @@ impl Settlements {
         self.with_cursor(|cursor| cursor.settled_count())
     }
 
-    /// How many targets ended in `outcome`'s variant this sitting. The position
-    /// of a settled variant is ignored, so any will do.
+    /// How many targets ended in `outcome`'s variant this sitting. The position of a
+    /// settled variant is ignored.
     pub fn count(&self, outcome: Outcome) -> u64 {
         self.counter(outcome).load(Ordering::Relaxed)
     }
@@ -407,8 +371,7 @@ mod tests {
         }
     }
 
-    /// A sitting cut short gives every outstanding and unasked target the same
-    /// verdict as an exhausted one, and advances the cursor over none.
+    /// A sitting cut short advances the cursor over no outstanding or unasked target.
     #[test]
     fn a_cut_short_sitting_settles_only_what_it_earned() {
         let settlements = Settlements::default();
@@ -427,8 +390,7 @@ mod tests {
         assert_eq!(settlements.count(Outcome::Interrupted), 500);
     }
 
-    /// Unsettled outcomes cost a counter each, whatever their number, so a scan
-    /// that abandons millions of targets pays no memory for them.
+    /// Unsettled outcomes cost a counter each, whatever their number.
     #[test]
     fn unsettled_outcomes_are_counted_rather_than_stored() {
         let settlements = Settlements::default();
@@ -447,7 +409,7 @@ mod tests {
         let settlements = Settlements::default();
 
         settlements.record(Outcome::Answered { position: 0 });
-        // Position 1 was interrupted: it carries no position, so it is re-probed.
+        // Position 1 was interrupted, so it carries no position and is re-probed.
         settlements.record(Outcome::Interrupted);
         for position in 2..1_000 {
             settlements.record(Outcome::Answered { position });
@@ -457,8 +419,8 @@ mod tests {
         assert_eq!(settlements.settled_count(), 999);
     }
 
-    /// A resumed sitting starts from what the first settled, and counts only its
-    /// own work.
+    /// A resumed sitting starts from what the first settled and counts only its own
+    /// work.
     #[test]
     fn resuming_keeps_the_earlier_sittings_progress() {
         let first = Settlements::default();

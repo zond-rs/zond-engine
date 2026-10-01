@@ -8,62 +8,43 @@
 
 //! # Creating a file inside a journal
 //!
-//! Three things that must not be separated: the mode it is created with, who it
-//! then belongs to, and that it is the file this crate meant rather than a link
-//! standing where one should be.
+//! Three things kept together: the mode a file is created with, who it then belongs to,
+//! and that it is the file this crate meant and not a link standing at its name.
 //!
-//! A journal holds the addresses an engagement was pointed at, so every file is
-//! `0600` from creation rather than chmod'd after, and when the scan ran under
-//! `sudo` it is given to the user who invoked it rather than left to root.
-//! [`paths`](crate::journal::paths) explains why the journal goes to the
-//! invoking user's home; this is the other half of that answer, without which
-//! it goes to their home and stays unreadable to them.
+//! A journal holds the addresses an engagement was pointed at, so every file is `0600` from
+//! creation, and when the scan ran under `sudo` it is given to the user who invoked it.
+//! [`paths`](crate::journal::paths) puts the journal in that user's home; this makes it
+//! readable to them there. Split apart, a cursor writer that set the mode but not the owner
+//! would leave `cursor.json` owned by root beside a manifest owned by the user, and an
+//! unprivileged listing would report every scan as untouched.
 //!
-//! They live together because separating them costs exactly that. A cursor
-//! writer with its own copy of the mode and none of the ownership would leave
-//! `cursor.json` owned by root after a sweep run with `sudo`, beside a manifest
-//! and findings owned by the user. An unprivileged listing would read the plan
-//! and not the progress, and report every scan as untouched.
+//! ## No path is looked up twice
 //!
-//! ## Why nothing here takes a path twice
+//! The journal's directory belongs to the invoking user and the names inside it are fixed.
+//! A root process that opened `cursor.json.tmp` by path, truncated it and then chowned that
+//! path would do both to whatever the user pointed the name at. `O_NOFOLLOW` refuses a link
+//! at a journal file's name, and every ownership change goes through the open descriptor.
 //!
-//! Giving the journal to the invoking user means the directory it sits in
-//! belongs to them, and the names inside it are fixed. A root process opening
-//! `cursor.json.tmp` by path, truncating it, and then chowning that path is a
-//! root process doing both of those to whatever the user pointed the name at.
-//! `O_NOFOLLOW` refuses a link where a journal file should be, and every
-//! ownership change goes through the descriptor already open rather than
-//! through the name, so there is no second lookup to redirect between them.
+//! The lock is the exception to opening a file in place: it has to appear at its name
+//! already holding its record, or a racer finds it empty. `lock::Lock::create_exclusively`
+//! stages the content through [`link_new`](crate::journal::file::link_new) and links it into
+//! place.
 //!
-//! Taking a lock is the one file this does not open. It has to appear at its name
-//! already holding its record, or a racer reads a lock mid-creation and finds it
-//! empty. See `lock::Lock::create_exclusively`, which stages the content through
-//! [`link_new`](crate::journal::file::link_new) here and links it into place.
+//! Directories and reads are opened the same way. A root process resuming a scan reads the
+//! manifest, cursor and findings out of the user's directory, and a link at one of those
+//! names would have it read whatever the user chose; see
+//! [`open_to_read`](crate::journal::file::open_to_read).
 //!
-//! Directories are opened the same way for the same reason.
+//! ## No link above the name is followed either
 //!
-//! Reading is opened the same way too. A root process resuming a scan reads
-//! the manifest, the cursor and the findings out of that user's directory, and
-//! a link at one of those names would have it read whatever the user chose and
-//! take it for the job's; see
-//! [`open_to_read`](crate::journal::file::open_to_read) for why such a job is
-//! refused by name rather than read as one that recorded nothing.
-//!
-//! ## Why nothing here is created through a link above it either
-//!
-//! `O_NOFOLLOW` guards the last name, and every name above it is the invoking
-//! user's to place as well. Under `sudo` a journal's files and directories are
-//! created relative to a directory reached from that user's home without
-//! following a link out of it; see
-//! [`ownership::Place`](crate::journal::ownership::Place) for why, and for why a link
-//! that stays inside the home still works. What renames, links or removes a
-//! name that is already there is reached the same way, since a lookup by path
-//! between staging a file and renaming it is one more lookup a link above it
-//! could redirect: [`replace`](crate::journal::file::replace),
-//! [`link_new`](crate::journal::file::link_new),
-//! [`remove`](crate::journal::file::remove) and
-//! [`remove_directory`](crate::journal::file::remove_directory) are how a
-//! journal changes a name, and nothing in it does so by path.
+//! Every name above the last is the invoking user's to place as well. Under `sudo` a
+//! journal's files and directories are reached from that user's home without following a
+//! link out of it; see [`ownership::Place`](crate::journal::ownership::Place), which also
+//! explains why a link that stays inside the home still works. Renames, links and removals
+//! go through the same walk: [`replace`](crate::journal::file::replace),
+//! [`link_new`](crate::journal::file::link_new), [`remove`](crate::journal::file::remove)
+//! and [`remove_directory`](crate::journal::file::remove_directory) are how a journal
+//! changes a name, never by path.
 
 use std::fs;
 use std::path::Path;
@@ -72,21 +53,15 @@ use super::ownership::{Directory, Kind, Place};
 
 /// Creates a file in a journal: private, the invoking user's, and new.
 ///
-/// The mode is set as the file is created rather than after, so there is no
-/// moment where what a scan is recording can be read by anyone else. The
-/// directory is `0700` as well, which would cover it either way.
+/// The mode is set at creation, so there is no moment when the file is readable by
+/// anyone else.
 ///
-/// Create-only, which is what every caller means. Create *or truncate* would
-/// mean a root process truncating and then chowning whatever the directory's
-/// owner had put at the name. `O_NOFOLLOW` already refuses a symlink there, so
-/// the residual case is a planted regular file: narrow, since the directory is
-/// `0700` and the planter would be its owner, but narrow is not the same as
-/// closed. `create_new` closes it: a name that already exists is refused rather
-/// than emptied.
+/// Create-only: a name that already exists is refused. Create-or-truncate would have a root
+/// process empty and then chown whatever the directory's owner had planted at the name;
+/// `O_NOFOLLOW` covers a symlink but not a planted regular file.
 ///
-/// The files a journal writes whole, through a staged sibling, want a name
-/// that may be left over from an interrupted run; [`replace`] and
-/// [`link_new`] stage them, which is this with one deliberate retry.
+/// Files written whole through a staged sibling may find a name left over from an
+/// interrupted run; [`replace`] and [`link_new`] stage them with one retry.
 pub(super) fn create_private(path: &Path) -> std::io::Result<fs::File> {
     create_in(&Place::of(path)?, path)
 }
@@ -100,19 +75,14 @@ fn create_in(place: &Place, path: &Path) -> std::io::Result<fs::File> {
 
 /// Creates a staging file, discarding one an interrupted run left behind.
 ///
-/// [`create_private`] refuses a name that exists, which is right for the files
-/// a journal creates once and wrong for those it re-creates every time it
-/// writes whole: `cursor.json.tmp` on every checkpoint, `hosts.jsonl-tmp` on
-/// every compaction. Each is renamed away on success and removed on failure,
-/// so a leftover means a previous run died between the create and the rename,
-/// and refusing forever after that would wedge the journal, trading the defect
-/// `create_new` closes for a failure of its own.
+/// [`create_private`] refuses a name that exists, which is wrong for the files a
+/// journal re-creates on every whole write: `cursor.json.tmp` on every checkpoint,
+/// `hosts.jsonl-tmp` on every compaction. A leftover means a previous run died between the
+/// create and the rename, and refusing it would wedge the journal.
 ///
-/// The removal is safe in the way truncation is not. It unlinks the name, so
-/// a symlink planted there loses the link rather than the target, and the
-/// retry is still `create_new` under `O_NOFOLLOW`: if something wins the race
-/// and plants a file between the two calls, this fails rather than opening
-/// it. A refused checkpoint is a cost; a truncated stranger is a defect.
+/// Removing it is safe where truncation is not: unlinking a planted symlink removes the
+/// link, not its target, and the retry is still `create_new` under `O_NOFOLLOW`, so a file
+/// planted between the two calls makes this fail without opening it.
 fn stage(place: &Place, path: &Path) -> std::io::Result<fs::File> {
     match create_in(place, path) {
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -123,19 +93,16 @@ fn stage(place: &Place, path: &Path) -> std::io::Result<fs::File> {
     }
 }
 
-/// Writes a journal file whole: `write` fills a file staged at `staged`, which
-/// is then renamed over `destination`, so the name holds all of what was there
-/// or all of what was written and never part of either.
+/// Writes a journal file whole: `write` fills a file staged at `staged`, which is
+/// then renamed over `destination`, so the name holds either all of the old contents or all
+/// of the new.
 ///
-/// `staged` lies beside `destination`, in the same directory, and both are
-/// reached through one walk; see [`Place::beside`]. The staged file is closed
-/// before the rename, since `write` takes it, because renaming over a file
-/// still held open is a hazard on platforms this may yet reach. The
-/// destination becomes the staged file's inode, which already carries the
-/// mode and the ownership [`create_private`] gives.
+/// `staged` lies in the same directory as `destination` and both are reached through one
+/// walk; see [`Place::beside`]. The staged file is closed before the rename (`write` takes
+/// it), since renaming over an open file is a hazard on some platforms. The destination
+/// becomes the staged inode, which already has the mode and owner [`create_private`] gives.
 ///
-/// A write or a rename that fails removes what it staged, so a failure leaves
-/// nothing behind beside the destination for the next attempt to discard.
+/// A failed write or rename removes what it staged.
 pub(super) fn replace<T, E: From<std::io::Error>>(
     destination: &Path,
     staged: &Path,
@@ -163,14 +130,13 @@ fn replace_at<T, E: From<std::io::Error>>(
     replaced
 }
 
-/// Puts a file at `destination` holding what `write` wrote, refusing a name
-/// that exists there.
+/// Puts a file at `destination` holding what `write` wrote, refusing a name that
+/// exists there.
 ///
-/// For a file that must appear at its name already whole, where creating it
-/// and then writing it would let a reader find it empty: the lock. Staged at
-/// `staged` as [`replace`] stages, and then linked into place, since a link
-/// refuses a name that exists, the same exclusion `create_new` gives, over a
-/// file that already has its contents. The staged name is removed either way.
+/// For a file that must appear at its name already whole, where a reader must never find it
+/// empty: the lock. Staged as [`replace`] stages, then linked into place, since a link
+/// refuses an existing name the way `create_new` does. The staged name is removed either
+/// way.
 pub(super) fn link_new(
     destination: &Path,
     staged: &Path,
@@ -210,48 +176,36 @@ fn sibling<'a>(destination: &Path, staged: &'a Path) -> std::io::Result<&'a std:
 
 /// Opens an existing journal file to add to it, keeping what is already there.
 ///
-/// [`create_private`] for the files written a record at a time. The mode is not
-/// set, because the file exists and the one that created it set it.
+/// For the files written a record at a time. The mode is not set: whoever created
+/// the file set it.
 pub(super) fn append_existing(path: &Path) -> std::io::Result<fs::File> {
     open(path, Access::Append)
 }
 
-/// Opens an existing journal file for reading and writing, to inspect and mend
-/// it before anything is added to it.
+/// Opens an existing journal file for reading and writing, to inspect and mend it
+/// before anything is added.
 ///
-/// [`append_existing`] can only add to the end, which is what makes it cheap and
-/// what makes it blind: an append-only descriptor cannot see whether the file
-/// carries a header or whether its last line ever finished. `store`'s
-/// `open_for_append` asks both questions through this handle first.
-///
-/// Neither creates and neither truncates, so a name that is not there is still
-/// an error and what is in the file is still whatever was written. The mode is
-/// not set for the same reason [`append_existing`] does not set it: the file
-/// exists, and the call that created it set it.
+/// An append-only descriptor cannot see whether the file has a header or whether its last
+/// line finished; `store`'s `open_for_append` checks both through this handle first. Neither
+/// creates nor truncates, and the mode is not set.
 pub(super) fn open_existing(path: &Path) -> std::io::Result<fs::File> {
     open(path, Access::ReadWrite)
 }
 
 /// Opens a journal's rendezvous file, creating it if it is not there yet.
 ///
-/// The one shape neither [`create_private`] nor [`replace`] fits: a file
-/// every racer must be able to *open*, where creating it is incidental and
-/// winning the create decides nothing. `journal::lock`'s `break` file is the
-/// only one: the lock taken on it lives on the open file, so what matters is
-/// that every process ends up on the same one.
-///
-/// No truncate, because there is nothing in it to empty and a truncate would be
-/// one more thing a racer could do to a file another racer holds. The mode and
-/// `O_NOFOLLOW` are the same as everywhere else here.
+/// For a file every racer must be able to open, where winning the create decides nothing:
+/// `journal::lock`'s `break` file, whose lock lives on the open file. No truncate, since
+/// that would be one more thing a racer could do to a file another holds. Same mode and
+/// `O_NOFOLLOW` as everywhere here.
 pub(super) fn open_or_create_private(path: &Path) -> std::io::Result<fs::File> {
     let file = open(path, Access::CreateOrOpen)?;
     claim(&file, path);
     Ok(file)
 }
 
-/// Removes a journal file's name: a link at it rather than what the link
-/// points to, and relative to the directory holding it, reached as every
-/// opener here reaches a name.
+/// Removes a journal file's name (a link at it, not what the link points to),
+/// relative to the directory holding it, reached as every opener here reaches a name.
 pub(super) fn remove(path: &Path) -> std::io::Result<()> {
     Place::of(path)?.remove()
 }
@@ -259,33 +213,28 @@ pub(super) fn remove(path: &Path) -> std::io::Result<()> {
 /// Removes a journal's directory and everything in it, each name looked up
 /// relative to the directory holding it; see [`Place::remove_tree`].
 ///
-/// A journal is removed by whoever may prune it, which under `sudo` is root
-/// in a directory the invoking user arranges. By path, a link placed above
-/// the journal between the decision and the removal would have root remove
-/// whatever stands under the journal's name wherever the link leads.
+/// Under `sudo` the pruner is root in a directory the invoking user controls. By
+/// path, a link placed above the journal between the decision and the removal would have
+/// root remove whatever the link leads to.
 pub(super) fn remove_directory(path: &Path) -> std::io::Result<()> {
     Place::of(path)?.remove_tree()
 }
 
 /// Creates one scan's directory, private from the moment it exists.
 ///
-/// The mode is set as the directory is created rather than chmod'd afterwards,
-/// which is the same rule this module applies to everything inside it and for
-/// the same two reasons. Creating at the default mode leaves a window in which
-/// the addresses an engagement was pointed at are world-readable, and a `chmod`
-/// by path is a privileged operation on a name in a directory this engine has
-/// just given to an unprivileged user.
+/// The mode is set at creation for the same reasons as the files inside it: no
+/// window in which the addresses are world-readable, and no privileged `chmod` by path in a
+/// directory just given to an unprivileged user.
 ///
-/// Fails with [`AlreadyExists`](std::io::ErrorKind::AlreadyExists) on a
-/// directory that is already there, which is what makes a minted id that
-/// collides a retry rather than two scans sharing one journal.
+/// Fails with [`AlreadyExists`](std::io::ErrorKind::AlreadyExists) if the directory exists,
+/// so a colliding minted id is retried and two scans never share a journal.
 #[cfg(unix)]
 pub(super) fn create_private_directory(path: &Path) -> std::io::Result<()> {
     Place::of(path)?.create_directory(0o700)
 }
 
-/// The platforms with no mode to set at creation, where the directory is created
-/// and nothing more is promised about it.
+/// Platforms with no mode to set at creation; nothing is promised about the
+/// directory's permissions.
 #[cfg(not(unix))]
 pub(super) fn create_private_directory(path: &Path) -> std::io::Result<()> {
     fs::create_dir(path)
@@ -293,29 +242,26 @@ pub(super) fn create_private_directory(path: &Path) -> std::io::Result<()> {
 
 /// Opens a journal file to read it, refusing a link standing at its name.
 ///
-/// Every file a journal holds is created by this module, and none of its
-/// openers ever leaves a link at a journal's name, so one there is not a
-/// journal file of any shape: it is a job that cannot be read, and the error
-/// says a link is why. Read as damaged instead, the job would list as a scan
-/// that found nothing, which is not what happened to it. Followed, it would
-/// have a process that is usually root read whatever the directory's owner
-/// pointed it at, and report what it found there as the job's own.
+/// No opener here leaves a link at a journal's name, so one there makes the job
+/// unreadable, and the error says a link is why. Read as damaged, the job would list as a
+/// scan that found nothing; followed, a root process would read whatever the directory's
+/// owner pointed it at as the job's own.
 ///
-/// Reached as every other opener here reaches a name, so under `sudo` a link
-/// above it that leads out of the invoking user's home is refused as well.
+/// Under `sudo` a link above it that leads out of the invoking user's home is refused as
+/// well.
 pub(super) fn open_to_read(path: &Path) -> std::io::Result<fs::File> {
     open(path, Access::Read)
 }
 
-/// The names in the directory at `path`, reached as every opener here
-/// reaches a name; see [`Directory`].
+/// The names in the directory at `path`, reached as every opener here reaches a
+/// name; see [`Directory`].
 pub(super) fn names(path: &Path) -> std::io::Result<Vec<std::ffi::OsString>> {
     Directory::of(path)?.names()
 }
 
-/// The names in the directory at `path`, each with what stands at it, a link
-/// being a link, looked at relative to the directory holding it; see
-/// [`Directory`]. A name gone by the time it is looked at is passed over.
+/// The names in the directory at `path`, each with what stands at it (a link counts
+/// as a link), looked up relative to that directory; see [`Directory`]. A name gone by the
+/// time it is looked at is skipped.
 pub(super) fn kinds(path: &Path) -> std::io::Result<Vec<(std::ffi::OsString, Kind)>> {
     let directory = Directory::of(path)?;
     Ok(directory
@@ -328,10 +274,9 @@ pub(super) fn kinds(path: &Path) -> std::io::Result<Vec<(std::ffi::OsString, Kin
         .collect())
 }
 
-/// Whether anything stands at `path`, a link included, asked of the name
-/// itself and reached as every opener here reaches a name.
-///
-/// A directory above it that is not there is nothing at the name either.
+/// Whether anything stands at `path`, a link included, asked of the name itself and
+/// reached as every opener here reaches a name. A missing directory above it counts as
+/// nothing there.
 pub(super) fn exists(path: &Path) -> std::io::Result<bool> {
     match Place::of(path) {
         Ok(place) => place.exists(),
@@ -355,17 +300,16 @@ enum Access {
     Read,
 }
 
-/// Opens a journal file private, refusing a link at its name, and reached the
-/// way [`Place`] reaches it.
+/// Opens a journal file private, refusing a link at its name, reached the way
+/// [`Place`] reaches it.
 fn open(path: &Path, how: Access) -> std::io::Result<fs::File> {
     open_in(&Place::of(path)?, path, how)
 }
 
 /// [`open`] at a name already reached; `path` is what it is called.
 ///
-/// A link refused at the name is said to be one: the system's own word for it
-/// is a loop of links, which names no link the reader placed and sends them
-/// looking for a cycle there is none of.
+/// A link refused at the name is reported as one; the system's own error is a loop
+/// of links, which sends the reader looking for a cycle that is not there.
 #[cfg(unix)]
 fn open_in(place: &Place, path: &Path, how: Access) -> std::io::Result<fs::File> {
     let flags = match how {
@@ -376,8 +320,8 @@ fn open_in(place: &Place, path: &Path, how: Access) -> std::io::Result<fs::File>
         Access::Read => libc::O_RDONLY,
     };
     place.open(flags, 0o600).map_err(|error| {
-        // Asked of the name itself, where it was reached, to tell a link at
-        // it from a loop further up, which fails the same way.
+        // Asked of the name itself, to tell a link at it from a loop further up, which
+        // fails the same way.
         let linked = error.raw_os_error() == Some(libc::ELOOP)
             && place.kind().is_ok_and(|kind| kind == Kind::Link);
         if linked {
@@ -391,9 +335,8 @@ fn open_in(place: &Place, path: &Path, how: Access) -> std::io::Result<fs::File>
     })
 }
 
-/// The platforms with no mode to set at open. Nothing is promised about who else
-/// can read a journal there, which is one of the reasons the crate does not claim
-/// to support them.
+/// Platforms with no mode to set at open. Nothing is promised about who else can
+/// read a journal there, one reason the crate does not claim to support them.
 #[cfg(not(unix))]
 fn open_in(place: &Place, _path: &Path, how: Access) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
@@ -407,12 +350,11 @@ fn open_in(place: &Place, _path: &Path, how: Access) -> std::io::Result<fs::File
     options.open(place.path())
 }
 
-/// Gives a directory a journal created under `sudo` to the user who invoked
-/// it, when it lies in their home.
+/// Gives a directory a journal created under `sudo` to the user who invoked it, when
+/// it lies in their home.
 ///
-/// The file cases claim through the handle they already hold. A directory has
-/// none, so one is opened for it, refusing a link in the same position for the
-/// same reason. The boundary is the one every giving shares; see
+/// A directory has no handle to claim through, so one is opened for it, refusing a link at
+/// the name. The boundary is shared with every other give; see
 /// [`ownership`](super::ownership).
 pub(super) fn claim_directory_for_invoking_user(path: &Path) {
     super::ownership::give(path);
@@ -421,10 +363,9 @@ pub(super) fn claim_directory_for_invoking_user(path: &Path) {
 /// Gives a file a journal wrote under `sudo` to the user who invoked it, when
 /// it lies in their home.
 ///
-/// Best effort: a journal left owned by root is one they can neither read nor
-/// prune, which is worth trying to avoid and not worth failing a scan over.
-/// Taking the descriptor rather than the path is what stops the name being
-/// repointed between the open and the change of owner.
+/// Best effort: a journal left owned by root is one the user can neither read nor
+/// prune, which is worth avoiding but not worth failing a scan over. Taking the descriptor
+/// stops the name being repointed between the open and the change of owner.
 fn claim(file: &fs::File, path: &Path) {
     super::ownership::give_open(file, path);
 }
@@ -441,10 +382,8 @@ mod tests {
         dir
     }
 
-    /// The journal lives in a directory this engine gives to the invoking user,
-    /// under fixed names, and is written by a process that is usually root. A
-    /// link standing where a journal file should be is the one thing that turns
-    /// that arrangement into somebody else's file being truncated.
+    /// A link where a journal file should be is refused, so a root process never writes
+    /// through it.
     #[test]
     fn a_link_where_a_journal_file_should_be_is_refused() {
         let dir = scratch("nofollow");
@@ -470,7 +409,7 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// And an ordinary file still opens, both ways.
+    /// An ordinary file opens both ways and is private.
     #[test]
     fn an_ordinary_journal_file_opens_and_is_private() {
         use std::os::unix::fs::PermissionsExt;
@@ -496,10 +435,9 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// `O_NOFOLLOW` covers a link planted at a journal's name; it says nothing
-    /// about an ordinary file planted there. Opened with truncation, that one
-    /// would be emptied and then chowned to the invoking user by a process that
-    /// is usually root.
+    /// `O_NOFOLLOW` covers a planted link but not a planted regular file. Opened with
+    /// truncation, that file would be emptied and then chowned by a process that is usually
+    /// root.
     #[test]
     fn a_file_already_at_a_journal_name_is_refused_rather_than_emptied() {
         let dir = scratch("create-only");
@@ -517,12 +455,10 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// Under `sudo` a file written whole is staged and then renamed or linked
-    /// into place in the one directory the walk from the invoking user's home
-    /// reached. Every name above it is that user's to rearrange meanwhile, and
-    /// a rename, link or removal looked up by path after the staging follows
-    /// a link placed in between to wherever it leads, having root rename,
-    /// link or remove there whatever stands under a journal's fixed names.
+    /// Under `sudo` a file written whole is staged and then renamed or linked into place
+    /// in the directory the walk from the invoking user's home reached. A rename, link or
+    /// removal looked up by path afterwards would follow a link placed above it in the
+    /// meantime.
     #[test]
     fn a_staged_file_is_put_in_place_where_it_was_staged_whatever_moves_above_it() {
         use crate::journal::paths::InvokingUser;
@@ -599,8 +535,7 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// And the staging names, which a crashed run does leave behind, are the
-    /// one place that refusal has to lift, or a journal wedges for good.
+    /// A staging name left by a crashed run is discarded so the journal does not wedge.
     #[test]
     fn a_staged_name_left_by_a_crashed_run_is_discarded_rather_than_wedging() {
         let dir = scratch("staged");
@@ -616,8 +551,8 @@ mod tests {
         assert_eq!(fs::read(&destination).expect("reads"), b"the next one");
         assert!(!temporary.exists(), "the staged name was renamed away");
 
-        // And it is still a link that cannot be followed: the removal unlinks the
-        // name, and the create behind it is the same refusing one.
+        // Still not followed when it is a link: the removal unlinks the name, and the
+        // create after it refuses a link.
         let elsewhere = dir.join("elsewhere");
         fs::write(&elsewhere, b"not the journal's to touch").expect("writes");
         let linked = dir.join("hosts.jsonl-tmp");

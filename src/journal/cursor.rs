@@ -8,86 +8,63 @@
 
 //! # How far a scan got
 //!
-//! A position in the plan below which everything is settled, and the positions
-//! above it that settled out of order.
+//! A position in the plan below which everything is settled, and the positions above it
+//! that settled out of order.
 //!
 //! ## A position needs nothing stored to name it
 //!
-//! [`TargetMap::iter`](crate::model::target::TargetMap::iter) walks its units in
-//! order and each unit's addresses against its ports, and a
+//! [`TargetMap::iter`](crate::model::target::TargetMap::iter) walks its units in order and
+//! each unit's addresses against its ports, and a
 //! [`TargetSet`](crate::model::target::TargetSet) is canonical and immutable from
-//! construction. So the same plan yields the same targets in the same order on
-//! every run, and the nth target is a stable identity that costs nothing to
-//! record.
+//! construction. So the same plan yields the same targets in the same order on every run,
+//! and the nth target is a stable identity. The cursor holds integers, not addresses, and
+//! its size depends on how far out of order the scan settled, not on the scan's size.
 //!
-//! That is what makes a checkpoint of a plan walked in order affordable. The
-//! cursor holds one integer and the positions settled above it, not a list of
-//! addresses, so its size is a property of how far out of order the scan settled
-//! rather than of how large the scan is. How far that is depends on the order
-//! the targets are asked in, which the next section weighs.
-//!
-//! This enumeration is load-bearing. The dispatcher decides what to probe by it
-//! and this decides what was probed by it, so the two have to be one numbering.
-//! The order the targets are asked in is a different question and is nobody's
-//! business here: a scan given a seed walks a
-//! [`Permutation`] of the whole index space
-//! and numbers what comes out by where the plan holds it, which it reads through
-//! [`TargetIndex`]. That the index and this walk agree at every position is
-//! `model`'s own test, `a_position_names_the_target_the_plans_own_walk_numbers_it`,
-//! and it is what keeps the two from being two numberings.
+//! The dispatcher and this module must use one numbering. The order targets are asked in
+//! is separate: a scan given a seed walks a [`Permutation`] of the whole index space and
+//! numbers what comes out by where the plan holds it, through [`TargetIndex`]. `model`'s
+//! test `a_position_names_the_target_the_plans_own_walk_numbers_it` checks the index and
+//! this walk agree at every position.
 //!
 //! ## The watermark chases the settled set
 //!
-//! [`Cursor::settle`] records a position and then advances the watermark over
-//! every consecutive settled position above it. Anything that settles out of
-//! order waits in [`above`](Cursor::settled_above) until the gap below it fills.
+//! [`Cursor::settle`] records a position and then advances the watermark over every
+//! consecutive settled position above it. Anything settled out of order waits in
+//! [`above`](Cursor::settled_above) until the gap below it fills, so the set holds only what
+//! the watermark has not caught up to. How much that is depends on the walk order.
 //!
-//! The set holds only what the watermark has not caught up to, with no window to
-//! size and no eviction policy to get wrong. How much that is depends on the
-//! order the plan is walked in.
+//! Walked in plan order, it is bounded by how far the dispatcher runs ahead of the slowest
+//! outstanding probe. A single tarpitting host stalls the watermark and the set grows to
+//! the pipeline depth, then collapses when that host settles.
 //!
-//! Walked in plan order, it is bounded by how far the dispatcher runs ahead of
-//! the slowest outstanding probe. A single tarpitting host stalls the watermark
-//! and the set grows to the pipeline depth, then collapses the moment that host
-//! settles.
+//! Walked in a seeded [`Permutation`], as every scan the engine starts is, settled positions
+//! are scattered across the plan and a plan-order watermark stays near zero until nearly
+//! all are in. The set would be half the plan at the halfway mark.
 //!
-//! Walked in a seeded [`Permutation`], which
-//! is how every scan the engine starts walks it, the positions settled so far
-//! are scattered across the whole plan, and a watermark counted in plan order
-//! stays near zero until nearly all of them are in. Held that way, the set would
-//! be half the plan at the halfway mark, in memory and in every checkpoint.
+//! ## Two watermarks
 //!
-//! ## So there are two watermarks
+//! One counts in plan order, and one in the order the scan asks in: a [`Walk`](Walked)
+//! says that every position the permutation names before a given index is settled. A
+//! position is settled if either watermark has passed it or it waits in the set, and the
+//! set holds only what neither has reached.
 //!
-//! One counted in plan order, and one counted in the order the scan asks in: a
-//! [`Walk`](Walked) says that every position the permutation names before a
-//! given index is settled. A position is settled if either watermark has passed
-//! it or it waits in the set, and the set holds only what neither has reached.
+//! One of the two follows whichever order a phase settles in. A port scan's dispatcher walks
+//! the permutation, so the walk watermark keeps the set at pipeline size however large the
+//! plan. A link-layer sweep asks in address order, so the plan watermark does. A phase
+//! mixing the two also holds roughly the part of the plan the slower order has yet to reach.
 //!
-//! Whichever order a phase actually settles in, one of the two follows it. A
-//! port scan's dispatcher walks the permutation, so the walk watermark chases
-//! its answers and the set stays the size of the pipeline, however large the
-//! plan. A link-layer sweep asks its segment in address order, so the plan
-//! watermark does. A phase mixing the two holds, beyond the pipeline, roughly
-//! the part of the plan the slower order has yet to reach.
+//! The walk (seed and length) is recorded beside the positions, so a checkpoint says on its
+//! own which targets it accounts for. Positions are still plan positions.
 //!
-//! The walk is recorded beside the positions, seed and length, rather than
-//! looked up in the manifest, so a checkpoint says on its own which targets it
-//! accounts for. A position is still a position in the plan: the walk is only a
-//! compact way of naming a great many of them.
-//!
-//! A checkpoint written this way is read by an engine that predates the walk as
-//! one that settled only what the plan watermark and the set name. That engine
-//! asks again about what the walk had covered, which costs probes and skips
-//! nothing. So a newer file is safe in an older reader rather than readable by
-//! it, and no format version is spent on the difference.
+//! An engine that predates the walk reads such a checkpoint as having settled only what the
+//! plan watermark and the set name, and asks again about what the walk covered. That costs
+//! probes and skips nothing, so no format version is spent on it.
 //!
 //! ## Only settled positions are recorded
 //!
-//! A position reaches here only from [`Outcome`](super::settle::Outcome)'s
-//! settled variants, the only ones that carry one. A target that was interrupted,
-//! never asked or never routed has no position to offer, so the watermark stalls
-//! behind it and the next sitting asks again.
+//! A position arrives only from [`Outcome`](super::settle::Outcome)'s settled variants. A
+//! target that was interrupted, never asked or never routed has no position, so the
+//! watermark stalls behind it and the next sitting asks again.
 
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -100,8 +77,8 @@ use crate::model::target::{PlannedTarget, Target, TargetIndex};
 
 /// How far a scan has got, maintained as it runs.
 ///
-/// Cheap to update. A snapshot costs what neither watermark has reached, which
-/// the module documentation weighs for the orders a scan walks in.
+/// Cheap to update. A snapshot holds what neither watermark has reached; see the
+/// module documentation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Cursor {
     watermark: u64,
@@ -110,24 +87,19 @@ pub struct Cursor {
 }
 
 impl Cursor {
-    /// A cursor over a plan nothing has been settled in yet, counted in plan
-    /// order alone.
+    /// A cursor over a plan with nothing settled yet, counted in plan order alone.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// A cursor over a plan nothing has been settled in yet, that also counts
-    /// along `order`, the order the scan asks its targets in.
-    ///
-    /// What that buys is the module documentation's subject: settled in the
-    /// order it is asked in, a plan of any size holds a pipeline's worth of
-    /// positions rather than most of what has settled.
+    /// A cursor over a plan with nothing settled yet, that also counts along `order`,
+    /// the order the scan asks its targets in. Settled in that order, a plan of any size holds
+    /// about a pipeline's worth of positions.
     pub fn walking(order: Permutation) -> Self {
         Self::new().along(order)
     }
 
-    /// Resumes from a checkpoint, along the walk it recorded if it recorded
-    /// one.
+    /// Resumes from a checkpoint, along the walk it recorded if any.
     pub fn from_checkpoint(checkpoint: &Checkpoint) -> Self {
         let walk = checkpoint
             .walked
@@ -143,20 +115,18 @@ impl Cursor {
                 .collect(),
             walk,
         };
-        // A checkpoint written by a newer build, or edited by hand, may name
-        // positions that are already contiguous with a watermark. Normalising
-        // here means the invariant below holds however the values arrived.
+        // A checkpoint written by a newer build, or edited by hand, may name positions
+        // already contiguous with a watermark; normalise so the invariants hold.
         cursor.catch_up();
         cursor
     }
 
-    /// Counts along `order` as well, for a cursor that does not yet count
-    /// along any walk: one resumed from a checkpoint written before the scan
-    /// was walked, or by a sitting that was not.
+    /// Counts along `order` as well, for a cursor not yet counting along any walk: one
+    /// resumed from a checkpoint written before the scan was walked, or by a sitting that was
+    /// not.
     ///
-    /// A cursor already counting along a walk keeps it. The walk it has is the
-    /// one its positions were recorded against, and a scan resumed under the
-    /// same manifest asks in that order anyway.
+    /// A cursor already counting along a walk keeps it, since its positions were recorded
+    /// against that walk and a resume under the same manifest asks in that order anyway.
     pub(crate) fn along(mut self, order: Permutation) -> Self {
         if self.walk.is_none() {
             self.walk = Some(Walked::start(order));
@@ -167,10 +137,9 @@ impl Cursor {
 
     /// Records that the target at `position` is settled.
     ///
-    /// Idempotent: settling a position either watermark has passed, or one
-    /// already recorded, changes nothing. A target can be reported twice, by a
-    /// probe retired on its retry budget and then again by a stop path that
-    /// does not know it already had a verdict.
+    /// Idempotent: settling a position already passed or recorded changes nothing. A
+    /// target can be reported twice, by a probe retired on its retry budget and then by a stop
+    /// path that does not know it already had a verdict.
     pub fn settle(&mut self, position: u64) {
         if self.is_settled(position) {
             return;
@@ -182,17 +151,14 @@ impl Cursor {
 
     /// Advances both watermarks over every settled position they can reach.
     ///
-    /// Each can let the other go further: a position the walk passed may be the
-    /// one the plan watermark was waiting on, and the other way about. So the
-    /// two take turns until the walk stops, which is when neither can move: the
-    /// plan's turn before it already saw everything the walk had reached.
+    /// Each can let the other go further: a position the walk passed may be the one the
+    /// plan watermark was waiting on, and vice versa. So they take turns until the walk stops
+    /// moving.
     ///
-    /// Saturating, because the positions come out of a cursor file this process
-    /// may not have written. A planted `u64::MAX` reaches the increment, and an
-    /// unchecked one panics in a debug build and wraps to zero in a release
-    /// one, which silently un-settles every target the scan had finished.
-    /// Saturating wedges the watermark at the ceiling instead, which is wrong
-    /// in the safe direction: a resume re-probes rather than skips.
+    /// Saturating, because positions may come from a cursor file this process did not write.
+    /// A planted `u64::MAX` would otherwise panic in debug or wrap to zero in release, silently
+    /// un-settling every finished target. Saturating wedges the watermark at the ceiling, which
+    /// errs towards re-probing.
     fn catch_up(&mut self) {
         let Self {
             watermark,
@@ -203,13 +169,11 @@ impl Cursor {
         loop {
             loop {
                 if above.remove(watermark) {
-                    // Counted in the set until now, and by the watermark from
-                    // here on.
+                    // Moves from the set to the watermark.
                 } else if let Some(walk) = walk.as_mut()
                     && walk.covers(*watermark)
                 {
-                    // Counted as ahead of the watermark when the walk passed
-                    // it, and by the watermark from here on.
+                    // Counted as ahead when the walk passed it; now counted by the watermark.
                     walk.ahead = walk.ahead.saturating_sub(1);
                 } else {
                     break;
@@ -237,8 +201,7 @@ impl Cursor {
         }
     }
 
-    /// The position below which every target is settled, counted in plan
-    /// order.
+    /// The position below which every target is settled, in plan order.
     ///
     /// A resume starts here, and skips the positions above it that
     /// [`is_settled`](Self::is_settled) names.
@@ -260,22 +223,18 @@ impl Cursor {
 
     /// How many targets are settled in total.
     ///
-    /// Saturating for the same reason the watermark's own advance is: the
-    /// watermark can come from a file this process did not write, and a count
-    /// that wrapped would report a nearly-finished scan as barely started.
+    /// Saturating like the watermark's advance: a count that wrapped would report a
+    /// nearly finished scan as barely started.
     pub fn settled_count(&self) -> u64 {
         self.watermark
             .saturating_add(self.walk.map_or(0, |walk| walk.ahead))
             .saturating_add(self.above.len() as u64)
     }
 
-    /// How many settled positions are waiting on a gap below them in both
-    /// orders.
+    /// How many settled positions are waiting on a gap below them in both orders.
     ///
-    /// The size of the out-of-order window, and so the size of a checkpoint.
-    /// Worth watching: settled in either order the scan counts in, a number
-    /// that grows and does not fall is a target that never settles, which is a
-    /// tarpit or a defect rather than a slow network.
+    /// The size of the out-of-order window, and so of a checkpoint. A number that keeps growing
+    /// means a target that never settles: a tarpit or a defect.
     pub fn pending_count(&self) -> usize {
         self.above.len()
     }
@@ -293,24 +252,22 @@ impl Cursor {
 /// How far along the order a scan asks in everything is settled.
 ///
 /// Every position [`Permutation::new(seed, len)`](Permutation::new) names before
-/// index `reached` is settled. The walk is written down whole, rather than
-/// taken from the manifest's seed, so a checkpoint says on its own which
+/// index `reached` is settled. Written down whole, so a checkpoint says on its own which
 /// positions it accounts for.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Walked {
     /// The key of the order walked.
     pub seed: u64,
-    /// How many positions it rearranges, which is the plan's total.
+    /// How many positions it rearranges: the plan's total.
     pub len: u64,
     /// How many of its positions, in the order it names them, are settled.
     pub reached: u64,
     /// How many of those are at or past the plan watermark.
     ///
-    /// Counted so a total can be read without walking: the rest of what the
-    /// walk reached is below the watermark and already counted there. A count
-    /// and nothing more. What a resume skips is decided by `reached` and never
-    /// by this.
+    /// Lets a total be read without walking; the rest of what the walk reached is below the
+    /// watermark and already counted there. What a resume skips is decided by `reached`
+    /// alone.
     pub ahead: u64,
 }
 
@@ -337,9 +294,9 @@ impl Walked {
             .is_some_and(|index| index < self.reached)
     }
 
-    /// Held to what the numbers can mean, for one read from a file: no more
-    /// reached than the walk holds, and no more ahead than was reached or than
-    /// the plan has past `watermark`.
+    /// Clamped to what the numbers can mean, for values read from a file: no more
+    /// reached than the walk holds, and no more ahead than was reached or than the plan has past
+    /// `watermark`.
     fn clamped(mut self, watermark: u64) -> Self {
         self.reached = self.reached.min(self.len);
         self.ahead = self
@@ -352,29 +309,27 @@ impl Walked {
 
 /// A cursor as it is written down.
 ///
-/// Two watermarks and the positions neither has reached, each named. Settled in
-/// either order the scan counts in, that is a handful of positions however
-/// large the plan; see the module documentation.
+/// Two watermarks and the positions neither has reached. Settled in either order the
+/// scan counts in, that is a handful of positions however large the plan.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checkpoint {
     /// The position below which everything is settled.
     pub watermark: u64,
-    /// Settled positions at or above the watermark that the walk has not
-    /// reached, ascending.
+    /// Settled positions at or above the watermark that the walk has not reached,
+    /// ascending.
     ///
-    /// Ascending is an invariant, not a description: [`is_settled`](Self::is_settled)
-    /// binary-searches it. [`new`](Self::new) establishes it, and [`read`](Self::read)
-    /// re-establishes it on anything that arrived from a file.
+    /// Ascending is an invariant: [`is_settled`](Self::is_settled) binary-searches it.
+    /// [`new`](Self::new) establishes it, and [`read`](Self::read) re-establishes it on anything
+    /// read from a file.
     #[serde(default)]
     pub settled_above: Vec<u64>,
-    /// How far along the order the scan asks in everything is settled, for a
-    /// scan that counted along one.
+    /// How far along the order the scan asks in everything is settled, for a scan that
+    /// counted along one.
     ///
-    /// Absent from a checkpoint written by a scan that was not walked, or by an
-    /// engine that predates the walk. An engine that predates it reads a
-    /// checkpoint carrying one as having settled less than it did, which costs
-    /// probes and skips nothing.
+    /// Absent from a checkpoint of a scan that was not walked, or from an older engine. An
+    /// older engine reads a checkpoint carrying one as having settled less, which costs probes
+    /// and skips nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub walked: Option<Walked>,
 }
@@ -382,11 +337,9 @@ pub struct Checkpoint {
 impl Checkpoint {
     /// A checkpoint over `watermark` and the settled positions above it.
     ///
-    /// The list is sorted and deduplicated here, which is the invariant
-    /// [`is_settled`](Self::is_settled) binary-searches on. The fields are public
-    /// and this is not the only way to build one, but it is the way that cannot be
-    /// built wrong, and a caller keeping journals in something other than a
-    /// directory should come through it.
+    /// Sorts and deduplicates the list, the invariant [`is_settled`](Self::is_settled)
+    /// relies on. The fields are public, but this is the way that cannot build one wrong, and a
+    /// caller storing journals somewhere other than a directory should use it.
     pub fn new(watermark: u64, settled_above: impl IntoIterator<Item = u64>) -> Self {
         let mut settled_above: Vec<u64> = settled_above
             .into_iter()
@@ -404,9 +357,8 @@ impl Checkpoint {
 
     /// Whether the target at `position` may be skipped.
     ///
-    /// Binary-searched, so [`settled_above`](Self::settled_above) has to be
-    /// ascending. Everything in this module that builds one keeps it that way,
-    /// and [`new`](Self::new) is how a caller does.
+    /// Binary-searched, so [`settled_above`](Self::settled_above) must be ascending;
+    /// [`new`](Self::new) guarantees that.
     pub fn is_settled(&self, position: u64) -> bool {
         position < self.watermark
             || self.settled_above.binary_search(&position).is_ok()
@@ -415,10 +367,9 @@ impl Checkpoint {
 
     /// How many targets are settled in total.
     ///
-    /// Read without walking anything: the watermark, what the walk counted
-    /// past it, and the positions neither reached. A position the list names
-    /// that a watermark has passed is counted once, by the watermark, which is
-    /// the reading [`Cursor::from_checkpoint`] gives the same file.
+    /// Read without walking: the watermark, what the walk counted past it, and the
+    /// positions neither reached. A listed position a watermark has passed is counted once, as
+    /// [`Cursor::from_checkpoint`] reads the same file.
     pub fn settled_count(&self) -> u64 {
         let walked = self.walked.map(|walked| walked.clamped(self.watermark));
         let above = self
@@ -435,24 +386,18 @@ impl Checkpoint {
 
     /// The addresses a resumed sweep still has to ask about.
     ///
-    /// The sweep counterpart of [`remaining`](Self::remaining). It gives back a
-    /// set rather than a positioned stream because a
-    /// [`HostScanner`](crate::scanner::strategy::HostScanner) owns its targets and
-    /// is aimed at them, and its positions come from the context. See
+    /// The sweep counterpart of [`remaining`](Self::remaining). Returns a set because a
+    /// [`HostScanner`](crate::scanner::strategy::HostScanner) owns its targets and its positions
+    /// come from the context; see
     /// [`ScanContext::settle_address`](crate::scanner::session::ScanContext::settle_address),
     /// which numbers an address against this same plan.
     ///
-    /// Computed from the ranges, so continuing a sweep of a `/8` costs what
-    /// continuing a sweep of a `/24` does, for a sweep that settled in order.
-    /// Everything below the watermark is one span to drop; above it, the
-    /// positions that settled out of order are taken out individually, which
-    /// for a shuffled sweep is most of what it settled. Anything the plan was
-    /// too large to number comes back whole, since no checkpoint can have
-    /// accounted for it.
+    /// Computed from the ranges: everything below the watermark is one span to drop, and the
+    /// positions settled out of order above it are taken out individually. Anything the plan
+    /// was too large to number comes back whole.
     ///
-    /// `positions` has to number the plan this checkpoint was written against. A
-    /// position is an index into one enumeration, and the manifest's plan
-    /// fingerprint is what refuses a resume before it reaches here.
+    /// `positions` must number the plan this checkpoint was written against; the manifest's
+    /// plan fingerprint refuses a mismatched resume before it gets here.
     pub fn remaining_addresses(&self, positions: &Positions) -> IpSet {
         let mut remaining = IpSet::new();
 
@@ -462,8 +407,8 @@ impl Checkpoint {
             }
         }
 
-        // A range too large to number holds no position, so nothing can ever
-        // have been recorded against it. Every sitting asks about it again.
+        // A range too large to number holds no position, so every sitting asks about it
+        // again.
         for range in positions.unnumbered() {
             remaining.insert_range(*range);
         }
@@ -474,27 +419,20 @@ impl Checkpoint {
 
     /// The addresses a resumed port scan still has a target at.
     ///
-    /// The port-plan counterpart of
-    /// [`remaining_addresses`](Self::remaining_addresses), for the passes beside
-    /// a port scan that ask about hosts rather than ports: the sweep that finds
-    /// which of them are there, and the one that reads their hardware addresses
-    /// and round trips. An address whose every target an earlier sitting settled
-    /// has nothing left to be asked, and sweeping it again puts the network a
-    /// question the job already put, which is what a resume exists not to do.
+    /// The port-plan counterpart of [`remaining_addresses`](Self::remaining_addresses),
+    /// for the host-level passes beside a port scan: the liveness sweep and the one that reads
+    /// hardware addresses and round trips. An address whose every target an earlier sitting
+    /// settled is not swept again.
     ///
-    /// An address with any target outstanding comes back whole. This sitting
-    /// probes it, and whether the host is there is a property of the network on
-    /// the day, so the answer that gates those probes is one the sitting has to
-    /// establish for itself rather than inherit.
+    /// An address with any target outstanding comes back whole: whether the host is up is a
+    /// property of the network on the day, so this sitting establishes it for itself.
     ///
-    /// Read host by host rather than target by target where that is cheaper,
-    /// which for a scan resumed part way is by far: see
-    /// [`left_along`](Self::left_along).
+    /// Read host by host where that is cheaper, which for a partly finished scan it is by far;
+    /// see [`left_along`](Self::left_along).
     ///
-    /// `index` has to number the plan this checkpoint was written against, as
-    /// for [`remaining`](Self::remaining). Every address of a unit the index
-    /// could not number comes back, since no position names a target there and
-    /// so none can have been settled.
+    /// `index` must number the plan this checkpoint was written against, as for
+    /// [`remaining`](Self::remaining). Every address of a unit the index could not number comes
+    /// back, since none of its targets can have been settled.
     pub(crate) fn remaining_hosts(&self, index: &TargetIndex) -> IpSet {
         let mut remaining = IpSet::new();
 
@@ -511,21 +449,18 @@ impl Checkpoint {
         remaining
     }
 
-    /// The stretches of `0..total` this checkpoint leaves unsettled, ascending
-    /// and never empty: the positions of a plan in which each is a host of its
-    /// own, as a sweep's are.
+    /// The stretches of `0..total` this checkpoint leaves unsettled, ascending and
+    /// non-empty, for a plan where each position is its own host, as in a sweep.
     fn unsettled_spans(&self, total: u64) -> Vec<Range<u64>> {
         self.left_in(&Alone(total))
     }
 
-    /// Stretches of `runs`' positions, ascending and never empty, that hold
-    /// every position this checkpoint leaves unsettled and touch only hosts
-    /// with one.
+    /// Stretches of `runs`' positions, ascending and non-empty, holding every position
+    /// this checkpoint leaves unsettled and touching only hosts with one.
     ///
-    /// Everything below the watermark is settled. Above it, a checkpoint
-    /// counted in plan order alone settled only the positions its list names,
-    /// so the stretches are the gaps between those, one more than it names.
-    /// One counted along a walk is read by [`left_along`](Self::left_along).
+    /// Below the watermark everything is settled. Above it, a checkpoint counted in plan order
+    /// alone settled only the listed positions, so the stretches are the gaps between them. One
+    /// counted along a walk is read by [`left_along`](Self::left_along).
     fn left_in(&self, runs: &impl HostRuns) -> Vec<Range<u64>> {
         match self.walked {
             Some(walked) => self.left_along(walked.clamped(self.watermark), runs),
@@ -533,35 +468,28 @@ impl Checkpoint {
         }
     }
 
-    /// The hosts of `runs` a checkpoint counted along `walked` leaves a target
-    /// at, as stretches of their whole runs of positions.
+    /// The hosts of `runs` where a checkpoint counted along `walked` leaves a target,
+    /// as stretches of their whole runs of positions.
     ///
-    /// What the walk has not reached is scattered across the plan, so there are
-    /// two ways to find it, and each is cheap where the other is dear.
+    /// What the walk has not reached is scattered across the plan. There are two ways to find
+    /// it, each cheap where the other is expensive.
     ///
-    /// **Host by host.** Each host past the watermark is asked, one position of
-    /// its run at a time, whether that position is settled, and the first that
-    /// is not answers for the host. A host with `u` of its positions left is
-    /// answered after about `1 / u` of them, so a scan resumed with half its
-    /// plan left costs about two questions a host whatever it asks each host,
-    /// and nothing is held but the answer. What it costs grows as the plan
-    /// empties: a host the walk finished is asked every position it has.
+    /// **Host by host.** Each host past the watermark is asked, one position at a time, whether
+    /// that position is settled, and the first that is not answers for the host. A host with
+    /// `u` positions left is answered after about `1 / u` of them, so with half the plan left it
+    /// costs about two questions a host and holds nothing. The cost grows as the plan empties:
+    /// a finished host is asked every position.
     ///
-    /// **Along the walk's tail.** The positions the walk has yet to reach are
-    /// exactly the ones it names from `reached` on, so reading them and marking
-    /// each one's host costs what is left and a bit a host. That is the cheap
-    /// way late in a scan, and the dear one early: a `/8` on a thousand ports
-    /// resumed half way has eight billion positions in its tail and sixteen
-    /// million hosts.
+    /// **Along the walk's tail.** The positions not yet reached are exactly those the walk names
+    /// from `reached` on, so reading them and marking each one's host costs the tail length and
+    /// a bit a host. Cheap late in a scan and expensive early: a `/8` on a thousand ports
+    /// resumed half way has eight billion tail positions and sixteen million hosts.
     ///
-    /// With `h` hosts and `n` positions past the watermark, and `t` of them in
-    /// the tail, the first costs about `h * min(n / h, n / t)` questions and
-    /// the second `t`, so the tail is the cheaper exactly when `t * t < h * n`.
-    /// The worst either reaches, at the crossing, is `h` times the square root
-    /// of a host's ports. The tail is marked a bit a host, far less than the
-    /// ranges handed back hold once many hosts are left; past
-    /// [`MARKED_AT_MOST`] hosts no bitmap is built and the plan is read host
-    /// by host, which holds nothing.
+    /// With `h` hosts, `n` positions past the watermark and `t` in the tail, the first costs
+    /// about `h * min(n / h, n / t)` and the second `t`, so the tail is cheaper exactly when
+    /// `t * t < h * n`. At the crossing either costs `h` times the square root of a host's
+    /// ports. Past [`MARKED_AT_MOST`] hosts no bitmap is built and the plan is read host by
+    /// host.
     fn left_along(&self, walked: Walked, runs: &impl HostRuns) -> Vec<Range<u64>> {
         let total = runs.total();
         if self.watermark >= total {
@@ -581,9 +509,8 @@ impl Checkpoint {
                 .iter_from(walked.reached)
                 .filter(|position| *position >= self.watermark && *position < total)
                 .filter(|position| !listed(*position));
-            // A plan longer than the walk, which only a damaged file
-            // describes: the walk names nothing past its end, so only the list
-            // can have settled any of it.
+            // A plan longer than the walk, which only a damaged file describes: the walk
+            // names nothing past its end, so only the list can have settled any of it.
             let unwalked = self
                 .gaps_from(walked.len.max(self.watermark), total)
                 .into_iter()
@@ -601,17 +528,16 @@ impl Checkpoint {
         host_by_host(runs, first..runs.hosts(), unsettled)
     }
 
-    /// The unsettled stretches of a checkpoint counted in plan order alone:
-    /// the gaps between the positions the list names.
+    /// The unsettled stretches of a checkpoint counted in plan order alone: the gaps
+    /// between the listed positions.
     fn spans_between(&self, total: u64) -> Vec<Range<u64>> {
         self.gaps_from(self.watermark, total)
     }
 
     /// The gaps between the positions the list names, from `from` to `total`.
     fn gaps_from(&self, from: u64, total: u64) -> Vec<Range<u64>> {
-        // `settled_above` is written ascending, and a checkpoint from disk is
-        // only as ordered as the file said. Sorting a copy is linear in an
-        // already sorted list and makes the walk below right either way.
+        // A checkpoint from disk is only as ordered as the file was. Sorting a copy is
+        // linear on an already sorted list.
         let mut above = self.settled_above.clone();
         above.sort_unstable();
 
@@ -634,21 +560,16 @@ impl Checkpoint {
     /// position in the original plan.
     ///
     /// Takes the plan's enumeration,
-    /// [`TargetMap::iter`](crate::model::target::TargetMap::iter), the same walk
-    /// the first sitting was numbered by, and yields only what
-    /// this checkpoint does not account for.
+    /// [`TargetMap::iter`](crate::model::target::TargetMap::iter), the walk the first sitting
+    /// was numbered by, and yields only what this checkpoint does not account for.
     ///
-    /// The positions are why this yields [`PlannedTarget`] rather than
-    /// [`Target`]. A resumed sitting scans a subset, so numbering it afresh would
-    /// give position 0 to whatever happens to be left and the two sittings'
-    /// cursors would count different things. The original numbering has to
-    /// survive the filtering.
+    /// Yields [`PlannedTarget`] so the original numbering survives the filtering: numbering the
+    /// subset afresh would give position 0 to whatever is left, and the two sittings' cursors
+    /// would count different things.
     ///
-    /// The plan has to be the one this checkpoint was written against. A
-    /// position is an index into a specific enumeration, so a changed port list,
-    /// a changed exclusion policy or a changed privilege level all move what
-    /// position 4,001,927 refers to. Nothing here detects that; the manifest's
-    /// plan fingerprint refuses the resume before it gets this far.
+    /// The plan must be the one this checkpoint was written against. A changed port list,
+    /// exclusion policy or privilege level moves what each position refers to. Nothing here
+    /// detects that; the manifest's plan fingerprint refuses the resume first.
     pub fn remaining<'a, I>(&'a self, targets: I) -> impl Iterator<Item = PlannedTarget> + 'a
     where
         I: IntoIterator<Item = Target> + 'a,
@@ -661,39 +582,33 @@ impl Checkpoint {
     }
 }
 
-/// The most hosts [`Checkpoint::left_along`] marks in a bitmap, a bit each:
-/// 128 MiB, which is every address of a quarter of IPv4.
+/// The most hosts [`Checkpoint::left_along`] marks in a bitmap, a bit each: 128
+/// MiB, every address of a quarter of IPv4.
 ///
-/// A plan with more reads host by host instead, which holds nothing. Only a
-/// plan with an IPv6 range among its units comes near it, and one that wide
-/// is a plan no scan finishes.
+/// A plan with more is read host by host. Only a plan with an IPv6 range comes near it.
 const MARKED_AT_MOST: u64 = 1 << 30;
 
-/// Whether [`Checkpoint::left_along`] reads the walk's tail of `tail`
-/// positions rather than asking `hosts` hosts holding `past` positions one by
-/// one: where the tail is the cheaper, and its bitmap is within
-/// [`MARKED_AT_MOST`].
+/// Whether [`Checkpoint::left_along`] reads the walk's tail of `tail` positions
+/// instead of asking `hosts` hosts holding `past` positions one by one: where the tail is
+/// cheaper and its bitmap is within [`MARKED_AT_MOST`].
 fn reads_the_tail(tail: u64, hosts: u64, past: u64) -> bool {
     let tail = u128::from(tail);
     tail * tail < u128::from(hosts) * u128::from(past) && hosts <= MARKED_AT_MOST
 }
 
-/// A numbering of targets seen host by host: every host's targets hold a
-/// contiguous run of positions, and the runs are ascending.
+/// A numbering of targets seen host by host: each host's targets hold a contiguous
+/// run of positions, and the runs ascend.
 ///
-/// A port plan's are its addresses, each with a run of its ports, since the
-/// port index runs fastest; see [`TargetIndex`]. A sweep's are its addresses,
-/// each a run of one.
+/// In a port plan the hosts are addresses, each with a run of its ports, since the port
+/// index runs fastest; see [`TargetIndex`]. In a sweep each address is a run of one.
 trait HostRuns {
     /// How many positions are numbered.
     fn total(&self) -> u64;
     /// How many hosts hold them.
     fn hosts(&self) -> u64;
-    /// The positions of the host numbered `host`, which is below
-    /// [`hosts`](Self::hosts).
+    /// The positions of host `host`, which is below [`hosts`](Self::hosts).
     fn run(&self, host: u64) -> Range<u64>;
-    /// The host whose run holds `position`, which is below
-    /// [`total`](Self::total).
+    /// The host whose run holds `position`, which is below [`total`](Self::total).
     fn host_of(&self, position: u64) -> u64;
 }
 
@@ -715,8 +630,7 @@ impl HostRuns for TargetIndex {
     }
 }
 
-/// `0..n` with every position a host of its own, as a sweep numbers its
-/// addresses.
+/// `0..n` with every position a host of its own, as a sweep numbers addresses.
 struct Alone(u64);
 
 impl HostRuns for Alone {
@@ -737,11 +651,9 @@ impl HostRuns for Alone {
     }
 }
 
-/// The runs of the hosts in `hosts` with a position `unsettled` answers for,
-/// merged where they meet.
-///
-/// Each host is asked about one position at a time, in plan order, and the
-/// first unsettled one answers for it; see [`Checkpoint::left_along`].
+/// The runs of the hosts in `hosts` with a position `unsettled` answers for, merged
+/// where they meet. Each host is asked one position at a time, in plan order; see
+/// [`Checkpoint::left_along`].
 fn host_by_host(
     runs: &impl HostRuns,
     hosts: Range<u64>,
@@ -757,10 +669,8 @@ fn host_by_host(
     spans
 }
 
-/// The runs of the hosts holding any of `positions`, merged where they meet,
-/// for `hosts` hosts numbered from `first`.
-///
-/// Marked in a bitmap as they arrive, in whatever order, and read back in
+/// The runs of the hosts holding any of `positions`, merged where they meet, for
+/// `hosts` hosts numbered from `first`. Marked in a bitmap in any order and read back in
 /// plan order; see [`Checkpoint::left_along`].
 fn marked(
     runs: &impl HostRuns,
@@ -768,8 +678,8 @@ fn marked(
     hosts: u64,
     positions: impl Iterator<Item = u64>,
 ) -> Vec<Range<u64>> {
-    // Within `MARKED_AT_MOST`, so the words fit in memory and their count in
-    // a `usize`.
+    // Within `MARKED_AT_MOST`, so the words fit in memory and their count in a
+    // `usize`.
     let mut bits = vec![0u64; hosts.div_ceil(64) as usize];
     for position in positions {
         let host = runs.host_of(position) - first;
@@ -806,20 +716,13 @@ mod persistence {
     use crate::journal::format::JournalError;
 
     impl Checkpoint {
-        /// Writes the checkpoint so that a process killed mid-write leaves the
-        /// previous one intact.
+        /// Writes the checkpoint so that a process killed mid-write leaves the previous one
+        /// intact.
         ///
-        /// Writes a sibling temporary file and renames it over the destination,
-        /// which is atomic on every filesystem this engine runs on. No `fsync`:
-        /// the failures this exists for, `^C` and a dropped session and an OOM
-        /// kill, are process deaths, and the page cache outlives the process. A
-        /// flush per checkpoint would buy protection against machine power loss
-        /// alone, at a cost on every scan that survives without it. See
-        /// [`journal`](crate::journal) for what that policy promises.
-        ///
-        /// A torn write is impossible rather than tolerated. The destination only
-        /// changes by rename, so a reader sees the whole of one checkpoint or the
-        /// whole of the one before it.
+        /// Writes a sibling temporary file and renames it over the destination, which is atomic on
+        /// every filesystem this engine runs on, so a reader sees one whole checkpoint or the one
+        /// before. No `fsync`: `^C`, a dropped session and an OOM kill are process deaths, and the
+        /// page cache outlives the process. See [`journal`](crate::journal).
         pub fn write_atomically(&self, path: &Path) -> Result<(), JournalError> {
             let text = serde_json::to_string(self).map_err(JournalError::json)?;
             replace(path, &path.with_extension("tmp"), |mut file| {
@@ -830,10 +733,9 @@ mod persistence {
 
         /// Reads a checkpoint back.
         ///
-        /// The `settled_above` list is sorted on read rather than trusted, since
-        /// [`is_settled`](Checkpoint::is_settled) binary-searches it and an
-        /// unsorted list would answer `false` for a position that is present. That
-        /// re-probes a settled target, which is safe and quietly wrong.
+        /// The `settled_above` list is sorted on read, since
+        /// [`is_settled`](Checkpoint::is_settled) binary-searches it and an unsorted list would
+        /// miss a position that is present and re-probe a settled target.
         pub fn read(path: &Path) -> Result<Self, JournalError> {
             let text = super::super::store::read_bounded(path, "a journal cursor")?;
             let mut checkpoint: Self = serde_json::from_str(&text).map_err(JournalError::json)?;
@@ -865,9 +767,8 @@ mod tests {
         written.parse().expect("a valid address specification")
     }
 
-    /// What a resumed sweep asks about must be exactly what the first sitting
-    /// did not settle. One address too few is a target silently skipped, which
-    /// is the failure this whole module exists to prevent.
+    /// A resumed sweep asks about exactly what the first sitting did not settle. One
+    /// address too few is a target silently skipped.
     #[test]
     fn a_resumed_sweep_asks_about_exactly_what_did_not_settle() {
         let plan = addresses("192.0.2.1-192.0.2.10");
@@ -896,8 +797,7 @@ mod tests {
         );
     }
 
-    /// A sweep that settled nothing comes back whole. A resume that quietly
-    /// narrowed an untouched plan would lose the whole first sitting's ground.
+    /// A sweep that settled nothing comes back whole.
     #[test]
     fn a_sweep_that_settled_nothing_resumes_over_the_whole_plan() {
         let plan = addresses("192.0.2.1-192.0.2.10,2001:db8::1-2001:db8::4");
@@ -906,9 +806,8 @@ mod tests {
         assert_eq!(remaining, plan);
     }
 
-    /// A plan holding a range too large to number comes back whole, however far
-    /// the numbered part of it got. Anything else resumes a sweep of an IPv6
-    /// subnet by asking about nothing and reporting that it finished.
+    /// A range too large to number comes back whole, however far the numbered part got,
+    /// so a resumed IPv6 sweep does not ask about nothing and report that it finished.
     #[test]
     fn a_sweep_of_an_unnumberable_plan_resumes_over_all_of_it() {
         let plan = addresses("192.0.2.0/30,2001:db8::/64");
@@ -929,7 +828,7 @@ mod tests {
         assert_eq!(remaining.v6(), plan.v6());
     }
 
-    /// And a sweep that settled everything has nothing left to ask.
+    /// A sweep that settled everything has nothing left to ask.
     #[test]
     fn a_finished_sweep_resumes_over_nothing() {
         let plan = addresses("192.0.2.1-192.0.2.4");
@@ -942,9 +841,7 @@ mod tests {
         assert!(checkpoint.remaining_addresses(&plan.positions()).is_empty());
     }
 
-    /// The two halves have to agree: whatever a resumed sweep is aimed at, the
-    /// positions it settles are still the original plan's. An address in the
-    /// narrowed set must number the same as it did in the first sitting.
+    /// An address in the narrowed set numbers the same as it did in the first sitting.
     #[test]
     fn a_resumed_sweep_keeps_the_original_numbering() {
         let plan = addresses("192.0.2.1-192.0.2.10");
@@ -965,7 +862,7 @@ mod tests {
         );
     }
 
-    /// A checkpoint read back from a file is only as ordered as the file said.
+    /// A checkpoint read from a file is only as ordered as the file was.
     #[test]
     fn an_unsorted_checkpoint_narrows_the_same_way() {
         let plan = addresses("192.0.2.1-192.0.2.10");
@@ -990,9 +887,8 @@ mod tests {
 
     // ─── Resuming a port scan's host passes ──────────────────────────────────
 
-    /// Several units, both families, and port counts that divide nothing, so
-    /// that an address's ports straddle every kind of boundary a span can end
-    /// on.
+    /// Several units, both families, and port counts that divide nothing, so an
+    /// address's ports straddle every kind of boundary a span can end on.
     fn ports_plan() -> TargetMap {
         let mut map = TargetMap::new();
         for (range, ports) in [
@@ -1009,8 +905,8 @@ mod tests {
         map
     }
 
-    /// The addresses of what [`Checkpoint::remaining`] still yields, which is
-    /// what `remaining_hosts` has to agree with.
+    /// The addresses of what [`Checkpoint::remaining`] still yields, which
+    /// `remaining_hosts` must agree with.
     fn hosts_of_remaining(checkpoint: &Checkpoint, map: &TargetMap) -> IpSet {
         let mut hosts = IpSet::new();
         for planned in checkpoint.remaining(map.iter()) {
@@ -1020,8 +916,8 @@ mod tests {
         hosts
     }
 
-    /// An address with a target left is swept, and one whose every target
-    /// settled is not, whichever way the settling fell across its ports.
+    /// An address with a target left is swept, and one whose every target settled is
+    /// not, however the settling fell across its ports.
     #[test]
     fn a_resumed_port_scan_sweeps_only_the_hosts_with_a_target_left() {
         // Three ports each: 192.0.2.1 is positions 0-2, .2 is 3-5, .3 is 6-8.
@@ -1044,8 +940,8 @@ mod tests {
         );
     }
 
-    /// A walked checkpoint over a numbering of `len` positions that reached
-    /// `reached` of them, with `watermark` and `above` settled in plan order.
+    /// A walked checkpoint over `len` positions that reached `reached` of them, with
+    /// `watermark` and `above` settled in plan order.
     fn walked(seed: u64, len: u64, reached: u64, watermark: u64, above: Vec<u64>) -> Checkpoint {
         Checkpoint {
             walked: Some(Walked {
@@ -1058,13 +954,11 @@ mod tests {
         }
     }
 
-    /// **A scan resumed part way is read host by host, and one nearly done
-    /// along its tail.** The tail of a shuffled walk half way through a `/8`
-    /// on a thousand ports is eight billion positions: minutes to read and
-    /// gigabytes to hold before the resumed sitting sends anything. Asked host
-    /// by host it is about two questions for each of sixteen million. Near the end the tail is the short read and the hosts, most of
-    /// them finished, the long one. A sweep, whose hosts are its positions,
-    /// reads whichever part is left.
+    /// A scan resumed part way is read host by host, and one nearly done along its tail.
+    /// Half way through a `/8` on a thousand ports the tail is eight billion positions, while
+    /// host by host it is about two questions for each of sixteen million hosts. Near the end
+    /// the tail is the short read. A sweep, whose hosts are its positions, reads whichever part
+    /// is left.
     #[test]
     fn a_resume_reads_whichever_of_the_hosts_and_the_tail_is_shorter() {
         let hosts: u64 = 1 << 24;
@@ -1085,9 +979,8 @@ mod tests {
         );
     }
 
-    /// Half way through a `/16` on 1,024 ports, every host still has a target
-    /// left, and the answer comes back without the tail's 33 million
-    /// positions being read or held.
+    /// Half way through a `/16` on 1,024 ports every host still has a target left, and
+    /// the answer comes back without reading the tail's 33 million positions.
     #[test]
     fn a_wide_port_scan_resumed_half_way_sweeps_every_host() {
         let map = plan("198.51.0.0/16", "1-1024");
@@ -1099,9 +992,7 @@ mod tests {
         assert_eq!(remaining, addresses("198.51.0.0/16"));
     }
 
-    /// A port scan whose first sitting settled everything has no host left to
-    /// sweep, so a resumed sitting puts nothing on the wire beside its (empty)
-    /// port scan.
+    /// A port scan whose first sitting settled everything has no host left to sweep.
     #[test]
     fn a_finished_port_scan_resumes_with_no_host_to_sweep() {
         let map = ports_plan();
@@ -1111,8 +1002,8 @@ mod tests {
         assert!(finished.remaining_hosts(&index).is_empty());
     }
 
-    /// A unit the numbering cannot reach is swept whole however far the rest
-    /// got, since nothing about it can have been settled.
+    /// A unit the numbering cannot reach is swept whole, since none of it can have been
+    /// settled.
     #[test]
     fn a_port_scan_of_an_unnumberable_plan_sweeps_all_of_that_part() {
         let mut map = plan("192.0.2.1", "22");
@@ -1128,11 +1019,9 @@ mod tests {
     }
 
     proptest::proptest! {
-        /// Whatever a walk had reached, the hosts a resumed sitting sweeps are
-        /// exactly the addresses of the targets it still probes, read along
-        /// the tail late in the walk and host by host early in it. A walk
-        /// shorter than the plan, which only a damaged file describes, leaves
-        /// the rest to the list.
+        /// Whatever a walk reached, the hosts a resumed sitting sweeps are exactly the
+        /// addresses of the targets it still probes, along the tail late in the walk and host by
+        /// host early. A walk shorter than the plan (a damaged file) leaves the rest to the list.
         #[test]
         fn the_hosts_swept_after_a_walk_are_the_addresses_of_what_is_left(
             seed in proptest::prelude::any::<u64>(),
@@ -1152,13 +1041,9 @@ mod tests {
             );
         }
 
-        /// Whatever an earlier sitting settled, the hosts a resumed sitting
-        /// sweeps are exactly the addresses of the targets it still probes.
-        ///
-        /// One fewer is a host whose ports are probed without the answer that
-        /// gates them; one more is a question the job already put. Positions
-        /// past the plan are included, as a checkpoint read from a file can
-        /// hold them.
+        /// Whatever an earlier sitting settled, the hosts a resumed sitting sweeps are
+        /// exactly the addresses of the targets it still probes. Positions past the plan are
+        /// included, as a checkpoint read from a file can hold them.
         #[test]
         fn the_hosts_swept_are_the_addresses_of_what_is_left(
             watermark in 0u64..70,
@@ -1188,8 +1073,7 @@ mod tests {
         map
     }
 
-    /// Settling in order is the ordinary case: the watermark simply follows and
-    /// nothing is ever held.
+    /// Settling in order: the watermark follows and nothing is held.
     #[test]
     fn settling_in_order_leaves_nothing_pending() {
         let mut cursor = Cursor::new();
@@ -1201,11 +1085,8 @@ mod tests {
         }
     }
 
-    /// The property the whole design rests on: one unsettled position stalls the
-    /// watermark however much settles above it.
-    ///
-    /// If this ever passes with a higher watermark, a resumed scan skips a
-    /// target nobody probed.
+    /// One unsettled position stalls the watermark however much settles above it.
+    /// Otherwise a resumed scan would skip a target nobody probed.
     #[test]
     fn one_unsettled_position_stalls_the_watermark() {
         let mut cursor = Cursor::new();
@@ -1221,17 +1102,15 @@ mod tests {
         assert!(!cursor.is_settled(2));
         assert_eq!(cursor.settled_count(), 999);
 
-        // And it collapses the moment the gap fills.
+        // It collapses when the gap fills.
         cursor.settle(2);
         assert_eq!(cursor.watermark(), 1_000);
         assert_eq!(cursor.pending_count(), 0);
     }
 
-    /// **Counted along the walk, a shuffled scan holds what is in flight.**
-    /// Counted in plan order alone, the same answers wait above a watermark
-    /// that barely moves, and the set is most of what has settled. Both halves
-    /// are asserted, since the second is the cost the walk exists to remove and
-    /// the first is what says the order is the reason.
+    /// Counted along the walk, a shuffled scan holds only what is in flight; counted in
+    /// plan order alone, the set is most of what has settled. Both halves are asserted, so the
+    /// order is shown to be the reason.
     #[test]
     fn a_shuffled_walk_holds_only_what_is_in_flight_when_counted_along_it() {
         const PLAN: u64 = 4_096;
@@ -1264,8 +1143,7 @@ mod tests {
         }
     }
 
-    /// A cursor counting along a walk still follows a phase that settles in
-    /// plan order, since the plan watermark is still there to chase it.
+    /// A cursor counting along a walk still follows a phase that settles in plan order.
     #[test]
     fn a_walked_cursor_settled_in_plan_order_holds_nothing_either() {
         let mut cursor = Cursor::walking(Permutation::new(7, 1_000));
@@ -1278,13 +1156,9 @@ mod tests {
     }
 
     proptest::proptest! {
-        /// Whatever order positions settle in, the two watermarks and the set
-        /// between them name exactly what settled, count it once, and say the
-        /// same after a round trip through a checkpoint.
-        ///
-        /// A position named that did not settle is a target a resume skips
-        /// without asking, and one settled that is not named is asked twice.
-        /// The first is the failure the whole module exists to prevent.
+        /// Whatever order positions settle in, the two watermarks and the set between them
+        /// name exactly what settled, count it once, and say the same after a round trip through a
+        /// checkpoint. A position named that did not settle is a target a resume skips unasked.
         #[test]
         fn two_watermarks_name_exactly_what_settled(
             seed in proptest::prelude::any::<u64>(),
@@ -1294,8 +1168,8 @@ mod tests {
         ) {
             let order = Permutation::new(seed, len);
             let mut cursor = Cursor::walking(order);
-            // Some of the walk in its own order, then the rest in any order,
-            // as a phase mixing a dispatcher and a sweep would.
+            // Some of the walk in its own order, then the rest in any order, as a phase mixing
+            // a dispatcher and a sweep would.
             let mut expected = BTreeSet::new();
             for position in order.iter().take(walked_first) {
                 cursor.settle(position);
@@ -1318,7 +1192,7 @@ mod tests {
             proptest::prop_assert_eq!(checkpoint.settled_count(), expected.len() as u64);
             proptest::prop_assert_eq!(restored.settled_count(), expected.len() as u64);
 
-            // And a resume asks about exactly the rest.
+            // A resume asks about exactly the rest.
             let total = len + 10;
             let spans: Vec<u64> = checkpoint
                 .unsettled_spans(total)
@@ -1330,8 +1204,8 @@ mod tests {
         }
     }
 
-    /// A walk attached to a cursor resumed from a checkpoint that had none
-    /// takes in what that checkpoint already settled, and loses none of it.
+    /// A walk attached to a cursor resumed from a walkless checkpoint keeps everything
+    /// that checkpoint settled.
     #[test]
     fn a_walk_joins_a_cursor_resumed_without_one() {
         let order = Permutation::new(11, 64);
@@ -1345,12 +1219,8 @@ mod tests {
         assert!(earlier.iter().all(|position| cursor.is_settled(*position)));
     }
 
-    /// An engine that predates the walk reads a checkpoint carrying one as
-    /// having settled less than it did, never more.
-    ///
-    /// Reading more would have it skip targets nobody asked about. Reading less
-    /// costs it probes, which is why a newer checkpoint needs no new format
-    /// version to be safe in an older reader.
+    /// An engine that predates the walk reads a checkpoint carrying one as having
+    /// settled less than it did, never more.
     #[cfg(feature = "journal-format")]
     #[test]
     fn an_older_reader_takes_a_walked_checkpoint_for_less_than_it_settled() {
@@ -1381,9 +1251,8 @@ mod tests {
         }
     }
 
-    /// Out-of-order settling is the normal case, since a seeded scan walks a
-    /// permutation of the whole plan, so the watermark has to be correct
-    /// whatever order positions arrive in.
+    /// A seeded scan settles out of order, so the watermark is correct whatever order
+    /// positions arrive in.
     #[test]
     fn the_watermark_is_independent_of_arrival_order() {
         let forwards = {
@@ -1420,8 +1289,7 @@ mod tests {
         assert_eq!(forwards, scattered);
     }
 
-    /// A target may be reported twice. Neither report may move the watermark
-    /// twice, or the cursor claims a position it never heard about.
+    /// A target reported twice does not move the watermark twice.
     #[test]
     fn settling_the_same_position_twice_is_idempotent() {
         let mut cursor = Cursor::new();
@@ -1453,8 +1321,8 @@ mod tests {
         assert!(!restored.is_settled(3));
     }
 
-    /// The payoff: a resumed scan asks about exactly what the first sitting did
-    /// not settle, in the plan's own order.
+    /// A resumed scan asks about exactly what the first sitting did not settle, in the
+    /// plan's own order.
     #[test]
     fn remaining_yields_only_what_was_not_settled() {
         let map = plan("192.0.2.1-192.0.2.4", "80,443");
@@ -1468,8 +1336,7 @@ mod tests {
 
         let remaining: Vec<PlannedTarget> = cursor.checkpoint().remaining(map.iter()).collect();
 
-        // The targets that were left, still carrying their positions in the
-        // whole plan rather than in the remainder.
+        // The remaining targets still carry their positions in the whole plan.
         assert_eq!(
             remaining,
             vec![
@@ -1481,9 +1348,8 @@ mod tests {
         );
     }
 
-    /// A checkpoint that settled nothing must re-ask the whole plan, and one
-    /// that settled everything must ask nothing. The two ends of the range,
-    /// where an off-by-one would hide.
+    /// A checkpoint that settled nothing re-asks the whole plan, and one that settled
+    /// everything asks nothing.
     #[test]
     fn the_empty_and_complete_cases_are_both_exact() {
         let map = plan("192.0.2.1-192.0.2.4", "80,443");
@@ -1500,10 +1366,9 @@ mod tests {
         assert_eq!(finished.watermark(), total as u64);
     }
 
-    /// The cursor numbers targets by the same walk the dispatcher probes them by.
-    /// Asserted rather than assumed: the two live in different modules, and a
-    /// divergence would resume a scan against positions that mean something else,
-    /// which looks like a working resume that skips the wrong targets.
+    /// The cursor numbers targets by the same walk the dispatcher probes them by. The
+    /// two live in different modules, and a divergence would resume a scan that skips the wrong
+    /// targets.
     #[test]
     fn positions_follow_the_plans_own_enumeration() {
         let mut map = plan("192.0.2.1-192.0.2.2", "80,443");
@@ -1524,8 +1389,8 @@ mod tests {
         );
     }
 
-    /// The checkpoint reaches disk whole, comes back identical, and replacing it
-    /// leaves one file rather than a temporary beside it.
+    /// The checkpoint reaches disk whole, comes back identical, and replacing it leaves
+    /// no temporary file.
     #[cfg(feature = "journal-format")]
     #[test]
     fn a_checkpoint_round_trips_through_a_file() {
@@ -1562,9 +1427,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// `is_settled` binary-searches, so a list that arrived unsorted would answer
-    /// `false` for a position that is present. That re-probes, which is safe and
-    /// silently wrong, so the reader sorts rather than trusting the file.
+    /// `is_settled` binary-searches, so the reader sorts a list that arrived unsorted.
     #[cfg(feature = "journal-format")]
     #[test]
     fn a_checkpoint_with_an_unsorted_list_is_sorted_on_read() {
@@ -1593,8 +1456,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A checkpoint naming positions below its own watermark is redundant rather
-    /// than wrong, and must normalise instead of double-counting.
+    /// A checkpoint naming positions below its own watermark normalises without
+    /// double-counting.
     #[test]
     fn a_checkpoint_with_redundant_positions_normalises() {
         let checkpoint = Checkpoint {

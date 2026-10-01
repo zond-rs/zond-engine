@@ -8,55 +8,43 @@
 
 //! # Telling a running scan from a crashed one
 //!
-//! A journal that is being written to must not be resumed, and a journal whose
-//! writer died must not stay locked forever. Both mistakes are easy and neither
-//! announces itself: resuming a live scan corrupts both sittings' cursors, and a
-//! lock nobody can clear turns a crash into a scan that can never be continued.
+//! A journal that is being written to must not be resumed, and a journal whose writer
+//! died must not stay locked forever. Resuming a live scan corrupts both sittings' cursors;
+//! a lock nobody can clear makes a crashed scan impossible to continue.
 //!
-//! ## Three facts, because no two of them are enough
+//! ## Three facts
 //!
-//! The lock file records a process id, a boot identity, and a heartbeat. Each
-//! covers a case the others cannot:
+//! The lock file records a process id, a boot identity and a heartbeat, because each alone
+//! is wrong in some case:
 //!
-//! - **The pid alone lies after a reboot.** Process ids restart from a low
-//!   number, so the pid in a lock written before a crash-and-reboot often belongs
-//!   to something live and unrelated, such as `launchd` or a shell. Reading it as
-//!   still running would leave every journal from before a reboot permanently
-//!   locked.
-//! - **The boot identity alone lies within one boot.** A pid freed by a crash
-//!   can be reissued to an unrelated process minutes later.
-//! - **The heartbeat alone lies about a slow scan.** A scan legitimately doing
-//!   nothing for a while, under a long silence tolerance or against a stalled
-//!   tarpit, is not a dead one, so staleness on its own is not evidence of death.
+//! - **The pid alone is wrong after a reboot.** Process ids restart from a low number, so
+//!   the pid in a lock written before a crash-and-reboot often belongs to something live
+//!   and unrelated, such as `launchd` or a shell.
+//! - **The boot identity alone is wrong within one boot.** A pid freed by a crash can be
+//!   reissued to an unrelated process minutes later.
+//! - **The heartbeat alone is wrong about a slow scan.** A scan may legitimately do
+//!   nothing for a while, under a long silence tolerance or against a tarpit.
 //!
-//! Together they decide. The boot identity rules out everything before the last
-//! boot; within one boot the pid says whether something holds that number, and
-//! the heartbeat says whether it is still this scan.
+//! The boot identity rules out everything before the last boot; within one boot the pid
+//! says whether something holds that number, and the heartbeat says whether it is still
+//! this scan.
 //!
 //! ## The policy is a pure function
 //!
-//! [`classify`] takes the record, the current boot identity, whether the pid is
-//! alive and what the time is, and returns a [`LockState`]. It calls nothing. The
-//! interesting cases are a reboot, a reused pid and a hung writer, and a test
-//! that had to arrange those for real could not run in CI. The syscalls live in
-//! [`inspect`], a thin wrapper over the same function.
+//! [`classify`] takes the record, the current boot identity, whether the pid is alive and
+//! the time, and returns a [`LockState`], so a reboot, a reused pid and a hung writer can be
+//! tested in CI. The syscalls live in [`inspect`], a thin wrapper over it.
 //!
-//! ## What is refused and what is not
+//! ## What is refused
 //!
-//! A scan that is or might be running is refused, and a scan that certainly is
-//! not may be resumed. The ambiguous case, where the pid is alive but has stopped
-//! touching the lock, is refused rather than assumed: it is indistinguishable
-//! from a hung writer that will wake up, and two writers on one journal is the
-//! failure this file exists to prevent.
+//! A scan that is or might be running is refused; one that certainly is not may be
+//! resumed. A live pid that has stopped touching the lock is refused, since it may be a hung
+//! writer that will wake up, and two writers on one journal is what this module prevents.
 //!
-//! Every refusal is overridable. A stale lock left by a defect this engine has
-//! not thought of would otherwise make a journal unusable forever.
-//!
-//! The ambiguous case has an override of its own, [`Lock::take_over`], because
-//! it is a judgement a user can make and this engine cannot: whether the
-//! process holding the number is the scan. [`Lock::force`] overrides a writer
-//! that is checkpointing now as well, which no user who can see the journal
-//! beating has a reason to ask for.
+//! Every refusal is overridable, so a stale lock left by an unforeseen defect cannot make a
+//! journal unusable forever. [`Lock::take_over`] overrides only that ambiguous case, where
+//! the user can judge whether the process holding the number is the scan.
+//! [`Lock::force`] also overrides a writer that is checkpointing now.
 
 use std::time::{Duration, SystemTime};
 
@@ -65,10 +53,9 @@ use serde::{Deserialize, Serialize};
 /// How long a heartbeat may go untouched before the writer holding a lock is
 /// treated as no longer obviously alive.
 ///
-/// Generous against the checkpoint interval. A scan writes one every few seconds,
-/// so a minute of silence is many missed beats rather than one late one. Being
-/// wrong in this direction costs a refusal a user can override; the other
-/// direction costs two writers on one journal.
+/// A scan checkpoints every few seconds, so a minute of silence is many missed beats.
+/// Erring long costs an overridable refusal; erring short costs two writers on one
+/// journal.
 pub const HEARTBEAT_STALE_AFTER: Duration = Duration::from_secs(60);
 
 /// What a lock file says about the process that wrote it.
@@ -79,8 +66,7 @@ pub struct LockRecord {
     pub pid: u32,
     /// Which boot that pid belongs to. A pid is only meaningful within one.
     pub boot: String,
-    /// When the scan started, so a caller listing journals can say how old
-    /// each one is.
+    /// When the scan started, so a listing can say how old each journal is.
     pub started_at: SystemTime,
     /// Last touched by the writer, once per checkpoint.
     pub heartbeat: SystemTime,
@@ -122,25 +108,23 @@ pub enum LockState {
         last_beat: Duration,
     },
 
-    /// The pid is gone and the writer died without releasing. Resume, and say
-    /// that the last checkpoint interval may be missing.
+    /// The pid is gone and the writer died without releasing. Resume, noting that the
+    /// last checkpoint interval may be missing.
     Crashed {
         /// The process that held it, for the note.
         pid: u32,
     },
 
-    /// The machine rebooted while this journal was locked, so whatever pid the
-    /// file names is not the writer whatever it is doing now. Resume, and warn
-    /// that a reboot loses more than a crash does: anything the page cache
-    /// had not flushed went with it.
+    /// The machine rebooted while this journal was locked, so the pid in the file is not
+    /// the writer. Resume, and warn that a reboot loses more than a crash: anything the page
+    /// cache had not flushed is gone.
     RebootedUnder {
         /// The process that held it, before the reboot.
         pid: u32,
     },
 
-    /// Something holds that pid and it has stopped touching the lock. Either the
-    /// writer is hung or it died and the number was reissued, and nothing here
-    /// can tell those apart. Refused, overridably.
+    /// Something holds that pid and it has stopped touching the lock: either the writer
+    /// is hung or it died and the number was reissued. Refused, overridably.
     Stale {
         /// The process that number now belongs to, whoever that is.
         pid: u32,
@@ -160,15 +144,14 @@ impl LockState {
 
     /// Whether resuming loses more than one checkpoint interval.
     ///
-    /// True only after a reboot: every other stop this engine survives is a
-    /// process death, and the page cache outlives a process. See
-    /// [`journal`](crate::journal) for the whole survival table.
+    /// True only after a reboot: every other stop is a process death, and the page cache
+    /// outlives a process. See [`journal`](crate::journal) for the survival table.
     pub fn may_have_lost_the_tail(&self) -> bool {
         matches!(self, LockState::RebootedUnder { .. })
     }
 
-    /// Why a resume was refused, phrased for a user who has to decide what to do
-    /// about it. `None` where nothing was refused.
+    /// Why a resume was refused, phrased for a user deciding what to do about it. `None`
+    /// where nothing was refused.
     pub fn refusal(&self) -> Option<String> {
         match self {
             LockState::Free | LockState::Crashed { .. } | LockState::RebootedUnder { .. } => None,
@@ -187,16 +170,11 @@ impl LockState {
     }
 }
 
-/// Decides what a lock record means, given everything that has to be observed to
-/// judge it.
+/// Decides what a lock record means, given everything observed about it. Pure.
 ///
-/// Pure. See the module documentation for why the policy is separated from the
-/// syscalls that feed it.
-///
-/// The order of the checks is the argument. The boot identity is read first: a
-/// pid from a previous boot says nothing at all, and asking whether it is alive
-/// before ruling that out is how a reboot leaves every journal locked
-/// behind an unrelated process.
+/// The boot identity is checked first: a pid from a previous boot says nothing, and asking
+/// whether it is alive first would leave every journal locked behind an unrelated process
+/// after a reboot.
 pub fn classify(
     record: &LockRecord,
     boot: &str,
@@ -212,10 +190,8 @@ pub fn classify(
         return LockState::Crashed { pid: record.pid };
     }
 
-    // A clock that went backwards between the write and this read yields no
-    // elapsed time. Treated as a fresh beat rather than an ancient one, since
-    // the safe reading of an unknowable age is that the writer is
-    // alive.
+    // A clock that went backwards yields no elapsed time, read as a fresh beat: the safe
+    // reading of an unknowable age is that the writer is alive.
     let last_beat = now.duration_since(record.heartbeat).unwrap_or_default();
 
     if last_beat > stale_after {
@@ -231,22 +207,19 @@ pub fn classify(
     }
 }
 
-/// Something that changes every boot, so a pid from before one can be
-/// disregarded.
+/// A value that changes every boot, so a pid from before one can be disregarded.
 ///
-/// Linux has a value for this. macOS and the BSDs have the boot time, which
-/// serves the same purpose, being constant for a boot and different across them.
-/// Where neither can be read the identity is empty, which compares unequal to any
-/// recorded one and so degrades to assuming a reboot, the conservative
-/// direction, since it releases a lock rather than holding one.
+/// Linux has a boot id; macOS and the BSDs use the boot time. Where neither can be read the
+/// identity is empty, which differs from any recorded one and so reads as a reboot,
+/// releasing the lock.
 pub fn boot_identity() -> String {
     imp::boot_identity()
 }
 
 /// Whether any process currently holds `pid`.
 ///
-/// Says nothing about which process. Within one boot that is enough, since
-/// the heartbeat is what distinguishes this scan from a reused number.
+/// Says nothing about which process. Within one boot the heartbeat distinguishes this
+/// scan from a reused number.
 pub fn pid_is_alive(pid: u32) -> bool {
     imp::pid_is_alive(pid)
 }
@@ -254,14 +227,12 @@ pub fn pid_is_alive(pid: u32) -> bool {
 #[cfg(unix)]
 mod imp {
     pub fn boot_identity() -> String {
-        // Linux: a UUID minted per boot, which is precisely the question.
+        // Linux: a UUID minted per boot.
         if let Ok(id) = std::fs::read_to_string("/proc/sys/kernel/random/boot_id") {
             return id.trim().to_string();
         }
 
-        // macOS and the BSDs: the boot instant, through the sysctl `uptime`
-        // reads. Constant within a boot and different across boots, which is all
-        // this has to be.
+        // macOS and the BSDs: the boot instant from `KERN_BOOTTIME`.
         #[cfg(any(target_os = "macos", target_os = "ios", target_vendor = "apple"))]
         {
             let mut boot = libc::timeval {
@@ -294,13 +265,9 @@ mod imp {
     }
 
     pub fn pid_is_alive(pid: u32) -> bool {
-        // A number that is not a process id names no process and must not reach
-        // `kill` as one. `pid_t` is signed and `kill` reads a negative argument
-        // as a process group: `u32::MAX` casts to `-1`, which asks about every
-        // process the caller may signal and is answered yes by any machine
-        // running anything. A lock naming it then reads as one somebody is
-        // holding, and the journal is refused for as long as the
-        // number sits in the file.
+        // `pid_t` is signed and `kill` reads a negative argument as a process group:
+        // `u32::MAX` casts to `-1`, which asks about every process the caller may signal and is
+        // always answered yes. A lock naming it would then be refused forever.
         let Ok(pid) = libc::pid_t::try_from(pid) else {
             return false;
         };
@@ -315,43 +282,34 @@ mod imp {
             return true;
         }
 
-        // `EPERM` means the process exists and belongs to somebody else, which
-        // is the ordinary case for a scan started under `sudo` and inspected
-        // without it, so reading it as dead would let a user resume a journal
-        // their own root process is writing.
+        // `EPERM` means the process exists and belongs to somebody else, the ordinary case
+        // for a scan started under `sudo` and inspected without it.
         std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
 }
 
 #[cfg(windows)]
 mod imp {
-    /// Empty, deliberately: the process id alone decides on Windows.
+    /// Empty on Windows, so the process id alone decides.
     ///
-    /// What the boot identity must be is constant within a boot and different
-    /// across one. `GetTickCount64` subtracted from the wall clock looks
-    /// constant within a boot, and it is not: the two are read at different
-    /// instants, the tick counter has a resolution of about fifteen
-    /// milliseconds, and it does not advance across some suspend states. A value
-    /// that moves within one boot reads every lock as `RebootedUnder`, and
-    /// `RebootedUnder` is resumable.
+    /// Wall clock minus `GetTickCount64` is not constant within a boot: the two are read at
+    /// different instants, the tick counter has about 15 ms resolution, and it stops across
+    /// some suspend states. A value that moved within a boot would read every lock as
+    /// `RebootedUnder`, which is resumable.
     ///
-    /// [`classify`](super::classify) reads the boot identity first, and two
-    /// empty identities compare equal, so [`pid_is_alive`] decides every lock.
-    /// What that costs is a lock left by a crash before a reboot, whose number
-    /// a different process has taken since: it reads as held and the journal is
-    /// refused, which is the direction a wrong answer has to fall.
+    /// Two empty identities compare equal, so [`pid_is_alive`] decides every lock. The cost is
+    /// that a lock left by a crash before a reboot, whose number another process has taken
+    /// since, reads as held and is refused.
     pub fn boot_identity() -> String {
         String::new()
     }
 
     /// Whether a process with this id is running, as the unix arm asks it.
     ///
-    /// Access denied means the process exists and belongs to somebody else,
-    /// which is the ordinary case for an elevated scan inspected from an
-    /// ordinary shell, so it reads as alive as `EPERM` does on unix. A query
-    /// that fails after the process was opened says nothing either way and
-    /// reads as alive too: a resume refused is a scan asked to wait, where a
-    /// resume allowed underneath a writer corrupts its journal.
+    /// Access denied means the process exists and belongs to somebody else, as `EPERM`
+    /// does on unix, so it reads as alive. A query that fails after the process was opened also
+    /// reads as alive: a refused resume only waits, while a resume under a live writer
+    /// corrupts its journal.
     pub fn pid_is_alive(pid: u32) -> bool {
         use windows_sys::Win32::Foundation::{
             CloseHandle, ERROR_ACCESS_DENIED, GetLastError, STILL_ACTIVE,
@@ -369,8 +327,7 @@ mod imp {
         // on failure, which is checked before any use.
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if handle.is_null() {
-            // SAFETY: reads the calling thread's last-error value and nothing
-            // else.
+            // SAFETY: reads the calling thread's last-error value.
             return unsafe { GetLastError() } == ERROR_ACCESS_DENIED;
         }
 
@@ -398,12 +355,10 @@ mod persistence {
 
     /// Reads a lock file and says what it means.
     ///
-    /// A missing file is [`LockState::Free`], and so is a file that cannot be
-    /// parsed, or a link at the name, which is read as no lock rather than
-    /// followed: nothing that takes a lock leaves one there. A truncated or corrupt lock is one a crashed writer left
-    /// mid-write, and treating it as a permanent refusal would make a crash
-    /// unrecoverable. The journal is protected by the heartbeat of whoever holds
-    /// it next, not by a file nobody can read.
+    /// A missing file is [`LockState::Free`], and so is a file that cannot be parsed or a
+    /// link at the name, which is not followed: nothing that takes a lock leaves one there. A
+    /// truncated or corrupt lock was left by a writer that crashed mid-write, and refusing it
+    /// would make the crash unrecoverable. The next holder's heartbeat protects the journal.
     pub fn inspect(path: &Path) -> LockState {
         let text = open_to_read(path).and_then(|mut file| {
             let mut text = String::new();
@@ -431,60 +386,49 @@ mod persistence {
     pub struct Lock {
         path: PathBuf,
         record: LockRecord,
-        /// Set by [`Lock::release`] so the `Drop` path does not try again.
-        ///
-        /// A flag rather than `mem::forget`, which would suppress the drop by
-        /// leaking the path and the record with it. One leak per scan is small
-        /// enough to be tempting and still the wrong thing to write down.
+        /// Set by [`Lock::release`] so the `Drop` path does not try again. A flag, since
+        /// `mem::forget` would leak the path and the record.
         released: bool,
     }
 
     impl Lock {
         /// Takes the lock, or explains why it could not be taken.
         ///
-        /// Creating the file is the exclusion: `create_new` fails if anything is
-        /// there, so two processes racing for one journal cannot both succeed
-        /// however close together they arrive. The state is inspected only after
-        /// that fails, to decide whether the existing lock is one that may be
-        /// broken.
+        /// Creating the file is the exclusion: it fails if anything is there, so two
+        /// processes racing for one journal cannot both succeed. The existing lock is inspected
+        /// only after that fails, to decide whether it may be broken.
         pub fn acquire(path: &Path) -> Result<Self, LockRefused> {
             Self::acquire_inner(path, Breaks::Dead)
         }
 
-        /// [`acquire`](Self::acquire), breaking a
-        /// [`Stale`](LockState::Stale) lock as well as a dead one.
+        /// [`acquire`](Self::acquire), breaking a [`Stale`](LockState::Stale) lock as well
+        /// as a dead one.
         ///
-        /// For a caller who has judged what this engine cannot: that the
-        /// process holding the number in a lock that stopped beating is not
-        /// the scan, usually because the number was reissued after a crash.
-        /// A lock whose writer is checkpointing now is still refused, since
-        /// that is no judgement at all.
+        /// For a caller who has judged that the process holding the number in a lock that stopped
+        /// beating is not the scan, usually because the number was reissued after a crash. A lock
+        /// whose writer is checkpointing now is still refused.
         pub fn take_over(path: &Path) -> Result<Self, LockRefused> {
             Self::acquire_inner(path, Breaks::Stale)
         }
 
-        /// [`acquire`](Self::acquire), overriding a refusal.
+        /// [`acquire`](Self::acquire), overriding any refusal.
         ///
-        /// For the case the module documentation names: a lock left by a defect
-        /// nothing here anticipated, which would otherwise make the journal
-        /// unusable forever.
+        /// For a lock left by a defect nothing here anticipated, which would otherwise make the
+        /// journal unusable forever.
         pub fn force(path: &Path) -> Result<Self, LockRefused> {
             Self::acquire_inner(path, Breaks::Anything)
         }
 
         /// How many times a break is retried before giving up.
         ///
-        /// A retry happens only when somebody else won the create between this
-        /// process removing a dead lock and replacing it, which resolves in one
-        /// round: the winner's lock is live, so the next inspection refuses. More
-        /// than a couple of rounds means two processes are breaking each other's
-        /// locks in a loop, and refusing is better than joining in.
+        /// A retry happens only when another process won the create between this one removing a
+        /// dead lock and replacing it; the winner's lock is live, so the next round refuses. More
+        /// rounds than that means two processes are breaking each other's locks in a loop.
         const BREAK_ATTEMPTS: usize = 3;
 
         fn acquire_inner(path: &Path, breaks: Breaks) -> Result<Self, LockRefused> {
-            // Built only once the create has succeeded, never before: `Lock`
-            // removes its file on drop, so an attempt that lost the create and
-            // then dropped one would delete the winner's lock on its way out.
+            // Built only after the create succeeds: `Lock` removes its file on drop, so one
+            // dropped after losing the create would delete the winner's lock.
             let held = |record| Self {
                 path: path.to_path_buf(),
                 record,
@@ -502,29 +446,19 @@ mod persistence {
                     Err(_) => {}
                 }
 
-                // **Deciding a lock is dead and replacing it is one operation.**
+                // Deciding a lock is dead and replacing it must be one operation. `create_new`
+                // only excludes racers for a free journal. Replacing a dead lock by rename
+                // bypasses the create, and removing it first lets every racer remove whatever is
+                // at the name, including the lock the last winner just created: eight processes
+                // on one crashed journal yielded two to four holders.
                 //
-                // The exclusion this file rests on is `create_new`: two processes
-                // racing for a *free* journal cannot both succeed. Breaking one
-                // needs the opposite and does not get it for free. Replacing a
-                // dead lock by rename steps outside the create entirely, and
-                // removing it first is no better on its own: every racer removes
-                // whatever is at the name, including the lock the last winner
-                // created a microsecond ago. Measured with eight processes put on
-                // one crashed journal, that yields two to four holders, each
-                // having deleted the previous winner's brand-new lock.
-                //
-                // So the inspect, the removal and the create are held together
-                // under an advisory lock on a sibling file, released the moment
-                // they are done and never held for the life of the journal. The
-                // kernel drops it when the process holding it exits, so unlike
-                // the lock file it cannot go stale and there is nothing here a
-                // `force` would ever need to clear.
+                // So the inspect, removal and create run under an advisory lock on a sibling
+                // file, held only for those three steps. The kernel drops it when its holder
+                // exits, so it cannot go stale and `force` never needs to clear it.
                 let _breaking = Breaking::take(path).map_err(|e| LockRefused::Io(e.to_string()))?;
 
-                // Asked again under the guard, because whoever held it before
-                // this process may have taken the journal in the meantime: what
-                // was crashed a moment ago is now a scan that is running.
+                // Asked again under the guard: the previous guard holder may have taken the
+                // journal in the meantime.
                 let state = inspect(path);
                 if !breaks.permits(&state) {
                     return Err(LockRefused::Held(state));
@@ -532,8 +466,7 @@ mod persistence {
 
                 match remove(path) {
                     Ok(()) => {}
-                    // Removed between the two inspections; the create below
-                    // decides either way.
+                    // Removed between the two inspections; the create below decides either way.
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => return Err(LockRefused::Io(error.to_string())),
                 }
@@ -544,11 +477,9 @@ mod persistence {
                     Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
                         return Err(LockRefused::Io(error.to_string()));
                     }
-                    // A process arriving at a journal whose lock this one has just
-                    // removed takes no guard, because from where it stands there
-                    // is nothing to break, and it can win the create in that gap.
-                    // That is the case the loop is for: the next round finds a
-                    // lock that is beating and is refused by name.
+                    // A process arriving after this one removed the lock sees nothing to break,
+                    // takes no guard, and can win the create in that gap. The next round then
+                    // finds a beating lock and refuses by name.
                     Err(_) => refusal = Some(state),
                 }
             }
@@ -579,33 +510,22 @@ mod persistence {
         }
 
         /// Takes the lock, or fails with
-        /// [`AlreadyExists`](std::io::ErrorKind::AlreadyExists) if somebody has
-        /// it.
+        /// [`AlreadyExists`](std::io::ErrorKind::AlreadyExists) if somebody has it.
         ///
-        /// The name appears already holding the record. Creating the file and
-        /// then writing it is two steps, and a racer reading between them finds a
-        /// lock it cannot parse, which [`inspect`] reports as `Free` because that
-        /// is what a writer killed mid-write leaves. It is also what a writer
-        /// mid-create leaves, and reading it that way would let a second
-        /// process delete a lock the first had taken a microsecond earlier. So
-        /// the record is written to a file of its own and that file is linked
-        /// into place: `link` refuses a name that exists, the same exclusion
-        /// `create_new` gives, over a file that already has its contents.
+        /// The name appears already holding the record. Creating then writing would let a racer
+        /// read an empty lock between the two steps, which [`inspect`] reports as `Free` (that is
+        /// what a writer killed mid-write leaves), and delete a lock taken a microsecond earlier.
+        /// So the record is written to a staged file and linked into place: `link` refuses an
+        /// existing name, as `create_new` does, over a file that already has its contents.
         ///
-        /// The lock names a pid and a scan, in a directory holding an
-        /// engagement's targets, so it is created the way every other journal
-        /// file is. Under `sudo` it belongs to whoever invoked the scan, or they
-        /// cannot release a journal they own the rest of.
+        /// Created like every other journal file, so under `sudo` it belongs to whoever invoked the
+        /// scan and they can release it.
         ///
-        /// The staged name carries a counter as well as the pid, because a pid
-        /// is only unique between processes and this is a library. With the pid
-        /// alone, two threads of one caller taking the same journal would share
-        /// the staged name, and [`link_new`] removes a staged name it finds
-        /// occupied: one thread would delete the file the other was
-        /// about to link, which fails the link with `NotFound` and is read here
-        /// as an error rather than a lost race, or link an empty file into place,
-        /// which [`inspect`] reads as `Free` and a third thread then breaks. Both
-        /// produce two holders of a lock whose whole purpose is that there is one.
+        /// The staged name carries a counter as well as the pid, because this is a library and two
+        /// threads of one caller may take the same journal. With the pid alone they would share the
+        /// staged name, and since [`link_new`] removes a staged name it finds occupied, one thread
+        /// could delete the other's file (failing its link with `NotFound`) or link an empty file
+        /// that [`inspect`] reads as `Free`. Either way the lock would get two holders.
         fn create_exclusively(path: &Path, record: &LockRecord) -> std::io::Result<()> {
             static STAGING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let staged = path.with_extension(format!(
@@ -615,25 +535,17 @@ mod persistence {
             ));
 
             let text = serde_json::to_string(record).map_err(std::io::Error::other)?;
-            // Staged, not created: the name carries this process's id, and a
-            // pid is reused, so a run that died between the create and the hard
-            // link can have left one of these behind under the same name.
+            // Staged with a retry, since a reused pid can find a staged file left by a run
+            // that died between the create and the link.
             link_new(path, &staged, |mut file| file.write_all(text.as_bytes()))
         }
 
-        /// Replaces the lock file in place, for the holder moving its own
-        /// heartbeat forward.
-        ///
-        /// Not a way to take a lock. Taking one goes through
-        /// [`create_exclusively`](Self::create_exclusively), which is the only
-        /// operation two processes cannot both win; this is the holder rewriting
-        /// a file it already owns, where there is nothing to decide.
+        /// Replaces the lock file in place, for the holder moving its own heartbeat forward.
+        /// Taking a lock goes through [`create_exclusively`](Self::create_exclusively).
         fn write(path: &Path, record: &LockRecord) -> std::io::Result<()> {
             let text = serde_json::to_string(record).map_err(std::io::Error::other)?;
-            // Private from creation, as `create_exclusively` makes the
-            // original: a heartbeat replaces the file, and a replacement that
-            // widened its mode would undo that. The lock becomes the staged
-            // file's inode, ownership and all.
+            // Private from creation like the original, so a heartbeat never widens the mode.
+            // The lock becomes the staged file's inode, ownership included.
             replace(path, &path.with_extension("lock-tmp"), |mut file| {
                 file.write_all(text.as_bytes())
             })
@@ -663,27 +575,21 @@ mod persistence {
 
     /// Serialises deciding that a lock is dead and replacing it.
     ///
-    /// See the argument at the call site. Held across three operations that have
-    /// to be one, and dropped as soon as they are done.
+    /// See the comment at the call site. Dropped as soon as the three steps are done.
     struct Breaking {
-        /// Held for the handle alone: the lock lives on the open file, and the
-        /// system releases it when this closes.
+        /// Held only for the handle: the lock lives on the open file and is released when
+        /// it closes.
         _file: fs::File,
     }
 
     impl Breaking {
         fn take(lock: &Path) -> std::io::Result<Self> {
-            // Its own file rather than the lock, which is about to be removed:
-            // the lock follows the open file, and removing the name it was
-            // taken on leaves the next process locking a different file.
-            // Private and link-refusing like everything else a journal writes,
-            // but opened rather than created: every racer has to reach the same
-            // file, so winning the create is not what decides anything here. The
-            // lock below is.
+            // A sibling file, because the lock file is about to be removed and an advisory
+            // lock follows the open file, not the name. Opened, not created, so every racer reaches
+            // the same file.
             let file = open_or_create_private(&lock.with_extension("break"))?;
 
-            // Waits for the exclusive lock: `flock` on unix and `LockFileEx` on
-            // Windows, released when `file` is closed or this process exits.
+            // Blocks for the exclusive lock: `flock` on unix, `LockFileEx` on Windows.
             file.lock()?;
             Ok(Self { _file: file })
         }
@@ -695,10 +601,8 @@ mod persistence {
                 return;
             }
 
-            // Best effort. A lock left behind by a failed removal reads as
-            // `Crashed` to the next reader, which is resumable, so this line
-            // failing costs a note in the output rather than a journal nobody
-            // can open.
+            // Best effort. A lock left by a failed removal reads as `Crashed` to the next
+            // reader, which is resumable.
             let _ = remove(&self.path);
         }
     }
@@ -761,8 +665,7 @@ mod tests {
         }
     }
 
-    /// A live writer checkpointing normally. The one case that must always be
-    /// refused.
+    /// A live writer checkpointing normally is always refused.
     #[test]
     fn a_beating_lock_on_a_live_pid_is_held() {
         let state = classify(
@@ -795,18 +698,14 @@ mod tests {
         assert_eq!(state.refusal(), None);
     }
 
-    /// The case the pid alone gets wrong.
-    ///
-    /// After a reboot, low pids are reissued to init and its children, so the
-    /// pid in an old lock is very often alive and entirely unrelated. Checking
-    /// liveness before the boot identity would leave every journal written
-    /// before a reboot locked behind `launchd`.
+    /// The case the pid alone gets wrong. After a reboot low pids go to init and its
+    /// children, so the pid in an old lock is often alive and unrelated.
     #[test]
     fn a_lock_from_a_previous_boot_is_released_even_though_its_pid_is_alive() {
         let state = classify(
             &record(OTHER_BOOT, 100),
             BOOT,
-            true, // alive, and irrelevant: it is not the same process.
+            true, // alive, but not the same process
             at(105),
             HEARTBEAT_STALE_AFTER,
         );
@@ -819,12 +718,8 @@ mod tests {
         );
     }
 
-    /// The case the boot identity alone gets wrong.
-    ///
-    /// Within one boot a freed pid can be reissued. The heartbeat is the only
-    /// thing distinguishing the scan that took the lock from whatever holds that
-    /// number now, and from here the two look the same, so it is refused rather
-    /// than guessed.
+    /// The case the boot identity alone gets wrong. Within one boot a freed pid can be
+    /// reissued, and only the heartbeat tells the two apart, so a stale beat is refused.
     #[test]
     fn a_live_pid_that_stopped_beating_is_stale_and_refused() {
         let state = classify(
@@ -844,9 +739,8 @@ mod tests {
         );
     }
 
-    /// A beat exactly at the threshold is not yet stale. Asserted because the
-    /// boundary decides between refusing a live scan and permitting a second
-    /// writer, and an off-by-one there is invisible in every other test.
+    /// A beat exactly at the threshold is not yet stale. The boundary decides between
+    /// refusing a live scan and permitting a second writer.
     #[test]
     fn the_staleness_boundary_is_exclusive() {
         let held = classify(
@@ -868,9 +762,7 @@ mod tests {
         assert!(matches!(stale, LockState::Stale { .. }), "{stale:?}");
     }
 
-    /// A clock that moved backwards between the write and the read must not turn
-    /// a live scan into a stale one. "I cannot tell how old this is" reads as
-    /// alive, which refuses rather than permitting a second writer.
+    /// A clock that moved backwards does not turn a live scan into a stale one.
     #[test]
     fn a_heartbeat_from_the_future_reads_as_fresh() {
         let state = classify(
@@ -884,9 +776,8 @@ mod tests {
         assert!(matches!(state, LockState::Held { .. }), "{state:?}");
     }
 
-    /// An unreadable boot identity compares unequal to any recorded one, so it
-    /// releases locks rather than holding them. The conservative direction for a
-    /// value this engine may fail to obtain on a platform it has not met.
+    /// An unreadable boot identity compares unequal to any recorded one, so it releases
+    /// locks.
     #[test]
     fn an_unknown_boot_identity_releases_rather_than_holds() {
         let state = classify(&record(BOOT, 100), "", true, at(105), HEARTBEAT_STALE_AFTER);
@@ -894,7 +785,7 @@ mod tests {
         assert!(state.is_resumable(), "{state:?}");
     }
 
-    /// This host can say which boot it is on, and says the same thing twice.
+    /// This host reports its boot identity, and the same one twice.
     #[test]
     fn the_boot_identity_is_readable_and_stable() {
         let first = boot_identity();
@@ -902,8 +793,8 @@ mod tests {
         assert_eq!(first, boot_identity(), "it must not change while running");
     }
 
-    /// The liveness check answers correctly for the one process a test can be
-    /// certain about: itself.
+    /// The liveness check is right about the one process a test can be sure of:
+    /// itself.
     #[test]
     fn this_process_is_alive() {
         assert!(pid_is_alive(std::process::id()));
@@ -943,8 +834,8 @@ mod file_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Two scans racing for one journal: the second must be refused, and told
-    /// which process has it.
+    /// Two scans racing for one journal: the second is refused and told which process
+    /// has it.
     #[test]
     fn a_second_acquisition_is_refused_while_the_first_holds_it() {
         let dir = scratch("contended");
@@ -965,7 +856,7 @@ mod file_tests {
             other => panic!("expected a refusal, got {other:?}"),
         }
 
-        // And forcing is the documented way past it.
+        // Forcing gets past it.
         let forced = Lock::force(&path).expect("force overrides");
         drop(forced);
         drop(first);
@@ -973,15 +864,8 @@ mod file_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A lock whose holder stopped beating can be taken over by a caller who
-    /// judges it is not the scan, and one whose holder is beating cannot.
-    ///
-    /// Within one boot a crashed scan's number can be reissued, and the lock
-    /// then names a live process that never checkpoints. That is refused
-    /// rather than guessed at, so taking it over has to be something a caller
-    /// can ask for; asked only for the whole override, a user who can see the
-    /// lock is not beating had nothing that stopped short of breaking a lock
-    /// that is. This process stands in for the reissued number.
+    /// A lock whose holder stopped beating can be taken over, and one whose holder is
+    /// beating cannot. This process stands in for a reissued pid.
     #[test]
     fn a_stale_lock_can_be_taken_over_and_a_beating_one_cannot() {
         let dir = scratch("stale");
@@ -1013,9 +897,8 @@ mod file_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A lock left half-written by a crash must not lock the journal forever.
-    /// Unreadable reads as free, because a permanent refusal is the worse of the
-    /// two failures.
+    /// A lock left half-written by a crash reads as free, so it does not lock the
+    /// journal forever.
     #[test]
     fn a_corrupt_lock_does_not_wedge_the_journal() {
         let dir = scratch("corrupt");
@@ -1029,15 +912,14 @@ mod file_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A crashed writer's lock is taken over without a force, and the heartbeat
-    /// written by the new holder replaces it.
+    /// A crashed writer's lock is taken without a force, and the new holder's heartbeat
+    /// replaces it.
     #[test]
     fn a_dead_writers_lock_is_taken_over() {
         let dir = scratch("crashed");
         let path = dir.join("LOCK");
 
-        // pid 0 is never a signalable process, so this stands in for a writer
-        // that is definitely gone without needing one to be killed.
+        // pid 0 is never a signalable process, so it stands in for a writer that is gone.
         let dead = LockRecord {
             pid: 0,
             boot: boot_identity(),
@@ -1054,32 +936,19 @@ mod file_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Several processes finding the same crashed journal: exactly one takes it.
+    /// Several racers finding the same crashed journal: exactly one takes it.
     ///
-    /// `inspect` then rename is two operations, so a break path built on them
-    /// would have every racer read `Crashed`, write its own record over the
-    /// last one, and return a `Lock` it believed was exclusive. Going back
-    /// through the exclusive create is what makes the question have one answer.
-    ///
-    /// # Why it runs the race more than once
-    ///
-    /// Racers here are threads, so they share a process and everything named
-    /// after it. A staged file for `create_exclusively` to link into place that
-    /// carried only the pid would be shared by two threads, each would remove
-    /// the other's, and the count would come out at two about one run in
-    /// twenty. A test that fails one time in twenty is one people re-run, so the
-    /// racers start on a barrier and the race is run in rounds. Removing either
-    /// mechanism reddens this most times it runs, which is the least a guard
-    /// against a one-in-twenty defect can be.
+    /// The racers are threads in one process, so this also covers the staged-name counter in
+    /// `create_exclusively`. Without the guard or the counter the count came out at two about
+    /// one run in twenty, so the racers start on a barrier and the race runs in rounds.
     #[test]
     fn only_one_of_several_racers_breaks_a_crashed_lock() {
         for round in 0..16 {
             let dir = scratch(&format!("break-race-{round}"));
             let path = dir.join("LOCK");
 
-            // A lock from before a reboot, which is resumable whatever its pid is
-            // doing now. Written this way rather than with a dead pid because a test
-            // cannot name a number it is certain nothing holds.
+            // A lock from before a reboot, resumable whatever its pid is doing. A test
+            // cannot name a pid it is certain nothing holds.
             let stale = LockRecord {
                 pid: std::process::id(),
                 boot: "a boot that is over".to_string(),
@@ -1090,10 +959,8 @@ mod file_tests {
             assert!(matches!(inspect(&path), LockState::RebootedUnder { .. }));
 
             let taken = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            // Every racer waits here, so they arrive together rather than in
-            // whatever order the scheduler happened to start them. Without it
-            // the first thread usually finished before the last began, and a
-            // race nobody ran is a race nobody tested.
+            // Racers start together; without the barrier the first thread usually finished
+            // before the last began.
             let start = std::sync::Arc::new(std::sync::Barrier::new(8));
             std::thread::scope(|scope| {
                 for _ in 0..8 {
@@ -1104,8 +971,7 @@ mod file_tests {
                         start.wait();
                         if let Ok(lock) = Lock::acquire(&path) {
                             taken.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            // Held for the rest of the scope, so a racer that came
-                            // second is refused rather than finding it free again.
+                            // Held for the rest of the scope, so a later racer is refused.
                             std::thread::sleep(std::time::Duration::from_millis(20));
                             std::mem::forget(lock);
                         }

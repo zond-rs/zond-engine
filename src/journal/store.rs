@@ -18,44 +18,38 @@
 //!     LOCK            who is writing, if anyone
 //! ```
 //!
-//! The cursor is rewritten because it describes one state, and the findings are
-//! appended because they accumulate. A host that changes appears more than once
-//! and the records fold together on reading, the later over the earlier, which
-//! is what makes a torn tail survivable: the worst it costs is one host's most
-//! recent update.
+//! The cursor is rewritten because it describes one state; the findings are appended
+//! because they accumulate. A host that changes appears more than once and the records fold
+//! together on reading, later over earlier, so a torn tail costs at most one host's latest
+//! update.
 //!
 //! ## A host is written by what changed in it
 //!
-//! A record carries the whole host but only the ports that differ from what
-//! the file already holds of them. A host scanned on every port holds tens of
-//! thousands of them, and written whole each time anything about it changed it
-//! was a record of megabytes every checkpoint, most of it a copy of the last.
-//! Folding is what makes leaving the rest out safe: a port's later record is
-//! merged over its earlier one, and a port a record leaves out keeps what the
-//! file already says of it. What the file holds of each port is remembered as a
-//! digest of the record written, so telling what changed costs no copy of the
-//! host.
+//! A record carries the whole host but only the ports that differ from what the file
+//! already holds. A host scanned on every port holds tens of thousands of them, and writing
+//! it whole on every change would be megabytes per checkpoint. Folding makes this safe: a
+//! port's later record merges over its earlier one, and a port a record leaves out keeps
+//! what the file says. What the file holds of each port is remembered as a digest, so
+//! finding what changed costs no copy of the host.
 //!
 //! ## A sitting is written down before it ends
 //!
-//! A sitting's phases are appended to `phases.jsonl` when it stops, and one
-//! killed outright never stops. So each sitting also keeps a file of its own,
-//! named for when it started, holding its phases as they stand: those that
-//! have closed, and the open one so far. It is rewritten whole at every
-//! checkpoint and removed once the phases are appended. One still there when
-//! the journal is read is a sitting that never ended, and its phases are read
-//! beside the rest. A phase that never closed says what it opened with, how
-//! long it ran and what failed in it, and claims nothing only its close could
-//! establish; it says instead that it is open, which is what keeps it from
-//! reading as a phase that ran to its end. A phase read from both, left by
-//! a sitting stopped between the append and the removal, is read once.
+//! A sitting's phases are appended to `phases.jsonl` when it stops, and a sitting killed
+//! outright never stops. So each sitting also keeps its own file, named for when it started,
+//! holding its phases as they stand: those closed and the open one so far. It is rewritten
+//! whole at every checkpoint and removed once the phases are appended. One still present
+//! when the journal is read is a sitting that never ended, and its phases are read with the
+//! rest. A phase that never closed reports what it opened with, how long it ran and what
+//! failed, claims nothing only its close could establish, and is marked open. A phase found
+//! in both files, left by a sitting stopped between the append and the removal, is read
+//! once.
 //!
-//! [`Journal::create`] begins one, [`Journal::resume`] continues one, and
-//! [`list`] enumerates them for a caller offering a choice.
+//! [`Journal::create`] begins one, [`Journal::resume`] continues one, and [`list`]
+//! enumerates them for a caller offering a choice.
 //!
-//! A journal holds the addresses an engagement was pointed at, so everything is
-//! `0600` under a `0700` directory, and a scan that runs elevated leaves it owned
-//! by the user who invoked it rather than by root. See [`paths`](super::paths).
+//! A journal holds the addresses an engagement was pointed at, so everything is `0600`
+//! under a `0700` directory, and a scan that runs elevated leaves it owned by the user who
+//! invoked it. See [`paths`](super::paths).
 
 use std::collections::HashSet;
 use std::fs;
@@ -90,8 +84,7 @@ const DETECTIONS: &str = "detections.jsonl";
 /// [`Journal::record_finished`].
 const FINISHED: &str = "finished.jsonl";
 const LOCK: &str = "LOCK";
-/// What a sitting's record of its phases as they stand is named after,
-/// before when it started.
+/// Prefix of a sitting's own phases file, followed by when it started.
 const SITTING: &str = "sitting-";
 /// What the job runs under, written once, when its first sitting starts. See
 /// [`Journal::options`].
@@ -107,9 +100,8 @@ pub enum OpenError {
 
     /// The journal records the other phase of a scan.
     ///
-    /// A sweep's positions count addresses and a port scan's count
-    /// address-and-port pairs, so one continued as the other would skip targets
-    /// nothing ever probed.
+    /// A sweep's positions count addresses and a port scan's count address-and-port
+    /// pairs, so one continued as the other would skip targets nothing probed.
     #[error("this journal records a {held} and cannot be continued as a {asked}")]
     WrongPhase {
         /// The phase the journal holds.
@@ -144,17 +136,17 @@ pub struct Journal {
     resume_point: Checkpoint,
     restored: Vec<Host>,
     earlier: Vec<ScanPhase>,
-    /// Whether this handle made the journal, rather than reopening one. See
+    /// Whether this handle made the journal or reopened one. See
     /// [`withdraw`](Journal::withdraw).
     created: bool,
     options: Option<JobOptions>,
-    /// What the findings file holds of each host, and how much of it later
-    /// records superseded. See [`record_hosts`](Journal::record_hosts).
+    /// What the findings file holds of each host, and how much of it later records
+    /// superseded. See [`record_hosts`](Journal::record_hosts).
     written: Written,
     /// How long the findings file is.
     length: u64,
-    /// How much has to be superseded before a compaction is tried again, once
-    /// one has failed. See [`compact`](Journal::compact).
+    /// How much has to be superseded before a compaction is tried again after one
+    /// failed. See [`compact`](Journal::compact).
     compact_after: u64,
     /// Where this sitting writes its phases as they stand. See the module
     /// documentation.
@@ -164,8 +156,8 @@ pub struct Journal {
 impl Journal {
     /// Begins a journal for `plan` under `root`, minting an id for it.
     ///
-    /// The plan carries which phase it belongs to, so a sweep and a port scan
-    /// both come through here and neither can be read back as the other.
+    /// The plan carries its phase, so a sweep and a port scan both come through here and
+    /// neither can be read back as the other.
     pub fn create(
         root: &Path,
         plan: &Plan,
@@ -175,13 +167,9 @@ impl Journal {
         let (id, directory) = claim_directory(root)?;
         let manifest = JournalManifest::new(id, plan, privilege, summary);
 
-        // A scan that never started should leave no trace, whichever step
-        // failed, so every failure past the claim is caught in this one arm.
-        // Without it, a lock it could not take would clean up after itself, but
-        // a manifest write that ran out of disk, or a findings header that could
-        // not be flushed, would propagate and leave the directory behind, which
-        // lists as a scan that found nothing, or does not list at all. Both are
-        // the state that reasoning called unreadable.
+        // A scan that never started leaves no trace, whichever step failed, so every
+        // failure past the claim is caught here. A leftover directory would list as a scan that
+        // found nothing, or not list at all.
         match Self::furnish(&directory, manifest) {
             Ok(journal) => Ok(journal),
             Err(error) => {
@@ -193,8 +181,7 @@ impl Journal {
 
     /// Everything [`create`](Self::create) does once the directory is claimed.
     ///
-    /// Split out so there is one place a failure past the claim is caught, rather
-    /// than each step having to remember to undo the directory on its way out.
+    /// Split out so a failure past the claim is caught in one place.
     fn furnish(directory: &Path, manifest: JournalManifest) -> Result<Self, OpenError> {
         write_private(
             &directory.join(MANIFEST),
@@ -244,34 +231,30 @@ impl Journal {
         lock: fn(&Path) -> Result<Lock, LockRefused>,
     ) -> Result<(Self, Checkpoint), OpenError> {
         let manifest = read_manifest(directory)?;
-        // The phase before the fingerprint, so continuing a sweep as a port scan
-        // is named for what it is rather than reported as a plan that moved.
+        // The phase before the fingerprint, so continuing a sweep as a port scan is named
+        // as such and not reported as a moved plan.
         if manifest.kind() != plan.kind() {
             return Err(OpenError::WrongPhase {
                 held: phase_name(manifest.kind()),
                 asked: phase_name(plan.kind()),
             });
         }
-        // The plan next. A refusal here is about the caller's arguments, and
-        // reporting it before taking a lock means a mistaken resume disturbs
-        // nothing.
+        // The plan next, before taking the lock, so a mistaken resume disturbs nothing.
         manifest.covers(plan, privilege)?;
 
         let lock = lock(&directory.join(LOCK))?;
         let sitting = sitting_file(directory, &lock);
         let checkpoint = read_checkpoint(directory)?;
         let earlier = read_phases(directory)?;
-        // Less the records the earlier sittings heard nothing from, which a
-        // report of the job drops by the same reading, but for those a
-        // sitting killed before its verdicts left for this one to decide; see
-        // `Unheard::decided`.
+        // Drop the records earlier sittings heard nothing from, as a report of the job
+        // does, except those a sitting killed before its verdicts left for this one to decide;
+        // see `Unheard::decided`.
         let unheard = Unheard::decided(&earlier);
         let mut restored = read_findings(directory)?;
         restored.retain(|host| !unheard.drops(host));
-        // What the file already holds, so a restored host a new sitting changes
-        // is written by what changed in it rather than whole. Whatever the file
-        // holds beyond what those fold to is records they superseded. A file an
-        // earlier sitting left behind with nothing in it is no length at all.
+        // What the file already holds, so a restored host this sitting changes is written
+        // by its changes. Anything in the file beyond what those fold to is superseded records. An
+        // empty file left by an earlier sitting counts as no length.
         let length = findings_length(directory)?;
         let written = Written::holding(&restored, length)?;
 
@@ -296,16 +279,13 @@ impl Journal {
 
     /// Continues the journal at `directory`, scanning the plan it recorded.
     ///
-    /// The counterpart of [`resume`](Self::resume) for a caller who has nothing
-    /// to describe the scan with but its id. The plan comes back as it was
-    /// written down, phase included, so a hostname that has moved since does not
-    /// change what is being continued and a caller that can only continue one of
-    /// the two phases can see which it has
-    /// before it starts.
+    /// The counterpart of [`resume`](Self::resume) for a caller who has only the
+    /// scan's id. The plan comes back as recorded, phase included, so a hostname that has moved
+    /// does not change what is continued, and a caller can see which phase it has before
+    /// starting.
     ///
-    /// Refused if this process holds different privileges than the scan did: the
-    /// connect fallback asks a different question than a raw technique does, and
-    /// a journal half of each would be counting two things.
+    /// Refused if this process holds different privileges than the scan did: the connect
+    /// fallback asks a different question than a raw technique.
     pub fn reopen(
         directory: &Path,
         privilege: Privilege,
@@ -318,12 +298,11 @@ impl Journal {
     /// [`reopen`](Self::reopen), taking over a lock whose holder has stopped
     /// checkpointing.
     ///
-    /// For the refusal [`LockState::Stale`] names: a live process holds the
-    /// number the lock records, and nothing here can tell whether it is the
-    /// scan, hung, or an unrelated process the number was reissued to after
-    /// the scan died. A caller who knows which it is can continue the job
-    /// here instead of removing the lock by hand. A lock whose holder is
-    /// checkpointing now is still refused. See [`Lock::take_over`].
+    /// For the refusal [`LockState::Stale`] names: a live process holds the recorded
+    /// number, and nothing here can tell whether it is the hung scan or an unrelated process the
+    /// number was reissued to. A caller who knows can continue the job here without removing
+    /// the lock by hand. A lock whose holder is checkpointing now is still refused. See
+    /// [`Lock::take_over`].
     pub fn take_over(
         directory: &Path,
         privilege: Privilege,
@@ -336,33 +315,28 @@ impl Journal {
 
     /// What earlier sittings of this scan found.
     ///
-    /// Empty for a journal just created. A scan seeds its store with these, so
-    /// the report it produces describes the whole job rather than the last
-    /// sitting of it.
+    /// Empty for a journal just created. A scan seeds its store with these, so its
+    /// report describes the whole job.
     ///
-    /// A record of an address an earlier sitting went on to hear nothing from
-    /// is left out, as the job's report leaves it out. One a sitting killed
-    /// before its port phase's verdicts had yet to decide is here, though the
-    /// report leaves it out as well: this sitting asks what is left at the
-    /// address and decides it.
+    /// A record of an address an earlier sitting went on to hear nothing from is left out, as
+    /// the job's report leaves it out. One that a sitting killed before its port phase's
+    /// verdicts had yet to decide is included (the report leaves it out too): this sitting asks
+    /// what is left at the address and decides it.
     pub fn restored(&self) -> &[Host] {
         &self.restored
     }
 
     /// Appends what `hosts` currently hold that the file does not.
     ///
-    /// Called with whatever
-    /// [`take_changed_hosts`](crate::scanner::session::ScanContext::take_changed_hosts)
-    /// yields, so a host is written once per change rather than once per
-    /// checkpoint for the rest of the run. Each record carries the host's own
-    /// fields and only the ports that changed since the file last held them;
-    /// see the module documentation for why that reads back as the whole host.
-    /// A host may carry only some of its ports, and those it leaves out stand
-    /// as the file holds them. A host the file already holds as it is gets no
-    /// record.
+    /// Called with what
+    /// [`take_changed_hosts`](crate::scanner::session::ScanContext::take_changed_hosts) yields,
+    /// so a host is written once per change. Each record carries the host's own fields and only
+    /// the ports that changed since the file last held them; see the module documentation. A
+    /// host may carry only some of its ports, and those it leaves out stand as the file holds
+    /// them. A host the file already holds unchanged gets no record.
     ///
-    /// What was written is remembered only once the write has succeeded, so a
-    /// failed one leaves every port it carried to be written again.
+    /// What was written is remembered only after the write succeeds, so a failed write leaves
+    /// every port it carried to be written again.
     pub fn record_hosts(&mut self, hosts: &[Host]) -> Result<(), JournalError> {
         let mut records = Vec::with_capacity(hosts.len());
         for host in hosts {
@@ -392,29 +366,24 @@ impl Journal {
         Ok(())
     }
 
-    /// Appends the tapes of detection runs, each recording what one detection read
-    /// from its capabilities so the run can be replayed offline later.
+    /// Appends the tapes of detection runs, each recording what one detection read from
+    /// its capabilities so the run can be replayed offline.
     ///
-    /// Written a port to a line, the responses the port's runs read held once
-    /// for all of them; see `PortRunsRecord`. [`read_detections`] hands each
-    /// run back whole.
+    /// One port per line, the responses the port's runs read held once for all of them; see
+    /// `PortRunsRecord`. [`read_detections`] hands each run back whole.
     ///
-    /// Its own file, created on the first run and appended after. The resume path
-    /// never reads it: a tape is evidence for later analysis, not a settled
-    /// verdict, so it does not advance a cursor or change what a resume skips.
+    /// Its own file, created on the first run. The resume path never reads it: a tape is
+    /// evidence for later analysis, not a settled verdict.
     ///
-    /// All or nothing: a write that fails part way is cut back to where it
-    /// began, so a caller that hands the same runs to a later write records
-    /// each of them once.
+    /// All or nothing: a write that fails part way is cut back to where it began, so a caller
+    /// that retries the same runs records each once.
     pub fn record_detections(&mut self, runs: &[DetectionRunRecord]) -> Result<(), JournalError> {
         if runs.is_empty() {
             return Ok(());
         }
 
-        // Appending is tried first and the file created only where there is
-        // none, rather than asking whether one exists and then acting on the
-        // answer. `create_private` refuses a name that exists, so losing that
-        // race is reported rather than costing every tape written before it.
+        // Append first and create only on `NotFound`. `create_private` refuses an existing
+        // name, so losing a race between two writers is reported, not a truncation.
         let path = self.directory.join(DETECTIONS);
         let (file, mut writer) = match open_for_append(&path) {
             Ok(file) => {
@@ -432,8 +401,8 @@ impl Journal {
             }
             Err(error) => return Err(error),
         };
-        // Where this write begins: past the header a new file was just given,
-        // which a write cut back leaves in place.
+        // Where this write begins: past the header a new file was just given, which a
+        // cut-back write keeps.
         writer.flush()?;
         let began = file.metadata()?.len();
         let outcome = PortRunsRecord::grouping(runs)
@@ -441,9 +410,8 @@ impl Journal {
             .try_for_each(|line| writer.write(line))
             .and_then(|()| writer.flush());
         if outcome.is_err() {
-            // Dropped first, since dropping flushes what it still buffers,
-            // and then everything written past the start is cut away. A cut
-            // that fails too leaves a torn tail, which the next append mends.
+            // Dropped first, since dropping flushes the buffer, then everything past the start
+            // is cut. A failed cut leaves a torn tail, which the next append mends.
             drop(writer);
             let _ = file.set_len(began);
         }
@@ -453,18 +421,14 @@ impl Journal {
     /// Appends that a sitting ran every pass that follows its probes over
     /// `hosts`, each named as its address and link are written.
     ///
-    /// For a sitting that ran to its end, whose passes each finished over
-    /// every host it held. A later sitting reads these back through
-    /// [`finished_hosts`](Self::finished_hosts) and runs those passes again
-    /// only over what it asks something new of. Without the record, every
-    /// sitting would identify each port's service, run each detection, walk
-    /// each TLS port and trace each route again for every host an earlier one
-    /// had finished with, which on a job resumed after it was done is the whole
-    /// of what the resume does.
+    /// For a sitting that ran to its end, whose passes each finished over every host it
+    /// held. A later sitting reads these through [`finished_hosts`](Self::finished_hosts) and
+    /// reruns those passes only over what it asks something new of. Without this, a job resumed
+    /// after it was done would redo service identification, detection, TLS and route tracing
+    /// for every host.
     ///
-    /// Its own file, created on the first record and appended after, so a
-    /// journal an older engine wrote reads as one no sitting finished, and a
-    /// newer one read by an older engine is merely not consulted.
+    /// Its own file, created on the first record, so a journal from an older engine reads as one
+    /// no sitting finished, and an older engine ignores it.
     pub(crate) fn record_finished(
         &mut self,
         hosts: impl IntoIterator<Item = String>,
@@ -476,8 +440,7 @@ impl Journal {
             return Ok(());
         }
 
-        // Created where there is none, as the tapes' file is; see
-        // `record_detections` for why appending is tried first.
+        // Created on `NotFound`, as in `record_detections`.
         let path = self.directory.join(FINISHED);
         let mut writer = match open_for_append(&path) {
             Ok(file) => crate::journal::format::Writer::append(std::io::BufWriter::new(file)),
@@ -491,12 +454,11 @@ impl Journal {
         writer.flush()
     }
 
-    /// Every host an earlier sitting that ran to its end had finished every
-    /// pass over, named as [`record_finished`](Self::record_finished) wrote
-    /// it.
+    /// Every host an earlier sitting that ran to its end had finished every pass over,
+    /// named as [`record_finished`](Self::record_finished) wrote it.
     ///
-    /// Empty for a journal no sitting finished, and for one written before the
-    /// record was kept, which a resume reads as owing every pass to every host.
+    /// Empty for a journal no sitting finished or one without the record, which a resume reads
+    /// as owing every pass to every host.
     pub(crate) fn finished_hosts(&self) -> Result<HashSet<String>, JournalError> {
         let file = match open_to_read(&self.directory.join(FINISHED)) {
             Ok(file) => file,
@@ -516,25 +478,17 @@ impl Journal {
         Ok(hosts)
     }
 
-    /// Whether the findings file holds enough superseded records to be worth
-    /// writing whole again.
+    /// Whether the findings file holds enough superseded records to be worth rewriting.
     ///
-    /// A host is appended each interval in which anything about it changed,
-    /// and the dispatcher shuffles targets across the whole plan, so on a long
-    /// scan most hosts change in most intervals. Their ports are written only
-    /// as they change, but each record repeats the host's own fields, so the
-    /// file grows with the scan's duration as well as with what it found.
-    /// Compaction bounds it.
+    /// The dispatcher shuffles targets across the whole plan, so on a long scan most hosts
+    /// change in most intervals. Ports are written only as they change, but each record repeats
+    /// the host's own fields, so the file grows with the scan's duration. Compaction bounds it.
     ///
-    /// Counted in bytes, since what a compaction costs and what it recovers
-    /// are both bytes, and a count of records says neither: one record can be
-    /// a line or a host's every port. What is counted is what later records
-    /// superseded, not what was appended, since a file growing by what the
-    /// scan found holds nothing a rewrite would drop. The file is rewritten
-    /// once the superseded part outgrows the rest, so it stays under twice
-    /// its live size, and a compaction writing the live part is paid for by
-    /// at least as much superseded since the last one. Below the floor a file
-    /// is not worth rewriting whatever it holds.
+    /// Counted in bytes of superseded records, since that is what a rewrite costs and recovers;
+    /// a file growing by new findings holds nothing a rewrite would drop. The file is rewritten
+    /// once the superseded part outgrows the rest, so it stays under twice its live size and
+    /// each compaction is paid for by at least as much superseded since the last. Below a floor
+    /// it is never worth rewriting.
     pub fn should_compact(&self) -> bool {
         outgrown(self.length, self.written.superseded)
             && self.written.superseded >= self.compact_after
@@ -542,18 +496,14 @@ impl Journal {
 
     /// Writes the findings file whole, replacing everything superseded.
     ///
-    /// `all` has to be every host the scan has found rather than the recent ones,
-    /// since this replaces the file rather than adding to it. Written to a sibling
-    /// and renamed over, so a compaction interrupted part way leaves the previous
+    /// `all` must be every host the scan has found, since this replaces the file.
+    /// Written to a sibling and renamed over, so an interrupted compaction leaves the previous
     /// file untouched.
     ///
-    /// A compaction that fails removes its sibling, and
-    /// [`should_compact`](Self::should_compact) does not ask for another until
-    /// as much again has been superseded. What stops one, most often a disk
-    /// with no room for a second copy of the findings, stops the next, and one
-    /// is due every checkpoint once the file has outgrown itself: retried each
-    /// time, a scan would write the live findings again every few seconds and
-    /// leave a partial copy holding whatever room the disk had left.
+    /// A failed compaction removes its sibling, and [`should_compact`](Self::should_compact)
+    /// does not ask again until as much again has been superseded. The usual cause, a disk with
+    /// no room for a second copy, would otherwise recur every checkpoint, rewriting the live
+    /// findings every few seconds into whatever room was left.
     pub fn compact(&mut self, all: &[Host]) -> Result<(), JournalError> {
         let compacted = self.write_whole(all);
         if compacted.is_err() {
@@ -572,16 +522,14 @@ impl Journal {
             &destination,
             &destination.with_extension("jsonl-tmp"),
             |file| {
-                // Measured on the handle, so the length is the file's that was
-                // written rather than whatever the name holds by the time it is
-                // asked.
+                // Measured on the handle, so the length is the written file's and not whatever
+                // the name holds by then.
                 let measured = file.try_clone()?;
                 let mut written = Written::default();
                 let mut writer =
                     crate::journal::format::Writer::create(std::io::BufWriter::new(file))?;
                 for host in all {
-                    // Measured against nothing written, so the record is the
-                    // whole host and what it remembers is all of it.
+                    // Measured against nothing written, so the record is the whole host.
                     if let Some((record, delta)) = Written::default().delta(host)? {
                         writer.write(&record)?;
                         written.update(delta);
@@ -600,9 +548,8 @@ impl Journal {
 
     /// What earlier sittings of this scan did.
     ///
-    /// A resumed report carries these alongside its own, so it describes a job
-    /// that ran in several sittings rather than presenting the last one as the
-    /// whole of it.
+    /// A resumed report carries these alongside its own, so it describes a job that ran
+    /// in several sittings.
     pub fn earlier_phases(&self) -> &[ScanPhase] {
         &self.earlier
     }
@@ -622,11 +569,11 @@ impl Journal {
         writer.flush()
     }
 
-    /// Writes down this sitting's phases as they stand, over what it wrote
-    /// of them last. See the module documentation.
+    /// Writes down this sitting's phases as they stand, over what it wrote last. See
+    /// the module documentation.
     ///
-    /// Written to a sibling and renamed over, as the cursor is, so a sitting
-    /// killed part way through leaves the previous record whole.
+    /// Written to a sibling and renamed over, as the cursor is, so a sitting killed part way
+    /// leaves the previous record whole.
     pub(crate) fn record_standing(&mut self, phases: &[ScanPhase]) -> Result<(), JournalError> {
         if phases.is_empty() {
             return Ok(());
@@ -645,11 +592,11 @@ impl Journal {
         )
     }
 
-    /// Appends what one sitting did once it has finished doing it, and
-    /// removes what it wrote of its phases as they stood.
+    /// Appends what one sitting did once it has finished, and removes its standing
+    /// record of its phases.
     ///
-    /// The removal only once the append has landed: until then the standing
-    /// record is the only one there is.
+    /// The removal waits for the append to land, since until then the standing record is the
+    /// only one.
     pub(crate) fn end_sitting(&mut self, phases: &[ScanPhase]) -> Result<(), JournalError> {
         if phases.is_empty() {
             return Ok(());
@@ -675,28 +622,24 @@ impl Journal {
 
     /// What an earlier sitting settled, and this one may skip.
     ///
-    /// Empty for a journal that was just created. A scan reads this to seed both
-    /// its dispatcher and its settlements, so the second sitting's cursor
-    /// continues the first's rather than starting over.
+    /// Empty for a journal just created. A scan seeds both its dispatcher and its
+    /// settlements from this, so the second sitting's cursor continues the first's.
     pub fn resume_point(&self) -> &Checkpoint {
         &self.resume_point
     }
 
     /// Writes how far the scan has got, and reports the writer is alive.
     ///
-    /// Cheap enough to call on a timer. The cursor is a watermark and a short
-    /// list however large the scan is, and the write is a rename over a small
-    /// file. See [`Checkpoint::write_atomically`].
+    /// Cheap enough to call on a timer: the cursor is small however large the scan,
+    /// and the write is a rename over a small file. See [`Checkpoint::write_atomically`].
     pub fn checkpoint(&mut self, settlements: &Settlements) -> Result<(), JournalError> {
         self.write_cursor(&settlements.checkpoint())
     }
 
-    /// Writes `cursor` as how far the scan has got, and reports the writer is
-    /// alive.
+    /// Writes `cursor` as how far the scan has got, and reports the writer is alive.
     ///
-    /// For a writer that read the cursor before taking the findings it wrote
-    /// beside it, which is the order a running scan needs; see
-    /// [`checkpoint`](crate::scanner::checkpoint).
+    /// For a writer that read the cursor before taking the findings it writes beside it, the
+    /// order a running scan needs; see [`checkpoint`](crate::scanner::checkpoint).
     pub(crate) fn write_cursor(&mut self, cursor: &Checkpoint) -> Result<(), JournalError> {
         cursor.write_atomically(&self.directory.join(CURSOR))?;
         self.lock.beat()
@@ -704,14 +647,12 @@ impl Journal {
 
     /// Writes down what the scan has found and how far it has got.
     ///
-    /// Findings first. A cursor claiming a target is settled, beside a file
-    /// missing what settling it produced, is the one ordering that loses a
-    /// finding. The other way round costs a target being probed twice.
+    /// Findings first: a cursor claiming a target settled beside a file missing its
+    /// finding loses that finding, while the other way round only probes a target twice.
     ///
-    /// The cursor is read here, after `hosts` were taken, so this suits a scan
-    /// that has stopped settling targets. While one is running, a target can
-    /// settle between the two readings with its finding in neither; the
-    /// scanner's own checkpoints read the cursor first for that reason.
+    /// The cursor is read here, after `hosts` were taken, which suits a scan that has stopped
+    /// settling targets. While one is running a target can settle between the two readings
+    /// with its finding in neither, so the scanner's own checkpoints read the cursor first.
     pub fn record(
         &mut self,
         hosts: &[Host],
@@ -721,36 +662,29 @@ impl Journal {
         self.checkpoint(settlements)
     }
 
-    /// The options the job runs under, or `None` where they were never
-    /// recorded.
+    /// The options the job runs under, or `None` where they were never recorded.
     ///
-    /// Recorded by the engine when the journal's first sitting starts, from the
-    /// configuration it was handed, and never rewritten. A later sitting is
-    /// held to them, and a caller continuing a job by its id restores them with
-    /// [`JobOptions::apply_to`]; the type says which options those are.
+    /// Recorded when the journal's first sitting starts, from its configuration, and never
+    /// rewritten. A later sitting is held to them, and a caller continuing a job by its id
+    /// restores them with [`JobOptions::apply_to`]; the type says which options those are.
     ///
-    /// `None` for a journal whose first sitting ran on an engine that did not
-    /// record them, for one no sitting has started yet, and for a watch's,
-    /// which asks nothing for them to decide. The first has no record of what
-    /// it ran under and is continued under whatever the caller passes.
+    /// `None` for a journal whose first sitting ran on an engine that did not record them
+    /// (continued under whatever the caller passes), for one no sitting has started, and for a
+    /// watch, which has nothing for them to decide.
     pub fn options(&self) -> Option<&JobOptions> {
         self.options.as_ref()
     }
 
-    /// Records the options the job runs under, where this is its first
-    /// sitting.
+    /// Records the options the job runs under, if this is its first sitting.
     ///
-    /// Only then: a journal an earlier sitting ran against without recording
-    /// them ran under options nobody wrote down, and recording this sitting's
-    /// as the job's would claim the earlier one ran under them too.
+    /// A journal an earlier sitting ran against without recording options ran under unknown
+    /// ones, and recording this sitting's would misdescribe it.
     ///
-    /// The ports they exclude are ones every sitting numbers the plan without,
-    /// so no sitting asks or settles them, and the manifest's total, written
-    /// before they were known, counts them out here. Counted in, they are a
-    /// remainder nothing reaches: a finished job would list as unfinished for
-    /// good, and a resume would announce probes it will not send. Only in a
-    /// manifest this handle wrote: rewriting one another build wrote would
-    /// drop whatever fields this one does not know.
+    /// Every sitting numbers the plan without the excluded ports, so the manifest's total,
+    /// written before they were known, is recounted here. Counted in, they would be a remainder
+    /// nothing reaches: a finished job would stay unfinished and a resume would announce probes
+    /// it will not send. Only rewritten in a manifest this handle wrote, since rewriting another
+    /// build's would drop fields this one does not know.
     pub(crate) fn record_options(&mut self, options: JobOptions) -> Result<(), JournalError> {
         if self.options.is_some() || !self.is_untouched() {
             return Ok(());
@@ -775,14 +709,13 @@ impl Journal {
         Ok(())
     }
 
-    /// Whether no sitting has run against this journal: no cursor written, no
-    /// phase and no finding recorded.
+    /// Whether no sitting has run against this journal: no cursor written, no phase
+    /// and no finding recorded.
     ///
-    /// A cursor that cannot be looked for is taken to be there, which keeps
-    /// the journal: what this decides is whether to write the job's options
-    /// and whether to remove the journal, and a journal wrongly called touched
-    /// costs a record of its options, where one wrongly called untouched
-    /// could lose a sitting's work.
+    /// A cursor that cannot be looked for counts as present. This decides whether to write the
+    /// job's options and whether to remove the journal, and wrongly calling it touched costs
+    /// only the options record, while wrongly calling it untouched could lose a sitting's
+    /// work.
     fn is_untouched(&self) -> bool {
         self.earlier.is_empty()
             && self.restored.is_empty()
@@ -799,32 +732,22 @@ impl Journal {
         &self.directory
     }
 
-    /// Gives up a journal handed to a scan that refused before it started, and
-    /// removes it if no sitting ever ran against it.
+    /// Gives up a journal handed to a scan that refused before it started, and removes
+    /// it if no sitting ever ran against it.
     ///
-    /// A scan that never started should leave no trace, which is the rule
-    /// [`create`](Self::create) keeps for a journal it could not finish
-    /// making, and a refusal is the same case arriving later. Kept, the record
-    /// lists as a job nobody ran, resumable with nothing done, and counts
-    /// against whatever limit a front end keeps on records. Its caller cannot
-    /// tidy it: the journal was handed over by value.
+    /// A scan that never started leaves no trace, as in [`create`](Self::create). Kept, the
+    /// record would list as a resumable job with nothing done and count against a front end's
+    /// record limit, and the caller cannot tidy it since the journal was handed over by value.
     ///
-    /// Only a journal this handle made and no sitting has touched: no cursor
-    /// written, no phase and no finding recorded. One an earlier sitting ran
-    /// against holds that sitting's work. One reopened was kept by whoever
-    /// made it, even with nothing in it, and a caller reopens a job to run it
-    /// once a first attempt was refused. Either is released for the next
-    /// sitting.
+    /// Only a journal this handle made and no sitting has touched (no cursor, phase or finding)
+    /// is removed. One an earlier sitting ran against holds its work, and one reopened was kept
+    /// by whoever made it; either is released for the next sitting.
     ///
-    /// Removed while the lock is held, so nothing takes the journal up between
-    /// the decision and the removal. The lock file goes with the directory and
-    /// the drop that follows finds nothing to release, which it tolerates.
+    /// Removed while the lock is held, so nothing takes the journal up in between. The lock
+    /// file goes with the directory, and the following drop tolerates finding nothing.
     pub(crate) fn withdraw(self) {
         if self.created && self.is_untouched() {
-            // Best effort, as removing a half-made journal in `create` is: a
-            // directory that will not go is a record of nothing, which is the
-            // state this avoids rather than a reason to report the refusal
-            // any differently.
+            // Best effort, as in `create`.
             let _ = remove_directory(&self.directory);
         }
     }
@@ -835,9 +758,8 @@ impl Journal {
     }
 }
 
-/// Whether a findings file `length` bytes long, `superseded` of them records
-/// something later superseded, is due to be written whole again. See
-/// [`Journal::should_compact`].
+/// Whether a findings file `length` bytes long, `superseded` of them superseded, is
+/// due to be rewritten. See [`Journal::should_compact`].
 fn outgrown(length: u64, superseded: u64) -> bool {
     superseded > COMPACT_FLOOR.max(length.saturating_sub(superseded))
 }
@@ -848,14 +770,11 @@ const COMPACT_FLOOR: u64 = 4 * 1024 * 1024;
 /// What a journal's findings file holds of each host, and how many of its
 /// bytes later records superseded.
 ///
-/// Each port is remembered as a digest of the record last written for it,
-/// rather than as the port, so remembering what was written costs a few bytes
-/// a port rather than a second copy of every host the scan holds. Kept for
-/// this process only and never written down, so the hasher need not be stable
-/// across builds.
+/// Each port is remembered as a digest of the record last written for it, a few
+/// bytes a port. Kept in memory only, so the hasher need not be stable across builds.
 ///
-/// Sizes are those of each piece as serialised, which is within a separator of
-/// what the line holds; the count they feed is a threshold, not an account.
+/// Sizes are of each piece as serialised, within a separator of the line; they feed a
+/// threshold, not an account.
 #[derive(Debug, Default)]
 struct Written {
     hosts: std::collections::HashMap<ScopedIp, HeldHost>,
@@ -902,13 +821,13 @@ impl Delta {
 }
 
 impl Written {
-    /// What a file `length` bytes long holds, where `hosts` are what it folds
-    /// to: those whole, and the rest of the file superseded.
+    /// What a file `length` bytes long holds, where `hosts` are what it folds to: those
+    /// whole, and the rest superseded.
     fn holding(hosts: &[Host], length: u64) -> Result<Self, JournalError> {
         let mut written = Self::default();
         let mut live = 0;
         for host in hosts {
-            // A file that holds nothing of a host holds all of it as new.
+            // Against nothing written, the record is the whole host.
             if let Some((_, delta)) = Self::default().delta(host)? {
                 live += delta.length();
                 written.update(delta);
@@ -918,20 +837,17 @@ impl Written {
         Ok(written)
     }
 
-    /// `host` as a record carrying only the ports whose record differs from
-    /// what was last written of them, and what writing it would hold; `None`
-    /// where the file already holds all of it.
+    /// `host` as a record carrying only the ports whose record differs from what was last
+    /// written of them, with what writing it would hold; `None` where the file already holds
+    /// all of it.
     ///
-    /// Compared rather than trusted to have changed: a host is marked changed
-    /// by whatever edited it, and an edit that confirmed what was on record,
-    /// a finding reached again or a service named as it was, changes nothing a
-    /// record would carry. Written anyway, every such pass over a host would
-    /// cost a record of it.
+    /// Compared, not trusted: a host is marked changed by whatever edited it, and an edit that
+    /// confirmed what was on record (a finding reached again, a service named as before)
+    /// changes nothing a record would carry.
     fn delta(&self, host: &Host) -> Result<Option<(HostRecord, Delta)>, JournalError> {
         let held = self.hosts.get(&host.scoped_ip());
         let mut record = HostRecord::from(host);
-        // `HostRecord` lists the ports in the order the host yields them, so
-        // the two walk together.
+        // `HostRecord` lists the ports in the order the host yields them, so the two zip.
         let ports = std::mem::take(&mut record.ports);
         let rest = mark(&record)?;
         let mut changed = Vec::new();
@@ -964,8 +880,8 @@ impl Written {
         Ok(Some((record, delta)))
     }
 
-    /// Records that the file holds what `delta` wrote, over whatever it held
-    /// of that host before, and counts what that superseded.
+    /// Records that the file holds what `delta` wrote over that host, and counts what it
+    /// superseded.
     fn update(&mut self, delta: Delta) {
         let held = match self.hosts.entry(delta.key) {
             std::collections::hash_map::Entry::Occupied(slot) => {
@@ -984,8 +900,8 @@ impl Written {
     }
 }
 
-/// A digest of `record` as it is written, and its length: the same
-/// serialisation the file gets, fed to a hasher rather than to a buffer.
+/// A digest and length of `record` as serialised, the same bytes the file gets, fed
+/// to a hasher.
 fn mark(record: &impl serde::Serialize) -> Result<Mark, JournalError> {
     use std::hash::Hasher;
 
@@ -1011,14 +927,14 @@ fn mark(record: &impl serde::Serialize) -> Result<Mark, JournalError> {
     serde_json::to_writer(&mut hashing, record).map_err(JournalError::json)?;
     Ok(Mark {
         digest: hashing.hasher.finish(),
-        // A separator or a newline beside it, and saturated for a record past
-        // four gigabytes, which is past what a journal line is read in.
+        // Plus a separator or newline; saturated past four gigabytes, beyond what a
+        // journal line is read in.
         length: u32::try_from(hashing.length + 1).unwrap_or(u32::MAX),
     })
 }
 
-/// A journal as it appears to a caller choosing between them. Read without
-/// taking the lock, so listing never disturbs a running scan.
+/// A journal as it appears to a caller choosing between them. Read without taking
+/// the lock, so listing never disturbs a running scan.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -1028,20 +944,17 @@ pub struct Entry {
     pub manifest: JournalManifest,
     /// How far it got, or `None` where that could not be read.
     ///
-    /// A journal that never checkpointed carries a fresh cursor rather than
-    /// nothing, since settling no targets is a fact about the scan. `None` is the
-    /// other case: the file is there and this process cannot read it, usually
-    /// because the scan ran under `sudo` and left it behind. That must not read
-    /// as no progress, or a listing reports every such scan as
-    /// untouched and offers to continue work that is already done.
+    /// A journal that never checkpointed carries a fresh cursor. `None` means the file
+    /// is there and this process cannot read it, usually because the scan ran under `sudo`; it
+    /// must not read as no progress, or a listing would offer to continue finished work.
     pub checkpoint: Option<Checkpoint>,
     /// Whether anything is writing it.
     pub lock: LockState,
 }
 
 impl Entry {
-    /// A listing entry from its parts, for a caller rendering one it did not
-    /// read off disk.
+    /// A listing entry from its parts, for a caller rendering one it did not read off
+    /// disk.
     pub fn new(
         directory: PathBuf,
         manifest: JournalManifest,
@@ -1059,15 +972,11 @@ impl Entry {
     /// Whether this journal has anything left to do.
     ///
     /// A journal whose cursor covers the whole plan is finished; one that never
-    /// checkpointed has everything left. One whose cursor cannot be read is not
-    /// finished as far as anything here can tell, which is the answer that keeps
-    /// a retention sweep from deleting it.
+    /// checkpointed has everything left. One whose cursor cannot be read is not finished, which
+    /// keeps a retention sweep from deleting it.
     pub fn is_complete(&self) -> bool {
-        // A watch is never finished. It enumerated nothing, so its total is
-        // zero, and by the arithmetic below every listen journal would be
-        // complete the moment it was created, offering no resume and inviting a
-        // retention sweep to take it. What is true instead is that another
-        // sitting can always be appended.
+        // A watch is never finished: its total is zero, so by the arithmetic below it would
+        // be complete when created. Another sitting can always be appended.
         if self.kind() == ScanKind::Listen {
             return false;
         }
@@ -1078,9 +987,8 @@ impl Entry {
 
     /// Which phase this journal records.
     ///
-    /// A sweep and a port scan are counted in different units, so a caller
-    /// reporting progress or offering to continue one has to know which it is
-    /// looking at.
+    /// A sweep and a port scan count in different units, so a caller reporting progress
+    /// needs to know which this is.
     pub fn kind(&self) -> ScanKind {
         self.manifest.kind()
     }
@@ -1088,15 +996,11 @@ impl Entry {
     /// How many targets are settled, or `None` where the cursor could not be
     /// read.
     ///
-    /// [`Checkpoint::settled_count`], which counts a position the list names
-    /// that a watermark has already passed once, by the watermark, as
-    /// [`Cursor::from_checkpoint`](super::cursor::Cursor::from_checkpoint)
-    /// does. `Checkpoint::read` deliberately does not drop such entries, so
-    /// without that filter a damaged list would be counted twice here and
-    /// nowhere else. That inflates the total, and
-    /// [`is_complete`](Self::is_complete) can tip to `true` on the inflation,
-    /// which is what a retention sweep deletes on. Two readers of one file
-    /// should not disagree about the scan it describes.
+    /// [`Checkpoint::settled_count`], which counts a listed position a watermark has
+    /// passed once, as [`Cursor::from_checkpoint`](super::cursor::Cursor::from_checkpoint)
+    /// does. `Checkpoint::read` keeps such entries, so without that a damaged list would be
+    /// double-counted here, and [`is_complete`](Self::is_complete) could tip to `true`, which is
+    /// what a retention sweep deletes on.
     pub fn settled(&self) -> Option<u128> {
         self.checkpoint
             .as_ref()
@@ -1107,47 +1011,28 @@ impl Entry {
 /// Creates the directory journals are kept in, and gives it to the user who
 /// invoked an elevated run.
 ///
-/// Call this before [`Journal::create`]. It exists because `create_dir_all`
-/// alone is not enough, and the gap stays invisible until somebody runs a scan
-/// that does not need root.
+/// Call this before [`Journal::create`].
 ///
-/// # The defect this closes
+/// Raw strategies need root, so the first run on a machine is usually under `sudo`, and
+/// [`paths::root`](super::paths::root) resolves the invoking user's home. The two
+/// directories above each scan's directory are then created by root, and claiming a scan's
+/// directory does not give them away. Left to root, every later unprivileged run, such as a
+/// listening phase, finds a directory it cannot write to and silently records nothing.
 ///
-/// Every raw strategy needs root, so the first run on a machine is almost always
-/// under `sudo`, and [`paths::root`](super::paths::root) resolves the invoking
-/// user's home so the journals land where that user will look. What they land in
-/// is two directories created by a root process, and claiming each scan's own
-/// directory does not give away the two above it.
+/// The two directories are claimed whether or not this call created them, so an existing
+/// installation left to root is repaired too. Claiming an already correct directory is a
+/// `chown` to its current owner.
 ///
-/// Left to root, the result is silent and total. Every later run that does not
-/// need root finds a directory it cannot write to, says `not recording this
-/// run: Permission denied`, and carries on. A listening phase needs no
-/// privileges, so it would never record anything on a machine where a scan had
-/// run first.
+/// Above those two, what this call created is given too: a first run with no
+/// `~/.local/state` creates it and `~/.local`. One already there belongs to whoever made it,
+/// unless root owns it, the sign of an elevated run that gave nothing back; see the
+/// `ownership` module.
 ///
-/// # It repairs as well as creates
+/// Nothing outside the invoking user's home is given: a state root kept through `sudo`
+/// that points elsewhere stays root's.
 ///
-/// The two directories are claimed whether or not this call created them.
-/// Creating and claiming alone would fix new installations and leave every
-/// existing one broken, since the directory may already be there, made by a run
-/// that left it to root. Claiming an already-correct directory is a `chown` to
-/// the owner it already has.
-///
-/// Above those two, what this call created is given too: a first run on a
-/// machine with no `~/.local/state` creates it and `~/.local` on the way, and
-/// left to root they are directories no other program of the user's can keep
-/// its state in. One that was already there may predate this engine by years
-/// and belongs to whoever made it, unless that is root, which is how an
-/// elevated run that gave nothing back leaves it; see
-/// the `ownership` module for why that one is given back.
-///
-/// Nothing is given outside the invoking user's home, wherever the root is:
-/// a state root kept through `sudo` that points elsewhere stays root's, as a
-/// settings directory there does.
-///
-/// Best effort, like every other claim here: a directory that cannot be given
-/// away is not worth failing a scan over, and an unprivileged run has no
-/// invoking user to give it to and no need of one.
+/// Best effort: a directory that cannot be given away is not worth failing a scan over, and
+/// an unprivileged run has nobody to give it to.
 pub fn prepare_root(root: &Path) -> std::io::Result<()> {
     let own = super::paths::root().as_deref() == Some(root);
     #[cfg(unix)]
@@ -1169,17 +1054,15 @@ enum Hand {
     Reclaim,
 }
 
-/// [`prepare_root`] with the claim passed in, so a test can see what would be
-/// given away without an elevated process to give it.
+/// [`prepare_root`] with the claim passed in, so a test can see what would be given
+/// without an elevated process.
 ///
-/// `own` says `root` is this crate's own location rather than one a caller
-/// named, which is the one case where what lies above it is known to be
-/// somewhere this engine may have created on the invoking user's behalf. A
-/// caller that named its own location is telling us where to write, not
-/// handing us everything above it.
+/// `own` says `root` is this crate's own location, the one case where what lies above it
+/// may have been created by this engine on the user's behalf. A location a caller named
+/// says where to write, not what lies above it.
 ///
-/// `home` is the invoking user's, `None` for a run on nobody else's behalf;
-/// the directories between it and the root are the ones a repair looks at.
+/// `home` is the invoking user's, `None` for a run on nobody else's behalf; the directories
+/// between it and the root are the ones a repair looks at.
 fn prepare_root_with(
     root: &Path,
     own: bool,
@@ -1213,21 +1096,18 @@ fn prepare_root_with(
     Ok(())
 }
 
-/// Every journal under a root, and everything standing there as one would
-/// that could not be listed.
+/// Every journal under a root, and everything standing there that could not be
+/// listed.
 ///
-/// What was passed over is data rather than a warning written as the root is
-/// read, because what to do about it is the caller's to say: a listing a
-/// person reads wants one line for ninety journals a newer build wrote, and a
-/// prune wants their directories. A listing short of a record with nothing to
-/// say so reads as a record that is not there.
+/// What was passed over is returned as data so the caller decides how to report it: a
+/// listing a person reads wants one line for ninety journals a newer build wrote, and a
+/// prune wants their directories.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default)]
 pub struct Listing {
     /// The journals this build can read, newest first.
     pub entries: Vec<Entry>,
-    /// What stands in the root as a journal would and could not be read as
-    /// one, by name.
+    /// What stands in the root as a journal would but could not be read as one.
     pub passed_over: Vec<PassedOver>,
 }
 
@@ -1244,8 +1124,8 @@ pub struct PassedOver {
 }
 
 impl PassedOver {
-    /// A passed-over entry from its parts, for a caller rendering one it did
-    /// not read off disk.
+    /// A passed-over entry from its parts, for a caller rendering one it did not read
+    /// off disk.
     pub fn new(name: impl Into<String>, directory: PathBuf, why: Unlisted) -> Self {
         Self {
             name: name.into(),
@@ -1257,27 +1137,24 @@ impl PassedOver {
 
 /// Why [`list`] passed something over.
 ///
-/// A kind rather than a sentence, so a caller can say it once for a whole
-/// root: a machine that ran a newer build has every journal it wrote passed
-/// over for the same reason, and a line per journal buries the one fact.
+/// A kind, so a caller can report it once for a whole root: a machine that ran a
+/// newer build has every journal it wrote passed over for the same reason.
 /// [`fmt::Display`](std::fmt::Display) gives the sentence for one.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unlisted {
-    /// A link rather than a directory.
+    /// A link, not a directory.
     ///
-    /// Every journal is a directory this crate made, so a link is none, and
-    /// [`prune`] never removes one: what it points to is somebody else's to
-    /// say, and under `sudo` a removal that followed it would be root's.
+    /// Every journal is a directory this crate made, so a link is none, and [`prune`] never
+    /// removes one: under `sudo` a removal that followed it would be root's.
     Link,
-    /// A journal whose manifest names a format newer than this build's, which
-    /// the build that wrote it still reads.
+    /// A journal whose manifest names a format newer than this build's.
     NewerFormat {
         /// The format the manifest names.
         found: u32,
     },
-    /// A manifest that could not be read or did not parse, in the words of
-    /// the failure: a permission this process lacks, a file cut short.
+    /// A manifest that could not be read or parsed, in the failure's words: a missing
+    /// permission, a file cut short.
     Unreadable(String),
 }
 
@@ -1297,13 +1174,10 @@ impl std::fmt::Display for Unlisted {
 
 /// Every journal under `root`, newest first, and what was passed over.
 ///
-/// A journal that cannot be read is passed over rather than failing the
-/// listing, since one unreadable journal must not hide the rest, and is
-/// returned in [`Listing::passed_over`] with why: the reason, a manifest from a
-/// newer format or a link planted where a journal should be, is what its
-/// owner has to act on. A link standing in the root is passed over the same
-/// way, being no journal. A directory holding no manifest at all is passed
-/// over in silence, as one a scan starting now has yet to write it into.
+/// One unreadable journal does not hide the rest: it is returned in
+/// [`Listing::passed_over`] with the reason (a newer format, a link where a journal should
+/// be, a read failure), which its owner has to act on. A directory holding no manifest is
+/// skipped silently, as one a scan starting now has yet to write.
 ///
 /// An empty listing for a root that does not exist yet.
 pub fn list(root: &Path) -> Result<Listing, JournalError> {
@@ -1335,8 +1209,7 @@ pub fn list(root: &Path) -> Result<Listing, JournalError> {
             Err(e) => {
                 let why = match e {
                     JournalError::VersionTooNew { found, .. } => Unlisted::NewerFormat { found },
-                    // The system's words alone for an I/O error: whoever
-                    // renders this says whose they are.
+                    // The system's words alone; whoever renders this says whose they are.
                     JournalError::Io(e) => Unlisted::Unreadable(e.to_string()),
                     other => Unlisted::Unreadable(other.to_string()),
                 };
@@ -1349,10 +1222,8 @@ pub fn list(root: &Path) -> Result<Listing, JournalError> {
             }
         };
         listing.entries.push(Entry {
-            // `Err` here is a cursor that exists and could not be read, which
-            // `Entry::checkpoint` records as `None` rather than as a scan that
-            // settled nothing. A journal that never checkpointed comes back as
-            // a fresh cursor from `read_checkpoint` itself.
+            // `Err` is a cursor that exists and could not be read, recorded as `None`. A
+            // journal that never checkpointed gets a fresh cursor from `read_checkpoint`.
             checkpoint: read_checkpoint(&directory).ok(),
             lock: super::lock::inspect(&directory.join(LOCK)),
             manifest,
@@ -1369,20 +1240,15 @@ pub fn list(root: &Path) -> Result<Listing, JournalError> {
 
 /// The scan at `directory`, as the report it would have produced.
 ///
-/// A journal holds everything a report is made of: what each sitting covered and
-/// under which settings, and every host it found. So a scan that is over can be
-/// read back and rendered as it was when it ended. That is what this returns, the
-/// hosts and the phases in the order they ran and the engine
-/// version taken from the manifest rather than from this build, so a scan run
-/// by an older engine still says so.
+/// A journal holds everything a report is made of, so a finished scan can be read
+/// back as it was when it ended: the hosts, the phases in the order they ran, and the engine
+/// version from the manifest, so a scan run by an older engine still says so.
 ///
-/// Read without the lock, like [`list`], so it is safe to call on a scan that is
-/// still running. What comes back is then a report of everything written down so
-/// far, which is a checkpoint behind the live one.
+/// Read without the lock, like [`list`], so it is safe on a running scan; the result is then
+/// a checkpoint behind the live one.
 ///
-/// A journal missing its findings or its phases reads as a scan that recorded
-/// none, rather than as a failure: a sitting can end before its first
-/// checkpoint, and a report of nothing is the truthful account of that.
+/// A journal missing its findings or phases reads as a scan that recorded none, since a
+/// sitting can end before its first checkpoint.
 pub fn report(directory: &Path) -> Result<ScanReport, JournalError> {
     let manifest = read_manifest(directory)?;
 
@@ -1393,15 +1259,13 @@ pub fn report(directory: &Path) -> Result<ScanReport, JournalError> {
     ))
 }
 
-/// How a phase is named in a refusal. Prose rather than the wire name, since
-/// this reaches a person.
+/// How a phase is named in a refusal, in prose, since this reaches a person.
 fn phase_name(kind: ScanKind) -> &'static str {
     match kind {
         ScanKind::Discovery => "host-discovery sweep",
         ScanKind::PortScan => "port scan",
-        // A watch enumerates nothing, so its journal has no cursor and resuming
-        // one appends a sitting rather than skipping settled work. It is still a
-        // journal this build writes, so this name reaches a person.
+        // A watch's journal is resumed by appending a sitting, but it is still one this
+        // build writes.
         ScanKind::Listen => "listening phase",
     }
 }
@@ -1409,18 +1273,12 @@ fn phase_name(kind: ScanKind) -> &'static str {
 /// Deletes the journal at `directory`.
 ///
 /// Refuses one a live scan is writing. A caller pruning by age should read
-/// [`Entry::lock`] and skip what is held rather than relying on this, so a
-/// sweep reports what it left alone.
+/// [`Entry::lock`] and skip what is held, so the sweep can report what it left alone.
 ///
-/// The refusal is a check, not an exclusion. The lock is inspected and then
-/// the directory is removed, and a scan that takes the lock between the two has
-/// its journal deleted under it: it runs on with open descriptors, appending to
-/// unlinked inodes, and nothing it writes lands anywhere. Reading [`Entry::lock`]
-/// first, as above, is the same check raced one step earlier rather than a way
-/// out of it. The window is one lock taken against one directory removal and both
-/// parties are the same user's own processes, so this is documented rather than
-/// closed. Closing it wants the lock held across the removal, which is a protocol
-/// change belonging to `lock` rather than here.
+/// The refusal is a check, not an exclusion: a scan that takes the lock between the
+/// inspection and the removal has its journal deleted under it and keeps writing to
+/// unlinked files. Both parties are the same user's processes and the window is one lock
+/// against one removal; closing it would need the lock held across the removal.
 pub fn remove(directory: &Path) -> Result<(), OpenError> {
     let state = super::lock::inspect(&directory.join(LOCK));
     if !state.is_resumable() {
@@ -1440,27 +1298,21 @@ struct FinishedRecord {
 
 /// Reads back what a journal's earlier sittings found.
 ///
-/// Records are folded together, each as a later account of the host than the
-/// ones before it, so a host written once when it answered and again when its
-/// ports were classified comes back whole, with the round trips its last
-/// record held; see [`Host::merge_later_account`].
+/// Records are folded together, each as a later account of the host, so a host
+/// written once when it answered and again when its ports were classified comes back whole;
+/// see [`Host::merge_later_account`].
 ///
-/// Two records are the same host when they share any address rather than when
-/// their primary addresses match. Local discovery promotes a host's primary
-/// address when a better one turns up, such as a link-local giving way to a
-/// global, so the same machine is written under one address and then another.
-/// Keyed on the primary alone it would come back as two hosts that were never
-/// two.
+/// Two records are the same host when they share any address. Local discovery promotes a
+/// host's primary address when a better one turns up (a link-local giving way to a global),
+/// so the same machine can be written under two primaries.
 ///
-/// An address is the one [`ScopedIp::scoped`] makes of it with the record's
-/// zone, so a link-local carries its interface and two machines answering to
-/// `fe80::1` on two links stay two hosts. That is the identity the report keys
-/// its hosts by and the one a diff pairs them by, so a job read back holds what
-/// its live report held. A record that names no zone joins only others that
-/// name none, as in pairing.
+/// An address is the one [`ScopedIp::scoped`] makes of it with the record's zone, so two
+/// machines answering to `fe80::1` on two links stay two hosts. That is the identity the
+/// report and a diff key hosts by. A record that names no zone joins only others that name
+/// none.
 ///
-/// A missing file is no findings rather than a failure, since a journal can be
-/// read before its first host is written.
+/// A missing file is no findings, since a journal can be read before its first host is
+/// written.
 fn read_findings(directory: &Path) -> Result<Vec<Host>, JournalError> {
     let file = match open_to_read(&directory.join(HOSTS)) {
         Ok(file) => file,
@@ -1470,15 +1322,14 @@ fn read_findings(directory: &Path) -> Result<Vec<Host>, JournalError> {
 
     let mut reader = match crate::journal::format::Reader::open(std::io::BufReader::new(file)) {
         Ok(reader) => reader,
-        // A findings file with no header was never opened for writing, which
-        // is a journal that stopped before it found anything.
+        // No header means the file was never opened for writing: a journal that stopped
+        // before it found anything.
         Err(JournalError::NotAJournal) => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
 
-    // Slots rather than a map: a record can join two hosts that were separate
-    // until it arrived, and the one it merges into keeps its slot while the
-    // other empties.
+    // Slots, not a map: a record can join two hosts that were separate until then, and
+    // the one it merges into keeps its slot while the other empties.
     let mut hosts: Vec<Option<Host>> = Vec::new();
     let mut slot_of: std::collections::BTreeMap<ScopedIp, usize> =
         std::collections::BTreeMap::new();
@@ -1494,8 +1345,7 @@ fn read_findings(directory: &Path) -> Result<Vec<Host>, JournalError> {
 
         let slot = match matched.split_first() {
             Some((&keep, absorb)) => {
-                // Every host this record has an address in common with is the
-                // same machine, so they fold into one another as well.
+                // Every host sharing an address with this record is the same machine.
                 for &other in absorb {
                     if let Some(other) = hosts[other].take() {
                         merge_into(&mut hosts, keep, other, Host::merge);
@@ -1533,10 +1383,9 @@ fn scoped_ips(host: &Host) -> impl Iterator<Item = ScopedIp> + '_ {
 /// Folds `host` into the one at `slot` by `fold`, or puts it there if the
 /// slot is empty.
 ///
-/// A record folds in as a later account of what the slot holds, since the
-/// file is appended in the order its records were written; see
-/// [`Host::merge_later_account`]. Two slots a record shows to be one machine
-/// fold as any two accounts of a host do.
+/// A record folds in as a later account of what the slot holds, since the file is
+/// appended in write order; see [`Host::merge_later_account`]. Two slots a record shows to
+/// be one machine fold as any two accounts of a host do.
 fn merge_into(hosts: &mut [Option<Host>], slot: usize, host: Host, fold: fn(&mut Host, Host)) {
     match hosts[slot].as_mut() {
         Some(existing) => fold(existing, host),
@@ -1544,9 +1393,8 @@ fn merge_into(hosts: &mut [Option<Host>], slot: usize, host: Host, fold: fn(&mut
     }
 }
 
-/// How long the findings file in `directory` is, measured on the file it
-/// opens to read rather than asked of the name: nothing here asks a
-/// journal's names anything by path. A file not there yet is no length.
+/// How long the findings file in `directory` is, measured on the opened file since
+/// nothing here looks up a journal's names by path. A missing file has length 0.
 fn findings_length(directory: &Path) -> Result<u64, JournalError> {
     match open_to_read(&directory.join(HOSTS)) {
         Ok(file) => Ok(file.metadata()?.len()),
@@ -1574,7 +1422,7 @@ fn read_phases(directory: &Path) -> Result<Vec<ScanPhase>, JournalError> {
         phases.push(ScanPhase::from(&record));
     }
 
-    // Sittings that never ended. A phase already appended is one a sitting
+    // Sittings that never ended. A phase already appended was left by a sitting
     // stopped between the append and the removal, and is read once.
     for standing in standing_phases(directory) {
         let recorded = phases.iter().any(|phase| {
@@ -1584,15 +1432,14 @@ fn read_phases(directory: &Path) -> Result<Vec<ScanPhase>, JournalError> {
             phases.push(standing);
         }
     }
-    // Oldest first, as the appended ones already are: a sitting that never
-    // ended ran before whatever was appended after it.
+    // Oldest first; a sitting that never ended ran before whatever was appended after
+    // it.
     phases.sort_by_key(ScanPhase::started_at);
     Ok(phases)
 }
 
-/// Where the sitting holding `lock` writes its phases as they stand: a name
-/// ordered by when it started, so reading them in name order is reading them
-/// in the order they ran.
+/// Where the sitting holding `lock` writes its phases as they stand, named by start
+/// time so name order is run order.
 fn sitting_file(directory: &Path, lock: &Lock) -> PathBuf {
     let started = lock
         .record()
@@ -1605,9 +1452,8 @@ fn sitting_file(directory: &Path, lock: &Lock) -> PathBuf {
 
 /// The phases of every sitting in `directory` that never ended, oldest first.
 ///
-/// A standing record is written whole by rename, so one that cannot be read
-/// is not a torn write but something else at the name, a link among them, and
-/// is passed over rather than failing a journal whose own files read.
+/// A standing record is written whole by rename, so one that cannot be read is
+/// something else at the name, such as a link, and is skipped.
 fn standing_phases(directory: &Path) -> Vec<ScanPhase> {
     let Ok(held) = names(directory) else {
         return Vec::new();
@@ -1640,8 +1486,7 @@ fn standing_phases(directory: &Path) -> Vec<ScanPhase> {
 
 /// Reads back the detection-run tapes a journal holds, for offline replay.
 ///
-/// A missing file is no runs rather than a failure, the same as a journal read
-/// before any detection ran.
+/// A missing file is no runs, as for a journal read before any detection ran.
 pub fn read_detections(directory: &Path) -> Result<Vec<DetectionRunRecord>, JournalError> {
     let file = match open_to_read(&directory.join(DETECTIONS)) {
         Ok(file) => file,
@@ -1664,39 +1509,24 @@ pub fn read_detections(directory: &Path) -> Result<Vec<DetectionRunRecord>, Jour
 
 /// Opens a findings file to add to it, making it whole first.
 ///
-/// [`format::Writer::append`](super::format::Writer::append) states a
-/// precondition, "a caller appending has already opened the file for reading
-/// and validated it", and this is what establishes it for all three append
-/// sites, which would otherwise open by path and write. It is one function
-/// rather than three checks because both failures below are the same defect
-/// from two ends: the append path cannot see what it is appending
-/// to, and `O_APPEND` guarantees it lands after whatever is there.
+/// Establishes the precondition
+/// [`format::Writer::append`](super::format::Writer::append) states, for all three append
+/// sites: an `O_APPEND` descriptor cannot see what it appends to.
 ///
-/// A torn tail stops being discardable the moment anything follows it. The
-/// format promises that a torn final line is discarded rather than an error,
-/// and [`format::Reader`](super::format::Reader) keeps that promise only while
-/// the torn line is *last*. A resumed sitting appends directly after the torn
-/// bytes; the tear becomes the prefix of the next record's line, that line is
-/// newline-terminated, and a JSON prefix followed by a JSON object is
-/// corruption by the reader's own rule. From then on the file can be neither
-/// read nor resumed, and the hours in front of the tear are stranded, the exact
-/// loss the torn-tail policy exists to prevent, arriving at the first append
-/// after the crash it was written to survive. Truncating to the last newline
-/// discards precisely what the reader would have discarded, one record inside
-/// the replay interval, and nothing else.
+/// A torn tail stops being discardable once anything follows it.
+/// [`format::Reader`](super::format::Reader) discards a torn line only while it is last. A
+/// resumed sitting appending after the torn bytes would make the tear the prefix of a
+/// newline-terminated line, which is corruption by the reader's rule, and the file could
+/// then be neither read nor resumed. Truncating to the last newline discards exactly what
+/// the reader would have.
 ///
-/// A file with no header is mended or refused, never blessed.
-/// [`Journal::open_findings`] creates the file and writes its header as two
-/// steps, so a process killed between them leaves a zero-length file. The resume
-/// path reads that as a journal that found nothing, which is true at that moment;
-/// appending into it then writes records under no header, every later read is
-/// `NotAJournal` mapped back to no findings, and the whole sitting is invisible
-/// while the cursor advances and reports the ground covered. Empty is mended,
-/// because there is nothing in the file to be mistaken for a record and
-/// completing the header is what the interrupted call was doing. Non-empty
-/// without a header is somebody else's file standing at this name, and naming it
-/// in an error is the only honest answer: prepending a header would turn its
-/// lines into records this engine claims to have written.
+/// A file with no header is mended or refused. [`Journal::open_findings`] creates the file
+/// and writes its header in two steps, so a process killed between them leaves a
+/// zero-length file; appending into it would write records under no header, which every
+/// later read treats as no findings while the cursor advances. An empty file is mended by
+/// writing the header. A non-empty file without one is somebody else's file at this name
+/// and is refused, since prepending a header would claim its lines as this engine's
+/// records.
 fn open_for_append(path: &Path) -> Result<fs::File, JournalError> {
     mend(path)?;
     Ok(append_existing(path)?)
@@ -1704,22 +1534,19 @@ fn open_for_append(path: &Path) -> Result<fs::File, JournalError> {
 
 /// Gives a findings file a header if it has none and no torn tail if it has one.
 ///
-/// The header is checked through [`format::Reader::open`](super::format::Reader)
-/// rather than by matching bytes here, so the rule this enforces is the same rule
-/// the reader applies, the version refusal included, which an append to a journal
-/// from a newer build should meet here as well as at the resume.
+/// The header is checked through [`format::Reader::open`](super::format::Reader),
+/// so the rule is the reader's own, version refusal included.
 ///
-/// Order matters: the header is validated *before* anything is truncated, so a
-/// stranger's file at this name is refused intact rather than edited and then
-/// refused.
+/// The header is validated before anything is truncated, so a stranger's file at this name
+/// is refused intact.
 fn mend(path: &Path) -> Result<(), JournalError> {
     use std::io::{Read, Seek, SeekFrom};
 
     let mut file = open_existing(path)?;
     let length = file.metadata()?.len();
 
-    // The header write that did not finish, which is the whole of the window
-    // between `open_findings`' create and its write.
+    // The header write that did not finish, between `open_findings`' create and its
+    // write.
     if length == 0 {
         super::format::Writer::create(&mut file)?.flush()?;
         return Ok(());
@@ -1737,9 +1564,9 @@ fn mend(path: &Path) -> Result<(), JournalError> {
     let keep = last_whole_line(&mut file, length)?;
     file.set_len(keep)?;
 
-    // No whole line anywhere, so the header line is the torn one. It parsed, so
-    // the file is this engine's and there is simply nothing in it to keep;
-    // writing the header again is the same repair the empty case makes.
+    // No whole line anywhere, so the header line is the torn one. It parsed, so the
+    // file is this engine's with nothing in it to keep; rewrite the header as for an empty
+    // file.
     if keep == 0 {
         file.seek(SeekFrom::Start(0))?;
         super::format::Writer::create(&mut file)?.flush()?;
@@ -1750,21 +1577,17 @@ fn mend(path: &Path) -> Result<(), JournalError> {
 
 /// The offset just past the file's last newline: where a whole record last ended.
 ///
-/// Read backwards a window at a time rather than by reading the file. This runs
-/// on every append, and a findings file grows with a scan's duration rather
-/// than with what it found, the reason [`Journal::compact`] exists, so a scan
-/// of any length would be paying for its own history on every checkpoint.
+/// Read backwards a window at a time. This runs on every append, and a findings file
+/// grows with the scan's duration, so reading it forwards would cost more every
+/// checkpoint.
 fn last_whole_line(file: &mut fs::File, length: u64) -> Result<u64, JournalError> {
     use std::io::{Read, Seek, SeekFrom};
 
     /// Comfortably more than a record, so the answer is almost always one read.
     ///
-    /// A `u64`, so the arithmetic below stays in the width the file's length is
-    /// measured in. A `usize` against `end as usize` would truncate wherever
-    /// `usize` is narrower: a length that is an exact multiple of 4 GiB has low
-    /// bits of zero, so the window would be empty, `start == end`, and the loop
-    /// would stop advancing — a hang holding the journal's lock, on a 32-bit
-    /// target, on the file this engine grows with a scan's duration.
+    /// A `u64` to match the file length's width. As a `usize` on a 32-bit target, a length that
+    /// is an exact multiple of 4 GiB would truncate to a zero window and the loop would hang
+    /// holding the journal's lock.
     const WINDOW: u64 = 8 * 1024;
 
     let mut end = length;
@@ -1773,8 +1596,7 @@ fn last_whole_line(file: &mut fs::File, length: u64) -> Result<u64, JournalError
         let start = end - size;
 
         file.seek(SeekFrom::Start(start))?;
-        // Lossless: `size` is bounded by `WINDOW`, so the one cast that remains
-        // cannot be the one that truncates.
+        // Lossless: `size` is at most `WINDOW`.
         let mut window = vec![0u8; size as usize];
         file.read_exact(&mut window)?;
 
@@ -1800,8 +1622,8 @@ fn read_options(directory: &Path) -> Result<Option<JobOptions>, JournalError> {
     ))
 }
 
-/// Reads a journal's manifest, refusing one written by a newer format than this
-/// build understands rather than reading it approximately.
+/// Reads a journal's manifest, refusing one written in a newer format than this
+/// build understands.
 fn read_manifest(directory: &Path) -> Result<JournalManifest, JournalError> {
     let text = read_bounded(&directory.join(MANIFEST), "a journal manifest")?;
     let manifest: JournalManifest = serde_json::from_str(&text).map_err(JournalError::json)?;
@@ -1820,8 +1642,8 @@ fn read_manifest(directory: &Path) -> Result<JournalManifest, JournalError> {
 fn read_checkpoint(directory: &Path) -> Result<Checkpoint, JournalError> {
     match Checkpoint::read(&directory.join(CURSOR)) {
         Ok(checkpoint) => Ok(checkpoint),
-        // A journal that stopped before its first checkpoint has settled
-        // nothing, which is a fresh cursor rather than a failure.
+        // A journal that stopped before its first checkpoint has settled nothing: a fresh
+        // cursor.
         Err(JournalError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
             Ok(Checkpoint::default())
         }
@@ -1836,16 +1658,12 @@ const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 /// How many characters an id is.
 ///
 /// Sixteen: the millisecond the scan started, then randomness. Shorter than a
-/// ULID's twenty-six because an id is printed in a listing and typed at a
-/// prompt, and a line of them should fit a terminal beside what it describes.
+/// ULID's twenty-six so a listing of ids fits a terminal and an id can be typed.
 ///
-/// All ten characters of width come off the random half and none off the clock.
-/// Timing to the millisecond is what makes ids sort into the order the scans ran
-/// in, and two scans a fifth of a second apart are the pair a reader most needs
-/// told apart. What is left is thirty-two bits for scans that started in the same
-/// millisecond, and a collision is answered by
-/// minting another id rather than by overwriting anything, so the cost of one is
-/// a retry rather than a lost journal. See [`claim_directory`].
+/// The ten characters saved all come off the random half. Millisecond timing keeps ids
+/// sorted in run order and distinguishes scans close together in time. That leaves 32
+/// random bits for scans started in the same millisecond, and a collision just mints
+/// another id; see [`claim_directory`].
 const ID_CHARS: usize = 16;
 
 /// Milliseconds, as a ULID counts them, reaching the year 10 889.
@@ -1854,10 +1672,8 @@ const ID_TIME_BITS: u32 = 48;
 /// A sortable id: the millisecond the scan started, then randomness, in
 /// Crockford base32.
 ///
-/// Sorts by creation time as text, which is what lets a listing be ordered
-/// without reading every manifest. Written out rather than pulled in: it is
-/// twenty lines against a dependency, and the crate already declines a crate per
-/// format for the same reason.
+/// Sorts by creation time as text, so a listing can be ordered without reading every
+/// manifest.
 fn mint_id() -> String {
     let millis = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -1880,17 +1696,12 @@ fn mint_id() -> String {
 
 /// Takes a directory under `root` that nothing else holds, and its id.
 ///
-/// `create_dir` rather than `create_dir_all`. The second succeeds on a directory
-/// that is already there, so two scans that minted the same id would share one,
-/// the later overwriting the earlier's manifest and, once the earlier had
-/// finished and released its lock, its findings too.
-///
-/// A collision is answered by minting another id rather than by failing. Ids
-/// carry enough randomness that this should never run twice, and a scan is not
-/// worth abandoning over a coincidence.
+/// `create_dir`, which fails on an existing directory, so two scans that minted the
+/// same id never share one. A collision mints another id, since ids carry enough randomness
+/// that this should almost never repeat.
 fn claim_directory(root: &Path) -> Result<(String, PathBuf), JournalError> {
-    /// Enough that exhausting them means something other than chance is wrong: a
-    /// root that is not a directory, or one nothing may write to.
+    /// Exhausting these means something other than chance: a root that is not a
+    /// directory, or one nothing may write to.
     const ATTEMPTS: usize = 8;
 
     for _ in 0..ATTEMPTS {
@@ -1917,13 +1728,10 @@ fn claim_directory(root: &Path) -> Result<(String, PathBuf), JournalError> {
 /// Reads a whole journal file, refusing one past
 /// [`MAX_READ_BYTES`](super::format::MAX_READ_BYTES).
 ///
-/// `fs::read_to_string` with a ceiling, and the ceiling applied through `take`
-/// before the read rather than to the length afterwards. The two files read
-/// whole, the manifest and the cursor, are the journal's own, in a directory
-/// this crate documents as belonging to a user while the process reading them
-/// is usually root; see [`MAX_READ_BYTES`](super::format::MAX_READ_BYTES) for
-/// what that is and is not worth. Opened as every journal file is read, so a
-/// link at the name is refused rather than followed; see [`open_to_read`].
+/// The ceiling is applied through `take` before the read. The manifest and cursor
+/// live in a directory belonging to a user while the reader is often root; see
+/// [`MAX_READ_BYTES`](super::format::MAX_READ_BYTES). A link at the name is refused; see
+/// [`open_to_read`].
 pub(super) fn read_bounded(path: &Path, what: &str) -> Result<String, JournalError> {
     use std::io::Read;
 
@@ -1939,16 +1747,11 @@ pub(super) fn read_bounded(path: &Path, what: &str) -> Result<String, JournalErr
     Ok(text)
 }
 
-/// Writes a whole file at a journal's own mode and ownership. For the files
-/// written once rather than a record at a time.
+/// Writes a whole file at a journal's own mode and ownership, for files written once.
 ///
-/// Staged and renamed, like [`Checkpoint::write_atomically`] and
-/// [`Journal::compact`], so the name either holds the whole file or does not
-/// exist. The manifest is its only caller. It is the file every other read
-/// begins with, so written by truncate-and-write it would be the one torn file
-/// no reader has a policy for: the torn-tail bargain covers records, and
-/// [`read_manifest`] answers a partial document with a parse error that
-/// [`list`] absorbs as a journal that is not there.
+/// Staged and renamed, like [`Checkpoint::write_atomically`], so the name holds the whole
+/// file or nothing. Used for the manifest, which every other read starts from: a torn
+/// manifest would fail to parse and [`list`] would treat the journal as absent.
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), JournalError> {
     use std::io::Write;
 
@@ -1960,10 +1763,9 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), JournalError> {
 
 /// How long journals are kept.
 ///
-/// A journal holds the addresses an engagement was pointed at, so it should not
-/// accumulate in a state directory nobody looks at. It is also evidence, so it
-/// should not vanish at a moment nobody chose. The defaults below take the
-/// second more seriously than the first.
+/// A journal holds the addresses an engagement was pointed at, so it should not pile
+/// up unseen; it is also evidence, so it should not vanish unasked. The defaults favour
+/// keeping.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Retention {
@@ -1973,26 +1775,20 @@ pub struct Retention {
     pub incomplete_for: Option<Duration>,
     /// The most journals to keep, or `None` for no cap.
     ///
-    /// Applied after the ages above, and it removes finished journals before
-    /// unfinished ones: a cap exists to bound a directory, and an unfinished
-    /// journal is the one thing there somebody may still want.
+    /// Applied after the ages above, removing finished journals before unfinished
+    /// ones, since an unfinished journal may still be wanted.
     pub keep_at_most: Option<usize>,
     /// Whether journals this build cannot read go too.
     ///
-    /// Off unless asked for. A journal passed over is usually a newer build's,
-    /// and that build still reads it; removing it is a decision about somebody
-    /// else's record, so nothing takes it but a caller who says so. Links are
-    /// never removed either way; see [`Unlisted::Link`].
+    /// Off by default. A journal passed over is usually a newer build's, which that build
+    /// still reads. Links are never removed either way; see [`Unlisted::Link`].
     pub unreadable: bool,
 }
 
 impl Default for Retention {
-    /// A month for finished journals, indefinitely for unfinished ones, and a
-    /// cap of two hundred.
-    ///
-    /// The asymmetry is the point. A finished scan has a report; its journal is
-    /// a duplicate that ages out. An unfinished one is the only copy of work
-    /// somebody may still mean to continue, so nothing but the cap removes it.
+    /// A month for finished journals, indefinitely for unfinished ones, and a cap of
+    /// two hundred. A finished scan has a report, so its journal is a duplicate; an unfinished
+    /// one is the only copy of work somebody may mean to continue.
     fn default() -> Self {
         Self {
             completed_for: Some(Duration::from_secs(30 * 24 * 60 * 60)),
@@ -2017,11 +1813,9 @@ impl Retention {
     /// Which of `entries` this policy would remove, newest-first as [`list`]
     /// yields them.
     ///
-    /// Pure, and separate from [`prune`] for the reason
-    /// [`lock::classify`](crate::journal::lock::classify) is: the interesting
-    /// cases are a directory full of journals of different ages and states, and
-    /// arranging those on a real filesystem to test the policy would test the
-    /// filesystem.
+    /// Pure, and separate from [`prune`] as
+    /// [`lock::classify`](crate::journal::lock::classify) is, so the policy can be tested
+    /// without building a real directory of journals.
     ///
     /// A journal something is writing is never selected, whatever its age.
     pub fn expired(&self, entries: &[Entry], now: SystemTime) -> Vec<usize> {
@@ -2049,15 +1843,13 @@ impl Retention {
             return removing;
         };
 
-        // What the ages left behind, oldest last, since `list` is newest first.
+        // What the ages left, oldest last, since `list` is newest first.
         let mut surviving: Vec<usize> = (0..entries.len())
             .filter(|index| !removing.contains(index))
             .collect();
 
-        // Ordered by how much a journal is worth keeping, most first: unfinished
-        // before finished, and newer before older. The cap is then applied by
-        // dropping from the end, so what goes is the oldest duplicate of work
-        // that already has a report.
+        // Most worth keeping first: unfinished before finished, newer before older. The cap
+        // drops from the end, so the oldest finished journal goes first.
         surviving.sort_by_key(|&index| {
             let entry = &entries[index];
             (
@@ -2084,11 +1876,8 @@ impl Retention {
 pub struct Pruned {
     /// The journals removed, by id.
     pub removed: Vec<String>,
-    /// The journals a policy selected but that could not be removed, each with
-    /// why.
-    ///
-    /// Reported rather than swallowed: a sweep that quietly leaves things behind
-    /// is one nobody can tell has stopped working.
+    /// The journals a policy selected that could not be removed, each with why, so a
+    /// sweep that stopped working is visible.
     pub held: Vec<Held>,
 }
 
@@ -2114,15 +1903,13 @@ impl Held {
 
 /// Removes the journals under `root` that `retention` no longer keeps.
 ///
-/// Journals a scan is writing are never removed, and are not reported as held
-/// either: they were never selected. What reaches [`Pruned::held`] is a journal
-/// the policy chose and the filesystem refused.
+/// Journals a scan is writing are never selected, so they are neither removed nor
+/// reported as held. [`Pruned::held`] lists journals the policy chose and the filesystem
+/// refused.
 ///
-/// A journal this build cannot read is removed only under
-/// [`Retention::unreadable`], by its directory name, since it has no manifest
-/// to name it by. The lock is checked as for any other: a newer build may be
-/// writing it. A link is no journal and is never selected, so it is neither
-/// removed nor reported as held; [`list`] is what names it.
+/// A journal this build cannot read is removed only under [`Retention::unreadable`], by its
+/// directory name, after the usual lock check (a newer build may be writing it). A link is
+/// never selected; [`list`] reports it.
 pub fn prune(root: &Path, retention: &Retention) -> Result<Pruned, JournalError> {
     let listing = list(root)?;
     let mut pruned = Pruned::default();
@@ -2169,9 +1956,8 @@ pub fn prune(root: &Path, retention: &Retention) -> Result<Pruned, JournalError>
 mod tests {
     use super::*;
     use crate::journal::settle::Outcome;
-    // The ticker lives in `scanner`, which is above this module, and two tests
-    // here reach up for it: what they assert is what ends up in the *journal*
-    // when a scan is checkpointed, so the fixtures they need are these.
+    // Two tests here use the checkpoint ticker from `scanner`, since what they assert
+    // is what a checkpointed scan leaves in the journal.
     use crate::model::exclusion::Exclusions;
     use crate::model::ip::set::IpSet;
     use crate::model::port::PortSet;
@@ -2203,8 +1989,8 @@ mod tests {
         Journal::create(root, &ports(map), Privilege::Raw, "test").expect("creates")
     }
 
-    /// A port phase that stood in for a liveness pass, naming `silent` the
-    /// addresses it asked on every port and heard nothing from.
+    /// A port phase that stood in for a liveness pass, naming `silent` the addresses
+    /// it asked on every port and heard nothing from.
     fn standing_in(silent: &str) -> ScanPhase {
         use crate::config::ZondConfig;
         use crate::model::ip::range::IpRange;
@@ -2239,8 +2025,8 @@ mod tests {
         })
     }
 
-    /// A record a port scanner files at an address before anything is heard
-    /// from it, as a checkpoint writes it down mid-sitting.
+    /// A record a port scanner files at an address before hearing from it, as a
+    /// checkpoint writes it mid-sitting.
     fn unheard(address: &str) -> Host {
         use crate::model::port::{Port, PortState, Protocol};
 
@@ -2256,11 +2042,9 @@ mod tests {
         host
     }
 
-    /// **A record an earlier sitting heard nothing from is not restored.** The
-    /// findings file can hold one, written before the phase decided the
-    /// address was silent, and a report drops it by that phase. Restored, it
-    /// would stand in the resumed sitting's live hosts as one the report does
-    /// not list, and be written back out with them.
+    /// A record an earlier sitting heard nothing from is not restored. The findings
+    /// file can hold one written before the phase decided the address was silent; restored, it
+    /// would sit among the resumed sitting's hosts though the report does not list it.
     #[test]
     fn a_record_an_earlier_sitting_heard_nothing_from_is_not_restored() {
         let root = scratch("unheard-restore");
@@ -2291,11 +2075,9 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// **A sitting that heard nothing from an address leaves no record of it on
-    /// disk.** A checkpoint writes a scanner's record of the address down
-    /// before the phase has decided it is silent, and the phase forgets it
-    /// only in memory; the findings file is the job's record, and a dead
-    /// record there is one every reader has to know to drop.
+    /// A sitting that heard nothing from an address leaves no record of it on disk. A
+    /// checkpoint writes the record before the phase decides the address is silent, and the
+    /// phase forgets it only in memory, so the close must rewrite the file.
     #[tokio::test]
     async fn a_sitting_that_heard_nothing_from_an_address_leaves_no_record_of_it() {
         let root = scratch("unheard-close");
@@ -2303,8 +2085,8 @@ mod tests {
         let mut journal = begin(&root, &map);
         let directory = journal.directory().to_path_buf();
 
-        // Written down mid-sitting, and forgotten by the phase since: the live
-        // store holds only the host that answered.
+        // Written mid-sitting and since forgotten by the phase: the live store holds only
+        // the host that answered.
         journal
             .record_hosts(&[heard("192.0.2.1"), unheard("192.0.2.5")])
             .expect("records");
@@ -2333,16 +2115,14 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// **A sitting killed before its port phase decides what it heard nothing
-    /// from leaves each record it had yet to decide to the next sitting, and
-    /// out of the job's report.** A phase standing in for a liveness pass
-    /// decides its unanswered records only at its end, and a target it asked
-    /// is settled as the answer, or the silence, is stored. Kept off the disk
-    /// until a verdict a killed sitting never reaches, a record's ports would
-    /// be settled with nothing on file to show for them: on no host if the
-    /// address answers the next sitting, and counted by no sitting if it
-    /// never does. Its probes at an address it had heard nothing from on
-    /// every target are its own to count, being decided.
+    /// A sitting killed before its port phase decides what it heard nothing from leaves
+    /// each undecided record to the next sitting, and out of the job's report.
+    ///
+    /// A phase standing in for a liveness pass decides its unanswered records only at its end,
+    /// while a target is settled as its answer or silence is stored. If the record stayed off
+    /// disk until a verdict the killed sitting never reaches, its ports would be settled with
+    /// nothing on file. Its probes at an address silent on every target are counted, being
+    /// decided.
     #[tokio::test]
     async fn a_sitting_killed_before_its_verdicts_leaves_its_undecided_records_to_the_next() {
         use crate::config::ZondConfig;
@@ -2377,8 +2157,8 @@ mod tests {
         .skipping_liveness(LivenessSkip::PortsNoDearer)
         .opening_in(&ctx);
         ctx.await_verdicts();
-        // A host; an address asked on one of its ports so far; and one asked
-        // on both, heard from on neither.
+        // A host; an address asked on one of its ports so far; and one asked on both and
+        // heard from on neither.
         ctx.update_host(address("192.0.2.1"), |host| {
             host.set_status(crate::model::host::HostStatus::Up);
         });
@@ -2438,11 +2218,9 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// **A sitting killed before its verdicts still names the addresses it
-    /// had heard nothing from on every target.** Their targets are settled on
-    /// disk, so a resume asks nothing more of them and restores no record of
-    /// them; named only by the phase's end, which a killed sitting never
-    /// reaches, they would be in no list of the job.
+    /// A sitting killed before its verdicts still names the addresses it heard nothing
+    /// from on every target. Their targets are settled on disk, so a resume asks nothing more
+    /// of them; named only at the phase's end, they would be in no list of the job.
     #[tokio::test]
     async fn a_sitting_killed_before_its_verdicts_still_names_what_it_heard_nothing_from() {
         use crate::config::ZondConfig;
@@ -2504,9 +2282,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// **A record awaiting its verdict is in the findings once the phase keeps
-    /// it.** An address the phase neither forgot nor heard from, one no route
-    /// led to, is a finding when the sitting ends.
+    /// A record awaiting its verdict is in the findings once the phase keeps it: an
+    /// address the phase neither forgot nor heard from, one no route led to.
     #[tokio::test]
     async fn a_record_held_for_its_verdict_is_written_once_the_phase_keeps_it() {
         let root = scratch("unheard-kept");
@@ -2540,8 +2317,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// The whole cycle: begin a scan, settle part of it, come back and continue
-    /// from exactly where it stopped.
+    /// Begin a scan, settle part of it, and continue from exactly where it stopped.
     #[test]
     fn a_scan_resumes_from_where_it_stopped() {
         let root = scratch("resume");
@@ -2568,11 +2344,9 @@ mod tests {
         assert_eq!(remaining.len(), 4, "eight targets, four settled");
     }
 
-    /// A job's options are written by its first sitting and read back by
-    /// every later one, and nothing a later sitting runs under replaces them.
-    ///
-    /// Replaced, a sitting that changed its pace would become the record of
-    /// what the job asked, and the one after it would restore the change.
+    /// A job's options are written by its first sitting and read back by every later
+    /// one, and nothing a later sitting runs under replaces them. Otherwise a sitting that
+    /// changed its pace would become the record of what the job asked.
     #[test]
     fn a_jobs_options_are_written_by_its_first_sitting_and_kept() {
         use crate::config::ZondConfig;
@@ -2609,9 +2383,8 @@ mod tests {
         assert_eq!(journal.options(), Some(&JobOptions::of(&first)));
     }
 
-    /// A journal an earlier sitting ran against without recording its options
-    /// is continued without any: this sitting's are not what that one ran
-    /// under, and recording them would say they were.
+    /// A journal an earlier sitting ran against without recording options is continued
+    /// without any, since this sitting's are not what that one ran under.
     #[test]
     fn a_journal_older_than_its_options_is_left_without_them() {
         use crate::config::ZondConfig;
@@ -2639,8 +2412,8 @@ mod tests {
         assert!(!directory.join(OPTIONS).exists());
     }
 
-    /// A plan edited between sittings renumbers every position past the edit, so
-    /// the resume is refused rather than scanning the wrong targets.
+    /// A plan edited between sittings renumbers positions past the edit, so the resume is
+    /// refused.
     #[test]
     fn a_changed_plan_is_refused() {
         let root = scratch("changed-plan");
@@ -2657,14 +2430,9 @@ mod tests {
         assert!(matches!(refused, OpenError::PlanChanged(_)), "{refused:?}");
     }
 
-    /// A journal being written must not be resumed underneath its writer.
-    /// A journal whose lock names a live process that stopped checkpointing
-    /// is refused as it stands and can be taken over when asked.
-    ///
-    /// A crashed scan's number reissued to another process leaves exactly
-    /// this, and the refusal says to take the journal over. With nothing to
-    /// take it over by, the job could be continued only by deleting the lock
-    /// by hand. This process stands in for the reissued number.
+    /// A journal being written is not resumed underneath its writer. A lock naming a live
+    /// process that stopped checkpointing is refused as it stands and can be taken over when
+    /// asked. This process stands in for a reissued pid.
     #[test]
     fn a_journal_whose_lock_went_stale_can_be_taken_over() {
         let root = scratch("stale-lock");
@@ -2710,13 +2478,12 @@ mod tests {
             Journal::resume(&directory, &ports(&map), Privilege::Raw).expect_err("it is held");
         assert!(matches!(refused, OpenError::Locked(_)), "{refused:?}");
 
-        // And released, it opens.
+        // Once released, it opens.
         journal.close().expect("closes");
         Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("now free");
     }
 
-    /// Listing reports progress and liveness without taking the lock, so it
-    /// never disturbs a running scan.
+    /// Listing reports progress and liveness without taking the lock.
     #[test]
     fn listing_describes_journals_without_locking_them() {
         let root = scratch("list");
@@ -2767,8 +2534,8 @@ mod tests {
         assert_eq!(listed[0].settled(), Some(8));
     }
 
-    /// A journal that stopped before its first checkpoint has settled nothing,
-    /// which is a fresh cursor rather than an unreadable journal.
+    /// A journal that stopped before its first checkpoint reads as a fresh cursor, not an
+    /// unreadable journal.
     #[test]
     fn a_journal_with_no_checkpoint_resumes_from_the_beginning() {
         let root = scratch("no-checkpoint");
@@ -2785,12 +2552,7 @@ mod tests {
         assert_eq!(checkpoint.remaining(map.iter()).count(), 8);
     }
 
-    /// Ids sort by creation time as text, which is what makes a listing orderable
-    /// without reading every manifest.
-    ///
-    /// Timing to the millisecond is what buys that. Minted a fifth of a second
-    /// apart, which is to say one after another, they still sort into the order
-    /// they were made, and that is the pair a reader most needs told apart.
+    /// Ids sort by creation time as text, including ids minted one after another.
     #[test]
     fn ids_are_sortable_and_distinct() {
         let mut ids: Vec<String> = (0..64).map(|_| mint_id()).collect();
@@ -2805,15 +2567,15 @@ mod tests {
         };
         assert_eq!(ids, sorted, "ids minted in one burst lost their order");
 
-        // And across milliseconds, where the clock rather than chance decides.
+        // And across milliseconds, where the clock decides.
         let first = mint_id();
         std::thread::sleep(std::time::Duration::from_millis(3));
         let second = mint_id();
         assert!(first < second, "{first} should sort before {second}");
     }
 
-    /// A listing skips what it cannot read rather than failing, so one damaged
-    /// journal never hides the rest.
+    /// A listing skips what it cannot read, so one damaged journal does not hide the
+    /// rest.
     #[test]
     fn an_unreadable_journal_does_not_hide_the_others() {
         let root = scratch("damaged");
@@ -2828,7 +2590,7 @@ mod tests {
         assert_eq!(listed.len(), 1, "the readable one is still there");
     }
 
-    /// Pruning removes a journal nobody is writing, and refuses one somebody is.
+    /// Pruning removes a journal nobody is writing and refuses one somebody is.
     #[test]
     fn pruning_refuses_a_journal_that_is_being_written() {
         let root = scratch("prune");
@@ -2844,8 +2606,8 @@ mod tests {
         assert!(list(&root).expect("lists").entries.is_empty());
     }
 
-    /// The ticker writes a final checkpoint and releases the lock, so a scan
-    /// that finishes between two ticks still records what it did.
+    /// The ticker writes a final checkpoint and releases the lock, so a scan that
+    /// finishes between two ticks still records what it did.
     #[tokio::test]
     async fn the_checkpoint_task_writes_a_final_cursor_and_releases() {
         let root = scratch("ticker");
@@ -2858,7 +2620,7 @@ mod tests {
             ctx.record_outcome(Outcome::Answered { position });
         }
 
-        // Finishes immediately, well inside one tick.
+        // Finishes well inside one tick.
         spawn_checkpoints(journal, ctx.progress()).finish(&[]).await;
 
         let checkpoint = Checkpoint::read(&directory.join(CURSOR)).expect("a cursor was written");
@@ -2870,12 +2632,9 @@ mod tests {
         );
     }
 
-    /// A resumed sitting that settles nothing must still write a cursor covering
-    /// the first sitting's work.
-    ///
-    /// The failure this guards is silent: forget to seed the live cursor from
-    /// the resume point and the second sitting's checkpoint erases the first's
-    /// progress, so a third would re-scan everything while reporting success.
+    /// A resumed sitting that settles nothing still writes a cursor covering the first
+    /// sitting's work. Without seeding the live cursor from the resume point, the second
+    /// sitting's checkpoint would erase the first's progress.
     #[test]
     fn a_resumed_cursor_carries_the_earlier_sittings_progress() {
         let root = scratch("carry-forward");
@@ -2896,7 +2655,7 @@ mod tests {
         let (mut journal, checkpoint) =
             Journal::resume(&directory, &ports(&map), Privilege::Raw).expect("resumes");
 
-        // Seeded from the resume point, exactly as a scan does.
+        // Seeded from the resume point, as a scan does.
         let settlements = Settlements::resuming(&checkpoint);
         journal
             .checkpoint(&settlements)
@@ -2910,7 +2669,7 @@ mod tests {
         );
     }
 
-    /// Findings survive the journal, which is the point of writing them down.
+    /// Findings survive the journal.
     #[test]
     fn what_a_sitting_found_comes_back() {
         use crate::model::host::HostStatus;
@@ -2944,9 +2703,8 @@ mod tests {
         assert!(restored[0].is_alive());
     }
 
-    /// A detection run's tape survives being written to the journal and read back,
-    /// so a recorded scan can be replayed offline. Its own file, so it never
-    /// disturbs the hosts a resume reads.
+    /// A detection run's tape survives the round trip, so a recorded scan can be
+    /// replayed offline. Its own file, so it never disturbs the hosts a resume reads.
     #[test]
     fn detection_run_tapes_survive_a_journal_round_trip() {
         use crate::detect::compute::{CapTape, CapTapeRecord, DetectionRunRecord, SpeakExchange};
@@ -2998,8 +2756,8 @@ mod tests {
         );
     }
 
-    /// A run over `port` of 192.0.2.1 by the passive detection `id`, which
-    /// read `responses` and spoke to nothing.
+    /// A run over `port` of 192.0.2.1 by the passive detection `id`, which read
+    /// `responses` and sent nothing.
     fn passive_run(
         id: &str,
         port: u16,
@@ -3024,11 +2782,9 @@ mod tests {
         }
     }
 
-    /// Every passive detection that matches a service reads the same
-    /// responses the scan gathered at its port, a dozen of them for any HTTP
-    /// port. Written with each run, those responses, up to kilobytes apiece,
-    /// would fill the file a dozen times over, so a port's are written once
-    /// and every run over it reads them back.
+    /// Every passive detection matching a service reads the same responses gathered at
+    /// its port, a dozen for any HTTP port, so a port's responses are written once and every
+    /// run over it reads them back.
     #[test]
     fn a_ports_responses_are_written_once_however_many_runs_read_them() {
         let root = scratch("tapes-once");
@@ -3053,9 +2809,8 @@ mod tests {
         assert_eq!(read_detections(&directory).expect("reads back"), runs);
     }
 
-    /// A journal written one run to a line, each with its own copy of what it
-    /// read, is still replayed: its runs come back beside those written a port
-    /// to a line.
+    /// A journal written one run per line, each with its own copy of what it read, is
+    /// still replayed beside runs written one port per line.
     #[test]
     fn tapes_written_one_run_to_a_line_still_read_back() {
         use std::io::Write;
@@ -3087,9 +2842,8 @@ mod tests {
         );
     }
 
-    /// A host written more than once comes back whole rather than as its last
-    /// record alone: the scan that found it and the scan that classified its
-    /// ports both wrote, and both readings matter.
+    /// A host written more than once comes back whole: the scan that found it and the
+    /// scan that classified its ports both wrote.
     #[test]
     fn repeated_records_for_one_host_are_folded_together() {
         use crate::model::host::HostStatus;
@@ -3126,11 +2880,8 @@ mod tests {
         assert_eq!(restored[0].port_count(), 1, "the second record's port too");
     }
 
-    /// `fe80::1` is a different machine on every link, so two gateways found
-    /// under that one number on two interfaces are two hosts. Folded by the
-    /// bare address, a resume would restore one of them and a report read back
-    /// from the journal would list fewer hosts than the scan found, where the
-    /// live report and a diff of it keep both.
+    /// `fe80::1` is a different machine on every link, so two gateways found under that
+    /// number on two interfaces stay two hosts, as in the live report and a diff.
     #[test]
     fn link_locals_on_two_interfaces_come_back_as_two_hosts() {
         use crate::model::host::HostStatus;
@@ -3171,8 +2922,7 @@ mod tests {
         assert_eq!(zones, ["en0", "en7"], "each restored on its own link");
     }
 
-    /// A journal that stopped before it found anything reads as no findings, not
-    /// as a failure.
+    /// A journal that stopped before it found anything reads as no findings.
     #[test]
     fn a_journal_with_no_findings_restores_nothing() {
         let root = scratch("no-findings");
@@ -3187,10 +2937,8 @@ mod tests {
         assert!(journal.restored().is_empty());
     }
 
-    /// The whole of `zond journal report`: a finished scan comes back out of
-    /// its journal as the report it produced. Everything the end of a run
-    /// prints is drawn from the hosts and the phases, so if either fails to
-    /// survive the round trip the record is a summary rather than the scan.
+    /// A finished scan comes back out of its journal as the report it produced:
+    /// everything the end of a run prints is drawn from the hosts and the phases.
     #[test]
     fn a_journal_reads_back_as_the_report_its_scan_produced() {
         let root = scratch("replay");
@@ -3220,8 +2968,7 @@ mod tests {
         );
         assert_eq!(replayed.summary().ports_open, original.summary().ports_open);
 
-        // A phase carries what the run covered and how it went, which is what
-        // the closing lines of a run are drawn from.
+        // A phase carries what the run covered and how it went.
         let (before, after) = (&original.phases()[0], &replayed.phases()[0]);
         assert_eq!(after.kind(), before.kind());
         assert_eq!(after.privilege(), before.privilege());
@@ -3233,9 +2980,7 @@ mod tests {
         );
     }
 
-    /// A report read back names the engine that ran the scan, not the one
-    /// reading it. The two differ the moment somebody upgrades, and a record
-    /// that quietly restamps itself is a record of the wrong thing.
+    /// A report read back names the engine that ran the scan, not the one reading it.
     #[test]
     fn a_replayed_report_names_the_engine_that_ran_the_scan() {
         let root = scratch("replay-version");
@@ -3248,7 +2993,7 @@ mod tests {
             directory
         };
 
-        // The manifest as a build before this one would have left it.
+        // The manifest as an earlier build would have left it.
         let path = directory.join(MANIFEST);
         let mut manifest: JournalManifest =
             serde_json::from_str(&fs::read_to_string(&path).expect("reads")).expect("parses");
@@ -3265,14 +3010,11 @@ mod tests {
         );
     }
 
-    /// A cursor that exists and cannot be read is not a scan that settled
-    /// nothing.
+    /// A cursor that exists and cannot be read is not a scan that settled nothing.
     ///
-    /// This is what a `sudo` scan leaves behind if its cursor is not handed over
-    /// with the rest: a journal in the invoking user's home whose cursor stays
-    /// root's. Reported as zero, every finished scan would list as untouched
-    /// and offer itself to be continued. Reported as unknown, a reader is told
-    /// to go and look.
+    /// A `sudo` scan whose cursor was not handed over leaves exactly this. Reported as zero,
+    /// every finished scan would list as untouched; reported as unknown, a reader is told to go
+    /// and look.
     #[cfg(unix)]
     #[test]
     fn a_cursor_that_cannot_be_read_is_not_a_scan_that_settled_nothing() {
@@ -3292,8 +3034,7 @@ mod tests {
             directory
         };
 
-        // Readable first, so the difference below is about the permission and
-        // not about the file's contents.
+        // Readable first, so the difference below is the permission, not the contents.
         let listed = list(&root).expect("lists").entries;
         assert_eq!(listed[0].settled(), Some(1));
 
@@ -3314,19 +3055,15 @@ mod tests {
             "and nothing that cannot be read may be called finished"
         );
 
-        // Left readable, so a failure here does not leave a file the next run
-        // of this test cannot clean up.
+        // Left readable, so a failure here leaves a file the next run can clean up.
         let _ = fs::set_permissions(directory.join(CURSOR), fs::Permissions::from_mode(0o600));
     }
 
-    /// What a scan learns after its last checkpoint has to reach the file.
+    /// What a scan learns after its last checkpoint reaches the file.
     ///
-    /// The enrichment passes, meaning OS identification and the echo probe and
-    /// traceroute, run at the end of a scan, often after the last timer
-    /// checkpoint has drained what changed. If the closing write misses them, a
-    /// replayed report is quieter than the run that made it, with a protocol
-    /// missing from the evidence or a round trip with no spread. Nothing errors,
-    /// so only a test comparing the two would notice.
+    /// The enrichment passes (OS identification, the echo probe, traceroute) run at the end,
+    /// often after the last timer checkpoint. If the closing write missed them, a replayed
+    /// report would silently lack them.
     #[tokio::test]
     async fn what_a_scan_learns_after_a_checkpoint_still_reaches_the_file() {
         use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
@@ -3352,7 +3089,7 @@ mod tests {
         // A checkpoint lands, taking that and leaving nothing behind.
         ticker.checkpointed().await;
 
-        // And then the enrichment finds something else, as it does.
+        // Then the enrichment finds something else.
         ctx.update_host(ip, |host| {
             host.record_evidence(
                 HostStatus::Up,
@@ -3415,8 +3152,7 @@ mod tests {
         SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)
     }
 
-    /// Finished journals age out; unfinished ones do not, because they are the
-    /// only copy of work somebody may still mean to continue.
+    /// Finished journals age out; unfinished ones do not.
     #[test]
     fn age_removes_finished_journals_and_keeps_unfinished_ones() {
         let entries = vec![
@@ -3454,9 +3190,8 @@ mod tests {
         assert!(retention.expired(&entries, now()).is_empty());
     }
 
-    /// The cap takes finished journals before unfinished ones, and the oldest
-    /// first within each, so a directory is bounded without losing work somebody
-    /// has not finished.
+    /// The cap takes finished journals before unfinished ones, and the oldest first within
+    /// each.
     #[test]
     fn the_cap_removes_duplicates_before_unfinished_work() {
         // `list` yields newest first.
@@ -3504,8 +3239,8 @@ mod tests {
         );
     }
 
-    /// The default keeps an unfinished scan whatever its age, and lets a
-    /// finished one go after a month.
+    /// The default keeps an unfinished scan whatever its age, and lets a finished one go
+    /// after a month.
     #[test]
     fn the_default_favours_unfinished_work() {
         let two_months = Duration::from_secs(60 * 24 * 60 * 60);
@@ -3519,7 +3254,7 @@ mod tests {
         assert_eq!(Retention::default().expired(&entries, now()), vec![0]);
     }
 
-    /// End to end: a prune removes what the policy chose and says which.
+    /// End to end: a prune removes what the policy chose and names it.
     #[test]
     fn pruning_removes_what_the_policy_selected() {
         let root = scratch("retention");
@@ -3557,10 +3292,8 @@ mod tests {
 
     /// A host whose primary address is promoted mid-scan is still one host.
     ///
-    /// Local discovery calls `Host::consider_primary_ip` when a better address
-    /// turns up, so the same machine can be written once under a link-local
-    /// address and again under a global one. Keyed on the primary alone, those
-    /// come back as two hosts that were never two.
+    /// Local discovery calls `Host::consider_primary_ip` when a better address turns up, so the
+    /// same machine can be written under a link-local address and then a global one.
     #[test]
     fn a_host_written_under_two_addresses_comes_back_as_one() {
         use crate::model::host::HostStatus;
@@ -3578,7 +3311,7 @@ mod tests {
             early.set_status(HostStatus::Up);
             journal.record_hosts(&[early]).expect("records");
 
-            // Then a global address arrives and takes the primary slot.
+            // Then a global address takes the primary slot.
             let mut promoted = Host::new(link_local);
             promoted.add_ip(global);
             assert!(
@@ -3607,8 +3340,7 @@ mod tests {
         assert_eq!(restored[0].hostname(), Some("router.example"));
     }
 
-    /// A journal holds the addresses an engagement was pointed at and what was
-    /// found there. Nobody else on the machine has business reading it.
+    /// Journal files are private to their owner.
     #[cfg(unix)]
     #[test]
     fn every_file_a_journal_writes_is_private() {
@@ -3649,16 +3381,10 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// The two files a scan appends to are opened the way every other journal
-    /// file is: refusing a link standing where the file should be.
-    ///
-    /// `file` makes the whole argument for `O_NOFOLLOW` and
-    /// `a_link_where_a_journal_file_should_be_is_refused` proves its three
-    /// openers honour it, and for a while neither reached here: `record_hosts`
-    /// and `record_phases` opened by path. The journal directory belongs to the
-    /// *invoking* user by design and the writing process is usually root, so a
-    /// link planted under a fixed name inside it is a root process appending an
-    /// engagement's addresses to whatever the link points at.
+    /// The two append-only files refuse a link where the file should be, like every other
+    /// journal file. The directory belongs to the invoking user and the writer is usually root,
+    /// so a planted link would have root append an engagement's addresses wherever it
+    /// points.
     #[cfg(unix)]
     #[test]
     fn appending_refuses_a_link_where_a_journal_file_should_be() {
@@ -3696,14 +3422,10 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A host recorded more than once reads back with the round trips its
-    /// last record holds, not with every record's added together.
-    ///
-    /// Each record carries the host's whole window of round trips as it stood
-    /// then, so a later one repeats what an earlier one held. Folded in as
-    /// new samples, the repeats count the early round trips twice: a resumed
-    /// job's report moved its average while its fastest and slowest, which a
-    /// repeat cannot move, stayed where they were.
+    /// A host recorded more than once reads back with the round trips its last record
+    /// holds, not every record's added together. Each record carries the whole window as it
+    /// stood, so folding them as new samples would count early round trips twice and skew the
+    /// average.
     #[test]
     fn a_host_recorded_twice_keeps_the_round_trips_its_last_record_holds() {
         use std::time::Duration;
@@ -3734,13 +3456,10 @@ mod tests {
         );
     }
 
-    /// **A host written down at every checkpoint reads back as the host it
-    /// is, every field of it.** Each record repeats its host's fields as they
-    /// stood, so a field folded as though each record brought something new
-    /// counts the repeats, as the round trips once did. Held over everything
-    /// a record keeps, for the hosts the schema can say the most about, grown
-    /// between checkpoints as a scan grows them, with a port changing at each
-    /// so its record repeats too.
+    /// A host written at every checkpoint reads back as the host it is, every field of
+    /// it. Each record repeats its host's fields, so a field folded as though each record were
+    /// new would count the repeats. Checked over everything a record keeps, for the richest
+    /// hosts the schema describes, grown between checkpoints with a port changing at each.
     #[test]
     fn a_host_recorded_at_every_checkpoint_reads_back_as_the_host_it_is() {
         use crate::model::confidence::Confidence;
@@ -3802,9 +3521,8 @@ mod tests {
         assert_eq!(as_recorded(&read), as_recorded(&hosts));
     }
 
-    /// A journal from a newer format is passed over by name and with why, not
-    /// dropped: the listing still holds every journal it can read, and says
-    /// what it could not.
+    /// A journal from a newer format is passed over by name and with why: the listing
+    /// still holds every journal it can read.
     #[test]
     fn a_journal_from_a_newer_format_is_passed_over_by_name() {
         let root = scratch("passed-over");
@@ -3836,13 +3554,8 @@ mod tests {
         );
     }
 
-    /// A prune takes a journal it cannot read only when asked to, and never a
-    /// link.
-    ///
-    /// Such a journal is usually a newer build's, which still reads it, so an
-    /// ordinary sweep leaves it; a caller who asks for them gets them removed
-    /// by directory name, the only name one has here. A link is no journal
-    /// and is not selected at all, so it is neither removed nor held.
+    /// A prune takes an unreadable journal only when asked to, by directory name, and
+    /// never a link. Such a journal is usually a newer build's, which still reads it.
     #[cfg(unix)]
     #[test]
     fn a_prune_takes_unreadable_journals_only_when_asked_and_never_a_link() {
@@ -3880,8 +3593,7 @@ mod tests {
         );
     }
 
-    /// Rewrites a journal's manifest to claim the next format, as a newer build
-    /// would leave it.
+    /// Rewrites a journal's manifest to claim the next format, as a newer build would.
     fn age_forward(directory: &Path) {
         let path = directory.join(MANIFEST);
         let mut manifest: serde_json::Value =
@@ -3890,11 +3602,8 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&manifest).expect("encodes")).expect("writes");
     }
 
-    /// **A link standing in a root of journals is not listed as a journal.**
-    /// Every journal is a directory this crate made, so a link there is none,
-    /// as a link at a journal file's name is none. Looked at as what it
-    /// points to, it would list a record somewhere else as one of this
-    /// root's, and under `sudo` have root look wherever it leads.
+    /// A link in a root of journals is not listed as a journal. Followed, it would list
+    /// a record from somewhere else, and under `sudo` have root look wherever it leads.
     #[cfg(unix)]
     #[test]
     fn a_link_in_a_root_of_journals_is_not_listed() {
@@ -3913,15 +3622,11 @@ mod tests {
         assert_eq!(where_it_is, 1, "the journal itself lists");
     }
 
-    /// Reading a journal refuses a link standing where one of its files
-    /// should be, and says so, rather than reading what it points to.
+    /// Reading a journal refuses a link where one of its files should be, and says so.
     ///
-    /// The journal directory is the invoking user's and the process reading
-    /// it to resume a scan is usually root, so a link planted at a fixed name
-    /// would have root read whatever the user chose: another job's plan
-    /// continued as this one's, or a file only root may read taken for a
-    /// journal's. No writer here ever leaves a link at those names, so one is
-    /// a job that cannot be read, named as such rather than read as damaged.
+    /// The directory is the invoking user's and the reader is usually root, so a planted link
+    /// would have root read whatever the user chose, such as another job's plan or a root-only
+    /// file.
     #[cfg(unix)]
     #[test]
     fn reading_refuses_a_link_where_a_journal_file_should_be() {
@@ -3972,8 +3677,7 @@ mod tests {
             fs::rename(&kept, directory.join(name)).expect("restores");
         }
 
-        // The files read after a job's start are refused the same way, where
-        // what the link reaches would otherwise have read as nothing recorded.
+        // Files read after a job's start are refused the same way.
         let journal = begin(&root, &plan("192.0.2.2", "80"));
         for name in [DETECTIONS, FINISHED] {
             std::os::unix::fs::symlink(&text, journal.directory().join(name)).expect("links");
@@ -3991,13 +3695,9 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A cursor naming positions the watermark has already passed does not make
-    /// the scan look more finished than it is.
-    ///
-    /// `Checkpoint::read` keeps below-watermark entries on purpose, because the
-    /// read is shared and `Cursor::from_checkpoint` is what filters them. This
-    /// counted them, so the same file read two ways gave two answers, and the
-    /// inflated one is what `is_complete` reads, which is what a retention
+    /// A cursor naming positions the watermark already passed does not make the scan look
+    /// more finished. `Checkpoint::read` keeps such entries and `Cursor::from_checkpoint`
+    /// filters them, so the listing must count the same way: `is_complete` is what a retention
     /// sweep deletes on.
     #[test]
     fn a_cursor_repeating_settled_positions_does_not_inflate_the_count() {
@@ -4011,8 +3711,8 @@ mod tests {
             directory
         };
 
-        // Four of the eight targets settled, and a list that names three of them
-        // again. A writer here never produces this; a damaged file does.
+        // Four of the eight targets settled, and a list naming three of them again, as only
+        // a damaged file would.
         let checkpoint = Checkpoint {
             watermark: 4,
             settled_above: vec![0, 1, 2, 6],
@@ -4040,20 +3740,11 @@ mod tests {
         );
     }
 
-    /// The failure the torn-tail policy exists to survive, arriving one append
-    /// later.
-    ///
-    /// `format` promises a torn final line is discarded rather than an error,
-    /// and its reader keeps that promise only while the tear is *last*. A
-    /// resumed sitting appends directly after the torn bytes under `O_APPEND`,
-    /// so the tear becomes the prefix of the next record's line, and that line
-    /// is newline-terminated, which makes it corruption by the reader's own
-    /// rule. Without the mend, every read of the file from that moment fails
-    /// with `Malformed`, so the journal can be neither read back nor resumed
-    /// again, and everything in front of the tear is stranded.
-    ///
-    /// `format`'s `a_torn_final_line_ends_the_journal_without_an_error` reads a
-    /// tear. This is the sequence that appends past one.
+    /// A torn tail followed by another append. The reader discards a torn line only while
+    /// it is last; under `O_APPEND` the tear would become the prefix of a newline-terminated
+    /// line, and every later read would fail with `Malformed`. `format`'s
+    /// `a_torn_final_line_ends_the_journal_without_an_error` covers reading a tear; this covers
+    /// appending past one.
     #[test]
     fn an_append_after_a_torn_tail_leaves_the_journal_readable() {
         let root = scratch("torn-tail-append");
@@ -4094,14 +3785,10 @@ mod tests {
         );
     }
 
-    /// The header write that did not land, and the sitting that would otherwise
-    /// disappear into the file it leaves.
-    ///
-    /// `open_findings` creates the file and writes its header as two steps, so a
-    /// process killed between them leaves a zero-length file. Appending into that
-    /// writes records under no header: every later read is `NotAJournal`, which
-    /// the resume path maps back to "found nothing", while the cursor keeps
-    /// advancing and reports the ground covered. Silent, and total.
+    /// A header write that did not land. `open_findings` creates the file and writes its
+    /// header in two steps, so a kill between them leaves a zero-length file. Appending into it
+    /// would write records under no header, which every later read treats as no findings while
+    /// the cursor advances.
     #[test]
     fn an_append_to_a_findings_file_whose_header_never_landed_mends_it() {
         let root = scratch("headerless-append");
@@ -4126,14 +3813,8 @@ mod tests {
         );
     }
 
-    /// The other half of that check: a file this engine did not write is refused
-    /// rather than given a header.
-    ///
-    /// Mending an empty file completes an interrupted write of our own. Mending
-    /// a file with content in it would be something else, it would turn a
-    /// stranger's lines into records this engine claims to have written. The
-    /// refusal has to leave the file exactly as it found it, which is why the
-    /// header is checked before anything is truncated.
+    /// A file this engine did not write is refused, not given a header, and left exactly
+    /// as it was, which is why the header is checked before anything is truncated.
     #[test]
     fn an_append_to_a_file_this_engine_did_not_write_is_refused() {
         let root = scratch("foreign-append");
@@ -4161,23 +3842,22 @@ mod tests {
         journal.close().expect("closes");
     }
 
-    /// A journal that could not take its lock leaves nothing behind, rather than
-    /// a directory that reads as a scan which found nothing.
+    /// A journal that could not take its lock leaves nothing behind.
     #[test]
     fn a_journal_that_cannot_be_locked_leaves_no_directory() {
         let root = scratch("unlockable");
         let map = plan("192.0.2.1", "80");
 
-        // A file where the scan directory would go: the create cannot proceed,
-        // and whatever it did get to must be undone.
+        // A file where the scan directory would go: the create cannot proceed, and what it
+        // did get to is undone.
         let before = list(&root).expect("lists").entries.len();
         assert_eq!(before, 0);
 
         let journal = begin(&root, &map);
         let directory = journal.directory().to_path_buf();
 
-        // Held by this process, so a second journal over the same directory is
-        // refused by the path a real contention takes.
+        // Held by this process, so a second journal over the same directory is refused the
+        // way real contention is.
         assert!(matches!(
             Journal::resume(&directory, &ports(&map), Privilege::Raw),
             Err(OpenError::Locked(_))
@@ -4188,14 +3868,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A host written again carries only the ports that changed, and reads
-    /// back whole.
-    ///
-    /// A host scanned on every port holds tens of thousands of them. Written
-    /// whole each checkpoint in which anything about it changed, a journal of
-    /// one such host grew by megabytes every few seconds to record one port
-    /// opening, and compaction, counted in records, waited for hundreds of
-    /// them.
+    /// A host written again carries only the ports that changed, and reads back whole.
     #[test]
     fn a_host_written_again_carries_only_what_changed_in_it() {
         use crate::model::port::{Port, PortState, Protocol};
@@ -4242,13 +3915,10 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// What a record supersedes is counted: the host's own fields of the record
-    /// before it, and the earlier record of each port it writes again, and
-    /// nothing a first record of a port adds.
-    ///
-    /// The count is what decides compaction, so one that missed what was
-    /// superseded would let the file grow without bound, and one that counted
-    /// new findings would rewrite a file with nothing in it to drop.
+    /// What a record supersedes is counted: the previous record's host fields and the
+    /// earlier record of each port it rewrites, and nothing for a port's first record. The count
+    /// decides compaction, so missing superseded bytes would let the file grow without bound
+    /// and counting new findings would rewrite a file with nothing to drop.
     #[test]
     fn a_record_counts_what_it_supersedes_and_not_what_it_adds() {
         use crate::model::port::{Port, PortState, Protocol};
@@ -4288,15 +3958,9 @@ mod tests {
         );
     }
 
-    /// A compaction that fails leaves no partial copy behind and is not tried
-    /// again at the next checkpoint.
-    ///
-    /// What stops one, usually a disk with no room for a second copy of the
-    /// findings, stops the next, and one is due every checkpoint once the file
-    /// has outgrown itself. Left behind, the partial copy held whatever room
-    /// the disk had; retried, it was written again every few seconds. The
-    /// rename is refused here by a directory standing where the findings file
-    /// goes, which fails the compaction at its last step.
+    /// A failed compaction leaves no partial copy and is not retried at the next
+    /// checkpoint, since what stopped it (usually a full disk) would stop the next. Here the
+    /// rename is refused by a directory standing where the findings file goes.
     #[test]
     fn a_failed_compaction_leaves_nothing_behind_and_waits_before_trying_again() {
         let root = scratch("failed-compaction");
@@ -4335,14 +3999,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A findings file is rewritten once what later records superseded in it
-    /// outgrows the rest, and not while it is small or merely growing.
-    ///
-    /// Counted in bytes: a count of records said nothing about either what a
-    /// compaction costs or what it recovers, and one record can be a host's
-    /// every port. And counted as what was superseded: a file that grew by a
-    /// host's every port the first time it was written holds nothing a
-    /// rewrite would drop, and rewriting it is the cost this bounds.
+    /// A findings file is rewritten once its superseded bytes outgrow the rest, and not
+    /// while it is small or growing only by new findings.
     #[test]
     fn a_findings_file_is_compacted_by_what_it_superseded() {
         const MIB: u64 = 1024 * 1024;
@@ -4363,9 +4021,8 @@ mod tests {
         );
     }
 
-    /// A long scan appends a host each interval anything about it changes, so
-    /// the findings file grows with the scan's duration rather than with what it
-    /// found. Compaction bounds it, and must lose nothing doing so.
+    /// A long scan's findings file grows with its duration. Compaction bounds it and loses
+    /// nothing.
     #[test]
     fn compaction_bounds_the_findings_file_without_losing_a_host() {
         use crate::model::host::HostStatus;
@@ -4419,12 +4076,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A scan can be continued knowing nothing but its id.
-    ///
-    /// The plan comes back as it was written down. Without this a resume has to
-    /// be told the targets and ports again, which is both a chore and a trap:
-    /// what somebody types the second time is not necessarily what ran the
-    /// first.
+    /// A scan can be continued knowing only its id: the plan comes back as recorded, so
+    /// nothing has to be retyped differently from what ran first.
     #[test]
     fn a_journal_gives_back_the_plan_it_recorded() {
         let root = scratch("reopen");
@@ -4455,9 +4108,7 @@ mod tests {
         assert_eq!(journal.manifest().technique(), TcpScanTechnique::Fin);
     }
 
-    /// Continuing a scan under different privileges is refused: the raw and
-    /// connect paths answer different questions, and a journal half of each
-    /// would be counting two things.
+    /// Continuing a scan under different privileges is refused.
     #[test]
     fn a_journal_will_not_be_continued_under_different_privileges() {
         let root = scratch("reopen-privilege");
@@ -4473,13 +4124,9 @@ mod tests {
         assert!(matches!(refused, OpenError::PlanChanged(_)), "{refused:?}");
     }
 
-    /// The root is created, which is the half of this call that is not the
-    /// chown.
-    ///
-    /// The chown cannot be exercised here, since it needs a real elevated process
-    /// with a real invoking user and is a no-op without one. What this pins is
-    /// that the call is the one a caller makes and that it produces a directory
-    /// `Journal::create` can then claim inside.
+    /// The root is created. The chown needs a real elevated process and is a no-op
+    /// without one; this pins that the call produces a directory `Journal::create` can claim
+    /// inside.
     #[test]
     fn preparing_a_root_creates_the_whole_path_to_it() {
         let root = scratch("prepare-root")
@@ -4491,8 +4138,7 @@ mod tests {
         prepare_root(&root).expect("the path is created");
         assert!(root.is_dir());
 
-        // And again on a root that is already there, which is the repair path:
-        // it must not fail for finding its own work.
+        // And again on an existing root, the repair path, which must not fail.
         prepare_root(&root).expect("an existing root is not an error");
 
         let plan = Plan::listen(vec![crate::model::ip::scoped::Zone::new(3, "en0")]);
@@ -4502,16 +4148,12 @@ mod tests {
             .expect("it closes");
     }
 
-    /// Everything a first run under `sudo` creates on the way to its journals
-    /// is given to the user who ran it, not only the two directories at the
-    /// end. A user with no `~/.local/state` who ran one scan would otherwise
-    /// own neither it nor `~/.local`, and every other program that keeps state
-    /// there would find it refused.
+    /// Everything a first run under `sudo` creates on the way to its journals is given to
+    /// the user who ran it, not only the last two directories, so `~/.local` and
+    /// `~/.local/state` are not left to root.
     ///
-    /// A directory on the way that was already there is given back only if
-    /// root owns it, which is how an elevated run that gave nothing back left
-    /// it; one somebody else owns belongs to them. The home itself, and
-    /// anything above it, is never the run's to give.
+    /// A directory on the way that already existed is given back only if root owns it. The
+    /// home itself, and anything above it, is never given.
     #[test]
     fn preparing_a_root_gives_away_what_it_created_and_repairs_what_root_left() {
         use Hand::{Give, Reclaim};
@@ -4544,9 +4186,8 @@ mod tests {
             "a directory created for the journal was left to root"
         );
 
-        // With `~/.local/state` already there, it and `~/.local` are looked
-        // at for a repair, and the two directories this crate owns are given
-        // regardless.
+        // With `~/.local/state` already there, it and `~/.local` are looked at for repair,
+        // and the two directories this crate owns are given regardless.
         fs::remove_dir_all(home.join(".local/state/zond")).expect("removes");
         assert_eq!(
             prepared(&root, true, Some(&home)),
@@ -4567,8 +4208,7 @@ mod tests {
             ])
         );
 
-        // A location the caller named is where to write, not everything above
-        // it: only the root itself is claimed.
+        // A location the caller named is where to write: only the root itself is claimed.
         let named = home.join("elsewhere/journals");
         assert_eq!(
             prepared(&named, false, Some(&home)),
@@ -4578,12 +4218,8 @@ mod tests {
         let _ = fs::remove_dir_all(&home);
     }
 
-    /// A watch is never finished, so a journal of one always offers a resume and
-    /// a retention sweep never takes it as done.
-    ///
-    /// Read by the arithmetic the other two phases use it would be complete the
-    /// moment it was created: it enumerated nothing, so its total is zero, and
-    /// zero settled is not fewer than zero.
+    /// A watch is never finished, so its journal always offers a resume and a retention
+    /// sweep never takes it as done, although its total is zero.
     #[test]
     fn a_watch_is_never_complete_however_long_it_ran() {
         use crate::model::ip::scoped::Zone;
