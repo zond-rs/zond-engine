@@ -32,9 +32,9 @@
 //! one. `Ubuntu:<release>[:LTS]` is the release's archive, and
 //! `Ubuntu:Pro:<release>:LTS` its ESM pockets; the FIPS, real-time and
 //! BlueField variants are dropped, because a scan cannot tell those builds
-//! apart and they are not what a banner names. Every version an entry lists
-//! joins the release's lineage, the CVE's Ubuntu priority is kept, and the
-//! USN that published a fix is found from the notices under `osv/usn/`.
+//! apart. Every version an entry lists joins the release's lineage, the CVE's
+//! Ubuntu priority is kept, and the USN that published a fix is found from the
+//! notices under `osv/usn/`.
 //!
 //! **VEX** (`vex/cve/**/CVE-*.json`) is where Ubuntu says **not affected**,
 //! which OSV cannot express, with a justification and the note Ubuntu wrote
@@ -43,37 +43,35 @@
 //! codename, alone for the archive or with a pocket (`esm-infra/focal`,
 //! `trusty/esm`) for ESM.
 //!
-//! ## Why fixes come from OSV and not VEX
+//! ## Fixes come from OSV
 //!
-//! A VEX `fixed` statement names the version of the package published now,
-//! not the version that first carried the fix: it lists CVE-2016-1908 on
-//! 14.04 as fixed in `1:6.6p1-2ubuntu2.13+esm2`, where the fix is
-//! `1:6.6p1-2ubuntu2.7`. Read as a fix version, every build between the two
-//! would be reported vulnerable to something it is patched against. OSV's
-//! `fixed` event is the first fixed version, which is what a build is
-//! compared with.
+//! A VEX `fixed` statement names the package version published today, which
+//! is often later than the first fixed one: it lists CVE-2016-1908 on 14.04 as
+//! fixed in `1:6.6p1-2ubuntu2.13+esm2`, where the fix is `1:6.6p1-2ubuntu2.7`.
+//! Read as a fix version, every build between the two would be reported
+//! vulnerable. OSV's `fixed` event is the first fixed version, which is what a
+//! build is compared with.
 //!
 //! ## When the two disagree
 //!
 //! "Not affected" replaces an open verdict for the same release, package and
 //! channel, and never a fix. OSV lists CVE-2020-14145 as open on 14.04 and
-//! Ubuntu's own verdict, in VEX, is not affected: OSV records every package a
-//! CVE touches and VEX is where Ubuntu says which of them the issue reaches.
+//! Ubuntu's verdict in VEX is not affected: OSV records every package a CVE
+//! touches, and VEX says which of them the issue reaches.
 //!
 //! An OSV record Canonical has withdrawn contributes its versions to the
-//! lineage and none of its verdicts. A withdrawn record no longer stands, and
-//! the verdicts left in one are the stale ones: CVE-2020-14145's record still
-//! lists 22.04 as open, where Ubuntu's verdict is not affected. Leaving a fix
-//! from one unread keeps the upstream range's answer, which errs toward
-//! reporting a vulnerability rather than toward hiding one.
+//! lineage and none of its verdicts, which are stale: CVE-2020-14145's
+//! withdrawn record still lists 22.04 as open, where Ubuntu's verdict is not
+//! affected. Without its fix, the upstream range decides, which errs toward
+//! reporting a vulnerability.
 //!
-//! ## Filtered, and streamed
+//! ## Filtered and streamed
 //!
 //! The archives are a hundred megabytes that decompress to thirty-six
 //! gigabytes of JSON. They are decompressed as they are read, and an entry is
-//! parsed only once a cheap search of its bytes finds a source package the
-//! engine's map names, so peak memory is one entry plus what survives the
-//! filter, and the time is mostly decompression.
+//! parsed only once a substring search of its bytes finds a source package the
+//! engine's map names. Peak memory is one entry plus what survives the filter,
+//! and the time is mostly decompression.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufReader, Read};
@@ -88,17 +86,16 @@ use crate::import::{ImportError, ImportOrigin};
 
 /// The most compressed bytes either archive may be.
 ///
-/// Each is under a hundred megabytes. A gigabyte is a source that does not
-/// end rather than a larger archive, and it is refused before it is read to
-/// the end.
+/// Each is under a hundred megabytes; the cap stops a source that does not
+/// end.
 const MAX_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// The most one file in an archive may be, since each is held whole while it
 /// is parsed. The largest real one is a few megabytes.
 const MAX_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
 
-/// The longest a not-affected reason is kept, in bytes. It is a note beside a
-/// finding, and Ubuntu's own notes run to paragraphs.
+/// The longest a not-affected reason is kept, in bytes. Ubuntu's notes run to
+/// paragraphs; this one sits beside a finding.
 const MAX_REASON_BYTES: usize = 240;
 
 /// Ubuntu's codenames and the release numbers they stand for, oldest first,
@@ -159,8 +156,8 @@ fn release_of(codename: &str) -> Option<&'static str> {
 }
 
 /// Reads Ubuntu's OSV and OpenVEX archives, as the `.tar.xz` Canonical
-/// publishes, into a dataset of Ubuntu's verdicts, keeping the source packages
-/// the engine's map names.
+/// publishes them, into Ubuntu's verdicts for the source packages the engine's
+/// map names.
 ///
 /// # Errors
 ///
@@ -264,7 +261,7 @@ fn each_entry(
             })
     };
 
-    // Past the bound, whatever went wrong went wrong because of it.
+    // At the bound, any error above was caused by the truncation.
     if bounded.limit() == 0 {
         return Err(ImportError::DocumentTooLarge {
             limit: MAX_ARCHIVE_BYTES,
@@ -284,12 +281,12 @@ fn components(path: &Path) -> Vec<&str> {
         .collect()
 }
 
-/// The source packages kept, and a cheap search for them in a record's raw
-/// bytes, so a record naming none of them is never parsed.
+/// The source packages kept, and a substring search for them in a record's raw
+/// bytes, so a record naming none of them is not parsed.
 ///
-/// The search can say yes wrongly and never no wrongly: an OSV record names
-/// its packages as JSON strings and a VEX document inside package URLs, and
-/// both spellings are searched for exactly.
+/// The search may match wrongly but never misses: an OSV record names its
+/// packages as JSON strings and a VEX document inside package URLs, and both
+/// spellings are searched for exactly.
 struct Wanted {
     names: BTreeSet<&'static str>,
     osv: AhoCorasick,
@@ -436,8 +433,8 @@ struct Fix {
 
 /// What the archives say, gathered while they stream.
 ///
-/// Fixes wait for the end, because the notice that published one is found in
-/// a different file, which may come later.
+/// Fixes are held until the end, because the notice that published one may be
+/// in a later file.
 #[derive(Default)]
 struct Facts {
     builder: Option<Builder>,
@@ -703,7 +700,7 @@ struct VexProduct {
 struct Purl<'a> {
     name: &'a str,
     version: &'a str,
-    /// Whether it names the source package rather than a binary one.
+    /// Whether it names a source package (`arch=source`).
     source: bool,
     /// The release and channel its `distro=` names, or nothing for one that
     /// names a variant or a codename this table does not know.
@@ -802,8 +799,7 @@ mod tests {
         assert_eq!(data.id(), "ubuntu:security-notices");
     }
 
-    /// A fix published only to ESM is a fix for subscribed machines and
-    /// nothing in the archive.
+    /// A fix published only to ESM is recorded for the ESM channel alone.
     #[test]
     fn an_esm_fix_is_not_an_archive_fix() {
         let data = read_fixture();
@@ -862,9 +858,8 @@ mod tests {
         assert!(reason.len() <= MAX_REASON_BYTES, "{reason}");
     }
 
-    /// VEX's fixed statements are not read as fixes: they name the version
-    /// published now, which for CVE-2016-1908 on 14.04 is a much later build
-    /// than the one that fixed it.
+    /// VEX's fixed statements are not read as fixes: for CVE-2016-1908 on
+    /// 14.04 it names a much later build than the one that fixed it.
     #[test]
     fn a_vex_fixed_statement_is_not_a_fix_version() {
         let data = read_fixture();
@@ -900,8 +895,8 @@ mod tests {
     }
 
     /// A withdrawn record's verdicts are not read: its fix for CVE-2016-1907
-    /// is not taken, and 22.04 is left with VEX's not affected for
-    /// CVE-2020-14145 rather than the withdrawn record's open.
+    /// is not taken, and 22.04 keeps only VEX's not affected for
+    /// CVE-2020-14145.
     #[test]
     fn a_withdrawn_record_gives_no_verdicts() {
         let data = read_fixture();
@@ -969,8 +964,7 @@ mod tests {
         assert!(data.version() > crate::model::finding::Version::new(2026, 1, 1));
     }
 
-    /// Packages outside the map are not kept, even where a record names
-    /// them beside one that is.
+    /// Packages outside the map are dropped, even beside one that is kept.
     #[test]
     fn only_mapped_packages_are_kept() {
         let data = read_fixture();
@@ -985,8 +979,6 @@ mod tests {
     /// the fixture spans every one the whole archive used when it was cut.
     #[test]
     fn every_codename_in_the_archive_maps_to_a_release() {
-        // Every codename the whole archive's CVE documents named when the
-        // fixture was cut.
         let today = [
             "trusty", "xenial", "bionic", "focal", "jammy", "noble", "plucky", "questing",
             "resolute",
