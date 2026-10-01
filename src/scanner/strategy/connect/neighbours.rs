@@ -8,35 +8,29 @@
 
 //! # The neighbours a connect waits on
 //!
-//! A connect to a host on one of this machine's links, or through a gateway
-//! on one, waits for the kernel to resolve that neighbour's hardware address
-//! before its SYN leaves, and Linux tells the socket nothing of how the
-//! asking goes. A connect to a neighbour that does not answer is held for the
-//! three seconds the kernel asks and then fails with a host unreachable the
-//! kernel addresses to itself, the very error a router's ICMP host
-//! unreachable raises for a host beyond it; given less than those three
-//! seconds, it runs out as a dropped SYN does. Read as either, every port of
-//! an address nothing holds is blocked or silent, though no SYN left for any
-//! of them.
+//! A connect to a host on one of this machine's links, or through a gateway on one,
+//! waits for the kernel to resolve that neighbour's hardware address before its SYN
+//! leaves, and Linux tells the socket nothing about it. If the neighbour never answers,
+//! the connect is held for the kernel's three seconds and then fails with a host
+//! unreachable, the same error a router's ICMP host unreachable raises; with a shorter
+//! timeout it runs out like a dropped SYN. Either way every port of an empty address
+//! would read as blocked or silent, though no SYN was ever sent.
 //!
-//! The kernel's neighbour table tells them apart. Read as the connect ends,
-//! an entry for the neighbour it waited on that is not resolved says the SYN
-//! never left; a router's error comes back through a neighbour that
-//! answered. [`Neighbours`] reads it, and remembers each neighbour given up
-//! on, so every other port of a host behind one is left unasked rather than
-//! each waiting out a resolution of its own. A port is given up on only
-//! after a second resolution goes unanswered, as the raw path gives a
-//! neighbour up: see [`NEIGHBOR_ROUNDS`].
+//! The kernel's neighbour table tells these apart: read when the connect ends, an
+//! unresolved entry for the neighbour it waited on means the SYN never left, while a
+//! router's error comes back through a neighbour that answered. [`Neighbours`] reads
+//! the table and remembers each neighbour given up on, so the other ports of a host
+//! behind it are skipped without each waiting out its own resolution. A port gives up
+//! only after a second unanswered resolution, as the raw path does; see
+//! [`NEIGHBOR_ROUNDS`].
 //!
-//! Linux only, as the table is; see [`KernelNeighbors`]. Elsewhere nothing
-//! here reads anything, and every connect is read as it ended.
+//! Linux only, as the table is; see [`KernelNeighbors`]. Elsewhere every connect is
+//! read as it ended.
 //!
-//! macOS says it where Linux does not, for a neighbour it gave up on lately:
-//! it refuses every connect to it with `EHOSTDOWN` until a hold-down of its
-//! own has passed. That is no fault of this machine's and no verdict on the
-//! host the first time; the host's ports are held through it, their places
-//! in the scan given up rather than kept waiting, and asked again after it.
-//! See [`HoldDowns`].
+//! macOS, for a neighbour it recently gave up on, refuses every connect with
+//! `EHOSTDOWN` until its own hold-down passes. The first time, that says nothing about
+//! the host: its ports release their scan slots, wait out the hold-down and are asked
+//! again. See [`HoldDowns`].
 
 use std::collections::HashSet;
 use std::net::IpAddr;
@@ -54,19 +48,19 @@ pub(super) struct Neighbours {
     table: Option<KernelNeighbors>,
     /// The neighbours given up on, whose hosts are sent nothing more.
     given_up: Mutex<HashSet<IpAddr>>,
-    /// The hosts filed unreachable for one, each logged once.
+    /// The hosts logged unreachable, so each is logged once.
     filed: Mutex<HashSet<IpAddr>>,
     /// The kernel's hold-downs on the hosts' neighbours.
     holds: Mutex<HoldDowns>,
 }
 
 impl Neighbours {
-    /// Reading the running kernel's table.
+    /// Reads the running kernel's table.
     pub(super) fn of_system() -> Self {
         Self::reading(KernelNeighbors::from_system())
     }
 
-    /// Reading `table`, or nothing.
+    /// Reads `table`, or nothing when it is `None`.
     pub(super) fn reading(table: Option<KernelNeighbors>) -> Self {
         Self {
             table,
@@ -76,22 +70,20 @@ impl Neighbours {
         }
     }
 
-    /// These, holding a neighbour down for `hold_down_for` where the kernel
-    /// refuses a connect for a hold-down, rather than for as long as the
-    /// running kernel does.
+    /// Sets the hold-down applied when the kernel refuses a connect for one, in place
+    /// of the running kernel's.
     #[cfg(all(test, unix))]
     pub(super) fn holding_down_for(self, hold_down_for: Duration) -> Self {
         lock(&self.holds).hold_down_for = hold_down_for;
         self
     }
 
-    /// Where the neighbour a connect to `host` waits on stands, read now,
-    /// where the kernel has not resolved it: a connect to `host` that just
-    /// ended then never sent its SYN.
+    /// The state of the neighbour a connect to `host` waits on, read now, if the
+    /// kernel has not resolved it: a connect to `host` that just ended never sent its
+    /// SYN.
     ///
-    /// `None` where the neighbour is resolved, where the table holds no entry
-    /// for it, and where there is no table or no neighbour to read: a connect
-    /// that ended is then read as it ended.
+    /// `None` when the neighbour is resolved, has no entry, or there is no table to
+    /// read; the connect is then read as it ended.
     pub(super) fn holding(&self, host: IpAddr) -> Option<NeighborState> {
         let table = self.table.as_ref()?;
         let neighbour = table.next_hop(host)?;
@@ -106,10 +98,9 @@ impl Neighbours {
         lock(&self.holds).until(host, Instant::now())
     }
 
-    /// Holds `host` through the kernel's hold-down on its neighbour, which a
-    /// connect to it was just refused for, in the kernel's words `why`, and
-    /// returns when it is over; or, where the refusal is the kernel's
-    /// verdict, gives the neighbour up and returns `None`. See
+    /// Holds `host` through the kernel's hold-down on its neighbour after a connect
+    /// was refused with `why`, returning when the hold-down ends. If the refusal is
+    /// the kernel's verdict, gives the neighbour up and returns `None`. See
     /// [`HoldDowns::hold`].
     pub(super) fn hold_down(&self, host: IpAddr, why: &std::io::Error) -> Option<Instant> {
         let now = Instant::now();
@@ -130,8 +121,8 @@ impl Neighbours {
         until
     }
 
-    /// Whether the neighbour `host`'s connects wait on has been given up on,
-    /// so `host` is sent nothing more; filed unreachable, the first time.
+    /// Whether the neighbour `host`'s connects wait on has been given up, so `host` is
+    /// sent nothing more. Logs `host` unreachable the first time.
     pub(super) fn unreached(&self, host: IpAddr) -> bool {
         let neighbour = self.neighbour_of(host);
         let given_up = lock(&self.given_up).contains(&neighbour);
@@ -141,17 +132,15 @@ impl Neighbours {
         given_up
     }
 
-    /// Gives up the neighbour `host`'s connects wait on, and files `host`
-    /// unreachable.
+    /// Gives up the neighbour `host`'s connects wait on and logs `host` unreachable.
     pub(super) fn give_up(&self, host: IpAddr) {
         let neighbour = self.neighbour_of(host);
         lock(&self.given_up).insert(neighbour);
         self.file(host, neighbour);
     }
 
-    /// The neighbour a connect to `host` waits on: the one the table's
-    /// routes name, and otherwise the host itself, which is all a refusal
-    /// without a table can be about.
+    /// The neighbour a connect to `host` waits on: the next hop from the table's
+    /// routes, or `host` itself when there is no table.
     fn neighbour_of(&self, host: IpAddr) -> IpAddr {
         self.table
             .as_ref()
@@ -180,26 +169,25 @@ pub(super) enum Held {
 /// How one port's connects have fared against the neighbour that held them.
 #[derive(Debug, Default)]
 pub(super) struct HeldConnects {
-    /// The resolutions of the neighbour the port's connects met unanswered.
+    /// Unanswered resolutions of the neighbour this port's connects have met.
     unanswered: u8,
-    /// Whether a connect's own wait has run out on a resolution still
-    /// running, which a port waits out once.
+    /// Whether a connect's own timeout already ran out on a resolution still in
+    /// progress; a port waits that out once.
     outwaited: bool,
 }
 
 impl HeldConnects {
-    /// What becomes of the port after a connect the kernel held for a
-    /// neighbour at `state`, which the kernel ended as unreachable, where it
-    /// `concluded`, or the connect's own wait ended first.
+    /// What to do with the port after a connect the kernel held for a neighbour at
+    /// `state`. `concluded` is true when the kernel ended the connect as
+    /// unreachable, false when the connect's own timeout ran out first.
     ///
-    /// A resolution the connect gave up on first has not said anything yet,
-    /// the connect's wait being as short as an ordinary path allows: the port
-    /// connects again, once, waiting long enough for a resolution and the
-    /// handshake behind it. One that concluded unanswered is a round of
-    /// [`NEIGHBOR_ROUNDS`]: the port connects again, which has the kernel ask
-    /// afresh, until the last, when the neighbour is given up. The connects
-    /// of a host's ports meet the same resolutions, so a dead neighbour costs
-    /// its host two resolutions however many ports are asked at once.
+    /// A resolution the connect timed out on has not answered yet, since the connect
+    /// timeout is as short as an ordinary path allows: the port connects once more,
+    /// waiting long enough for a resolution plus the handshake. A resolution that
+    /// concluded unanswered counts as one of [`NEIGHBOR_ROUNDS`]: the port connects
+    /// again, making the kernel ask afresh, until the last round gives the neighbour
+    /// up. A host's ports share the same resolutions, so a dead neighbour costs its
+    /// host two resolutions however many ports are in flight.
     pub(super) fn after(&mut self, state: NeighborState, concluded: bool) -> Held {
         let again = Held::Again(NEIGHBOUR_PATH_FINDING_TIMEOUT);
         if !concluded && state == NeighborState::Resolving && !self.outwaited {
@@ -215,15 +203,15 @@ impl HeldConnects {
     }
 }
 
-/// Reading nothing: every connect is read as it ended.
+/// Reads no table: every connect is read as it ended.
 impl Default for Neighbours {
     fn default() -> Self {
         Self::reading(None)
     }
 }
 
-/// `held`, taken even where a thread panicked holding it: every section
-/// under these locks leaves what it holds whole.
+/// Locks `held`, ignoring poisoning: every section under these locks leaves its
+/// data consistent.
 fn lock<T>(held: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     held.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -247,8 +235,8 @@ mod tests {
     const ROUTED: IpAddr = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
     const GATEWAY: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 254));
 
-    /// Neighbours read from a table holding `table`, with [`HOST`] on a link
-    /// of this machine's and [`ROUTED`] behind [`GATEWAY`].
+    /// Neighbours read from `table`, with [`HOST`] on a local link and [`ROUTED`]
+    /// behind [`GATEWAY`].
     fn reading(table: NeighborTable) -> Neighbours {
         let table = KernelNeighbors::with_reader(Box::new(move || Ok(table.clone()))).routing(
             Box::new(|address| Ok(Some(if address == ROUTED { GATEWAY } else { address }))),
@@ -256,10 +244,8 @@ mod tests {
         Neighbours::reading(Some(table))
     }
 
-    /// A connect ended by a neighbour the kernel has not resolved is told
-    /// from one that crossed a neighbour that answered, which is where a
-    /// router's unreachable comes from, and from one the table knows nothing
-    /// of, which is read as it ended.
+    /// Only an unresolved neighbour holds a connect; a resolved one (where a router's
+    /// unreachable comes from) or one missing from the table does not.
     #[test]
     fn only_an_unresolved_neighbour_holds_a_connect() {
         for state in [NeighborState::Failed, NeighborState::Resolving] {
@@ -299,9 +285,8 @@ mod tests {
         assert!(!neighbours.unreached(HOST));
     }
 
-    /// A connect that ran out on a resolution still running is asked again
-    /// once, waiting for it, and a port meets two unanswered resolutions
-    /// before its neighbour is given up.
+    /// A connect that timed out on a resolution in progress is retried once, and a
+    /// port meets two unanswered resolutions before its neighbour is given up.
     #[test]
     fn a_port_is_given_up_after_its_second_unanswered_resolution() {
         let mut held = HeldConnects::default();

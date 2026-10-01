@@ -8,39 +8,31 @@
 
 //! # Unprivileged TCP Connect Scanning
 //!
-//! The fallback strategy for when raw sockets are not available, whether because
-//! the process is not root, no usable interface exists, or the OS could not route
-//! a target. Everything here is built on ordinary
-//! [`TcpStream`] connects, so it needs no special
-//! privileges and works anywhere the async runtime does.
+//! The fallback strategy when raw sockets are unavailable: the process is not root,
+//! no usable interface exists, or the OS could not route a target. Everything is
+//! built on ordinary [`TcpStream`] connects, so it needs no privileges.
 //!
-//! It answers both scan phases. [`discover`] establishes host presence by probing
-//! a small set of common infrastructure ports and treating any TCP-layer response,
-//! an accept or even a refusal, as proof the host is alive. [`scan`] takes known
-//! targets and classifies each port from a full connect handshake.
+//! [`discover`] finds live hosts by connecting to a few common infrastructure ports
+//! and taking any TCP-layer answer, an accept or a refusal, as proof of life.
+//! [`scan`] classifies each known target port from a full connect handshake.
 //!
-//! Both draw their work in shuffled batches and cap their in-flight connections
-//! with a `ProbePool`, and both record findings through the shared
-//! [`ScanContext`] like every other strategy. What they draw differs with the
-//! phase: a sweep asks about an address and a port scan about an address paired
-//! with a port, which is the unit each of them settles.
+//! Both draw work in shuffled batches, cap in-flight connections with a
+//! `ProbePool`, and record findings through the shared [`ScanContext`]. A sweep
+//! settles an address; a port scan settles an address and port.
 //!
-//! Every probe takes its socket from the process's descriptor budget first
-//! (see `dial`), and a probe the process has no socket for waits for one.
-//! A shell's file limit therefore slows a scan and never narrows it: a socket
-//! the process could not open is a question nobody asked, not an answer.
+//! Every probe takes its socket from the process's descriptor budget first (see
+//! `dial`) and waits if none is free, so a low file limit slows a scan without
+//! narrowing it.
 //!
 //! ## What a socket cannot see
 //!
-//! The kernel hands back an outcome and never the packet behind it, so two
-//! readings the raw path makes are out of reach here. A refused connect is a
-//! reset or an ICMP port unreachable, reported alike, and the second is what a
-//! firewall rejecting on a host's behalf sends by default: such a filter in
-//! front of an address with nothing behind it reads here as a host up with a
-//! closed port. And a UDP port is asked once, so a host rationing its ICMP
-//! errors, which leaves most of its closed ports reading `OpenOrNoReply` on
-//! either path, is never named as rationing here: only a retry answered late
-//! shows the ration, and this path makes none.
+//! The kernel returns an outcome, never the packet, so two readings the raw path
+//! makes are out of reach. A refused connect is a reset or an ICMP port unreachable,
+//! reported alike, and the latter is what a firewall rejecting on a host's behalf
+//! sends by default: a filter in front of an empty address reads here as a host up
+//! with a closed port. And a UDP port is asked once, so a host rate-limiting its
+//! ICMP errors (most closed ports then read `OpenOrNoReply` on either path) is never
+//! identified as such; only a late answer to a retry shows it.
 
 use crate::config::ServiceDetection;
 use crate::config::limits::{
@@ -87,15 +79,11 @@ use neighbours::{Held, HeldConnects, Neighbours};
 /// The evasion an unprivileged connect probe can honour: a source port to leave
 /// from and a hop limit to carry.
 ///
-/// Both are ordinary socket options that need no privilege, so they belong on
-/// this path as much as on the raw one: a hop limit a filter keys on should be
-/// the chosen value on *every* probe, the connect fallback included, or the
-/// fallback would leak the real one. The framing techniques, a spoofed hardware
-/// address, fragmentation, decoys, are absent here because they need a
-/// self-built frame this path never touches; a profile that asks for one opens
-/// the Ethernet path and never reaches this scanner. The segment shapers,
-/// padding, a corrupt checksum, are absent for a different reason: the kernel
-/// builds the segment a connect sends, so there is nothing here to shape.
+/// Both are unprivileged socket options, so the connect fallback applies them too
+/// and does not leak the real hop limit. Framing techniques (spoofed hardware
+/// address, fragmentation, decoys) need a self-built frame; a profile asking for one
+/// opens the Ethernet path and never reaches this scanner. Segment shapers (padding,
+/// a corrupt checksum) do not apply because the kernel builds the segment.
 impl From<&EvasionProfile> for Shaping {
     fn from(evasion: &EvasionProfile) -> Self {
         Self {
@@ -111,33 +99,26 @@ impl From<&EvasionProfile> for Shaping {
 pub struct ConnectScanner {
     /// The addresses being probed for aliveness.
     ips: IpSet,
-    /// Shared state (host store, event channel, abort signal) for the scan
-    /// this explorer is part of.
+    /// Shared scan state: host store, event channel, abort signal.
     ctx: ScanContext,
-    /// What each liveness probe changes about the packet it sends. Only the
-    /// source port and hop limit reach the wire from here (see `dial::Shaping`).
+    /// Only the source port and hop limit reach the wire (see `dial::Shaping`).
     evasion: EvasionProfile,
     /// The ports every address is asked about.
     ports: SynPorts,
 }
 
 impl ConnectScanner {
-    /// Checks each of `ips` for a pulse, connecting to a handful of common
-    /// infrastructure ports and taking any TCP-layer answer, an accept or a
-    /// refusal alike, as proof that something is there.
+    /// Checks each of `ips` for life by connecting to a few common infrastructure
+    /// ports; an accept or a refusal both count.
     ///
-    /// Hosts are filed through `ctx`. Of `evasion`, only the source port and
-    /// the hop limit reach the wire; the kernel builds the rest of what a
-    /// connect sends.
+    /// Hosts are filed through `ctx`. Of `evasion`, only the source port and hop
+    /// limit reach the wire.
     pub fn new(ips: IpSet, ctx: ScanContext, evasion: &EvasionProfile) -> Self {
         Self::asking(ips, ctx, evasion, SynPorts::common())
     }
 
-    /// [`new`](Self::new), asking `ports` rather than the common five.
-    ///
-    /// The set a routed sweep of the same addresses would ask, so that which
-    /// strategy reached an address decides nothing about which ports it was
-    /// asked on. See [`discover_on`].
+    /// [`new`](Self::new), asking `ports` in place of the common five: the set a
+    /// routed sweep of the same addresses would ask. See [`discover_on`].
     pub fn asking(ips: IpSet, ctx: ScanContext, evasion: &EvasionProfile, ports: SynPorts) -> Self {
         Self {
             ips,
@@ -155,9 +136,7 @@ impl HostScanner for ConnectScanner {
     }
 
     async fn discover_hosts(&mut self) -> Result<(), StrategyError> {
-        // The targets are taken rather than cloned. A sweep asks each address
-        // once, so a second call has nothing left to probe and correctly does
-        // nothing, where a clone would silently re-probe the whole set.
+        // Taken, so a second call has nothing left to probe.
         discover_on(
             std::mem::take(&mut self.ips),
             self.ctx.clone(),
@@ -168,142 +147,106 @@ impl HostScanner for ConnectScanner {
     }
 }
 
-/// What one finished prober task learned. A probe never fails, since every
-/// network outcome maps to some combination of the fields below, so this is a
-/// plain [`Option`] rather than a `Result`.
-///
-/// `None` means the target was not probed at all.
+/// What one finished prober task learned. Every network outcome maps to some
+/// combination of these fields, so a probe never fails.
 struct Probed {
     /// The address probed.
     ip: IpAddr,
-    /// The port verdict, where the probe produced one.
+    /// The port verdict. `None` only for a target never probed (UDP through a TCP
+    /// prober).
     ///
-    /// Separate from [`Probed::answered`] because the two say different things:
-    /// a timeout yields a `NoReply` port and proves nothing about the host,
-    /// while a refusal yields a `Closed` port *and* proves the host is up. Only
-    /// a target that was never probed - UDP through a TCP prober - carries
-    /// `None`.
+    /// Separate from [`Probed::answered`]: a timeout gives a `NoReply` port and
+    /// proves nothing about the host, while a refusal gives a `Closed` port and
+    /// proves the host is up.
     port: Option<Port>,
-    /// What the port said while it was being fingerprinted, carried out of the
-    /// probe for the detection phase to hand a passive detection.
-    ///
-    /// This scanner holds the only connection an unprivileged scan makes to the
-    /// port, so bytes dropped here are bytes no later phase can read without
-    /// dialling again. Empty for every probe that drew nothing.
+    /// What the port said while being fingerprinted, for the detection phase to
+    /// hand a passive detection. This is the only connection an unprivileged scan
+    /// makes to the port. Empty when the probe drew nothing.
     responses: Vec<String>,
 
-    /// What those same bytes said about the *machine*, carried out for the same
-    /// reason and filed in a different place: the service belongs to the port,
-    /// the operating system to the host.
-    ///
-    /// Empty for every probe that drew nothing, and for every verdict that came
-    /// from the kernel rather than from a conversation.
+    /// What those same bytes said about the host's operating system. Empty when
+    /// the probe drew nothing or the verdict came from the kernel.
     about_the_host: crate::fingerprint::AboutTheHost,
-    /// Whether identifying the port lost a later connection for want of a
-    /// socket, so that what it names is a floor; see
+    /// Whether identifying the port lost a later connection for want of a socket,
+    /// so what it names is a floor; see
     /// [`Fingerprinted::starved`](crate::fingerprint::Fingerprinted::starved).
     identified_in_part: bool,
-    /// Whether the host answered. The kernel hands back a completed handshake or
-    /// a `ConnectionRefused` only when something came back, and a refusal is
-    /// almost always the target's own RST, so either is read as a live stack;
-    /// a port unreachable standing in for one comes, as a rule, from a filter
-    /// on the host itself. A timeout or any other unreachable proves
-    /// nothing about the host, whose sender this path cannot see, and never
-    /// sets this.
+    /// Whether the host answered. A completed handshake or `ConnectionRefused`
+    /// means something came back; a refusal is almost always the target's own RST,
+    /// and a port unreachable in its place usually comes from a filter on the host
+    /// itself. A timeout or any other unreachable never sets this.
     answered: bool,
-    /// What became of this target, for a resume.
-    ///
-    /// Distinct from [`answered`](Self::answered), which is about the *host*: a
-    /// timeout proves nothing about the host and still settles the target,
-    /// because the connect made its one and only attempt.
+    /// What became of this target, for a resume. A timeout settles the target
+    /// (the connect made its one attempt) without proving the host up.
     outcome: Outcome,
     /// Whether a send was made, as the run's audit counts it.
     attempt: Attempt,
-    /// How long the connect took to draw its answer, where it drew one.
-    ///
-    /// A completed handshake returns once the SYN/ACK is in and a refusal once
-    /// the RST is, so either is one round trip to the host, timed from when
-    /// the attempt began rather than from any wait for a socket. `None` for a
-    /// timeout and for every probe that never left.
+    /// One round trip to the host: to the SYN/ACK or the RST, timed from the
+    /// attempt's start, excluding any wait for a socket. `None` for a timeout or a
+    /// probe that never left.
     rtt: Option<Duration>,
-    /// What the reply proved the host *is*, where its protocol says so.
-    ///
-    /// A claim about the host rather than about the port, and carried alongside
-    /// the verdict rather than folded into it for that reason: a name server
-    /// and a socket bound to 53 produce the same `Open`, and only one of them
-    /// is a name server. See [`payload::declared_role`].
+    /// What the reply proved the host *is*, where its protocol says so. Kept
+    /// apart from the verdict: a name server and any socket bound to 53 are both
+    /// `Open`. See [`payload::declared_role`].
     role: Option<NetworkRole>,
-    /// The connect that heard nothing, and how long it waited, for a port
-    /// filed `NoReply` because its connect ran out of time; see [`SlowPaths`].
+    /// For a port filed `NoReply` because its connect timed out: the connect and
+    /// how long it waited; see [`SlowPaths`].
     silence: Option<Silence>,
-    /// The port, where the kernel refused its connect for a hold-down on its
-    /// host's neighbour, and when the hold-down is over: nothing of this probe
-    /// is filed, and the port is asked again after it. See [`HeldPorts`].
+    /// Set when the kernel refused the connect for a neighbour hold-down: nothing
+    /// is filed and the port is asked again after it. See [`HeldPorts`].
     held_down: Option<HeldPort>,
-    /// Whether this probe's outcome settles its target. A second asking's
-    /// does not: the first asking settled the target already, and the second
-    /// only revises what it was filed as.
+    /// Whether this outcome settles its target. A second asking's does not; it
+    /// only revises what the first filed.
     settles: bool,
 }
 
-/// The outcome of one finished [`port_prober`] task.
+/// The outcome of one finished [`port_prober`] task; `None` when the target was
+/// not probed.
 type ProbedPort = Option<Probed>;
 
-/// Whether a port probe put anything on the wire, which is what the run's
-/// `sends_attempted` and `sends_failed` count.
-///
-/// Carried by the probe rather than counted when it is admitted, because only
-/// the probe knows: a probe admitted can still find no socket, no route, or a
-/// scan that stopped before it asked.
+/// Whether a port probe put anything on the wire, for the run's `sends_attempted`
+/// and `sends_failed`. Only the probe knows: an admitted probe can still find no
+/// socket, no route, or a stopped scan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Attempt {
     /// The probe was sent.
     Sent,
-    /// This machine refused the send before anything left it, for the reason
-    /// carried, which the scan reports once it has drained.
+    /// This machine refused the send; reported once the scan has drained.
     Refused(Refusal),
-    /// The process had no socket to give the probe for as long as it would
-    /// wait, which the scan reports once it has drained.
+    /// No socket became free in time; reported once the scan has drained.
     Starved,
     /// Nothing was attempted: the scan stopped before the probe asked.
     Unmade,
 }
 
-/// Why this machine refused to send a probe, sorted the way the raw path sorts
-/// a send it could not make: by whose fact it is.
+/// Why this machine refused to send a probe, sorted as the raw path sorts them:
+/// by whose fact it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Refusal {
-    /// No route leads to the address. A fact about the address as seen from
-    /// here rather than a fault, and reported against the address.
+    /// No route leads to the address. Reported against the address.
     NoRoute,
-    /// A route leads to the address and refuses it, in the words only a
-    /// route's policy uses: a `prohibit` or `blackhole` route where Linux has
-    /// them; see [`Egress::start_connect`]. Reported against the address as
-    /// [`NoRoute`](Self::NoRoute) is, and named as refused by a route, since
-    /// the remedy is this machine's routing table.
+    /// A `prohibit` or `blackhole` route (Linux) refuses the address; see
+    /// [`Egress::start_connect`]. Reported against the address like
+    /// [`NoRoute`](Self::NoRoute), and named as a route refusal since the fix is
+    /// in this machine's routing table.
     Forbidden,
-    /// The source port every probe is pinned to was held; see
-    /// [`SourcePortHeld`]. Named apart from [`Local`](Self::Local) because
-    /// the operating system's words for it name neither the port nor the
-    /// wait, and those are what a reader acts on.
+    /// The source port every probe is pinned to was held; see [`SourcePortHeld`].
+    /// Kept apart from [`Local`](Self::Local) because the OS error names neither
+    /// the port nor the holder.
     PortHeld(u16, Holder),
-    /// The neighbour a route leads through did not answer address
-    /// resolution, asked twice: the kernel held the connect's SYN, or
-    /// refused it for a hold-down, and never sent it. A fact about the
-    /// address, reported against it as [`NoRoute`](Self::NoRoute) is; see
-    /// [`neighbours`].
+    /// The next-hop neighbour did not answer address resolution, asked twice, so
+    /// the kernel never sent the SYN. Reported against the address like
+    /// [`NoRoute`](Self::NoRoute); see [`neighbours`].
     Unresolved,
-    /// Anything else: no source to send from, no local port, a probe that met
-    /// itself on every try. This machine's failure, in the operating system's
-    /// own words, which is the part a reader asking why can act on.
+    /// Anything else (no source address, no local port, a probe that met itself
+    /// on every try): this machine's failure, in the OS's words.
     Local(String),
 }
 
 impl Refusal {
-    /// The refusal `error` is, raised before anything left this machine.
+    /// Classifies `error`, raised before anything left this machine.
     ///
-    /// A route that refuses by its type, `prohibit` or `blackhole`, arrives
-    /// as a host this machine cannot reach; see
+    /// A `prohibit` or `blackhole` route arrives as a host unreachable; see
     /// [`Egress::start_connect`].
     fn of(error: &io::Error) -> Self {
         if let Some(held) = SourcePortHeld::of(error) {
@@ -338,15 +281,14 @@ fn refused_by_policy(error: &io::Error) -> bool {
 
 /// What a scan's probes could not ask, and why, reported once it has drained.
 ///
-/// Each is a port or address left unasked, which a resume asks again, and
-/// each has a cause the report has to name: without it, a scan that could not
-/// send reads as a network that did not answer.
+/// Each is a port or address left unasked, which a resume asks again. The report
+/// names each cause, so a scan that could not send does not read as a silent
+/// network.
 #[derive(Debug, Default)]
 struct Shortfall {
     /// Targets the process had no socket for.
     starved: u128,
-    /// Ports identified in part, a later connection of theirs refused a
-    /// socket.
+    /// Ports identified in part because a later connection got no socket.
     identified_in_part: u128,
     /// Addresses no route led to.
     unroutable: std::collections::BTreeSet<IpAddr>,
@@ -388,22 +330,18 @@ impl Shortfall {
 
     /// Files what fell short, counting targets as `unit` and `units`.
     ///
-    /// An address no route led to is filed against the address, the way the
-    /// raw path files one, unless it answered something else, since an
-    /// address that answered was reached and a report saying otherwise would
-    /// contradict the ports it holds for it.
+    /// An address no route led to is filed against the address, as the raw path
+    /// does, unless it answered something else and so was reached.
     ///
-    /// Among those, an address on one of this host's own segments is named
-    /// refused by a route where the routing table refuses it, asked as the raw
-    /// path's plan asks it; see [`refuses_neighbour`]. A segment this host
-    /// holds is reached by its connected route, so a refusal there is an
-    /// override: a `prohibit` route is told by its words, but an `unreachable`
-    /// one refuses in a missing route's, and only where the address sits
-    /// says which it is. The segment's own network and broadcast addresses
-    /// are left out, since the kernel refuses a connection to them on grounds
-    /// of its own.
+    /// An address on one of this host's own segments that the routing table
+    /// refuses is named refused by a route, as in the raw path's plan; see
+    /// [`refuses_neighbour`]. A connected segment is always routed, so a refusal
+    /// there is an override; a `prohibit` route says so in its error, but an
+    /// `unreachable` one looks like a missing route, and only the address's
+    /// segment tells them apart. The segment's network and broadcast addresses
+    /// are excluded, since the kernel refuses those for its own reasons.
     fn report(self, ctx: &ScanContext, scanner: ScannerKind, unit: &str, units: &str) {
-        // Read only where there is something to ask it about, which is rare.
+        // Rarely needed, so read only when it is.
         let segments = if self.unroutable.is_empty() {
             OnLinkTable::from_links(&[])
         } else {
@@ -457,10 +395,9 @@ impl Shortfall {
                 ctx.record_unroutable(address);
             }
         }
-        // Filed, since those targets have no verdict, but warned in one short
-        // line rather than announced as a scanner that failed: nothing broke.
-        // The pinned port is still closing from the connection just made, or
-        // another socket holds it, and the remedy is to wait or pin another.
+        // Filed, since those targets have no verdict, but only a short warning:
+        // nothing broke. The pinned port is still closing or held by another
+        // socket; the fix is to wait or pin another.
         if let Some((port, holder)) = self.held {
             let by = match holder {
                 Holder::Closing => "still closing",
@@ -490,45 +427,34 @@ impl Shortfall {
 /// [`crate::scanner::scan`] can drive it through the same path as the privileged
 /// [`TcpPortScanner`](super::ports::TcpPortScanner).
 ///
-/// It carries no [`detect_services`](PortScanner::detect_services) override,
-/// because the connect engine fingerprints each port inline over the live stream
-/// it already holds (see this module's port prober), so a second identification pass would
-/// be wasted work. This is the reason service detection lives on the trait rather
-/// than in the caller: the fact that connect needs no second pass is expressed
-/// here by its absence, instead of as a branch at the call site.
+/// Each port is fingerprinted inline over the stream that found it (see the port
+/// prober), so the scan itself needs no second identification pass.
 pub struct ConnectPortScanner {
-    /// Shared state (host store, event channel, abort signal) for the scan this
-    /// strategy is part of.
+    /// Shared scan state: host store, event channel, abort signal.
     ctx: ScanContext,
     /// The ceiling on in-flight connect probes.
     concurrency: usize,
     /// How far each probe may go to name what answered.
     ///
-    /// [`ServiceDetection::Off`] means something slightly different here than it
-    /// does on the privileged path, and the difference is worth knowing: this
-    /// scanner's connection *is* how the port's state is established, so turning
-    /// identification off skips the conversation, never the connection. A caller
-    /// who needs the target's application logs to stay clean needs raw sockets;
-    /// without them, being seen is the price of the answer.
+    /// The connection is what establishes the port's state, so
+    /// [`ServiceDetection::Off`] skips the conversation but never the connection.
+    /// Keeping the target's application logs clean needs raw sockets.
     detection: ServiceDetection,
-    /// What each probe changes about the packet it sends. Only the source port
-    /// and hop limit reach the wire from here (see `dial::Shaping`).
+    /// Only the source port and hop limit reach the wire (see `dial::Shaping`).
     evasion: EvasionProfile,
-    /// The interface each link-local target was named on, empty for a scan that
-    /// named none. A `SocketAddrV6` with a zero scope id will not connect to a
-    /// neighbour however close it is, so the scope id is carried per target and
-    /// applied where the endpoint is built.
+    /// The interface each link-local target was named on; empty if none. A
+    /// `SocketAddrV6` with a zero scope id will not connect to a neighbour, so the
+    /// scope id is applied per target where the endpoint is built.
     zones: ZoneMap,
 }
 
 impl ConnectPortScanner {
-    /// Settles each `(address, port)` it is fed with a full handshake, holding
-    /// at most `concurrency` connections open and recording verdicts through
-    /// `ctx`.
+    /// Settles each `(address, port)` it is fed with a full handshake, holding at
+    /// most `concurrency` connections open and recording verdicts through `ctx`.
     ///
-    /// `detection` decides how far the conversation goes once a port answers,
-    /// not whether the connection is made: the connection is what establishes
-    /// the state. `evasion` contributes the source port and the hop limit.
+    /// `detection` decides how far the conversation goes once a port answers; the
+    /// connection is always made. `evasion` contributes the source port and hop
+    /// limit.
     pub fn new(
         ctx: ScanContext,
         concurrency: usize,
@@ -544,10 +470,8 @@ impl ConnectPortScanner {
         }
     }
 
-    /// Names the interface each of the scan's link-local targets was given on.
-    ///
-    /// Without it a link-local endpoint is built with a zero scope id, which the
-    /// kernel refuses to connect however reachable the neighbour is.
+    /// Names the interface each link-local target was given on. Without it the
+    /// endpoint has a zero scope id, which the kernel refuses to connect.
     pub fn with_zones(mut self, zones: ZoneMap) -> Self {
         self.zones = zones;
         self
@@ -576,11 +500,9 @@ impl PortScanner for ConnectPortScanner {
         .await
     }
 
-    /// Identifies the open ports an earlier sitting of the job identified,
-    /// whose responses ended with it. This scanner identifies each port it
-    /// finds over the connection that found it, so a port that comes back
-    /// settled is one no connection of this sitting reaches, and without this
-    /// pass the detections would run over it with nothing to read.
+    /// Identifies open ports settled by an earlier sitting of the job, whose
+    /// responses were lost with it. Ports found in this sitting were already
+    /// identified over the connection that found them.
     async fn detect_services(&mut self, ctx: &ScanContext) {
         crate::scanner::service::detect_inherited(ctx, self.detection, Protocol::Tcp).await;
     }
@@ -590,42 +512,31 @@ impl PortScanner for ConnectPortScanner {
 pub struct ConnectUdpPortScanner {
     ctx: ScanContext,
     concurrency: usize,
-    /// What each probe changes about the packet it sends. Only the source port
-    /// and hop limit reach the wire from here (see `dial::Shaping`).
+    /// Only the source port and hop limit reach the wire (see `dial::Shaping`).
     evasion: EvasionProfile,
-    /// How far the second pass may go to name what answered.
-    ///
-    /// Unlike [`ConnectPortScanner`] beside it, this one cannot identify a
-    /// service inline: there is no connection to hold, and the datagram that
-    /// establishes the port is open is not the one that identifies what is
-    /// behind it. So it runs the second pass, and holds the level to run it at.
+    /// How far the service identification pass may go. UDP has no connection to
+    /// identify over, so this scanner runs a separate pass.
     service_detection: ServiceDetection,
-    /// The interface each link-local target was named on, empty for a scan that
-    /// named none. A `SocketAddrV6` with a zero scope id will not connect to a
-    /// neighbour however close it is, so the scope id is carried per target and
-    /// applied where the endpoint is built.
+    /// The interface each link-local target was named on; empty if none. A
+    /// `SocketAddrV6` with a zero scope id will not connect to a neighbour, so the
+    /// scope id is applied per target where the endpoint is built.
     zones: ZoneMap,
 }
 
 impl ConnectUdpPortScanner {
-    /// Sends one datagram per `(address, port)` it is fed, `concurrency` of
-    /// them in flight at a time, and files what came back through `ctx`. As on
-    /// the TCP path, `evasion` reaches the wire as a source port and a hop
-    /// limit and no further.
+    /// Sends one datagram per `(address, port)` it is fed, `concurrency` at a
+    /// time, and files what came back through `ctx`. `evasion` contributes the
+    /// source port and hop limit.
     ///
-    /// A closed verdict here proves nothing about the host. It comes from an
-    /// ICMP error the kernel matched to the socket, and the error's own source,
-    /// a router as easily as the target, is not surfaced through this API. Only
-    /// a datagram coming back proves the port and the host at once.
+    /// A closed verdict proves nothing about the host: it comes from an ICMP error
+    /// the kernel matched to the socket, whose source (a router as easily as the
+    /// target) this API does not expose. Only a datagram back proves both the port
+    /// and the host.
     pub fn new(ctx: ScanContext, concurrency: usize, evasion: &EvasionProfile) -> Self {
         Self::with_detection(ctx, concurrency, evasion, ServiceDetection::default())
     }
 
-    /// The same scanner, told how far the second pass may go.
-    ///
-    /// [`new`](Self::new) is the ordinary way in and takes the default level;
-    /// this is for a caller carrying a level of its own, which is every caller
-    /// that read one from a configuration.
+    /// [`new`](Self::new) with an explicit service detection level.
     pub fn with_detection(
         ctx: ScanContext,
         concurrency: usize,
@@ -641,8 +552,8 @@ impl ConnectUdpPortScanner {
         }
     }
 
-    /// Names the interface each of the scan's link-local targets was given on,
-    /// as on the TCP scanner beside it.
+    /// Names the interface each link-local target was given on, as on the TCP
+    /// scanner.
     pub fn with_zones(mut self, zones: ZoneMap) -> Self {
         self.zones = zones;
         self
@@ -659,13 +570,8 @@ impl PortScanner for ConnectUdpPortScanner {
         vec![Protocol::Udp]
     }
 
-    /// Identifies the UDP services this scanner found open.
-    ///
-    /// [`ConnectPortScanner`] needs no such pass because it fingerprints over
-    /// the stream it already holds. There is no equivalent here: a UDP probe is
-    /// one datagram, sent to establish that the port is open, and the question
-    /// that identifies what answered is a second one. So the phase runs, scoped
-    /// to [`Protocol::Udp`] so a composite's TCP member keeps its own half.
+    /// Identifies the UDP services this scanner found open. Scoped to
+    /// [`Protocol::Udp`] so a composite's TCP member keeps its own half.
     async fn detect_services(&mut self, ctx: &ScanContext) {
         crate::scanner::service::detect(ctx, self.service_detection, Protocol::Udp).await;
     }
@@ -691,9 +597,8 @@ impl PortScanner for ConnectUdpPortScanner {
                 break;
             }
             probes += 1;
-            // A host past its own budget is left alone. Counted with the
-            // probes, because it was work routed here, and recorded unasked so a
-            // resume asks about it rather than trusting a verdict nobody earned.
+            // A host past its own budget is skipped: counted as work routed here,
+            // and recorded unasked so a resume asks it.
             if self.ctx.host_expired(target.ip()) {
                 record_unasked(&self.ctx, &target);
                 continue;
@@ -705,11 +610,9 @@ impl PortScanner for ConnectUdpPortScanner {
                 .await;
         }
 
-        // Anything still queued was never sent, and carries no position to
-        // settle. The TCP scan above does the same; leaving it out here would
-        // both lose the ports and leave the sitting's settlement counts short
-        // of the targets it was handed. Closed first, for the reason it is
-        // there.
+        // Anything still queued was never sent: record it unasked so the ports
+        // and the sitting's settlement counts stay whole. Closed first, as in
+        // the TCP scan.
         rx.close();
         while let Ok(target) = rx.try_recv() {
             record_unasked(&self.ctx, &target);
@@ -725,14 +628,11 @@ impl PortScanner for ConnectUdpPortScanner {
 
 /// Performs a high-concurrency, unprivileged port scan.
 ///
-/// This is the primary scanning strategy for callers without root privileges. It
-/// consumes the randomized stream of targets a
-/// [`Dispatcher`](crate::scanner::dispatcher::Dispatcher) produces, holding the
-/// number of ports in flight at or below `concurrency_limit` and each
-/// connection within the process's descriptor budget, and records every port it
-/// probed into the shared
-/// [`ScanContext`] store - open, closed, blocked and silent alike, so the list
-/// does not depend on whether the caller had root.
+/// The primary strategy for callers without root. Consumes the randomized target
+/// stream a [`Dispatcher`](crate::scanner::dispatcher::Dispatcher) produces, keeps
+/// at most `concurrency_limit` ports in flight within the process's descriptor
+/// budget, and records every probed port (open, closed, blocked and silent) in the
+/// shared [`ScanContext`] store.
 pub async fn scan(
     rx: mpsc::Receiver<PlannedTarget>,
     concurrency_limit: usize,
@@ -742,8 +642,7 @@ pub async fn scan(
     zones: &ZoneMap,
 ) -> Result<(), StrategyError> {
     let neighbours = Neighbours::of_system();
-    // On the heap: the walk's state holds every kind of asking it makes, more
-    // than a caller's stack should be asked to carry.
+    // Boxed: the walk's state is too large for a caller's stack.
     Box::pin(scan_among(
         rx,
         concurrency_limit,
@@ -756,8 +655,7 @@ pub async fn scan(
     .await
 }
 
-/// [`scan`], knowing what `neighbours` knows of the neighbours its connects
-/// wait on.
+/// [`scan`], reading the neighbours its connects wait on from `neighbours`.
 async fn scan_among(
     mut rx: mpsc::Receiver<PlannedTarget>,
     concurrency_limit: usize,
@@ -771,9 +669,9 @@ async fn scan_among(
     let shaping = Shaping::from(evasion);
     let folder = ctx.clone();
     let mut shortfall = Shortfall::default();
-    // Each port is identified over the connection that finds it open, a host's
-    // ports side by side, so a host answering them in turn is seen for that;
-    // see [`Crowd`](crate::scanner::service::Crowd).
+    // Ports are identified over the connection that finds them open, grouped by
+    // host so a host answering on every port is noticed; see
+    // [`Crowd`](crate::scanner::service::Crowd).
     let crowds = crate::scanner::service::Crowds::default();
     let tarpits = crate::scanner::service::Tarpits::default();
     let slow = SlowPaths::default();
@@ -810,14 +708,11 @@ async fn scan_among(
     while let Some(target) = rx.recv().await {
         if let Some(cause) = ctx.handle.stopped() {
             reason = cause.into();
-            // This one was taken off the queue and never asked, so it is
-            // recorded with the rest still waiting behind it.
             record_unasked(&ctx, &target);
             break;
         }
         probes += 1;
-        // A host past its own budget is left alone, and its remaining ports are
-        // recorded unasked rather than given a verdict nothing earned.
+        // A host past its own budget has its remaining ports recorded unasked.
         if ctx.host_expired(target.ip()) {
             record_unasked(&ctx, &target);
             continue;
@@ -825,28 +720,23 @@ async fn scan_among(
         pool.admit(asking.first(target, &finding)).await;
     }
 
-    // Anything still queued was never sent, and carries no position to settle.
-    // Closed first: the probes still in flight are waited out below with the
-    // receiver alive, and a router handing over a target meanwhile would put
-    // it in a queue nothing reads, to be dropped with it. Closed, the router
-    // finds this scanner gone and records the target unasked itself.
+    // Anything still queued was never sent. Closed first: otherwise a router
+    // handing over a target while the in-flight probes drain below would put it
+    // in a queue nothing reads. Closed, the router records it unasked itself.
     rx.close();
     while let Ok(target) = rx.try_recv() {
         record_unasked(&ctx, &target);
     }
 
-    // Every target dispatched; wait out the probes still in flight, then the
-    // second askings they left owed: the ports a hold-down kept back, and
-    // then those a slow path did, among which the first may have left some.
+    // Drain the in-flight probes, then the second askings they left owed: ports
+    // a hold-down kept back, then slow-path ports, which may leave more held.
     pool.drain().await;
     held.ask_again(&asking, &mut pool).await;
     slow.ask_again(&asking, &mut pool).await;
     held.ask_again(&asking, &mut pool).await;
     let audit = pool.into_audit();
-    // Identification runs inside this walk rather than as a pass after it, so
-    // a stop that came while it ran ended the identifications in flight and
-    // left every port it had not reached unidentified. Named as the pass it
-    // cut where the scan identifies what it finds and found something open.
+    // Identification runs inside this walk, so a stop also cut it short. Name
+    // the services pass as stopped when it was on and something was open.
     if detection.connects()
         && ctx.handle.should_stop()
         && ctx.store.iter().any(|host| {
@@ -860,31 +750,28 @@ async fn scan_among(
     shortfall.identified_in_part +=
         crowds.ask_again(&ctx, ScannerKind::Connect).await.len() as u128;
     crowds.report_silence();
-    // Under the identification pass rather than this strategy: every port of
-    // the host has its verdict, and only what runs behind some of them went
-    // unasked, which is what a reader is told the raw path's own pass left.
+    // Reported under the identification pass, as on the raw path: every port
+    // has its verdict, only some services went unidentified.
     tarpits.report(&ctx, ScannerKind::Service);
     shortfall.report(&ctx, ScannerKind::Connect, "port", "ports");
     finish(&ctx, audit, ScannerKind::Connect, probes, reason);
     Ok(())
 }
 
-/// How long a connect across `path` waits for its answer, or to a host
-/// nothing has measured where `path` allows nothing.
+/// How long a connect across `path` waits for its answer (`path` is
+/// [`PathAllowance::NONE`] for an unmeasured host).
 ///
-/// [`CONNECT_PROBE_TIMEOUT`] where that covers the path, which is every path
-/// whose round trip is under a sixth of a second measured once, or two fifths
-/// measured steadily, so an ordinary scan waits what it always waits. On a longer one the wait is set as that timeout is:
-/// the host stack's SYN retransmission and then its answer across the path,
-/// with the headroom the host's measured round trips earn (see
-/// [`PathAllowance`]). A wait sized for a path that costs nothing gives up on
-/// every answer that crosses a slow one, and an open port reads `NoReply`.
+/// [`CONNECT_PROBE_TIMEOUT`] when that covers the path: any round trip under a
+/// sixth of a second measured once, or two fifths measured steadily. Beyond that,
+/// the wait is the host stack's SYN retransmission plus the answer across the
+/// path, with the headroom the measured round trips earn (see [`PathAllowance`]),
+/// so an open port behind a slow path does not read `NoReply`.
 fn connect_patience(path: PathAllowance) -> Duration {
     path.over(HOST_SYN_RETRANSMIT).max(CONNECT_PROBE_TIMEOUT)
 }
 
-/// What the path to `ip` adds to every wait on it, as the scan has measured
-/// it so far, or nothing where it has measured nothing.
+/// What the path to `ip`, as measured so far, adds to every wait on it;
+/// [`PathAllowance::NONE`] if unmeasured.
 fn measured_path(ctx: &ScanContext, ip: IpAddr) -> PathAllowance {
     ctx.read_host(ip, |host| {
         PathAllowance::of_round_trips(host.telemetry().round_trips())
@@ -892,8 +779,8 @@ fn measured_path(ctx: &ScanContext, ip: IpAddr) -> PathAllowance {
     .unwrap_or(PathAllowance::NONE)
 }
 
-/// What a connect port scan asks each port with, so a second asking asks it
-/// as the first did.
+/// What a connect port scan asks each port with, so a second asking matches the
+/// first.
 struct Asking<'a> {
     ctx: &'a ScanContext,
     detection: ServiceDetection,
@@ -905,12 +792,9 @@ struct Asking<'a> {
 }
 
 impl Asking<'_> {
-    /// The first asking of `target`, its connect's wait decided by `finding`
-    /// as the probe starts.
-    ///
-    /// Decided then rather than when the target is taken, because the probe
-    /// may wait for a place in the pool, and what the probes ahead of it
-    /// measured of the path while it waited is what its wait should allow.
+    /// The first asking of `target`, its connect's wait decided by `finding` when
+    /// the probe starts, so it uses whatever the probes ahead of it measured while
+    /// it waited for a pool slot.
     fn first(
         &self,
         target: PlannedTarget,
@@ -931,7 +815,7 @@ impl Asking<'_> {
         self.port_waiting(target, move || patience)
     }
 
-    /// The probe of `target`, its connect waiting what `patience` says as the
+    /// The probe of `target`, its connect waiting what `patience` returns when the
     /// probe starts.
     fn port_waiting(
         &self,
@@ -941,12 +825,11 @@ impl Asking<'_> {
         let ctx = self.ctx;
         let endpoint = self.zones.endpoint(target.ip(), target.port());
         let egress = ctx.egress_toward(target.ip());
-        // Identified over the connection that finds the port open, so the
-        // port's own cap applies here rather than in a pass of its own.
+        // Identification happens on this connection, so the port's cap applies here.
         let identify = ctx.service_detection_on(self.detection, target.port(), target.protocol());
         // A host that answers on every port has only its likeliest identified;
-        // see `Tarpits`. It is known for one once it has answered on enough,
-        // or said nothing on enough of the ports identified so far.
+        // see `Tarpits`. It is recognised once enough ports answered, or enough
+        // identified ports said nothing.
         let crowd = self.crowds.of(target.ip(), ctx.target_name(target.ip()));
         let identify = match ctx.read_host(target.ip(), |host| {
             self.tarpits
@@ -973,12 +856,11 @@ impl Asking<'_> {
         }
     }
 
-    /// [`port`](Self::port), asked a second time: what it draws revises the
-    /// port's record and settles nothing, since the first asking settled it.
+    /// [`port`](Self::port), asked a second time: it revises the port's record
+    /// and settles nothing, since the first asking did.
     ///
-    /// One that drew no verdict, cut short by the stop or refused by this
-    /// machine, revises nothing either: the first asking's verdict stands
-    /// rather than giving way to an unasked port. Its send is still counted.
+    /// If it draws no verdict (stopped, or refused by this machine), the first
+    /// asking's verdict stands. Its send is still counted.
     fn again(
         &self,
         target: PlannedTarget,
@@ -1005,22 +887,19 @@ struct HeldPort {
     until: Instant,
 }
 
-/// The ports a connect port scan was refused for the kernel's hold-down on
-/// their host's neighbour, each asked again once it is over.
+/// Ports refused for the kernel's hold-down on their host's neighbour, each asked
+/// again once it is over.
 ///
-/// macOS refuses a connect to a neighbour it gave up on lately with
-/// `EHOSTDOWN`, for twenty seconds by default, and sends nothing; the first
-/// such refusal is no verdict on the host (see
-/// [`HoldDowns`](crate::scanner::strategy::raw::neighbors::HoldDowns)), and
-/// no fault of this machine's. A port refused, and every port of the host
-/// that comes up while the hold-down lasts, gives up its place in the scan's
-/// pool at once rather than wait there, which would hold the places of ports
-/// of other hosts for the whole twenty seconds: it is noted here with the end
-/// of the hold-down, and asked again once the first askings are done and the
-/// hold-down has passed. The connect that asks again has the kernel resolve
-/// the neighbour afresh, and waits as a neighbour's first connect does. A
-/// host refused for a hold-down a second time is filed unreachable, every
-/// port of it unasked.
+/// macOS refuses a connect to a neighbour it recently gave up on with
+/// `EHOSTDOWN`, for twenty seconds by default, and sends nothing. The first such
+/// refusal is no verdict on the host (see
+/// [`HoldDowns`](crate::scanner::strategy::raw::neighbors::HoldDowns)). The refused
+/// port, and every port of the host that comes up during the hold-down, releases
+/// its pool slot at once so other hosts are not blocked for twenty seconds. It is
+/// asked again once the first askings are done and the hold-down has passed; that
+/// connect makes the kernel resolve the neighbour afresh and waits as a
+/// neighbour's first connect does. A host held down a second time is filed
+/// unreachable with every port unasked.
 #[derive(Debug, Default)]
 struct HeldPorts {
     held: std::sync::Mutex<Vec<HeldPort>>,
@@ -1035,10 +914,9 @@ impl HeldPorts {
             .push(port);
     }
 
-    /// Asks again, through `pool`, every port noted held, once the latest
-    /// hold-down among them has passed, until none is noted. A scan told to
-    /// stop while it waits asks nothing more, and every port still held is
-    /// recorded unasked, as is one of a host past its own budget.
+    /// Asks again, through `pool`, every held port once the latest hold-down among
+    /// them has passed, until none is left. If the scan stops while waiting, or a
+    /// host is past its budget, the held ports are recorded unasked.
     async fn ask_again<F>(&self, asking: &Asking<'_>, pool: &mut ProbePool<ProbedPort, F>)
     where
         F: FnMut(ProbedPort, &mut ProbeAudit),
@@ -1076,68 +954,56 @@ struct Silence {
     waited: Duration,
 }
 
-/// The ports a connect port scan filed `NoReply` on a wait the path to their
-/// host needs more than, and the second asking each is owed.
+/// Ports filed `NoReply` on a wait shorter than their host's path needs, each
+/// owed a second asking.
 ///
-/// A connect's wait is sized from the path its host was measured on when the
-/// port was asked, and a port asked before anything was measured waits as on
-/// an ordinary path. Across a path slower than that the wait gives up on
-/// every answer, and the port is filed `NoReply` for being far away. Two cases
-/// reach here once the scan's first askings are all done.
+/// A connect's wait is sized from the host's path as measured when the port was
+/// asked; an unmeasured host gets an ordinary path's wait, which gives up on every
+/// answer across a slower one. Two cases reach here once the first askings are
+/// done.
 ///
-/// A host measured since, by a port of its that answered, has each port that
-/// waited less than the measured path needs asked again with that wait; see
-/// [`connect_patience`]. On an ordinary path that is no port at all, since
-/// the measured path needs no more than the ordinary wait.
+/// A host measured since (some port answered) has each port that waited less than
+/// the measured path needs asked again with that wait; see [`connect_patience`].
+/// On an ordinary path that is no port at all.
 ///
-/// A host that answered nothing has no measurement to go on, and may be a
-/// host whose every port is silent or one whose every answer was given up
-/// on. So the first port the scan asks of a host nothing has measured is the
-/// one that finds the path: its connect waits as a liveness sweep's first
-/// connect to an address does, [`path_finding_wait`], and what it measures
-/// sizes the wait of every port of the host that starts after it; see
-/// [`PathFinding`]. On a slow path only the ports that started while it was
-/// still on its way are owed a second asking, where finding the path once
-/// the first askings were done owed one to every port: across a 1.9 s path,
-/// a scan of 200 ports at [`CONNECT_CONCURRENCY`] asks 98 of them twice
-/// rather than all 200, and took 15.7 to 18.3 s against 17.8 to 22.5. On a
-/// silent host it costs what finding the path afterwards would: one connect
-/// of that wait, spent at the start rather than at the end.
+/// A host that answered nothing may be silent or may be far away. So the first
+/// port asked of an unmeasured host finds the path: it waits as a liveness
+/// sweep's first connect does, [`path_finding_wait`], and its measurement sizes
+/// the wait of every later port of the host; see [`PathFinding`]. On a slow path
+/// only the ports that started before that answer are owed a second asking.
+/// Across a 1.9 s path, a scan of 200 ports at [`CONNECT_CONCURRENCY`] asks 98
+/// twice (finding the path afterwards would ask all 200), taking 15.7 to 18.3 s
+/// against 17.8 to 22.5 s. On a silent host it costs one connect of that wait,
+/// spent at the start.
 ///
 /// [`CONNECT_CONCURRENCY`]: crate::config::limits::CONNECT_CONCURRENCY
 ///
-/// The ports that start while the path is being found wait as on an
-/// ordinary path rather than for the answer. Holding them would hold their
-/// places in the scan's pool idle for the length of the path-finding wait on
-/// every host whose first port is silent, which is most hosts a wide scan
-/// asks, to spare a second asking on the rare one that is far away.
+/// Ports that start while the path is being found wait as on an ordinary path.
+/// Holding them would idle their pool slots for the path-finding wait on every
+/// host whose first port is silent, which is most hosts in a wide scan.
 ///
-/// A host whose path-finding connect was cut short, by a stop or by this
-/// machine, and that answered nothing else, has one of its ports, the one
-/// likeliest to be listening, asked again with that wait once the first
-/// askings are done. If it answers, the host is measured and the rest follow
-/// as above; if it stays silent, the host is as silent as the wait for the
-/// longest path a connect looks for can show. Nothing else is asked twice,
-/// so a silent host costs one connect of that wait and a slow one the ports
-/// asked before its path was known.
+/// If the path-finding connect was cut short (by a stop or by this machine) and
+/// the host answered nothing else, its port likeliest to be listening is asked
+/// again with that wait once the first askings are done. If it answers, the host
+/// is measured and the rest follow as above. Nothing else is asked twice.
 #[derive(Debug, Default)]
 struct SlowPaths {
     silent: std::sync::Mutex<std::collections::HashMap<IpAddr, Vec<Silence>>>,
 }
 
-/// Which hosts of a connect port scan a first connect has been sent to find
-/// the path to, and how long each first asking waits; see [`SlowPaths`].
+/// Which hosts have had a path-finding connect, and how long each first asking
+/// waits; see [`SlowPaths`].
 #[derive(Clone)]
 struct PathFinding {
-    /// This host's segments, whose addresses are resolved before the first
-    /// SYN leaves; see [`path_finding_wait`].
+    /// This host's segments, whose addresses are resolved before the first SYN
+    /// leaves; see [`path_finding_wait`].
     segments: Arc<OnLinkTable>,
     /// The hosts a path-finding connect has been sent to.
     sent: Arc<std::sync::Mutex<std::collections::HashSet<IpAddr>>>,
 }
 
 impl PathFinding {
-    /// Nothing sent yet, to addresses on `segments` or beyond them.
+    /// Nothing sent yet, with `segments` marking which addresses are on-link.
     fn of(segments: OnLinkTable) -> Self {
         Self {
             segments: Arc::new(segments),
@@ -1145,10 +1011,9 @@ impl PathFinding {
         }
     }
 
-    /// How long the first asking of a port on `ip` waits, across `path` as
-    /// measured so far: the [path-finding wait](path_finding_wait) for the
-    /// first port asked of a host nothing has measured, and
-    /// [`connect_patience`] for every other.
+    /// How long the first asking of a port on `ip` waits, given `path` as measured
+    /// so far: the [path-finding wait](path_finding_wait) for the first port of an
+    /// unmeasured host, [`connect_patience`] otherwise.
     fn patience(&self, path: PathAllowance, ip: IpAddr) -> Duration {
         let finds_the_path = path == PathAllowance::NONE
             && self
@@ -1180,11 +1045,9 @@ impl SlowPaths {
         std::mem::take(&mut *self.silent.lock().unwrap_or_else(|held| held.into_inner()))
     }
 
-    /// Asks again, through `pool`, every port owed a second asking, finding
-    /// the path to each host that answered nothing first; see [`SlowPaths`].
-    ///
-    /// A scan told to stop asks nothing more, and a host past its own budget
-    /// is left as it is.
+    /// Asks again, through `pool`, every port owed a second asking, first finding
+    /// the path to each host that answered nothing; see [`SlowPaths`]. Asks nothing
+    /// once stopped, and skips hosts past their budget.
     async fn ask_again<F>(&self, asking: &Asking<'_>, pool: &mut ProbePool<ProbedPort, F>)
     where
         F: FnMut(ProbedPort, &mut ProbeAudit),
@@ -1195,8 +1058,7 @@ impl SlowPaths {
 
         let mut finders = std::collections::HashSet::new();
         for (ip, ports) in &owed {
-            // A port of the host that already waited the path-finding wait
-            // and heard nothing found as much as asking it again would.
+            // A port that already waited the path-finding wait needs no repeat.
             let found = ports
                 .iter()
                 .any(|silence| silence.waited >= PATH_FINDING_TIMEOUT);
@@ -1234,8 +1096,7 @@ impl SlowPaths {
         }
         pool.drain().await;
 
-        // What the second askings heard nothing on waited as long as the path
-        // needs, so nothing is owed again.
+        // Silent second askings already waited as long as the path needs.
         self.take();
         if asked > 0 {
             info!(
@@ -1247,23 +1108,15 @@ impl SlowPaths {
     }
 }
 
-/// Folds one finished probe into the store: the port it classified, if it
-/// classified one worth keeping, and what the exchange proved about the host.
+/// Folds one finished probe into the store: the port it classified, if any, and
+/// what the exchange proved about the host.
 ///
-/// A refused connection reaches here with no port and `answered` set, which is
-/// the case worth noticing: this strategy declines to file closed ports, but the
-/// RST behind the refusal still proves the host is there, and that evidence
-/// would otherwise be dropped along with the port verdict.
+/// The responses the inline fingerprint drew go to the context the
+/// [detection phase](crate::scanner::detection) reads, where
+/// [`service::detect`](crate::scanner::service::detect) puts a raw scan's.
 ///
-/// The responses the inline fingerprint drew are kept here too. They belong to
-/// no host record, so they go to the context the
-/// [detection phase](crate::scanner::detection) reads them from, which is the same
-/// place [`service::detect`](crate::scanner::service::detect) puts the ones a
-/// raw scan draws in its second pass.
-///
-/// The send is counted here, from the probe's own [`Attempt`], and a probe
-/// that could not ask is also counted into `shortfall`, which the scan reports
-/// once it has drained.
+/// The send is counted from the probe's [`Attempt`], and a probe that could not
+/// ask is counted into `shortfall`, reported once the scan has drained.
 fn absorb_probe(
     ctx: &ScanContext,
     probed: ProbedPort,
@@ -1281,10 +1134,8 @@ fn absorb_probe(
     shortfall.count(probed.ip, &probed.attempt);
     shortfall.identified_in_part += u128::from(probed.identified_in_part);
     if probed.answered {
-        // A connect probe carries no attempt token: the retransmission that may
-        // have produced this answer was the host stack's, on its own schedule
-        // (see `CONNECT_PROBE_TIMEOUT`), so which attempt was answered is
-        // not knowable from here.
+        // No attempt token: the host stack retransmits on its own schedule (see
+        // `CONNECT_PROBE_TIMEOUT`), so which attempt was answered is unknowable.
         audit.record_host_found(None);
     }
     // Settled once what it found is stored; see `ScanContext::record_outcome`.
@@ -1302,9 +1153,8 @@ fn file_probe(ctx: &ScanContext, probed: Probed) {
         return;
     }
 
-    // Filed under the same key the port is, which is the key the detection
-    // phase looks the responses up by: a host's zone comes from the key it was
-    // stored under, so the two cannot disagree.
+    // Filed under the port's key, which the detection phase looks up by; the
+    // host's zone comes from that key, so the two cannot disagree.
     if let Some((number, protocol)) = probed
         .port
         .as_ref()
@@ -1329,17 +1179,12 @@ fn file_probe(ctx: &ScanContext, probed: Probed) {
                 ),
             );
         }
-        // The handshake's round trip, which is the host's as much as the
-        // liveness pass's own connect is: a scan that ran no such pass has no
-        // other on this path.
+        // Without a liveness pass, this is the host's only round trip here.
         if let Some(rtt) = probed.rtt {
             host.add_rtt_from(rtt, StatusProtocol::TcpConnect);
         }
         if !probed.about_the_host.is_empty() {
             // The same call the service phase makes on the privileged path.
-            // What a banner says about the machine is worth the same whichever
-            // scanner happened to draw it, and this scanner is the only one
-            // that draws it without a raw socket.
             probed.about_the_host.clone().apply(host);
         }
     });
@@ -1347,18 +1192,13 @@ fn file_probe(ctx: &ScanContext, probed: Probed) {
 
 /// A port in `state`, carrying the packet that settled it where one did.
 ///
-/// This scanner never sees a segment, the kernel does the handshake and hands
-/// back an outcome, but the outcome names what came back: a completed
-/// connection is a SYN/ACK, a timeout is silence, an unreachable is an ICMP
-/// error, and a refusal is one of two packets the kernel reports alike, a RST
-/// or an ICMP port unreachable, and is named as a refusal for that reason.
-/// Recorded so an unprivileged report can say what its verdicts rest on,
-/// which is the one thing separating a port a firewall dropped from a port
-/// nothing was listening on.
+/// The kernel does the handshake, but its outcome implies the packet: a completed
+/// connection is a SYN/ACK, a timeout is silence, an unreachable is an ICMP error,
+/// and a refusal is a RST or an ICMP port unreachable (reported alike, so named as
+/// a refusal). Recorded so an unprivileged report says what each verdict rests on.
 ///
-/// `None` where no packet is implied: a local failure, no route, no socket
-/// left, is this host giving up, and crediting the target with a silence it was
-/// never asked for would be evidence of the wrong thing.
+/// `None` when no packet is implied: a local failure, no route or no socket is
+/// this host giving up, not the target's silence.
 fn settled(number: u16, state: PortState, reason: Option<ScanResponse>) -> Port {
     settled_over(Protocol::Tcp, number, state, reason)
 }
@@ -1378,18 +1218,15 @@ fn settled_over(
     }
 }
 
-/// Which packet settled a UDP port the connected socket reported on, in the
-/// vocabulary the raw scanner records the same verdicts in.
+/// Which packet settled a UDP port, in the raw scanner's vocabulary.
 ///
-/// A reply read off the socket is the port's own answer. A refusal is an ICMP
-/// port unreachable, since nothing else refuses a datagram, and any other error
-/// the kernel matched to the socket is an ICMP error too. Its sender is not
-/// surfaced here, so where the raw scanner names a prohibition from the host
-/// itself apart from one from the path, this names both as unreachable.
+/// A reply read off the socket is the port's own answer. A refusal is an ICMP port
+/// unreachable, and any other error the kernel matched to the socket is an ICMP
+/// error too. Its sender is not exposed, so a prohibition from the host and one
+/// from the path are both named unreachable.
 ///
-/// `None` for `OpenOrNoReply`, silence being the protocol's ordinary outcome
-/// rather than a packet, as the raw scanner records it, and for a port no
-/// datagram was sent to.
+/// `None` for `OpenOrNoReply` (silence is UDP's ordinary outcome, as the raw
+/// scanner records it) and for a port no datagram was sent to.
 fn udp_evidence(state: PortState) -> Option<ScanResponse> {
     match state {
         PortState::Open => Some(ScanResponse::UdpResponse),
@@ -1413,38 +1250,28 @@ fn note_handshake(ctx: &ScanContext, ip: IpAddr, rtt: Duration) {
     });
 }
 
-/// Probes a single [`PlannedTarget`] over a full TCP connect handshake and
-/// classifies its port. Returns `None` only for a target this strategy doesn't
-/// handle.
+/// Probes a single [`PlannedTarget`] with a full TCP connect and classifies its
+/// port. Returns `None` only for a UDP target, which is skipped.
 ///
-/// An accepted connection is `Open` and gets fingerprinted over the live stream,
-/// a refusal is `Closed`, an ICMP error is `Blocked`, and a timeout is
-/// `NoReply`. A connect this machine refused before anything left it is
-/// `Unasked`; see [`Handshake`] for how each is told from the others. Only TCP
-/// is supported, so UDP targets are skipped.
-///
-/// A connect that met itself asked nothing, and is made again from a fresh
-/// socket, up to [`SELF_MEETINGS`] times.
+/// Accepted is `Open` and fingerprinted over the live stream, refused is
+/// `Closed`, an ICMP error is `Blocked`, a timeout is `NoReply`, and a connect this
+/// machine refused before sending is `Unasked`; see [`Handshake`]. A connect that
+/// met itself is retried from a fresh socket, up to [`SELF_MEETINGS`] times.
 ///
 /// The connection, and every one the fingerprint makes after it, leaves by
-/// `egress`, each in a slot of the scan's pacing, so a scan keeping a gap
-/// between its probes keeps it here; see [`dial`]. Its socket comes from the
-/// process's budget and is held until the fingerprint is done with it; a port
-/// the process has no socket for, or that the scan stopped before asking, or
-/// whose host ran out of its budget while it waited for its slot, is
-/// `Unasked` too.
+/// `egress` in a slot of the scan's pacing; see [`dial`]. Its socket comes from
+/// the process's budget and is held until the fingerprint is done. A port with no
+/// socket, stopped before asking, or whose host ran out of budget while waiting
+/// for its slot is `Unasked` too.
 ///
-/// The handshake is given `patience` to be answered, which the scan sizes
-/// from the path to the host; see [`connect_patience`]. An open port is
-/// identified in its host's `crowd`, every wait on it allowing for the path
-/// as the host's round trips show it once its own handshake is among them:
-/// the handshake is filed with its host in `ctx` before the identification
-/// begins, see [`note_handshake`], and the path read back from the host.
+/// The handshake gets `patience`, sized from the path to the host; see
+/// [`connect_patience`]. An open port is identified in its host's `crowd`. The
+/// handshake is filed with the host first ([`note_handshake`]) so the
+/// identification's waits allow for the path including this round trip.
 ///
-/// A connect the kernel held for a neighbour it has not resolved sent
-/// nothing, however it ended, and is made again as `neighbours` says; a host
-/// whose neighbour has been given up on is sent nothing more, and the port is
-/// unasked. See [`neighbours`].
+/// A connect the kernel held for an unresolved neighbour sent nothing, however
+/// it ended, and is retried as `neighbours` says; once the neighbour is given up,
+/// the port is unasked. See [`neighbours`].
 #[allow(clippy::too_many_arguments)]
 async fn port_prober(
     planned: PlannedTarget,
@@ -1460,9 +1287,7 @@ async fn port_prober(
     let handle = &ctx.handle;
     let target = planned.target;
     if target.protocol == Protocol::Udp {
-        // UDP can't be probed through a TCP stream; skip rather than misreport.
-        // No outcome: unreported is re-probed, which is what a routing mistake
-        // deserves.
+        // No outcome, so a resume probes it again.
         return None;
     }
 
@@ -1502,8 +1327,8 @@ async fn port_prober(
         })
     };
 
-    // Refused for a hold-down, or come up during one: its place in the pool
-    // is given back, and the port asked again after it. See `HeldPorts`.
+    // Refused for a hold-down, or reached during one: the pool slot is released
+    // and the port asked again after it. See `HeldPorts`.
     let held_down = |until| {
         Some(Probed {
             ip: target.ip,
@@ -1547,14 +1372,12 @@ async fn port_prober(
                     descriptor,
                     ..
                 } => {
-                    // The SYN left, so a stop that cuts the wait leaves a port
-                    // asked with no verdict, as the raw path files a probe whose
-                    // schedule the stop cut: unasked, and asked again by a resume.
+                    // The SYN left; a stop cutting the wait leaves the port
+                    // unasked for a resume, as on the raw path.
                     let Some(finished) = handshake(connecting, patience, handle).await else {
                         return unasked(Outcome::Interrupted, Attempt::Sent);
                     };
-                    // Read before the fingerprint talks to the port, which is the
-                    // service's time rather than the path's.
+                    // Timed before the fingerprint, whose time is the service's.
                     (Handshake::sent(finished), began.elapsed(), Some(descriptor))
                 }
                 Dialled::Ran {
@@ -1566,14 +1389,13 @@ async fn port_prober(
                     slot.refund();
                     (Handshake::unsent(e), began.elapsed(), None)
                 }
-                // Not a local failure: the scan ended first, or the host's budget
-                // did, as for a target still queued (see `record_unasked`).
+                // The scan or the host's budget ended first (see `record_unasked`).
                 Dialled::Unmade => return unasked(Outcome::Unasked, Attempt::Unmade),
                 Dialled::Starved => return unasked(Outcome::Unroutable, Attempt::Starved),
             };
 
-        // A host unreachable, or a wait run out, is no packet at all where the
-        // kernel held the SYN for a neighbour it has not resolved.
+        // If the kernel held the SYN for an unresolved neighbour, an unreachable
+        // or a timeout means nothing was sent.
         let concluded = matches!(handshake, Handshake::Unreachable);
         if (concluded || matches!(handshake, Handshake::Silent))
             && let Some(state) = neighbours.holding(target.ip)
@@ -1593,34 +1415,17 @@ async fn port_prober(
         return match handshake {
             Handshake::Accepted(stream) => {
                 let port = settled(target.port, PortState::Open, Some(ScanResponse::TcpSynAck));
-                // The detailed form, for the second and third values. This
-                // handshake is the only conversation an unprivileged scan has
-                // with the port, so what it draws here is everything any later
-                // phase can read without dialling again: the responses a
-                // passive detection needs, and what the same bytes said about
-                // the machine. The descriptor is held until it is done.
-                // Filed with the host at once rather than with the verdict,
-                // which the identification holds for as long as the port
-                // takes to answer it, seconds on a port that says nothing:
-                // every other port of the host asked meanwhile sizes its
-                // wait from this, and across a path slower than an ordinary
-                // wait covers, a port that waits as on an ordinary path
-                // gives up on its answer and reads as no reply.
+                // Filed with the host now, not with the verdict (which waits for
+                // identification, seconds on a silent port): other ports of the
+                // host asked meanwhile size their wait from it, and on a slow
+                // path an ordinary wait would read them as no reply.
                 note_handshake(&ctx, target.ip, rtt);
-                // The handshake is a round trip over the very path the
-                // conversation that follows takes, measured a moment ago,
-                // and the latest of those the scan has taken. Read back from
-                // the host rather than added to what it held before, so an
-                // upper bound it held, a neighbour's first answer, gives way
-                // to the handshake as it does wherever else the path is read.
+                // Read back from the host, so an upper bound it held (a
+                // neighbour's first answer) gives way to this handshake.
                 let path = measured_path(&ctx, target.ip);
-                // Raced against the stop, because the identification is the
-                // one wait here no loop reads it between: on a port that
-                // accepts and says nothing it runs the better part of half a
-                // minute, and a stopped scan would wait out every one in
-                // flight. One cut short keeps the verdict the handshake
-                // earned, an open port with its registered name, and draws
-                // nothing further.
+                // Raced against the stop: on a port that accepts and says
+                // nothing, identification runs close to half a minute. Cut
+                // short, the port keeps its open verdict and registered name.
                 let identified = handle
                     .or_stopped(crowd.identify(
                         target.ip.into(),
@@ -1632,8 +1437,7 @@ async fn port_prober(
                     ))
                     .await;
                 drop(descriptor);
-                // The round trip is filed already, and a second sample of the
-                // same handshake would weigh it twice.
+                // The round trip is filed already; `rtt: None` avoids a duplicate.
                 let Some(identified) = identified else {
                     return verdict(
                         PortState::Open,
@@ -1653,30 +1457,19 @@ async fn port_prober(
                     rtt: None,
                     outcome: Outcome::Answered { position },
                     attempt: Attempt::Sent,
-                    // A TCP handshake proves a service, and the service is the
-                    // port's to name. No role is read from one.
+                    // A TCP handshake proves a service, which the port names.
                     role: None,
                     silence: None,
                     held_down: None,
                     settles: true,
                 })
             }
-            // A refusal is the clearest verdict this scanner ever gets, and it
-            // is filed as one, under the name of what it is: a refusal, which
-            // the operating system hands back alike for a reset and for an
-            // ICMP port unreachable. Most are resets, a stack with nothing
-            // listening, and the port is read closed. A filter rejecting with
-            // a port unreachable reads closed here too, where the raw path,
-            // which sees the packet, reads it blocked; no error code on any
-            // platform separates the two, so the reason recorded says what
-            // the verdict rests on rather than naming a reset nobody saw.
-            //
-            // Recorded rather than dropped because a port list that changes
-            // with the caller's privilege level is not a smaller answer, it is
-            // a different one: omitting it would leave an unprivileged report
-            // with no `Closed` entry in its `ports_by_state` however many
-            // refusals it collected, which somebody diffing two scans would
-            // read as a change in the network.
+            // The OS reports a reset and an ICMP port unreachable alike. Most are
+            // resets, so the port reads closed; a filter rejecting with a port
+            // unreachable reads closed here too, where the raw path reads it
+            // blocked. The recorded reason is the refusal, not a reset nobody
+            // saw. Filed so an unprivileged report's ports match a privileged
+            // one's.
             Handshake::Refused => verdict(
                 PortState::Closed,
                 Some(ScanResponse::ConnectionRefused),
@@ -1684,12 +1477,9 @@ async fn port_prober(
                 Some(rtt),
                 Outcome::Answered { position },
             ),
-            // Something on the way refused the connection with an ICMP error:
-            // a firewall's reject, a router with no way on. The raw path reads
-            // the same packet as blocked, and so does this one. Settled,
-            // because it is an answer; the host is not credited, because the
-            // error's sender is not surfaced and is as often a router as the
-            // target, and neither is its round trip.
+            // An ICMP error (a firewall's reject, a router with no route): blocked,
+            // as on the raw path. The host gets no credit or round trip, since
+            // the sender is hidden and is as often a router as the target.
             Handshake::Unreachable => verdict(
                 PortState::Blocked,
                 Some(ScanResponse::IcmpUnreachable),
@@ -1697,11 +1487,9 @@ async fn port_prober(
                 None,
                 Outcome::Answered { position },
             ),
-            // Silence: the probe was dropped, the classic firewall signature.
-            // Settled, because a connect gets one attempt and this was it.
-            // Noted with the wait it was given, which a path measured longer
-            // later in the scan may show to have been too short; see
-            // `SlowPaths`.
+            // Dropped. Settled, since a connect gets one attempt. Noted with its
+            // wait, which a slower path measured later may show was too short;
+            // see `SlowPaths`.
             Handshake::Silent => verdict(
                 PortState::NoReply,
                 Some(ScanResponse::NoResponse),
@@ -1721,18 +1509,10 @@ async fn port_prober(
                 met_itself = Some(e);
                 continue;
             }
-            // This machine refused the connect before anything left it, so
-            // nothing was asked and the host has proved nothing. The next
-            // sitting may well get further.
-            //
-            // No evidence recorded, since there is no packet to name, and no
-            // verdict either: filing `NoReply` would credit the target with a
-            // silence it was never asked for in the one field a reader takes
-            // for a finding.
-            //
-            // Refused for the kernel's hold-down on the host's neighbour, it
-            // is neither: the host is held through it, and given up on at the
-            // second. See `HeldPorts`.
+            // This machine refused the connect before sending: unasked, with no
+            // evidence and no verdict, for a later sitting to retry. A refusal for
+            // a neighbour hold-down holds the host through it instead, giving up
+            // at the second. See `HeldPorts`.
             Handshake::NotSent(e) if crate::transport::probe::host_is_down(&e) => {
                 match neighbours.hold_down(target.ip, &e) {
                     Some(until) => held_down(until),
@@ -1742,9 +1522,8 @@ async fn port_prober(
             Handshake::NotSent(e) => {
                 unasked(Outcome::Unroutable, Attempt::Refused(Refusal::of(&e)))
             }
-            // The SYN left and the connect failed in a way that names no
-            // packet. It was asked, so the send counts, and it has no verdict,
-            // so a resume asks again.
+            // The SYN left but the failure names no packet: the send counts, and
+            // with no verdict a resume asks again.
             Handshake::Failed(e) => {
                 error!(
                     verbosity = 2,
@@ -1755,51 +1534,42 @@ async fn port_prober(
         };
     }
 
-    // Met itself every time, which only a pinned source port equal to the
-    // target's, on this machine's own address, can do.
+    // Met itself every time: only a pinned source port equal to the target's,
+    // on this machine's own address, does that.
     let why = met_itself.map_or_else(String::new, |e| e.to_string());
     unasked(Outcome::Unroutable, Attempt::Refused(Refusal::Local(why)))
 }
 
-/// How many times a connect probe is made before a connect that keeps
-/// meeting itself is given up.
+/// How many times a connect that keeps meeting itself is tried.
 ///
 /// A connect meets itself when the kernel draws the target's own port as its
-/// source, which a fresh socket draws again with odds of about one in the
-/// size of the ephemeral range. Three is room for that and for nothing else:
-/// a probe that met itself three times is one pinned to the port it asks
-/// about, which no retry changes.
+/// source; a fresh socket repeats that with odds of about one in the ephemeral
+/// range's size. Three times means the probe is pinned to the port it asks about,
+/// which no retry changes.
 const SELF_MEETINGS: usize = 3;
 
-/// What one connect probe's handshake came to, read for what it says about
-/// the port.
+/// What one connect probe's handshake came to.
 ///
-/// The operating system hands a connect back as an error code and nothing
-/// else, and the codes are shared between causes that mean different things:
-/// `EHOSTUNREACH` is a missing route on this machine and a firewall's reject
-/// on the far side. What separates them is when the code arrived, so a
-/// connect is made in two halves (see
-/// [`Egress::start_connect`](crate::transport::dial::Egress::start_connect)),
-/// and a code from the first half is always [`NotSent`](Self::NotSent).
+/// The OS returns only an error code, and codes are shared between causes:
+/// `EHOSTUNREACH` is a missing local route or a firewall's reject on the far side.
+/// Timing separates them, so a connect is made in two halves (see
+/// [`Egress::start_connect`](crate::transport::dial::Egress::start_connect)), and a
+/// code from the first half is always [`NotSent`](Self::NotSent).
 #[derive(Debug)]
 enum Handshake {
     /// The handshake completed: a SYN/ACK.
     Accepted(TcpStream),
-    /// The connection was refused: a reset, or an ICMP port unreachable,
-    /// which every platform reports alike.
+    /// A reset or an ICMP port unreachable, which every platform reports alike.
     Refused,
-    /// An ICMP error other than a port unreachable ended the connect after its
-    /// SYN left: an administrative prohibition, a host or network the path
-    /// could not reach, a protocol the far end does not speak.
+    /// Another ICMP error ended the connect after its SYN left: an administrative
+    /// prohibition, an unreachable host or network, an unsupported protocol.
     ///
-    /// Linux ends a connect at the first such error; macOS and the BSDs hold
-    /// it as a soft error and keep retrying, so there the same packet ends in
-    /// [`Silent`](Self::Silent), which is filed as the same state.
+    /// Linux ends a connect at the first such error; macOS and the BSDs treat it
+    /// as a soft error and keep retrying, so there it ends in
+    /// [`Silent`](Self::Silent).
     Unreachable,
-    /// Nothing came back within the connect's budget, or the stack gave up
-    /// first, which is the same outcome, a SYN out and nothing back; the
-    /// second can come first on Windows, where a probe keeps a single
-    /// retransmission.
+    /// Nothing came back within the connect's budget, or the stack gave up first
+    /// (possible on Windows, which retransmits a SYN once).
     Silent,
     /// The connect reached its own socket; see
     /// [`met_itself`](crate::transport::dial::met_itself).
@@ -1811,12 +1581,10 @@ enum Handshake {
 }
 
 impl Handshake {
-    /// Reads a connect's first half refused, before anything left this
-    /// machine.
+    /// Classifies an error from a connect's first half, before anything left.
     ///
-    /// A refusal stays a refusal whichever half reported it, since no stack
-    /// invents one: over loopback the answer can arrive before the connect
-    /// call returns.
+    /// A refusal is still a refusal here: over loopback the answer can arrive
+    /// before the connect call returns.
     fn unsent(error: io::Error) -> Self {
         if crate::transport::dial::met_itself(&error) {
             Self::MetItself(error)
@@ -1845,12 +1613,11 @@ impl Handshake {
     }
 }
 
-/// Whether `error`, raised after a probe left, is an ICMP error other than a
-/// port unreachable: a host or network the path could not reach, an
-/// administrative prohibition, which Linux reports as a host it cannot reach,
-/// and on Linux a protocol unreachable (`ENOPROTOOPT`) or an unknown or
-/// isolated host (`EHOSTDOWN`, `ENONET`), which the standard library has no
-/// kind for.
+/// Whether `error`, raised after a probe left, is an ICMP error other than a port
+/// unreachable: an unreachable host or network, an administrative prohibition
+/// (which Linux reports as host unreachable), and on Linux a protocol unreachable
+/// (`ENOPROTOOPT`) or an unknown or isolated host (`EHOSTDOWN`, `ENONET`), which
+/// have no standard library kind.
 fn is_unreachable(error: &io::Error) -> bool {
     if matches!(
         error.kind(),
@@ -1871,15 +1638,12 @@ fn is_unreachable(error: &io::Error) -> bool {
     }
 }
 
-/// The second half of a connect, given `patience` to be answered, or `None`
-/// where the scan stopped first.
+/// The second half of a connect, given `patience` to be answered, or `None` if the
+/// scan stopped first.
 ///
-/// The budget running out and the stack giving up first are the same outcome,
-/// a SYN out and nothing back, so both come back as [`ErrorKind::TimedOut`].
-/// Raced against the stop because the wait is the longest one a probe makes
-/// with nothing between to read it: a port that drops its SYN holds its
-/// probe the whole of `patience`, which across a slow path is many seconds,
-/// and a stopped scan would otherwise wait out every one in flight.
+/// The budget running out and the stack giving up both come back as
+/// [`ErrorKind::TimedOut`]. Raced against the stop, since a dropped SYN holds the
+/// probe for all of `patience`, many seconds across a slow path.
 async fn handshake(
     connecting: Connecting,
     patience: Duration,
@@ -1895,22 +1659,17 @@ async fn handshake(
 /// the unprivileged counterpart of
 /// [`UdpPortScanner`](super::ports::UdpPortScanner).
 ///
-/// UDP has no handshake to read a verdict from, so this leans on what the local
-/// kernel reports about the datagram it sent. The socket is *connected*, which
-/// is what makes that possible: a connected UDP socket has a known peer, so the
-/// kernel can attribute an inbound ICMP error to it and surface it as
-/// `ConnectionRefused` on a subsequent operation. An unconnected socket
-/// discards the same error with nowhere to deliver it.
+/// The socket is *connected*, so the kernel can attribute an inbound ICMP error to
+/// its peer and surface it as `ConnectionRefused` on the next operation; an
+/// unconnected socket discards it.
 ///
-/// A reply is `Open`, a refusal is `Closed`, any other ICMP error the kernel
-/// surfaces is `Blocked`, and silence is `OpenOrNoReply` - the verdicts the
-/// raw scanner reaches, by a different route.
-/// Errors that say nothing about the target (no local socket, no route) are
-/// logged and yield no record rather than a guess.
+/// A reply is `Open`, a refusal `Closed`, any other ICMP error `Blocked`, and
+/// silence `OpenOrNoReply`, the same verdicts the raw scanner reaches. Local
+/// errors (no socket, no route) are logged and recorded unasked.
 ///
-/// The datagram leaves by `egress` in a slot of the scan's pacing, from a
-/// socket out of the process's budget, and a port the process has no socket
-/// for, or that the scan stopped before its turn, is recorded unasked.
+/// The datagram leaves by `egress` in a slot of the scan's pacing, from a socket
+/// out of the process's budget. A port with no socket, or stopped before its
+/// turn, is recorded unasked.
 async fn udp_port_prober(
     planned: PlannedTarget,
     shaping: Shaping,
@@ -1924,14 +1683,9 @@ async fn udp_port_prober(
     }
 
     let position = planned.position;
-    // `answered` is set only where the kernel vouches for who sent the packet.
-    // A datagram arriving on a connected socket came from the peer, so `Open`
-    // proves the host. A refusal does not: it is an ICMP error the kernel
-    // matched to this socket by the datagram it quotes, and the error's own
-    // source address - a router's, or the target's - is not surfaced through
-    // this API at all. The privileged scanner reads that address and can tell
-    // the two apart; here the port verdict stands on its own and no claim is
-    // made about the host.
+    // `answered` only when the kernel vouches for the sender: a datagram on a
+    // connected socket came from the peer. A refusal's ICMP source (router or
+    // target) is not exposed, so it makes no claim about the host.
     let record = |state, answered, outcome, attempt| {
         Some(Probed {
             ip: target.ip,
@@ -1941,19 +1695,16 @@ async fn udp_port_prober(
                 state,
                 udp_evidence(state),
             )),
-            // Nothing on this path turns a datagram into the text a detection
-            // reads: the reply is read for the role and the names it declares
-            // and no more.
+            // The reply is read only for its declared role and names.
             responses: Vec::new(),
             about_the_host: crate::fingerprint::AboutTheHost::default(),
             identified_in_part: false,
             answered,
-            // A datagram's reply is the service's as much as the path's, so no
-            // round trip is read from it.
+            // A datagram's reply time includes the service's, so no round trip.
             rtt: None,
             outcome,
             attempt,
-            // Filled in by the one arm that has a reply to read it from.
+            // Set by the arm that has a reply.
             role: None,
             silence: None,
             held_down: None,
@@ -1961,12 +1712,9 @@ async fn udp_port_prober(
         })
     };
 
-    // Three ways this machine can fail before a datagram leaves it, below, and
-    // each records the port unasked rather than dropping it. The target was
-    // named by the plan, and a port that disappears from the host when the
-    // scanner runs out of sockets is the shortfall a reader cannot see. The
-    // outcome is `Unroutable` rather than `Unasked` for the reason the TCP
-    // prober gives: this host gave up, which the next sitting may not.
+    // Each local failure below records the port unasked, so it stays on the
+    // host. The outcome is `Unroutable`, as in the TCP prober: this host gave up,
+    // and the next sitting may not.
     let refused = |e: &io::Error| Attempt::Refused(Refusal::of(e));
     let (socket, _descriptor, slot) =
         match dial(&handle, &egress, target.ip, descriptors::PATIENCE, |slot| {
@@ -2005,8 +1753,8 @@ async fn udp_port_prober(
             }
         };
 
-    // The datagram is the probe, so its slot is spent once it leaves, and
-    // given back where this machine refused to address or send it.
+    // The slot is spent once the datagram leaves, refunded if this machine
+    // refused to address or send it.
     if let Err(e) = socket.connect(socket_addr).await {
         slot.refund();
         error!(
@@ -2017,8 +1765,8 @@ async fn udp_port_prober(
     }
 
     if let Err(e) = socket.send(payload::for_port(target.port)).await {
-        // A refusal can surface here rather than on the receive: the kernel
-        // reports a queued ICMP error on whichever operation comes next.
+        // The kernel reports a queued ICMP error on the next operation, which
+        // can be this send.
         return match e.kind() {
             ErrorKind::ConnectionRefused => record(
                 PortState::Closed,
@@ -2040,10 +1788,7 @@ async fn udp_port_prober(
 
     let mut buf = [0u8; 1024];
     match timeout(CONNECT_PROBE_TIMEOUT, socket.recv(&mut buf)).await {
-        // Something answered, so something is listening, and what it said may
-        // prove what the host is, which is a claim no port verdict can make.
-        // Read here rather than left to the privileged path, so a scan without
-        // root reaches the same conclusions about the network.
+        // Something is listening, and its reply may declare what the host is.
         Ok(Ok(read)) => record(
             PortState::Open,
             true,
@@ -2065,24 +1810,20 @@ async fn udp_port_prober(
             Outcome::Answered { position },
             Attempt::Sent,
         ),
-        // Any other ICMP error the kernel surfaced: an administrative
-        // prohibition, which Linux reports on a connected socket as a host it
-        // cannot reach, or a protocol unreachable. The raw path reads the same
-        // packet as blocked, and so does this one.
+        // Another ICMP error: an administrative prohibition (host unreachable on
+        // Linux) or a protocol unreachable. Blocked, as on the raw path.
         Ok(Err(e)) if is_unreachable(&e) => record(
             PortState::Blocked,
             false,
             Outcome::Answered { position },
             Attempt::Sent,
         ),
-        // Any other failure leaves the port as unknown as silence does.
+        // A local read failure after the send: as unknown as silence.
         Ok(Err(e)) => {
             error!(
                 verbosity = 2,
                 "UDP probe to {socket_addr} failed after sending: {e}"
             );
-            // A local read failure, not a fact about the target, and after
-            // the datagram left, so the send itself was made.
             record(
                 PortState::OpenOrNoReply,
                 false,
@@ -2090,8 +1831,7 @@ async fn udp_port_prober(
                 Attempt::Sent,
             )
         }
-        // No error and no reply: open but silent, or dropped. UDP cannot tell.
-        // Settled either way: this probe had one attempt and spent it.
+        // Open but silent, or dropped. Settled: the one attempt is spent.
         Err(_) => record(
             PortState::OpenOrNoReply,
             false,
@@ -2105,52 +1845,44 @@ async fn udp_port_prober(
 enum Dialled<T> {
     /// A slot and a socket were had and the attempt ran.
     Ran {
-        /// What the attempt came to. Never the process running out of
-        /// sockets, which is waited out rather than returned.
+        /// The attempt's result; never descriptor exhaustion, which is waited
+        /// out.
         result: io::Result<T>,
-        /// When the attempt that ran began, after any wait for its slot or a
-        /// socket, so a round trip timed from it is the target's and not the
-        /// queue's.
+        /// When the attempt began, after any wait for slot or socket, so a round
+        /// trip timed from it excludes queueing.
         began: Instant,
-        /// The socket's share of the process's budget, given back when it is
-        /// dropped. Kept for as long as what `result` holds is, or the budget
-        /// would count a socket as closed while it is still open.
+        /// The socket's share of the process's budget, returned on drop. Keep it
+        /// as long as `result`'s socket lives.
         descriptor: Descriptor,
-        /// The probe's slot, spent where it is dropped. An error in `result`
-        /// left nothing, since both attempts this runs fail only before
-        /// anything leaves, and gives it back.
+        /// The probe's slot, spent on drop. On an error in `result` nothing left,
+        /// so refund it.
         slot: Slot,
     },
-    /// The scan stopped, or the host ran out of its budget, before the probe
-    /// had a slot and a socket, so nothing was sent.
+    /// The scan stopped, or the host's budget ran out, before the probe had a slot
+    /// and a socket; nothing was sent.
     Unmade,
-    /// The process had no socket to give for as long as the probe would wait.
+    /// No socket became free for as long as the probe would wait.
     Starved,
 }
 
 /// Runs `attempt`, one probe to `peer`, in the slot `egress` gives it and on a
 /// socket from the process's descriptor budget.
 ///
-/// The slot is waited for first, so the scan's gap between probes holds
-/// neither a socket nor any part of the attempt's own budget; a scan that
-/// stops, or a host that runs out of its budget, while the probe waits leaves
-/// it [`Dialled::Unmade`]. The budget is taken next, so a sweep never asks for
-/// more sockets than [`descriptors`] allows it. The attempt can still be
-/// refused a socket, when something else in the process has filled the table,
-/// and that refusal is never passed on: it is raised before anything is sent,
-/// so it says nothing about the target, and read as an answer it becomes an
-/// address passed over as silent or a port filed as asked. The attempt is made
-/// again, in the same slot since nothing left, once a descriptor may have come
-/// free, for as long as `patience` allows from the first refusal, and then
-/// given up as [`Dialled::Starved`], its slot given back.
+/// The slot is waited for first, so the pacing gap holds no socket and none of the
+/// attempt's time budget; a stop or an expired host budget during that wait gives
+/// [`Dialled::Unmade`]. The descriptor budget is taken next, so a sweep never
+/// exceeds what [`descriptors`] allows. If the attempt is still refused a socket
+/// (something else filled the table), that is never returned as a result, since
+/// nothing was sent: the attempt is retried in the same slot with backoff for up
+/// to `patience` from the first refusal, then given up as [`Dialled::Starved`]
+/// with its slot refunded.
 ///
-/// Each attempt's own time budget starts only once it has its slot and its
-/// socket, so no part of either wait is ever read as a target's silence.
+/// Each attempt's time budget starts only once it has its slot and socket, so no
+/// wait is read as the target's silence.
 ///
-/// The same wait as [`descriptors::patiently`], every other connection's, in a
-/// loop of its own because a sweep keeps thousands of these in flight: each
-/// gives its descriptor back while it waits, so a queued probe can use it, and
-/// asks the scan's stop before it asks again.
+/// The same wait as [`descriptors::patiently`], in its own loop because a sweep
+/// keeps thousands in flight: each returns its descriptor while it waits and
+/// checks for a stop before retrying.
 async fn dial<T, F, Fut>(
     handle: &ScanHandle,
     egress: &Egress,
@@ -2199,18 +1931,12 @@ where
     }
 }
 
-/// Files the targets a run left unasked because the process had no socket to
-/// give them, once. `patience` is how long each waited, and `unasked` names
-/// what was left, counted.
+/// Files, once, the targets a run left unasked for want of a socket. `patience` is
+/// how long each waited; `unasked` is the counted description.
 ///
-/// Filed, because it narrows the result: those targets have no verdict, and
-/// a report that did not say why would read as a network that did not answer.
-/// Filed [cut short](crate::report::ScannerFailure::is_cut_short) rather than
-/// failed, and warned in one short line naming the limit rather than
-/// announced as a scanner that failed, because nothing broke. The process
-/// reached the file limit it was started under, the remedy is the caller's,
-/// raising it, and a reader told the scanner failed looks for a fault in the
-/// engine or the network that is not there.
+/// Filed [cut short](crate::report::ScannerFailure::is_cut_short), not failed,
+/// with a one-line warning naming the limit: nothing broke, the process hit the
+/// file limit it was started under, and raising it is the caller's remedy.
 fn report_starved(ctx: &ScanContext, scanner: ScannerKind, unasked: String, patience: Duration) {
     crate::warn!("{unasked} unasked ({})", descriptors::starved_briefly());
     ctx.file_cut_short(
@@ -2219,10 +1945,7 @@ fn report_starved(ctx: &ScanContext, scanner: ScannerKind, unasked: String, pati
     );
 }
 
-/// Files what a finished sweep or scan measured.
-///
-/// Both halves of this strategy report the same way, so the audit line and the
-/// recorded counters cannot drift between them.
+/// Files what a finished sweep or scan measured, the same way for both.
 fn finish(
     ctx: &ScanContext,
     audit: ProbeAudit,
@@ -2237,8 +1960,7 @@ fn finish(
 /// Multi-port host discovery for unprivileged environments, asking the common
 /// five ports: SSH (22), HTTP (80), HTTPS (443), SMB (445), and RDP (3389).
 ///
-/// [`discover_on`] with [`SynPorts::common`], for a sweep that was asked about
-/// no ports of its own.
+/// [`discover_on`] with [`SynPorts::common`].
 pub async fn discover(
     ips: IpSet,
     ctx: ScanContext,
@@ -2250,39 +1972,29 @@ pub async fn discover(
 /// Multi-port host discovery for unprivileged environments, asking each address
 /// about every port of `ports` until one of them answers.
 ///
-/// `ports` is the set a routed SYN sweep asks, and for the same reason: a host
-/// behind a filter that drops a connection attempt to anything it does not
-/// serve answers on the ports it serves and nowhere else, so a port scan's
-/// liveness pass passes [`SynPorts::for_scan`] and the host is asked about the
-/// ports the scan is about to probe. Taking the one type both sweeps take is
-/// what keeps an unprivileged run from finding fewer hosts than a privileged
-/// one over the same ports. See [`SynPorts`] for which ports those are.
+/// `ports` is the set a routed SYN sweep asks: a host behind a filter that drops
+/// connects to anything it does not serve answers only on the ports it serves, so
+/// a port scan's liveness pass passes [`SynPorts::for_scan`] and asks about the
+/// ports about to be probed. Sharing the type keeps an unprivileged run from
+/// finding fewer hosts than a privileged one. See [`SynPorts`].
 ///
-/// One task per address, not per port. Its ports are tried in turn, in the
-/// order the set holds them, and the first TCP-layer answer ends the address,
-/// so a host that answers on SSH costs one connect whatever the set's size. A
-/// silent address costs a connect per port, the first waiting three seconds,
-/// six for a neighbour, and each after it the [`CONNECT_PROBE_TIMEOUT`], so a
-/// silent range takes up to nine timeouts an address where the common five
-/// alone take six. The first waits longer because nothing has measured the
-/// path to the address yet, and a host across a path slower than the ordinary
-/// timeout covers is heard by that connect or by none; a neighbour's first
-/// connect waits on its resolution too, since the kernel resolves a
-/// neighbour's hardware address before the first SYN to it leaves. The socket
-/// budget is the same either way: one descriptor per address in flight, held one connect at
-/// a time, so a larger set lengthens a silent sweep and never widens it. A task
-/// per port would spend the same descriptor-seconds on fewer addresses at a
-/// time and answer no sooner.
+/// One task per address. Its ports are tried in order and the first TCP-layer
+/// answer ends the address, so a host answering on SSH costs one connect. A silent
+/// address costs a connect per port: the first waits three seconds (six for a
+/// neighbour), each later one [`CONNECT_PROBE_TIMEOUT`], so a silent range takes up
+/// to nine timeouts per address where the common five take six. The first waits
+/// longer because the path is still unmeasured, and a neighbour's first connect
+/// also waits on hardware address resolution. Each address in flight holds one
+/// descriptor, one connect at a time, so a larger set lengthens a silent sweep
+/// without widening it.
 ///
-/// That shape is also what lets a sweep be continued. An address is the unit a
-/// journal counts, so its verdict has to be earned as a whole: answered, or
-/// every port asked once and none of them answering. Interleaving the ports of
-/// many addresses would give neither, because nothing would know when an
-/// address was finished with.
+/// The address is also the unit a journal counts, so its verdict must be earned
+/// whole (answered, or every port asked once with no answer) for a sweep to be
+/// resumable.
 ///
-/// Addresses are drawn from
-/// [`dispatch_addresses`](crate::scanner::dispatcher::dispatch_addresses) to
-/// spread load across the network instead of hammering one subnet at a time.
+/// Addresses come from
+/// [`dispatch_addresses`](crate::scanner::dispatcher::dispatch_addresses), which
+/// spreads load across the network.
 pub async fn discover_on(
     ips: IpSet,
     ctx: ScanContext,
@@ -2292,8 +2004,8 @@ pub async fn discover_on(
     sweep(ips, ctx, evasion, ports, descriptors::PATIENCE).await
 }
 
-/// [`discover_on`], waiting at most `patience` for a socket the process has
-/// none of before leaving an address unasked.
+/// [`discover_on`], waiting at most `patience` for a free socket before leaving an
+/// address unasked.
 async fn sweep(
     ips: IpSet,
     ctx: ScanContext,
@@ -2316,8 +2028,7 @@ async fn sweep(
     let mut shortfall = Shortfall::default();
     let segments = Arc::new(OnLinkTable::of_segments());
     let edges = Arc::clone(&segments);
-    // No more probes than the process has sockets for: past the budget a
-    // probe would only queue at the gate, holding a task and nothing else.
+    // Past the socket budget a probe would only queue at the gate.
     let mut pool = ProbePool::new(
         DISCOVERY_CONCURRENCY.min(descriptors::budget()),
         ctx.clone(),
@@ -2332,8 +2043,6 @@ async fn sweep(
     while let Some(ip) = rx.recv().await {
         if let Some(cause) = ctx.handle.stopped() {
             reason = cause.into();
-            // Taken off the queue and never asked, so it counts with the rest
-            // still waiting behind it.
             ctx.record_address_outcomes(Outcome::Unasked, 1);
             break;
         }
@@ -2351,12 +2060,11 @@ async fn sweep(
         .await;
     }
 
-    // Anything still queued was never asked, and carries no position to settle.
+    // Anything still queued was never asked.
     while rx.try_recv().is_ok() {
         ctx.record_address_outcomes(Outcome::Unasked, 1);
     }
 
-    // Every address dispatched; wait out the probes still in flight.
     pool.drain().await;
     let audit = pool.into_audit();
     if starved > 0 {
@@ -2370,43 +2078,35 @@ async fn sweep(
 
 /// What one address's liveness probe came to.
 struct ProbedHost {
-    /// The address asked about, which is the unit a sweep settles.
+    /// The address asked about, the unit a sweep settles.
     ip: IpAddr,
     /// What became of it.
     fate: Fate,
 }
 
-/// The four things a sweep can honestly say about an address, before anything
-/// knows where in the plan it sits.
+/// What a sweep can say about an address, before its plan position is known.
 ///
-/// Only the first two are verdicts the sweep earned. The others say the address
-/// was not asked, or not finished with, and a resume must ask again. see
-/// [`settle`](crate::journal::settle).
+/// Only the first two are verdicts; the rest mean the address was not asked or not
+/// finished, and a resume must ask again. See [`settle`](crate::journal::settle).
 ///
-/// Each also says whether a send was made, which is what the sweep's
-/// `sends_attempted` and `sends_failed` count: an address the process could not
-/// open a socket for, or had no route to, was a send that failed, and one the
-/// scan stopped before asking was no send at all.
+/// Each also says whether a send was made, for the sweep's `sends_attempted` and
+/// `sends_failed`: no socket or no route is a failed send, a stop before asking is
+/// no send.
 enum Fate {
     /// It answered, and this is what the answer proved.
     ///
-    /// Boxed because a [`Host`] is by far the largest thing a fate can carry and
-    /// five of the six variants carry nothing: unboxed, every probe that found
-    /// silence would still move a host-sized value through the sweep.
+    /// Boxed: a [`Host`] is far larger than anything the other variants carry.
     Answered(Box<Host>),
-    /// Every port was asked once and not one of them answered. **Settled**: a
-    /// connect gets one attempt per port and those were all of them.
+    /// Every port was asked once and none answered. **Settled**: a connect gets one
+    /// attempt per port.
     Exhausted,
-    /// This machine refused to send a probe, for the reason carried, so the
-    /// address proved nothing and the next sitting may get further. No route
-    /// leading to it is filed against the address, as the raw path files one;
-    /// any other refusal is this machine's, and the sweep reports it once it
-    /// has drained.
+    /// This machine refused to send a probe, so the next sitting may get further.
+    /// No route is filed against the address, as on the raw path; any other
+    /// refusal is reported once the sweep has drained.
     Refused(Refusal),
-    /// The process had no socket to give the probe, for longer than it was
-    /// willing to wait, so the address was never asked. Unsettled for the same
-    /// reason as [`Refused`](Self::Refused), and told apart from it because
-    /// the cause is this process's file limit, which the scan reports.
+    /// No socket became free in time, so the address was never asked. Unsettled
+    /// like [`Refused`](Self::Refused), but the cause is the process's file limit,
+    /// which the scan reports.
     Starved,
     /// The scan stopped while the address's ports were still being tried.
     Interrupted,
@@ -2417,25 +2117,17 @@ enum Fate {
 /// Merges one finished discovery probe into the store, and settles the address
 /// it asked about.
 ///
-/// A freshly created entry starts from [`Host::new`] and absorbs the probe's
-/// findings, so the recorded result is the same whether or not the host was seen
-/// before.
+/// A new entry starts from [`Host::new`] and absorbs the probe's findings, so the
+/// result is the same whether or not the host was seen before. Only answered and
+/// exhausted addresses are settled; see [`settle`](crate::journal::settle).
 ///
-/// The three cases are the three things a sweep can honestly say about an
-/// address: it answered, it was asked as many times as it is going to be and
-/// stayed silent, or it could not be asked from here at all. Only the first two
-/// are settled. see [`settle`](crate::journal::settle).
+/// An address starved of a socket is counted into `starved`, and one this machine
+/// refused to send to into `shortfall`, both reported once the sweep has drained.
 ///
-/// An address starved of a socket is counted into `starved`, and one this
-/// machine refused to send to into `shortfall`, both of which the sweep
-/// reports once it has drained.
-///
-/// Except the network or broadcast address of one of this host's own
-/// `segments`, which the kernel refuses a connection to as it refuses one no
-/// route leads to. That refusal says the address is the segment's own rather
-/// than a host's, and the address is settled with nothing there, as the frame
-/// sweep's unanswered request to it is: filed unreachable, a sweep of a `/24`
-/// names its broadcast address as one this machine cannot reach.
+/// The network or broadcast address of one of this host's `segments` is refused by
+/// the kernel like an unrouted one. It is settled as exhausted, as the frame
+/// sweep's unanswered request to it is; filed unreachable, every `/24` sweep would
+/// list its broadcast address as unreachable.
 fn absorb_host(
     ctx: &ScanContext,
     probed: ProbedHost,
@@ -2448,14 +2140,13 @@ fn absorb_host(
         Fate::Refused(Refusal::NoRoute | Refusal::Forbidden)
             if segments.is_segment_edge(probed.ip) =>
         {
-            // Nothing left this machine, so no send is counted either way.
+            // Nothing left this machine, so no send is counted.
             ctx.settle_address(probed.ip, Settled::Exhausted);
         }
         Fate::Answered(host) => {
             let ip = host.primary_ip();
             audit.record_send(true);
-            // See `absorb_probe`: this path has no attempt to attribute the
-            // answer to, so every host it finds is counted as unattributed.
+            // Unattributed, as in `absorb_probe`.
             audit.record_host_found(None);
             ctx.update_host(ip, |existing| existing.merge(*host));
             ctx.settle_address(probed.ip, Settled::Answered);
@@ -2482,21 +2173,18 @@ fn absorb_host(
     }
 }
 
-/// Whether `ip` is a neighbour: an address on one of this host's `segments`,
-/// or a link-local one, which is on a segment wherever it is.
+/// Whether `ip` is a neighbour: on one of this host's `segments`, or link-local.
 fn is_neighbour(segments: &OnLinkTable, ip: IpAddr) -> bool {
     let link_local = matches!(ip, IpAddr::V6(v6) if v6.is_unicast_link_local());
     link_local || segments.source_for(ip).is_some()
 }
 
-/// How long the first connect to an address waits, the one that finds the
-/// path to it: [`NEIGHBOUR_PATH_FINDING_TIMEOUT`] for a `neighbour`, and
-/// [`PATH_FINDING_TIMEOUT`] for any other.
+/// How long the first, path-finding connect to an address waits:
+/// [`NEIGHBOUR_PATH_FINDING_TIMEOUT`] for a `neighbour`, [`PATH_FINDING_TIMEOUT`]
+/// otherwise.
 ///
-/// A neighbour is resolved before the first SYN to it leaves, across the path
-/// the handshake then crosses, and a wait sized for the handshake alone gives
-/// up on a slow neighbour whose hardware address the kernel did not yet hold.
-/// An address anywhere else has its next hop resolved already, or resolved
+/// A neighbour is resolved before the first SYN leaves, so its wait covers the
+/// resolution too. Any other address's next hop is usually resolved already, and
 /// once for every address behind it.
 fn path_finding_wait(neighbour: bool) -> Duration {
     if neighbour {
@@ -2508,36 +2196,28 @@ fn path_finding_wait(neighbour: bool) -> Duration {
 
 /// Probes one address for presence, over each of `ports` in turn.
 ///
-/// Returns as soon as one of them answers at the TCP layer: a completed
-/// handshake, or a reset the kernel surfaced as a connection error. Anything
-/// else is read as [`Knock::of`] reads it, and the next port is tried.
+/// Returns as soon as one answers at the TCP layer (a completed handshake, or a
+/// reset surfaced as a connection error). Anything else is read by [`Knock::of`]
+/// and the next port is tried.
 ///
-/// Each connect is made in the two halves the port scan makes it in (see
-/// [`Handshake`]), because the operating system names a missing route here
-/// and a filter's rejection on the far side with the same codes, and only
-/// where the code surfaced tells them apart. No route leads to the address
-/// from any of its ports, so the first refusal for that ends the probe and
-/// the address is filed as one this host cannot reach.
+/// Each connect is made in two halves, as in the port scan (see [`Handshake`]),
+/// since only the half that raised a code tells a missing local route from a
+/// filter's rejection. No route reaches any port of the address, so the first
+/// such refusal ends the probe and files the address unreachable.
 ///
-/// The stop signal is checked between ports, not only between addresses.
-/// One task covers up to eight connects, and a sweep that only looked once
-/// per address would take eight timeouts to wind down rather than one. What has
-/// been asked so far decides how the address is filed: cut off part way through
-/// is not the same as asked and silent, and only the second is a verdict. So
-/// does what was not: an address with a port this machine refused to send to
-/// was not asked everything, and is left for the next sitting, with the
-/// reason reported.
+/// The stop is checked between ports, so a sweep winds down within one timeout
+/// even with up to eight connects per task. Cut off part way is not a verdict;
+/// asked and silent is. An address with a port this machine refused to send to
+/// was not fully asked and is left for the next sitting, with the reason
+/// reported.
 ///
-/// Every connect leaves by `egress`, in a slot of the scan's pacing and on a
-/// socket from the process's budget, and waits at most `patience` for one the
-/// process has none of.
+/// Every connect leaves by `egress` in a slot of the scan's pacing, on a socket
+/// from the process's budget, waiting at most `patience` for a free one.
 ///
-/// The first connect to leave is how the path to the address is found, and
-/// waits for the longest path a connect looks for, and for the address
-/// resolution too where the address is a `neighbour`; see
-/// [`path_finding_wait`]. Every one after it waits as on an ordinary path. An
-/// answer to the first connect to a neighbour times the path and the
-/// resolution together, and is kept as the upper bound it is; see
+/// The first connect finds the path: it waits for the longest path a connect looks
+/// for, plus resolution for a `neighbour` (see [`path_finding_wait`]); later ones
+/// wait as on an ordinary path. An answer to the first connect to a neighbour
+/// times path and resolution together and is kept as an upper bound; see
 /// [`RttSource::FirstToNeighbour`](crate::model::host::telemetry::RttSource::FirstToNeighbour).
 async fn prober(
     ip: IpAddr,
@@ -2551,8 +2231,7 @@ async fn prober(
     let mut asked = false;
     let mut refused = None;
     let mut waiting = path_finding_wait(neighbour);
-    // Whether a connect has left yet: only the first to a neighbour may have
-    // waited on its resolution.
+    // Only the first connect to a neighbour may have waited on its resolution.
     let mut left = false;
     let cut_short = |asked| ProbedHost {
         ip,
@@ -2571,9 +2250,7 @@ async fn prober(
             if handle.should_stop() {
                 return cut_short(asked);
             }
-            // The descriptor is held until the attempt's socket is dropped,
-            // at the end of this pass, so the budget counts every socket still
-            // open.
+            // Held until the socket drops at the end of this pass.
             let (handshake, start, _descriptor) =
                 match dial(&handle, &egress, ip, patience, |slot| {
                     std::future::ready(egress.start_connect(slot, addr, shaping))
@@ -2586,7 +2263,7 @@ async fn prober(
                         descriptor,
                         ..
                     } => {
-                        // Asked, with no answer yet, where the stop cut the wait.
+                        // Asked, but the stop cut the wait.
                         let Some(finished) = handshake(connecting, waiting, &handle).await else {
                             return cut_short(true);
                         };
@@ -2633,8 +2310,8 @@ async fn prober(
             Some((Knock::Refused(refusal), _)) => {
                 refused.get_or_insert(refusal);
             }
-            // Met itself every time, which only a pinned source port equal
-            // to the one asked, on this machine's own address, can do.
+            // Met itself every time: a pinned source port equal to the one
+            // asked, on this machine's own address.
             Some((Knock::MetItself(_), _)) | None => {
                 let why = met_itself.map_or_else(String::new, |e| e.to_string());
                 refused.get_or_insert(Refusal::Local(why));
@@ -2655,24 +2332,20 @@ async fn prober(
 /// What one connect of a liveness probe says about the address it knocked on.
 #[derive(Debug)]
 enum Knock {
-    /// Something at the address answered at the TCP layer: a completed
-    /// handshake, a refusal, or a reset. A refusal is almost always the
-    /// target's own reset, as the port scan reads one.
+    /// Something answered at the TCP layer: a completed handshake, a refusal
+    /// (almost always the target's own reset), or a reset.
     Answered,
-    /// The SYN left and nothing that proves a host came back: silence, an
-    /// ICMP error from a filter or a router on the way, whose sender this path
-    /// cannot see, or a failure that names no packet.
+    /// The SYN left but nothing proving a host came back: silence, an ICMP error
+    /// whose sender this path cannot see, or a failure naming no packet.
     Asked,
     /// This machine refused the connect before anything left it.
     Refused(Refusal),
-    /// The connect reached its own socket, which says nothing about the
-    /// address; a fresh socket is given another source.
+    /// The connect reached its own socket; a fresh socket gets another source.
     MetItself(io::Error),
 }
 
 impl Knock {
-    /// Reads `handshake` for what it says about the address rather than the
-    /// port.
+    /// Reads `handshake` for what it says about the address.
     fn of(handshake: Handshake) -> Self {
         match handshake {
             Handshake::Accepted(_) | Handshake::Refused => Self::Answered,
@@ -2691,10 +2364,10 @@ impl Knock {
     }
 }
 
-/// The record an address earns by answering, timed from `start`, when the
-/// connect that was answered began: after any wait for a socket and any port
-/// asked before it, so the round trip is that connect's alone, and an upper
-/// bound on it where the connect was `resolving` its neighbour first.
+/// The record an address earns by answering. `start` is when the answered connect
+/// began, after any socket wait and earlier ports, so the round trip is that
+/// connect's alone; it is an upper bound when the connect was `resolving` its
+/// neighbour first.
 fn answered(ip: IpAddr, start: Instant, resolving: bool) -> ProbedHost {
     let mut host = Host::new(ip);
     let rtt = start.elapsed();
@@ -2703,10 +2376,9 @@ fn answered(ip: IpAddr, start: Instant, resolving: bool) -> ProbedHost {
     } else {
         host.add_rtt_from(rtt, StatusProtocol::TcpConnect);
     }
-    // Every outcome that reaches here required a segment from the target: a
-    // completed handshake, or a reset the kernel surfaced as a connection error.
-    // `Host::merge` keeps the stronger status, so this survives being folded
-    // into an entry another strategy created first.
+    // Every outcome here required a segment from the target. `Host::merge`
+    // keeps the stronger status, so this survives merging into another
+    // strategy's entry.
     host.record_evidence(
         HostStatus::Up,
         StatusReason::new(
@@ -2738,13 +2410,9 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
     use tokio::net::UdpSocket;
 
-    /// A connect waits what it always waits on an ordinary path, and on a
-    /// path nothing measured, and across a slow one long enough for the host
-    /// stack's retransmitted SYN to be answered across it.
-    ///
-    /// The ordinary wait is what every scan pays per silent port, so a
-    /// measured path that is merely not free leaves it alone; the slow path's
-    /// is what keeps an open port two seconds away from reading `NoReply`.
+    /// A connect waits [`CONNECT_PROBE_TIMEOUT`] on an ordinary or unmeasured path,
+    /// and across a slow one long enough for the host stack's retransmitted SYN to
+    /// be answered.
     #[test]
     fn a_connect_waits_as_ever_on_an_ordinary_path_and_longer_on_a_slow_one() {
         assert_eq!(connect_patience(PathAllowance::NONE), CONNECT_PROBE_TIMEOUT);
@@ -2765,12 +2433,8 @@ mod tests {
         }
     }
 
-    /// The first port asked of a host nothing has measured waits long enough
-    /// to find the path, and every other port asks as the measurement so far
-    /// allows.
-    ///
-    /// Waited as on an ordinary path, every first asking across a path slower
-    /// than that wait gave up on its answer, and each port was asked twice.
+    /// The first port of an unmeasured host waits long enough to find the path;
+    /// every other port waits as the measurement so far allows.
     #[test]
     fn the_first_port_asked_of_an_unmeasured_host_finds_the_path() {
         use crate::system::interface::{Link, LinkAddress};
@@ -2802,8 +2466,7 @@ mod tests {
             NEIGHBOUR_PATH_FINDING_TIMEOUT
         );
 
-        // A host already measured has its path, and its first port asks as
-        // the measurement says.
+        // A measured host's first port waits as the measurement says.
         let measured = PathAllowance::of_round_trip(Duration::from_millis(1_900));
         let third = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9));
         assert_eq!(
@@ -2823,9 +2486,8 @@ mod tests {
         )
     }
 
-    /// A socket bound IPv4-only would make a v6 target fail at `connect` and
-    /// vanish without a record or a log. Loopback only, and no privileges
-    /// required, so this runs everywhere the suite does.
+    /// An IPv6 target gets a verdict. A socket bound IPv4-only would fail at
+    /// `connect` and drop the target unrecorded. Loopback only, no privileges.
     #[tokio::test]
     async fn closed_ipv6_port_is_classified_not_dropped() {
         let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
@@ -2872,11 +2534,8 @@ mod tests {
         );
     }
 
-    /// **A UDP port the connect path settles says what settled it, as the raw
-    /// path's does.** A reply is the port's own answer and a refusal an ICMP
-    /// port unreachable. Without the reason an unprivileged report's closed
-    /// and open UDP ports rest on nothing a reader can see, and two scans of
-    /// one network compare as different by privilege alone.
+    /// A UDP port the connect path settles records what settled it, as on the raw
+    /// path: a reply is the port's answer, a refusal an ICMP port unreachable.
     #[tokio::test]
     async fn a_udp_port_the_connect_path_settles_records_what_settled_it() {
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -2915,14 +2574,11 @@ mod tests {
         }
     }
 
-    /// **What a NetBIOS name table calls the machine reaches the host on the
-    /// connect path, masked where a report masks.** The raw path reads the
-    /// same reply for the same names, so a scan without a raw socket records
-    /// what one with it would.
+    /// The names in a NetBIOS name table reach the host on the connect path, as on
+    /// the raw path, and are masked where a report masks.
     ///
-    /// The responder answers on loopback at a port of its own, and the probe
-    /// is addressed there while the target names 137, which is what decides
-    /// how its reply is read.
+    /// The responder listens on its own loopback port; the target names 137, which
+    /// decides how the reply is read.
     #[tokio::test]
     async fn a_name_table_names_the_machine_on_the_connect_path() {
         use crate::export::schema::HostDto;
@@ -2974,10 +2630,8 @@ mod tests {
         );
     }
 
-    /// A TCP port that refuses a connect is a SYN out and a RST back, one round
-    /// trip to the host, and the host is credited with it. Without it a scan
-    /// that ran no liveness pass, the only other source of a round trip on this
-    /// path, reports every host it found with none.
+    /// A refused connect is one round trip (SYN out, RST back), credited to the
+    /// host.
     #[tokio::test]
     async fn a_refused_connect_times_the_host() {
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -3021,13 +2675,9 @@ mod tests {
         );
     }
 
-    /// A host the connect path reaches is credited to a handshake its own
-    /// stack made, and not to a half-open SYN probe, both where a port scan
-    /// found it and where a sweep did. The two answer the same question and
-    /// differ in how visible they are: a completed connection reaches the
-    /// service and its logs, a half-open probe does not, and a report
-    /// naming a SYN probe for a connect tells a reader the target was asked
-    /// more quietly than it was.
+    /// A host the connect path reaches, by port scan or sweep, is credited to
+    /// `TcpConnect`, not a SYN probe: a completed connection reaches the service
+    /// and its logs, which a half-open probe does not.
     #[tokio::test]
     async fn a_host_the_connect_path_reached_is_credited_to_a_handshake() {
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -3113,14 +2763,9 @@ mod tests {
         }
     }
 
-    /// A port of a host whose neighbour has been given up on is not connected,
-    /// and is unasked, filed against the address rather than as this
-    /// machine's failure.
-    ///
-    /// On Linux every connect to such a host waits out a resolution of its
-    /// own, three seconds, to learn what two already said, and then reads as
-    /// a filter's reject: a dead neighbour's ports cost the scan three
-    /// seconds a wave and read blocked, every one of them.
+    /// A port of a host whose neighbour was given up is not connected; it is
+    /// unasked and filed against the address. On Linux each such connect would
+    /// otherwise wait out its own three-second resolution and read blocked.
     #[tokio::test]
     async fn a_host_whose_neighbour_was_given_up_is_sent_nothing_more() {
         use crate::transport::kernel_neighbors::{KernelNeighbors, NeighborTable};
@@ -3158,9 +2803,8 @@ mod tests {
         assert!(listener.accept().is_err(), "the port was connected");
     }
 
-    /// What a round trip measured alone earns on a slow path is the wait a
-    /// path nothing has measured is given, so a measurement never makes the
-    /// scan more patient than ignorance did unless the round trip needs it.
+    /// A lone round-trip sample on a slow path earns the same wait as an
+    /// unmeasured path.
     #[test]
     fn a_lone_sample_is_held_to_the_path_finding_wait() {
         assert_eq!(
@@ -3169,10 +2813,9 @@ mod tests {
         );
     }
 
-    /// The connect that finds the path to a neighbour waits for the
-    /// neighbour's resolution as well as its handshake, and one to any other
-    /// address waits for the handshake alone. A link-local address is a
-    /// neighbour on whichever segment its zone names.
+    /// A neighbour's path-finding connect also waits for its resolution; other
+    /// addresses wait for the handshake alone. Link-local addresses are
+    /// neighbours.
     #[test]
     fn a_neighbour_s_first_connect_waits_for_its_resolution_too() {
         use crate::system::interface::{Link, LinkAddress};
@@ -3199,15 +2842,13 @@ mod tests {
         }
     }
 
-    /// The answer to the first connect a sweep made to a neighbour is kept as
-    /// an upper bound on the path, since the connect may have waited on the
-    /// neighbour's resolution first, and a handshake timed after it is what
-    /// the host's waits are sized from.
+    /// The answer to a sweep's first connect to a neighbour is kept as an upper
+    /// bound, since it may include resolution; a later handshake replaces it for
+    /// sizing waits.
     ///
-    /// Across a path of 1.9 s, a neighbour whose hardware address was not
-    /// held answered that connect in 3.8 s, and kept as a round trip beside
-    /// the true ones it made every wait of the port's identification three
-    /// times what the path needs: the scan of one silent port took 59 s.
+    /// Across a 1.9 s path, an unresolved neighbour answered that connect in
+    /// 3.8 s; kept as a plain round trip it tripled every identification wait, and
+    /// scanning one silent port took 59 s.
     #[test]
     fn a_neighbour_s_first_answer_is_a_bound_a_later_handshake_retires() {
         use crate::model::host::telemetry::RttSource;
@@ -3246,15 +2887,12 @@ mod tests {
 
     /// A connect that reaches its own socket is never filed as an open port.
     ///
-    /// On Linux, and on macOS over IPv6, a connect given its target's port as
-    /// its source completes a handshake with itself, and a prober that took
-    /// the completed connect for an answer filed a port nothing listened on
-    /// as open and identified its service from its own questions. On macOS
-    /// over IPv4 the kernel refuses it instead. Either way nothing was asked.
+    /// On Linux, and on macOS over IPv6, a connect whose source port is the
+    /// target's completes a handshake with itself; on macOS over IPv4 the kernel
+    /// refuses it. Either way nothing was asked.
     ///
-    /// Pinning the source port to the target's is what makes every attempt
-    /// meet itself, so the prober's fresh tries meet itself too and the port
-    /// ends unasked, with the reason reported, rather than with a verdict.
+    /// Pinning the source port to the target's makes every retry meet itself too,
+    /// so the port ends unasked with the reason reported.
     #[tokio::test]
     async fn a_connect_that_reaches_itself_is_never_filed_as_an_open_port() {
         for ip in [
@@ -3298,12 +2936,10 @@ mod tests {
         }
     }
 
-    /// **A stop ends an identification in flight.** On a port that accepts
-    /// and says nothing, a thorough identification asks every question it
-    /// has, a connection each, and an unprivileged scan stopped with some of
-    /// those in flight asked them all before it ended. The stop here arrives
-    /// once the port has taken the first connection, and the probe has to
-    /// make no other and keep the verdict the handshake earned.
+    /// A stop ends an identification in flight. On a port that accepts and says
+    /// nothing, a thorough identification opens a connection per question. The
+    /// stop arrives after the first connection; the probe must open no other and
+    /// keep the handshake's verdict.
     #[tokio::test]
     async fn a_stop_ends_an_identification_in_flight() {
         let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -3314,8 +2950,7 @@ mod tests {
         let (_session, ctx) = crate::scanner::session::ScanSession::new();
         let stopper = ctx.handle.clone();
         let (returned, mut probe_done) = tokio::sync::oneshot::channel::<()>();
-        // Takes every connection and says nothing on any of them, and asks
-        // for the stop once the first is in.
+        // Accepts every connection silently; stops the scan after the first.
         let listening = tokio::spawn(async move {
             let mut held = Vec::new();
             let first = accept_from_this_process(&listener)
@@ -3323,8 +2958,7 @@ mod tests {
                 .expect("the probe connects");
             held.push(first);
             stopper.abort();
-            // Held open until the probe returns, so nothing ends its
-            // identification but the stop.
+            // Held open until the probe returns, so only the stop ends it.
             loop {
                 tokio::select! {
                     accepted = accept_from_this_process(&listener) => {
@@ -3333,8 +2967,7 @@ mod tests {
                     _ = &mut probe_done => break,
                 }
             }
-            // Whatever else the probe made before it returned is already
-            // queued on the listener; this only has to take it.
+            // Collect anything else the probe opened before returning.
             while let Ok(Ok(more)) = tokio::time::timeout(
                 Duration::from_millis(500),
                 accept_from_this_process(&listener),
@@ -3375,16 +3008,14 @@ mod tests {
         assert!(probed.answered);
     }
 
-    /// A loopback listener that drops every further SYN, and the connections
-    /// that filled its queue, held for as long as it is.
+    /// A loopback listener that drops every further SYN, and the connections that
+    /// filled its queue, to be held as long as it is.
     ///
-    /// A listener never accepted from takes connections into its queue up to
-    /// its backlog and then drops the SYNs that follow, as Linux and the BSDs
-    /// do (Windows resets them instead): from outside, a port a firewall
-    /// drops. A backlog of one, since
-    /// macOS reads zero as its default; filled until a connect goes
-    /// unanswered, so the next one is dropped whatever the stack's arithmetic
-    /// on the backlog.
+    /// A listener never accepted from queues connections up to its backlog, then
+    /// drops further SYNs on Linux and the BSDs (Windows resets them), which looks
+    /// like a firewalled port. Backlog one, since macOS reads zero as its default;
+    /// filled until a connect goes unanswered, whatever the stack's backlog
+    /// arithmetic.
     #[cfg(unix)]
     fn a_port_that_drops_syns() -> (socket2::Socket, Vec<std::net::TcpStream>) {
         let listener = socket2::Socket::new(
@@ -3412,14 +3043,8 @@ mod tests {
         panic!("the listener's queue never filled");
     }
 
-    /// **A stop ends a handshake in flight at once, and leaves its port
-    /// unasked.**
-    ///
-    /// A connect to a port that drops its SYN waits its whole patience, which
-    /// across a slow path is many seconds, and a stopped scan would wait out
-    /// every one in flight before it ended. The SYN left and nothing came
-    /// back yet, so the port has no verdict: filed `NoReply`, it would report
-    /// a silence the probe never waited long enough to hear.
+    /// A stop ends a handshake in flight at once and leaves its port unasked: the
+    /// SYN left but the probe had not waited its full patience.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_stop_ends_a_handshake_in_flight_and_leaves_its_port_unasked() {
@@ -3439,7 +3064,7 @@ mod tests {
         });
 
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        // Far longer than the wait below, so only the stop can end it there.
+        // Far longer than the timeout below, so only the stop can end it.
         let patience = Duration::from_secs(600);
         let probed = tokio::time::timeout(
             Duration::from_secs(60),
@@ -3472,11 +3097,8 @@ mod tests {
         );
     }
 
-    /// A second asking the stop cuts short keeps the first asking's verdict.
-    ///
-    /// The first asking settled the port `NoReply`, and the second is only a
-    /// longer wait for the same answer. Cut short, it heard nothing yet, and
-    /// filed unasked it would take back a verdict the scan earned.
+    /// A second asking cut short by a stop files nothing, so the first asking's
+    /// `NoReply` stands.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_second_asking_cut_short_revises_nothing() {
@@ -3517,15 +3139,9 @@ mod tests {
         assert!(matches!(probed.attempt, Attempt::Sent), "its send counts");
     }
 
-    /// A handshake's round trip is the host's as soon as the handshake
-    /// completes, while the port it opened is still being identified.
-    ///
-    /// Every other port of the host asked meanwhile sizes its wait from the
-    /// host's measured path, and an identification on a port that says
-    /// nothing runs for seconds. Filed only with the verdict, the round trip
-    /// reached the host after its identification returned, and across a path
-    /// slower than an ordinary wait covers every port asked in the meantime
-    /// waited as on an ordinary path and read `NoReply`.
+    /// A handshake's round trip is filed with the host as soon as it completes,
+    /// while the port is still being identified, since other ports of the host
+    /// size their waits from it meanwhile.
     #[tokio::test]
     async fn a_handshake_times_the_host_before_its_port_is_identified() {
         let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -3578,12 +3194,10 @@ mod tests {
         assert!(identifying, "the identification ended before the test read");
     }
 
-    /// A route that refuses in its policy's words is told from one that is
-    /// missing, so the address is named as refused by a route: Linux answers
-    /// a `prohibit` route with permission denied and a `blackhole` route with
-    /// an invalid argument, which the connect hands on inside a host it
-    /// cannot reach, and a missing or `unreachable` route with the plain
-    /// host or network unreachable.
+    /// A route refusing by policy is told from a missing one. Linux answers a
+    /// `prohibit` route with permission denied and a `blackhole` route with
+    /// invalid argument, wrapped in a host unreachable; a missing or
+    /// `unreachable` route gives plain host or network unreachable.
     #[cfg(unix)]
     #[test]
     fn a_route_refusing_by_policy_is_told_from_a_missing_one() {
@@ -3605,15 +3219,9 @@ mod tests {
         );
     }
 
-    /// Where an error surfaced decides what it means: the same code before
-    /// the SYN left is this machine's failure, and after it is an answer.
-    ///
-    /// `EHOSTUNREACH` is both a missing route here and a firewall's
-    /// administrative prohibition on the far side, which Linux reports alike.
-    /// Read as a local failure, a firewalled port is filed unasked and asked
-    /// again on every resume; read as an answer, a port this machine could
-    /// not reach would be filed blocked, a finding about a target nothing
-    /// was sent to.
+    /// The same code before the SYN left is a local failure, and after it an
+    /// answer. `EHOSTUNREACH` is both a missing local route and a far firewall's
+    /// administrative prohibition, which Linux reports alike.
     #[test]
     fn an_unreachable_is_an_answer_after_the_syn_left_and_a_local_failure_before() {
         for kind in [ErrorKind::HostUnreachable, ErrorKind::NetworkUnreachable] {
@@ -3653,14 +3261,10 @@ mod tests {
         ));
     }
 
-    /// A port this machine refused to send to is left unasked, and the report
-    /// says why, in the operating system's words.
-    ///
-    /// Without the line, a scan whose every connect failed locally reads as
-    /// one that asked and heard nothing: the ports are unasked, but nothing
-    /// says the cause was here. The refusal is made by pinning connections to
-    /// a source no interface holds, so the bind fails before anything is sent
-    /// and the documentation address is never dialled.
+    /// A port this machine refused to send to is left unasked, and the report says
+    /// why in the OS's words. Connections are pinned to a source no interface
+    /// holds, so the bind fails before anything is sent and the documentation
+    /// address is never dialled.
     #[tokio::test]
     async fn a_port_this_machine_refused_to_send_is_unasked_and_the_report_says_why() {
         let target = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
@@ -3701,9 +3305,8 @@ mod tests {
         );
     }
 
-    /// Listeners on `count` ports of `ip`, and the ports. Never accepted
-    /// from: the kernel completes a handshake into the backlog, which is all
-    /// a connect scan asks of an open port.
+    /// Listeners on `count` ports of `ip`, and the ports. Never accepted from;
+    /// the kernel completes the handshake into the backlog.
     fn listeners(ip: IpAddr, count: usize) -> (Vec<std::net::TcpListener>, Vec<u16>) {
         (0..count)
             .map(|_| {
@@ -3714,13 +3317,12 @@ mod tests {
             .unzip()
     }
 
-    /// Asserts that this process began one connection to each of `addrs`,
-    /// and began them at least `gap` apart, less a margin for scheduling,
-    /// however they were ordered.
+    /// Asserts that this process began one connection to each of `addrs`, at
+    /// least `gap` apart less a scheduling margin, in any order.
     ///
-    /// Read from where every connection to a target is begun, the one place
-    /// that sees each SYN handed to the kernel whether or not a listener ever
-    /// accepts it; see [`dialled`](crate::transport::dial::dialled).
+    /// Read from where every connection begins, which sees each SYN handed to the
+    /// kernel whether or not it is accepted; see
+    /// [`dialled`](crate::transport::dial::dialled).
     fn assert_spaced(addrs: &[SocketAddr], gap: Duration) {
         let mut times: Vec<Instant> = addrs
             .iter()
@@ -3738,8 +3340,8 @@ mod tests {
         }
     }
 
-    /// Runs a connect scan of `targets`, as many at once as there are, with
-    /// nothing identified, and returns once it has drained.
+    /// Runs a connect scan of all `targets` at once, with no identification,
+    /// returning once it has drained.
     async fn scan_all(ctx: &ScanContext, targets: Vec<PlannedTarget>) {
         let (tx, rx) = mpsc::channel(targets.len());
         let concurrency = targets.len();
@@ -3747,8 +3349,7 @@ mod tests {
             tx.send(target).await.expect("queued");
         }
         drop(tx);
-        // On the heap, as a scan run from a strategy is: the walk's state is
-        // more than a test thread's stack should carry.
+        // Boxed, as in `scan`: the walk's state is too large for the stack.
         Box::pin(scan(
             rx,
             concurrency,
@@ -3782,13 +3383,9 @@ mod tests {
             .collect()
     }
 
-    /// **A connect scan's connections to one host keep the host's gap**,
-    /// however many the pool holds at once, and every port still gets the
-    /// verdict it earned.
-    ///
-    /// The pool admits every port together, so what spaces them is the slot
-    /// each connection claims before its SYN; a connection that dialled
-    /// without one would leave at once.
+    /// A connect scan's connections to one host keep the host's gap, however many
+    /// the pool holds, and every port still gets its verdict. The pool admits all
+    /// ports together; the slot each claims before its SYN is what spaces them.
     #[tokio::test]
     async fn a_connect_scan_keeps_the_host_gap_between_its_connections() {
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -3816,9 +3413,8 @@ mod tests {
         assert_spaced(&addrs, gap);
     }
 
-    /// **A connect scan's connections keep the scan-wide gap across hosts**,
-    /// which no host's own gap would: the two hosts here are asked side by
-    /// side, and only the one gap between any two probes holds them apart.
+    /// A connect scan's connections keep the scan-wide gap across hosts asked
+    /// side by side.
     #[tokio::test]
     async fn a_connect_scan_keeps_the_scan_wide_gap_across_hosts() {
         let gap = Duration::from_millis(300);
@@ -3857,11 +3453,9 @@ mod tests {
         assert_spaced(&addrs, gap);
     }
 
-    /// **A scan stopped while its connections wait for their slots ends at
-    /// once**, and the ports still waiting are unasked rather than silent.
-    ///
-    /// The gap here is an hour, so only the stop can end the wait, and a port
-    /// filed `NoReply` would report a silence nobody listened for.
+    /// A scan stopped while connections wait for their slots ends at once, and the
+    /// waiting ports are unasked. The gap is an hour, so only the stop can end the
+    /// wait.
     #[tokio::test]
     async fn a_stop_ends_the_wait_for_a_slot_and_leaves_the_port_unasked() {
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -3879,8 +3473,7 @@ mod tests {
                 .map(|&addr| crate::transport::dial::dialled::to(addr))
                 .sum()
         };
-        // Stopped once the first connection has left and the others are
-        // waiting behind it, however long the scan took to start.
+        // Stop once the first connection has left and the others wait behind it.
         let stopper = ctx.handle.clone();
         let watched = addrs.clone();
         let stopped_at = tokio::spawn(async move {
@@ -3942,14 +3535,10 @@ mod tests {
         .expect("the scan runs");
     }
 
-    /// A connect the kernel refused for a hold-down on its host's neighbour,
-    /// `EHOSTDOWN` on macOS, is asked again once the hold-down is over, and
-    /// is no fault of this machine's.
-    ///
-    /// Read as this machine refusing, it left the port unasked and the report
-    /// blaming the scan, though the kernel's memory of the neighbour failing
-    /// may be another process's, and a neighbour asleep through one
-    /// resolution is awake for the next.
+    /// A connect refused for a neighbour hold-down (`EHOSTDOWN` on macOS) is asked
+    /// again once it is over, and is not reported as this machine's failure. The
+    /// failed resolution may have been another process's, and a neighbour asleep
+    /// through one may answer the next.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_connect_refused_for_a_hold_down_is_asked_again_after_it() {
@@ -3978,10 +3567,9 @@ mod tests {
         assert!(!ctx.is_unroutable(ip));
     }
 
-    /// A host the kernel holds down again once the first hold-down is over is
-    /// filed unreachable, its port unasked, and still not as this machine's
-    /// fault: the second refusal comes of a resolution begun after the first
-    /// hold-down, and is the kernel's verdict.
+    /// A host held down again after the first hold-down is filed unreachable with
+    /// its port unasked, still not as this machine's failure: the second refusal
+    /// follows a fresh resolution and is the kernel's verdict.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_connect_refused_for_a_second_hold_down_files_its_host_unreachable() {
@@ -4006,16 +3594,11 @@ mod tests {
         );
     }
 
-    /// A port found open on a host that answers on every port is not asked
-    /// what it runs unless it is one of the likeliest, where the same port on
-    /// an ordinary host is, and the report says how many went unasked.
-    ///
-    /// Identified over the connection that finds it open, a port of such a
-    /// host would each cost a conversation waited out to its end, which across
-    /// the port range is hours spent on a host whose ports mean nothing. The
-    /// host is marked for it once it has answered on enough ports, so here it
-    /// is marked before the scan asks. A port it finds closed is no port
-    /// left unidentified, though the scan decided about it before it knew.
+    /// On a host that answers on every port, an open port outside the likeliest is
+    /// not identified (on an ordinary host it is), and the report counts those.
+    /// Otherwise each would cost a full conversation, hours across the port range.
+    /// The host is marked a tarpit before the scan here. A closed port does not
+    /// count as unidentified.
     #[tokio::test]
     async fn a_tarpits_unlikely_port_is_found_open_and_not_asked_what_it_runs() {
         use crate::scanner::service::TARPIT_PORTS_IDENTIFIED;
@@ -4036,9 +3619,7 @@ mod tests {
                     host.add_network_role(NetworkRole::Tarpit);
                 }
             });
-            // And a port nothing listens on, which the scan decides about
-            // before it finds it closed, and which is no open port left
-            // unidentified.
+            // And a closed port, which must not count as unidentified.
             let closed = crate::testing::loopback::refused_port(addr.ip()).port();
             let (tx, rx) = mpsc::channel(2);
             for port in [addr.port(), closed] {
@@ -4064,8 +3645,7 @@ mod tests {
                     .collect::<Vec<_>>()
             });
             assert_eq!(open, Some(vec![addr.port()]), "tarpit: {tarpit}");
-            // Filed as fingerprinting left unfinished, as the raw path's pass
-            // files it: this strategy gave every port its verdict.
+            // Filed under the service pass, as on the raw path.
             let reported = ctx.failures_snapshot().iter().any(|failure| {
                 failure.scanner() == ScannerKind::Service
                     && failure.reason().starts_with(&format!(
@@ -4085,13 +3665,10 @@ mod tests {
         );
     }
 
-    /// **A port asked again from a pinned source port inside the closing wait
-    /// of the last connection to it is asked, or the report names the port.**
-    /// The connection just made from that port to that port keeps its
-    /// four-tuple for up to a minute after it ends, and macOS refuses the next
-    /// connect with it, as Linux does beyond loopback. Filed with the system's
-    /// "address in use" alone, the scan read as this machine failing for no
-    /// reason the caller could act on.
+    /// A port asked again from a pinned source port during the previous
+    /// connection's closing wait is either asked or the report names the pinned
+    /// port. The four-tuple lingers up to a minute after close, and macOS refuses
+    /// the next connect with it, as Linux does beyond loopback.
     #[tokio::test]
     async fn a_pinned_source_port_still_closing_is_named_as_the_reason_a_port_went_unasked() {
         use tokio::io::AsyncReadExt;
@@ -4099,7 +3676,7 @@ mod tests {
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let listener = tokio::net::TcpListener::bind((ip, 0)).await.expect("bind");
         let port = listener.local_addr().expect("bound").port();
-        // Held until the scanner closes first, so the closing wait is its.
+        // Held until the scanner closes first, so the closing wait is the scanner's.
         tokio::spawn(async move {
             while let Ok(mut stream) = accept_from_this_process(&listener).await {
                 tokio::spawn(async move {
@@ -4154,14 +3731,8 @@ mod tests {
         }
     }
 
-    /// **A pinned source port something still holds is a wait on this
-    /// machine, said in one short warning rather than as a scanner that
-    /// failed.** The ports it left unasked are still filed, since the result
-    /// is narrower for them, but nothing broke: the connection just made from
-    /// that port is closing, or another socket has it, and the remedy is to
-    /// wait or pin another. A line saying the scanner failed sends a reader
-    /// looking for a fault that is not there, and so does a report entry that
-    /// does not say it was cut short.
+    /// A held pinned source port gives one short warning and a cut-short report
+    /// entry for the unasked ports, not a scanner failure.
     #[test]
     fn a_pinned_source_port_held_is_warned_in_one_short_line_not_as_a_failure() {
         for (holder, by) in [
@@ -4196,11 +3767,8 @@ mod tests {
         }
     }
 
-    /// **Targets the process had no socket for are the file limit, said in
-    /// one short warning naming it and filed as cut short, not as a scanner
-    /// that failed.** Nothing broke: the process reached the limit it was
-    /// started under, and the remedy is to raise it. The report still counts
-    /// the targets, since they have no verdict.
+    /// Targets starved of a socket give one short warning naming the file limit
+    /// and a cut-short report entry counting them.
     #[test]
     fn descriptor_starvation_is_warned_naming_the_limit_and_filed_as_cut_short() {
         let (_session, ctx) = crate::scanner::session::ScanSession::new();
@@ -4231,8 +3799,7 @@ mod tests {
         );
     }
 
-    /// TCP targets belong to the connect scanner next door; this prober must
-    /// leave them alone rather than misreport them over the wrong protocol.
+    /// The UDP prober skips TCP targets.
     #[tokio::test]
     async fn tcp_targets_are_skipped() {
         let target = PlannedTarget::new(
@@ -4257,11 +3824,7 @@ mod tests {
     }
 
     /// The two fields a connect can carry cross over from the profile, and a
-    /// default profile stays inert so the scanner takes its plain path.
-    ///
-    /// The guard is the mapping itself: a version that dropped either field, or
-    /// reported an inert profile as active, would send the wrong packet while
-    /// every higher-level test still passed.
+    /// default profile stays inert.
     #[test]
     fn the_profile_maps_onto_what_a_connect_can_carry() {
         let profile = EvasionProfile {
@@ -4282,14 +3845,9 @@ mod tests {
         exhaust as exhaust_descriptors, in_a_process_of_its_own,
     };
 
-    /// A sweep that cannot have a socket waits for one, and finds the host
-    /// the moment the table has room, rather than passing the address over
-    /// as if it had been asked.
-    ///
-    /// The address is this machine's own, which answers every connect on
-    /// every platform, and the only thing standing between the sweep and that
-    /// answer is a full descriptor table that empties a moment after the
-    /// sweep starts.
+    /// A sweep short of sockets waits for one and finds the host once the table
+    /// has room. The address is loopback, which answers every connect; the
+    /// descriptor table empties shortly after the sweep starts.
     #[cfg(unix)]
     #[test]
     fn a_sweep_short_of_descriptors_waits_for_one_rather_than_passing_the_address_over() {
@@ -4330,14 +3888,10 @@ mod tests {
         });
     }
 
-    /// **A liveness connect that reaches its own socket finds no host.** A
-    /// connect given its target's port as its source completes a handshake
-    /// with itself on Linux, and on macOS over IPv6, and a sweep that took
-    /// the completed connect for an answer reported a host nothing proved was
-    /// there. macOS refuses the same connect over IPv4, and a sweep that read
-    /// the refusal as nothing at all left the address undecided with no reason
-    /// given. Pinned to the port it asks, every attempt meets itself, so the
-    /// address stays unsettled and the report says why.
+    /// A liveness connect that reaches its own socket finds no host. It completes
+    /// a handshake with itself on Linux and on macOS over IPv6, and macOS refuses
+    /// it over IPv4. Pinned to the port it asks, every attempt meets itself, so
+    /// the address stays unsettled and the report says why.
     #[tokio::test]
     async fn a_sweep_connect_that_reaches_itself_finds_no_host_and_says_why() {
         for ip in [
@@ -4374,12 +3928,9 @@ mod tests {
         }
     }
 
-    /// What a liveness connect says about the address rests on where its
-    /// error surfaced, as it does for a port.
-    ///
-    /// No route here is the address this machine cannot reach, filed against
-    /// it. The same code after the SYN left is a router or a filter answering
-    /// for the address, which asked it without proving a host. A refusal
+    /// A liveness knock reads an error by where it surfaced, as for a port. No
+    /// route before sending is filed against the address; the same code after the
+    /// SYN left is a router or filter answering, which proves no host. A refusal
     /// proves one.
     #[test]
     fn a_liveness_knock_reads_an_unreachable_by_where_it_surfaced() {
@@ -4411,11 +3962,7 @@ mod tests {
         ));
     }
 
-    /// An address no route leads to is filed as one, against the address, and
-    /// is not an address the sweep failed to decide.
-    ///
-    /// Filed as nothing, it was counted among the addresses without a
-    /// verdict, the report called itself partial, and nothing said why.
+    /// An address no route leads to is filed unroutable, not as a sweep failure.
     #[test]
     fn an_address_no_route_leads_to_is_filed_unroutable() {
         let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9));
@@ -4440,12 +3987,10 @@ mod tests {
         assert!(ctx.failures_snapshot().is_empty(), "nothing broke here");
     }
 
-    /// A neighbour refused a connect is named refused by a route where the
-    /// routing table refuses it, since only an override of the segment's
-    /// connected route can: an `unreachable` route refuses in the words a
-    /// missing route uses, and only where the address sits tells them apart.
-    /// An address off the segments, one the table does not refuse, and the
-    /// segment's broadcast address are unreachable and no more.
+    /// A neighbour the routing table refuses is named refused by a route, since
+    /// only an override of the connected route can refuse it. An address off the
+    /// segments, one the table does not refuse, and the broadcast address are
+    /// only unreachable.
     #[test]
     fn a_neighbour_the_routing_table_refuses_is_named_refused_by_a_route() {
         use crate::system::interface::{Link, LinkAddress};
@@ -4460,9 +4005,8 @@ mod tests {
         for ip in [address(2), address(3), address(255), routed] {
             shortfall.count(ip, &Attempt::Refused(Refusal::NoRoute));
         }
-        // Refuses the neighbour at .2, the broadcast address, and anything
-        // off the segment, as a table with an `unreachable` route over .2
-        // and no route off it does.
+        // Like a table with an `unreachable` route over .2 and no route off the
+        // segment: refuses .2, the broadcast address and anything off-segment.
         shortfall.file(
             &ctx,
             ScannerKind::Connect,
@@ -4479,14 +4023,9 @@ mod tests {
         assert_eq!(refused, [address(2)]);
     }
 
-    /// A segment's own addresses, which the kernel refuses a connection to as
-    /// it refuses one no route leads to, are settled with no host there
-    /// rather than filed unreachable, as the frame sweep's unanswered request
-    /// settles them. A neighbour refused the same way is still unreachable.
-    ///
-    /// Filed unreachable, every sweep of a whole `/24` without raw sockets
-    /// reported one address this machine cannot reach, and it was the
-    /// segment's broadcast address.
+    /// A segment's network and broadcast addresses, which the kernel refuses like
+    /// unrouted ones, are settled with no host, as the frame sweep settles them.
+    /// A neighbour refused the same way is still unreachable.
     #[test]
     fn a_segment_s_own_addresses_are_settled_rather_than_filed_unreachable() {
         use crate::system::interface::{Link, LinkAddress};
@@ -4523,12 +4062,8 @@ mod tests {
         assert!(!settled_silent.contains(&neighbour));
     }
 
-    /// A sweep that never gets a socket says so: the address is left
-    /// unsettled for a resume to ask, the send is counted as failed rather
-    /// than made, and the report names the file limit as the reason, so a
-    /// sweep that found nothing cannot be read as a network that answered
-    /// nothing. It is filed as cut short, since the remedy is to raise the
-    /// limit and there is no fault to look for.
+    /// A sweep that never gets a socket leaves the address unsettled, counts the
+    /// send as failed, and files the file limit as the reason, cut short.
     #[cfg(unix)]
     #[test]
     fn a_sweep_that_never_gets_a_socket_reports_it_rather_than_an_empty_network() {
