@@ -30,32 +30,27 @@
 //!
 //! ## An IPv4-mapped address is the IPv4 host it spells
 //!
-//! `::ffff:192.0.2.1` is how RFC 4291 §2.5.5.2 writes `192.0.2.1` inside an
-//! IPv6 address. A dual-stack socket handed it connects over IPv4, and no
-//! packet on any wire carries it. So an address, block or range written wholly
-//! inside `::ffff:0:0/96` becomes the IPv4 one it spells, the reading
-//! [`Exclusions`](crate::model::exclusion::Exclusions) gives the same spelling.
-//! Kept as IPv6 it would name a host no link holds, probed as off-link IPv6
-//! and reported apart from the same machine written the ordinary way.
+//! `::ffff:192.0.2.1` is how RFC 4291 §2.5.5.2 writes `192.0.2.1` inside an IPv6
+//! address; a dual-stack socket handed it connects over IPv4, and no packet carries it.
+//! So an address, block or range written wholly inside `::ffff:0:0/96` becomes the IPv4
+//! one it spells, as [`Exclusions`](crate::model::exclusion::Exclusions) reads it too.
+//! Kept as IPv6 it would be probed as off-link IPv6 and reported apart from the same
+//! machine written normally.
 //!
-//! A range that reaches outside the block is kept as written. `::/0` holds the
-//! block as it holds every IPv6 address, and whoever writes it means IPv6.
+//! A range reaching outside the block is kept as written: whoever writes `::/0` means
+//! IPv6.
 //!
-//! ## What it cannot do for itself
+//! ## Lookups are supplied by the caller
 //!
-//! Resolving `lan` means reading this host's interface table, and resolving
-//! `%en0` means looking up a name in it. Both arrive as caller-supplied
-//! functions ([`ResolverFn`], [`ZoneResolverFn`]) rather than being called
-//! directly, which is what keeps this module free of any knowledge of the
-//! machine it runs on. An expression needing a lookup the caller did not supply
-//! is **refused**, never silently dropped: a scan that covers less than its
-//! input said it covers is a wrong answer that looks like a right one.
+//! Resolving `lan` reads this host's interface table, and resolving `%en0` looks up a
+//! name in it. Both arrive as caller-supplied functions ([`ResolverFn`],
+//! [`ZoneResolverFn`]), so this module knows nothing about the machine. An expression
+//! needing a lookup the caller did not supply is **refused**, so a scan never silently
+//! covers less than its input said.
 //!
-//! Hostnames are not resolved here at all. That belongs to
-//! [`super::target::TargetMapBuilder`], because whether a name may be looked up
-//! is a policy question and this grammar has no business deciding it. An
-//! expression that is not any of the forms above comes back as
-//! [`IpParseError::Malformed`], which is the signal a caller uses to try a name.
+//! Hostnames are resolved by [`super::target::TargetMapBuilder`], since whether a name
+//! may be looked up is a policy question. An expression matching none of the forms
+//! above comes back as [`IpParseError::Malformed`], the signal to try it as a name.
 
 use std::net::IpAddr;
 use thiserror::Error;
@@ -65,9 +60,7 @@ use crate::model::ip::set::IpSet;
 
 /// A name standing for a set of addresses only the running host can supply.
 ///
-/// Written in place of an address, and expanded by the caller's
-/// [`ResolverFn`]. This module knows the words and nothing about what they
-/// resolve to.
+/// Written in place of an address and expanded by the caller's [`ResolverFn`].
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keyword {
@@ -79,16 +72,10 @@ pub enum Keyword {
 impl Keyword {
     /// Every keyword this build knows, in declaration order.
     ///
-    /// Here for the reason [`Protocol::ALL`](crate::model::port::Protocol::ALL)
-    /// gives, and so that [`from_token`](Self::from_token) reads the list rather
-    /// than writing it out. `as_str` is an exhaustive match, so a keyword added
-    /// to the enum stops the build until it has a spelling; nothing there
-    /// requires it to be *recognised*, and an unrecognised keyword falls through
-    /// to the address parser, comes back [`Malformed`](IpParseError::Malformed),
-    /// and is looked up in DNS.
-    ///
-    /// [`names_keyword`] reads the same function, so a scan that should have
-    /// asked for a segment sweep would not have.
+    /// [`from_token`](Self::from_token) and [`names_keyword`] read this list, so a
+    /// keyword missing from it would fall through to the address parser, come back
+    /// [`Malformed`](IpParseError::Malformed), be looked up in DNS, and never trigger a
+    /// segment sweep.
     pub const ALL: &'static [Self] = &[Self::Lan];
 
     /// The word as it is written in a target expression.
@@ -100,9 +87,7 @@ impl Keyword {
 
     /// The keyword `token` is, if it is one.
     ///
-    /// Case-insensitive, and the same test [`insert_expression`] applies, so a
-    /// caller asking whether its own input names a keyword gets the answer the
-    /// parser will act on rather than a second opinion.
+    /// Case-insensitive, and the same test [`insert_expression`] applies.
     pub fn from_token(token: &str) -> Option<Self> {
         let token = token.trim();
         Self::ALL
@@ -114,11 +99,9 @@ impl Keyword {
 
 /// Whether any of these target expressions names `keyword`.
 ///
-/// A scan of the local segment is a different scan from a scan of the addresses
-/// that segment happens to contain: it sends an all-nodes echo and reads the
-/// neighbour table, where a targeted run does neither. A caller that offers the
-/// `lan` keyword therefore has to know whether it was used, and this answers
-/// from the caller's own input rather than from anything the parser remembers.
+/// A scan of the local segment sends an all-nodes echo and reads the neighbour table,
+/// which a scan of the same addresses does not, so a caller offering `lan` needs to
+/// know whether it was used.
 ///
 /// Splits on commas the way [`to_set`] does, so `"lan,198.51.100.0/24"` counts.
 pub fn names_keyword<S: AsRef<str>>(targets: &[S], keyword: Keyword) -> bool {
@@ -136,18 +119,12 @@ pub fn names_keyword<S: AsRef<str>>(targets: &[S], keyword: Keyword) -> bool {
 pub enum IpParseError {
     /// The CIDR prefix is longer than its address family allows.
     ///
-    /// Both bounds are named because the variant carries the prefix and not the
-    /// family it was written against, and a reader told only the IPv4 rule after
-    /// mistyping an IPv6 prefix is being sent to shorten an address that was
-    /// never too long.
+    /// The message names both families' bounds, since the variant does not carry the
+    /// family.
     ///
-    /// Wider than the `u8` a prefix fits in, because what a person types is not
-    /// bounded by what a prefix is. Held in a `u8`, `/999` would be reported as
-    /// [`Malformed`](Self::Malformed) purely because the number did not fit,
-    /// and `Malformed` is the signal a caller takes as "this might be a
-    /// hostname": a mistyped prefix would go to a DNS lookup and come back as a
-    /// name that could not be resolved, which sends its author to look at their
-    /// resolver over a typo.
+    /// A `u32`, so `/999` is reported as a bad prefix. In a `u8` it would be
+    /// [`Malformed`](Self::Malformed), which a caller takes as "might be a hostname",
+    /// sending a typo to DNS.
     #[error("Invalid CIDR prefix: {0} (0-32 for IPv4, 0-128 for IPv6)")]
     InvalidPrefix(u32),
 
@@ -161,11 +138,8 @@ pub enum IpParseError {
 
     /// A keyword's resolver could not answer.
     ///
-    /// Carries the keyword, because [`Keyword`] is `#[non_exhaustive]` and meant
-    /// to grow: a variant named after the one word in the vocabulary would
-    /// report a LAN problem when a second keyword failed. The reason stays
-    /// prose, since it is the caller's resolver that knows why and there is no
-    /// set of answers this module could enumerate for it.
+    /// Carries the keyword, since [`Keyword`] may grow. The reason is prose from the
+    /// caller's resolver.
     #[error("could not resolve `{keyword}`: {reason}")]
     KeywordUnresolved {
         /// The word that could not be expanded.
@@ -190,29 +164,22 @@ pub enum IpParseError {
 
 /// Expands a [`Keyword`] into the addresses it stands for.
 ///
-/// Supplied by the caller, because answering means reading the host's interface
-/// table and this module knows nothing about the machine it runs on. Writes into
-/// the set it is given rather than returning one, so a keyword
-/// mixed with literal targets accumulates alongside them.
+/// Supplied by the caller, since answering reads the host's interface table. Writes into
+/// the set it is given, so a keyword mixed with literal targets accumulates alongside
+/// them.
 ///
-/// A borrowed `dyn Fn` rather than a bare `fn` pointer, so a resolver may close
-/// over what it needs, such as an interface table read once and reused, which a
-/// function pointer cannot. It stays `Copy`, so
-/// [`TargetContext`](super::target::TargetContext) does too.
+/// A borrowed `dyn Fn`, so a resolver may close over state such as an interface table
+/// read once; it stays `Copy`, so [`TargetContext`](super::target::TargetContext) does
+/// too.
 ///
-/// `Sync`, so that a `&` to one is `Send` and a caller resolving targets inside
-/// a spawned task can hold the context across an await. Without it the whole
-/// future is pinned to the thread that made it, which costs a single-tasked
-/// caller nothing and costs a front end serving more than one request at a time
-/// the ability to resolve at all.
+/// `Sync`, so a `&` to one is `Send` and a caller can hold the context across an await
+/// in a spawned task.
 pub type ResolverFn<'a> = &'a (dyn Fn(Keyword, &mut IpSet) -> Result<(), IpParseError> + Sync);
 
 /// Looks up an interface by name and returns its scope id.
 ///
-/// Injected for the same reason [`ResolverFn`] is: resolving a name means
-/// reading the host's interface list, and this module knows nothing about the
-/// host it runs on. `None` for a name no interface answers to. `Sync` for the
-/// reason [`ResolverFn`] is.
+/// Supplied by the caller, like [`ResolverFn`], and `Sync` for the same reason. `None`
+/// for a name no interface answers to.
 pub type ZoneResolverFn<'a> = &'a (dyn Fn(&str) -> Option<u32> + Sync);
 
 /// Resolves a list of address expressions into one [`IpSet`].
@@ -223,13 +190,11 @@ pub type ZoneResolverFn<'a> = &'a (dyn Fn(&str) -> Option<u32> + Sync);
 ///
 /// # Errors
 ///
-/// The first expression that does not parse, or [`IpParseError::EmptySet`] if
-/// nothing was named, since an empty target set is a caller mistake rather than
-/// a scan of nothing.
+/// The first expression that does not parse, or [`IpParseError::EmptySet`] if nothing
+/// was named.
 ///
-/// A caller that supplies no `zones` cannot express a link-local target at all,
-/// and gets [`IpParseError::UnknownInterface`] rather than a set that silently
-/// means a different segment.
+/// Without `zones`, a zoned link-local target fails with
+/// [`IpParseError::UnknownInterface`].
 ///
 /// # Examples
 ///
@@ -272,36 +237,27 @@ where
 /// Identifies the format of a single address expression and inserts it into an
 /// existing set.
 ///
-/// This is the grammar itself, without the list handling [`to_set`] wraps
-/// around it. A caller that has already tokenized its input, such as an
-/// importer reading a file of targets, wants exactly this: one expression,
-/// inserted into a set it is accumulating.
+/// The grammar without [`to_set`]'s list handling, for a caller that has already
+/// tokenized its input, such as an importer reading a file of targets.
 ///
-/// Nothing is inserted when the expression is refused, so a caller that collects
-/// errors and carries on is left with a set holding only what parsed.
+/// Nothing is inserted when the expression is refused.
 ///
-/// [`IpParseError::Malformed`] is the one error worth treating as a question
-/// rather than an answer: it means the expression matches no address, range or
-/// CIDR form, which is also what a hostname looks like from here. A caller that
-/// accepts hostnames uses it as the signal to try resolving one. Every other
-/// error describes an address that is wrong rather than absent.
+/// [`IpParseError::Malformed`] means the expression matches no address, range or CIDR
+/// form, which is also what a hostname looks like; a caller accepting hostnames tries
+/// resolving one. Every other error describes a wrong address.
 pub fn insert_expression(
     s: &str,
     set: &mut IpSet,
     resolver: Option<ResolverFn<'_>>,
     zones: Option<ZoneResolverFn<'_>>,
 ) -> Result<(), IpParseError> {
-    // Trimmed here rather than by `to_set` alone. This function is public and
-    // its documentation invites an importer to call it directly with a token
-    // it has already split out, and such a caller would otherwise get a
-    // grammar split in two: `Keyword::from_token` trims, so ` lan ` would
-    // resolve, and `IpAddr::from_str` does not, so ` 198.51.100.1 ` would come
-    // back malformed and be tried as a hostname.
+    // Trimmed here too, for direct callers: `Keyword::from_token` trims but
+    // `IpAddr::from_str` does not, so ` 198.51.100.1 ` would otherwise come back
+    // malformed and be tried as a hostname.
     let s = s.trim();
 
-    // The interface suffix is stripped first and applied to whatever the rest
-    // parses to, so `fe80::1%en0` and `fe80::1-fe80::5%en0` are both expressible
-    // and mean the obvious thing.
+    // The suffix applies to whatever the rest parses to, so `fe80::1%en0` and
+    // `fe80::1-fe80::5%en0` both work.
     if let Some((address, zone)) = s.split_once('%') {
         return parse_scoped(s, address, zone, set, zones);
     }
@@ -348,10 +304,8 @@ fn as_hosts(range: IpRange) -> IpRange {
 
 /// Parses a target carrying an explicit `%interface` suffix.
 ///
-/// The suffix is only meaningful on a link-local address, and only resolvable by
-/// a caller that supplied a lookup. Both failures are reported rather than
-/// papered over: an interface nobody recognizes and a zone written on an address
-/// with no use for one are each a target that does not mean what it says.
+/// The suffix is only meaningful on a link-local address, and only resolvable with a
+/// caller-supplied lookup. Both failures are reported.
 fn parse_scoped(
     original: &str,
     address: &str,
@@ -369,19 +323,14 @@ fn parse_scoped(
     let IpRange::V6(v6) = range else {
         return Err(IpParseError::ZoneOnUnscopedTarget(original.to_string()));
     };
-    // The whole range, not its first address. A zone on a range only partly
-    // link-local is meaningful for that part and meaningless for the rest, and
-    // asking about the start alone would accept `fe80::1-fec0::1` and refuse
-    // `fe00::1-fe80::5`, neither of which is what the suffix means.
+    // The whole range must be link-local; checking only the start would accept
+    // `fe80::1-fec0::1` and refuse `fe00::1-fe80::5`.
     if !v6.is_link_local() {
         return Err(IpParseError::ZoneOnUnscopedTarget(original.to_string()));
     }
 
-    // A resolver answering zero has not found an interface: zero is what a name
-    // lookup returns to say there is no such name, and a range carrying it names
-    // no segment. Refused here rather than passed on, since this is the one
-    // place that still holds the name the caller wrote and can say which one
-    // went unanswered.
+    // Zero is what a name lookup returns for no such name. Refused here, the one
+    // place that still holds the name to report.
     let lookup = zones.ok_or_else(|| IpParseError::UnknownInterface(zone.to_string()))?;
     let index = lookup(zone)
         .filter(|index| *index != 0)
@@ -396,13 +345,10 @@ fn parse_scoped(
 
 /// Parses a hyphenated range, deferring to the one range grammar.
 ///
-/// Written here as a thin wrapper rather than as a second implementation so
-/// that `198.51.100.1-50` cannot mean one thing through this module and fail to
-/// parse through [`IpRange`]'s own `from_str`.
+/// A thin wrapper, so ranges parse the same here as through [`IpRange`]'s `from_str`.
 fn parse_range(s: &str) -> Result<IpRange, IpParseError> {
     s.parse::<IpRange>().map_err(|error| match error {
-        // "not an address" rather than "a wrong address", which is what tells
-        // a caller it may be looking at a hostname.
+        // "Not an address", which tells a caller it may be a hostname.
         IpError::InvalidFormat(_) | IpError::AddrParse(_) | IpError::PrefixParse(_) => {
             IpParseError::Malformed(s.into())
         }
@@ -420,10 +366,8 @@ fn parse_cidr(s: &str) -> Result<IpRange, IpParseError> {
         .parse::<IpAddr>()
         .map_err(|_| IpParseError::Malformed(s.into()))?;
 
-    // Read as a `u32` and narrowed, so that a number too large to be a prefix is
-    // a prefix that is too large rather than a token this grammar did not
-    // recognise. The difference is the whole of what a caller does next: an
-    // unrecognised token is tried as a hostname.
+    // Read as a `u32`, so a huge number is a bad prefix, not an unrecognised
+    // token that would be tried as a hostname.
     let prefix = prefix_str
         .parse::<u32>()
         .map_err(|_| IpParseError::Malformed(s.into()))?;
@@ -435,9 +379,7 @@ fn parse_cidr(s: &str) -> Result<IpRange, IpParseError> {
 /// Restates a range error in this module's vocabulary, against the expression
 /// the caller wrote.
 ///
-/// `original` is threaded through because the remaining variants describe a token
-/// this module no longer holds, and a bare "invalid IP range" leaves whoever is
-/// reading the error with nothing to search their input for.
+/// `original` is passed in so the error quotes what the caller wrote.
 fn map_range_error(original: &str, e: IpError) -> IpParseError {
     match e {
         IpError::InvalidRange(s, e) => IpParseError::InvalidRange(s, e),
@@ -461,21 +403,12 @@ mod tests {
     use std::net::Ipv4Addr;
     use std::str::FromStr;
 
-    /// Two public entry points read written ranges: this module's, and
-    /// [`IpSet`]'s string constructors by way of [`IpRange::from_str`]. They are
-    /// the same grammar, and a spelling either accepts the other has to accept
-    /// too, or a target file works through one API and silently fails through
-    /// the other.
+    /// This module and [`IpSet`]'s string constructors (via [`IpRange::from_str`]) are
+    /// one grammar and accept the same spellings.
     ///
-    /// They differ in one reading, on purpose: this module reads an address in
-    /// the IPv4-mapped block as the host it names, where an [`IpSet`] holds the
-    /// value it was given, as a set of values should. See
+    /// They differ in one reading: this module reads an IPv4-mapped address as the
+    /// host it names, where an [`IpSet`] keeps the value it was given. See
     /// `a_mapped_address_is_read_as_the_ipv4_host_it_spells`.
-    ///
-    /// Compares the sets rather than their sizes. Two ranges of equal length are
-    /// equal lengths and nothing more, and the divergence this exists to catch
-    /// is one entry point reading a spelling the other refuses outright, which
-    /// a size comparison would see only as a panic on the unwrap.
     #[test]
     fn both_ways_into_the_parser_accept_the_same_spellings() {
         for expression in [
@@ -485,7 +418,7 @@ mod tests {
             "192.0.2.0/24",
             "2001:db8::1-2001:db8::5",
             "8.8.8.8",
-            // Spellings a second grammar would most easily read differently.
+            // Spellings most easily read differently.
             "198.51.100.0-0",
             "  198.51.100.1  ",
         ] {
@@ -504,10 +437,7 @@ mod tests {
     /// An address written the IPv4-mapped way is read as the IPv4 host it
     /// spells, in every form the grammar has.
     ///
-    /// Kept as IPv6 it names no machine a packet can reach: a frame for it goes
-    /// to the router as off-link IPv6, and the host behind it, reached by a
-    /// dual-stack socket as the IPv4 address it is, is reported as no reply, and
-    /// reported apart from the same machine written the ordinary way.
+    /// Kept as IPv6, a frame for it would go to the router as off-link IPv6.
     #[test]
     fn a_mapped_address_is_read_as_the_ipv4_host_it_spells() {
         for (mapped, plain) in [
@@ -525,10 +455,7 @@ mod tests {
         }
     }
 
-    /// A range reaching outside the mapped block is kept as written, IPv6 and
-    /// all. `::/0` holds the block as it holds every IPv6 address, and whoever
-    /// writes it means IPv6; read as the IPv4 it contains it would be a scan of
-    /// every address there is.
+    /// A range reaching outside the mapped block, such as `::/0`, is kept as written.
     #[test]
     fn a_range_that_only_overlaps_the_mapped_block_is_kept_as_written() {
         for written in ["::/0", "::fffe:ffff:ffff-::ffff:0:5"] {
@@ -538,8 +465,7 @@ mod tests {
         }
     }
 
-    /// The simplest expression there is, and the one every other form reduces
-    /// to.
+    /// A single address.
     #[test]
     fn a_single_literal_address_becomes_a_set_of_one() {
         let input = vec!["192.0.2.1"];
@@ -548,8 +474,7 @@ mod tests {
         assert!(set.contains(&IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))));
     }
 
-    /// One argument may itself be a list, so a command line and a whole target
-    /// file reach the same code.
+    /// One argument may itself be a comma-separated list.
     #[test]
     fn one_argument_may_name_several_addresses() {
         let input = vec!["198.51.100.1, 198.51.100.2, 198.51.100.5"];
@@ -558,8 +483,7 @@ mod tests {
         assert!(set.contains(&IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))));
     }
 
-    /// A block is expanded to what it covers rather than to what was written,
-    /// which is the difference a budget check depends on.
+    /// A block counts every address it covers.
     #[test]
     fn a_cidr_block_covers_every_address_in_it() {
         let input = vec!["203.0.113.0/24"];
@@ -567,8 +491,7 @@ mod tests {
         assert_eq!(set.len(), 256);
     }
 
-    /// The shorthand crosses an octet boundary, which is where writing it out
-    /// by hand goes wrong: `.250-2.10` is seventeen addresses, not eight.
+    /// The shorthand crosses an octet boundary: `.250-2.10` is seventeen addresses.
     #[test]
     fn a_shortened_range_end_continues_the_starts_octets() {
         let input = vec!["192.168.1.250-2.10"];
@@ -576,8 +499,7 @@ mod tests {
         assert_eq!(set.len(), 17);
     }
 
-    /// A prefix too long for its family is refused rather than clamped, since
-    /// a clamped `/33` silently scans the whole `/32` it was not asked about.
+    /// A prefix too long for its family is refused, not clamped.
     #[test]
     fn a_prefix_longer_than_its_family_allows_is_refused() {
         let input = vec!["192.0.2.1/33"];
@@ -585,34 +507,22 @@ mod tests {
         assert_eq!(result.unwrap_err(), IpParseError::InvalidPrefix(33));
     }
 
-    /// A prefix too large to be a prefix at all is still a prefix.
-    ///
-    /// `/999` does not fit a `u8`, and a parse failing on the width would read
-    /// as [`Malformed`](IpParseError::Malformed), which is the one error a
-    /// caller treats as "this might be a hostname". A mistyped prefix would go
-    /// to a DNS lookup and come back reported as a name nothing could resolve,
-    /// which is the wrong thing to hand somebody who typed one digit too many.
-    ///
-    /// `/33` and `/999` are the same mistake made twice as far as a person is
-    /// concerned, so the two say the same thing.
+    /// `/999` is reported as an invalid prefix, like `/33`, not as
+    /// [`Malformed`](IpParseError::Malformed), which would send it to DNS.
     #[test]
     fn a_prefix_too_large_for_a_u8_is_still_a_prefix() {
         let too_large = to_set(&["198.51.100.0/999"], None, None).unwrap_err();
         assert_eq!(too_large, IpParseError::InvalidPrefix(999));
         assert!(too_large.to_string().contains("0-32"), "{too_large}");
 
-        // Text that is not a number at all stays malformed, which is what lets
-        // a hostname reach the lookup that resolves it.
+        // Text that is not a number stays malformed, so a hostname reaches DNS.
         assert!(matches!(
             to_set(&["198.51.100.0/wide"], None, None),
             Err(IpParseError::Malformed(_))
         ));
     }
 
-    /// The error carries the prefix and not the family it was written against,
-    /// so its message has to name both bounds. Told only the IPv4 rule, whoever
-    /// mistyped an IPv6 prefix is sent to shorten an address that was never too
-    /// long.
+    /// The message names both families' bounds.
     #[test]
     fn a_prefix_error_names_the_bound_for_both_families() {
         let v6 = to_set(&["2001:db8::/129"], None, None).unwrap_err();
@@ -623,8 +533,7 @@ mod tests {
         assert!(v4.to_string().contains("0-32"), "{v4}");
     }
 
-    /// A backwards range is a typo, and reporting it is what stops it being
-    /// read as an empty set that scans nothing.
+    /// A backwards range is reported, not read as an empty set.
     #[test]
     fn a_range_written_backwards_is_refused() {
         let input = vec!["198.51.100.10-1"];
@@ -634,8 +543,8 @@ mod tests {
 
     /// The interface a link-local target names survives into the target set.
     ///
-    /// Without it the address is a question with no answer: every interface
-    /// holds an `fe80::/64`, so the scan picks one and probes the wrong segment.
+    /// Every interface holds an `fe80::/64`, so without it the scan could probe the
+    /// wrong segment.
     #[test]
     fn a_link_local_target_keeps_the_interface_it_names() {
         fn zones(name: &str) -> Option<u32> {
@@ -649,8 +558,8 @@ mod tests {
         assert!(!set.v6()[0].is_ambiguous());
     }
 
-    /// The same address without an interface is accepted but marked as the
-    /// unanswerable question it is, for the classifier to report.
+    /// The same address without an interface is accepted but marked ambiguous, for the
+    /// classifier to report.
     #[test]
     fn a_link_local_target_without_an_interface_is_ambiguous() {
         let set = to_set(&["fe80::aa"], None, None).expect("parses");
@@ -658,16 +567,10 @@ mod tests {
         assert!(set.v6()[0].is_ambiguous());
     }
 
-    /// A resolver answering zero has not answered.
-    ///
-    /// Zero is what a name lookup returns to say there is no such interface, so
-    /// a resolver that passes it on is reporting a failure as a success. Taken
-    /// at face value it built a range that reads as scoped, which stops
-    /// `is_ambiguous` reporting the problem, and a scan then sent probes at
-    /// `fe80::` on whichever link the kernel picked.
-    ///
-    /// Refused here rather than downstream, because this is the last place that
-    /// still holds the name the target was written with.
+    /// A resolver answering zero has not answered: zero means no such interface. Taken
+    /// at face value it would build a range that reads as scoped, hiding the problem
+    /// from `is_ambiguous`, and probes would go out on whichever link the kernel
+    /// picked.
     #[test]
     fn a_resolver_that_answers_zero_has_not_found_an_interface() {
         fn zones(_: &str) -> Option<u32> {
@@ -680,15 +583,8 @@ mod tests {
         ));
     }
 
-    /// One grammar, whatever whitespace the caller left on the token.
-    ///
-    /// [`insert_expression`] is public and its documentation invites an importer
-    /// reading a file to call it with a token it has already split out. Were
-    /// `to_set` the only thing trimming, such a caller would meet a grammar
-    /// split in two: `Keyword::from_token` trims of its own accord so ` lan `
-    /// would resolve, and `IpAddr::from_str` does not, so ` 198.51.100.1 `
-    /// would come back malformed and then be tried as a hostname by the builder
-    /// above it.
+    /// [`insert_expression`] trims the token itself, so keywords and addresses behave
+    /// alike whatever whitespace a direct caller leaves.
     #[test]
     fn an_untrimmed_token_reads_the_same_as_a_trimmed_one() {
         let mut set = IpSet::new();
@@ -711,8 +607,7 @@ mod tests {
         );
     }
 
-    /// An interface nobody recognizes is a target that does not mean what it
-    /// says, and is refused rather than silently stripped of its scope.
+    /// An unknown interface is refused, not silently stripped.
     #[test]
     fn an_unknown_interface_is_refused() {
         fn zones(_: &str) -> Option<u32> {
@@ -749,8 +644,7 @@ mod tests {
         ));
     }
 
-    /// Nothing to scan is a caller mistake rather than a scan of nothing: a
-    /// silent empty set looks exactly like a completed scan that found no
+    /// Nothing to scan is an error: an empty set would look like a scan that found no
     /// hosts.
     #[test]
     fn input_naming_no_addresses_is_an_error() {

@@ -19,28 +19,22 @@
 //!
 //! # Usable on its own
 //!
-//! This module depends on nothing else in the crate. Targets parse, address sets
-//! do arithmetic, and hosts and ports hold their values without a scan starting
-//! or anything that would start one being linked.
+//! This module depends on nothing else in the crate. Targets parse, address sets do
+//! arithmetic, and hosts and ports hold their values without linking anything that
+//! scans.
 //!
-//! Two consequences are worth knowing about.
+//! Expanding a keyword like `lan`, looking up an interface by name, and resolving a
+//! hostname all read the machine the process runs on, so each arrives as a
+//! caller-supplied function. An expression that needs a lookup the caller did not
+//! provide is refused.
 //!
-//! Nothing here resolves anything for itself. Expanding a keyword like `lan`,
-//! looking up an interface by name, and resolving a hostname all mean reading
-//! the machine the process runs on, so each arrives as a caller-supplied
-//! function. An expression that needs a lookup the caller did not provide is
-//! refused rather than guessed at.
+//! These functions return values and never log.
 //!
-//! Nothing here writes output. These functions return values and never log,
-//! because only the caller knows what it asked for and at what verbosity it
-//! wants to hear about it.
+//! # Serialization
 //!
-//! # Not the wire format
-//!
-//! None of these types are serializable. The document a scan produces is a
-//! separate contract, written by hand in
-//! [`export::schema`](crate::export::schema), so that a field moving here stays
-//! a private matter instead of breaking somebody's parser.
+//! None of these types are serializable. The document a scan produces is a separate
+//! contract, written by hand in [`export::schema`](crate::export::schema), so fields
+//! here can move without breaking anyone's parser.
 
 pub mod capture;
 pub mod confidence;
@@ -77,10 +71,9 @@ mod tests {
 
     /// Holds one vocabulary's `ALL` to the order its enum declares.
     ///
-    /// A fieldless enum's variant casts to its own declaration index, so an
-    /// entry sitting anywhere else is out of order, a repeat, or standing where
-    /// a variant that belongs earlier is missing. `index_of` is that cast,
-    /// passed in because it needs the concrete type.
+    /// A fieldless enum's variant casts to its declaration index, so an entry anywhere
+    /// else is out of order, a repeat, or a sign of a missing variant. `index_of` is
+    /// that cast, passed in because it needs the concrete type.
     fn holds_declaration_order<T: std::fmt::Debug>(
         vocabulary: &str,
         all: &[T],
@@ -99,10 +92,8 @@ mod tests {
     /// Where `value` sits in [`StatusProtocol::ALL`], or `None` for the variant
     /// that is not in it.
     ///
-    /// `StatusProtocol` carries a name in one variant, so it cannot cast to its
-    /// own index the way the fieldless vocabularies do and this match stands in
-    /// for the cast. Being exhaustive, it is also where adding a variant becomes
-    /// a compile error beside the list it has to join.
+    /// `StatusProtocol` carries a name in one variant, so it cannot be cast to its
+    /// index. The match is exhaustive, so a new variant fails to compile here.
     fn status_protocol_index(value: &StatusProtocol) -> Option<usize> {
         match value {
             StatusProtocol::Arp => Some(0),
@@ -116,28 +107,21 @@ mod tests {
             StatusProtocol::Dhcp => Some(8),
             StatusProtocol::Udp => Some(9),
             StatusProtocol::Sctp => Some(10),
-            // Named by a strategy rather than by this enum, so there is no fixed
-            // place for it and no list it belongs in.
+            // Named by a strategy, so it has no fixed place.
             StatusProtocol::Custom(_) => None,
         }
     }
 
     /// Every `ALL` in this module, held to its enum's own order.
     ///
-    /// The lists are the module's enumeration contract. The exported schema's
-    /// enums are built from them, the wire round trip iterates them, a `FromStr`'s
-    /// error message is composed from one, and a report's role line is ordered by
-    /// another. Nothing checked any of them, and [`PortState::ALL`] transposed two
-    /// pairs while its documentation said declaration order.
+    /// The lists are the module's enumeration contract: the exported schema's enums
+    /// are built from them, the wire round trip iterates them, a `FromStr` error
+    /// message is composed from one, and a report's role line is ordered by another.
     ///
-    /// What this does not catch is a variant appended to an enum and not to its
-    /// `ALL`, since a list that is right as far as it goes looks complete from
-    /// here. Catching that needs the variant count, which no stable Rust reads
-    /// without a derive macro. What stands in for it is that every vocabulary here
-    /// is spelled for the wire in [`record::wire`](crate::record::wire) by an
-    /// exhaustive `match`, so a new variant cannot compile without its author
-    /// being taken to a function whose round trip is driven by the `ALL` they have
-    /// to update.
+    /// A variant appended to an enum but not its `ALL` is not caught here, since stable
+    /// Rust cannot read a variant count without a derive macro. Instead, every
+    /// vocabulary is spelled for the wire in [`record::wire`](crate::record::wire) by
+    /// an exhaustive `match`, whose round trip is driven by the `ALL`.
     ///
     /// A vocabulary added to this module belongs below.
     #[test]

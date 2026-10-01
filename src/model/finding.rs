@@ -8,43 +8,32 @@
 
 //! # What is wrong with what is running
 //!
-//! [`Evidence`](crate::fingerprint::Evidence) says what is running on a port and
-//! a [`Finding`] says what is wrong with it. It is the model's second vocabulary,
-//! the typed result a detection produces, whether that detection is a signature,
-//! a declarative flow, a sandboxed module or the built-in CVE correlator, so all
-//! of them compose without knowing about one another.
+//! [`Evidence`](crate::fingerprint::Evidence) says what is running on a port and a
+//! [`Finding`] says what is wrong with it. Every kind of detection (a signature, a
+//! declarative flow, a sandboxed module, the built-in CVE correlator) produces this one
+//! type, so they compose without knowing about one another.
 //!
 //! A finding is a **positive claim, backed by evidence, about a subject the scan
-//! already holds**: a vulnerable service on a port, a weakness inferred across a
-//! host. It is carried by the thing it is about, so a [`Host`](crate::model::host)
-//! and a [`Port`](crate::model::port) each hold their own findings the way they
-//! already hold network roles and filtering conclusions. A finding that is not
-//! present is never a claim that the subject is clean; it is a detection that did
-//! not run, or ran and did not fire.
+//! already holds**: a vulnerable service on a port, a weakness inferred across a host.
+//! The [`Host`](crate::model::host) or [`Port`](crate::model::port) it is about carries
+//! it. An absent finding is not a claim that the subject is clean: the detection did not
+//! run, or ran and did not fire.
 //!
-//! ## Two axes, not one
+//! ## Two axes
 //!
-//! Every finding carries two independent judgements, and keeping them apart is
-//! the whole reason a typed finding beats a printed string:
+//! - [`Severity`]: how bad it is if true.
+//! - [`Confidence`]: how sure it is true, the same trust vocabulary fingerprinting uses.
 //!
-//! - [`Severity`], how bad it is if true.
-//! - [`Confidence`], how sure it is true, reused verbatim from the fingerprinting
-//!   model so one trust vocabulary covers the whole engine.
+//! A single "risk" number cannot say *Critical but unverified*, which is the common
+//! case: a distribution backports a security fix without moving the version string, so
+//! a version-matched CVE is severe and uncertain at once.
 //!
-//! A single "risk" number cannot say *Critical but unverified*, and that is
-//! precisely the common case: a distribution backports a security fix without
-//! moving the version string, so a version-matched CVE is genuinely severe and
-//! genuinely unsure at once. The two axes say both; a fused one lies about one.
+//! ## Provenance
 //!
-//! ## Provenance is a first-class field
-//!
-//! A finding always names the [`DetectionId`] that produced it: an id, a
-//! [`Version`], and the content hash of the detection body. The report records
-//! that stamp, so a finding is reproducible and auditable long after the scan,
-//! naming which detection and which version and which bytes. This is the field
-//! an
-//! unstructured script blob never has, and it is what lets a detection be
-//! accepted from a stranger and still answer for itself.
+//! A finding always names the [`DetectionId`] that produced it: an id, a [`Version`],
+//! and the content hash of the detection body. The report records that stamp, so a
+//! finding stays reproducible and auditable after the scan, and a detection from a
+//! stranger can still answer for itself.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -57,44 +46,30 @@ use crate::model::port::Build;
 
 /// The most justifying text a finding retains, in bytes.
 ///
-/// The excerpt is target-controlled, being bytes a scanned host chose to send,
-/// and it travels into every export and every journal. Three things break without
-/// a bound: a multi-megabyte banner becomes a denial-of-service on the
-/// report; a journal that must let two runs write byte-identical files cannot
-/// carry an unbounded string and stay comparable with itself; and the full
-/// bytes already live in the journal's recorded exchange, of which this is only
-/// the excerpt. Two kilobytes is past anything a person reads to see why a
-/// finding fired and short of where the string stops being an excerpt.
+/// The excerpt is target-controlled and travels into every export and journal, so it is
+/// bounded: a multi-megabyte banner would be a denial of service on the report. The full
+/// bytes live in the journal's recorded exchange. Two kilobytes is more than a person
+/// reads to see why a finding fired.
 pub const MAX_EXCERPT_BYTES: usize = 2048;
 
 /// The most distinct findings one subject, meaning a single host or a single
 /// port, retains.
 ///
-/// Findings deduplicate by claim, so this bounds distinct claims rather than
-/// repetitions: a detection that fires the same claim a thousand times still
-/// occupies one slot. What it guards is the other direction: a flooding detection,
-/// or a correlation against a service with a vast CVE history, making one subject
-/// allocate without limit. Past the finding count of any real
-/// subject and short of where the map becomes a denial-of-service on the report
-/// it feeds.
+/// Findings deduplicate by claim, so a claim fired a thousand times occupies one slot.
+/// This bounds a flooding detection, or a correlation against a service with a vast CVE
+/// history. Above the finding count of any real subject.
 pub const MAX_FINDINGS_PER_SUBJECT: usize = 256;
 
 /// How bad a [`Finding`] is if it is true.
 ///
-/// Ordered weakest-to-strongest, so a set of findings ranks by an ordinary
-/// comparison and the worst rises to the top of a report. This is the impact
-/// axis and is independent of [`Confidence`], the certainty axis: a finding can
-/// be [`Critical`](Self::Critical) and only
-/// [`Probable`](Confidence::Probable), and a report that fuses the two into one
-/// number can no longer say so.
-///
-/// The enum is `#[non_exhaustive]` so that adding a level costs a recompile
-/// rather than a major version; [`ALL`](Self::ALL) is the list to iterate.
+/// Ordered weakest to strongest, so findings rank by ordinary comparison. Independent of
+/// [`Confidence`]: a finding can be [`Critical`](Self::Critical) and only
+/// [`Probable`](Confidence::Probable). [`ALL`](Self::ALL) is the list to iterate.
 #[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub enum Severity {
-    /// Not a weakness but a fact worth surfacing: an unencrypted service that is
-    /// meant to be unencrypted, a version banner, a reachable management port.
+    /// A fact worth surfacing: an unencrypted service meant to be unencrypted, a
+    /// version banner, a reachable management port.
     Info,
     /// A weakness of little consequence on its own: information disclosure a
     /// determined attacker gains anyway, a hardening step left undone.
@@ -113,11 +88,8 @@ pub enum Severity {
 impl Severity {
     /// The human label, capitalised for a report a person reads.
     ///
-    /// Kept separate from the wire name (which lives in
-    /// [`record::wire`](crate::record::wire)) for the reason every model enum
-    /// keeps them apart: the label may be reworded whenever it reads better, and
-    /// the wire name may never change without breaking every file already
-    /// written.
+    /// Separate from the wire name in [`record::wire`](crate::record::wire): the label
+    /// may be reworded, the wire name may not.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Info => "Info",
@@ -142,8 +114,7 @@ impl Severity {
         }
     }
 
-    /// Every severity, weakest-first, for a caller that iterates rather than
-    /// writing the list out.
+    /// Every severity, weakest first.
     pub const ALL: &'static [Self] = &[
         Self::Info,
         Self::Low,
@@ -155,16 +126,12 @@ impl Severity {
 
 /// The intrusiveness a detection ran under, recorded on the finding it produced.
 ///
-/// Not part of what the finding claims, since the same weakness reached passively
-/// and then confirmed by an exploit is one finding corroborated rather than two.
-/// It is a fact about how the finding was learned, so a report can say whether it
-/// was drawn by observation or by an exploit that fired. The class a detection
-/// declares is
-/// exactly the set of capabilities the operator's envelope will serve it, which
-/// is what makes it an enforced boundary rather than a self-assigned label:
-/// [`Passive`](Self::Passive) is served no way to touch the network at all.
+/// How the finding was learned, not part of its claim: a weakness seen passively and
+/// then confirmed by an exploit is one finding. The class a detection declares is
+/// exactly the set of capabilities the operator's envelope serves it, so it is
+/// enforced: [`Passive`](Self::Passive) is given no way to touch the network.
 ///
-/// Ordered least-to-most intrusive, so a policy can compare against a ceiling.
+/// Ordered least to most intrusive, so a policy can compare against a ceiling.
 #[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub enum DetectionClass {
@@ -185,13 +152,10 @@ pub enum DetectionClass {
 impl DetectionClass {
     /// How a class is written for a person to read.
     ///
-    /// Lowercase, by the rule
-    /// [`NetworkRole::label`](crate::model::host::NetworkRole::label) writes
-    /// down: an acronym is capitals and a word is not, so `exploit` is an
-    /// ordinary noun and `DoS` is a name in initials. [`Severity::label`] beside
-    /// it is Title Case, which is its own deliberate choice, so a report showing
-    /// both axes shows `Critical` and `active-benign`. Two conventions, one per
-    /// axis, and neither is a slip.
+    /// Lowercase except acronyms, by the rule
+    /// [`NetworkRole::label`](crate::model::host::NetworkRole::label) describes: so
+    /// `exploit` and `DoS`. [`Severity::label`] is Title Case, so a report showing both
+    /// axes shows `Critical` and `active-benign`.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Passive => "passive",
@@ -212,27 +176,20 @@ impl DetectionClass {
     ];
 }
 
-/// A detection's version: a provenance stamp that has to be ordered, rather than
-/// a package resolver's input.
+/// A detection's version, ordered so two accounts of one claim can reconcile in a merge
+/// ("the newer detection's verdict wins").
 ///
-/// "The newer detection's verdict wins" (which is how two accounts of one claim
-/// reconcile in a merge) needs a comparison, so this is a real type rather than a
-/// string. It is the common `major.minor.patch` subset of semver and nothing
-/// more, with no pre-release grammar and no build metadata, since a detection
-/// version answers only which of two is newer. Hand-rolled so no version-parsing
-/// dependency enters the model.
-///
-/// The `Ord` derive compares `major`, then `minor`, then `patch`, in field order,
-/// which is exactly the intended precedence.
+/// The `major.minor.patch` subset of semver, with no pre-release or build metadata,
+/// since it only has to say which of two is newer. `Ord` compares `major`, then
+/// `minor`, then `patch`.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Version {
-    /// The leading component, and the one that settles a comparison whenever
-    /// two versions differ in it.
+    /// The leading component.
     pub major: u16,
     /// Breaks a tie on `major`.
     pub minor: u16,
-    /// The last word, reached only where `major` and `minor` both agree.
+    /// Breaks a tie on `major` and `minor`.
     pub patch: u16,
 }
 
@@ -261,15 +218,9 @@ impl FromStr for Version {
 
     /// Reads `"major.minor.patch"`.
     ///
-    /// Strict on purpose: exactly three dot-separated unsigned integers, each in
-    /// range. A version that will not parse is not guessed at, and a caller
-    /// reading one from a file substitutes the earliest, least-trusted value
-    /// rather than inventing a middle one, which `unwrap_or` says in one line.
-    ///
-    /// A [`FromStr`] rather than an inherent `parse`, because every other type
-    /// in the model that reads itself from text is one, and an inherent method
-    /// of that name invites a reader to expect `"1.2.3".parse::<Version>()` to
-    /// work.
+    /// Strict: exactly three dot-separated unsigned integers, each in range. A caller
+    /// reading one from a file substitutes the earliest, least-trusted value on
+    /// failure.
     fn from_str(text: &str) -> Result<Self, Self::Err> {
         let fail = || VersionParseError {
             input: text.to_string(),
@@ -296,27 +247,22 @@ impl fmt::Display for Version {
 
 /// An external reference a finding points at.
 ///
-/// The kind is typed because that is what a consumer switches on, whether an NVD
-/// entry for a CVE, a MITRE definition for a CWE, or a bare link otherwise, and
-/// typing it costs nothing and buys the export, sorting and deduplication
-/// behaviour. The
-/// payloads differ by kind: a CVE is an opaque identifier this vocabulary never
-/// computes over, a CWE *is* a number (its canonical MITRE URL is built from it),
-/// and a URL is arbitrary and untrusted.
+/// Typed by kind, which is what a consumer switches on: an NVD entry for a CVE, a MITRE
+/// definition for a CWE, or a bare link. A CVE is an opaque identifier, a CWE is a
+/// number (its MITRE URL is built from it), and a URL is arbitrary and untrusted.
 ///
-/// `Ord` because a claim key needs the lowest CVE a finding carries, which has to
-/// be the same one on every run; see [`Finding::claim_id`].
+/// `Ord` because a claim key needs the lowest CVE a finding carries; see
+/// [`Finding::claim_id`].
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Reference {
     /// A CVE identifier, e.g. `CVE-2021-44228`. Validated for shape at
     /// construction, never parsed into fields.
     Cve(String),
-    /// A CWE weakness number, e.g. `79` for `CWE-79`. The bare number, because
-    /// the identifier is a number and its link is built from it.
+    /// A CWE weakness number, e.g. `79` for `CWE-79`.
     Cwe(u32),
-    /// Any other reference, such as an advisory or a vendor bulletin. Untrusted,
-    /// and rendered as inert escaped text on export rather than as a live link.
+    /// Any other reference, such as an advisory or a vendor bulletin. Untrusted, and
+    /// exported as inert escaped text, not a live link.
     Url(String),
 }
 
@@ -342,8 +288,7 @@ impl Reference {
 
 /// Whether `id` reads as `CVE-<4 digits>-<1+ digits>`.
 ///
-/// A hand-rolled shape check rather than a regex, because the model has no
-/// business pulling a regex engine in to recognise one fixed prefix.
+/// A hand-rolled shape check, so the model needs no regex engine.
 fn is_cve_shaped(id: &str) -> bool {
     let Some(rest) = id.strip_prefix("CVE-") else {
         return false;
@@ -360,20 +305,13 @@ fn is_cve_shaped(id: &str) -> bool {
 /// What a finding is one of, where several detections cover one weakness
 /// between them.
 ///
-/// Four detections read an SSH server's KEXINIT and each says a different thing
-/// is wrong with it: a cipher, a host key, a key exchange, a MAC. They are four
-/// findings and stay four findings, because each is separately true and
-/// separately fixed. They are also one sentence to a person reading a scan, and
-/// a presentation with one line to spend on them has no way to say so unless the
-/// detections say it themselves.
+/// Four detections reading an SSH server's KEXINIT may each flag something different: a
+/// cipher, a host key, a key exchange, a MAC. They stay four findings, each separately
+/// true and separately fixed, but to a reader they are one sentence. A detection may
+/// declare its group and how the group reads as a whole; what a front end does with
+/// that is up to it, and nothing merges.
 ///
-/// So a detection may declare which group it belongs to and how the group reads
-/// when it is spoken of as a whole. Nothing here decides what a front end does
-/// with that, and nothing merges: the group is what the detections agree on, and
-/// what agreement is worth is the reader's end of the question.
-///
-/// Both halves are author-chosen and untrusted, as the detection's own id and
-/// title are.
+/// Both halves are author-chosen and untrusted, like the detection's id and title.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FindingGroup {
     id: String,
@@ -384,10 +322,8 @@ impl FindingGroup {
     /// A group from its identity and how it reads, or
     /// [`FindingError::EmptyGroup`] if either is blank.
     ///
-    /// The summary is a plural noun phrase a count can lead: `weak SSH
-    /// algorithms offered`, so that four of them read as *4 weak SSH algorithms
-    /// offered*. It is not checked against that, which no check could be, and a
-    /// detection that writes a sentence here gets a front end that prints one.
+    /// The summary is a plural noun phrase a count can lead: `weak SSH algorithms
+    /// offered`, so four read as *4 weak SSH algorithms offered*. This is not checked.
     pub fn new(id: impl Into<String>, summary: impl Into<String>) -> Result<Self, FindingError> {
         let id = id.into();
         let summary = summary.into();
@@ -412,11 +348,10 @@ impl FindingGroup {
 
 /// The bytes that made a detection fire, bounded and safe to carry everywhere.
 ///
-/// A newtype rather than a bare `String`, so the [`MAX_EXCERPT_BYTES`] bound is
-/// enforced at [`Excerpt::new`], the one place a value is made, and cannot be
-/// bypassed by a rebuild from a file or a value handed back from a sandboxed
-/// module. Over-length input is truncated rather than rejected, since dropping a
-/// real finding because its evidence ran long would be the wrong failure.
+/// A newtype, so the [`MAX_EXCERPT_BYTES`] bound is enforced at [`Excerpt::new`] and
+/// cannot be bypassed by a rebuild from a file or a value from a sandboxed module.
+/// Over-length input is truncated, so a real finding is never dropped for long
+/// evidence.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct Excerpt(String);
 
@@ -448,25 +383,16 @@ impl Excerpt {
 
 /// Which detection produced a [`Finding`], to which version, from which bytes.
 ///
-/// The provenance stamp the report records so a finding can be reproduced and
-/// audited: an author-chosen `id`, a [`Version`] that can be ordered, and the
-/// content hash of the detection body. The hash is carried as an opaque string,
-/// computed by the detection subsystem rather than by the model, the way a
-/// certificate fingerprint is carried as a string rather than a typed digest.
+/// The provenance stamp the report records: an author-chosen `id`, an ordered
+/// [`Version`], and the content hash of the detection body. The hash is an opaque
+/// string computed by the detection subsystem.
 ///
-/// The `id` is **untrusted input**: an author chose it, and it reaches exported
-/// reports, so a consumer escapes it exactly as it escapes a scanned host's own
-/// banner. The reservation of the `zond:` prefix for the engine's own built-in
-/// detections is enforced where detections are authored, by `build.rs` for the
-/// ones this project ships and by
-/// [`detect::flow::validate`](crate::detect::flow) for the ones an operator
-/// writes, rather than here, since the built-in correlator's own id lives in that
-/// namespace.
-///
-/// It is not enforced on a report read back either, and that is not a gap in the
-/// reservation so much as a fact about the document: everything in an imported
-/// report is the document's claim, the host list included. Checking one prefix
-/// there would suggest the rest had been verified.
+/// The `id` is **untrusted input** that reaches exported reports, so escape it like a
+/// scanned host's banner. The `zond:` prefix is reserved for built-in detections,
+/// enforced where detections are authored: by `build.rs` for those this project ships
+/// and by [`detect::flow::validate`](crate::detect::flow) for an operator's. It is not
+/// enforced here, since the built-in correlator's id lives in that namespace, nor on a
+/// report read back, where everything is the document's own claim.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DetectionId {
     id: String,
@@ -477,9 +403,8 @@ pub struct DetectionId {
 impl DetectionId {
     /// A detection identity, or [`FindingError::EmptyId`] if `id` is blank.
     ///
-    /// The content hash is opaque and may be empty (a detection under development
-    /// need not have one yet); the id may not, because a finding that cannot say
-    /// what produced it is the unstructured blob this whole vocabulary replaces.
+    /// The content hash is opaque and may be empty (a detection under development need
+    /// not have one); the id may not.
     pub fn new(
         id: impl Into<String>,
         version: Version,
@@ -516,18 +441,13 @@ impl DetectionId {
 /// Which of a finding's vulnerabilities are known to be exploited in the wild,
 /// and whose list says so.
 ///
-/// Beside the verdict rather than part of it. That somebody is exploiting a
-/// vulnerability says nothing about whether this host has it, which the
-/// [`Confidence`] answers, nor about how bad it is if it does, which the
-/// [`Severity`] answers. It says which of the claims a host does carry are
-/// already being used against someone, which is the order a reader works
-/// through them in. So it raises neither axis, and a front end marks and
-/// orders by it.
+/// Separate from the verdict: exploitation in the wild says nothing about whether this
+/// host is affected ([`Confidence`]) or how bad it would be ([`Severity`]). It tells a
+/// reader which claims to work through first, so it raises neither axis; a front end
+/// marks and orders by it.
 ///
-/// Stamped with the list that said so, for the reason a finding is stamped
-/// with its detection: the list is somebody else's data on somebody else's
-/// schedule, CISA's by default, and a report has to say which copy of it
-/// marked what.
+/// Stamped with the list that said so (CISA's by default), since that is someone
+/// else's data on someone else's schedule.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Exploitation {
     by: DetectionId,
@@ -539,9 +459,8 @@ impl Exploitation {
     /// order given and without repeats, or [`FindingError::NoExploitedCve`]
     /// where none of them is one.
     ///
-    /// Anything not shaped like a CVE identifier is left out, as
-    /// [`Reference::cve`] leaves it out, since a malformed identifier names
-    /// nothing a finding could cite.
+    /// Anything not shaped like a CVE identifier is left out, as with
+    /// [`Reference::cve`].
     pub fn new(
         by: DetectionId,
         cves: impl IntoIterator<Item = impl Into<String>>,
@@ -575,17 +494,14 @@ impl Exploitation {
 /// What makes two findings *the same finding*: the detection that asserts it and
 /// the thing it asserts.
 ///
-/// A key that excludes the version, the hash, the confidence, the severity and
-/// the excerpt, for the reason the host's own `OsClaim` key excludes its
-/// confidence and evidence: those say how sure, which build and why, none of
-/// which change what is being claimed. Keying on any of them
-/// would let one claim in under several spellings, so a detection version bump
-/// would double every finding in a merge instead of updating it in place.
+/// Excludes the version, hash, confidence, severity and excerpt (as the host's `OsClaim`
+/// key excludes confidence and evidence): they say how sure, which build and why, not
+/// what is claimed. Otherwise a detection version bump would double every finding in a
+/// merge.
 ///
-/// The `subject` distinguishes two claims from the *same* detection: the CVE
-/// identifier for a CVE finding, and the finding's title otherwise. The host or
-/// port a finding hangs off is the other half of its identity, supplied by the
-/// container it lives in rather than by the finding.
+/// The `subject` distinguishes two claims from the *same* detection: the CVE identifier
+/// for a CVE finding, the title otherwise. The host or port holding the finding is the
+/// other half of its identity.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClaimId {
     detection: String,
@@ -612,9 +528,9 @@ impl ClaimId {
 /// Every finding names the [`DetectionId`] that produced it, carries two
 /// independent judgements ([`Severity`] and [`Confidence`]), holds a bounded
 /// [`Excerpt`] of the bytes that justify it, and points at zero or more typed
-/// [`Reference`]s. It is built through [`Finding::new`] and refined with the
-/// `with_*` builders, so every finding has passed the same checks whether it was
-/// scanned, rebuilt from a file, or handed back from a module.
+/// [`Reference`]s. Built through [`Finding::new`] and the `with_*` builders, so every
+/// finding passes the same checks whether scanned, rebuilt from a file, or returned by
+/// a module.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
     detection: DetectionId,
@@ -625,55 +541,44 @@ pub struct Finding {
     excerpt: Excerpt,
     /// In the order the detection added them, deduplicated.
     ///
-    /// Order carries meaning and sorting would throw it away. A vulnerability
-    /// correlation cites the worst first, and a front end with room for three of
-    /// forty-four wants the three that matter rather than the three whose
-    /// identifiers happen to sort lowest. Two runs still write the same file,
-    /// because what produced them is deterministic.
+    /// Order carries meaning: a vulnerability correlation cites the worst first, and a
+    /// front end with room for three of forty-four wants those three. Two runs still
+    /// write the same file, since the producer is deterministic.
     references: Vec<Reference>,
     remediation: Option<String>,
     /// The platform identifiers the finding was drawn from, for one a
     /// vulnerability correlation drew from a service's CPEs, ascending.
     ///
-    /// Carried as a field rather than left to the excerpt, which quotes one
-    /// for a person. A correlation rests on the identification it matched, and
-    /// [`merge`](crate::merge) has to ask whether a newer scan still backs that
-    /// identification before carrying the finding past it; the excerpt is not
-    /// a parser's to read, and the detection id names a catalogue anybody may
-    /// write rather than the correlator.
+    /// A correlation rests on the identification it matched, and [`merge`](crate::merge)
+    /// asks whether a newer scan still backs it before carrying the finding forward.
+    /// The excerpt is for people, and the detection id names a catalogue, so this is
+    /// a field.
     ///
-    /// A set, because one claim can be drawn from several. A service may carry
-    /// two identifiers for one release, an imported document's URI form beside
-    /// its 2.3 form, and both draw the same vulnerability: the claim then rests
-    /// on either, and is backed while any of them is.
+    /// A set, because a service may carry two identifiers for one release (an
+    /// imported document's URI form beside its 2.3 form), and the claim is backed
+    /// while any of them is.
     cpes: BTreeSet<String>,
-    /// What the claim is about, where the detection names it outright rather
-    /// than leaving it to be read off the references. See
+    /// What the claim is about, where the detection names it outright. See
     /// [`claim_id`](Self::claim_id).
     subject: Option<String>,
     /// The distribution build a correlation judged, for one drawn from a
     /// service that carried one.
     ///
-    /// Beside [`cpes`](Self::cpes) and for the same reason: the claim rests on
-    /// it. A distribution publishes fixes as new package revisions of the same
-    /// upstream version, so an upgrade leaves the platform identifier where it
-    /// was and moves only this, and a [`merge`](crate::merge) asking whether a
-    /// newer scan still backs the claim has to be able to see it move.
+    /// The claim rests on it, as on [`cpes`](Self::cpes). A distribution ships fixes as
+    /// new package revisions of the same upstream version, so an upgrade moves only
+    /// this, and [`merge`](crate::merge) has to see it move.
     build: Option<Build>,
     /// What this finding is one of, where its detection declared a
-    /// [`FindingGroup`]. Absent from a detection that declared none, which is
-    /// most of them: a weakness one detection covers by itself is its own
-    /// sentence already.
+    /// [`FindingGroup`]. Most detections declare none.
     group: Option<FindingGroup>,
     /// The distributor's advisory data a correlation consulted, where it
     /// consulted any.
     ///
-    /// A second stamp beside [`detection`](Self::detection), because a verdict
-    /// on a distribution's build is reached by two datasets: the catalogue
-    /// says which vulnerabilities the upstream release has, and the
-    /// distributor's data says which of them its build still carries. A
-    /// finding withdrawn or confirmed by the second has to say which snapshot
-    /// of it did, for the reason the first is stamped at all.
+    /// A second stamp beside [`detection`](Self::detection). A verdict on a
+    /// distribution's build uses two datasets: the catalogue says which
+    /// vulnerabilities the upstream release has, and the distributor's data which of
+    /// them its build still carries. This records which snapshot of the second was
+    /// used.
     advised_by: Option<DetectionId>,
     /// Which of the vulnerabilities it cites are known to be exploited, where
     /// the correlation that drew it consulted a list naming any.
@@ -684,10 +589,8 @@ impl Finding {
     /// A finding from its required parts, or [`FindingError::EmptyTitle`] if
     /// `title` is blank.
     ///
-    /// The excerpt starts empty, the reference set empty, and remediation absent;
-    /// each is added with a builder below. Severity and confidence are separate
-    /// arguments because they are separate axes, and neither is derived from the
-    /// other.
+    /// The excerpt, references and remediation start empty and are added with the
+    /// builders below.
     pub fn new(
         detection: DetectionId,
         title: impl Into<String>,
@@ -743,9 +646,8 @@ impl Finding {
 
     /// Adds a platform identifier the finding was drawn from.
     ///
-    /// For a correlation, which draws a finding from a CPE a service carries.
-    /// A finding drawn from anything else carries none. Adding one already
-    /// named changes nothing.
+    /// For a correlation, which draws a finding from a CPE a service carries. Adding
+    /// one already named changes nothing.
     #[must_use]
     pub fn with_cpe(mut self, cpe: impl Into<String>) -> Self {
         self.cpes.insert(cpe.into());
@@ -755,10 +657,8 @@ impl Finding {
     /// Names what the claim is about, which [`claim_id`](Self::claim_id)
     /// then keys on in place of the references.
     ///
-    /// For a detection whose findings summarise a changing set of references,
-    /// as a correlation's do: the set changes whenever the data behind it
-    /// does, and a claim keyed on any one member of it would rename itself
-    /// with it.
+    /// For a detection whose findings summarise a changing set of references, as a
+    /// correlation's do, so the claim does not rename itself when the data changes.
     #[must_use]
     pub fn with_subject(mut self, subject: impl Into<String>) -> Self {
         self.subject = Some(subject.into());
@@ -865,8 +765,8 @@ impl Finding {
     /// ascending, and none for a finding drawn from anything else. Untrusted: a
     /// scanned host's banner chose them, so escape before display.
     ///
-    /// Every one of them draws the same claim, so the claim stands while any
-    /// of them is still what the endpoint is identified as.
+    /// Each draws the same claim, so it stands while any of them still identifies the
+    /// endpoint.
     pub fn cpes(&self) -> impl Iterator<Item = &str> {
         self.cpes.iter().map(String::as_str)
     }
@@ -884,12 +784,10 @@ impl Finding {
     /// otherwise the lowest CVE identifier this finding references, or its
     /// title where it references none.
     ///
-    /// The lowest rather than the first, and that distinction is load-bearing
-    /// because references keep the order a detection stated them in. A
-    /// correlation states its worst first, and which one is worst changes when
-    /// the catalogue does — so a claim keyed on the first would rename itself
-    /// after a data refresh, and a diff between two scans of an unchanged host
-    /// would report a finding gone and another arrived.
+    /// The lowest, not the first: a correlation states its worst first, which changes
+    /// when the catalogue does, so keying on the first would rename the claim after a
+    /// data refresh and a diff of an unchanged host would show one finding gone and
+    /// another arrived.
     pub fn claim_id(&self) -> ClaimId {
         let subject = self.subject.clone().unwrap_or_else(|| {
             self.references
@@ -910,72 +808,46 @@ impl Finding {
     /// Folds another account of the same claim into this one, keeping the
     /// stronger reading, and reports whether anything changed.
     ///
-    /// Called when a detection asserts a claim a subject already carries: the
-    /// same producer, the same [`claim_id`](Self::claim_id). The caller is
-    /// trusted to have matched the claims first; folding two different claims
-    /// would be a caller's error, not this method's to police.
+    /// Called when a detection asserts a claim a subject already carries: the same
+    /// producer and [`claim_id`](Self::claim_id). The caller must have matched the
+    /// claims.
     ///
-    /// A superseded detection does not supply the verdict. Severity, title
-    /// and class are what a detection concluded, and the [`DetectionId`] beside
-    /// them is the record of which one concluded it. Taking the verdict from
-    /// whichever account arrived second while taking the stamp only from a newer
-    /// one would put the two out of step: folding a `1.0.0` reading of a claim
-    /// into a `2.0.0` one would leave a finding that read `2.0.0` and `Low` where
-    /// `2.0.0` had said `Critical`, which is the one thing a provenance stamp
-    /// exists to make impossible. Two reports written by two builds are enough
-    /// to reach it, and the direction that loses is the common one, since the
-    /// record being folded in is usually the older.
+    /// The verdict (severity, title, class) follows the version, so it stays in step
+    /// with the [`DetectionId`] that records who concluded it:
     ///
-    /// So an account at a lower version supplies nothing but what is missing.
+    /// - An account at a **lower** version supplies only what is missing. Otherwise
+    ///   folding a `1.0.0` reading into a `2.0.0` one would leave `2.0.0` stamped on
+    ///   `1.0.0`'s `Low`. This is the common direction, since the record folded in is
+    ///   usually the older.
+    /// - An account at the **same** version supplies the verdict: one detection
+    ///   grading a claim differently twice has read different evidence, and the later
+    ///   reading wins. [`merge`](crate::merge) folds documents in the order their own
+    ///   clocks give, so a cipher `Low` in January and `Critical` in June is `Critical`.
+    /// - A **newer** version supplies the verdict and its own stamp.
     ///
-    /// An account at the same version supplies the verdict, and that is not
-    /// the same question. One detection grading one claim differently on two
-    /// occasions has read different evidence, not changed its mind, so the
-    /// reading to keep is the current one. Which is current is
-    /// [`merge`](crate::merge)'s to know: it folds documents in the order their
-    /// own clocks give, so the account arriving here second is the later scan's,
-    /// and a cipher that was `Low` in January and `Critical` in June is
-    /// `Critical`. Nothing is out of step either way, the stamps being equal.
+    /// Regardless of version, **certainty only rises**, since a second agreeing account
+    /// is worth something whichever build produced it, and **references and platform
+    /// identifiers union**, as [`Service::merge`](crate::model::port::Service::merge)
+    /// unions CPEs. Keeping one identifier would have a merge drop the claim once a
+    /// newer scan backed only the other.
     ///
-    /// Two things never follow the version. **Certainty rises whatever reached
-    /// it**, because [`Confidence`] says how sure the claim is rather than what
-    /// the claim is, and a second account agreeing is worth something whichever
-    /// build produced it. **References union**, for the same reason
-    /// [`Service::merge`](crate::model::port::Service::merge) unions CPEs: a
-    /// reference is a pointer that applies, not a verdict that competes.
-    ///
-    /// **Platform identifiers union** too. Two accounts of one correlation
-    /// drawn from two identifiers are one claim resting on either, and keeping
-    /// one would have a merge drop the claim once a newer scan backed the
-    /// other and not that one.
-    ///
-    /// **Except that a correlation's certainty and references are its
-    /// verdict**, and follow the version like the rest of it. A correlation is
-    /// not an observation a second account can corroborate: it is a
-    /// computation over a service identification and the datasets it was
-    /// judged against, and a later computation that cites fewer
-    /// vulnerabilities, or holds them less surely, has usually learned that
-    /// some of them do not apply to this build. Unioning the references and
-    /// keeping the higher certainty would carry every vulnerability any
-    /// earlier account ever cited into every later report, at the surest grade
-    /// any account ever gave it, which is the outcome a distribution's own fix
-    /// data is consulted to prevent. So an account of a correlation at the
-    /// same version or newer replaces the certainty, the references, the build,
-    /// the advisory stamp and which of its vulnerabilities are known exploited
+    /// **Except for correlations**, whose certainty and references are part of the
+    /// verdict. A correlation is a computation over a service identification and the
+    /// datasets behind it, and a later one that cites fewer vulnerabilities, or holds
+    /// them less surely, has usually learned some do not apply to this build. Unioning
+    /// would carry every vulnerability ever cited into every later report at the surest
+    /// grade ever given. So an account of a correlation at the same version or newer
+    /// replaces the certainty, references, build, advisory stamp and exploitation
     /// outright, and an older one supplies none of them.
     ///
-    /// The excerpt and the remediation travel with the verdict where there is
-    /// one to take, and fill a gap where there is not.
+    /// The excerpt and remediation travel with the verdict where one is taken, and
+    /// otherwise fill a gap.
     pub fn corroborate(&mut self, other: Finding) -> bool {
-        // Both accounts must be correlations for the verdict rule to apply: a
-        // claim one detection draws both ways is not one this crate produces,
-        // and a finding rebuilt from a file that lost its identifiers is read
-        // as the observation it then looks like.
+        // Both must be correlations: a finding rebuilt from a file that lost its
+        // identifiers is treated as the observation it looks like.
         let correlation = self.is_correlation() && other.is_correlation();
 
-        // Destructured rather than reached through `other.…`, so a field added
-        // to this struct is a compile error here and not a value that quietly
-        // stops being folded.
+        // Destructured, so a new field fails to compile until it is folded.
         let Finding {
             detection,
             title,
@@ -997,8 +869,7 @@ impl Finding {
         let at_least_as_new = detection.version >= self.detection.version;
 
         if correlation {
-            // A correlation's verdict, given whole by an account at least as
-            // new and not at all by an older one. See the documentation above.
+            // A correlation's verdict comes whole from an account at least as new.
             if at_least_as_new {
                 if confidence != self.confidence {
                     self.confidence = confidence;
@@ -1047,29 +918,22 @@ impl Finding {
             }
         }
 
-        // The subject is the claim's identity, which both accounts share by
-        // construction; one that named it fills one that did not.
+        // Both accounts share the subject; one that named it fills one that did not.
         if self.subject.is_none() && subject.is_some() {
             self.subject = subject;
             changed = true;
         }
 
-        // The group is a fact about the detection rather than about the claim,
-        // so both accounts of one claim declare the same one or neither does.
-        // An account that carries it fills one that does not, which is what
-        // moves a finding recorded before its detection joined a group onto the
-        // group once a newer scan says so.
+        // The group belongs to the detection. A newer account carrying it moves a
+        // finding recorded before the detection joined the group onto it.
         if at_least_as_new && group.is_some() && group != self.group {
             self.group = group;
             changed = true;
         }
 
-        // Same claim means the same detection id, so the version is what orders
-        // the two accounts.
+        // Same claim means the same detection id, so the version orders them.
         if at_least_as_new {
-            // Only a strictly newer detection replaces the stamp, and it brings
-            // its own content hash with it. At the same version the hashes are
-            // the same detection's, so the incumbent's stands.
+            // Only a strictly newer detection replaces the stamp and content hash.
             if detection.version > self.detection.version {
                 self.detection = detection;
                 changed = true;
@@ -1096,8 +960,7 @@ impl Finding {
                 changed = true;
             }
         } else {
-            // Superseded. What it justified itself with is still better than
-            // nothing where nothing is recorded, and cannot displace what is.
+            // Superseded: its justification only fills a gap.
             if self.excerpt.is_empty() && !excerpt.is_empty() {
                 self.excerpt = excerpt;
                 changed = true;
@@ -1119,12 +982,9 @@ impl Finding {
 /// Where one account of a subject leaves a claim drawn from another account's
 /// evidence.
 ///
-/// Asked only of a finding a built-in derivation draws from evidence a report
-/// records beside it, such as what a TLS endpoint accepts, since only there can
-/// the evidence a claim rests on be named and asked about again. A finding a
-/// detection drew from an exchange the report keeps no account of has nothing
-/// to ask, and its absence from a later scan is a detection that did not fire,
-/// as the module documentation says.
+/// Asked only of a finding a built-in derivation draws from evidence the report records
+/// beside it, such as what a TLS endpoint accepts. For other findings, absence from a
+/// later scan only means the detection did not fire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Standing {
     /// The account draws the same claim from its own evidence.
@@ -1138,8 +998,7 @@ pub(crate) enum Standing {
 
 /// Why a [`Finding`] or a [`DetectionId`] could not be constructed.
 ///
-/// Every case is an empty identifier, title, phrase or list. A finding has to
-/// say what produced it and what it claims, and a blank string says neither.
+/// Every case is an empty identifier, title, phrase or list.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum FindingError {
@@ -1149,13 +1008,10 @@ pub enum FindingError {
     /// A [`Finding`] was given a blank title.
     #[error("a finding title cannot be empty")]
     EmptyTitle,
-    /// A [`FindingGroup`] was given a blank id or a blank summary. Either
-    /// alone is half a group: an id nothing can be printed for, or a phrase
-    /// nothing can be gathered by.
+    /// A [`FindingGroup`] was given a blank id or a blank summary.
     #[error("a finding group needs both an id and a summary")]
     EmptyGroup,
-    /// An [`Exploitation`] was given no CVE identifier. A list that marks none
-    /// of a finding's vulnerabilities marks nothing, and is left off it.
+    /// An [`Exploitation`] was given no CVE identifier.
     #[error("an exploitation needs at least one CVE identifier")]
     NoExploitedCve,
 }
@@ -1179,11 +1035,8 @@ mod tests {
         .unwrap()
     }
 
-    /// A correlation is a computation, and a second one at the same version or
-    /// newer replaces the first's verdict, certainty and citations included.
-    /// Corroborated like an observation, a correlation that learned most of
-    /// its vulnerabilities do not apply to a build would keep every one of
-    /// them at the surest grade any account gave.
+    /// A correlation at the same version or newer replaces the earlier one's verdict,
+    /// certainty and citations included.
     #[test]
     fn a_correlations_later_account_replaces_its_certainty_and_citations() {
         let correlation = |version: u16, confidence: Confidence, cves: &[&str]| {
@@ -1212,12 +1065,12 @@ mod tests {
         assert_eq!(held.confidence(), Confidence::Weak);
         assert_eq!(held.references().count(), 1);
 
-        // An older correlator's account gives nothing of its verdict.
+        // An older correlator's account gives nothing.
         held.corroborate(correlation(2, Confidence::Certain, &["CVE-2016-1908"]));
         assert_eq!(held.confidence(), Confidence::Weak);
         assert_eq!(held.references().count(), 1);
 
-        // And an observation still ratchets, as it always has.
+        // An observation still ratchets.
         let mut observed = finding();
         let mut weaker = finding();
         weaker.confidence = Confidence::Weak;
@@ -1227,8 +1080,7 @@ mod tests {
 
     #[test]
     fn severity_orders_weakest_to_strongest() {
-        // The whole reason Severity is an enum and not a number: a report ranks
-        // by this order. A mutant that reorders the variants is caught here.
+        // A report ranks by this order.
         assert!(Severity::Info < Severity::Low);
         assert!(Severity::Low < Severity::Medium);
         assert!(Severity::Medium < Severity::High);
@@ -1240,8 +1092,7 @@ mod tests {
 
     #[test]
     fn an_empty_title_is_refused() {
-        // A finding that cannot say what it claims is an opaque blob, which is
-        // what this type exists not to be.
+        // A finding must say what it claims.
         let err = Finding::new(
             detection(),
             "   ",
@@ -1260,14 +1111,12 @@ mod tests {
 
     #[test]
     fn an_over_length_excerpt_is_truncated_on_a_char_boundary() {
-        // A multi-byte char straddling the cap must not be split into invalid
-        // UTF-8, and the result must be within the bound. A mutant that truncates
-        // by byte index alone would panic or produce a broken string.
+        // A multi-byte char straddling the cap must not be split into invalid UTF-8,
+        // and the result must be within the bound.
         let big = "é".repeat(MAX_EXCERPT_BYTES); // two bytes each, so twice the cap
         let excerpt = Excerpt::new(big);
         assert!(excerpt.as_str().len() <= MAX_EXCERPT_BYTES);
-        // Still valid UTF-8: as_str returning at all proves it, but assert the
-        // last char is whole by round-tripping through chars.
+        // The last char is whole.
         assert!(excerpt.as_str().chars().all(|c| c == 'é'));
     }
 
@@ -1279,11 +1128,7 @@ mod tests {
 
     /// A duplicate folds away and the rest keep the order they arrived in.
     ///
-    /// Order is the detection's to state: a vulnerability correlation cites its
-    /// worst first, and a front end with room for three of forty-four wants
-    /// those three. Sorting here would throw that away and hand back the three
-    /// whose identifiers sort lowest, which is a fact about numbering rather
-    /// than about the host.
+    /// A correlation cites its worst first, and that order is kept.
     #[test]
     fn references_dedup_and_keep_the_order_they_were_added_in() {
         let worst = Reference::cve("CVE-2024-6387").expect("a CVE");
@@ -1302,10 +1147,8 @@ mod tests {
 
     /// The claim key takes the lowest CVE, not the first.
     ///
-    /// Which reference a detection states first changes when its dataset does,
-    /// and a claim keyed on that would rename itself after a catalogue refresh:
-    /// a diff between two scans of an unchanged host would report one finding
-    /// gone and another arrived.
+    /// The first reference changes when the dataset does; keying on it would rename
+    /// the claim after a catalogue refresh.
     #[test]
     fn a_claim_is_keyed_on_the_lowest_cve_however_they_were_ordered() {
         let ranked = finding()
@@ -1339,8 +1182,8 @@ mod tests {
 
     #[test]
     fn claim_id_keys_on_cve_when_present_else_title() {
-        // Two versions of the same CVE detection are the same claim, so a merge
-        // updates in place rather than doubling. The version is not in the key.
+        // Two versions of the same CVE detection are the same claim; the version is
+        // not in the key.
         let v1 = finding().with_reference(Reference::cve("CVE-2021-44228").unwrap());
         let newer = Finding::new(
             DetectionId::new("redis-unauth-access", Version::new(2, 0, 0), "def456").unwrap(),
@@ -1398,15 +1241,9 @@ mod tests {
         assert!(refs.contains(&Reference::Cwe(306)));
     }
 
-    /// The direction a merge usually takes.
-    ///
-    /// A record being folded in is normally the older of the two: a journal read
-    /// back into a newer run, or a report written by an earlier build. A fold
-    /// taking the verdict from whichever account arrived second and the stamp
-    /// only from a newer one would land an older reading under a newer version's
-    /// name. The finding would then say `2.0.0` produced a `Low`, where `2.0.0`
-    /// had said `Critical` and `1.0.0` had said `Low`, and nothing in the
-    /// document would show which had happened.
+    /// The usual direction: folding an older record (a journal read back into a newer
+    /// run, a report from an earlier build) into a newer one keeps the newer verdict
+    /// under the newer stamp.
     #[test]
     fn an_older_account_does_not_supply_a_newer_versions_verdict() {
         let account = |version: Version, severity: Severity, title: &str| {
@@ -1438,19 +1275,10 @@ mod tests {
         assert_eq!(current.title(), "Redis, wide open");
     }
 
-    /// One detection at one version grading a claim two ways has read two lots
-    /// of evidence, so the account arriving second stands.
-    ///
-    /// The counterpart of the test above and a different question from it. That
-    /// one is about two *detections*, settled by which of them is superseded;
-    /// this is about two *readings* by one detection, where nothing supersedes
-    /// anything and the one to keep is the current one.
-    ///
-    /// Which is current is [`merge`](crate::merge)'s to know, and it folds
-    /// documents in the order their own clocks give. `merge`'s
-    /// `two_accounts_of_one_host_keep_every_claim_and_grade_it_as_the_newer_did`
-    /// is this rule read from the other end: a cipher graded `Low` in January
-    /// and `Critical` in June is `Critical`.
+    /// One detection at one version grading a claim two ways has read two lots of
+    /// evidence, so the account arriving second stands. [`merge`](crate::merge) folds
+    /// in clock order; see its
+    /// `two_accounts_of_one_host_keep_every_claim_and_grade_it_as_the_newer_did`.
     #[test]
     fn an_account_at_the_same_version_supplies_the_current_reading() {
         let account = |severity: Severity| {
@@ -1468,18 +1296,16 @@ mod tests {
         assert!(january.corroborate(account(Severity::Critical)));
         assert_eq!(january.severity(), Severity::Critical);
 
-        // And a claim that was downgraded is downgraded. The later reading is
-        // kept because it is later, not because it is worse.
+        // A downgrade is kept too: the later reading wins either way.
         let mut worse_before = account(Severity::Critical);
         assert!(worse_before.corroborate(account(Severity::Low)));
         assert_eq!(worse_before.severity(), Severity::Low);
 
-        // The stamp does not move, there being nothing newer to move it to.
+        // The stamp does not move.
         assert_eq!(january.detection().version(), Version::new(1, 0, 0));
     }
 
-    /// A superseded account still justifies itself, and that is worth keeping
-    /// where the record has nothing.
+    /// A superseded account's excerpt fills a gap.
     #[test]
     fn an_older_account_fills_a_gap_it_cannot_overwrite() {
         let account = |version: Version| {
@@ -1502,18 +1328,14 @@ mod tests {
         assert_eq!(current.excerpt().as_str(), "-ERR unknown command");
         assert_eq!(current.remediation(), Some("Require a password."));
 
-        // But it does not displace an excerpt the newer account already carried.
+        // It does not displace an excerpt the newer account already carried.
         let mut carrying = account(Version::new(2, 0, 0)).with_excerpt(Excerpt::new("READONLY"));
         carrying.corroborate(account(Version::new(1, 0, 0)).with_excerpt(Excerpt::new("older")));
         assert_eq!(carrying.excerpt().as_str(), "READONLY");
     }
 
-    /// **A claim drawn from two identifiers names both.** A service carrying
-    /// one release under two identifiers draws the same vulnerability from
-    /// each, and the claim rests on either. Keeping the last alone, a merge
-    /// whose newer scan backed only the first would drop a claim that scan
-    /// still backs. Whichever account is the current reading, and whichever
-    /// catalogue version drew it, the identifiers union as references do.
+    /// **A claim drawn from two identifiers names both**, whichever account is current
+    /// and whichever catalogue version drew it.
     #[test]
     fn a_claim_drawn_from_two_identifiers_names_both() {
         let drawn = |version: Version, cpe: &str| {
@@ -1552,8 +1374,7 @@ mod tests {
 
     #[test]
     fn corroborate_reports_no_change_for_an_identical_refiring() {
-        // A detection firing the same claim twice is not new information, which
-        // is how a subject knows a finding was already recorded.
+        // The same claim twice is not new information.
         let mut base = finding();
         assert!(!base.corroborate(finding()));
     }

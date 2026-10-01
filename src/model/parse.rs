@@ -13,19 +13,14 @@
 //! ranges, CIDR blocks, zones and keywords. [`target`] handles an address with
 //! a port specification after it.
 //!
-//! These grammars live beside the model rather than beside the file formats
-//! because every way of naming a target ends here. A command-line argument, a
-//! form field, a line of a target list, a row of somebody's CSV and a hostname
-//! read out of an nmap report are one expression arriving from different places.
-//! Writing the grammar once leaves the formats above deciding only where the
-//! tokens come from, with none of them able to drift into a slightly different
-//! dialect.
+//! Every way of naming a target ends here: a command-line argument, a form field, a
+//! line of a target list, a CSV row and a hostname read from an nmap report are one
+//! grammar, so the file formats only decide where the tokens come from.
 //!
-//! Resolution that needs to ask the machine anything, such as what `lan` means
-//! or which interface a `%zone` names, arrives as a caller-supplied callback
-//! ([`ip::ResolverFn`], [`ip::ZoneResolverFn`]). That is what keeps this a leaf:
-//! the engine passes [`crate::system::interface`]'s answers in, rather than this
-//! module reaching out for them.
+//! Resolution that has to ask the machine, such as what `lan` means or which interface
+//! a `%zone` names, arrives as a caller-supplied callback ([`ip::ResolverFn`],
+//! [`ip::ZoneResolverFn`]). The engine passes [`crate::system::interface`]'s answers in,
+//! which keeps this module a leaf.
 
 pub mod ip;
 pub mod target;
@@ -40,15 +35,13 @@ use crate::model::target::TargetMap;
 /// [`TargetMap`], giving each one the ports it names or `global_ports` if it
 /// names none.
 ///
-/// The shape of [`target::to_target_map`] that takes a keyword resolver and
-/// nothing else. To resolve interface zones or hostnames as well, build a
-/// [`TargetContext`] and call that function directly.
+/// [`target::to_target_map`] with only a keyword resolver. To resolve interface zones
+/// or hostnames as well, build a [`TargetContext`] and call that function directly.
 ///
 /// # Errors
 ///
-/// The first expression that does not parse. Nothing is returned partially, so
-/// a caller that wants to log the bad lines and scan the rest should drive
-/// [`TargetMapBuilder`] itself.
+/// The first expression that does not parse. Nothing is returned partially; to log the
+/// bad lines and scan the rest, drive [`TargetMapBuilder`] directly.
 pub fn to_target_map(
     targets: &[String],
     global_ports: PortSet,
@@ -73,11 +66,8 @@ pub fn to_target_map(
 mod tests {
     use super::*;
 
-    /// [`to_target_map`] is the only thing this module defines rather than
-    /// re-exports, and the grammar it wraps is tested where the grammar lives.
-    /// What is worth pinning here is the wrapping itself: a context built from
-    /// a keyword resolver and nothing else still parses literal targets, and
-    /// still groups them by port specification.
+    /// A context built from only a keyword resolver still parses literal targets and
+    /// groups them by port specification.
     #[test]
     fn the_facade_builds_a_map_from_targets_that_need_no_resolver() {
         let targets = ["198.51.100.1:22".to_string(), "198.51.100.2".to_string()];
@@ -88,9 +78,8 @@ mod tests {
         assert_eq!(map.gross_targets().unwrap(), 2);
     }
 
-    /// The lookups this shape does *not* take are the point of it. A target
-    /// needing one is refused rather than silently dropped, so a scan never
-    /// covers less than its input said it would.
+    /// A target needing a lookup this function cannot make is refused, so a scan never
+    /// silently covers less than its input said.
     #[test]
     fn the_facade_refuses_a_target_it_cannot_resolve() {
         let targets = ["scanme.example".to_string()];

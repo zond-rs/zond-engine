@@ -8,25 +8,18 @@
 
 //! # How sure a claim is
 //!
-//! A grade rather than a percentage, so that two claims reached by different
-//! routes can be ranked without either knowing how the other was arrived at.
+//! A grade, so that two claims reached by different routes can be ranked.
 //!
 //! A [`Finding`](crate::model::finding::Finding) carries one. A
-//! [`Service`](crate::model::port::Service) does not: it holds the `0..=100`
-//! score [`as_score`](Confidence::as_score) projects onto, because a service
-//! identification is refined in place by several analyzers and the score is what
-//! [`Service::merge`](crate::model::port::Service::merge) ranks them by. The two
-//! are comparable through that projection rather than directly, which is worth
-//! knowing before writing a report that puts them side by side.
+//! [`Service`](crate::model::port::Service) holds the `0..=100` score
+//! [`as_score`](Confidence::as_score) projects onto instead, because several analyzers
+//! refine a service identification in place and
+//! [`Service::merge`](crate::model::port::Service::merge) ranks them by score. The two
+//! are comparable only through that projection.
 
 /// How much trust to place in a single piece of [`Evidence`](crate::fingerprint::Evidence).
 ///
-/// Ordered weakest-to-strongest, so evidence can be compared and ranked
-/// directly.
-///
-/// Non-exhaustive, as [`Severity`](crate::model::finding::Severity) is: a grade
-/// added to the scale costs a recompile rather than a major version.
-/// [`ALL`](Self::ALL) is the list to iterate.
+/// Ordered weakest to strongest. [`ALL`](Self::ALL) is the list to iterate.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Confidence {
@@ -56,8 +49,7 @@ impl Confidence {
         }
     }
 
-    /// Every level, weakest-first, for a caller that iterates rather than writing
-    /// the list out, the wire-name round trip among them.
+    /// Every level, weakest first.
     pub const ALL: &'static [Self] = &[
         Self::Heuristic,
         Self::Weak,

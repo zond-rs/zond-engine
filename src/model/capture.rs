@@ -8,43 +8,31 @@
 
 //! What a capture saw, and what it did with it.
 //!
-//! Two things, in the vocabulary rather than beside the capture backend that
-//! fills them in, because in both cases more than one module has to agree on
-//! the shape. [`CaptureCounts`] is written by the capture and read by the
-//! report. [`IpObservation`] is written by the capture and read by whatever
-//! wants to know what a stack put in its headers.
-//!
-//! Putting them here lets a record describe its own shape rather than borrowing
-//! it from the transport it came from, and leaves a backend with no kernel buffer
-//! at all, such as a synthetic receive stream in a test, able to say so.
+//! [`CaptureCounts`] is written by the capture and read by the report. [`IpObservation`]
+//! is written by the capture and read by whatever wants to know what a stack put in its
+//! headers. Both live in the vocabulary because several modules share their shape, and
+//! a backend with no kernel buffer, such as a synthetic receive stream in a test, can
+//! still fill them in.
 
 /// What a reply's IP header said, past the addressing the scanner needed to
 /// correlate it.
 ///
-/// A packet's headers carry two kinds of information. The addresses and the
-/// protocol are routing: they say who sent this and how to read the rest, and the
-/// scanners have always kept them. Everything else, meaning how many hops are
-/// left and whether the datagram may be fragmented and what identifier was
-/// stamped on it, is a fact about the stack that emitted it, chosen by its
-/// authors and nearly identical across every packet that stack will ever send.
-/// That second kind is what this carries, and it is why a reply to an ordinary
-/// port probe says something about the machine behind it.
+/// Beyond the addresses and protocol, a header records how many hops are left, whether
+/// the datagram may be fragmented, and what identifier was stamped on it. Those are
+/// choices of the stack that sent it, nearly identical across every packet it sends,
+/// which is why a reply to an ordinary port probe says something about the machine
+/// behind it.
 ///
-/// # Split by family rather than flattened
+/// # Split by family
 ///
-/// IPv4 and IPv6 do not describe the same header, and pretending otherwise is
-/// the failure mode worth designing out. Half these fields exist in one family
-/// and not the other: there is no identification field in an IPv6 header, and no
-/// don't-fragment bit, because an IPv6 datagram is never fragmented in transit.
-/// Modelled as one flat struct, those become an `Option` that is always `None`
-/// for one family and a `bool` that is silently `false` for it, and a rule
-/// written against `dont_fragment == false` would match every IPv6 packet ever
-/// captured while looking correct. An enum makes the question unaskable in the
-/// family where it has no answer.
+/// Half these fields exist in only one family: an IPv6 header has no identification
+/// field and no don't-fragment bit, since IPv6 datagrams are never fragmented in
+/// transit. In one flat struct, a rule written against `dont_fragment == false` would
+/// silently match every IPv6 packet. The enum makes such a question unaskable where it
+/// has no answer.
 ///
-/// [`remaining_hops`](Self::remaining_hops) is the one field both families do
-/// have, under two different names, so it is the one thing worth reading without
-/// first asking which family this is.
+/// [`remaining_hops`](Self::remaining_hops) is the one field both families have, under
+/// different names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IpObservation {
     /// What an IPv4 header said.
@@ -56,12 +44,10 @@ pub enum IpObservation {
 impl IpObservation {
     /// The hop counter as it arrived: an IPv4 TTL or an IPv6 hop limit.
     ///
-    /// This is not the value the sender wrote. Every router on the path
-    /// decrements it, so what arrives is the initial value minus the hop count,
-    /// and the initial value is the part that identifies a stack. Recovering it
-    /// means knowing how far away the host is; rounding up to the nearest
-    /// familiar starting value is a guess that holds until a path is long, and
-    /// then fails silently.
+    /// Every router on the path decrements it, so this is the initial value minus the
+    /// hop count. The initial value is what identifies a stack; recovering it means
+    /// knowing the host's distance. Rounding up to the nearest familiar starting value
+    /// fails silently on long paths.
     pub fn remaining_hops(self) -> u8 {
         match self {
             IpObservation::V4(observed) => observed.ttl,
@@ -69,31 +55,22 @@ impl IpObservation {
         }
     }
 
-    /// Whether the reply arrived as a fragment rather than a whole datagram.
+    /// Whether the reply arrived as a fragment.
     ///
-    /// Worth asking before reading anything else here. A fragment's header
-    /// describes the fragment, and the fields that identify a stack, above all
-    /// the window and options of the segment behind it, either belong to a
-    /// different piece of the datagram or are absent. A fragmented reply is
-    /// evidence about the path rather than about the sender.
+    /// Check this first. A fragment's header describes the fragment, and the fields
+    /// that identify a stack, above all the window and options of the segment behind
+    /// it, belong to a different piece of the datagram or are absent. A fragmented
+    /// reply is evidence about the path, not the sender.
     pub fn is_fragment(self) -> bool {
         match self {
-            // True for the first fragment and no other, which is every fragment
-            // that gets this far. `parse_ip_segment` refuses a datagram whose
-            // fragment offset is non-zero, on both families and for the same
-            // reason: what follows the header of a later fragment is the middle
-            // of somebody's payload rather than a Layer-4 header.
-            //
-            // Without that refusal this answered the More Fragments bit, which
-            // the *last* fragment of a fragmented datagram does not set, so the
-            // one reply whose segment fields belong to a different piece of the
-            // datagram was the one reply this reported as whole.
+            // Only first fragments get this far: `parse_ip_segment` refuses a
+            // non-zero fragment offset on both families, since what follows a later
+            // fragment's header is mid-payload. That refusal is what makes the More
+            // Fragments bit sufficient; the last fragment does not set it.
             IpObservation::V4(observed) => observed.more_fragments,
-            // An IPv6 sender's fragments carry a fragment extension header, and
-            // `walk_ipv6_headers` stops at any whose offset is non-zero, so the
-            // first fragment is the only one that arrives and it is not
-            // distinguishable here from a whole datagram. A caller that needs to
-            // know reads the extension header, which this does not carry.
+            // `walk_ipv6_headers` stops at a fragment header with a non-zero offset,
+            // so only the first fragment arrives, and it cannot be told from a whole
+            // datagram here. A caller that needs to know reads the extension header.
             IpObservation::V6(_) => false,
         }
     }
@@ -108,11 +85,9 @@ pub struct Ipv4Observation {
 
     /// The fragment identifier.
     ///
-    /// Interesting for how it *changes* across several replies rather than for
-    /// any single value: zero throughout, counting up globally, counting up per
-    /// connection and random are four different policies, and which one a stack
-    /// follows is close to a signature. One observation cannot tell them apart,
-    /// which is why this is recorded per reply and read across them.
+    /// Read for how it *changes* across replies: zero throughout, counting globally,
+    /// counting per connection, and random are four policies, and which one a stack
+    /// follows is close to a signature. Recorded per reply and read across them.
     pub identification: u16,
 
     /// Whether the sender forbade fragmentation in transit.
@@ -144,29 +119,24 @@ pub struct Ipv6Observation {
 
     /// The flow label, twenty bits.
     ///
-    /// Whether a stack sets one at all is the signal. The specification allows
-    /// zero, several stacks always send zero, and others derive a value per flow,
-    /// so what is worth recording is whether choosing one was attempted rather
-    /// than which label was chosen.
+    /// Whether a stack sets one at all is the signal: the specification allows zero,
+    /// several stacks always send zero, and others derive a value per flow.
     pub flow_label: u32,
 }
 
 /// What became of the frames a capture's BPF filter admitted, cumulative over its
 /// lifetime, and whether it lasted the scan.
 ///
-/// `dropped` is the field this exists for. It counts frames that matched the
-/// filter, reached the kernel's buffer, and were discarded because this process
-/// did not read them in time. A scanner cannot tell such a frame from one that
-/// was never sent - both are silence - so a reply lost here is
-/// indistinguishable from a host that did not answer, and no amount of
-/// retransmission helps if the retry's reply is lost the same way. That makes it
-/// the one loss the scanner has to be told about rather than left to infer.
+/// `dropped` matters most. It counts frames that matched the filter, reached the
+/// kernel's buffer, and were discarded because this process did not read them in time.
+/// A reply lost there is indistinguishable from a host that did not answer, and
+/// retransmission does not help if the retry's reply is lost the same way, so the
+/// scanner has to be told.
 ///
-/// Read against a scanner's own counters with care. The filters that produce
-/// these are narrow but not private: the SYN filter admits every TCP SYN and RST
-/// crossing any captured interface, so `received` includes traffic that has
-/// nothing to do with the scan. It bounds the receive path's load, not the
-/// scan's share of it.
+/// Compare against a scanner's own counters with care. The filters are narrow but not
+/// private: the SYN filter admits every TCP SYN and RST crossing any captured
+/// interface, so `received` includes unrelated traffic. It bounds the receive path's
+/// load, not the scan's share of it.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CaptureCounts {
@@ -180,30 +150,21 @@ pub struct CaptureCounts {
     pub if_dropped: u64,
     /// How many captures ended before they were told to.
     ///
-    /// Counted in captures, not frames, unlike the three above, and here for
-    /// the same reason [`dropped`](Self::dropped) is: it is a loss the scanner
-    /// cannot infer. A capture whose reader stops is an interface that hears
-    /// nothing for the rest of the run, and every reply that would have arrived
-    /// on it is silence indistinguishable from a host that did not answer.
+    /// Counted in captures, not frames. A capture whose reader stops leaves an
+    /// interface deaf for the rest of the run, and every reply that would have arrived
+    /// on it reads as a host that did not answer. Where [`dropped`](Self::dropped) says
+    /// frames were lost, this says a link was, and the counts beside it describe less
+    /// of the network than they appear to.
     ///
-    /// Where [`dropped`](Self::dropped) says frames were lost, this says a link
-    /// was. Non-zero means part of the receive path was not there for part of
-    /// the scan, and the counts beside it describe less of the network than they
-    /// appear to.
-    ///
-    /// A scan that opened one capture reports at most one. A scan across eight
-    /// interfaces reports how many of the eight went deaf.
+    /// A scan across eight interfaces reports how many of the eight went deaf.
     pub stopped_early: u64,
 }
 
 impl std::ops::Add for CaptureCounts {
     type Output = Self;
 
-    /// Saturating, like every other count in the model.
-    ///
-    /// These come from a kernel and are summed across however many captures a
-    /// scan opened. A total too large to represent is still enormous, where a
-    /// wrapped one reads as a quiet capture and would be believed.
+    /// Saturating, like every other count in the model: a wrapped total would read as
+    /// a quiet capture.
     fn add(self, other: Self) -> Self {
         Self {
             received: self.received.saturating_add(other.received),
@@ -221,8 +182,7 @@ impl std::ops::AddAssign for CaptureCounts {
 }
 
 impl std::iter::Sum for CaptureCounts {
-    /// Totals a scan's captures. Empty sums to all zeros, which is what a scan
-    /// that opened no capture observed.
+    /// Totals a scan's captures. Empty sums to all zeros.
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         iter.fold(Self::default(), |total, counts| total + counts)
     }
@@ -265,8 +225,7 @@ mod tests {
         assert_eq!(total.if_dropped, 2);
     }
 
-    /// A wrapped total reads as a quiet capture, which is the one conclusion
-    /// these counts exist to prevent anybody reaching.
+    /// A wrapped total would read as a quiet capture.
     #[test]
     fn a_total_too_large_to_represent_saturates_rather_than_wrapping() {
         let huge = CaptureCounts {

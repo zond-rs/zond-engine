@@ -8,61 +8,44 @@
 
 //! # The order a plan's targets are asked in
 //!
-//! A scan that walks its plan in order emits the most recognisable signature it
-//! has. Every other thing this engine does to make a probe look ordinary, the
-//! decoys, the fragments, the deliberately wrong checksum, the spoofed hardware
-//! address, is spent on one packet at a time; the shape of the whole run is a
-//! monotonic sweep across an address range, and that is what a correlating sensor
-//! keys on.
+//! A scan that walks its plan in order is easy to recognise: whatever is done to make
+//! each probe look ordinary, the run as a whole is a monotonic sweep across an address
+//! range, which is what a correlating sensor keys on.
 //!
-//! [`Permutation`] is the answer: a keyed rearrangement of the plan's whole index
-//! space, so the nth target the scan asks about is somewhere else entirely in
-//! the plan, and consecutive questions land in unrelated parts of the network.
+//! [`Permutation`] is a keyed rearrangement of the plan's whole index space, so
+//! consecutive questions land in unrelated parts of the network.
 //!
-//! ## Why not shuffle a list
+//! ## Computed, not shuffled
 //!
-//! Because the list does not fit. A `/8` on a thousand ports is sixteen billion
-//! targets, which is why
-//! [`TargetSet`](crate::model::target::TargetSet) describes a plan rather than
-//! holding one. Shuffling needs the whole list in memory, so a scanner that
-//! shuffles is a scanner with a window, and the window is the signature again at
-//! a coarser grain: this engine filled batches of eight thousand and shuffled
-//! those, which spread a `/24` nicely and walked a `/16` in address order.
+//! A `/8` on a thousand ports is sixteen billion targets, which is why
+//! [`TargetSet`](crate::model::target::TargetSet) describes a plan without holding
+//! one. Shuffling needs the list in memory, so it can only shuffle a window at a time,
+//! and the window is itself a signature: batches of eight thousand spread a `/24`
+//! well but walk a `/16` in address order. A computed permutation has no window and
+//! costs three words and a handful of arithmetic per target.
 //!
-//! A permutation computed rather than stored has no window. It costs three words
-//! and a handful of arithmetic per target, whatever the plan.
+//! ## Keyed and reproducible
 //!
-//! ## Why it can be keyed at all
+//! A [`TargetSet`](crate::model::target::TargetSet) is canonical from construction, so
+//! the nth target is the same on every run, and
+//! [`TargetIndex`](crate::model::target::TargetIndex) resolves a position back to it.
+//! The order is therefore a pure function of a seed: a journal records the seed, and a
+//! resumed sitting asks its remaining targets in the same relative order.
 //!
-//! Because the plan's numbering is stable. A
-//! [`TargetSet`](crate::model::target::TargetSet) is canonical from
-//! construction, so the nth target is the same target on every run, and
-//! [`TargetIndex`](crate::model::target::TargetIndex) resolves a position back to
-//! it. That is what lets the order be a pure function of a seed: a journal
-//! records the seed, and a resumed sitting asks the targets it has left in the
-//! same relative order the first sitting would have. A resume that switched to a
-//! fresh order would be a signature of its own.
+//! ## Not cryptography
 //!
-//! ## What this is not
+//! The construction is a small Feistel network over the index space, a permutation by
+//! its shape, with a bit mixer as round function. It defeats a sensor correlating a
+//! monotonic walk; it would not survive someone looking for it.
 //!
-//! Cryptography. The construction below is a small Feistel network over the
-//! index space, which is a permutation by its shape rather than by any argument
-//! about its strength, and the round function is a bit mixer rather than a keyed
-//! hash anybody has attacked. It is built to defeat a sensor correlating a
-//! monotonic walk, which needs the order to be unpredictable to something not
-//! looking for it. It would not survive somebody who was.
-//!
-//! Nothing here is load-bearing for a verdict either. Getting the order wrong
-//! costs a recognisable scan; the one thing it must not do is skip or repeat a
-//! target, which is what makes [`Permutation`] a bijection and not merely a
-//! scramble, and what `is_a_permutation_of_the_whole_domain` holds it to.
+//! The one hard requirement is never to skip or repeat a target, which makes
+//! [`Permutation`] a bijection, checked by `is_a_permutation_of_the_whole_domain`.
 
 /// How many rounds the network runs.
 ///
-/// Four is where a Feistel construction becomes a permutation that does not
-/// visibly resemble its input: three leaves the low half of the output correlated
-/// with the low half of the index, which for a scan means neighbouring targets
-/// still arriving near each other, which is the whole thing this exists to stop.
+/// Four is where a Feistel construction stops visibly resembling its input: with three,
+/// the low half of the output stays correlated with the low half of the index, so
+/// neighbouring targets still arrive near each other.
 const ROUNDS: u32 = 4;
 
 /// Knuth's golden-ratio constant, which separates the rounds from each other.
@@ -73,9 +56,8 @@ const GOLDEN: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// A keyed rearrangement of `0..len`.
 ///
-/// Every index in the range maps to a distinct value in the range, and the whole
-/// range is covered: the order a scan asks its plan in is a rearrangement of the
-/// plan, never a sample of it.
+/// Every index in the range maps to a distinct value in the range, and the whole range
+/// is covered.
 ///
 /// ```
 /// use zond_engine::model::order::Permutation;
@@ -104,10 +86,10 @@ pub struct Permutation {
 impl Permutation {
     /// The rearrangement of `0..len` that `seed` names.
     ///
-    /// Two calls with the same pair produce the same order, on any build: the
-    /// mixing below is written out here rather than taken from a hasher whose
-    /// output is free to change between releases, because a seed recorded in a
-    /// journal has to mean the same order when the scan is continued next week.
+    /// The same pair produces the same order on any build, since a seed recorded in a
+    /// journal has to mean the same order when the scan is continued. The mixing is
+    /// written out here because a library hasher's output may change between
+    /// releases.
     pub fn new(seed: u64, len: u64) -> Self {
         Self {
             seed,
@@ -129,10 +111,8 @@ impl Permutation {
     /// The position asked about `index`th, or [`None`] for an index outside the
     /// range this rearranges.
     ///
-    /// The bound is not a formality. The walk below lands inside `0..len` from
-    /// anywhere in the domain, so an index past the end would answer a position
-    /// some index inside it also answers, and a caller would ask one target
-    /// twice while never asking another.
+    /// The bound matters: the walk lands inside `0..len` from anywhere in the domain,
+    /// so an index past the end would repeat a position some index inside it answers.
     pub fn at(&self, index: u64) -> Option<u64> {
         (index < self.len).then(|| self.walk(index))
     }
@@ -145,9 +125,8 @@ impl Permutation {
     /// When `position` is asked about: the index [`at`](Self::at) names it
     /// at, or [`None`] for a position outside the range.
     ///
-    /// The inverse of [`at`](Self::at), and as cheap. It is what lets a count
-    /// of how far a scan has got be kept in the order it asks in while its
-    /// answers arrive numbered by where the plan holds them.
+    /// The inverse of [`at`](Self::at), and as cheap. Lets progress be counted in the
+    /// order the scan asks while answers arrive numbered by plan position.
     ///
     /// ```
     /// use zond_engine::model::order::Permutation;
@@ -177,16 +156,13 @@ impl Permutation {
     /// [`at`](Self::at) without the bound, for an index already known to be
     /// inside the range.
     ///
-    /// Walks the network until it lands on a position the range holds, which is
-    /// the standard way to cut a permutation of a power of two down to a
-    /// permutation of an arbitrary count. It terminates, and not on average: the
-    /// network is a bijection over the whole domain, so repeated application
-    /// traces the cycle `index` sits on, and that cycle contains `index` itself,
-    /// which is inside the range. The loop cannot run past the cycle without
-    /// finding one.
+    /// Walks the network until it lands inside the range (cycle walking), the standard
+    /// way to cut a permutation of a power of two down to an arbitrary count. It always
+    /// terminates: the network is a bijection, so repeated application traces the
+    /// cycle `index` sits on, which contains `index` itself.
     ///
-    /// The domain is under four times the range by construction, so it lands on
-    /// the first try more often than not and on the fourth essentially always.
+    /// The domain is under four times the range, so it usually lands on the first try
+    /// and essentially always by the fourth.
     fn walk(&self, index: u64) -> u64 {
         if self.half == 0 {
             return index;
@@ -204,10 +180,8 @@ impl Permutation {
     /// [`walk`](Self::walk) backwards: the index whose walk lands on
     /// `position`, for a position already known to be inside the range.
     ///
-    /// The same cycle traced the other way. The walk from an index passes
-    /// through values outside the range and stops at the first inside it, so
-    /// stepping back from that position through the values outside the range
-    /// arrives at the index, which is the first inside it going that way.
+    /// The same cycle traced the other way: stepping back through values outside the
+    /// range arrives at the index, the first value inside it.
     fn unwalk(&self, position: u64) -> u64 {
         if self.half == 0 {
             return position;
@@ -240,9 +214,8 @@ impl Permutation {
 
     /// One pass of the network: [`ROUNDS`] rounds of `(l, r) -> (r, l ^ f(r))`.
     ///
-    /// A bijection over `0..2^(2 * half)` whatever the round function does, which
-    /// is the property the whole thing rests on: each round is undone by running
-    /// it backwards, so no two inputs can collide.
+    /// A bijection over `0..2^(2 * half)` whatever the round function does, since each
+    /// round can be undone, so no two inputs collide.
     fn round_trip(&self, value: u64) -> u64 {
         let mask = (1u64 << self.half) - 1;
         let mut left = (value >> self.half) & mask;
@@ -260,10 +233,9 @@ impl Permutation {
 
 /// Half the width of the smallest domain that holds `len`, in bits.
 ///
-/// Rounded up to an even number of bits so the network's two halves are the same
-/// width, which is what lets a round exclusive-or one into the other. That costs
-/// at most one extra bit of domain, so the walk in [`Permutation::walk`] discards
-/// under three quarters of its landings in the worst case and none in the best.
+/// Rounded up to an even number of bits so the two halves have the same width. That
+/// costs at most one extra bit of domain, so [`Permutation::walk`] discards under three
+/// quarters of its landings in the worst case.
 ///
 /// Zero for a range of one position or none, which has one arrangement.
 fn half_width(len: u64) -> u32 {
@@ -279,10 +251,8 @@ fn half_width(len: u64) -> u32 {
 /// The round function: the key, the round and the half, mixed into a value the
 /// round exclusive-ors into the other half.
 ///
-/// The mixing is a well-known 64-bit avalanche step, written out rather than
-/// pulled from a dependency for the reason [`Permutation::new`] gives: the order
-/// a journal recorded has to be the order a later build reproduces, and a
-/// hasher's output is not a promise anybody made.
+/// A well-known 64-bit avalanche step (SplitMix64's finaliser), written out for the
+/// reason [`Permutation::new`] gives.
 const fn mix(seed: u64, round: u32, value: u64) -> u64 {
     let mut mixed = value
         .wrapping_add(seed)
@@ -308,9 +278,8 @@ const fn mix(seed: u64, round: u32, value: u64) -> u64 {
 mod tests {
     use super::*;
 
-    /// The one property everything else rests on, over every awkward length
-    /// there is: one either side of each power of two, where the domain is
-    /// widest relative to the range and the walk discards the most.
+    /// The bijection holds at every awkward length: either side of each power of two,
+    /// where the walk discards the most.
     #[test]
     fn is_a_permutation_of_the_whole_domain() {
         let mut lengths: Vec<u64> = (0..=64).collect();
@@ -334,8 +303,7 @@ mod tests {
         }
     }
 
-    /// A seed names one order and keeps naming it, which is what a journal
-    /// records it for.
+    /// A seed names one order, every time.
     #[test]
     fn a_seed_names_the_same_order_every_time() {
         let once: Vec<u64> = Permutation::new(0xC0FFEE, 5_000).iter().collect();
@@ -344,7 +312,7 @@ mod tests {
         assert_eq!(once, again);
     }
 
-    /// And two seeds name different ones, or the key is decoration.
+    /// Two seeds name different orders.
     #[test]
     fn two_seeds_name_different_orders() {
         let one: Vec<u64> = Permutation::new(1, 5_000).iter().collect();
@@ -353,13 +321,8 @@ mod tests {
         assert_ne!(one, other);
     }
 
-    /// The reason the feature exists. A scan asking positions 0, 1, 2 in turn
-    /// must not be walking the plan in address order at any grain, so
-    /// consecutive questions have to land far apart.
-    ///
-    /// The bound is loose. What it rules out is the failure that matters, an
-    /// order that is the identity or a local rearrangement of it; pinning the
-    /// number tighter would be testing the mixer rather than the property.
+    /// Consecutive questions land far apart. The bound is loose: it rules out the
+    /// identity or a local rearrangement of it without testing the mixer itself.
     #[test]
     fn consecutive_questions_land_in_unrelated_parts_of_the_plan() {
         const LEN: u64 = 65_536;
@@ -381,8 +344,7 @@ mod tests {
         );
     }
 
-    /// A range of one position or none has one arrangement, and asking for it
-    /// answers rather than dividing by anything.
+    /// A range of one position or none is the identity.
     #[test]
     fn a_range_too_small_to_rearrange_is_the_identity() {
         assert!(Permutation::new(7, 0).iter().next().is_none());
@@ -390,8 +352,7 @@ mod tests {
         assert!(Permutation::new(7, 0).is_empty());
     }
 
-    /// An index outside the range answers nothing rather than a position some
-    /// index inside it already owns.
+    /// An index outside the range names no position.
     #[test]
     fn an_index_past_the_end_names_no_position() {
         let order = Permutation::new(3, 10);
@@ -401,9 +362,7 @@ mod tests {
         assert_eq!(order.at(u64::MAX), None);
     }
 
-    /// Asking when a position comes up answers the index it came up at, for
-    /// every position, so a count kept in the order a scan asks in and one
-    /// kept in the plan's own order name the same targets.
+    /// `index_of` inverts `at` for every position.
     #[test]
     fn index_of_undoes_at_over_every_awkward_length() {
         for len in [0u64, 1, 2, 3, 7, 8, 9, 255, 256, 257, 1_000, 4_097] {
@@ -422,7 +381,7 @@ mod tests {
         }
     }
 
-    /// And the inverse holds across the widest domain too.
+    /// The inverse holds across the widest domain too.
     #[test]
     fn index_of_undoes_at_in_the_widest_range() {
         let order = Permutation::new(0x5EED, u64::MAX);

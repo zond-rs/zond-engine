@@ -10,57 +10,45 @@
 //!
 //! Which segment a TCP port probe carries, and what an answer to it proves.
 //!
-//! A port scan asks a target one question, and the flags on the probe decide
-//! which question that is. A SYN asks "will you accept a connection here?" and
-//! is answered positively; the five techniques that do not send one ask "is
-//! there anyone behind this port at all?" and are answered *negatively*, by the
-//! RST that only a closed port is obliged to send. That inversion is the point
-//! of them: a filter that blocks connection attempts often passes a segment
-//! that is not one, so the probe reaches a stack that a SYN never would. The
-//! seventh, [`Window`](TcpScanTechnique::Window), reads that same refusal for
-//! the one field in it that answers positively.
+//! The flags on the probe decide which question a port scan asks. A SYN asks "will you
+//! accept a connection here?" and is answered positively. The five techniques that do
+//! not send one ask "is anyone behind this port?" and are answered *negatively*, by the
+//! RST only a closed port is obliged to send; a filter that blocks connection attempts
+//! often passes such a segment. The seventh, [`Window`](TcpScanTechnique::Window), reads
+//! one field of that refusal that answers positively.
 //!
-//! The mapping from reply to verdict lives here rather than in the scanner
-//! because it is the whole of what distinguishes the techniques. Everything
-//! else - retransmission, pacing, source selection, the deadline - is identical
-//! across all seven, and the scanner is written once against this table. The
-//! flags themselves live in [`crate::protocols::tcp`], which is the layer that
-//! knows what a TCP header is.
+//! The reply-to-verdict mapping lives here because it is all that distinguishes the
+//! techniques; retransmission, pacing, source selection and the deadline are shared,
+//! and the scanner is written once against this table. The flags themselves live in
+//! [`crate::protocols::tcp`].
 //!
 //! ## What each technique rests on
 //!
 //! RFC 793 §3.4 requires a port with nothing behind it to answer any segment
-//! that does not carry RST with a RST, and requires a port in LISTEN to ignore
-//! a segment carrying neither SYN, ACK nor RST. Silence is therefore weak
-//! evidence of a listener and a RST is strong evidence of none - which is why
-//! [`PortState::OpenOrNoReply`] is the honest verdict for silence here, and
-//! [`PortState::NoReply`] is not.
+//! that does not carry RST with a RST, and requires a port in LISTEN to ignore a segment
+//! carrying neither SYN, ACK nor RST. Silence is weak evidence of a listener and a RST
+//! strong evidence of none, so the verdict for silence is
+//! [`PortState::OpenOrNoReply`].
 //!
-//! Not every stack obeys. Windows, many Cisco devices, BSDI and IBM OS/400
-//! answer every flag probe with a RST whatever the port state. Against those,
-//! [`Fin`](TcpScanTechnique::Fin), [`Null`](TcpScanTechnique::Null),
-//! [`Xmas`](TcpScanTechnique::Xmas) and [`Maimon`](TcpScanTechnique::Maimon)
-//! report every port closed - not merely useless but confidently wrong. A run
-//! that finds *no* open-or-no-reply port at all has almost certainly met one, and
-//! is worth repeating with [`Syn`](TcpScanTechnique::Syn).
+//! Not every stack obeys. Windows, many Cisco devices, BSDI and IBM OS/400 answer every
+//! flag probe with a RST whatever the port state, so [`Fin`](TcpScanTechnique::Fin),
+//! [`Null`](TcpScanTechnique::Null), [`Xmas`](TcpScanTechnique::Xmas) and
+//! [`Maimon`](TcpScanTechnique::Maimon) report every port closed, confidently and
+//! wrongly. A run that finds *no* open-or-no-reply port has almost certainly met one,
+//! and is worth repeating with [`Syn`](TcpScanTechnique::Syn).
 //!
-//! ## No technique here answers the whole question
+//! ## No single technique answers the whole question
 //!
-//! These are not seven ways of doing the same thing, and running one of them is
-//! rarely enough. A flag probe cannot tell an open port from one a filter dropped -
-//! both are silent, and both come back [`PortState::OpenOrNoReply`]. An
-//! [`Ack`](TcpScanTechnique::Ack) scan tells those two apart and never says
-//! which is open. Only [`Syn`](TcpScanTechnique::Syn) identifies a listener
-//! from the reply alone. [`Window`](TcpScanTechnique::Window) sends the ACK
-//! scan's segment and reads one field further, which separates open from closed
-//! on the stacks that still leak the difference and says nothing on the ones
-//! that do not.
+//! A flag probe cannot tell an open port from one a filter dropped: both are silent and
+//! come back [`PortState::OpenOrNoReply`]. An [`Ack`](TcpScanTechnique::Ack) scan tells
+//! those two apart but never says which is open. Only [`Syn`](TcpScanTechnique::Syn)
+//! identifies a listener from the reply alone. [`Window`](TcpScanTechnique::Window)
+//! reads one field further than the ACK scan, separating open from closed on stacks
+//! that still leak the difference.
 //!
-//! Measured against a router with one open, one dropping probes and three closed
-//! ports, that plays out exactly: the FIN scan reports the open port and the
-//! dropping port identically, and it takes the ACK scan beside it to separate
-//! them. A caller offering these to a user is offering complementary
-//! instruments, not alternatives.
+//! Measured against a router with one open, one dropping and three closed ports, the
+//! FIN scan reported the open and the dropping port identically, and the ACK scan beside
+//! it separated them. The techniques are complementary instruments.
 
 use std::fmt;
 use std::str::FromStr;
@@ -70,10 +58,9 @@ use crate::model::port::PortState;
 /// The two segments a TCP port probe can draw back, as classified off the wire
 /// by [`crate::protocols::tcp::classify_probe_response`].
 ///
-/// What either one *means* depends entirely on the probe that provoked it, which
-/// is [`TcpScanTechnique::verdict`]'s job. A RST is a closed port to a FIN probe
-/// and a reachable one to an ACK probe; naming the segment rather than the
-/// conclusion is what keeps the two from being confused.
+/// What either means depends on the probe that provoked it, which is
+/// [`TcpScanTechnique::verdict`]'s job: a RST is a closed port to a FIN probe and a
+/// reachable one to an ACK probe.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpReply {
@@ -84,41 +71,33 @@ pub enum TcpReply {
     Rst {
         /// The receive window the reset announced.
         ///
-        /// A stack resetting a connection it never held has no window to
-        /// announce, so whatever it writes here is a property of the code path
-        /// it took rather than of the segment it answered. BSD derivatives
-        /// leave the listening socket's own window on a reset from an open
-        /// port and zero on one from a closed port, which is the single field
-        /// [`TcpScanTechnique::Window`] reads. Every other technique ignores
-        /// it.
+        /// A stack resetting a connection it never held has no window to announce,
+        /// so this reflects the code path it took. BSD derivatives leave the
+        /// listening socket's window on a reset from an open port and zero on one
+        /// from a closed port. Only [`TcpScanTechnique::Window`] reads it.
         window: u16,
     },
 
-    /// ACK alone: a *challenge ACK*, and the only reply here that is not an
-    /// answer to the probe that drew it.
+    /// ACK alone: a *challenge ACK*, the one reply here that does not answer the probe
+    /// that drew it.
     ///
-    /// A stack sends one when a SYN arrives for a connection it is already
-    /// half-open on and the sequence number does not fit that connection's
-    /// window (RFC 793 §3.9 requires an acknowledgement for an unacceptable
-    /// segment; RFC 5961 §4 makes it mandatory for a SYN specifically, to close
-    /// the blind-reset window). It carries `RCV.NXT`, which acknowledges the
-    /// earlier attempt that opened the connection rather than the one that
-    /// provoked this.
+    /// A stack sends one when a SYN arrives for a connection it is already half-open on
+    /// and the sequence number does not fit that connection's window (RFC 793 §3.9
+    /// requires an acknowledgement for an unacceptable segment; RFC 5961 §4 makes it
+    /// mandatory for a SYN, to close the blind-reset window). It carries `RCV.NXT`,
+    /// acknowledging the earlier attempt that opened the connection.
     ///
-    /// Only a host holding a half-open connection sends one, and only a
-    /// listener holds one. A closed port has no state to challenge from; it
-    /// resets. So this is positive evidence of an open port, arriving by a
-    /// different route than a handshake.
+    /// Only a listener holds a half-open connection; a closed port resets. So this is
+    /// positive evidence of an open port.
     ChallengeAck,
 }
 
 /// The two chunks an SCTP port probe can draw back, as classified off the wire
 /// by [`crate::protocols::sctp::classify_probe_response`].
 ///
-/// Beside [`TcpReply`] and for its reason: what either chunk *means* depends on
-/// the probe that provoked it, which is [`SctpScanTechnique::verdict`]'s job. An
-/// ABORT is a closed port to either technique; an INIT-ACK is an open port to an
-/// INIT probe and cannot be an answer to a COOKIE-ECHO at all.
+/// As with [`TcpReply`], meaning depends on the probe, which is
+/// [`SctpScanTechnique::verdict`]'s job. An ABORT is a closed port to either technique;
+/// an INIT-ACK is an open port to an INIT probe and cannot answer a COOKIE-ECHO.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SctpReply {
@@ -133,20 +112,16 @@ pub enum SctpReply {
 
 /// How an SCTP port is probed.
 ///
-/// Two chunks, and the difference between them is the difference between the
-/// SYN scan and the FIN family one protocol over. An INIT is answered whichever
-/// way the port stands, so it names open ports and reads silence as a filter. A
-/// COOKIE-ECHO is answered only by a port with nothing behind it, so it cannot
-/// name an open port at all and reads silence as open or no reply.
+/// The SCTP counterparts of the SYN scan and the FIN family. An INIT is answered
+/// whichever way the port stands, so it names open ports and reads silence as a
+/// filter. A COOKIE-ECHO is answered only by a port with nothing behind it, so it
+/// cannot name an open port and reads silence as open or no reply.
 ///
-/// Both need raw sockets. There is no unprivileged form of either, since no
-/// kernel builds an SCTP chunk on a caller's behalf the way it completes a TCP
-/// handshake, so a process without them has its SCTP ports refused rather than
-/// answered a different way.
+/// Both need raw sockets: no kernel builds an SCTP chunk on a caller's behalf, so
+/// without them SCTP ports are refused.
 ///
-/// Host discovery is not governed by this. A sweep asks whether an address is
-/// there, and only an INIT draws an answer from an address whose port is open,
-/// so the discovery probe is an INIT whatever a port scan was asked for.
+/// Host discovery always sends an INIT, since only an INIT draws an answer from an
+/// open port.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SctpScanTechnique {
@@ -161,31 +136,21 @@ pub enum SctpScanTechnique {
     Init,
     /// A COOKIE-ECHO chunk carrying a cookie no endpoint minted.
     ///
-    /// RFC 4960 §8.4 sends an out-of-the-blue COOKIE-ECHO down two different
-    /// paths depending on whether anything is listening. A listener
-    /// authenticates the cookie (§5.1.5), fails to, and discards the packet
-    /// without a word. A port with no endpoint behind it has nothing to
-    /// authenticate against and falls through to the rule that answers an
-    /// unrecognised packet with an ABORT. So the ABORT is a closed port and
-    /// silence is everything else.
+    /// RFC 4960 §8.4 handles an out-of-the-blue COOKIE-ECHO in two ways. A listener
+    /// tries to authenticate the cookie (§5.1.5), fails, and silently discards the
+    /// packet. A port with no endpoint falls through to the rule that answers an
+    /// unrecognised packet with an ABORT. So an ABORT is a closed port and silence is
+    /// everything else.
     ///
-    /// What it buys is passage. A filter written against SCTP scanning blocks
-    /// the INIT chunk, because that is the chunk a scan is expected to send and
-    /// the one that opens an association; a COOKIE-ECHO is neither, and rules
-    /// written for the first often say nothing about the second. What it costs
-    /// is the positive result: an open port and one a filter dropped are both
-    /// silent here, and no amount of waiting separates them. Run it to find out
-    /// whether a range that drew no reply to an INIT scan is dropping SCTP or
-    /// only the INIT chunk.
+    /// Filters written against SCTP scanning block INIT, the chunk that opens an
+    /// association, and often say nothing about COOKIE-ECHO. The cost is the positive
+    /// result: an open port and a dropped probe are both silent. Use it to find out
+    /// whether a range that ignored an INIT scan is dropping SCTP or only INIT.
     CookieEcho,
 }
 
 impl SctpScanTechnique {
     /// Every technique, in the order they are documented.
-    ///
-    /// Here for the reason [`TcpScanTechnique::ALL`] is: a front end offering
-    /// the choice enumerates it from the engine rather than from a list of its
-    /// own that drifts the first time one is added.
     pub const ALL: &'static [Self] = &[Self::Init, Self::CookieEcho];
 
     /// The canonical name, which is also what [`FromStr`] accepts and
@@ -209,10 +174,8 @@ impl SctpScanTechnique {
     /// What the technique concludes from `reply`, or `None` if that chunk
     /// answers nothing this probe asked.
     ///
-    /// The `None` case carries the same weight it does for TCP. Nothing a
-    /// COOKIE-ECHO can send provokes an INIT-ACK, so one arriving at that scan
-    /// is somebody else's association rather than an open port, and resolving a
-    /// port on it would report a listener on the strength of a coincidence.
+    /// Nothing a COOKIE-ECHO sends provokes an INIT-ACK, so one arriving at that scan
+    /// belongs to someone else's association and resolves nothing.
     pub const fn verdict(self, reply: SctpReply) -> Option<PortState> {
         match (self, reply) {
             (Self::Init, SctpReply::InitAck) => Some(PortState::Open),
@@ -223,10 +186,9 @@ impl SctpScanTechnique {
 
     /// What the technique concludes when every attempt goes unanswered.
     ///
-    /// The same split the TCP techniques make. An INIT that draws nothing was
-    /// dropped, since a live stack answers one whichever way the port stands. A
-    /// COOKIE-ECHO that draws nothing was either dropped or handed to a listener
-    /// that discarded it in silence, and the probe cannot tell those apart.
+    /// An INIT that draws nothing was dropped, since a live stack answers one either
+    /// way. A COOKIE-ECHO that draws nothing was either dropped or silently discarded
+    /// by a listener, and the probe cannot tell which.
     pub const fn silence_means(self) -> PortState {
         match self {
             Self::Init => PortState::NoReply,
@@ -236,9 +198,8 @@ impl SctpScanTechnique {
 
     /// Whether this technique can report a port [`PortState::Open`].
     ///
-    /// [`Init`](Self::Init) alone, from the INIT-ACK a listener sends. A
-    /// COOKIE-ECHO scan's best answer is open or no reply, so anything that
-    /// wants open SCTP ports has to ask for the other one.
+    /// [`Init`](Self::Init) alone, from the INIT-ACK a listener sends. A COOKIE-ECHO
+    /// scan's best answer is open or no reply.
     pub const fn finds_open_ports(self) -> bool {
         matches!(self, Self::Init)
     }
@@ -258,11 +219,8 @@ impl fmt::Display for SctpScanTechnique {
     }
 }
 
-/// The error [`SctpScanTechnique::from_str`] returns, carrying the list of names
+/// The error [`SctpScanTechnique::from_str`] returns, listing the SCTP technique names
 /// that would have worked.
-///
-/// Built the way [`UnknownTechnique`] is, and separate from it so a message
-/// naming the alternatives names the ones for the right protocol.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 #[error(
@@ -312,11 +270,10 @@ impl FromStr for SctpScanTechnique {
 
 /// How a TCP port is probed.
 ///
-/// Every technique here needs raw sockets, and so root; the unprivileged connect
-/// fallback can only complete handshakes, which is [`Syn`](Self::Syn) and
-/// nothing else. A caller asking for another technique without privileges is
-/// told so rather than quietly given a connect scan, because the two answer
-/// different questions.
+/// Every technique needs raw sockets, and so root. The unprivileged connect fallback can
+/// only complete handshakes, which approximates [`Syn`](Self::Syn) alone; asking for
+/// another technique without privileges is refused, since a connect scan answers a
+/// different question.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TcpScanTechnique {
@@ -324,9 +281,8 @@ pub enum TcpScanTechnique {
     /// port positively: a SYN+ACK means a listener accepted the connection
     /// attempt, and a RST means nothing is there.
     ///
-    /// Fast, accurate against every stack, and the most widely recognized -
-    /// which is also its weakness, since it is what a filter is most likely to
-    /// block and an IDS most likely to log.
+    /// Fast and accurate against every stack, but also what a filter most likely
+    /// blocks and an IDS most likely logs.
     #[default]
     Syn,
     /// A lone FIN. A closed port answers RST, an open one is required to ignore
@@ -335,74 +291,56 @@ pub enum TcpScanTechnique {
     /// The plainest of the flag probes and the one most likely to pass a
     /// stateless filter that blocks SYN.
     Fin,
-    /// No flags at all. Semantically identical to [`Fin`](Self::Fin) at the
-    /// target - neither carries SYN, ACK or RST - but a segment with an
-    /// empty flag field is unlike anything a real connection produces, so it
-    /// gets past filters that match on FIN and is trivially matched by any
-    /// filter that thinks to look.
+    /// No flags at all. Identical to [`Fin`](Self::Fin) at the target, since neither
+    /// carries SYN, ACK or RST. An empty flag field gets past filters that match on
+    /// FIN, and is trivially matched by any filter that looks for it.
     Null,
     /// FIN, PSH and URG together, lit up like a Christmas tree. Classified
     /// exactly as [`Fin`](Self::Fin) is, since PSH and URG occupy no sequence
     /// space and no stack reads them on a segment for a port it is not holding
     /// open.
     ///
-    /// Its value over the other two is diagnostic: three unusual flags at once
-    /// is a combination filters and stacks disagree about more than either
-    /// alone.
+    /// Useful diagnostically: filters and stacks disagree about this combination more
+    /// than about either flag alone.
     Xmas,
     /// FIN and ACK together, after Uriel Maimon's finding in *Phrack* 49.
     ///
-    /// The one technique whose usefulness is a property of the target rather
-    /// than of the RFC, and the one to reach for last. BSD-derived stacks drop
-    /// the segment when the port is open, and against those it works like a FIN
-    /// scan while looking far more like ordinary connection teardown.
+    /// Works only on some targets, so reach for it last. BSD-derived stacks drop the
+    /// segment when the port is open, and against those it works like a FIN scan while
+    /// looking more like ordinary connection teardown.
     ///
-    /// Against a conformant stack it is actively misleading. RFC 793
-    /// requires a reset for any ACK-carrying segment on a connection that does
-    /// not exist, whether or not the port is listening, so an open port answers
-    /// exactly as a closed one does and is reported [`PortState::Closed`].
-    /// That is not a missing result but a wrong one, and nothing in the scan
-    /// distinguishes it from the truth: measured against a router whose port 80
-    /// is open and answers a SYN with SYN+ACK, this technique reported that
-    /// port closed. Use it where a FIN scan has already shown the target does
-    /// *not* reset everything, and read a `Closed` from it against a second
-    /// technique before believing it.
+    /// Against a conformant stack it is wrong. RFC 793 requires a reset for any
+    /// ACK-carrying segment on a nonexistent connection, listening or not, so an open
+    /// port is reported [`PortState::Closed`], and nothing in the scan reveals it:
+    /// against a router whose port 80 answered a SYN with SYN+ACK, this reported port
+    /// 80 closed. Use it where a FIN scan has shown the target does *not* reset
+    /// everything, and confirm a `Closed` with a second technique.
     Maimon,
-    /// A lone ACK. Never establishes whether a port is open - it maps the
-    /// firewall in front of it.
+    /// A lone ACK. Maps the firewall in front of a port without establishing whether
+    /// the port is open.
     ///
-    /// A RST means the probe reached the host's stack, which is
-    /// [`PortState::Reachable`]: something is there and nothing dropped the
-    /// segment on the way. Silence or an ICMP error means something did. Running
-    /// this beside a SYN scan is what separates "no listener" from "never
-    /// arrived".
+    /// A RST means the probe reached the host's stack: [`PortState::Reachable`].
+    /// Silence or an ICMP error means something dropped it. Beside a SYN scan, this
+    /// separates "no listener" from "never arrived".
     Ack,
     /// A lone ACK, read for the window on the reset it draws.
     ///
-    /// The probe is [`Ack`](Self::Ack)'s exactly, and so is the RST that comes
-    /// back from every port a filter did not swallow. One field separates them:
-    /// a stack that announces its listening socket's window on the reset from
-    /// an open port, and zero on the reset from a closed one, has said which is
-    /// which without a SYN having been sent. It is the only technique here that
-    /// finds a listener from a refusal.
+    /// The probe is [`Ack`](Self::Ack)'s. A stack that announces its listening
+    /// socket's window on the reset from an open port, and zero from a closed one, says
+    /// which is which without a SYN being sent. The only technique that finds a
+    /// listener from a refusal.
     ///
-    /// BSD derivatives, a great deal of network hardware and many embedded
-    /// stacks still carry the distinction. Linux and current Windows do not:
-    /// both reset with a zero window whichever the port was, and against them
-    /// this reports the entire range closed. Two shapes of result say the
-    /// answer is about the stack rather than the ports, and neither is a
-    /// failure the scan can detect for itself: a range that comes back almost
-    /// entirely open, and one that comes back closed to the last port. Read
-    /// either against a [`Syn`](Self::Syn) scan before believing it.
+    /// BSD derivatives, much network hardware and many embedded stacks still carry the
+    /// distinction. Linux and current Windows reset with a zero window either way, so
+    /// against them the whole range reads closed. A range that comes back almost
+    /// entirely open, or closed to the last port, is describing the stack; check it
+    /// against a [`Syn`](Self::Syn) scan.
     Window,
 }
 
 impl TcpScanTechnique {
-    /// Every technique, in the order they are documented.
-    ///
-    /// Exists so a front end offering the choice enumerates it from the engine
-    /// rather than from a list of its own that drifts the first time one is
-    /// added.
+    /// Every technique, in the order they are documented, for a front end offering the
+    /// choice.
     pub const ALL: &'static [Self] = &[
         Self::Syn,
         Self::Fin,
@@ -448,45 +386,34 @@ impl TcpScanTechnique {
     /// What the technique concludes from `reply`, or `None` if that segment
     /// answers nothing this probe asked.
     ///
-    /// The `None` cases are as load-bearing as the others. A SYN+ACK reaching an
-    /// ACK scan did not answer its probe - nothing this scan sent could provoke
-    /// one - and reading it as an open port would report a listener on the
-    /// strength of somebody else's traffic.
+    /// The `None` cases matter: a SYN+ACK reaching an ACK scan cannot have answered its
+    /// probe, and reading it as an open port would trust someone else's traffic.
     pub const fn verdict(self, reply: TcpReply) -> Option<PortState> {
         match (self, reply) {
-            // A SYN is the only probe a listener answers, and a RST to it is the
-            // stack saying nothing holds that port.
+            // A listener answers a SYN; a RST says nothing holds the port.
             (Self::Syn, TcpReply::SynAck) => Some(PortState::Open),
             (Self::Syn, TcpReply::Rst { .. }) => Some(PortState::Closed),
 
-            // A challenge ACK means a stack is already half-open on this
-            // connection, which only a listener is. It reaches this scan on the
-            // path that matters: when a SYN+ACK is lost, this host never resets
-            // it, the peer stays in SYN-RECEIVED, and every retransmission draws
-            // one of these instead of a fresh handshake. Reading it as noise
-            // reported those ports as no reply, which is an open port on a lossy
-            // path and the case retransmission exists for.
+            // A challenge ACK means the stack is half-open on this connection, which
+            // only a listener is. It happens when a SYN+ACK is lost: this host never
+            // resets it, the peer stays in SYN-RECEIVED, and every retransmission
+            // draws a challenge ACK. Ignoring it would read an open port on a lossy
+            // path as no reply.
             (Self::Syn, TcpReply::ChallengeAck) => Some(PortState::Open),
 
-            // No other technique opens a connection, so none can legitimately
-            // provoke a challenge. A bare ACK drawn by a FIN or an ACK probe is
-            // somebody else's traffic that happened to carry the right nonce, and
-            // resolving a port on it would be resolving it on a coincidence.
+            // No other technique opens a connection, so a bare ACK drawn by a FIN or
+            // ACK probe is someone else's traffic that happened to match.
 
-            // A RST is what only a closed port is obliged to send; the silence
-            // of an open one is handled by `silence_means`.
+            // Only a closed port must send a RST; silence is `silence_means`.
             (Self::Fin | Self::Null | Self::Xmas | Self::Maimon, TcpReply::Rst { .. }) => {
                 Some(PortState::Closed)
             }
 
-            // The probe reached a real stack, which is all an ACK scan claims to
-            // establish. Whether anything is listening it cannot say.
+            // The probe reached a real stack, which is all an ACK scan establishes.
             (Self::Ack, TcpReply::Rst { .. }) => Some(PortState::Reachable),
 
-            // The same reset the ACK scan reads as a reachable port, one
-            // field further. A window the resetting stack had no connection to
-            // announce it for is the listening socket's, and zero is what a
-            // port with no socket behind it has to announce.
+            // A non-zero window on the reset is the listening socket's; a port
+            // with no socket behind it announces zero.
             (Self::Window, TcpReply::Rst { window }) => Some(if window == 0 {
                 PortState::Closed
             } else {
@@ -499,11 +426,9 @@ impl TcpScanTechnique {
 
     /// What the technique concludes when every attempt goes unanswered.
     ///
-    /// The difference between the two answers is the difference between the
-    /// families. A SYN or an ACK that draws nothing was dropped - both are
-    /// answered by any live stack, so silence means no stack took it. A flag probe that
-    /// draws nothing was either dropped *or* delivered to an open port that was
-    /// required to ignore it, and no amount of waiting separates those.
+    /// Any live stack answers a SYN or an ACK, so silence means it was dropped. A flag
+    /// probe that draws nothing was either dropped *or* delivered to an open port
+    /// required to ignore it, and waiting cannot separate those.
     pub const fn silence_means(self) -> PortState {
         match self {
             Self::Syn | Self::Ack | Self::Window => PortState::NoReply,
@@ -513,15 +438,11 @@ impl TcpScanTechnique {
 
     /// Whether this technique can report a port [`PortState::Open`].
     ///
-    /// [`Syn`](Self::Syn) from a handshake it drew, [`Window`](Self::Window)
-    /// from a refusal it read a field of. It is worth asking before promising a
-    /// user open ports, and it is why the service-detection pass, which
-    /// fingerprints open TCP ports, finds nothing to do after the other five.
+    /// [`Syn`](Self::Syn) from a handshake, [`Window`](Self::Window) from a field of a
+    /// refusal. After the other five, the service-detection pass, which fingerprints
+    /// open TCP ports, has nothing to do.
     ///
-    /// Not the same question as [`has_connect_fallback`](Self::has_connect_fallback),
-    /// which asks whether an unprivileged scan may stand in for this one. Both
-    /// were this method for a while, and a window scan would have been quietly
-    /// answered with a handshake it never asked for.
+    /// A different question from [`has_connect_fallback`](Self::has_connect_fallback).
     pub const fn finds_open_ports(self) -> bool {
         matches!(self, Self::Syn | Self::Window)
     }
@@ -529,10 +450,9 @@ impl TcpScanTechnique {
     /// Whether a TCP connect scan asks the same question, and so may stand in
     /// for this technique where the process has no raw sockets.
     ///
-    /// [`Syn`](Self::Syn) alone. A completed handshake finds the listeners a
-    /// half-open one finds, paying for them by being logged. Every other
-    /// technique turns on a segment no kernel sends on a caller's behalf, so
-    /// there is nothing to fall back to and the scan is refused instead.
+    /// [`Syn`](Self::Syn) alone: a completed handshake finds the same listeners, at the
+    /// cost of being logged. Every other technique depends on a segment no kernel sends
+    /// on a caller's behalf, so without raw sockets the scan is refused.
     pub const fn has_connect_fallback(self) -> bool {
         matches!(self, Self::Syn)
     }
@@ -540,20 +460,16 @@ impl TcpScanTechnique {
     /// Whether this technique needs ICMP errors as well as TCP segments to
     /// reach its verdict.
     ///
-    /// False for [`Syn`](Self::Syn) alone. Admitting ICMP copies every ICMP
-    /// packet on every captured interface into userspace, an error carrying no
-    /// ports to narrow a kernel filter with. The flag-probe techniques buy a
-    /// changed verdict for that, [`PortState::Blocked`] where silence would
-    /// have said open or no reply, and an ACK scan buys the identity of the
-    /// device doing the filtering, which is the question it was asked. A SYN
-    /// scan reaches open and closed without it.
+    /// False for [`Syn`](Self::Syn) alone. Admitting ICMP copies every ICMP packet on
+    /// every captured interface into userspace, since an ICMP error has no ports to
+    /// narrow a kernel filter with. The flag-probe techniques gain a verdict for it
+    /// ([`PortState::Blocked`] instead of open or no reply), and an ACK scan learns
+    /// which device is filtering. A SYN scan reaches open and closed without it.
     ///
-    /// What a SYN scan gives up without ICMP is telling a refusal from a
-    /// silence: a port a filter refused reads [`PortState::NoReply`], since
-    /// from here that is what it looks like. A caller who wants the two apart
-    /// asks through
-    /// [`ZondConfig::icmp_evidence`](crate::config::ZondConfig::icmp_evidence),
-    /// and such a port then reads [`PortState::Blocked`].
+    /// Without ICMP, a SYN scan reads a port a filter refused as [`PortState::NoReply`].
+    /// To tell the two apart, set
+    /// [`ZondConfig::icmp_evidence`](crate::config::ZondConfig::icmp_evidence), and such
+    /// a port reads [`PortState::Blocked`].
     pub const fn reads_icmp_errors(self) -> bool {
         !matches!(self, Self::Syn)
     }
@@ -565,16 +481,8 @@ impl fmt::Display for TcpScanTechnique {
     }
 }
 
-/// The error [`TcpScanTechnique::from_str`] returns, carrying the list of names
-/// that would have worked so a front end can print it verbatim.
-///
-/// The list is built from [`TcpScanTechnique::ALL`] rather than written out, so
-/// a technique added there appears in the error that exists to enumerate them.
-///
-/// Open rather than `#[non_exhaustive]`, for the reason
-/// [`MacAddrParseError`](crate::model::mac::MacAddrParseError) gives: one way to
-/// fail, one thing to say about it, and the list of alternatives derived rather
-/// than stored.
+/// The error [`TcpScanTechnique::from_str`] returns. Its message lists the accepted
+/// names, built from [`TcpScanTechnique::ALL`], so a front end can print it verbatim.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 #[error(
@@ -600,9 +508,7 @@ impl UnknownTechnique {
 impl FromStr for TcpScanTechnique {
     type Err = UnknownTechnique;
 
-    /// Parses a technique name, ignoring case and surrounding whitespace, so a
-    /// choice arriving as text - from an argument, a form field, a config file -
-    /// needs no mapping table of its own.
+    /// Parses a technique name, ignoring case and surrounding whitespace.
     ///
     /// # Examples
     ///
@@ -637,8 +543,7 @@ impl FromStr for TcpScanTechnique {
 mod tests {
     use super::*;
 
-    /// Every technique round-trips through its own name, so the name a caller
-    /// asks by and the one a report answers with can never drift apart.
+    /// Every technique round-trips through its own name.
     #[test]
     fn every_technique_parses_back_from_the_name_it_prints() {
         for &technique in TcpScanTechnique::ALL {
@@ -651,9 +556,7 @@ mod tests {
         assert_eq!("  MAIMON ".parse(), Ok(TcpScanTechnique::Maimon));
     }
 
-    /// The error names the alternatives, being printed straight at a user who has
-    /// just mistyped a flag, and it names every one, since it is built from `ALL`
-    /// rather than from a list somebody has to remember.
+    /// The error names every alternative.
     #[test]
     fn an_unknown_name_is_rejected_with_the_ones_that_would_work() {
         let error = "stealth"
@@ -670,9 +573,7 @@ mod tests {
         }
     }
 
-    /// The near-miss the whole table exists to prevent: a RST is a closed port
-    /// to one technique and a reachable port to another, and only the probe
-    /// that drew it says which.
+    /// A RST is a closed port to one technique and a reachable port to another.
     #[test]
     fn a_rst_means_something_different_per_technique() {
         use TcpScanTechnique::*;
@@ -683,9 +584,7 @@ mod tests {
         assert_eq!(Window.verdict(rst), Some(PortState::Open));
     }
 
-    /// The whole of the window scan: the same reset, read for one field. Zero
-    /// is a port with no socket behind it to announce a window for, and
-    /// anything else is the socket that had one.
+    /// The window scan: zero is a closed port, anything else an open one.
     #[test]
     fn a_window_scan_reads_the_reset_the_ack_scan_only_counts() {
         use TcpScanTechnique::*;
@@ -704,10 +603,8 @@ mod tests {
         );
     }
 
-    /// An unprivileged process may be given a handshake in place of a SYN scan
-    /// and nothing else. A window scan reports open ports too, so reading that
-    /// as licence to substitute a connect scan would answer a question about
-    /// reset windows with one about connections.
+    /// Only a SYN scan has a connect fallback, though a window scan also finds open
+    /// ports.
     #[test]
     fn only_a_syn_scan_falls_back_to_connect() {
         for &technique in TcpScanTechnique::ALL {
@@ -721,8 +618,7 @@ mod tests {
         assert!(!TcpScanTechnique::Window.has_connect_fallback());
     }
 
-    /// Only a SYN can provoke a SYN+ACK, so one arriving at any other scan
-    /// answered something else and must not be read as an open port.
+    /// Only a SYN can provoke a SYN+ACK, so any other scan ignores one.
     #[test]
     fn only_a_syn_scan_reads_a_syn_ack() {
         for &technique in TcpScanTechnique::ALL {
@@ -736,8 +632,6 @@ mod tests {
     }
 
     /// Silence is plain no-reply only where every live stack would have answered.
-    /// Getting this backwards would report open ports as no reply on the
-    /// techniques whose positive result *is* silence.
     #[test]
     fn silence_is_open_or_no_reply_exactly_for_the_flag_probes() {
         use TcpScanTechnique::*;
@@ -749,9 +643,7 @@ mod tests {
         }
     }
 
-    /// An ICMP error changes a flag probe's verdict and names an ACK scan's
-    /// firewall; for a SYN scan it confirms what silence already concluded, and
-    /// admitting ICMP costs every ICMP packet on the host.
+    /// Every technique but SYN reads ICMP errors.
     #[test]
     fn only_a_syn_scan_declines_icmp_errors() {
         for &technique in TcpScanTechnique::ALL {
@@ -764,8 +656,7 @@ mod tests {
 
     // ── SCTP ─────────────────────────────────────────────────────────────────
 
-    /// The same round trip the TCP techniques hold to, so a name in a settings
-    /// file and a name in a report cannot drift apart.
+    /// Every SCTP technique round-trips through its own name.
     #[test]
     fn every_sctp_technique_parses_back_from_the_name_it_prints() {
         for &technique in SctpScanTechnique::ALL {
@@ -786,9 +677,8 @@ mod tests {
         }
     }
 
-    /// An abort is a closed port whichever chunk drew it. An init-ack is an open
-    /// port to an init probe and nothing at all to a cookie-echo, which cannot
-    /// provoke one: reading it would report a listener on a coincidence.
+    /// An abort is a closed port whichever chunk drew it. An init-ack is an open port
+    /// to an init probe and nothing to a cookie-echo, which cannot provoke one.
     #[test]
     fn an_abort_closes_a_port_for_both_and_an_init_ack_only_for_one() {
         assert_eq!(
@@ -809,10 +699,7 @@ mod tests {
         );
     }
 
-    /// The trade the quieter chunk makes, and the reason it is not the default.
-    /// A listener answers an init and discards a cookie it cannot authenticate,
-    /// so only one of the two can name an open port and only one reads silence
-    /// as a filter.
+    /// Only an init can name an open port, and only an init reads silence as a filter.
     #[test]
     fn only_an_init_scan_names_an_open_sctp_port() {
         assert!(SctpScanTechnique::Init.finds_open_ports());
@@ -825,8 +712,7 @@ mod tests {
         );
     }
 
-    /// The audit line's word for silence is the state silence actually
-    /// produces, so a run's own summary cannot contradict its port table.
+    /// The audit line's word for silence matches the state silence produces.
     #[test]
     fn the_silence_label_names_the_state_silence_produces() {
         assert_eq!(SctpScanTechnique::Init.silence_label(), "no-reply");

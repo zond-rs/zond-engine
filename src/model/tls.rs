@@ -13,24 +13,19 @@
 //! that are wrong. No I/O and no wire format; [`protocols::tls`](crate::protocols::tls)
 //! builds the packet and [`fingerprint`](crate::fingerprint) sends it.
 //!
-//! ## Why a suite's faults are derived rather than stored
+//! ## Faults are derived from a suite's parts
 //!
-//! A cipher suite is not an opaque name. `TLS_RSA_WITH_3DES_EDE_CBC_SHA` says,
-//! in order, that it exchanges keys with static RSA, encrypts with 3DES in CBC
-//! mode, and authenticates with SHA-1, and each of those three is a separate
-//! thing a report should say about it. So a suite here is its parts, and
-//! [`CipherSuite::faults`] reads the parts rather than a verdict written beside
-//! them. A table of verdicts drifts from the suites it grades the first time one
-//! is added; a derivation cannot.
+//! `TLS_RSA_WITH_3DES_EDE_CBC_SHA` says it exchanges keys with static RSA, encrypts
+//! with 3DES in CBC mode, and authenticates with SHA-1, and each is a separate thing a
+//! report should say. So a suite here is its parts, and [`CipherSuite::faults`] reads
+//! them; a new suite cannot arrive ungraded.
 //!
-//! ## The list is curated, and says so
+//! ## The list is curated
 //!
-//! IANA's registry holds several hundred suites, most of them never deployed.
-//! [`CipherSuite::ALL`] is the ones a scan has any reason to offer: everything a
-//! current server negotiates, and everything with a fault worth reporting, so
-//! that a range coming back clean is evidence rather than a gap in the list. A
-//! suite nobody has ever configured is absent, and a server that somehow
-//! negotiates one is reported by its number; see
+//! IANA's registry holds several hundred suites, most never deployed.
+//! [`CipherSuite::ALL`] holds the ones a scan has reason to offer: everything a current
+//! server negotiates, and everything with a fault worth reporting, so a clean result is
+//! evidence. A server that negotiates an unlisted suite is reported by its number; see
 //! [`CipherSuite::from_code`].
 
 use std::collections::BTreeSet;
@@ -49,8 +44,7 @@ use crate::model::finding::{
 
 /// A TLS protocol version, by the number it carries on the wire.
 ///
-/// Ordered oldest to newest, so a scan reporting the range an endpoint accepts
-/// can name its floor and ceiling by comparison rather than by a table.
+/// Ordered oldest to newest, so an endpoint's floor and ceiling are found by comparison.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TlsVersion {
@@ -72,8 +66,7 @@ pub enum TlsVersion {
 impl TlsVersion {
     /// Every version worth offering, oldest first.
     ///
-    /// An enumeration walks this in order, so the report's version list is in
-    /// the same order for every endpoint and two scans diff cleanly.
+    /// An enumeration walks this in order, so two scans diff cleanly.
     pub const ALL: &'static [Self] = &[
         Self::Ssl30,
         Self::Tls10,
@@ -84,11 +77,9 @@ impl TlsVersion {
 
     /// The two-byte number this version carries on the wire.
     ///
-    /// TLS 1.3's is `0x0304`, which never appears in a record header or in a
-    /// ClientHello's version field: RFC 8446 §4.1.2 puts it in the
-    /// `supported_versions` extension and leaves the legacy field reading
-    /// `0x0303`. The number is still this one, and the wire module is what knows
-    /// where to write it.
+    /// TLS 1.3's is `0x0304`, which never appears in a record header or a ClientHello's
+    /// version field: RFC 8446 §4.1.2 puts it in the `supported_versions` extension and
+    /// leaves the legacy field at `0x0303`. The wire module knows where to write it.
     pub const fn code(self) -> u16 {
         match self {
             Self::Ssl30 => 0x0300,
@@ -115,8 +106,7 @@ impl TlsVersion {
     /// The name this version is written under, in a report and wherever it
     /// arrives as text.
     ///
-    /// The spelling every other tool prints, so a reader comparing two scanners'
-    /// output is comparing findings rather than formatting.
+    /// The spelling other tools print.
     pub const fn name(self) -> &'static str {
         match self {
             Self::Ssl30 => "SSLv3",
@@ -129,10 +119,8 @@ impl TlsVersion {
 
     /// Whether a standards body has withdrawn this version.
     ///
-    /// RFC 7568 prohibits SSL 3.0; RFC 8996 deprecates TLS 1.0 and 1.1. An
-    /// endpoint still accepting one of these is the single most quotable line a
-    /// TLS enumeration produces, because the remedy is a configuration change
-    /// rather than an upgrade.
+    /// RFC 7568 prohibits SSL 3.0; RFC 8996 deprecates TLS 1.0 and 1.1. The remedy is
+    /// a configuration change.
     pub const fn is_deprecated(self) -> bool {
         matches!(self, Self::Ssl30 | Self::Tls10 | Self::Tls11)
     }
@@ -140,11 +128,9 @@ impl TlsVersion {
     /// How much a report should make of an endpoint that still accepts this
     /// version.
     ///
-    /// SSL 3.0 outranks the other two because POODLE is a practical attack
-    /// against it rather than a deprecation on paper: an attacker who can make a
-    /// client retry recovers plaintext a byte at a time. TLS 1.0 and 1.1 are
-    /// withdrawn and, on their own, are a compliance failure rather than a way
-    /// in. `None` for a version still in good standing.
+    /// SSL 3.0 ranks higher because POODLE is practical: an attacker who can make a
+    /// client retry recovers plaintext a byte at a time. TLS 1.0 and 1.1 on their own
+    /// are a compliance failure. `None` for a version in good standing.
     pub const fn severity(self) -> Option<Severity> {
         match self {
             Self::Ssl30 => Some(Severity::High),
@@ -197,8 +183,7 @@ impl TlsVersion {
 impl FromStr for TlsVersion {
     type Err = UnknownTlsVersion;
 
-    /// Parses a version by the name it prints, ignoring case and surrounding
-    /// space, so a report read back names the same version it recorded.
+    /// Parses a version by the name it prints, ignoring case and surrounding space.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let name = s.trim().to_ascii_lowercase();
         Self::ALL
@@ -367,13 +352,10 @@ pub enum Mac {
 
 /// One thing wrong with a cipher suite, in the terms a report states it.
 ///
-/// A suite may carry several: `TLS_RSA_EXPORT_WITH_RC4_40_MD5` is export-grade,
-/// uses RC4, has no forward secrecy and MACs with MD5, and a reader deciding
-/// what to do about it is served by all four rather than by whichever one an
-/// engine happened to rank first.
+/// A suite may carry several: `TLS_RSA_EXPORT_WITH_RC4_40_MD5` is export-grade, uses
+/// RC4, has no forward secrecy and MACs with MD5, and all four are reported.
 ///
-/// Ordered by how much each costs the endpoint, so
-/// [`CipherSuite::worst_fault`] is a comparison rather than a table.
+/// Ordered by cost to the endpoint, so [`CipherSuite::worst_fault`] is a comparison.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SuiteFault {
@@ -431,8 +413,7 @@ impl SuiteFault {
         }
     }
 
-    /// One sentence a report can print beside the suite, saying what the fault
-    /// costs rather than restating its name.
+    /// One sentence a report can print beside the suite, saying what the fault costs.
     pub const fn summary(self) -> &'static str {
         match self {
             Self::NoForwardSecrecy => {
@@ -452,37 +433,27 @@ impl SuiteFault {
     /// How much a report should make of an endpoint that accepts a suite
     /// carrying this fault.
     ///
-    /// Graded against what the fault buys somebody who is already in a position
-    /// to use it, which is what separates the three tiers here. The top tier
-    /// needs a position in the path and then hands over the traffic or the
-    /// identity; the middle needs a position and a great deal of patience; the
-    /// bottom is a hardening step left undone.
+    /// Graded by what the fault gives someone already positioned to use it. The top
+    /// tier hands over the traffic or the identity; the middle needs a great deal of
+    /// patience as well; the bottom is a hardening step left undone.
     ///
-    /// Nothing here reaches [`Critical`](Severity::Critical). Every fault below
-    /// costs an attacker a position on the network first, and the crate reserves
-    /// that level for what needs nothing the internet does not already have.
+    /// Nothing reaches [`Critical`](Severity::Critical): every fault needs a position
+    /// on the network first, and the crate reserves that level for what needs nothing
+    /// more than the internet.
     pub const fn severity(self) -> Severity {
         match self {
-            // The channel is not what it claims to be at all: unencrypted, or
-            // authenticated by nobody, or shortened to a length that has been
-            // brute-forceable for thirty years.
+            // Unencrypted, unauthenticated, or brute-forceable for thirty years.
             Self::NullCipher | Self::Anonymous | Self::Export => Severity::High,
-            // Published attacks that work, and need a great deal of traffic or a
-            // very long-lived connection to do it.
+            // Working attacks that need a great deal of traffic or a long-lived
+            // connection.
             Self::Rc4 | Self::SmallBlock | Self::Md5Mac => Severity::Medium,
-            // Structural weaknesses worth removing, none of which is a way in on
-            // its own.
+            // Structural weaknesses, none a way in on its own.
             Self::CbcMode | Self::Sha1Mac | Self::NoForwardSecrecy => Severity::Low,
         }
     }
 
-    /// Whether this fault alone makes the suite unfit for use, rather than
-    /// merely worth replacing.
-    ///
-    /// The line between [`SuiteStrength::Weak`] and
-    /// [`SuiteStrength::Insecure`]: below it a suite has a structural weakness
-    /// somebody should plan to remove, and at or above it the suite provides
-    /// materially less than it appears to.
+    /// Whether this fault alone makes the suite unfit for use: the line between
+    /// [`SuiteStrength::Weak`] and [`SuiteStrength::Insecure`].
     pub const fn is_disqualifying(self) -> bool {
         matches!(
             self,
@@ -504,8 +475,7 @@ impl fmt::Display for SuiteFault {
 
 /// How much a suite is worth, in three steps a report can act on.
 ///
-/// Derived from [`CipherSuite::faults`] and never stored, so a suite added to
-/// the registry is graded by the same rule as every other one.
+/// Derived from [`CipherSuite::faults`].
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SuiteStrength {
@@ -546,9 +516,7 @@ impl fmt::Display for SuiteStrength {
 /// One cipher suite: the number it is offered under, the name it is known by,
 /// and the four parts that decide what it is worth.
 ///
-/// Construction is closed to the registry below. A suite assembled by hand could
-/// name one thing and describe another, and every finding this module produces
-/// rests on the name and the parts agreeing.
+/// Only the registry below constructs one, so the name and the parts always agree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CipherSuite {
     code: u16,
@@ -566,8 +534,7 @@ impl CipherSuite {
         self.code
     }
 
-    /// The name IANA registers it under, which is the name every other tool
-    /// prints.
+    /// The name IANA registers it under.
     pub const fn name(self) -> &'static str {
         self.name
     }
@@ -604,13 +571,10 @@ impl CipherSuite {
 
     /// Whether the suite carries this fault.
     ///
-    /// Read off the parts every time rather than from a table beside them, so a
-    /// suite added to the registry is judged by the same rule as the rest and
-    /// cannot arrive ungraded.
+    /// Read off the parts, so a suite added to the registry cannot arrive ungraded.
     pub const fn has_fault(self, fault: SuiteFault) -> bool {
         match fault {
-            // Anonymous key exchange is forward secret and proves nothing, so it
-            // is reported under its own fault rather than this one.
+            // Anonymous key exchange is forward secret; it has its own fault.
             SuiteFault::NoForwardSecrecy => !self.kex.is_forward_secret(),
             SuiteFault::Sha1Mac => matches!(self.mac, Mac::Sha1),
             SuiteFault::CbcMode => self.cipher.is_cbc(),
@@ -658,20 +622,15 @@ impl CipherSuite {
 
     /// Whether this suite can be offered under `version`.
     ///
-    /// The two families do not mix. RFC 8446 §B.4 gives TLS 1.3 its own suites,
-    /// which name only the AEAD and the hash because everything else moved into
-    /// extensions; offering one under TLS 1.2 names a suite that version has
-    /// never heard of, and offering a 1.2 suite under 1.3 is equally meaningless.
-    /// An enumeration that mixed them would report a whole version unsupported
-    /// on the strength of having asked the wrong question.
+    /// The families do not mix. RFC 8446 §B.4 gives TLS 1.3 its own suites, naming only
+    /// the AEAD and hash because everything else moved into extensions. Mixing them
+    /// would report a whole version unsupported for having asked the wrong question.
     pub const fn is_offered_under(self, version: TlsVersion) -> bool {
         let tls13_suite = matches!(self.kex, KeyExchange::Negotiated);
         match version {
             TlsVersion::Tls13 => tls13_suite,
-            // A suite whose MAC is SHA-256 or SHA-384 needs the PRF that arrived
-            // with TLS 1.2 (RFC 5246 §5), and so does every AEAD suite. Offering
-            // one to a 1.0 or 1.1 server asks for something the version cannot
-            // express.
+            // SHA-256 and SHA-384 MACs and every AEAD suite need the TLS 1.2 PRF
+            // (RFC 5246 §5), which 1.0 and 1.1 cannot express.
             TlsVersion::Ssl30 | TlsVersion::Tls10 | TlsVersion::Tls11 => {
                 !tls13_suite && matches!(self.mac, Mac::Md5 | Mac::Sha1 | Mac::Null)
             }
@@ -682,9 +641,8 @@ impl CipherSuite {
     /// The suite a wire number names, or `None` for one this build does not
     /// carry.
     ///
-    /// A server selecting a number absent from [`ALL`](Self::ALL) has selected
-    /// something it was never offered, which an enumeration treats as the end of
-    /// that version rather than as a suite.
+    /// A server selecting a number absent from [`ALL`](Self::ALL) selected something it
+    /// was never offered; an enumeration treats that as the end of the version.
     pub fn from_code(code: u16) -> Option<Self> {
         Self::ALL.iter().copied().find(|suite| suite.code == code)
     }
@@ -696,8 +654,7 @@ impl fmt::Display for CipherSuite {
     }
 }
 
-/// Builds one registry entry, so that a row is its wire number, its name and its
-/// four parts and nothing else can be written between them.
+/// Builds one registry entry: wire number, name and four parts.
 macro_rules! suite {
     ($code:literal, $name:literal, $kex:expr, $auth:expr, $cipher:expr, $mac:expr) => {
         CipherSuite {
@@ -731,16 +688,13 @@ use Mac as M;
 impl CipherSuite {
     /// Every suite a scan offers, grouped by the document that defines it.
     ///
-    /// Curated rather than complete; see the module documentation for the
-    /// criterion. Ordered strongest first within each group, which is the order
-    /// they go into a ClientHello: a server with its own preference ignores the
-    /// order, and one that takes the client's should be handed the best suite it
-    /// can accept rather than the worst.
+    /// Curated; see the module documentation. Strongest first within each group, the
+    /// order they go into a ClientHello, so a server taking the client's preference
+    /// picks the best it can accept.
     pub const ALL: &'static [Self] = &[
         // ── TLS 1.3 (RFC 8446 §B.4) ──────────────────────────────────────────
-        // Named for their AEAD and hash alone: key exchange and authentication
-        // moved into extensions, so they are properties of the connection rather
-        // than of the suite.
+        // Named for their AEAD and hash alone; key exchange and authentication
+        // moved into extensions.
         suite!(
             0x1302,
             "TLS_AES_256_GCM_SHA384",
@@ -788,8 +742,7 @@ impl CipherSuite {
             M::Aead
         ),
         // ── ECDHE with AEAD (RFC 5289, RFC 7905) ─────────────────────────────
-        // What a current TLS 1.2 deployment should be negotiating and nothing
-        // else.
+        // What a current TLS 1.2 deployment should negotiate.
         suite!(
             0xC030,
             "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
@@ -864,9 +817,7 @@ impl CipherSuite {
             M::Aead
         ),
         // ── Static RSA with AEAD (RFC 5288) ──────────────────────────────────
-        // Modern encryption on a key exchange that has none of its own: the
-        // records are fine and the secrecy is only as durable as the server's
-        // private key.
+        // Modern records, but secrecy only as durable as the server's private key.
         suite!(
             0x009D,
             "TLS_RSA_WITH_AES_256_GCM_SHA384",
@@ -966,8 +917,7 @@ impl CipherSuite {
             M::Sha256
         ),
         // ── CBC with a SHA-1 MAC (RFC 5246, RFC 4492) ────────────────────────
-        // The floor a great many deployments still sit on, and the reason a
-        // report needs the MAC as well as the cipher.
+        // Where many deployments still sit.
         suite!(
             0xC014,
             "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
@@ -1049,8 +999,8 @@ impl CipherSuite {
             M::Sha1
         ),
         // ── Static ECDH (RFC 4492) ───────────────────────────────────────────
-        // The server's Diffie-Hellman share fixed in its certificate, so the
-        // exchange looks ephemeral and is not.
+        // The server's Diffie-Hellman share is fixed in its certificate, so the
+        // exchange is not ephemeral.
         suite!(
             0xC00F,
             "TLS_ECDH_RSA_WITH_AES_256_CBC_SHA",
@@ -1233,8 +1183,7 @@ impl CipherSuite {
             M::Md5
         ),
         // ── Anonymous key exchange (RFC 5246 §A.5, RFC 4492) ─────────────────
-        // Confidential against a passive observer and transparent to an active
-        // one, which is the worse of the two to be wrong about.
+        // Confidential against a passive observer, transparent to an active one.
         suite!(
             0x006D,
             "TLS_DH_anon_WITH_AES_256_CBC_SHA256",
@@ -1367,9 +1316,8 @@ impl CipherSuite {
             M::Sha1
         ),
         // ── Export grade (RFC 4346 §A.5, withdrawn in RFC 5246) ──────────────
-        // Keys shortened to satisfy an export regulation that has not existed
-        // since 2000. FREAK and Logjam are both about servers that still offer
-        // them.
+        // Keys shortened for an export regulation gone since 2000. FREAK and
+        // Logjam target servers that still offer them.
         suite!(export 0x0003, "TLS_RSA_EXPORT_WITH_RC4_40_MD5", K::Rsa, A::Rsa, C::Rc4, M::Md5),
         suite!(export 0x0006, "TLS_RSA_EXPORT_WITH_RC2_CBC_40_MD5", K::Rsa, A::Rsa, C::Des, M::Md5),
         suite!(export 0x0008, "TLS_RSA_EXPORT_WITH_DES40_CBC_SHA", K::Rsa, A::Rsa, C::Des, M::Sha1),
@@ -1423,12 +1371,9 @@ impl CipherSuite {
     /// How many suites [`offered_under`](Self::offered_under) yields for the
     /// version that has the most of them.
     ///
-    /// The tight bound on how many questions an enumeration can put to one
-    /// endpoint under one version, and so the only defensible ceiling to stop
-    /// one at: a walk that narrows its offer by a suite per answer cannot ask
-    /// more times than the version had suites. Derived here rather than written
-    /// down, so a suite added to the registry raises it and no ceiling
-    /// elsewhere has to be remembered.
+    /// The tight bound on how many questions an enumeration can put to one endpoint
+    /// under one version, since a walk narrows its offer by a suite per answer. Derived,
+    /// so a suite added to the registry raises it.
     ///
     /// TLS 1.2 is the version that decides it, carrying every suite that is not
     /// 1.3-only.
@@ -1459,14 +1404,12 @@ impl CipherSuite {
 
 /// What one endpoint accepted under one protocol version.
 ///
-/// The suites are in the order the server chose them, which is worth keeping.
-/// An enumeration offers its list strongest first and removes each suite as it
-/// is selected, so a server with a preference of its own reveals it: the first
-/// entry is that server's favourite among everything offered, not the scan's.
+/// The suites are in the order the server chose them. An enumeration offers its list
+/// strongest first and removes each suite once selected, so a server with its own
+/// preference reveals it: the first entry is its favourite among everything offered.
 ///
-/// A server taking the *client's* preference produces the same list in the same
-/// order, and nothing here tells the two apart. Separating them needs the offer
-/// repeated in a second order, which is a question this does not yet ask.
+/// A server taking the *client's* preference produces the same list, and nothing here
+/// tells the two apart; that would need the offer repeated in a second order.
 #[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionSupport {
@@ -1479,10 +1422,8 @@ impl VersionSupport {
     /// Records that `version` was accepted, with the suites chosen under it.
     ///
     /// `unrecognised` holds any suite the server selected by a number
-    /// [`CipherSuite::ALL`] does not carry. Kept rather than dropped: it is a
-    /// server negotiating something this build cannot grade, and a reader who
-    /// sees an empty suite list beside an accepted version would otherwise
-    /// conclude the endpoint negotiated nothing.
+    /// [`CipherSuite::ALL`] does not carry, so an accepted version with only ungradable
+    /// suites does not read as negotiating nothing.
     pub fn new(version: TlsVersion, suites: Vec<CipherSuite>, unrecognised: Vec<u16>) -> Self {
         Self {
             version,
@@ -1515,13 +1456,11 @@ impl VersionSupport {
 
 /// Why a version's walk ended before the endpoint had declined an offer.
 ///
-/// A walk is finished when the server declines what is left of the offer, and
-/// only then are the suites it found the whole of what it accepts. A walk that
-/// ended any other way found a floor, and what it missed is the tail of the
-/// server's own preference order, where a legacy configuration keeps its worst
-/// suites. The causes are kept apart because they are acted on apart: one is a
-/// property of the path to the endpoint, one of the scan's budget, and one of
-/// the machine the scan ran on.
+/// A walk is finished when the server declines what is left of the offer; only then
+/// are the suites found the whole answer. A walk that ended otherwise found a floor and
+/// missed the tail of the server's preference order, where a legacy configuration keeps
+/// its worst suites. The causes call for different remedies: the path, the scan's
+/// budget, or the scanning machine.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Interruption {
@@ -1535,10 +1474,8 @@ pub enum Interruption {
     /// [`timed_out`](crate::report::ScanPhase::timed_out) list, or the scan
     /// itself was stopped.
     Stopped,
-    /// The scan had no socket to put the offer on: the process held as many
-    /// files as its descriptor limit allows for as long as the offer would
-    /// wait for one. Nothing was asked of the endpoint, so this says nothing
-    /// about it, and raising the limit is the remedy.
+    /// The scan had no socket: the process stayed at its descriptor limit for as long
+    /// as the offer would wait. Says nothing about the endpoint; raise the limit.
     FileLimit,
 }
 
@@ -1570,11 +1507,9 @@ impl fmt::Display for Interruption {
 
 /// A version whose walk did not finish, and why.
 ///
-/// Held apart from [`VersionSupport`] because the two answer different
-/// questions: that one says a version was accepted, and a walk can be cut
-/// before the server has said anything about its version at all. Such a
-/// version is neither accepted nor refused, and this is the only place a
-/// reader learns that it is unknown rather than absent.
+/// Separate from [`VersionSupport`], because a walk can be cut before the server says
+/// anything about the version. Such a version is neither accepted nor refused, and this
+/// is where a reader learns it is unknown.
 #[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnfinishedVersion {
@@ -1604,16 +1539,13 @@ impl UnfinishedVersion {
 
 /// What an endpoint accepts, version by version.
 ///
-/// The answer a TLS enumeration exists to produce, and a different question from
-/// the one a single handshake answers. [`Security`](super::port::Security)
-/// records what *was* negotiated; this records what *would be*, which is what a
-/// PCI scan, an ASV report or an internal audit is actually asking.
+/// [`Security`](super::port::Security) records what a single handshake *did*
+/// negotiate; this records what *would be*, which is what a PCI scan, an ASV report or
+/// an internal audit asks.
 ///
-/// Empty for an endpoint that accepted nothing under any version and left no
-/// walk unfinished, which is a real outcome rather than a failure: a server
-/// refusing every offer is either very strictly configured or was asked
-/// without the name it insists on. See
-/// [`Offer::server_name`](crate::protocols::tls::Offer::server_name).
+/// Empty for an endpoint that accepted nothing and left no walk unfinished: a server
+/// refusing every offer is very strictly configured or was asked without the name it
+/// insists on. See [`Offer::server_name`](crate::protocols::tls::Offer::server_name).
 ///
 /// A version under [`unfinished`](Self::unfinished) is one whose accepted
 /// suites, if it has any here, are a floor rather than the whole answer.
@@ -1666,27 +1598,22 @@ impl TlsSupport {
         self
     }
 
-    /// Folds another enumeration of this endpoint into this one, version by
-    /// version: this record's account of a version stands unless the other's
-    /// is the more complete of the two and holds every suite this one found.
+    /// Folds another enumeration of this endpoint into this one, version by version:
+    /// this record's account of a version stands unless the other's is more complete
+    /// and holds every suite this one found.
     ///
-    /// More complete is a walk that finished over one that was cut short, or of
-    /// two cut short, the one that got further. That alone does not decide it,
-    /// because a walk offers what is left and the server chooses: of one
-    /// configuration, a walk cut short finds part of what a further walk finds
-    /// and nothing else. So where the account on record found a suite the other
-    /// does not list, the two were answered by different configurations rather
-    /// than being two accounts of one, and the one on record stands. A fold
-    /// across scans puts the newer on record, so a server whose configuration
-    /// changed is described as it is now.
+    /// More complete means finished over cut short, or of two cut short, the one that
+    /// got further. Against one configuration, a shorter walk finds a subset of what a
+    /// longer one finds; if the record on hand found a suite the other lacks, the two
+    /// saw different configurations and the one on record stands. A fold across scans
+    /// puts the newer on record, so a changed server is described as it is now.
     ///
-    /// A version is taken whole from one account, its suites in the order that
-    /// server chose them and its interruption with them. Spliced from two walks
-    /// of two configurations it would be a list no server accepted.
+    /// A version is taken whole from one account, with its suite order and
+    /// interruption; splicing two walks would produce a list no server accepted.
     ///
-    /// A record with nothing in it was never asked, and displaces nothing. One
-    /// with anything in it walked every version, so a version it lists nowhere
-    /// was refused, which is a finished walk that found nothing.
+    /// An empty record was never asked and displaces nothing. A non-empty one walked
+    /// every version, so a version it lists nowhere was refused: a finished walk that
+    /// found nothing.
     pub(crate) fn merge(&mut self, other: TlsSupport) {
         if other.is_empty() {
             return;
@@ -1709,9 +1636,7 @@ impl TlsSupport {
             .filter(|version| other.account(*version).supersedes(&self.account(*version)))
             .collect();
 
-        // Destructured rather than reached through `other.…`, so a field added
-        // to this struct is a compile error here and not a value that quietly
-        // stops being folded.
+        // Destructured, so a new field fails to compile until it is folded.
         let TlsSupport {
             versions,
             unfinished,
@@ -1770,9 +1695,8 @@ impl TlsSupport {
     /// Whether nothing was recorded at all: no version accepted, and no walk
     /// left unfinished.
     ///
-    /// An enumeration that settled nothing because the endpoint stopped
-    /// answering is not empty. It is the one a reader most needs to see,
-    /// since the alternative reading is an endpoint that refused everything.
+    /// An enumeration cut short because the endpoint stopped answering is not empty,
+    /// so it cannot be mistaken for an endpoint that refused everything.
     pub fn is_empty(&self) -> bool {
         self.versions.is_empty() && self.unfinished.is_empty()
     }
@@ -1782,8 +1706,7 @@ impl TlsSupport {
         self.versions.iter().any(|held| held.version == version)
     }
 
-    /// The oldest version accepted, which is the one a report leads with: it is
-    /// the floor an attacker gets to choose from.
+    /// The oldest version accepted, the floor an attacker can choose.
     pub fn floor(&self) -> Option<TlsVersion> {
         self.versions.first().map(|held| held.version)
     }
@@ -1803,8 +1726,7 @@ impl TlsSupport {
 
     /// Every suite accepted anywhere, deduplicated, in registry order.
     ///
-    /// For a reader asking what the endpoint will negotiate rather than what it
-    /// will negotiate under which version.
+    /// What the endpoint will negotiate, regardless of version.
     pub fn suites(&self) -> Vec<CipherSuite> {
         let mut all: Vec<CipherSuite> = self
             .versions
@@ -1827,8 +1749,8 @@ impl TlsSupport {
 
     /// Every distinct fault carried by any accepted suite, least costly first.
     ///
-    /// What a finding is written from: a reader acts on "this endpoint still
-    /// negotiates RC4" rather than on the nine suite names that establish it.
+    /// Findings are written from these: "this endpoint still negotiates RC4", not nine
+    /// suite names.
     pub fn faults(&self) -> Vec<SuiteFault> {
         SuiteFault::ALL
             .iter()
@@ -1873,12 +1795,9 @@ const DETECTION: &str = "zond:tls";
 
 /// The identity every finding this module produces is stamped with.
 ///
-/// A built-in derivation rather than a dataset, so its identity is this build
-/// and the rules compiled into it. The content hash is taken over the registry
-/// itself, which means a suite added, removed or reclassified changes the hash
-/// and two reports drawn by different rules can be told apart. The engine
-/// version alone would not do that: the registry can move within a patch
-/// release.
+/// A built-in derivation, so its identity is this build's rules. The content hash
+/// covers the registry, so adding, removing or reclassifying a suite changes it even
+/// within a patch release.
 fn detection_id() -> DetectionId {
     static ID: OnceLock<DetectionId> = OnceLock::new();
     ID.get_or_init(|| {
@@ -1886,9 +1805,8 @@ fn detection_id() -> DetectionId {
             .parse::<Version>()
             .unwrap_or(Version::new(0, 0, 0));
 
-        // The registry as a string, in declaration order: every number, name,
-        // and derived grade. The grade is included so that a change to the fault
-        // rules moves the hash even when no suite did.
+        // Every number, name and derived grade in declaration order; the grade
+        // makes a change to the fault rules move the hash too.
         let mut census = String::with_capacity(CipherSuite::ALL.len() * 64);
         for &suite in CipherSuite::ALL {
             use std::fmt::Write;
@@ -1916,18 +1834,13 @@ impl TlsSupport {
     /// Everything about this endpoint's configuration worth reporting, one
     /// finding per thing wrong with it.
     ///
-    /// Grouped by the fault rather than by the suite, which is the difference
-    /// between a report somebody reads and a list somebody scrolls past. An
-    /// endpoint accepting nine RC4 suites has one problem, not nine, and the
-    /// remedy is one line of configuration; the suite names are carried in the
-    /// finding's excerpt for whoever needs to see them.
+    /// Grouped by fault: an endpoint accepting nine RC4 suites has one problem with a
+    /// one-line remedy, and the suite names go in the excerpt.
     ///
-    /// A withdrawn version is its own finding, separately from whatever suites
-    /// sit under it, because the two are fixed by different edits: one removes a
-    /// protocol version and the other removes ciphers.
+    /// A withdrawn version is its own finding, since removing a protocol version and
+    /// removing ciphers are different edits.
     ///
-    /// Empty for an endpoint with nothing against it, which is the answer a
-    /// clean scan should produce rather than an `Info` finding saying so.
+    /// Empty for an endpoint with nothing against it.
     pub fn findings(&self) -> Vec<Finding> {
         let mut findings = Vec::new();
 
@@ -1941,24 +1854,17 @@ impl TlsSupport {
                 detection_id(),
                 format!("{version} is still accepted"),
                 severity,
-                // The server selected terms under it, in answer to a hello
-                // offering it. There is no inference between the evidence and
-                // the claim.
+                // The server selected terms under it in answer to a hello offering
+                // it; no inference is involved.
                 Confidence::Certain,
                 DetectionClass::ActiveBenign,
             ) else {
                 continue;
             };
 
-            // What the scan actually observed, and not a word more. An
-            // enumeration offers a version and reads the ServerHello that comes
-            // back; it derives no key, sends no Finished and completes no
-            // handshake — see `protocols::tls`. The excerpt said "completed a
-            // negotiation", which claimed an exchange that never happens here,
-            // and claimed it most loudly for a HelloRetryRequest, whose whole
-            // meaning is that the server wants to start again. A report signed
-            // as evidence has to survive being read closely by somebody who
-            // disagrees with it.
+            // Exactly what was observed: an enumeration reads the ServerHello and
+            // completes no handshake (see `protocols::tls`), so the excerpt must not
+            // claim one, least of all for a HelloRetryRequest.
             let mut finding = finding.with_excerpt(Excerpt::new(format!(
                 "the endpoint answered a {version} hello by selecting a suite under it; \
                  {withdrawn_by} withdrew it"
@@ -1970,11 +1876,8 @@ impl TlsSupport {
         }
 
         for fault in self.faults() {
-            // Each suite once, however many versions accept it: the remedy is
-            // to remove that cipher, which is one edit whether it was offered
-            // under one protocol version or three, and a name listed once per
-            // version would read as the same suite repeated with nothing to
-            // tell the repeats apart.
+            // Each suite once, however many versions accept it: removing it is one
+            // edit.
             let mut carriers: Vec<&'static str> = Vec::new();
             for held in &self.versions {
                 for suite in &held.suites {
@@ -2011,19 +1914,16 @@ impl TlsSupport {
     /// Where this record leaves a claim [`findings`](Self::findings) drew
     /// from `basis`, or `None` where `finding` is not one it draws from there.
     ///
-    /// A claim rests on the versions whose accepted suites draw it: a
-    /// withdrawn version on that version alone, and a fault on every version
-    /// with a suite carrying it. This record upholds the claim where it draws
-    /// it too. Where it does not, it overturned the claim only if it finished
-    /// every version the claim rests on, because a walk cut short there found a
-    /// floor and the claim may sit in the tail it never reached. A record with
-    /// nothing in it made no walk, as [`merge`](Self::merge) reads it, and
-    /// settles nothing.
+    /// A claim rests on the versions whose accepted suites draw it: a withdrawn version
+    /// on that version alone, a fault on every version with a suite carrying it. This
+    /// record upholds the claim if it draws it too. Otherwise it overturns the claim
+    /// only if it finished every version the claim rests on, since a walk cut short
+    /// found only a floor. An empty record settles nothing, as in
+    /// [`merge`](Self::merge).
     ///
-    /// `None` covers a finding another detection produced, and one of this
-    /// detection's that these rules do not draw from `basis`, as a build with
-    /// other rules may have written. What such a claim rests on is not this
-    /// build's to say, and a caller leaves it as it found it.
+    /// `None` for a finding from another detection, or one this build's rules do not
+    /// draw from `basis` (written by a build with other rules); the caller leaves it
+    /// alone.
     pub(crate) fn standing(&self, finding: &Finding, basis: &TlsSupport) -> Option<Standing> {
         if finding.detection().id() != DETECTION {
             return None;
@@ -2050,20 +1950,15 @@ impl TlsSupport {
     /// The excerpt `finding`, drawn from `basis`, should carry beside this
     /// record, or `None` where the one it was written with already fits.
     ///
-    /// A claim's excerpt lists the evidence behind it, the suites carrying a
-    /// fault under every version that accepts one, and carried beside a record
-    /// that holds other evidence it would name what that record does not say.
-    /// Where this record upholds the claim, the excerpt is the one this record
-    /// draws for it. Where it leaves the claim unsettled, it is the one `basis`
-    /// draws from the versions this record left open, since a version this
-    /// record finished has its own answer and a suite `basis` found there is
-    /// no part of why the claim still stands. A claim this record overturned,
-    /// or one with no [`standing`](Self::standing) here, is not this function's
-    /// to word.
+    /// A claim's excerpt lists its evidence, so beside a record holding other evidence
+    /// it would name things that record does not say. Where this record upholds the
+    /// claim, the excerpt is the one this record draws. Where it leaves the claim
+    /// unsettled, it is the one `basis` draws from only the versions this record left
+    /// open. An overturned claim, or one with no [`standing`](Self::standing) here, is
+    /// not this function's to word.
     ///
-    /// `None` too where the excerpt comes out as the one `basis` itself draws,
-    /// which is what makes a finding whose evidence did not move travel as it
-    /// was written, in whatever words the build that wrote it chose.
+    /// `None` also where the result equals what `basis` itself draws, so a finding
+    /// whose evidence did not move keeps the words it was written with.
     pub(crate) fn restate(&self, finding: &Finding, basis: &TlsSupport) -> Option<Excerpt> {
         let claim = finding.claim_id();
         let excerpt = |record: &TlsSupport| {
@@ -2146,9 +2041,8 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    /// A number appearing twice would make one of the two unreachable through
-    /// [`CipherSuite::from_code`], so a server selecting it would be reported as
-    /// the wrong suite: the wrong name, and the wrong faults under it.
+    /// A duplicate number would make one suite unreachable through
+    /// [`CipherSuite::from_code`].
     #[test]
     fn every_suite_has_a_number_of_its_own() {
         let mut seen = BTreeSet::new();
@@ -2162,7 +2056,7 @@ mod tests {
         }
     }
 
-    /// The same for names, which is what a reader and a diff key on.
+    /// The same for names, which readers and diffs key on.
     #[test]
     fn every_suite_has_a_name_of_its_own() {
         let mut seen = BTreeSet::new();
@@ -2171,17 +2065,12 @@ mod tests {
         }
     }
 
-    /// The registry's own consistency check, and the one that earns its keep.
+    /// An IANA suite name states its parts in order, so this holds the fields to the
+    /// name; a transcription error would otherwise report the right suite with the
+    /// wrong faults.
     ///
-    /// An IANA suite name states its parts in order, so the name and the fields
-    /// beside it are two statements of the same fact. A transcription error in
-    /// the fields is otherwise invisible: the scan offers a real suite, a server
-    /// accepts it, and the report names the right suite with the wrong faults
-    /// under it, which is worse than not asking. This reads the name and holds
-    /// the fields to it.
-    ///
-    /// It cannot check the number, which nothing but the registry states. The
-    /// numbers are grouped by their defining document above so that a reader can.
+    /// It cannot check the number. The numbers are grouped by their defining document
+    /// above so a reader can.
     #[test]
     fn every_suite_describes_what_its_name_says() {
         for &suite in CipherSuite::ALL {
@@ -2203,7 +2092,7 @@ mod tests {
                 .and_then(|rest| rest.split_once("_WITH_"))
                 .unwrap_or_else(|| panic!("{name} is not an IANA suite name"));
 
-            // Key exchange and authentication, which the name states together.
+            // Key exchange and authentication, stated together in the name.
             let expected_kex = if kex_part.starts_with("ECDHE_") {
                 KeyExchange::Ecdhe
             } else if kex_part.starts_with("DHE_") {
@@ -2256,7 +2145,7 @@ mod tests {
             };
             assert_eq!(suite.mac(), expected_mac, "MAC of {name}");
 
-            // And the cipher, which the middle of the name states.
+            // The cipher, from the middle of the name.
             let cipher = suite.bulk_cipher();
             let claims = |needle: &str| cipher_part.contains(needle);
             match cipher {
@@ -2274,9 +2163,8 @@ mod tests {
                 }
                 C::ChaCha20Poly1305 => assert!(claims("CHACHA20_POLY1305"), "cipher of {name}"),
                 C::TripleDes => assert!(claims("3DES_EDE_CBC"), "cipher of {name}"),
-                // RC2 is carried as DES: both are export-era block ciphers this
-                // engine only needs to recognise and report, and neither is
-                // worth a variant of its own.
+                // RC2 is carried as DES: both are export-era block ciphers that only
+                // need recognising.
                 C::Des => assert!(
                     claims("DES") || claims("RC2"),
                     "cipher of {name} is not a DES-class cipher"
@@ -2290,8 +2178,7 @@ mod tests {
         }
     }
 
-    /// The grading rule, stated once here so that a change to it is a change to
-    /// a test rather than a silent reclassification of ninety suites.
+    /// The grading rule, so a change to it cannot silently reclassify ninety suites.
     #[test]
     fn a_suite_is_graded_by_the_worst_thing_about_it() {
         let named = |name: &str| {
@@ -2326,7 +2213,7 @@ mod tests {
         assert_eq!(sweet32.strength(), SuiteStrength::Insecure);
         assert_eq!(sweet32.worst_fault(), Some(SuiteFault::SmallBlock));
 
-        // And the ones that are simply broken.
+        // The broken ones.
         for name in [
             "TLS_RSA_WITH_RC4_128_SHA",
             "TLS_DH_anon_WITH_AES_128_CBC_SHA",
@@ -2341,10 +2228,8 @@ mod tests {
         }
     }
 
-    /// Anonymous suites are reported for what they are rather than filed under
-    /// the missing forward secrecy they do not have: an anonymous exchange *is*
-    /// ephemeral, and calling it "no forward secrecy" would be both wrong and
-    /// the less alarming of the two things to say.
+    /// An anonymous exchange *is* ephemeral, so it is reported as anonymous, not as
+    /// lacking forward secrecy.
     #[test]
     fn an_anonymous_suite_is_not_reported_as_lacking_forward_secrecy() {
         let anon = CipherSuite::from_code(0x0034).expect("TLS_DH_anon_WITH_AES_128_CBC_SHA");
@@ -2353,9 +2238,7 @@ mod tests {
         assert!(anon.has_fault(SuiteFault::Anonymous));
     }
 
-    /// The two families never mix, and the split is what keeps an enumeration
-    /// from reporting a whole version unsupported because it asked with suites
-    /// that version cannot express.
+    /// The TLS 1.3 and pre-1.3 families never mix.
     #[test]
     fn each_version_is_offered_the_suites_it_can_express() {
         let thirteen: Vec<_> = CipherSuite::offered_under(TlsVersion::Tls13).collect();
@@ -2381,8 +2264,7 @@ mod tests {
         );
     }
 
-    /// Every version round-trips through its wire number and through its name,
-    /// so a report read back names the version it recorded.
+    /// Every version round-trips through its wire number and its name.
     #[test]
     fn every_version_round_trips_through_its_number_and_its_name() {
         for &version in TlsVersion::ALL {
@@ -2420,9 +2302,8 @@ mod tests {
         assert_eq!(CipherSuite::from_code(0xFFFF), None);
     }
 
-    /// A fault is disqualifying or it is not, and the grade follows from that
-    /// alone. Stated as a property over the whole registry so a suite added
-    /// later cannot land outside the rule.
+    /// The grade follows from whether a fault is disqualifying, across the whole
+    /// registry.
     #[test]
     fn the_grade_follows_from_the_worst_fault_for_every_suite() {
         for &suite in CipherSuite::ALL {
@@ -2433,7 +2314,7 @@ mod tests {
             };
             assert_eq!(suite.strength(), expected, "grade of {suite}");
 
-            // And the faults reported are exactly the ones the parts imply.
+            // The faults reported are exactly the ones the parts imply.
             for fault in suite.faults() {
                 assert!(suite.has_fault(fault), "{suite} reported {fault} it lacks");
             }
@@ -2446,9 +2327,7 @@ mod tests {
         CipherSuite::from_code(code).expect("a suite in the registry")
     }
 
-    /// The record keeps its versions oldest first however they were recorded,
-    /// so a report's version list is in the same order for every endpoint and
-    /// two scans diff cleanly.
+    /// The record keeps its versions oldest first however they were recorded.
     #[test]
     fn recorded_versions_are_ordered_oldest_first() {
         let support = TlsSupport::new()
@@ -2465,8 +2344,7 @@ mod tests {
         assert_eq!(support.ceiling(), Some(TlsVersion::Tls13));
     }
 
-    /// Recording a version twice replaces it rather than listing it twice: a
-    /// second enumeration of one endpoint answers the same question.
+    /// Recording a version twice replaces it.
     #[test]
     fn recording_a_version_twice_keeps_one_entry() {
         let mut support = TlsSupport::new();
@@ -2481,13 +2359,9 @@ mod tests {
         assert_eq!(support.suites().len(), 1);
     }
 
-    /// A version whose walk was cut before the server said anything about it
-    /// is unknown, and must read as neither of the two things it is not.
-    ///
-    /// Read as accepted, an unfinished TLS 1.0 walk would report the most
-    /// quotable finding a TLS scan produces about a server that may never have
-    /// spoken 1.0. Read as nothing, the enumeration would look like an endpoint
-    /// that refused every offer, and be dropped as carrying no new fact.
+    /// A version whose walk was cut before the server said anything about it is
+    /// unknown: neither accepted (which would report TLS 1.0 on a server that may never
+    /// have spoken it) nor empty (which would read as refusing everything).
     #[test]
     fn a_version_never_settled_is_neither_accepted_nor_nothing() {
         let support = TlsSupport::new().leaving_unfinished(UnfinishedVersion::new(
@@ -2504,8 +2378,7 @@ mod tests {
         );
     }
 
-    /// Every cause round-trips through its name, so a record read back says why
-    /// a walk did not finish in the words it was written with.
+    /// Every cause round-trips through its name.
     #[test]
     fn every_interruption_round_trips_through_its_name() {
         for &cause in Interruption::ALL {
@@ -2546,10 +2419,8 @@ mod tests {
         folded
     }
 
-    /// A walk that finished is the whole answer, and one cut short that found
-    /// nothing it lacks is part of that answer, whichever is on record. A
-    /// resumed sitting finishing the walk its predecessor was stopped in is one
-    /// way round, and a merge whose newer scan was stopped is the other.
+    /// A finished walk wins over a cut-short one that found nothing it lacks, whichever
+    /// is on record.
     #[test]
     fn a_finished_walk_stands_over_a_cut_short_one_whichever_is_on_record() {
         let whole = finished(&[0xC030, 0xC02F, 0x000A]);
@@ -2559,10 +2430,9 @@ mod tests {
         assert_eq!(folded(&floor, &whole), whole);
     }
 
-    /// A walk cut short that found a suite a finished walk does not list was
-    /// answered by a different configuration, and the finished list is no
-    /// answer for it. Taken instead, a server that has since started accepting
-    /// 3DES would be reported as refusing it.
+    /// A cut-short walk that found a suite a finished walk lacks saw a different
+    /// configuration, and stands; otherwise a server that started accepting 3DES would
+    /// be reported as refusing it.
     #[test]
     fn a_walk_that_found_what_the_other_does_not_list_is_not_displaced() {
         let whole = finished(&[0xC030, 0xC02F]);
@@ -2571,9 +2441,8 @@ mod tests {
         assert_eq!(folded(&changed, &whole), changed);
     }
 
-    /// Two walks of one configuration cut short each found the head of the
-    /// same preference order, and the longer head is the better floor. It
-    /// carries its own interruption, since that is why it ended where it did.
+    /// Of two cut-short walks, the longer is the better floor, and keeps its own
+    /// interruption.
     #[test]
     fn of_two_cut_short_walks_the_one_that_got_further_stands() {
         let short = cut_short(&[0xC030], Interruption::Stopped);
@@ -2583,9 +2452,8 @@ mod tests {
         assert_eq!(folded(&further, &short), further);
     }
 
-    /// A version an enumeration lists nowhere was walked and refused, which is
-    /// a finished answer. A walk cut short before the server said anything
-    /// about the version is no evidence against it.
+    /// A version a non-empty enumeration lists nowhere was refused. A walk cut short
+    /// before the server said anything is no evidence against it.
     #[test]
     fn a_refused_version_stands_over_one_never_settled() {
         let thirteen = VersionSupport::new(TlsVersion::Tls13, vec![suite(0x1301)], vec![]);
@@ -2595,9 +2463,8 @@ mod tests {
         assert_eq!(folded(&unsettled, &refused), refused);
     }
 
-    /// An empty record is an endpoint nobody enumerated. Read version by
-    /// version it would be five refusals, each a finished answer, so it is set
-    /// aside whole: it neither displaces an enumeration nor stands over one.
+    /// An empty record is an endpoint nobody enumerated: it neither displaces an
+    /// enumeration nor stands over one.
     #[test]
     fn a_record_nobody_enumerated_displaces_nothing() {
         let whole = finished(&[0xC030]);
@@ -2625,8 +2492,7 @@ mod tests {
         assert_eq!(support.suites().len(), 1);
     }
 
-    /// An endpoint with nothing against it produces no findings at all. A clean
-    /// scan should be quiet rather than carry an `Info` saying it is clean.
+    /// An endpoint with nothing against it produces no findings.
     #[test]
     fn a_sound_endpoint_produces_no_findings() {
         let support = TlsSupport::new()
@@ -2646,15 +2512,12 @@ mod tests {
         assert!(support.findings().is_empty());
     }
 
-    /// A withdrawn version is its own finding, separate from the suites under
-    /// it: the two are fixed by different edits, one removing a protocol version
-    /// and one removing ciphers.
+    /// A withdrawn version is its own finding, separate from the suites under it.
     #[test]
     fn a_withdrawn_version_is_reported_on_its_own_terms() {
         let support = TlsSupport::new().accepting(VersionSupport::new(
             TlsVersion::Tls10,
-            // Nothing wrong with the suite beyond what its era implies, so the
-            // version finding cannot be confused with a suite finding.
+            // A suite with no faults of its own beyond its era.
             vec![suite(0x002F)],
             vec![],
         ));
@@ -2674,8 +2537,7 @@ mod tests {
         );
     }
 
-    /// Nine RC4 suites are one problem and one line of configuration, so they
-    /// are one finding with the suites in its excerpt rather than nine findings.
+    /// Nine RC4 suites are one finding with the suites in its excerpt.
     #[test]
     fn one_fault_across_many_suites_is_one_finding() {
         let rc4: Vec<CipherSuite> = CipherSuite::ALL
@@ -2707,9 +2569,8 @@ mod tests {
         );
     }
 
-    /// A suite accepted under several versions is one cipher to remove, so the
-    /// excerpt names it once with a count to match, not once per version with
-    /// nothing to tell the repeats apart.
+    /// A suite accepted under several versions is named once in the excerpt, with a
+    /// count to match.
     #[test]
     fn a_suite_accepted_under_several_versions_is_listed_once() {
         let rc4 = CipherSuite::ALL
@@ -2743,9 +2604,7 @@ mod tests {
         );
     }
 
-    /// The severity a fault earns is the one the report prints, and the ceiling
-    /// is deliberate: every fault here costs an attacker a position on the
-    /// network first, which is not what this crate calls critical.
+    /// The severity a fault earns is the one the report prints, and none is critical.
     #[test]
     fn no_tls_fault_is_reported_as_critical() {
         for &fault in SuiteFault::ALL {
@@ -2759,9 +2618,7 @@ mod tests {
         assert_eq!(SuiteFault::CbcMode.severity(), Severity::Low);
     }
 
-    /// Every finding is stamped with the same identity, and the hash moves with
-    /// the registry rather than only with the release: the rules can change
-    /// inside a patch version and two reports have to be tellable apart.
+    /// Every finding carries the same identity, whose hash moves with the registry.
     #[test]
     fn every_finding_carries_the_registry_it_was_drawn_from() {
         let support = TlsSupport::new().accepting(VersionSupport::new(
@@ -2784,13 +2641,9 @@ mod tests {
 
     /// Every finding this produces survives being filed against one port.
     ///
-    /// The assumption the whole reporting path rests on, and it is not obvious:
-    /// a port deduplicates findings by claim, which is the producing detection's
-    /// id paired with its first CVE or, failing that, its title. Every finding
-    /// here carries the same detection id, so what keeps them apart is the
-    /// title alone. Two faults whose summaries read the same, or two versions
-    /// phrased alike, would collapse into one and the rest would be silently
-    /// lost.
+    /// A port deduplicates findings by claim (detection id plus first CVE or title).
+    /// Every finding here shares a detection id, so titles alone keep them apart; two
+    /// alike would silently collapse.
     #[test]
     fn every_finding_survives_being_filed_against_one_port() {
         use crate::model::port::{Port, PortState, Protocol};
@@ -2830,13 +2683,9 @@ mod tests {
 
     // ── Where a later record leaves a claim ──────────────────────────────────
 
-    /// A fault claim rests on every version that drew it, so a later record
-    /// refutes it only by finishing all of them.
-    ///
-    /// The reading a comparison and a merge both act on: one that called a
-    /// claim overturned on the strength of a walk cut short would report a fix
-    /// nobody made, and one that called it unsettled after every walk finished
-    /// would never report the fix at all.
+    /// A fault claim rests on every version that drew it, so a later record refutes it
+    /// only by finishing all of them. Otherwise a comparison would report a fix nobody
+    /// made, or never report a real one.
     #[test]
     fn a_claim_is_overturned_only_where_every_walk_it_rests_on_finished() {
         use TlsVersion::{Tls10, Tls12};
@@ -2879,8 +2728,7 @@ mod tests {
         );
     }
 
-    /// A claim this derivation does not draw from the record it is said to
-    /// rest on has nothing this build can name, and is left alone.
+    /// A claim this derivation does not draw from its basis is left alone.
     #[test]
     fn a_claim_these_rules_do_not_draw_has_no_standing() {
         let basis = TlsSupport::new().accepting(VersionSupport::new(

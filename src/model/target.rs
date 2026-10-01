@@ -8,20 +8,16 @@
 
 //! # What a scan was asked to cover
 //!
-//! A [`Target`] is one address, one port, one protocol: the smallest thing a
-//! scan can ask about, and what a probe is built from. The two types above it
-//! exist so that nothing has to hold the whole list.
+//! A [`Target`] is one address, one port, one protocol: the smallest thing a scan can
+//! ask about. The two types above it describe many targets without holding them.
 //!
-//! [`TargetSet`] pairs an [`IpSet`] with a [`PortSet`] and yields their cross
-//! product lazily. A `/8` on a thousand ports is sixteen billion targets, which
-//! is a few words to describe and more than any machine can hold; the set
-//! describes it and the iterator produces them one at a time.
+//! [`TargetSet`] pairs an [`IpSet`] with a [`PortSet`] and yields their cross product
+//! lazily. A `/8` on a thousand ports is sixteen billion targets.
 //!
-//! [`TargetMap`] is several of those, since one scan can ask different questions
-//! of different hosts: `192.0.2.1:22` and `192.0.2.0/24:80` are one job with
-//! two shapes. Each unit is a set of addresses paired with a set of ports,
-//! which is why the counts here are gross rather than net. Two units naming one
-//! address are two questions about it, and both get asked.
+//! [`TargetMap`] holds several sets, since one scan can ask different questions of
+//! different hosts: `192.0.2.1:22` and `192.0.2.0/24:80` are one job with two shapes.
+//! Counts here are gross: two units naming one address are two questions about it, and
+//! both get asked.
 
 use crate::model::ip::range::{IpRange, Ipv6Range};
 use crate::model::ip::scoped::ZoneMap;
@@ -36,10 +32,8 @@ use thiserror::Error;
 pub enum TargetError {
     /// The number of targets is too large to represent in a `u128`.
     ///
-    /// Reachable: `::/0` is already `u128::MAX` addresses, so any second port
-    /// overflows. Reported rather than wrapped, because a scan of the entire
-    /// address space reported as a small number is the one answer a budget
-    /// check must never be handed.
+    /// Reachable: `::/0` is already `u128::MAX` addresses, so a second port
+    /// overflows. Reported, since a wrapped count would pass a budget check.
     #[error("Target calculation resulted in an integer overflow")]
     CapacityOverflow,
 }
@@ -51,13 +45,11 @@ pub enum TargetError {
 pub struct Target {
     /// The address to probe.
     ///
-    /// Bare, with no zone. A link-local address needs one, and it travels
-    /// beside the targets rather than on each of them: the zone is written on
-    /// the range a target came from, and a scan holds the pairing in a
-    /// [`ZoneMap`] for the phases that open a
-    /// socket or send a frame. See
-    /// [`ScopedIp`](crate::model::ip::scoped::ScopedIp) for an address that
-    /// carries its own.
+    /// Bare, with no zone. A link-local address's zone is written on the range the
+    /// target came from, and a scan keeps the pairing in a [`ZoneMap`] for the phases
+    /// that open a socket or send a frame. See
+    /// [`ScopedIp`](crate::model::ip::scoped::ScopedIp) for an address that carries
+    /// its own.
     pub ip: IpAddr,
     /// The port to probe.
     pub port: u16,
@@ -74,14 +66,11 @@ impl Target {
 
 /// A target together with its position in the plan it came from.
 ///
-/// The position is the target's index in [`TargetMap::iter`], which is
-/// reproducible for a given plan, so it names the target without storing an
-/// address and a journal records how far a scan got in a few bytes.
+/// The position is the target's index in [`TargetMap::iter`], reproducible for a given
+/// plan, so a journal records how far a scan got in a few bytes.
 ///
-/// Carried alongside [`Target`] rather than folded into it, because a target
-/// that came from a file or a hand-built set belongs to no plan and has no
-/// position. Only the dispatcher numbers targets, and only what it emits is
-/// wrapped.
+/// A separate type because a target from a file or a hand-built set has no position.
+/// Only the dispatcher numbers targets.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PlannedTarget {
@@ -115,31 +104,22 @@ impl PlannedTarget {
 
 /// A set of addresses paired with the ports to try on each of them.
 ///
-/// The addresses are merged for this type's whole life. [`new`](Self::new)
-/// canonicalizes them and there is no way to mutate them afterwards, so a
-/// `TargetSet` never holds overlapping ranges and never miscounts them. Every
-/// method that reads one takes `&self`, since counting is not a mutation.
+/// [`new`](Self::new) merges the addresses and nothing mutates them afterwards, so a
+/// `TargetSet` never holds overlapping ranges or miscounts them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TargetSet {
     /// Internal IP set, canonical by construction.
     ips: IpSet,
     /// The ports to try on each of them.
     ///
-    /// Private for symmetry with the addresses rather than to protect anything:
-    /// a [`PortSet`] is canonical from construction and has no lazy state.
-    /// [`ports`](Self::ports) hands out a reference and
-    /// [`into_parts`](Self::into_parts) the value, so what privacy buys is that
-    /// nobody replaces it under a set that has been counted.
+    /// Private so nobody replaces it under a set that has been counted.
     ports: PortSet,
 }
 
 impl TargetSet {
     /// Creates a scan blueprint over `ips` and `ports`.
     ///
-    /// Merges `ips` once, here, which is what lets every read below take
-    /// `&self`. The work is the same either way, since a set has to be merged
-    /// before it can be counted or iterated. Doing it at one known point rather
-    /// than at whichever read happens first is the whole of the difference.
+    /// Merges `ips` once, here, so every read takes `&self`.
     pub fn new(mut ips: IpSet, ports: PortSet) -> Self {
         ips.canonicalize();
         Self { ips, ports }
@@ -152,22 +132,18 @@ impl TargetSet {
 
     /// Takes the IP set, discarding the ports.
     ///
-    /// For moving targets to a phase that has no use for ports, such as
-    /// [`discover`](crate::scanner::discover), which only asks whether a host is
-    /// there at all. Cloning the addresses in order to drop the ports beside
-    /// them would be the wrong shape for a set that may hold a `/8`.
+    /// For a phase with no use for ports, such as
+    /// [`discover`](crate::scanner::discover), without cloning a set that may hold a
+    /// `/8`.
     pub fn into_ips(self) -> IpSet {
         self.ips
     }
 
     /// Takes the set apart into the two halves it was built from.
     ///
-    /// For rebuilding one. A unit is immutable once constructed, so narrowing the
-    /// addresses of an existing set, which is what withholding an excluded range
-    /// amounts to, means taking it apart and building a new one through
-    /// [`new`](Self::new). Handing out a `&mut IpSet` would let a caller leave
-    /// the addresses unmerged, and every count and membership test downstream
-    /// assumes they are not.
+    /// For rebuilding one, for example to withhold an excluded range, through
+    /// [`new`](Self::new). A `&mut IpSet` would let a caller leave the addresses
+    /// unmerged, which every count and membership test assumes they are not.
     pub fn into_parts(self) -> (IpSet, PortSet) {
         (self.ips, self.ports)
     }
@@ -200,11 +176,8 @@ impl TargetSet {
 
     /// Every address paired with every port, lazily.
     ///
-    /// The addresses were merged when the set was constructed, so there is
-    /// nothing to normalize. Nothing is materialized either. A `/8` on a
-    /// thousand ports is 16 billion targets, so they are produced one at a time
-    /// and the port list is shared behind an `Arc` rather than cloned for every
-    /// address.
+    /// Targets are produced one at a time, and the port list is shared behind an `Arc`
+    /// across addresses.
     pub fn iter(&self) -> impl Iterator<Item = Target> + Send + '_ {
         let ports_arc: Arc<[(u16, Protocol)]> = self.ports.to_vec().into();
 
@@ -229,10 +202,8 @@ impl TargetSet {
 pub struct TargetMap {
     /// The units, in the order they were added.
     ///
-    /// Public because there is no invariant over the vector for an accessor to
-    /// protect: a [`TargetSet`] is canonical and immutable from the moment it
-    /// is built, this type caches nothing derived from them, and a scanner
-    /// splitting work across units needs to iterate and partition them freely.
+    /// Public because there is no invariant to protect: each [`TargetSet`] is
+    /// canonical and immutable, and this type caches nothing derived from them.
     pub units: Vec<TargetSet>,
 }
 
@@ -249,8 +220,8 @@ impl TargetMap {
 
     /// Whether any unit names a port on `protocol`.
     ///
-    /// Read when a scan is assembled, to decide whether a transport nothing is
-    /// probed on by default is worth opening a socket for.
+    /// Read when a scan is assembled, to decide whether a transport not probed by
+    /// default needs a socket.
     pub fn names(&self, protocol: Protocol) -> bool {
         self.units
             .iter()
@@ -259,9 +230,8 @@ impl TargetMap {
 
     /// Returns the gross total of target connections across all units.
     ///
-    /// Gross rather than net: two units naming the same address each count it,
-    /// because a unit is a set of addresses *paired with a set of ports* and two
-    /// units are two different questions about that address.
+    /// Gross: two units naming the same address each count it, since they ask
+    /// different questions about it.
     pub fn gross_targets(&self) -> Result<u128, TargetError> {
         let mut total: u128 = 0;
         for unit in &self.units {
@@ -297,12 +267,10 @@ impl TargetMap {
     /// Takes `excluded` out of every unit's ports, and drops a unit left with
     /// none.
     ///
-    /// A unit whose every port was excluded has nothing left to ask its
-    /// addresses, so it leaves no target to number and no address for a
-    /// liveness pass to spend probes on. A scan does this itself with
-    /// [`ZondConfig::excluded_ports`](crate::config::ZondConfig::excluded_ports);
-    /// a caller measuring what a scan will cost before starting it does it to
-    /// a copy.
+    /// A unit with every port excluded has nothing to ask, so a liveness pass spends no
+    /// probes on its addresses. A scan does this itself with
+    /// [`ZondConfig::excluded_ports`](crate::config::ZondConfig::excluded_ports); a
+    /// caller estimating a scan's cost beforehand does it to a copy.
     pub fn withhold_ports(&mut self, excluded: &PortSet) {
         if excluded.is_empty() {
             return;
@@ -323,18 +291,14 @@ impl TargetMap {
     /// IPv6 ranges `walkable` refuses as too wide to walk. Hands back what it
     /// took out and the interface each link-local range it kept was named on.
     ///
-    /// One reading for every place that has to agree on it: the port phase,
-    /// which numbers what is left and refuses the rest, a journal, which
-    /// counts what is left as the job's total, and a caller announcing what a
-    /// scan will ask. A total that counted a withheld target would never be reached, and a
-    /// finished job would read as one with work left. What is taken out
-    /// depends on the targets alone, so every sitting of a job takes out the
-    /// same ones.
+    /// The port phase, a journal's job total, and a caller announcing what a scan will
+    /// ask all use this, so they agree; a total that counted a withheld target would
+    /// never be reached. What is taken out depends on the targets alone, so every
+    /// sitting of a job takes out the same ones.
     ///
-    /// `interfaces` is the host's interface table as index and name, which
-    /// names the zones handed back; `walkable` is the host's own limit on
-    /// what a walk may cover. Both are the caller's to supply, this module
-    /// asking nothing of the host.
+    /// `interfaces` is the host's interface table as index and name, naming the zones
+    /// handed back; `walkable` is the host's limit on what a walk may cover. The caller
+    /// supplies both.
     pub(crate) fn take_unprobeable(
         &mut self,
         interfaces: &[(u32, &str)],
@@ -417,21 +381,17 @@ pub(crate) struct Unprobeable {
 /// The same targets [`TargetMap::iter`] yields, addressed by position instead of
 /// walked in order.
 ///
-/// [`iter`](TargetMap::iter) is what numbers a plan: the nth target it yields is
-/// position n, and a journal records how far a scan got as one of those numbers.
-/// That is enough for a scan that asks its targets in plan order and not enough
-/// for one that does not, which needs to go the other way and ask what target a
-/// position names. This is that direction.
+/// [`iter`](TargetMap::iter) numbers a plan: its nth target is position n, and a journal
+/// records progress as one of those numbers. A scan asking in another order needs the
+/// reverse, the target a position names, which this provides.
 ///
-/// The two are one numbering or they are nothing, since the dispatcher decides
-/// what to probe by one and the cursor decides what was probed by the other. The
-/// property is stated as [`target_at`](Self::target_at) agreeing with
-/// `iter().nth()` for every position, and `model`'s own tests hold it there.
+/// The dispatcher decides what to probe by one and the cursor records what was probed
+/// by the other, so [`target_at`](Self::target_at) must agree with `iter().nth()` for
+/// every position; the tests below hold it to that.
 ///
-/// Costs a few words per unit and nothing per target. A unit's addresses are
-/// numbered by [`Positions`], which is a table of its ranges, and its ports are
-/// the list it already holds; a position is resolved by one binary search and two
-/// divisions.
+/// Costs a few words per unit and nothing per target. Addresses are numbered by
+/// [`Positions`], a table of a unit's ranges; a position resolves with one binary
+/// search and two divisions.
 #[derive(Debug, Clone)]
 pub struct TargetIndex {
     /// The numbered units, in the order [`TargetMap::iter`] walks them.
@@ -465,16 +425,14 @@ struct UnitIndex {
 impl TargetIndex {
     /// Numbers `map`'s targets.
     ///
-    /// Numbering stops at the first unit that cannot be counted whole, and every
-    /// unit after it is left out for the reason [`Positions`] leaves out a range
-    /// it cannot number: positions have to stay contiguous, and a gap in the
-    /// middle would move every position above it. What that costs is
-    /// [`is_complete`](Self::is_complete) answering false, and a caller that
-    /// needs the whole plan addressed reads that before it reads anything else.
+    /// Numbering stops at the first unit that cannot be counted whole, and every unit
+    /// after it is left out, since positions must stay contiguous (as in
+    /// [`Positions`]). [`is_complete`](Self::is_complete) then answers false; a caller
+    /// that needs the whole plan addressed checks that first.
     ///
-    /// A unit is uncountable when its addresses are, which is an IPv6 range of a
-    /// `/64` or wider, or when its address count times its port count overflows
-    /// the numbering. Both describe a plan no scan finishes.
+    /// A unit is uncountable when its addresses are (an IPv6 range of a `/64` or
+    /// wider), or when addresses times ports overflows the numbering. Both describe a
+    /// plan no scan finishes.
     pub fn of(map: &TargetMap) -> Self {
         let mut units = Vec::with_capacity(map.units.len());
         let mut total: u64 = 0;
@@ -486,8 +444,7 @@ impl TargetIndex {
             let addresses = Positions::of(unit.ips());
             let ports: Arc<[(u16, Protocol)]> = unit.ports().to_vec().into();
 
-            // A unit with no ports yields no targets, so it takes no positions
-            // and does not interrupt the numbering. `iter` skips it the same way.
+            // A unit with no ports takes no positions; `iter` skips it too.
             if ports.is_empty() {
                 continue;
             }
@@ -499,8 +456,7 @@ impl TargetIndex {
 
             let Some(len) = counted.filter(|len| total.checked_add(*len).is_some()) else {
                 complete = false;
-                // A unit without ports is skipped here as it is above: it has
-                // no target, so there is nothing at its addresses to ask.
+                // A unit without ports has nothing to ask, as above.
                 for left_out in map.units[at..]
                     .iter()
                     .filter(|unit| !unit.ports().is_empty())
@@ -542,10 +498,9 @@ impl TargetIndex {
     /// Whether every target the map holds is numbered.
     ///
     /// False for a plan whose addresses outrun the numbering, where
-    /// [`total`](Self::total) counts a prefix of what
-    /// [`TargetMap::iter`] yields rather than all of it. A caller walking
-    /// positions rather than the iterator has to read this, or it asks about
-    /// part of the plan and reports having asked about all of it.
+    /// [`total`](Self::total) counts only a prefix of [`TargetMap::iter`]. A caller
+    /// walking positions must check this, or it covers part of the plan and reports
+    /// all of it.
     pub fn is_complete(&self) -> bool {
         self.complete
     }
@@ -567,21 +522,18 @@ impl TargetIndex {
     /// The addresses holding at least one of the targets numbered `positions`,
     /// as ranges.
     ///
-    /// The numbering seen host by host, for a pass that asks about an address
-    /// rather than about its ports. Such a pass has business with an address
-    /// while any one of its targets is in the span, so the span's partial
-    /// addresses at either end come back whole: the port index runs fastest, and
-    /// a span starting on an address's third port still holds that address.
+    /// For a pass that asks about addresses. An address is included if any of its
+    /// targets is in the span, so a span starting on an address's third port still
+    /// holds that address.
     ///
-    /// Positions past [`total`](Self::total) name nothing and are ignored. What
-    /// they would have named, had the numbering reached that far, is
+    /// Positions past [`total`](Self::total) are ignored; see
     /// [`unnumbered_addresses`](Self::unnumbered_addresses).
     pub(crate) fn addresses_in(&self, positions: Range<u64>) -> Vec<IpRange> {
         let end = positions.end.min(self.total);
         let mut found = Vec::new();
 
-        // Units are contiguous and ascending, so the first one worth reading is
-        // the first that ends past the start of the span.
+        // Units are contiguous and ascending: start at the first ending past the
+        // span's start.
         let first = self
             .units
             .partition_point(|unit| unit.start + unit.len <= positions.start);
@@ -620,10 +572,8 @@ impl TargetIndex {
     /// How many hosts the numbering holds: an address of a unit and every port
     /// the unit pairs it with.
     ///
-    /// Numbered in plan order, and each holds a contiguous run of positions,
-    /// since a unit pairs an address with every port before moving to the
-    /// next; see [`host_run`](Self::host_run). An address two units name is
-    /// two hosts here, each with its own run.
+    /// Numbered in plan order, each holding a contiguous run of positions; see
+    /// [`host_run`](Self::host_run). An address two units name is two hosts here.
     pub(crate) fn hosts(&self) -> u64 {
         self.hosts
     }
@@ -654,10 +604,8 @@ impl TargetIndex {
     /// The addresses of every unit the numbering could not reach, which is
     /// empty exactly when the index [is complete](Self::is_complete).
     ///
-    /// No position names a target at these, so nothing recorded against the
-    /// numbering can have settled one of them. A caller asking which addresses
-    /// still have work outstanding has to count every one of them as having
-    /// some.
+    /// No position names a target at these, so a caller asking which addresses have
+    /// work outstanding must count all of them.
     pub(crate) fn unnumbered_addresses(&self) -> &[IpRange] {
         &self.unnumbered
     }
@@ -672,8 +620,8 @@ impl TargetIndex {
             .binary_search_by_key(&position, |unit| unit.start)
         {
             Ok(index) => index,
-            // The unit before the first one starting above `position`, which is
-            // the one holding it: units are contiguous and ascending by `start`.
+            // Units are contiguous and ascending by `start`, so the holder is the
+            // unit before the first one starting above `position`.
             Err(0) => return None,
             Err(index) => index - 1,
         };
@@ -707,10 +655,8 @@ mod tests {
     /// A plan that runs several units, of both families, with ports that do not
     /// divide evenly into anything.
     ///
-    /// Awkward on purpose. Every off-by-one available lives at a unit boundary or
-    /// at the wrap from one address's last port to the next address's first, so a
-    /// fixture whose units are the same size and whose port counts are powers of
-    /// two would pass while getting both wrong.
+    /// Off-by-ones live at unit boundaries and at the wrap from one address's last port
+    /// to the next address's first, which an evenly sized fixture would miss.
     fn awkward() -> TargetMap {
         let mut map = TargetMap::new();
         map.add_unit(TargetSet::new(ips("192.0.2.0/29"), ports("22, 80, u:53")));
@@ -723,9 +669,8 @@ mod tests {
         map
     }
 
-    /// The whole of what an index promises. A position names the target the
-    /// plan's own walk gives it, or the dispatcher and the cursor are counting
-    /// two different things and a resume skips ground nobody probed.
+    /// A position names the target the plan's own walk gives it; otherwise a resume
+    /// would skip ground nobody probed.
     #[test]
     fn a_position_names_the_target_the_plans_own_walk_numbers_it() {
         let map = awkward();
@@ -745,11 +690,9 @@ mod tests {
         assert_eq!(index.target_at(index.total()), None, "past the end");
     }
 
-    /// Seen host by host, the numbering is the same one: every host's run is
-    /// the positions of one address's targets in one unit, the runs tile the
-    /// numbering in order, and each position's host is the run holding it.
-    /// A resume reads which hosts have work left by these, and a run one port
-    /// short or long sweeps a host with nothing left or misses one with some.
+    /// Every host's run is the positions of one address's targets in one unit, the
+    /// runs tile the numbering in order, and each position's host is the run holding
+    /// it. A resume reads which hosts have work left by these.
     #[test]
     fn the_hosts_tile_the_numbering_one_address_each() {
         let index = TargetIndex::of(&awkward());
@@ -771,10 +714,7 @@ mod tests {
         assert_eq!(index.host_of(index.total()), index.hosts(), "past the end");
     }
 
-    /// A unit naming no port yields no target, so it takes no positions.
-    /// Skipping it and counting it are not the same thing: counting it would
-    /// put a gap in the middle of the numbering that moves every position above
-    /// it.
+    /// A unit naming no port takes no positions and leaves no gap.
     #[test]
     fn a_unit_with_no_ports_takes_no_positions() {
         let mut map = TargetMap::new();
@@ -791,9 +731,7 @@ mod tests {
         assert_eq!(index.target_at(1).as_ref(), walked.get(1));
     }
 
-    /// An address range the numbering cannot reach makes the whole index
-    /// incomplete, and it says so rather than numbering the part that fits and
-    /// leaving a caller to walk a prefix believing it walked a plan.
+    /// An address range the numbering cannot reach marks the index incomplete.
     #[test]
     fn a_plan_wider_than_the_numbering_is_incomplete_and_says_so() {
         let mut map = TargetMap::new();
@@ -812,10 +750,8 @@ mod tests {
         );
     }
 
-    /// Where the numbering gives out, checked rather than asserted from the
-    /// documentation of the thing that does it. A `/64` holds one address more
-    /// than a position can count, so it is the first prefix that cannot be
-    /// addressed and a `/65` is the first that can be split.
+    /// A `/64` holds one address more than a position can count, so it is the first
+    /// prefix that cannot be numbered.
     #[test]
     fn a_sixty_four_is_the_first_prefix_the_numbering_cannot_reach() {
         let indexed = |prefix: &str| {
@@ -829,8 +765,7 @@ mod tests {
         assert!(!indexed("2001:db8::/48"), "and anything wider is too");
     }
 
-    /// An empty plan numbers nothing and is still complete: there is nothing it
-    /// failed to reach.
+    /// An empty plan numbers nothing and is complete.
     #[test]
     fn an_empty_plan_numbers_nothing() {
         let index = TargetIndex::of(&TargetMap::new());
@@ -843,11 +778,9 @@ mod tests {
     /// Every span of the numbering names exactly the addresses its targets are
     /// at, checked against the plan's own walk for every span there is.
     ///
-    /// Exhaustive because the fixture is small and the mistakes are all at the
-    /// edges: a span starting or ending partway through an address's ports, one
-    /// crossing from a unit into the next, one ending on a unit boundary. An
-    /// address left out is a host a resumed pass never asks about while one of
-    /// its ports is still waiting on the answer.
+    /// Exhaustive because the mistakes are at the edges: a span starting or ending
+    /// partway through an address's ports, crossing into the next unit, or ending on a
+    /// unit boundary.
     #[test]
     fn every_span_names_exactly_the_addresses_its_targets_are_at() {
         let map = awkward();
@@ -875,10 +808,8 @@ mod tests {
         assert!(index.unnumbered_addresses().is_empty(), "a complete index");
     }
 
-    /// The units the numbering never reached come back as addresses, since a
-    /// caller asking what is outstanding has to count all of them. A unit naming
-    /// no port has no targets to be outstanding and is left out wherever it
-    /// sits.
+    /// Units the numbering never reached come back as addresses; a unit naming no port
+    /// is left out.
     #[test]
     fn the_units_past_the_numbering_are_left_out_whole() {
         let mut map = TargetMap::new();
@@ -898,8 +829,7 @@ mod tests {
         assert_eq!(unnumbered, ips("2001:db8::/64, 203.0.113.9"));
     }
 
-    /// What decides whether a scan opens a socket for SCTP, which nothing
-    /// probes unless a port specification asks for it.
+    /// Decides whether a scan opens a socket for SCTP.
     #[test]
     fn a_map_says_which_transports_its_units_name() {
         let mut map = TargetMap::new();
@@ -913,17 +843,15 @@ mod tests {
         assert!(map.names(Protocol::Sctp));
     }
 
-    /// The cross product's size, which is what a caller checks a scan budget
-    /// against before anything is sent.
+    /// The cross product's size, which a caller checks a scan budget against.
     #[test]
     fn a_sets_target_count_is_its_addresses_times_its_ports() {
         let ts = TargetSet::new(ips("192.0.2.0/24"), ports("80, 443"));
         assert_eq!(ts.total_targets().unwrap(), 256 * 2);
     }
 
-    /// A set is merged the moment it becomes a `TargetSet`, so nothing
-    /// downstream can read one that is not. Overlapping ranges counted twice is
-    /// the failure that makes this matter, so that is what it checks.
+    /// A set is merged when it becomes a `TargetSet`, so overlapping ranges are not
+    /// counted twice.
     #[test]
     fn a_target_set_merges_its_addresses_on_construction() {
         let mut overlapping = ips("192.0.2.0/24");
@@ -936,9 +864,7 @@ mod tests {
         assert_eq!(ts.total_targets().unwrap(), 256);
     }
 
-    /// The cross product is the whole purpose of the type, and a count alone
-    /// does not pin it: two different pairings of the same addresses and ports
-    /// produce the same total. This pins the triples.
+    /// Pins the cross product's triples, since different pairings give the same count.
     #[test]
     fn a_set_yields_every_address_paired_with_every_port() {
         let ts = TargetSet::new(ips("192.0.2.1-192.0.2.2"), ports("80, u:53"));
@@ -960,8 +886,7 @@ mod tests {
         );
     }
 
-    /// A map's iterator is a flattening of its units, in the order they were
-    /// added, which is what makes two runs over one input scan in one order.
+    /// A map's iterator flattens its units in the order they were added.
     #[test]
     fn a_map_iterates_its_units_in_the_order_they_were_added() {
         let mut map = TargetMap::new();
@@ -982,10 +907,8 @@ mod tests {
         );
     }
 
-    /// `::/0` is 2^128 addresses, which [`IpSet::len`] already saturates to
-    /// `u128::MAX`. One port still fits; two do not, and the multiplication has
-    /// to refuse rather than wrap. A scan of the entire address space reported
-    /// as a small number is the one answer a budget check must never be given.
+    /// `::/0` is 2^128 addresses, which [`IpSet::len`] saturates to `u128::MAX`. One
+    /// port fits; two must be refused, not wrapped.
     #[test]
     fn a_target_count_too_large_to_represent_is_refused_rather_than_wrapped() {
         let two_ports = TargetSet::new(ips("::/0"), ports("80, 443"));
@@ -998,8 +921,7 @@ mod tests {
         assert_eq!(one_port.total_targets().unwrap(), u128::MAX);
     }
 
-    /// A map's total is the sum of its units', so a caller can budget the whole
-    /// job from one number rather than walking the units itself.
+    /// A map's total is the sum of its units'.
     #[test]
     fn a_maps_total_is_the_sum_of_its_units() {
         let mut map = TargetMap::new();
