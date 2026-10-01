@@ -8,30 +8,17 @@
 
 //! # Attributing a system to a host
 //!
-//! One function, and the reason it exists is that the alternative is four.
-//!
-//! Every source that concludes something about a host's operating system has to
-//! do the same three things afterwards: fold its own reading together with what
-//! the host *already* implies, resolve the combination into one verdict, and
-//! merge that verdict into whatever the host is already carrying. The raw TCP
-//! port scanner does it, the echo prober does it, the service pass does it, and
-//! left to itself each would do it in its own copy of the same eighteen lines.
-//!
-//! That is a bad place for a copy. The rule those lines encode, **a host's own
-//! hardware and name are evidence, and are consulted whatever else was seen**,
-//! is a statement about how identification works, not about how a port scanner
-//! works. Written once, adding a fifth source is a call; written four times, it
-//! is four edits and three chances to forget one. Host discovery forgetting it
-//! concludes nothing at all, on hosts whose hostname and hardware vendor are
-//! sitting in the store the whole time.
+//! Every source that concludes something about a host's operating system (the
+//! raw TCP port scanner, the echo prober, the service pass) then does the same
+//! thing: folds its reading together with what the host already implies,
+//! resolves the combination, and merges the verdict into the host. [`identify`]
+//! does that once, and always consults the host's own **hardware and name**.
 //!
 //! ## The passive sources are free
 //!
-//! [`hardware_evidence`] reads a vendor out of a MAC
-//! address and [`hostname_evidence`] reads a family
-//! out of a default hostname. Neither sends a packet, neither needs a port, and
-//! both work on anything a discovery sweep found. That is what makes
-//! [`identify`] worth calling with no observation at all.
+//! [`hardware_evidence`] reads a vendor out of a MAC address and
+//! [`hostname_evidence`] a family out of a default hostname. Neither sends a
+//! packet, so [`identify`] is worth calling with no observation at all.
 
 use crate::model::host::Host;
 
@@ -41,50 +28,29 @@ use crate::model::host::OsEvidence;
 /// Folds `observed` together with what the host already implies, and records the
 /// verdict.
 ///
-/// `observed` is whatever the caller just read off the wire, a stack reading,
-/// an echo reply, a service banner, and may be empty, which is the discovery
-/// case: nothing was read, and the question is only what the host's own name
-/// and hardware say.
+/// `observed` is what the caller just read off the wire (a stack reading, an
+/// echo reply, a service banner), and may be empty.
 ///
 /// Returns whether a fingerprint was written, so a caller can announce or count
 /// what it managed to name.
 ///
 /// # The evidence is kept, not the answer
 ///
-/// Every reading is filed against the host and the verdict is recomputed from
-/// all of them, rather than each source producing its own verdict and the
-/// verdicts being ranked against each other.
+/// Every reading is filed against the host and the verdict recomputed from all
+/// of them. A `Debian 12` banner at 0.55 and a Linux stack reading at 0.65 then
+/// corroborate, and the release survives; ranked against each other, the
+/// banner and its release would be lost.
 ///
-/// That distinction is the difference between two sources corroborating and two
-/// sources competing, and it is worth a real finding. A service banner naming
-/// `Debian 12` scores 0.55 alone, under the 0.65 a stack reading scores;
-/// ranked, it loses outright and the release it alone can name goes with it.
-/// Resolved *together* the two agree on Linux, combine to well above either,
-/// and the release survives because nothing contradicts it, which is exactly
-/// what [`resolve`] was built to do.
+/// Order does not matter. One item is kept per source, the strongest, so a
+/// stack read forty times is one piece of evidence.
 ///
-/// So a weak source cannot displace a strong one, a strong one cannot silence a
-/// weak one, and the order sources run in does not decide the answer. One item
-/// is kept per source and the strongest wins, so a stack read once and a stack
-/// read forty times are one piece of evidence. Repeating an observation must
-/// never look like corroboration.
-///
-/// # What it will not do
-///
-/// Guess. [`resolve`] returns nothing when there is nothing to go on, or
-/// when the sources disagree badly enough that what survives is not worth
-/// reporting, and this records nothing in either case. A host whose hardware is
-/// a randomised address and whose name its owner chose gets no fingerprint, and
-/// that is the correct answer rather than a shortfall.
+/// Where [`resolve`] returns nothing, nothing is recorded.
 pub fn identify(host: &mut Host, observed: impl IntoIterator<Item = OsEvidence>) -> bool {
     for item in observed {
         host.record_os_evidence(item);
     }
 
-    // The host's own two sources, consulted whatever else was seen. Worth
-    // little alone, a lone hit stays below the reporting threshold, and worth a
-    // great deal agreeing with the wire, which is what carries a verdict past
-    // what one packet supports.
+    // The host's own two sources, always consulted.
     if let Some(hardware) = host.hardware().and_then(hardware_evidence) {
         host.record_os_evidence(hardware);
     }
@@ -92,24 +58,13 @@ pub fn identify(host: &mut Host, observed: impl IntoIterator<Item = OsEvidence>)
         host.record_os_evidence(name);
     }
 
-    // Everything any source has said, resolved together. Not merely what this
-    // caller happens to be holding: see the note below on why that distinction
-    // is the whole point.
+    // Everything any source has said, resolved together.
     let evidence: Vec<OsEvidence> = host.os_evidence().cloned().collect();
     let had_evidence = !evidence.is_empty();
     let Some(resolved) = resolve(evidence) else {
-        // A verdict this host's own evidence no longer supports has to go with
-        // it. Evidence only accumulates, so the answer can move either way as
-        // it does, a second source may contradict the first hard enough to
-        // leave nothing reportable, and leaving the earlier verdict standing
-        // would report a conclusion nothing on record reached. Measured, on one
-        // device answering over two addresses: identical evidence sets, and
-        // without this the one named first keeps a stale answer the other
-        // correctly declines to give.
-        //
-        // Only where this host has evidence at all. A fingerprint carried in
-        // from a report or a merge rests on somebody else's, and `resolve`
-        // saying nothing about an empty set is not a finding about it.
+        // A verdict the evidence no longer supports is cleared, since a new
+        // source can contradict an old one. Only where this host has evidence:
+        // a fingerprint imported from a report or a merge is kept.
         if had_evidence {
             host.clear_os();
         }
@@ -139,9 +94,7 @@ mod tests {
         Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)))
     }
 
-    /// Stands in for something read off the wire, a stack reading strong enough
-    /// to be reported on its own, which is what the passive sources exist to
-    /// agree with.
+    /// A stack reading strong enough to be reported on its own.
     fn observed(family: &str, confidence: f32) -> OsEvidence {
         OsEvidence {
             source: OsSource::TcpStack,
@@ -158,11 +111,7 @@ mod tests {
         }
     }
 
-    /// The rule both passive sources state in their own documentation, pinned
-    /// here because it is the whole reason they are safe to consult on every
-    /// host: a lone hit sits below the floor `resolve` reports at, so neither can
-    /// name a machine by itself. Hardware and software are separable, and a
-    /// hostname is a label somebody may have typed.
+    /// Neither passive source names a host alone.
     #[test]
     fn one_passive_source_alone_never_names_a_host() {
         let mut by_hardware = host();
@@ -176,9 +125,8 @@ mod tests {
         assert!(by_name.os().is_none());
     }
 
-    /// And the other half of that rule: two independent sources agreeing carry a
-    /// verdict past what either supports alone. An Apple address and a default
-    /// `MacBook-Pro` name are exactly that pair, and a common one.
+    /// An Apple address and a default `MacBook-Pro` name together carry a
+    /// verdict.
     #[test]
     fn two_agreeing_passive_sources_name_a_host_between_them() {
         let mut host = host();
@@ -197,21 +145,15 @@ mod tests {
 
     /// One Bonjour responder is one witness, however much it says.
     ///
-    /// A host no resolver named takes the name it announced over multicast DNS,
-    /// and its device-info record is then asked for under that same name, of
-    /// the same responder. Filed as two sources, a default name and a model
-    /// identifier would fuse to 87 between them, past the 85 at which the active
-    /// probe is skipped as having nothing left to settle, on one daemon's word.
-    ///
-    /// The same name given by a resolver is something other than the host
-    /// speaking, and the last assertion keeps it a witness of its own.
+    /// As two sources, a default name and a model identifier would fuse to 87,
+    /// past the 85 at which the active probe is skipped. The same name from a
+    /// resolver is a separate witness (the last assertion).
     #[test]
     fn one_bonjour_responder_is_one_witness_however_much_it_says() {
         use crate::fingerprint::SignatureDb;
         use crate::model::port::Protocol;
 
-        // What the responder says when asked, read the way the active pass
-        // reads it.
+        // The responder's record, read as the active pass reads it.
         let record = || {
             SignatureDb::global()
                 .identify(5353, Protocol::Udp, "model=Mac16,10")
@@ -242,20 +184,14 @@ mod tests {
         );
     }
 
-    /// Evidence only accumulates, so an answer can move either way as it does,
-    /// and when it moves to *nothing*, the answer on record has to go with it.
-    ///
-    /// Measured on one device answering over two addresses: identical evidence,
-    /// and without this the address named first keeps a verdict the other
-    /// correctly declines to give, so one printer contradicts itself inside one
-    /// report.
+    /// When the evidence resolves to nothing, the recorded verdict is cleared.
     #[test]
     fn a_verdict_the_evidence_no_longer_supports_is_withdrawn() {
         let mut host = host();
         assert!(identify(&mut host, [observed("Linux", 0.5)]));
         assert!(host.os().is_some());
 
-        // A second source, as strong and naming something else. Neither survives.
+        // An equally strong contradiction.
         let mut contradiction = observed("Windows", 0.5);
         contradiction.source = OsSource::HardwareVendor;
         assert!(!identify(&mut host, [contradiction]));
@@ -265,9 +201,7 @@ mod tests {
         );
     }
 
-    /// A fingerprint carried in from a report or a merge rests on evidence this
-    /// host never held, and `resolve` saying nothing about an empty set is not a
-    /// finding about it.
+    /// An imported fingerprint, with no evidence behind it, is kept.
     #[test]
     fn a_verdict_with_no_evidence_behind_it_is_left_alone() {
         let mut host = host();
@@ -277,9 +211,7 @@ mod tests {
         assert_eq!(host.os().map(|os| os.name()), Some("Linux"));
     }
 
-    /// Declining is the point rather than a shortfall. A randomised hardware
-    /// address has no registered vendor, and a name its owner chose says nothing
-    /// about the machine, so there is nothing here to be right or wrong about.
+    /// A randomised address and a chosen name yield no fingerprint.
     #[test]
     fn a_host_with_nothing_to_go_on_is_left_unnamed() {
         let mut host = host();
@@ -294,10 +226,7 @@ mod tests {
         assert!(host.os().is_none());
     }
 
-    /// The rule this function exists to state once. A caller that has read
-    /// something off the wire does not have to remember to ask the host what it
-    /// already implies, and the agreement is worth accuracy, which is the whole
-    /// point of consulting them.
+    /// The host's own sources are consulted alongside what was read off the wire.
     #[test]
     fn the_hosts_own_sources_are_consulted_alongside_what_was_observed() {
         let reading = observed("Linux", 0.6);
@@ -320,12 +249,8 @@ mod tests {
     /// A banner naming a release, arriving after a stack reading, must
     /// corroborate it rather than lose to it.
     ///
-    /// The defect this prevents, measured end to end on a real host: the stack
-    /// says `Linux` at 0.65, the SSH banner says `Debian 12.0` at 0.55, and a
-    /// banner verdict ranked against the stack's loses on the number and is
-    /// discarded whole, so a scan that read the release off the wire reports a
-    /// bare family. The two agree; agreement is worth more than either, and
-    /// only the banner can speak to the release.
+    /// Stack `Linux` at 0.65 and banner `Debian 12.0` at 0.55 agree, and the
+    /// release survives.
     #[test]
     fn a_banner_arriving_after_a_stack_reading_adds_its_release() {
         let banner = OsEvidence {
@@ -366,14 +291,9 @@ mod tests {
     /// different questions, and two answers to two questions are not a
     /// disagreement.
     ///
-    /// Measured, on a Raspberry Pi running Debian: the address block says
-    /// `Raspberry Pi Trading Ltd` and the SSH banner says `Debian`. With both
-    /// filed as the operating system's vendor, the resolver keeps neither,
-    /// leaving a release with no name to attach to and reporting `Linux 12.0`,
-    /// a version no Linux has ever had.
-    ///
-    /// An address block supports a family and nothing more. The company is still
-    /// recorded, against the hardware, which is what it is about.
+    /// A Raspberry Pi running Debian: the address says `Raspberry Pi Trading Ltd`,
+    /// the banner `Debian`. The address supports only a family; the company is
+    /// recorded against the hardware.
     #[test]
     fn a_board_maker_does_not_contradict_the_publisher_of_the_system() {
         let banner = OsEvidence {
@@ -412,15 +332,8 @@ mod tests {
 
     /// A stack read twice by two routes keeps the richer reading.
     ///
-    /// The failure this prevents: the port scan reads a stack off one reply
-    /// and the series probe reads the *same stack* off twelve, concluding the
-    /// identical thing: same source, same family, nothing finer from either.
-    /// Rejecting the second as a claim already on record would discard the
-    /// readings only it can produce, the ones that cost twenty-four probes, and
-    /// a scan would report `syn-ack hops>=64 …` where it had measured `id=`,
-    /// `isn=` and `ts=` as well.
-    ///
-    /// The claim is not new; the working behind it is.
+    /// The series probe's reading (with `id=`, `isn=`, `ts=`) replaces the port
+    /// scan's single-reply reading of the same stack.
     #[test]
     fn a_stack_read_twice_keeps_the_reading_that_says_more() {
         let mut passive = observed("Linux", 0.65);
@@ -450,13 +363,7 @@ mod tests {
         );
     }
 
-    /// And the guard that makes the above safe: reading one stack repeatedly is
-    /// one piece of evidence, however many ports it was read from.
-    ///
-    /// A host with forty open ports has its stack read forty times, and the
-    /// arithmetic that combines independent sources cannot tell that apart from
-    /// forty sources agreeing unless something upstream does. Left unchecked it
-    /// would turn a single observation into certainty.
+    /// A stack read on forty ports is one piece of evidence.
     #[test]
     fn one_stack_read_many_times_is_still_one_piece_of_evidence() {
         let mut once = host();
@@ -474,8 +381,7 @@ mod tests {
         );
     }
 
-    /// Merged rather than assigned, so running twice cannot lose ground and the
-    /// order sources happen to finish in does not decide the answer.
+    /// Merged, so running twice or in another order gives the same answer.
     #[test]
     fn identifying_twice_never_loses_what_was_already_known() {
         let mut host = host();
@@ -496,16 +402,14 @@ mod tests {
         assert!(second.accuracy() >= first.accuracy());
     }
 
-    /// A weak source may not displace a strong one, whichever order they arrive
-    /// in, which is what makes it safe to run the passive pass after a scan has
-    /// already concluded something from the wire.
+    /// A weak source does not displace a strong one, in either order.
     #[test]
     fn a_passive_pass_cannot_weaken_a_reading_taken_from_the_wire() {
         let mut host = host();
         assert!(identify(&mut host, [observed("Linux", 0.7)]));
         let from_the_wire = host.os().expect("a fingerprint").clone();
 
-        // Now the passive pass runs over the same host and finds nothing new.
+        // The passive pass finds nothing new.
         identify(&mut host, []);
 
         let after = host.os().expect("still a fingerprint");

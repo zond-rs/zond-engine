@@ -8,37 +8,27 @@
 
 //! # Deciding whether a rule describes an observation
 //!
-//! One function, applied field by field. A rule holds a predicate per field and
-//! an observation holds a value per field; a rule matches when **every predicate
-//! it states is satisfied**, and a field the rule does not name is not tested.
+//! A rule matches when **every predicate it states is satisfied**; a field it
+//! does not name is not tested.
 //!
-//! ## Absence is "do not care", and it is not free
+//! ## Absence is "do not care"
 //!
-//! A rule naming no predicates at all matches everything, which is why the build
-//! refuses one. Between that and a fully specified rule the trade is the usual
-//! one, and it is worth being explicit about which way it fails: a rule that
-//! names too few fields matches hosts it should not and is *confidently wrong*,
-//! while one that names too many matches nothing and is merely useless. The
-//! second failure is visible in the corpus test; the first is not, which is why
-//! that test also runs every example against every other family's rules.
+//! A rule naming no predicates would match everything, so the build refuses
+//! one. A rule naming too few fields matches hosts it should not, which the
+//! corpus test catches by running every example against every other family's
+//! rules.
 //!
-//! ## A predicate over a value the observation does not have
+//! ## A predicate over a missing value
 //!
-//! A rule may ask about a maximum segment size on a reply that carries none, a
-//! reset carries no options whatever the probe offered. That is a **failure to
-//! match**, never a match: "the peer did not say" and "the peer said something
-//! this rule accepts" are different, and treating the first as the second would
-//! let a reset satisfy a rule written for a handshake.
+//! A predicate over a value the reply does not have (an MSS on a reset) **fails
+//! to match**.
 
 use super::observation::{StackObservation, StackReply};
 use super::signature::{MatchRule, Predicate, ReplyKind};
 
 /// Whether a predicate accepts `value`.
 ///
-/// Exactly one form is set on a well-formed predicate, which `build.rs` enforces
-/// at compile time; a predicate that somehow sets none accepts nothing rather
-/// than everything, so a defect that escapes the build narrows detection instead
-/// of silently widening it.
+/// `build.rs` enforces exactly one form; a predicate with none accepts nothing.
 pub fn accepts<T: PartialOrd>(predicate: &Predicate<T>, value: &T) -> bool {
     if let Some(expected) = &predicate.equals {
         return expected == value;
@@ -55,9 +45,7 @@ pub fn accepts<T: PartialOrd>(predicate: &Predicate<T>, value: &T) -> bool {
 /// Whether `predicate` accepts what the observation holds, where the observation
 /// may hold nothing.
 ///
-/// Takes the value by reference so a predicate over a `String` costs a
-/// comparison rather than a clone. `None` never matches; see the module
-/// documentation.
+/// `None` never matches; see the module documentation.
 fn accepts_optional<T: PartialOrd>(predicate: &Option<Predicate<T>>, value: Option<&T>) -> bool {
     match (predicate, value) {
         (None, _) => true,
@@ -66,9 +54,7 @@ fn accepts_optional<T: PartialOrd>(predicate: &Option<Predicate<T>>, value: Opti
     }
 }
 
-/// [`accepts_optional`] for a predicate over a *name*: the class enums render
-/// `&'static str` names, which have no sized value to take by reference, so
-/// the comparison is spelled here once instead of at each call site.
+/// [`accepts_optional`] for a predicate over a class enum's `&'static str` name.
 fn accepts_named(predicate: &Option<Predicate<String>>, value: Option<&'static str>) -> bool {
     match (predicate, value) {
         (None, _) => true,
@@ -94,24 +80,13 @@ fn accepts_str(predicate: &Predicate<String>, name: &str) -> bool {
 /// An observation with its derived values worked out, so a set of rules can be
 /// asked about it without each one recomputing them.
 ///
-/// The reason this exists is measurable and was measured. Rendering the option
-/// layout allocates, and doing it inside the per-rule test made matching cost
-/// 3.2 ms per host against ten thousand rules, or 210 seconds of pure CPU for a
-/// `/16`, all of it spent building the same short string ten thousand times.
-/// Hoisting it is the difference between linear-with-a-big-constant and
-/// linear-with-a-small-one.
-///
-/// It is the same principle the service signatures run on next door, where a
-/// regex is compiled once and cached rather than per match; only the expensive
-/// thing differs. Two rules do not need this. Ten thousand, which is what
-/// translating a public corpus would bring, very much do, and the shape of the
-/// code should not have to change when they arrive.
+/// Rendering the option layout per rule cost 3.2 ms per host against ten
+/// thousand rules (210 seconds of CPU for a `/16`).
 struct Prepared<'a> {
     reply: &'a StackReply,
     series: Option<&'a crate::fingerprint::os::series::SeriesClasses>,
-    /// Everything below is `None` for a reply that has no such field, so a rule
-    /// naming a TCP field fails against an echo reply by the ordinary
-    /// "the peer did not say" rule rather than by a special case.
+    /// `None` for an echo reply, so TCP predicates fail against it as for any
+    /// missing value.
     tcp: Option<&'a StackObservation>,
     layout: Option<String>,
     initial_hops: u8,
@@ -138,8 +113,7 @@ impl<'a> Prepared<'a> {
             series,
             tcp,
             layout: tcp.map(StackObservation::layout_string),
-            // The IP header is the one thing both kinds have, so these two are
-            // read off the reply rather than off the TCP half.
+            // IP header fields, common to both kinds.
             initial_hops: reply.initial_hops_at_least(),
             dont_fragment: matches!(
                 reply.ip(),
@@ -162,9 +136,7 @@ impl<'a> Prepared<'a> {
             return false;
         }
 
-        // Cheapest and most selective first: the integer comparisons reject the
-        // overwhelming majority of a large rule set before the string comparison
-        // is ever reached.
+        // Cheapest and most selective first; the string comparison comes last.
         let echo = match self.reply {
             StackReply::Echo(observed) => Some(observed),
             StackReply::Tcp(_) => None,
@@ -202,23 +174,18 @@ impl<'a> Prepared<'a> {
 
 /// Whether `rule` describes `observed`.
 ///
-/// The single-shot entry point. Asking about many rules at once should go
-/// through [`RuleDb::matching`](super::RuleDb::matching), which prepares the
-/// derived values once rather than per rule.
+/// For many rules, use [`RuleDb::matching`](super::RuleDb::matching), which
+/// prepares the derived values once.
 ///
-/// The reply kind is checked first and is not optional: a rule written for a
-/// handshake must never be applied to a reset, whatever else agrees.
+/// The reply kind is checked first.
 pub fn matches(rule: &MatchRule, reply: &StackReply) -> bool {
     Prepared::new(reply, None).matches(rule)
 }
 
 /// Whether `rule` describes `reply` with its series readings known.
 ///
-/// The form the active path calls, where several replies were collected and
-/// classified. A rule predicating on a series field matches only through this
-/// entry point; against [`matches`](fn@matches) it fails by the ordinary
-/// "the peer did not say" rule, which is what keeps a series rule from ever
-/// being satisfied by a single reply.
+/// Called by the active path. A series rule matches only through this; against
+/// [`matches`](fn@matches) its series predicates fail as missing values.
 pub fn matches_with_series(
     rule: &MatchRule,
     reply: &StackReply,
@@ -234,9 +201,7 @@ pub(super) fn matching<'a>(
     reply: &'a StackReply,
     series: Option<&'a crate::fingerprint::os::series::SeriesClasses>,
 ) -> impl Iterator<Item = &'a super::signature::OsDefinition> {
-    // Moved into the closure so it is built once and lives as long as the
-    // iterator, rather than per rule. The iterator stays lazy: a caller wanting
-    // only the first match pays for only the rules before it.
+    // Built once for the whole lazy iterator.
     let prepared = Prepared::new(reply, series);
     rules
         .iter()
@@ -335,11 +300,7 @@ mod tests {
         }
     }
 
-    /// The reason this vocabulary exists: two builds of one stack can answer a
-    /// single SYN with byte-identical shapes and still be separated, because a
-    /// policy is visible only across a series. A rule predicating on the
-    /// sequence class matches the hashed generator and not the stepping one,
-    /// against replies that no single-reply predicate can tell apart.
+    /// Identical single-reply shapes are separated by the sequence class.
     #[test]
     fn a_series_predicate_separates_identical_single_reply_shapes() {
         let reply = syn_ack();
@@ -366,10 +327,7 @@ mod tests {
         );
     }
 
-    /// A rule predicating on a series field must never be satisfied by a single
-    /// reply, however well the shape agrees. The passive path has no series,
-    /// and the ordinary "the peer did not say" rule is what keeps a series rule
-    /// from naming a host it never sampled.
+    /// A series rule is never satisfied by a single reply.
     #[test]
     fn a_series_rule_is_never_satisfied_by_a_single_reply() {
         let reply = syn_ack();
