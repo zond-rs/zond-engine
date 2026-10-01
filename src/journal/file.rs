@@ -222,6 +222,7 @@ pub(super) fn open_or_create_private(path: &Path) -> std::io::Result<fs::File> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(path)
 }
 

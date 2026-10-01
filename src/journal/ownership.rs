@@ -953,10 +953,6 @@ pub(crate) fn give_open(_opened: &fs::File, _path: &Path) {}
 pub(crate) fn reclaim(_path: &Path) {}
 
 /// [`reclaim`] for a file, inert for the same reason.
-#[cfg(all(not(unix), feature = "journal-format"))]
-pub(crate) fn reclaim_open(_opened: &fs::File, _path: &Path) {}
-
-/// [`reclaim`] for a file, inert for the same reason.
 #[cfg(all(not(unix), feature = "import-settings"))]
 pub(crate) fn reclaim_file(_path: &Path) {}
 
