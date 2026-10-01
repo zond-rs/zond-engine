@@ -8,23 +8,17 @@
 
 //! # Contiguous runs of addresses
 //!
-//! A range is two addresses and everything between them, inclusive at both
-//! ends. It is how this engine holds a `/24` or a `/8` without holding the
-//! addresses themselves. It is the unit [`IpSet`](super::set::IpSet) is built
-//! out of, and the reason a target set naming sixteen million addresses costs
-//! two words.
+//! A range is two addresses and everything between them, inclusive at both ends: how a
+//! `/8` is held without holding its addresses. It is the unit
+//! [`IpSet`](super::set::IpSet) is built from.
 //!
-//! [`Ipv4Range`] and [`Ipv6Range`] are separate rather than one type over
-//! `IpAddr` because the arithmetic differs in kind: a v4 range is 8 bytes and
-//! its length always fits a `u64`, a v6 range is 32 and its length can exceed
-//! what a `u128` holds. [`IpRange`] is the enum over the two, for callers that
-//! do not care which family they were handed.
+//! [`Ipv4Range`] and [`Ipv6Range`] are separate types because the arithmetic differs: a
+//! v4 range's length always fits a `u64`, a v6 range's can exceed a `u128`. [`IpRange`]
+//! is the enum over both.
 //!
-//! The two families are never comparable. A v4 address is not in a v6 range
-//! whatever the numbers say, and `::ffff:192.0.2.1` is an IPv6 address here
-//! even though it names an IPv4 one. Membership across families is `false`
-//! rather than an error, because the callers are filtering received packets and
-//! a packet of the wrong family is simply not one they asked about.
+//! The families never compare: `::ffff:192.0.2.1` is an IPv6 address here. Membership
+//! across families is `false`, not an error, since callers are filtering received
+//! packets.
 
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -34,25 +28,22 @@ use thiserror::Error;
 
 /// Why a range could not be built or read.
 ///
-/// The distinction [`parse::ip`](crate::model::parse::ip) depends on runs
-/// through these: [`InvalidFormat`](Self::InvalidFormat),
-/// [`AddrParse`](Self::AddrParse) and [`PrefixParse`](Self::PrefixParse) mean
-/// "this is not a range", which is also what a hostname looks like from here,
-/// while the other two mean "this is a range, and it is wrong".
+/// [`InvalidFormat`](Self::InvalidFormat), [`AddrParse`](Self::AddrParse) and
+/// [`PrefixParse`](Self::PrefixParse) mean "not a range" (which a hostname also looks
+/// like); the other two mean "a range, but wrong". [`parse::ip`](crate::model::parse::ip)
+/// depends on that split.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum IpError {
-    /// The start address is above the end. Both are named, since which of the
-    /// two was mistyped is the reader's to work out.
+    /// The start address is above the end. Both are named.
     #[error("Invalid range: start address {0} is greater than end address {1}")]
     InvalidRange(IpAddr, IpAddr),
 
     /// A CIDR prefix longer than its family allows.
     ///
-    /// The bound is not in the message because this type does not carry the
-    /// family it was written against;
+    /// The message omits the bound, since the family is not carried;
     /// [`IpParseError::InvalidPrefix`](crate::model::parse::ip::IpParseError::InvalidPrefix)
-    /// is the one a user reads, and it names both.
+    /// names both.
     #[error("Invalid CIDR prefix: {0}")]
     InvalidPrefix(u8),
 
@@ -76,10 +67,8 @@ pub enum IpError {
 
 /// A contiguous run of IPv4 addresses, inclusive at both ends.
 ///
-/// Eight bytes, whatever the range covers. The start is never above the end,
-/// which [`new`](Self::new) is the only way to construct one in order to
-/// guarantee: an inverted range has a length that cannot be represented and
-/// yields nothing when iterated, so the two would disagree about what it holds.
+/// Eight bytes, whatever the range covers. [`new`](Self::new) guarantees the start is
+/// never above the end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ipv4Range {
     /// The inclusive starting address of the range.
@@ -119,10 +108,7 @@ impl Ipv4Range {
 
     /// A range covering the single address `addr`.
     ///
-    /// Infallible, because one address is trivially in order with itself. That
-    /// is what keeps the callers that hold one address from writing
-    /// `new(addr, addr).unwrap()` and teaching a reader that constructing a
-    /// range can panic.
+    /// Infallible, unlike [`new`](Self::new).
     pub const fn single(addr: Ipv4Addr) -> Self {
         Self {
             start_addr: addr,
@@ -143,9 +129,8 @@ impl Ipv4Range {
 
     /// Extends this range to reach `end`, if it does not already.
     ///
-    /// The only mutation a range allows, and the one merging adjacent ranges
-    /// needs. Growing the end cannot put it below the start, so the ordering
-    /// invariant survives without a check.
+    /// The only mutation a range allows, used to merge adjacent ranges. Growing the end
+    /// cannot invert the range.
     pub fn extend_end_to(&mut self, end: Ipv4Addr) {
         if end > self.end_addr {
             self.end_addr = end;
@@ -159,12 +144,8 @@ impl Ipv4Range {
 
     /// How many addresses the range covers, never fewer than one.
     ///
-    /// There is no `is_empty`: both bounds are inclusive and
-    /// [`new`](Self::new) refuses an inverted range, so a range always holds at
-    /// least one address and the answer would be `false` every time it was
-    /// asked. [`IpSet::is_empty`](crate::model::ip::set::IpSet::is_empty) next
-    /// door means something real, which is exactly what makes an always-false
-    /// one here a trap.
+    /// No `is_empty`: a range always holds at least one address, unlike an
+    /// [`IpSet`](crate::model::ip::set::IpSet::is_empty).
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> u64 {
         let s_u32: u64 = u32::from(self.start_addr) as u64;
@@ -190,16 +171,11 @@ pub struct Ipv6Range {
     /// The interface these addresses are valid on, as a scope id, for a range
     /// of link-local addresses.
     ///
-    /// The index alone rather than the whole
-    /// [`Zone`](crate::model::ip::scoped::Zone), so this type stays
-    /// `Copy`: a scan expands ranges into millions of targets, and the index is
-    /// all a socket ever needs. The interface *name* is a display concern and
-    /// belongs where a person reads the output.
+    /// The index only, so this type stays `Copy`; the index is all a socket needs. The
+    /// name lives on [`Zone`](crate::model::ip::scoped::Zone).
     ///
-    /// `None` for every range that does not need one, which is all of them
-    /// except link-local. See
-    /// [`ScopedIp`](crate::model::ip::scoped::ScopedIp) for why an
-    /// address that needs a zone and lacks one cannot be probed at all.
+    /// `None` except for link-local ranges. See
+    /// [`ScopedIp`](crate::model::ip::scoped::ScopedIp).
     zone: Option<u32>,
 }
 
@@ -215,11 +191,9 @@ impl Ipv6Range {
 
     /// Creates an `Ipv6Range` valid on the interface with scope id `zone`.
     ///
-    /// `Some(0)` is read as `None`, for the reason
-    /// [`Zone::new`](crate::model::ip::scoped::Zone::new) gives: zero is what a
-    /// name lookup returns when there is no such interface, so a range carrying
-    /// it names no segment. Kept as `Some(0)` it would read as scoped, which is
-    /// the one answer that stops [`is_ambiguous`](Self::is_ambiguous) saying so.
+    /// `Some(0)` is read as `None`: zero is a failed name lookup (see
+    /// [`Zone::new`](crate::model::ip::scoped::Zone::new)), and kept it would hide the
+    /// problem from [`is_ambiguous`](Self::is_ambiguous).
     ///
     /// # Errors
     ///
@@ -275,18 +249,11 @@ impl Ipv6Range {
     /// Whether these addresses are meaningless without an interface to
     /// interpret them against, and none is recorded.
     ///
-    /// A range spanning link-local addresses without a zone cannot be probed:
-    /// every interface holds an `fe80::/64`, so there is no way to tell which
-    /// segment was meant, and picking one is a guess a scan must not make
-    /// silently.
+    /// Such a range cannot be probed: every interface holds an `fe80::/64`, so which
+    /// segment was meant cannot be told.
     ///
-    /// True where *any* of the range is link-local, which is the direction a
-    /// safety question has to fail in. Asking
-    /// `start_addr.is_unicast_link_local()` would not do, since a range is two
-    /// addresses where that predicate takes one: `fe00::-fe80::5` covers
-    /// link-local space, starts outside it, and would reach
-    /// `system::interface::routing`'s `owning_interface` as though its segment
-    /// were knowable.
+    /// True where *any* of the range is link-local, so `fe00::-fe80::5`, which starts
+    /// outside it, counts.
     pub fn is_ambiguous(&self) -> bool {
         self.zone.is_none() && self.covers_link_local()
     }
@@ -299,10 +266,7 @@ impl Ipv6Range {
 
     /// Whether every address in the range is in `fe80::/10`.
     ///
-    /// What a `%zone` suffix needs to be true of the thing it is written on. A
-    /// zone on a range only partly link-local is meaningful for that part and
-    /// meaningless for the rest, which is a target that does not mean what it
-    /// says.
+    /// What a `%zone` suffix requires of the range it is written on.
     pub fn is_link_local(&self) -> bool {
         u128::from(self.start_addr) >= LINK_LOCAL_FIRST
             && u128::from(self.end_addr) <= LINK_LOCAL_LAST
@@ -311,18 +275,13 @@ impl Ipv6Range {
     /// The IPv4 range this range spells, when it lies wholly inside the
     /// IPv4-mapped block `::ffff:0:0/96`.
     ///
-    /// RFC 4291 §2.5.5.2 writes an IPv4 address inside an IPv6 one that way,
-    /// and a dual-stack socket handed `::ffff:192.0.2.1` connects to
-    /// `192.0.2.1` over IPv4. No packet on any wire carries such an address, so
-    /// wherever one names a host rather than an IPv6 value, the host is the
-    /// IPv4 one it spells.
+    /// RFC 4291 §2.5.5.2 writes an IPv4 address inside an IPv6 one that way, and a
+    /// dual-stack socket handed `::ffff:192.0.2.1` connects to `192.0.2.1`.
     ///
-    /// [`None`] when either end lies outside the block, which includes a range
-    /// that merely contains it: `::/0` holds the block as it holds every IPv6
-    /// address, and whoever writes it means IPv6, not every address there is.
+    /// [`None`] when either end lies outside the block, including a range like `::/0`
+    /// that merely contains it.
     pub(crate) fn spelled_ipv4(&self) -> Option<Ipv4Range> {
-        // Both ends inside the block put the whole range inside it, since the
-        // block is contiguous.
+        // The block is contiguous, so both ends inside means the whole range is.
         let start = self.start_addr.to_ipv4_mapped()?;
         let end = self.end_addr.to_ipv4_mapped()?;
         Ipv4Range::new(start, end).ok()
@@ -332,9 +291,8 @@ impl Ipv6Range {
     ///
     /// # Warning
     ///
-    /// IPv6 ranges can be astronomically large. Iterating over a typical CIDR (like a /64)
-    /// will take millions of years. This method is provided for small, manually
-    /// defined ranges.
+    /// IPv6 ranges can be astronomically large: iterating a `/64` does not finish. For
+    /// small ranges.
     pub fn iter(&self) -> impl Iterator<Item = IpAddr> {
         let start: u128 = self.start_addr.into();
         let end: u128 = self.end_addr.into();
@@ -343,18 +301,16 @@ impl Ipv6Range {
 
     /// Checks if the given [`Ipv6Addr`] falls within this range (inclusive).
     ///
-    /// Blind to the zone, like [`IpSet::contains`](super::set::IpSet::contains)
-    /// above it: a received packet carries a bare address with no interface
-    /// attached to compare against.
+    /// Ignores the zone, like [`IpSet::contains`](super::set::IpSet::contains): a
+    /// received packet carries a bare address.
     pub fn contains(&self, ip: &Ipv6Addr) -> bool {
         (u128::from(self.start_addr)..=u128::from(self.end_addr)).contains(&u128::from(*ip))
     }
 
     /// Whether any address falls in both ranges.
     ///
-    /// Blind to the zone, as [`contains`](Self::contains) is. Two ranges naming
-    /// the same addresses on different interfaces overlap here and are still two
-    /// segments, which is what a caller comparing zones wants to know.
+    /// Ignores the zone, as [`contains`](Self::contains) does, so a caller can compare
+    /// zones of overlapping ranges.
     pub fn overlaps(&self, other: &Self) -> bool {
         u128::from(self.start_addr) <= u128::from(other.end_addr)
             && u128::from(other.start_addr) <= u128::from(self.end_addr)
@@ -363,13 +319,9 @@ impl Ipv6Range {
     /// How many addresses the range covers, never fewer than one. See
     /// [`Ipv4Range::len`] for why there is no `is_empty` beside it.
     ///
-    /// `::/0` covers 2^128 addresses, which is one more than a `u128` can hold,
-    /// so the count saturates at [`u128::MAX`]. That is an undercount of one
-    /// address in the single case where the range is the entire address space -
-    /// a quantity no caller can act on differently at either value, and the only
-    /// alternative to a wrapping subtraction that reports the whole of IPv6 as
-    /// *nothing*. A budget check is the main reader of this, and reporting zero
-    /// would wave through precisely the target it exists to stop.
+    /// `::/0` covers 2^128 addresses, one more than a `u128` holds, so the count
+    /// saturates at [`u128::MAX`]. Wrapping would report the whole of IPv6 as zero and
+    /// pass a budget check.
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> u128 {
         let s_u128: u128 = u128::from(self.start_addr);
@@ -381,10 +333,8 @@ impl Ipv6Range {
 /// The first and last address of `fe80::/10`, the block
 /// [`Ipv6Addr::is_unicast_link_local`] answers for.
 ///
-/// Written out because that predicate takes one address and a range is two, so
-/// asking it about either end says nothing about what lies between them. The
-/// test beside them checks the two agree at all four boundaries, which is what
-/// keeps these from being a second opinion about where link-local space is.
+/// Written out because the predicate takes one address and a range is two. A test
+/// checks they agree at all four boundaries.
 const LINK_LOCAL_FIRST: u128 = 0xfe80 << 112;
 const LINK_LOCAL_LAST: u128 = (0xfebf << 112) | ((1u128 << 112) - 1);
 
@@ -394,15 +344,10 @@ const LINK_LOCAL_LAST: u128 = (0xfebf << 112) | ((1u128 << 112) - 1);
 
 /// Either family's range, for a caller that does not care which it was handed.
 ///
-/// What [`FromStr`] produces, since the text decides the family and the caller
-/// writing it usually has no reason to branch on the answer.
+/// What [`FromStr`] produces, since the text decides the family.
 ///
-/// The one public enum in [`model`](crate::model) without `#[non_exhaustive]`.
-/// There is no third address family to add, so a caller
-/// matching both arms is writing something exhaustive that will stay
-/// exhaustive, and the marker's whole effect would be to take away the compile
-/// error if that ever stopped being true. The same argument
-/// [`diff::change::Presence`](crate::diff::change::Presence) is left open on.
+/// Not `#[non_exhaustive]`: there is no third address family, so matching both arms is
+/// exhaustive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IpRange {
     /// An IPv4 address range.
@@ -414,10 +359,9 @@ pub enum IpRange {
 impl IpRange {
     /// Every address the range holds, ascending.
     ///
-    /// Boxed because the two families iterate as different types and this
-    /// carries either, which is why [`IpSet::iter`](super::set::IpSet::iter) is
-    /// boxed as well. The same warning applies: a range is a description rather
-    /// than a list, and iterating a wide IPv6 one does not finish.
+    /// Boxed, since the families iterate as different types, as in
+    /// [`IpSet::iter`](super::set::IpSet::iter). Iterating a wide IPv6 range does not
+    /// finish.
     pub fn iter(&self) -> Box<dyn Iterator<Item = IpAddr> + Send + '_> {
         match self {
             IpRange::V4(range) => Box::new(range.iter()),
@@ -476,28 +420,23 @@ impl FromStr for IpRange {
     ///   `10.0.0.1-50`, `192.168.1.1-2.254`
     /// - Single IPs: `1.1.1.1`, `::1`
     ///
-    /// This is the whole of the range grammar. Everything in the crate that
-    /// reads a written range ends here, so no two entry points can accept
-    /// different spellings of the same thing.
+    /// The whole range grammar: everything in the crate that reads a written range ends
+    /// here.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
 
-        // Handle CIDR
+        // CIDR
         if let Some(pos) = s.find('/') {
             let ip = s[..pos].parse::<IpAddr>()?;
             let prefix = s[pos + 1..].parse::<u8>()?;
             return cidr_range(ip, prefix);
         }
 
-        // Handle hyphenated range
+        // Hyphenated range
         if let Some(pos) = s.find('-') {
-            // Not trimmed around the separator, so `192.0.2.1 - 192.0.2.5` is
-            // not a range here either. Nothing that reads a written range
-            // through this crate could express it anyway: `IpSet` splits its
-            // input on spaces as well as commas, so that spelling arrives as
-            // three tokens and the middle one is a bare `-`. The module
-            // documentation above claims one grammar with no second dialect, and
-            // trimming here would be the second dialect.
+            // Not trimmed around the separator: `IpSet` splits on spaces, so
+            // `192.0.2.1 - 192.0.2.5` arrives as three tokens there, and trimming
+            // here would make a second dialect.
             let start_str = &s[..pos];
             let end_str = &s[pos + 1..];
 
@@ -512,7 +451,7 @@ impl FromStr for IpRange {
             return Err(IpError::InvalidFormat(s.to_string()));
         }
 
-        // Handle single IP
+        // Single address
         match s.parse::<IpAddr>()? {
             IpAddr::V4(v4) => Ok(IpRange::V4(Ipv4Range::single(v4))),
             IpAddr::V6(v6) => Ok(IpRange::V6(Ipv6Range::single(v6))),
@@ -523,14 +462,10 @@ impl FromStr for IpRange {
 /// Reads the end of an IPv4 range, which may be written in full or as however
 /// many trailing octets differ from the start.
 ///
-/// `10.0.0.1-50` ends at `10.0.0.50` and `192.168.1.1-2.254` at
-/// `192.168.2.254`: the octets given replace the same number of octets at the
-/// end of the start address. A shorthand exists because the alternative is
-/// writing an address twice to name a range within one subnet, which is the
-/// common case.
+/// `10.0.0.1-50` ends at `10.0.0.50` and `192.168.1.1-2.254` at `192.168.2.254`: the
+/// octets given replace as many octets at the end of the start address.
 ///
-/// IPv4 only. IPv6 has no comparable form, and inventing one would make `::1-5`
-/// ambiguous with an address whose last group is hex.
+/// IPv4 only: an IPv6 form would make `::1-5` ambiguous with a hex group.
 fn expand_v4_end(start: Ipv4Addr, end_str: &str) -> Option<Ipv4Addr> {
     if let Ok(full) = end_str.parse::<Ipv4Addr>() {
         return Some(full);
@@ -549,13 +484,9 @@ fn expand_v4_end(start: Ipv4Addr, end_str: &str) -> Option<Ipv4Addr> {
 
 /// One octet of a shortened range's end, read as strictly as an address's own.
 ///
-/// `u8::from_str` is not that: it takes a leading `+` and a leading zero, where
-/// `Ipv4Addr::from_str` has refused a leading zero since 1.53 because `010` is
-/// octal to enough software to matter. Reading the two halves of one range with
-/// two grammars would refuse `010.0.0.50` as a start and accept it as an end,
-/// which is the ambiguity the address parser rejects it for arriving by the
-/// other door. In a scanner the addresses a range covers are the machines that
-/// receive packets.
+/// `u8::from_str` accepts a leading `+` and a leading zero, but `Ipv4Addr::from_str`
+/// refuses a leading zero since 1.53, because `010` is octal to enough software to
+/// matter. Both halves of a range must use the same rules.
 fn octet(part: &str) -> Option<u8> {
     if part.len() > 1 && part.starts_with('0') {
         return None;
@@ -584,9 +515,7 @@ pub fn cidr_range(ip: IpAddr, prefix: u8) -> Result<IpRange, IpError> {
                 return Err(IpError::InvalidPrefix(prefix));
             }
 
-            // No special case for a zero prefix: `checked_shr(0)` is the whole
-            // mask, whose complement is no mask, which is what `/0` means, so a
-            // branch for it could not change an answer.
+            // `/0` needs no special case: `checked_shr(0)` is the whole mask.
             let ip_u32 = u32::from(v4);
             let mask = !u32::MAX.checked_shr(u32::from(prefix)).unwrap_or(0);
 
@@ -632,11 +561,7 @@ pub fn cidr_range(ip: IpAddr, prefix: u8) -> Result<IpRange, IpError> {
 mod tests {
     use super::*;
 
-    /// Both bounds are inclusive, so the edges are the cases worth writing
-    /// down: the property tests below establish that a range holds its own
-    /// endpoints, and these establish that it holds nothing beyond them. An
-    /// off-by-one here scans an address nobody asked about, or misses one they
-    /// did.
+    /// A range holds nothing beyond its inclusive endpoints.
     #[test]
     fn a_range_holds_both_its_bounds_and_nothing_outside_them() {
         let v4 = Ipv4Range::new(
@@ -659,11 +584,7 @@ mod tests {
     /// The ends of each address space, where the arithmetic that counts a range
     /// is one step from overflowing.
     ///
-    /// `::/0` is the case the type cannot represent exactly: 2^128 addresses is
-    /// one more than a `u128` holds, so the count saturates. The undercount of
-    /// one beats the alternative, a wrapping subtraction reporting the whole of
-    /// IPv6 as nothing, where a budget check reading zero would wave through the
-    /// target it exists to stop.
+    /// `::/0` saturates at `u128::MAX`.
     #[test]
     fn the_extremes_of_each_address_space_saturate_rather_than_wrap() {
         let top_of_v4 = Ipv4Range::new(
@@ -680,10 +601,7 @@ mod tests {
         assert_eq!(everything.len(), u128::MAX, "saturated, never zero");
     }
 
-    /// Ascending, with no address skipped or repeated. The order is what a scan
-    /// walks, so two runs over one target list probe in the same sequence, and
-    /// the values rather than the count are what the property tests below leave
-    /// unpinned.
+    /// Ascending, with no address skipped or repeated.
     #[test]
     fn iteration_yields_every_address_in_ascending_order() {
         let v4 = Ipv4Range::new(Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(1, 1, 1, 3)).unwrap();
@@ -709,9 +627,7 @@ mod tests {
 
     /// Every form the grammar accepts, and what each covers.
     ///
-    /// This is the whole of what a written range can mean, and everything in the
-    /// crate that reads one ends here, so a spelling that stops working stops
-    /// working for target files, imported reports and command lines at once.
+    /// Target files, imported reports and command lines all read ranges here.
     #[test]
     fn every_written_form_names_the_range_it_says_it_does() {
         for (written, first, last) in [
@@ -734,17 +650,12 @@ mod tests {
 
     /// One grammar for both halves of a range.
     ///
-    /// Reading the end of a shortened range with `u8::from_str` and the start
-    /// with `Ipv4Addr::from_str` would read one token by two grammars, and the
-    /// two disagree about a leading zero: the address parser has refused it
-    /// since 1.53 because `010` is octal to enough software to matter, and the
-    /// integer parser takes it, along with a leading `+`. The spelling refused
-    /// on the left of the hyphen would be accepted on the right.
+    /// A leading zero or sign is refused on either side of the hyphen.
     #[test]
     fn both_halves_of_a_range_read_octets_the_same_way() {
         for spelling in [
             "010.0.0.1",             // as a start
-            "198.51.100.1-010",      // and as an end
+            "198.51.100.1-010",      // as an end
             "198.51.100.1-0.0.0.50", // in a longer suffix
             "198.51.100.1-+50",      // a sign is not an octet either
             "198.51.100.1- 50",      // nor is one with space around it
@@ -755,7 +666,7 @@ mod tests {
             );
         }
 
-        // A single zero is a zero, and the forms that always worked still do.
+        // A single zero is fine, as are the ordinary forms.
         for (spelling, last) in [
             ("198.51.100.0-0", "198.51.100.0"),
             ("198.51.100.1-50", "198.51.100.50"),
@@ -770,20 +681,14 @@ mod tests {
 
     /// A range has no spaces in it, whichever door it arrives through.
     ///
-    /// `IpSet::from_str` splits its input on spaces as well as commas, so an
-    /// `IpRange::from_str` that trimmed around the separator would make
-    /// `198.51.100.1 - 198.51.100.5` a range through one entry point and three
-    /// tokens through the other. The module documentation says there is one
-    /// grammar and no two entry points that accept different spellings of the
-    /// same thing.
+    /// `IpSet::from_str` splits on spaces, so trimming around the separator here would
+    /// make a second dialect.
     #[test]
     fn a_range_written_with_spaces_is_not_a_range() {
         assert!("198.51.100.1 - 198.51.100.5".parse::<IpRange>().is_err());
         assert!("198.51.100.1 -198.51.100.5".parse::<IpRange>().is_err());
 
-        // The whole token is still trimmed, which is a different question: a
-        // caller that split a file on newlines has trailing whitespace and no
-        // second dialect.
+        // The whole token is still trimmed.
         let padded: IpRange = "  198.51.100.1-198.51.100.5  "
             .parse()
             .expect("trimmed as a whole");
@@ -792,11 +697,6 @@ mod tests {
 
     /// The link-local bounds agree with the predicate std answers for one
     /// address, at all four edges.
-    ///
-    /// They are a second opinion about where `fe80::/10` sits, and the only
-    /// thing that keeps a second opinion honest is checking it against the
-    /// first. Written out because a range is two addresses and the predicate
-    /// takes one.
     #[test]
     fn the_link_local_bounds_are_the_block_std_recognises() {
         let first = Ipv6Addr::from(LINK_LOCAL_FIRST);
@@ -813,14 +713,8 @@ mod tests {
     /// A range is two addresses, and whether it is link-local is a question
     /// about both.
     ///
-    /// An `is_ambiguous` that asked `start_addr.is_unicast_link_local()` would
-    /// find a range that runs into link-local space from below not ambiguous
-    /// and send it to `owning_interface` as though its segment were knowable,
-    /// and would find one that runs out of it from within ambiguous along its
-    /// whole length. The two
-    /// questions are also not the same question: covering *some* link-local
-    /// space is what makes a range ambiguous, and covering *only* link-local
-    /// space is what a `%zone` suffix needs.
+    /// Covering *some* link-local space makes a range ambiguous; covering *only*
+    /// link-local space is what a `%zone` suffix needs.
     #[test]
     fn whether_a_range_is_link_local_is_a_question_about_all_of_it() {
         let range = |first: &str, last: &str| {
@@ -843,7 +737,7 @@ mod tests {
         assert!(!out_of.is_link_local());
         assert!(out_of.is_ambiguous());
 
-        // Entirely inside, which is what a zone may be written on.
+        // Entirely inside, where a zone may be written.
         let inside = range("fe80::1", "fe80::5");
         assert!(inside.covers_link_local() && inside.is_link_local());
         assert!(inside.is_ambiguous(), "until an interface is named");
@@ -860,10 +754,7 @@ mod tests {
     /// A scope id of zero names no interface, so a range carrying one is not
     /// scoped and has to say so.
     ///
-    /// `is_ambiguous` is what a caller asks before deciding a link-local range
-    /// can be attributed to a segment, and it reads the zone. A `Some(0)` left
-    /// as written would make the range look answered, so the question the
-    /// classifier exists to ask would never be asked.
+    /// Otherwise `is_ambiguous` would treat it as answered.
     #[test]
     fn a_zone_of_zero_is_no_zone_at_all() {
         let link_local: Ipv6Addr = "fe80::1".parse().expect("literal");
@@ -881,11 +772,7 @@ mod tests {
         assert!(!found.is_ambiguous());
     }
 
-    /// `new` is the only way to build a range, so the ordering it checks is a
-    /// property of every range that exists. Without that, an inverted one is
-    /// constructible and disagrees with itself: `len` cannot represent a
-    /// negative count and `iter` yields nothing, so a budget check and a scan
-    /// read the same value differently.
+    /// `new` refuses an inverted range.
     #[test]
     fn a_range_can_only_be_built_in_order() {
         let low = Ipv4Addr::new(198, 51, 100, 1);
@@ -906,8 +793,7 @@ mod tests {
         assert_eq!(range.iter().count() as u64, range.len());
     }
 
-    /// The one mutation a range allows. It only ever grows the end, which is
-    /// what keeps it unable to invert the range it is called on.
+    /// `extend_end_to` only grows the end.
     #[test]
     fn extending_a_range_never_inverts_it() {
         let mut range = Ipv4Range::new(
@@ -919,15 +805,14 @@ mod tests {
         range.extend_end_to(Ipv4Addr::new(198, 51, 100, 9));
         assert_eq!(range.end_addr(), Ipv4Addr::new(198, 51, 100, 9));
 
-        // A shorter end is not an instruction to shrink.
+        // A shorter end does not shrink it.
         range.extend_end_to(Ipv4Addr::new(198, 51, 100, 2));
         assert_eq!(range.end_addr(), Ipv4Addr::new(198, 51, 100, 9));
         assert!(range.end_addr() >= range.start_addr());
         assert_eq!(range.iter().count() as u64, range.len());
     }
 
-    /// These messages are printed at whoever mistyped a target, so they have to
-    /// name the value that was wrong rather than only the rule it broke.
+    /// The messages name the value that was wrong.
     #[test]
     fn an_error_names_the_input_that_produced_it() {
         let prefix_err = IpError::InvalidPrefix(40);
@@ -1002,8 +887,6 @@ mod property_tests {
         }
 
         /// From zero, the prefix an implementation is tempted to special-case.
-        /// A generator starting at one, to spare the assertion writing
-        /// `1 << 128`, would never reach it.
         #[test]
         fn cidr_v4_roundtrip(v4 in any_ipv4(), prefix in 0..=32u8) {
             let range = cidr_range(IpAddr::V4(v4), prefix).unwrap();
@@ -1013,9 +896,7 @@ mod property_tests {
         #[test]
         fn cidr_v6_roundtrip(v6 in any_ipv6(), prefix in 0..=128u8) {
             let range = cidr_range(IpAddr::V6(v6), prefix).unwrap();
-            // `/0` is the whole space, which is one more address than a `u128`
-            // counts and is what `len` saturates for; every other prefix is the
-            // shift.
+            // `/0` saturates; every other prefix is the shift.
             let expected = 1u128.checked_shl(u32::from(128 - prefix)).unwrap_or(u128::MAX);
             prop_assert_eq!(range.len(), expected);
         }

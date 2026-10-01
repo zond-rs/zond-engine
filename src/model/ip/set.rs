@@ -14,21 +14,16 @@
 //!
 //! ## Merging is lazy
 //!
-//! Insertion is constant time, because it only appends. Sorting and merging is
-//! `O(n log n)` and happens once, at [`IpSet::canonicalize`]. The split exists
-//! because a target file can name tens of thousands of ranges, and merging after
-//! each one would make loading it quadratic.
+//! Insertion appends in constant time; sorting and merging is `O(n log n)` and happens
+//! once, at [`IpSet::canonicalize`]. A target file can name tens of thousands of ranges,
+//! and merging after each would make loading quadratic.
 //!
-//! Which state a set is in is nobody's to track. Every query is correct either
-//! way: [`contains`](IpSet::contains) and [`len`](IpSet::len) take a fast
-//! path over merged ranges when they can and a slower one when they cannot.
-//! Canonicalizing is a performance decision, not a correctness one, and the
-//! right moment for it is when a set stops being built and starts being read.
+//! Every query is correct either way: [`contains`](IpSet::contains) and
+//! [`len`](IpSet::len) take a fast path over merged ranges and a slower one otherwise.
+//! Canonicalize when a set stops being built and starts being read.
 //!
-//! Most callers never need to think about it at all, because
-//! [`TargetSet::new`](crate::model::target::TargetSet::new) canonicalizes what
-//! it is given and never mutates it again. Everything downstream of a
-//! `TargetSet` reads merged ranges by construction.
+//! [`TargetSet::new`](crate::model::target::TargetSet::new) canonicalizes what it is
+//! given, so everything downstream of a `TargetSet` reads merged ranges.
 
 use super::range::{IpError, IpRange, Ipv4Range, Ipv6Range};
 use std::cmp::Ordering;
@@ -41,18 +36,10 @@ use std::{
 
 /// Why a written address specification could not be read as a set.
 ///
-/// One variant, wrapping the range grammar's own error, and less than
-/// [`IpParseError`](crate::model::parse::ip::IpParseError) says about the
-/// same input. That type distinguishes "this is not a range" from "this is a
-/// range and it is wrong", names both prefix bounds, and carries the expression
-/// as the caller wrote it, all of which a person reading a refused target wants.
-///
-/// It is not available here. `parse` is built on `ip` and reaching the other way
-/// would put the two modules in a cycle, which `tests/hygiene/architecture.rs` refuses
-/// and `lib.rs` sets out the order to avoid. So the richer reading belongs to
-/// the layer that has both, and a caller wanting it goes through
-/// [`to_set`](crate::model::parse::ip::to_set) rather than through this type's
-/// [`FromStr`].
+/// Wraps the range grammar's error. For the richer
+/// [`IpParseError`](crate::model::parse::ip::IpParseError), which names both prefix
+/// bounds and quotes the expression, use [`to_set`](crate::model::parse::ip::to_set);
+/// `parse` depends on `ip`, so this module cannot use it.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IpSetError {
@@ -67,10 +54,9 @@ pub enum IpSetError {
 
 /// A collection of unique IP addresses stored as sorted, non-overlapping ranges.
 ///
-/// Handles automatic merging of overlapping and adjacent ranges lazily.
+/// Merges overlapping and adjacent ranges lazily.
 ///
-/// Equality is over the addresses held, not over how the set was built: see the
-/// hand-written [`PartialEq`].
+/// Equality is over the addresses held; see the hand-written [`PartialEq`].
 #[derive(Debug, Clone, Default, Eq)]
 pub struct IpSet {
     v4: Vec<Ipv4Range>,
@@ -83,10 +69,8 @@ pub struct IpSet {
 /// range of one, for a test that has to know a set was built from only what
 /// it needed to hold.
 ///
-/// Counted where a range first enters a set, which every way of building one
-/// passes through: a range moved between sets, or rewritten by a merge or a
-/// subtraction, was counted as it entered. Per thread, so the tests running
-/// beside one never move its count.
+/// Counted where a range first enters a set. Per thread, so concurrent tests do not
+/// interfere.
 #[cfg(test)]
 pub(crate) mod ranges_added {
     use std::cell::Cell;
@@ -116,8 +100,7 @@ impl IpSet {
 
     /// Adds a single IP address to the set.
     ///
-    /// Constant time: it appends and defers the merge. See the module
-    /// documentation for why.
+    /// Constant time: it appends and defers the merge.
     pub fn insert(&mut self, ip: IpAddr) {
         match ip {
             IpAddr::V4(v4) => self.push_v4_range(Ipv4Range::single(v4)),
@@ -152,10 +135,9 @@ impl IpSet {
     /// Sorts and merges the ranges, so that every read afterwards takes its
     /// fast path.
     ///
-    /// Call it once, at the point the set stops being built and starts being
-    /// read. It is not required for correctness, since every query answers
-    /// correctly either way, but an unmerged set answers by scanning, and a set
-    /// read once per received packet should not be.
+    /// Call it once the set stops being built. Not required for correctness, but an
+    /// unmerged set answers by scanning, which a set read per received packet should
+    /// not.
     pub fn canonicalize(&mut self) {
         if self.v4_dirty {
             if !self.v4.is_empty() {
@@ -194,22 +176,12 @@ impl IpSet {
     /// Sorts and merges the IPv6 ranges, keeping ranges on different interfaces
     /// apart.
     ///
-    /// Two link-local ranges spanning the same numbers on two interfaces are two
-    /// different sets of machines, and merging them would produce a range that
-    /// means one thing at one end and something else at the other. So adjacency
-    /// alone is not enough to combine two ranges; they have to agree on scope.
+    /// The same link-local numbers on two interfaces are two sets of machines, so
+    /// ranges merge only when their zones agree.
     ///
-    /// The sort is keyed on the zone first. That leaves the vector as one run
-    /// per interface, each sorted by address and disjoint within itself, which is
-    /// what [`v6_runs`](Self::v6_runs) hands the binary search. Sorted by address
-    /// first the runs interleave, and two ranges that overlap numerically while
-    /// disagreeing on zone both survive the merge, leaving a vector a binary
-    /// search steps straight past.
-    ///
-    /// Grouping also merges strictly more than address-first ordering would:
-    /// two ranges sharing a zone are always adjacent, where under address-first
-    /// ordering a differently-zoned range between them would leave both in
-    /// place.
+    /// Sorted by zone first, leaving one run per interface, each sorted and disjoint,
+    /// which [`v6_runs`](Self::v6_runs) hands the binary search. Grouping by zone also
+    /// keeps same-zone ranges adjacent, so they always merge.
     fn merge_v6(&mut self) {
         self.v6.sort_by_key(|r| (r.zone(), r.start_addr()));
         let mut merged: Vec<Ipv6Range> = Vec::with_capacity(self.v6.len());
@@ -234,30 +206,17 @@ impl IpSet {
 
     /// Removes every address `other` holds from this set.
     ///
-    /// This set is canonicalized first and left that way, so every read after it
-    /// takes its fast path. `other` is read in whatever state it is in, with the
-    /// subtrahend sorted and coalesced on the way through, which a set being
-    /// subtracted from cannot be since the difference has to write back into it.
-    /// Afterwards [`contains`](Self::contains) answers `false` for every
-    /// address `other` contained, and that property is what makes this usable as
-    /// a policy rather than merely as an optimisation.
+    /// This set is canonicalized first and left that way; `other` is read in whatever
+    /// state it is in. Afterwards [`contains`](Self::contains) answers `false` for every
+    /// address `other` contained, which makes this usable as a policy.
     ///
-    /// Blind to zones, exactly as [`contains`](Self::contains) is. A range in
-    /// `other` removes those addresses from every interface, whether or not
-    /// either side named one. The two have to agree: a difference that kept
-    /// `fe80::5%en1` while `contains` reported `fe80::5` present would leave a
-    /// set that says one thing when asked and another when walked, and the caller
-    /// most likely to meet the discrepancy is the one filtering received replies,
-    /// which arrive as bare addresses with no interface attached and so can only
-    /// be tested the blind way.
+    /// Ignores zones, as [`contains`](Self::contains) does: a range in `other` removes
+    /// those addresses from every interface. The two must agree, since received replies
+    /// arrive as bare addresses. This errs toward removing more, which is the safe
+    /// direction for withholding addresses from a scan.
     ///
-    /// Where the two readings differ this is the one that removes more, which is
-    /// the direction a subtraction used to withhold addresses from a scan has to
-    /// err in. Deciding it here rather than per caller is the point.
-    ///
-    /// Linear in the *ranges* of both sides and never in their addresses:
-    /// subtracting a `/24` from a `/8` is a handful of comparisons, not sixteen
-    /// million.
+    /// Linear in the *ranges* of both sides: subtracting a `/24` from a `/8` is a
+    /// handful of comparisons.
     pub fn subtract(&mut self, other: &IpSet) {
         if other.is_empty() || self.is_empty() {
             return;
@@ -268,8 +227,8 @@ impl IpSet {
             let cuts = merged_intervals(other.v4.iter().map(v4_bounds));
             if !cuts.is_empty() {
                 self.v4 = subtract_run(&self.v4, &cuts, v4_bounds, |_, start, end| {
-                    // Both ends came out of a `u32`-derived range and the
-                    // difference only ever narrows one, so the casts are exact.
+                    // Both ends came from a `u32`-derived range and only narrow, so
+                    // the casts are exact.
                     Ipv4Range::new(Ipv4Addr::from(start as u32), Ipv4Addr::from(end as u32))
                         .unwrap_or_else(|_| unreachable!("a narrowed range keeps start <= end"))
                 });
@@ -280,9 +239,8 @@ impl IpSet {
             let cuts = merged_intervals(other.v6.iter().map(v6_bounds));
             if !cuts.is_empty() {
                 // One run per interface, since only within a run are the ranges
-                // disjoint, which is the precondition the difference needs. The
-                // zone travels with every piece a range is cut into, so the
-                // result stays grouped and sorted the way `merge_v6` left it.
+                // disjoint. Each piece keeps its zone, so the result stays grouped
+                // as `merge_v6` left it.
                 let mut kept = Vec::with_capacity(self.v6.len());
                 for run in self.v6_runs() {
                     kept.extend(subtract_run(run, &cuts, v6_bounds, |range, start, end| {
@@ -297,11 +255,8 @@ impl IpSet {
 
     /// The merged IPv6 ranges, one slice per interface.
     ///
-    /// Each slice is sorted by address and holds no two ranges that overlap,
-    /// which is the precondition [`holds`] needs and which the vector as a
-    /// whole does not meet. There is one slice per distinct zone, so this
-    /// yields once for the sets that name no interface at all and otherwise as
-    /// many times as the host has interfaces in the set.
+    /// Each slice is sorted and disjoint, as [`holds`] needs; the vector as a whole is
+    /// not. One slice per distinct zone.
     fn v6_runs(&self) -> impl Iterator<Item = &[Ipv6Range]> {
         let mut rest = self.v6.as_slice();
 
@@ -318,20 +273,12 @@ impl IpSet {
 
     /// Checks if the set contains the given IP address, on any interface.
     ///
-    /// Deliberately blind to zones: the callers are filtering received replies
-    /// against the targets they asked about, and a reply arrives as a bare
-    /// address with no interface attached to compare. The strategy that receives
-    /// it is bound to one segment already, so the scope is established by which
-    /// scanner is asking rather than by this test.
+    /// Ignores zones: callers filter received replies, which arrive as bare addresses,
+    /// and the receiving strategy is already bound to one segment.
     ///
-    /// Correct whatever state the set is in: a binary search when the address's
-    /// own family is merged, and a linear scan of that family's unmerged ranges
-    /// when it is not. The slow path allocates nothing, because a membership
-    /// test is not a reason to merge a set the caller has not finished building.
-    ///
-    /// Per family, because the merge is. Asking about both would put every IPv6
-    /// lookup on the linear path for as long as one unmerged IPv4 range sat
-    /// beside it, which is the path a received reply takes.
+    /// Correct in any state: a binary search when the address's family is merged, a
+    /// non-allocating linear scan when it is not. Checked per family, so an unmerged
+    /// IPv4 range does not slow IPv6 lookups.
     pub fn contains(&self, ip: &IpAddr) -> bool {
         if self.is_merged(ip) {
             return self.contains_canonical(ip);
@@ -344,10 +291,8 @@ impl IpSet {
 
     /// The number of distinct addresses the set covers.
     ///
-    /// Overlapping ranges are counted once, so an unmerged set is merged before
-    /// answering. That happens on a clone, which keeps counting a read.
-    /// [`len_gross`](Self::len_gross) is the cheap over-estimate for a caller
-    /// that asks often.
+    /// Overlaps count once, so an unmerged set is merged on a clone first.
+    /// [`len_gross`](Self::len_gross) is the cheap over-estimate.
     pub fn len(&self) -> u128 {
         if !self.v4_dirty && !self.v6_dirty {
             self.len_canonical()
@@ -366,24 +311,18 @@ impl IpSet {
     /// How many addresses the ranges cover, counting overlaps once per range
     /// they appear in.
     ///
-    /// [`len`](Self::len) clones and merges the whole set when it is dirty,
-    /// which is the right answer to give a person and the wrong one to ask on
-    /// every insertion. This costs one pass and no allocation, and it is never
-    /// lower than the true count - so a budget checked against it refuses early
-    /// rather than late.
+    /// One pass and no allocation, unlike [`len`](Self::len) on an unmerged set. Never
+    /// lower than the true count, so a budget check errs early.
     pub fn len_gross(&self) -> u128 {
         self.v4_len().saturating_add(self.v6_len())
     }
 
     /// Every address the set covers, one at a time, IPv4 before IPv6.
     ///
-    /// Each address is yielded once, however many ranges named it. That needs
-    /// merged ranges, so an unmerged set is merged on a clone and iteration stays
-    /// a read. A caller that owns the set calls
-    /// [`canonicalize`](Self::canonicalize) first and skips the copy.
+    /// Each address once, however many ranges named it, so an unmerged set is merged
+    /// on a clone; call [`canonicalize`](Self::canonicalize) first to skip the copy.
     ///
-    /// Yields lazily. A `/8` is sixteen million addresses and an IPv6 range can
-    /// hold far more than that, so nothing here is materialized.
+    /// Lazy: nothing is materialized.
     pub fn iter(&self) -> Box<dyn Iterator<Item = IpAddr> + Send + '_> {
         if self.v4_dirty || self.v6_dirty {
             let mut temp = self.clone();
@@ -399,10 +338,8 @@ impl IpSet {
     /// Every address the set covers, each paired with the interface index it is
     /// only meaningful on.
     ///
-    /// The zone lives on the range rather than on the addresses inside it, so
-    /// [`iter`](Self::iter) cannot report it. An IPv6 address yields the zone of
-    /// the range it came from, `None` when that range carries none; IPv4 always
-    /// yields `None`.
+    /// The zone lives on the range, so [`iter`](Self::iter) cannot report it. An IPv6
+    /// address yields its range's zone; IPv4 always yields `None`.
     ///
     /// ```
     /// use zond_engine::model::ip::{IpRange, set::IpSet};
@@ -444,19 +381,9 @@ impl IpSet {
 
     /// Whether the family `ip` belongs to has been merged.
     ///
-    /// The question [`contains`](Self::contains) asks before taking its fast
-    /// path, and it is per family because the merge is. A set that has just
-    /// gained an IPv4 range holds an IPv6 half as canonical as it was a moment
-    /// earlier, and a binary search over that half is as valid as it ever was;
-    /// [`canonicalize`](Self::canonicalize) merges only the family that needs
-    /// it for the same reason.
-    ///
-    /// Asking `!v4_dirty && !v6_dirty` instead would put every IPv6 membership
-    /// test on a linear scan for as long as one unmerged IPv4 range sat beside
-    /// it, which is the path a received reply takes. Measured over a thousand
-    /// merged IPv6 ranges with one IPv4 address pushed after canonicalizing:
-    /// twenty thousand lookups take 276 ms on the linear path and 6.5 ms on the
-    /// merged one.
+    /// What [`contains`](Self::contains) checks before its fast path, per family. Over a
+    /// thousand merged IPv6 ranges with one IPv4 address pushed afterwards, twenty
+    /// thousand lookups took 276 ms on the linear path and 6.5 ms on the merged one.
     fn is_merged(&self, ip: &IpAddr) -> bool {
         match ip {
             IpAddr::V4(_) => !self.v4_dirty,
@@ -466,17 +393,12 @@ impl IpSet {
 
     /// The fast path [`contains`](Self::contains) takes on a merged family.
     ///
-    /// Private, because the assertion below is the only thing separating a
-    /// binary search over sorted ranges from a binary search over unsorted
-    /// ones, and a release build compiles it out. Whether an address is in
-    /// scope decides whether a reply is credited or discarded, so that choice
-    /// is not one to leave to a caller who cannot see the set's state.
+    /// Private, since only a debug assertion guards against searching unsorted ranges,
+    /// and a wrong answer decides whether a reply is credited.
     ///
     /// # Panics
     ///
-    /// In debug builds, if the address's own family has unmerged ranges
-    /// pending. The other family's state is not its business, for the reason
-    /// [`is_merged`](Self::is_merged) gives.
+    /// In debug builds, if the address's own family has unmerged ranges pending.
     fn contains_canonical(&self, ip: &IpAddr) -> bool {
         debug_assert!(
             self.is_merged(ip),
@@ -516,17 +438,10 @@ impl IpSet {
 
     /// How many addresses the IPv4 ranges cover, and how many the IPv6 ones do.
     ///
-    /// Counted per family rather than as one total because a caller that emits
-    /// a different probe per family needs to know the ratio between them - a
-    /// sweep interleaving ARP with neighbor solicitation has to space each
-    /// against the other's volume. Overlapping ranges are counted twice, which
-    /// merging is what would fix: these steer pacing, and a pacing decision does
-    /// not warrant canonicalizing a clone of the set to make them exact.
+    /// Per family, for a sweep that spaces ARP against neighbour solicitation by their
+    /// relative volume. Overlaps count twice; these only steer pacing.
     ///
-    /// Saturates rather than wrapping, for the reason
-    /// [`Ipv6Range::len`](crate::model::ip::range::Ipv6Range::len) gives:
-    /// a count too large to represent is still enormous, and a wrapped one reads
-    /// as small.
+    /// Saturating, as [`Ipv6Range::len`](crate::model::ip::range::Ipv6Range::len) is.
     pub fn v4_len(&self) -> u128 {
         self.v4
             .iter()
@@ -554,17 +469,11 @@ impl IpSet {
 impl PartialEq for IpSet {
     /// Whether the two sets hold the same addresses.
     ///
-    /// Written by hand rather than derived because a derive would compare the
-    /// range vectors as written and the dirty flags beside them, so one address
-    /// inserted twice and the same address inserted once would be different
-    /// sets.
-    /// What a caller means by `==` here is the addresses.
+    /// Hand-written, since a derive would compare the raw range vectors and dirty
+    /// flags.
     ///
-    /// Merged ranges are the only comparable form, so a set that is not in one is
-    /// merged on a clone, the trade [`len`](Self::len) makes: comparing is a read,
-    /// and a read does not mutate its operand. Two sets that have both been
-    /// canonicalized, which is every set
-    /// that reached a `TargetSet`, compare without allocating.
+    /// An unmerged set is merged on a clone, as in [`len`](Self::len). Two
+    /// canonicalized sets compare without allocating.
     fn eq(&self, other: &Self) -> bool {
         fn merged(set: &IpSet) -> Cow<'_, IpSet> {
             if set.v4_dirty || set.v6_dirty {
@@ -583,29 +492,21 @@ impl PartialEq for IpSet {
 
 /// Where each of an [`IpSet`]'s addresses falls in its enumeration.
 ///
-/// [`IpSet::iter`] walks the merged IPv4 ranges in ascending order and then the
-/// IPv6 ones, and the index an address holds in that walk is its **position**.
-/// A sweep is counted in positions the way a port scan is counted in
-/// [`PlannedTarget`](crate::model::target::PlannedTarget)s, so that a journal
-/// can record how far one got without writing down an address per target.
+/// An address's index in [`IpSet::iter`]'s walk (merged IPv4 ranges ascending, then
+/// IPv6) is its **position**. A sweep is counted in positions, as a port scan is in
+/// [`PlannedTarget`](crate::model::target::PlannedTarget)s, so a journal records
+/// progress without listing addresses.
 ///
-/// Built from the ranges rather than the addresses: a `/8` costs one entry
-/// here, and a lookup is a binary search over the ranges however many addresses
-/// they hold. Nothing is enumerated, so this is affordable to consult once per
-/// probe.
+/// Built from the ranges: a `/8` costs one entry and a lookup is a binary search, so
+/// this is cheap enough to consult per probe.
 ///
 /// # A set larger than a position can count
 ///
-/// A position is a `u64`, and an IPv6 range can hold more addresses than that.
-/// A `/64` is the first size that does not fit, being one address past what a
-/// `u64` counts. Ranges are numbered in order until one would not fit, and
-/// everything from there on is **unnumbered**: [`find`](Self::find) answers
-/// `None` for it and [`unnumbered`](Self::unnumbered) hands it back whole.
-///
-/// An unnumbered address can never settle, so it is asked again on every
-/// sitting, which is the fail-safe an unreported outcome also takes. IPv4 is
-/// numbered first and so is never the half that is lost, which matters because
-/// it is the half that is walked address by address.
+/// A position is a `u64`, and a `/64` is one address past what that counts. Ranges are
+/// numbered in order until one would not fit, and the rest is **unnumbered**:
+/// [`find`](Self::find) answers `None` and [`unnumbered`](Self::unnumbered) returns it
+/// whole. Unnumbered addresses are asked again on every sitting. IPv4 is numbered first,
+/// so it is never lost.
 #[derive(Debug, Clone, Default)]
 pub struct Positions {
     /// The ranges in enumeration order, each with the position of its first
@@ -614,10 +515,8 @@ pub struct Positions {
     /// The stretches of `spans` that are sorted and disjoint *by address*, so
     /// that a binary search inside one is valid.
     ///
-    /// IPv4 is one. IPv6 is one per interface, since the set sorts by zone before
-    /// address: `fe80::1` on two interfaces is two different machines and two
-    /// separate ranges, which together are not one ascending sequence.
-    /// [`contains`](IpSet::contains) walks the same runs for the same reason.
+    /// IPv4 is one run; IPv6 is one per interface, since the set sorts by zone first.
+    /// [`contains`](IpSet::contains) walks the same runs.
     runs: Vec<Run>,
     /// How many addresses are numbered, which is every address of every span.
     total: u64,
@@ -649,9 +548,8 @@ struct Span {
 impl Positions {
     /// Numbers `set`'s addresses.
     ///
-    /// The set is merged first if it is not already, on a clone, since an
-    /// unmerged set enumerates differently from the canonical one every
-    /// position is counted in. That is the same trade [`IpSet::len`] makes.
+    /// An unmerged set is merged on a clone first, since positions count the canonical
+    /// enumeration.
     pub fn of(set: &IpSet) -> Self {
         if set.v4_dirty || set.v6_dirty {
             let mut merged = set.clone();
@@ -676,10 +574,9 @@ impl Positions {
         let mut unnumbered = Vec::new();
 
         for range in ranges {
-            // The first range that will not fit ends the numbering, and so does
-            // every range after it: positions have to stay contiguous, or the
-            // ones already handed out would move. What is left is kept rather
-            // than dropped, so a resumed sitting still asks about it.
+            // The first range that will not fit ends the numbering, since positions
+            // must stay contiguous. The rest is kept so a resumed sitting asks
+            // about it.
             if !unnumbered.is_empty() {
                 unnumbered.push(range);
                 continue;
@@ -730,8 +627,7 @@ impl Positions {
 
     /// Whether nothing is numbered at all.
     ///
-    /// A plan whose first range is already too large is empty by this and still
-    /// holds every address it was built from; see
+    /// A plan whose first range is too large is empty by this; see
     /// [`unnumbered`](Self::unnumbered).
     pub fn is_empty(&self) -> bool {
         self.total == 0
@@ -739,11 +635,8 @@ impl Positions {
 
     /// The ranges the numbering could not reach, in enumeration order.
     ///
-    /// Empty for every plan that fits, which is every IPv4 plan and every IPv6
-    /// one written narrower than a `/64`. A resumed sweep asks about these
-    /// alongside whatever its checkpoint says is left, because a range with no
-    /// positions has nothing recorded against it and asking again is the only
-    /// reading that cannot skip an address.
+    /// Empty for every IPv4 plan and every IPv6 plan narrower than a `/64`. A resumed
+    /// sweep asks about these again, since nothing is recorded against them.
     pub fn unnumbered(&self) -> &[IpRange] {
         &self.unnumbered
     }
@@ -751,9 +644,7 @@ impl Positions {
     /// Where `ip` falls in the enumeration, or `None` when the set does not hold
     /// it or holds it beyond what a position can count.
     ///
-    /// A sweep finds addresses it was never asked about, and those have no
-    /// position: they are findings rather than plan targets, and nothing about
-    /// them advances a cursor.
+    /// Addresses a sweep finds without being asked have no position.
     pub fn find(&self, ip: IpAddr) -> Option<u64> {
         let span = self.span_holding(ip)?;
         let offset = offset_within(&span.range, ip)?;
@@ -769,10 +660,8 @@ impl Positions {
 
     /// The addresses at every position in `wanted`, as ranges.
     ///
-    /// For narrowing a plan to what a resumed sweep still has to ask about:
-    /// the answer is a handful of ranges however many addresses they cover, so
-    /// continuing a sweep of a `/8` costs no more than continuing one of a
-    /// `/24`.
+    /// For narrowing a plan to what a resumed sweep still has to ask, as a handful of
+    /// ranges.
     pub fn ranges_in(&self, wanted: Range<u64>) -> Vec<IpRange> {
         let end = wanted.end.min(self.total);
         if wanted.start >= end {
@@ -805,12 +694,9 @@ impl Positions {
     /// The span holding `ip`, or `None` where no run holds it or more than one
     /// does.
     ///
-    /// Two runs holding it is refused rather than resolved. An `IpAddr` carries
-    /// no interface, so an address two segments both hold cannot say which of its
-    /// two positions it means, and picking one would settle a position belonging
-    /// to the other, which is a resume skipping an address nothing ever probed.
-    /// Answering `None` costs that address being asked again, which is the
-    /// direction this has to fail in.
+    /// An `IpAddr` carries no interface, so an address two segments hold cannot say
+    /// which position it means. `None` means it is asked again, which is safe; picking
+    /// one could skip an address nothing probed.
     fn span_holding(&self, ip: IpAddr) -> Option<&Span> {
         let v6 = ip.is_ipv6();
         let key = widen(ip);
@@ -863,8 +749,7 @@ impl Positions {
 impl IpSet {
     /// Numbers this set's addresses, for counting how far a sweep of it got.
     ///
-    /// See [`Positions`], which is where the numbering and its one limit are
-    /// described.
+    /// See [`Positions`].
     pub fn positions(&self) -> Positions {
         Positions::of(self)
     }
@@ -928,8 +813,7 @@ fn slice_of(range: &IpRange, from: u64, to: u64) -> Option<IpRange> {
         (IpRange::V4(_), IpAddr::V4(start), IpAddr::V4(end)) => {
             Ipv4Range::new(start, end).ok().map(IpRange::V4)
         }
-        // The zone travels with the slice: `fe80::1` names a different machine
-        // on every segment, so a piece of a zoned range is still zoned.
+        // A slice of a zoned range keeps its zone.
         (IpRange::V6(v6), IpAddr::V6(start), IpAddr::V6(end)) => {
             Ipv6Range::scoped(start, end, v6.zone())
                 .ok()
@@ -940,7 +824,7 @@ fn slice_of(range: &IpRange, from: u64, to: u64) -> Option<IpRange> {
 }
 
 /// The inclusive bounds of an IPv4 range, widened so one difference serves both
-/// address families, the widening [`holds`] does for the same reason.
+/// families, as in [`holds`].
 fn v4_bounds(range: &Ipv4Range) -> (u128, u128) {
     (
         u128::from(u32::from(range.start_addr())),
@@ -957,10 +841,8 @@ fn v6_bounds(range: &Ipv6Range) -> (u128, u128) {
 /// Sorts and coalesces `intervals` into ascending, non-overlapping, non-adjacent
 /// inclusive pairs.
 ///
-/// The subtrahend, flattened. It comes from the other set's range vector, which
-/// is merged within each IPv6 zone and so may still overlap across zones, and
-/// [`IpSet::subtract`] reads it blind to zones, so those overlaps have to be
-/// coalesced before the difference can walk both sides once.
+/// The subtrahend, flattened. IPv6 ranges may overlap across zones, and
+/// [`IpSet::subtract`] ignores zones, so they are coalesced first.
 fn merged_intervals(intervals: impl Iterator<Item = (u128, u128)>) -> Vec<(u128, u128)> {
     let mut cuts: Vec<(u128, u128)> = intervals.collect();
     cuts.sort_unstable();
@@ -968,9 +850,7 @@ fn merged_intervals(intervals: impl Iterator<Item = (u128, u128)>) -> Vec<(u128,
     let mut merged: Vec<(u128, u128)> = Vec::with_capacity(cuts.len());
     for (start, end) in cuts {
         match merged.last_mut() {
-            // Adjacent as well as overlapping: two cuts that meet end to end
-            // remove the same addresses as one spanning both, and coalescing
-            // them here saves the difference below a step.
+            // Adjacent cuts coalesce too.
             Some(last) if start <= last.1.saturating_add(1) => last.1 = last.1.max(end),
             _ => merged.push((start, end)),
         }
@@ -980,17 +860,13 @@ fn merged_intervals(intervals: impl Iterator<Item = (u128, u128)>) -> Vec<(u128,
 
 /// Every part of `run` that no interval in `cuts` covers, in ascending order.
 ///
-/// Both slices have to be sorted by start and free of overlap, which is what lets
-/// this advance through each once rather than testing every pair. `run` is one
-/// address family's merged ranges, and for IPv6 one zone's run of them since only
-/// within a run are they disjoint, while `cuts` is what [`merged_intervals`]
-/// produced.
+/// Both slices must be sorted by start and disjoint, so each is walked once. `run` is
+/// one family's merged ranges (for IPv6, one zone's run); `cuts` comes from
+/// [`merged_intervals`].
 ///
-/// `bounds` reads a range's inclusive ends, widened to `u128` so one difference
-/// serves both families, exactly as [`holds`] does. `rebuild` turns a surviving
-/// `[start, end]` back into a range of the caller's type; it is handed the range
-/// being cut so a piece can carry across what its bounds do not say, which for
-/// IPv6 is the zone.
+/// `bounds` reads a range's inclusive ends widened to `u128`, as in [`holds`].
+/// `rebuild` turns a surviving `[start, end]` back into a range, given the range being
+/// cut so a piece keeps its zone.
 fn subtract_run<R: Copy>(
     run: &[R],
     cuts: &[(u128, u128)],
@@ -1003,9 +879,8 @@ fn subtract_run<R: Copy>(
     for range in run {
         let (start, end) = bounds(range);
 
-        // A cut entirely left of this range is left of every later one too,
-        // both slices ascending, so this index only moves forward, which is what
-        // makes the pass linear rather than quadratic.
+        // A cut left of this range is left of every later one, so this index only
+        // moves forward and the pass is linear.
         while first_live < cuts.len() && cuts[first_live].1 < start {
             first_live += 1;
         }
@@ -1013,21 +888,18 @@ fn subtract_run<R: Copy>(
         let mut cursor = start;
         let mut consumed = false;
 
-        // Not advancing `first_live` here: one cut may span several ranges, and
-        // it has to still be in front of the next one.
+        // `first_live` stays: one cut may span several ranges.
         let mut cut = first_live;
         while cut < cuts.len() && cuts[cut].0 <= end {
             let (cut_start, cut_end) = cuts[cut];
 
-            // The gap in front of this cut survives. Nothing to emit when the
-            // cut starts at or before the cursor, which is what an overlap with
-            // the previous cut or with the range's own start looks like.
+            // The gap in front of this cut survives, if there is one.
             if cut_start > cursor {
                 kept.push(rebuild(range, cursor, cut_start - 1));
             }
 
-            // A cut reaching the range's end takes the tail with it, and stays
-            // in front of the range after this one.
+            // A cut reaching the range's end takes the tail, and stays for the next
+            // range.
             if cut_end >= end {
                 consumed = true;
                 break;
@@ -1051,12 +923,9 @@ fn subtract_run<R: Copy>(
 /// `bounds` reads a range's inclusive ends, widened to `u128` so that one
 /// search serves both families.
 ///
-/// `ranges` must be sorted by start address and free of overlap. Against
-/// overlapping ranges the search can land on one that ends before the target,
-/// conclude the target lies further right, and never look at the range on its
-/// left that holds it. Each family reaches that precondition its own way: the
-/// IPv4 vector is disjoint once merged, and the IPv6 vector only within a single
-/// zone's run; see [`IpSet::v6_runs`].
+/// `ranges` must be sorted by start and disjoint, or the search can step past the
+/// range holding the target. The IPv4 vector is disjoint once merged; the IPv6 vector
+/// only within one zone's run (see [`IpSet::v6_runs`]).
 fn holds<R>(ranges: &[R], target: u128, bounds: impl Fn(&R) -> (u128, u128)) -> bool {
     ranges
         .binary_search_by(|range| {
@@ -1102,13 +971,8 @@ impl IntoIterator for IpSet {
 impl Extend<IpAddr> for IpSet {
     /// Marks only the families that actually gained a range.
     ///
-    /// A set is merged per family, so extending with IPv4 addresses alone must
-    /// not put IPv6 membership back on its slow path, and extending with
-    /// nothing must not undo a `canonicalize` that has already run.
-    ///
-    /// Marking the family is half of that; the other half is that every read
-    /// asks about the family it is reading, which is [`IpSet::contains`]'s to
-    /// do.
+    /// Extending with IPv4 alone keeps IPv6 on its fast path, and extending with
+    /// nothing keeps a completed `canonicalize`.
     fn extend<T: IntoIterator<Item = IpAddr>>(&mut self, iter: T) {
         for ip in iter {
             match ip {
@@ -1209,30 +1073,26 @@ impl FromStr for IpSet {
 mod tests {
     use super::*;
 
-    /// The lazy state, seen from outside: two adjacent addresses stay two
-    /// ranges until canonicalized, then become one, and the count is right
-    /// either way.
+    /// Two adjacent addresses stay two ranges until canonicalized, and the count is
+    /// right either way.
     #[test]
     fn adjacent_addresses_merge_when_the_set_is_canonicalized() {
         let mut set = IpSet::new();
         set.insert(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)));
         set.insert(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 2)));
 
-        // Before canonicalization, they stay as individual pushes
+        // Before canonicalization they stay separate.
         assert_eq!(set.v4.len(), 2);
         assert!(set.v4_dirty);
 
-        // Explicitly canonicalize, since a query never merges the set it reads
+        // A query never merges the set it reads.
         set.canonicalize();
         assert_eq!(set.len(), 2);
         assert!(!set.v4_dirty);
         assert_eq!(set.v4.len(), 1);
     }
 
-    /// Every arrangement two ranges can be in, whether overlapping at the start
-    /// or at the end, disjoint, or one subsuming the rest, collapsing to the
-    /// single range that covers them. Counted once each, which is what makes
-    /// `len` a number a budget can be checked against.
+    /// Every arrangement of two ranges collapses to the single covering range.
     #[test]
     fn every_kind_of_overlap_collapses_to_one_range() {
         let mut set = IpSet::new();
@@ -1252,9 +1112,7 @@ mod tests {
         assert_eq!(set.v4().len(), 1);
     }
 
-    /// Adjacency is tested with a saturating add, so two addresses at the very
-    /// top of the IPv6 space still merge rather than overflowing into a
-    /// comparison that fails.
+    /// Adjacency uses a saturating add, so addresses at the top of IPv6 still merge.
     #[test]
     fn the_top_of_the_ipv6_space_merges_without_overflowing() {
         let mut set = IpSet::new();
@@ -1270,9 +1128,7 @@ mod tests {
         assert_eq!(set.v6().len(), 1);
     }
 
-    /// Iterating is a read: it yields every address once and leaves the set in
-    /// the state it found it, so a caller can iterate a set it is still
-    /// building.
+    /// Iterating yields every address once and leaves the set unchanged.
     #[test]
     fn iterating_yields_each_address_without_mutating_the_set() {
         let mut set = IpSet::new();
@@ -1285,8 +1141,7 @@ mod tests {
         assert!(!set.v4_dirty);
     }
 
-    /// Canonicalizing an empty set is a no-op rather than an error, so a caller
-    /// that built nothing does not have to check before reading.
+    /// Canonicalizing an empty set is a no-op.
     #[test]
     fn an_empty_set_canonicalizes_and_counts_as_zero() {
         let mut set = IpSet::new();
@@ -1295,15 +1150,8 @@ mod tests {
         assert!(set.v4().is_empty());
     }
 
-    /// A set is merged per family, so work on one must not undo the other's
-    /// canonical state. Marking both would put IPv6 membership back on its
-    /// linear path every time an IPv4 address arrived.
-    ///
-    /// The flags are half of it. The assertion that matters is the last one:
-    /// that a read of the untouched family still takes its fast path. Marking
-    /// the family and then asking about both is the same linear scan by a
-    /// longer route, and a test that checked the bookkeeping and never the
-    /// thing the bookkeeping is for would allow it.
+    /// Work on one family keeps the other's canonical state, and a read of the
+    /// untouched family still takes its fast path.
     #[test]
     fn extending_one_family_leaves_the_other_canonical() {
         let mut set = IpSet::from_iter(vec![IpAddr::V6(Ipv6Addr::LOCALHOST)]);
@@ -1314,18 +1162,18 @@ mod tests {
         assert!(set.v4_dirty, "the family that gained a range");
         assert!(!set.v6_dirty, "and only that one");
 
-        // And extending with nothing does not undo a merge that already ran.
+        // Extending with nothing keeps a completed merge.
         let mut untouched = IpSet::from_iter(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
         untouched.extend([]);
         assert!(!untouched.v4_dirty && !untouched.v6_dirty);
 
-        // The point of marking one family: the other keeps its binary search.
+        // The other family keeps its binary search.
         let v6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
         let v4 = IpAddr::V4(Ipv4Addr::LOCALHOST);
         assert!(set.is_merged(&v6), "an unmerged IPv4 range is not IPv6's");
         assert!(!set.is_merged(&v4), "and IPv4's own half is not merged");
 
-        // Which the guarded fast path is entitled to be handed, and answers.
+        // The guarded fast path accepts it.
         assert!(set.contains_canonical(&v6));
         assert!(set.contains(&v6));
         assert!(set.contains(&v4), "the slow path is still correct");
@@ -1341,9 +1189,7 @@ mod tests {
         assert_eq!(set.len(), 4);
     }
 
-    /// Insertion appends and defers the merge, so a hundred addresses are a
-    /// hundred ranges until `canonicalize` runs. That is the point of the split:
-    /// merging on each insertion makes loading a target file quadratic.
+    /// A hundred inserted addresses are a hundred ranges until `canonicalize` runs.
     #[test]
     fn insertion_defers_the_merge_until_it_is_asked_for() {
         let mut set = IpSet::new();
@@ -1356,16 +1202,8 @@ mod tests {
         assert_eq!(set.len(), 100);
     }
 
-    /// The guard is the only thing that makes the private fast paths safe to
-    /// have at all: `contains_canonical` binary-searches a vector that is
-    /// sorted only once `canonicalize` has run, and against an unmerged one it
-    /// silently misses. A wrong answer about whether an address is in scope
-    /// decides whether a reply is credited or discarded, so a test that never
-    /// trips the assertion is testing nothing, and would pass with the
-    /// `debug_assert!` deleted.
-    ///
-    /// Debug-only because that is where the assertion exists; a release build
-    /// compiles it out and takes the silently-wrong path this pins.
+    /// The debug assertion trips when `contains_canonical` is handed an unmerged set.
+    /// Debug-only, as the assertion is.
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "must be canonicalized")]
@@ -1376,7 +1214,7 @@ mod tests {
         set.contains_canonical(&IpAddr::V4(Ipv4Addr::LOCALHOST));
     }
 
-    /// And the same for the count, which has its own guard for its own reason.
+    /// The same for the count.
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "must be canonicalized")]
@@ -1386,8 +1224,7 @@ mod tests {
         set.len_canonical();
     }
 
-    /// The case the guards let through, and the one the public `contains`
-    /// delegates to once the set is merged.
+    /// A merged set passes the guards.
     #[test]
     fn a_membership_query_on_a_merged_set_answers() {
         let set = IpSet::from_iter(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
@@ -1396,11 +1233,7 @@ mod tests {
         assert_eq!(set.len_canonical(), 1);
     }
 
-    /// Two link-local ranges spanning the same numbers on two interfaces are
-    /// two different sets of machines. Merged on adjacency alone they would
-    /// produce one range that means one thing at one end and something else at
-    /// the other. Every interface holds an `fe80::/64`, so the mistake is
-    /// available on any host with two of them.
+    /// The same link-local numbers on two interfaces do not merge.
     #[test]
     fn ranges_on_different_interfaces_never_merge_however_adjacent() {
         let one: Ipv6Addr = "fe80::1".parse().unwrap();
@@ -1415,9 +1248,7 @@ mod tests {
 
         assert_eq!(split.v6().len(), 2, "adjacent, but on two segments");
 
-        // The same numbers on one interface are one segment's worth of machines
-        // and do merge, or the zone check would be refusing everything rather
-        // than refusing the right thing.
+        // On one interface they do merge.
         let mut joined = IpSet::new();
         joined.push_v6_range(Ipv6Range::scoped(one, five, Some(4)).unwrap());
         joined.push_v6_range(Ipv6Range::scoped(six, ten, Some(4)).unwrap());
@@ -1425,16 +1256,12 @@ mod tests {
 
         assert_eq!(joined.v6().len(), 1);
 
-        // Membership still answers across the split.
+        // Membership still answers.
         assert!(split.contains(&IpAddr::V6(five)));
         assert!(split.contains(&IpAddr::V6(six)));
     }
 
-    /// Equality is about the addresses a set holds, not about whether it has
-    /// been merged yet. Derived, it would compare the dirty flags and the range
-    /// vectors as written, so one address inserted two ways would compare
-    /// unequal and `assert_eq!` on two sets would answer a question about
-    /// bookkeeping.
+    /// Equality compares the addresses held, merged or not.
     #[test]
     fn two_sets_holding_the_same_addresses_are_equal_however_they_were_built() {
         let canonical = IpSet::try_from("198.51.100.1-198.51.100.2, ::1").expect("parses");
@@ -1451,15 +1278,8 @@ mod tests {
         );
     }
 
-    /// Refusing to merge across zones leaves ranges that *overlap* as well as
-    /// ranges that abut, and a binary search cannot navigate an overlapping
-    /// vector: it lands on a range that ends before the target, concludes the
-    /// target lies further right, and never examines the range on its left
-    /// that holds it.
-    ///
-    /// Two interfaces each carrying a slice of `fe80::/64` is the ordinary
-    /// shape of a dual-homed segment, and a missed membership test there
-    /// discards a reply from a host that did answer.
+    /// Ranges on different interfaces can overlap, which a single binary search cannot
+    /// navigate; the search runs per zone.
     #[test]
     fn membership_answers_when_ranges_on_different_interfaces_overlap() {
         let one: Ipv6Addr = "fe80::1".parse().unwrap();
@@ -1486,17 +1306,13 @@ mod tests {
         written.parse().expect("a valid address specification")
     }
 
-    /// The one property everything else rests on: a position is an index into
-    /// `iter`, and the two must agree address for address. If they drift, a
-    /// resumed sweep skips addresses it never asked about and reports success.
+    /// A position is an index into `iter`, and the two agree address for address.
     #[test]
     fn a_position_is_the_index_the_set_enumerates_at() {
         let set = set("192.0.2.1-192.0.2.10,198.51.100.0/30,2001:db8::1-2001:db8::5");
         let positions = set.positions();
 
-        // `try_from` rather than `as`: the cast truncates a count too large to
-        // number down to a total that matches the truncated numbering, so the
-        // assertion held for exactly the sets it exists to catch.
+        // `try_from`, since `as` would truncate to match a truncated numbering.
         assert_eq!(positions.total(), u64::try_from(set.len()).unwrap());
         assert!(positions.unnumbered().is_empty());
 
@@ -1507,9 +1323,8 @@ mod tests {
         }
     }
 
-    /// A `/64` holds one address more than a `u64` counts, so it is the first
-    /// prefix the numbering cannot reach, and it is also the ordinary size of
-    /// an IPv6 subnet.
+    /// A `/64`, the ordinary IPv6 subnet, is the first prefix the numbering cannot
+    /// reach.
     #[test]
     fn a_range_too_large_to_number_is_kept_rather_than_dropped() {
         let positions = set("2001:db8::/64").positions();
@@ -1518,9 +1333,7 @@ mod tests {
         assert_eq!(positions.unnumbered().len(), 1);
     }
 
-    /// A sweep finds neighbours it was never asked about. They are findings,
-    /// not plan targets, and numbering one would advance a cursor over a
-    /// position belonging to something else.
+    /// An address outside the set has no position.
     #[test]
     fn an_address_outside_the_plan_has_no_position() {
         let positions = set("192.0.2.1-192.0.2.10").positions();
@@ -1557,9 +1370,7 @@ mod tests {
         );
     }
 
-    /// Narrowing a plan to what is left gives back exactly the addresses at those
-    /// positions: no more, since a re-probed address is waste, and no fewer, since
-    /// a dropped one is a target silently skipped.
+    /// Narrowing a plan gives back exactly the addresses at those positions.
     #[test]
     fn the_addresses_in_a_span_of_positions_are_exactly_those_positions() {
         let set = set("192.0.2.1-192.0.2.10,2001:db8::1-2001:db8::4");
@@ -1583,8 +1394,7 @@ mod tests {
         }
     }
 
-    /// A span that runs past the end is clamped rather than refused, and an
-    /// empty one gives back nothing.
+    /// A span past the end is clamped, and an empty one gives back nothing.
     #[test]
     fn a_span_outside_the_plan_yields_nothing() {
         let positions = set("192.0.2.1-192.0.2.4").positions();
@@ -1594,9 +1404,8 @@ mod tests {
         assert_eq!(positions.ranges_in(0..99).len(), 1, "clamped to the plan");
     }
 
-    /// An IPv6 range can hold more addresses than a position can count. The
-    /// numbering stops there rather than wrapping, and IPv4, the half that is
-    /// actually walked address by address, keeps its positions.
+    /// The numbering stops at an IPv6 range too large to count, and IPv4 keeps its
+    /// positions.
     #[test]
     fn a_range_too_large_to_number_ends_the_numbering_without_losing_ipv4() {
         let set = set("192.0.2.1-192.0.2.4,2001:db8::/64,2001:db9::1");
@@ -1624,8 +1433,7 @@ mod tests {
         );
     }
 
-    /// A zoned range names one segment. A slice of it has to keep saying so,
-    /// or a resumed sweep aims at `fe80::` on whichever interface comes first.
+    /// A slice of a zoned range keeps its zone.
     #[test]
     fn a_slice_of_a_zoned_range_keeps_its_zone() {
         let mut set = IpSet::new();
@@ -1647,14 +1455,8 @@ mod tests {
         }
     }
 
-    /// `fe80::1` names a different machine on every segment, and the set keeps
-    /// the two apart by sorting on zone first, so the IPv6 ranges are not one
-    /// ascending sequence. A lookup that treated them as one would answer with
-    /// whichever run it landed on, and settling an address at another
-    /// interface's position lets a resume skip one nothing ever probed.
-    ///
-    /// A bare address cannot say which segment it came from, so the honest
-    /// answer where two runs hold it is no position at all.
+    /// An address two interfaces hold has no position, since a bare address cannot
+    /// say which it means.
     #[test]
     fn an_address_two_interfaces_both_hold_has_no_position() {
         let mut both = IpSet::new();
@@ -1683,8 +1485,7 @@ mod tests {
         );
     }
 
-    /// One interface holding it is not ambiguous and still resolves, or a
-    /// link-local sweep settles nothing at all.
+    /// An address one interface holds still resolves.
     #[test]
     fn an_address_one_interface_holds_keeps_its_position() {
         let mut set = IpSet::new();
@@ -1716,8 +1517,7 @@ mod tests {
         }
     }
 
-    /// An unmerged set enumerates differently from the canonical one every
-    /// position is counted in, so numbering one has to merge it first.
+    /// Numbering an unmerged set merges it first.
     #[test]
     fn an_unmerged_set_is_numbered_as_the_canonical_one() {
         let mut lazy = IpSet::new();
@@ -1751,9 +1551,8 @@ mod property_tests {
         any::<u128>().prop_map(Ipv6Addr::from)
     }
 
-    /// Zoned ranges drawn from one narrow band of `fe80::/64`, so that
-    /// generated ranges overlap each other often rather than by luck. Four
-    /// zones, which is the shape of a multi-homed host.
+    /// Zoned ranges from a narrow band of `fe80::/64`, so they often overlap, across
+    /// four zones.
     fn any_zoned_v6_range() -> impl Strategy<Value = Ipv6Range> {
         (0..64u128, 0..64u128, prop::option::of(0..4u32)).prop_map(|(a, b, zone)| {
             let base = u128::from(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0));
@@ -1769,13 +1568,8 @@ mod property_tests {
 
     // ─── Set difference ──────────────────────────────────────────────────────
 
-    /// Builds a v4 set from `[start, end]` pairs written as last octets of
-    /// `198.51.100.0/24`, which is enough address space to arrange every
-    /// overlap a difference has to handle and short enough to read.
-    /// A canonical set of both families, small enough to walk in a test and
-    /// varied enough to put more than one range in each family, and to put the
-    /// same IPv6 address on more than one interface, which is the shape that
-    /// stops the ranges being one ascending sequence.
+    /// A small canonical set of both families, with several ranges in each and some
+    /// IPv6 addresses on more than one interface.
     fn any_ipset() -> impl Strategy<Value = IpSet> {
         (
             prop::collection::vec((0u8..40, 0u8..6), 0..4),
@@ -1803,6 +1597,8 @@ mod property_tests {
             })
     }
 
+    /// Builds a v4 set from `[start, end]` pairs written as last octets of
+    /// `198.51.100.0/24`.
     fn v4_set(spans: &[(u8, u8)]) -> IpSet {
         let mut set = IpSet::new();
         for &(start, end) in spans {
@@ -1829,14 +1625,11 @@ mod property_tests {
     /// Every way one cut can meet one range: through the middle, off each end,
     /// swallowing it whole, and missing entirely.
     ///
-    /// Split out one arrangement per case because the middle cut is the only
-    /// one that produces *more* ranges than it started with, and a difference
-    /// that quietly drops either side of it still passes a count check.
+    /// One arrangement per case; the middle cut is the one that produces more ranges.
     #[test]
     fn a_cut_takes_exactly_what_it_covers() {
-        /// A target, what is cut from it, and what should be left: last octets
-        /// of `198.51.100.0/24`, which is enough room for every arrangement and
-        /// short enough to read down the column.
+        /// A target, what is cut from it, and what should be left, as last octets of
+        /// `198.51.100.0/24`.
         type Case = (
             &'static [(u8, u8)],
             &'static [(u8, u8)],
@@ -1852,7 +1645,7 @@ mod property_tests {
             // Swallowed whole, and exactly.
             (&[(10, 20)], &[(5, 25)], &[]),
             (&[(10, 20)], &[(10, 20)], &[]),
-            // Adjacent but not overlapping, which must remove nothing.
+            // Adjacent but not overlapping: nothing removed.
             (&[(10, 20)], &[(21, 30)], &[(10, 20)]),
         ];
 
@@ -1865,10 +1658,8 @@ mod property_tests {
 
     /// One cut spanning several ranges, and several cuts inside one range.
     ///
-    /// Both directions of the walk at once: the first needs a cut to stay in
-    /// front of the range after the one it just consumed, the second needs the
-    /// cursor to survive being moved repeatedly inside a single range. Each is
-    /// an index the pass could advance one step too far.
+    /// The first needs a cut to stay for the next range; the second moves the cursor
+    /// repeatedly inside one range.
     #[test]
     fn the_difference_walks_both_sides_once() {
         let mut set = v4_set(&[(10, 20), (30, 40), (50, 60)]);
@@ -1882,10 +1673,8 @@ mod property_tests {
 
     /// A range ending at the last address of its family, cut from below.
     ///
-    /// The arithmetic walking a cut forward is `cut_end + 1`, and the tail
-    /// emission is the branch that must not compute `end + 1`. Both families,
-    /// because only the v6 one is a `u128` where the overflow is unrepresentable
-    /// rather than merely wrong.
+    /// The tail emission must not compute `end + 1`. Both families; for v6 the
+    /// overflow would be in a `u128`.
     #[test]
     fn a_range_ending_at_the_last_address_survives_a_cut() {
         let mut set = IpSet::new();
@@ -1917,12 +1706,8 @@ mod property_tests {
     /// A subtraction cuts an address out of every interface it appears on, and
     /// leaves the zones of what survives intact.
     ///
-    /// The blindness is deliberate and documented on `subtract`: it is the
-    /// direction that removes more, and it is the only reading that agrees with
-    /// `contains`, which cannot see a zone either. The second half is the part
-    /// that would break silently: a difference that rebuilt the surviving pieces
-    /// without their zone would leave link-local ranges naming no interface, and
-    /// those cannot be probed at all.
+    /// See `subtract`. Surviving pieces must keep their zone, or they could not be
+    /// probed.
     #[test]
     fn subtracting_a_link_local_address_clears_it_from_every_interface() {
         let base = u128::from(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0));
@@ -1939,7 +1724,7 @@ mod property_tests {
         }
         set.canonicalize();
 
-        // Named on one interface only, and still removed from both.
+        // Named on one interface, removed from both.
         let mut cuts = IpSet::new();
         cuts.push_v6_range(
             Ipv6Range::scoped(
@@ -1963,16 +1748,8 @@ mod property_tests {
     }
 
     proptest::proptest! {
-        /// The numbering and the enumeration agree over any set rather than only
-        /// the hand-written ones. A position is an index into `iter` and a
-        /// resumed sweep subtracts positions from a plan, so a set where the two
-        /// disagree is one where addresses are silently skipped.
-        ///
-        /// The exception is an address more than one interface holds. A bare
-        /// address cannot say which of its positions it means, so `find`
-        /// answers `None` and it is asked again. That is allowed; answering
-        /// with the *wrong* one of them is not, which is what the equality
-        /// below rules out.
+        /// The numbering and the enumeration agree over any set. An address several
+        /// interfaces hold may answer `None` from `find`, never the wrong position.
         #[test]
         fn a_position_is_the_enumeration_index_for_any_set(
             set in any_ipset(),
@@ -1982,8 +1759,7 @@ mod property_tests {
 
             prop_assert_eq!(positions.total() as usize, walked.len());
             for (index, ip) in walked.iter().enumerate() {
-                // `address_at` is unambiguous in this direction: a position
-                // names one address however many positions the address has.
+                // A position names one address.
                 prop_assert_eq!(positions.address_at(index as u64), Some(*ip));
 
                 let held_twice = walked.iter().filter(|other| *other == ip).count() > 1;
@@ -1994,9 +1770,7 @@ mod property_tests {
             }
         }
 
-        /// Narrowing to a span of positions gives back exactly those addresses,
-        /// whatever the set's shape. Too few is a target skipped; too many is
-        /// work repeated.
+        /// Narrowing to a span of positions gives back exactly those addresses.
         #[test]
         fn a_span_of_positions_narrows_to_exactly_those_addresses(
             set in any_ipset(),
@@ -2019,14 +1793,9 @@ mod property_tests {
 
         /// Membership has to agree with a linear scan of the same ranges.
         ///
-        /// The fast path is a binary search, which is only valid over ranges
-        /// that do not overlap. Zones are what put overlapping ranges in one
-        /// vector, since `merge_v6` refuses to combine ranges from two
-        /// interfaces, so this is where a search that steps past the range holding
-        /// the
-        /// target shows up. An example of that is pinned in
-        /// `membership_answers_when_ranges_on_different_interfaces_overlap`;
-        /// this covers the arrangements nobody thought to write down.
+        /// Zones put overlapping ranges in one vector, which a binary search could step
+        /// past; see also
+        /// `membership_answers_when_ranges_on_different_interfaces_overlap`.
         #[test]
         fn zoned_membership_agrees_with_a_linear_scan(
             ranges in prop::collection::vec(any_zoned_v6_range(), 1..12),
@@ -2052,12 +1821,8 @@ mod property_tests {
 
         /// Membership after a difference, against the definition of one.
         ///
-        /// The pass is a single walk of two ascending slices with an index that
-        /// only moves forward, which is fast and has several places to be off by
-        /// one that no hand-written arrangement is likely to visit. So this
-        /// asserts the property itself, that an address survives exactly when it
-        /// was there and was not cut, probed at the boundaries where a difference
-        /// goes wrong if it goes wrong at all.
+        /// An address survives exactly when it was there and was not cut, probed at
+        /// the boundaries.
         #[test]
         fn a_difference_keeps_exactly_what_was_not_cut(
             target in prop::collection::vec((0..64u8, 0..64u8), 1..8),
@@ -2085,8 +1850,7 @@ mod property_tests {
                 );
             }
 
-            // The result has to be canonical, or every read after it silently
-            // takes the slow path and `holds` may search a vector it cannot.
+            // The result must be canonical.
             let mut recanonicalized = after.clone();
             recanonicalized.canonicalize();
             prop_assert_eq!(after.v4(), recanonicalized.v4());
