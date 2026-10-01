@@ -8,53 +8,48 @@
 
 //! A network scanner, as a library.
 //!
-//! Addresses in, and it reports which hosts are alive; hosts and ports in, and
-//! it reports which of those ports are open and what is listening on them. Everything a front end needs is here, the scanning, the domain model,
-//! the report and the file formats, so that a CLI, a web service and an
+//! Give it addresses and it reports which hosts are alive; give it hosts and ports and it
+//! reports which ports are open and what is listening on them. The scanning, the domain
+//! model, the report and the file formats all live here, so a CLI, a web service and an
 //! embedded consumer produce the same results and the same documents.
 //!
 //! # Three phases
 //!
-//! [`discover`] establishes which hosts exist. [`scan`] classifies the ports of
-//! hosts already known. [`listen`] sends nothing at all and reads what a link
-//! already carries: for the networks the other two may not touch, and for the
-//! findings no probe obtains: which switch port this machine is on, which VLANs
-//! a link carries, what a device says about itself while asking for an address.
+//! [`discover`] finds which hosts exist. [`scan`] classifies the ports of hosts already
+//! known. [`listen`] sends nothing and reads what a link already carries: for networks the
+//! other two may not touch, and for things no probe can learn, such as which switch port
+//! this machine is on, which VLANs a link carries, or what a device says about itself while
+//! asking for an address.
 //!
-//! The first two are jobs and finish. A listener is a service and finishes when
-//! it is told to, because having asked nothing it can never be complete.
+//! The first two are jobs and finish on their own. A listener is a service and runs until
+//! it is told to stop.
 //!
-//! [`discover`] and [`scan`] are separate calls because they cost very different
-//! amounts: a sweep of a `/24` is a few hundred packets, and port-scanning all of
-//! it is a few hundred thousand. Run the cheap one first and spend the expensive
-//! one only on what answered.
+//! [`discover`] and [`scan`] are separate because their costs differ by orders of
+//! magnitude: sweeping a `/24` is a few hundred packets, port-scanning all of it a few
+//! hundred thousand. Run the cheap one first and spend the expensive one on what answered.
 //!
-//! Both are unprivileged-safe. With root they use raw sockets, ARP and ICMPv6
-//! on the local segment, raw TCP and UDP elsewhere, and without it they fall
-//! back to ordinary TCP connect attempts. The phase records which it was, so a
-//! result can be read for what it is worth. [`listen`] has no such fallback and
-//! cannot: reading a link *is* the capability, where a scan can degrade to
-//! connect attempts and still be a scan.
+//! Both work unprivileged. With root they use raw sockets, ARP and ICMPv6 on the local
+//! segment and raw TCP and UDP elsewhere; without it they fall back to TCP connect
+//! attempts. Each phase records which path it took, so a result can be weighed accordingly.
+//! [`listen`] has no fallback: reading a link needs capture access.
 //!
 //! # Live results, and the record afterwards
 //!
-//! Each call returns a pair. [`ScanSession`] is the live view: hosts appear in
-//! its [`HostStore`] as they are found, and each change fires a [`ScanEvent`],
-//! so a caller can render a scan in progress instead of waiting for it. The
-//! [`ScanTask`] resolves when everything has finished and yields a
-//! [`ScanReport`]: the durable record of what was asked for, what came back,
-//! what failed on the way, and under which settings.
+//! Each call returns a pair. [`ScanSession`] is the live view: hosts appear in its
+//! [`HostStore`] as they are found and each change fires a [`ScanEvent`], so a caller can
+//! render a scan in progress. The [`ScanTask`] resolves when everything has finished and
+//! yields a [`ScanReport`]: what was asked for, what came back, what failed on the way, and
+//! under which settings.
 //!
-//! The two answer different questions and both are needed. A bare list of hosts
-//! cannot say whether the network is empty or the raw scanner never started;
-//! only the report can.
+//! Both are needed. A list of hosts alone cannot say whether the network is empty or the
+//! raw scanner never started; the report can.
 //!
 //! ```no_run
 //! use zond_engine::{Resolver, ScanEvent, ZondConfig, discover, resolve};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! // One call: the address grammar, this host's interface table for `lan` and
-//! // `%en0`, any hostnames, and whether a segment sweep was asked for.
+//! // The address grammar, this host's interface table for `lan` and `%en0`, any
+//! // hostnames, and whether a segment sweep was asked for, in one call.
 //! let resolver = Resolver::from_system();
 //! let targets = resolve::for_discovery(&["192.0.2.0/24"], Some(&resolver)).await?;
 //!
@@ -81,229 +76,179 @@
 //!
 //! # Wrapping the engine, or being the orchestrator
 //!
-//! The example above is the whole API for a front end that wants results:
-//! targets in, hosts and a report out, with privilege, interfaces, fallbacks and
-//! retries all decided for it. Most callers want exactly that and should not
-//! have to learn anything below it.
+//! The example above is the whole API for a front end that wants results: targets in,
+//! hosts and a report out, with privilege, interfaces, fallbacks and retries decided for
+//! it. Most callers need nothing below it.
 //!
-//! Some callers want to be the one deciding. For them the same machinery is
-//! available a layer at a time, and none of it is behind a cargo feature:
+//! Callers who want to make those decisions themselves can use the same machinery a layer
+//! at a time, none of it behind a cargo feature:
 //!
-//! - **The vocabulary alone.** [`model`] parses targets, holds hosts and ports,
-//!   and does arithmetic on address sets, without scanning anything. A caller
-//!   with their own probing code can use it as a domain model and stop there.
-//! - **The plan.** [`scanner::plan`] works out which strategies would run
-//!   against a set of targets on this host, opening nothing. Inspect it, drop
-//!   steps, reorder them, or print it as a dry run.
-//! - **One strategy at a time.** [`scanner::strategy`] holds every scanner the
-//!   engine uses behind two small traits, each constructible directly and each
-//!   able to run over a transport the caller opened. Aim one at one segment and
-//!   read the results out of a [`ScanSession`] the caller opened.
+//! - **The vocabulary alone.** [`model`] parses targets, holds hosts and ports, and does
+//!   arithmetic on address sets without scanning anything. A caller with their own probing
+//!   code can use it as a domain model and stop there.
+//! - **The plan.** [`scanner::plan`] works out which strategies would run against a set of
+//!   targets on this host, opening nothing. Inspect it, drop or reorder steps, or print it
+//!   as a dry run.
+//! - **One strategy at a time.** [`scanner::strategy`] holds every scanner the engine uses
+//!   behind two small traits. Each can be constructed directly and run over a transport the
+//!   caller opened, with results read from a [`ScanSession`] the caller opened.
 //!
-//! The `test-support` feature is *not* the way in to any of this. It gates the
-//! synthetic transports the crate's own tests use to fake a network, and nothing
-//! else.
+//! The `test-support` feature only gates the synthetic transports the crate's own tests use
+//! to fake a network.
 //!
 //! # Reports out, targets in
 //!
-//! [`export`] writes a finished report as JSON, JSONL, CSV, a self-contained
-//! HTML page, or nmap-compatible XML. [`import`] reads targets back, from a
-//! plain list, a CSV, this engine's own JSON, or an nmap XML file somebody else
-//! produced, and reads layered settings from TOML. Each format sits behind a
-//! cargo feature; `export-json` is the only one on by default.
+//! [`export`] writes a finished report as JSON, JSONL, CSV, a self-contained HTML page, or
+//! nmap-compatible XML. [`import`] reads targets from a plain list, a CSV, this engine's
+//! own JSON, or an nmap XML file, and reads layered settings from TOML. Each format sits
+//! behind a cargo feature; `export-json` is the only one on by default.
 //!
-//! `import::report` reads the other direction of the same documents: not the
-//! targets to scan next, but what the scan that produced them found, rebuilt as
-//! a [`ScanReport`]. That is what lets [`diff`] compare an archived file, this
-//! engine's or nmap's, against a scan that just finished. Unlinked because the
-//! module is there only in a build that can read a report format at all, and a
-//! link into it would not resolve in one that cannot.
+//! `import::report` reads the same documents back as a [`ScanReport`] of what the scan
+//! found, which is what lets [`diff`] compare an archived file, this engine's or nmap's,
+//! against a scan that just finished. (Unlinked because the module exists only in builds
+//! with a report format enabled.)
 //!
-//! Neither module opens a file or touches standard input. Export writes to a
-//! `Write`, import reads from a `BufRead`, and choosing where the bytes come
-//! from or go is the caller's business.
+//! Neither module opens files or touches standard input. Export writes to a `Write`, import
+//! reads from a `BufRead`, and where the bytes go is up to the caller.
 //!
 //! # What changed since last time
 //!
-//! [`diff`] compares two [`ScanReport`]s and says what moved: a host that was
-//! not there before, a port that opened, a service that changed version, a
-//! certificate that rotated or is about to lapse. It is the other half of
-//! scanning a network on a schedule, and it asks nothing about where either
-//! report came from: one side can be a scan this process just ran, one can be
-//! read back out of a [`journal`], and one can be another scanner's output that
-//! something built a report from.
+//! [`diff`] compares two [`ScanReport`]s and says what moved: a new host, a port that
+//! opened, a service that changed version, a certificate that rotated or is about to lapse.
+//! It is the other half of scanning a network on a schedule, and either side can be a scan
+//! that just ran, a report read back out of a [`journal`], or one built from another
+//! scanner's output.
 //!
-//! Every appearance and disappearance carries what the other scan says about
-//! whether it covered that target at all, so a narrowed scan does not read as a
-//! network that emptied out.
+//! Every appearance and disappearance carries what the other scan says about whether it
+//! covered that target at all, so a narrowed scan does not read as a network that emptied.
 //!
 //! # What several scans add up to
 //!
-//! [`merge`] folds any number of [`ScanReport`]s into one. A `/16` scanned in
-//! eight chunks, one range seen from inside the perimeter and from outside, or a
-//! year of archived nmap files against tonight's run: sources go in and one
-//! report comes out, holding every phase each of them walked.
+//! [`merge`] folds any number of [`ScanReport`]s into one: a `/16` scanned in eight chunks,
+//! one range seen from inside the perimeter and from outside, or a year of archived nmap
+//! files plus tonight's run. The result holds every phase each source walked.
 //!
-//! Its rule is that a later source overrides only where it made a claim, so a
-//! host missing from tonight's scan is not a host that went away and an endpoint
-//! nothing listed is not a port that closed. Where two sources genuinely
-//! disagree the newer one wins, which is what lets a merged report say a port
-//! closed rather than accumulating towards a network that reads as wide open.
+//! A later source overrides only where it made a claim, so a host missing from tonight's
+//! scan has not gone away and an endpoint nothing listed has not closed. Where two sources
+//! genuinely disagree the newer one wins, which lets a merged report record a port closing.
 //!
-//! A merge is closed over `ScanReport`, so the result exports through every
-//! writer, compares through [`diff`], and merges again.
+//! The result is itself a `ScanReport`, so it exports through every writer, compares
+//! through [`diff`], and merges again.
 //!
 //! # Layout
 //!
-//! The names most consumers need are re-exported here at the root. The modules
-//! below are the whole of it:
+//! The names most consumers need are re-exported at the root.
 //!
-//! The modules are layered, and the layering is a rule. Each depends only on
-//! those below it, and `tests/hygiene/architecture.rs` reads every `crate::`
-//! path in the library, including the ones inside an expression, which is where
-//! a violation is easiest to miss, and fails if that stops being true.
+//! The modules are layered: each depends only on those below it, and
+//! `tests/hygiene/architecture.rs` reads every `crate::` path in the library, including
+//! those inside expressions, and fails if that stops being true. `ORDER` in that test is
+//! the layering itself. The list below is ordered for someone meeting the crate, starting
+//! with the vocabulary and ending with the file formats.
 //!
-//! The list below is ordered for somebody meeting the crate rather than for the
-//! rule: it opens with the vocabulary and ends with the file formats, where the
-//! layering opens with the plumbing those two share. `ORDER` in that test is the
-//! layering itself, and it is the one that decides anything.
-//!
-//! - [`model`]: the vocabulary every other module names: [`Host`], [`Port`],
-//!   [`IpSet`], [`TargetMap`], and the grammars that construct them from what a
-//!   person wrote. It depends on nothing else here.
-//! - [`config`]: what a caller asks for before a scan starts, including the
-//!   effort a scan is worth spending. Separate from [`model`] because a request
-//!   is not a finding, and separate from [`scanner`] because a report has to
-//!   record what was asked for whether or not a scan ever ran.
-//! - [`protocols`]: building and parsing packets, as bytes and nothing else.
-//! - [`transport`]: the sockets and captures that carry those bytes. Kept apart
-//!   from [`protocols`] because one half needs a NIC and root and the other half
-//!   needs neither, and a packet that cannot be built without a socket open is a
-//!   packet nobody can test. Both are public because crafting a probe is a
-//!   reasonable thing to want on its own; nothing in the two phases above
-//!   requires touching them.
-//! - [`system`]: interfaces, routing, and whether the process may open raw
-//!   sockets. The one place the engine asks the host about itself.
-//! - [`evasion`]: what a scan is allowed to change about the packets it sends,
-//!   and which of those a given strategy can honour. Beside [`protocols`] rather
-//!   than inside it, because a profile is asked for before a packet is built and
-//!   is refused up front when no scan could carry it.
-//! - [`resolve`]: turning the names a person writes into the addresses a scan
-//!   probes, over unicast DNS and multicast DNS. It runs before a scan, deciding
-//!   what it covers; the reverse direction, naming hosts a scan has found, is the
-//!   scanner's own [`rdns`](scanner::rdns).
-//!   [`resolve::for_discovery`] is the one call a front end makes: it is where
-//!   the grammar, this host's interface table, hostname lookup and the
-//!   segment-sweep question are answered together, rather than being four things
-//!   for every consumer to remember separately.
+//! - [`model`]: the vocabulary every other module names: [`Host`], [`Port`], [`IpSet`],
+//!   [`TargetMap`], and the grammars that build them from what a person wrote. It depends
+//!   on nothing else here.
+//! - [`config`]: what a caller asks for before a scan starts, including how much effort a
+//!   scan is worth. A report records it whether or not a scan ever ran.
+//! - [`protocols`]: building and parsing packets, as bytes.
+//! - [`transport`]: the sockets and captures that carry those bytes. Separate from
+//!   [`protocols`] because one half needs a NIC and root and the other needs neither, which
+//!   keeps packet code testable. Both are public for callers who want to craft probes; the
+//!   phases above never require touching them.
+//! - [`system`]: interfaces, routing, and whether the process may open raw sockets. The one
+//!   place the engine asks the host about itself.
+//! - [`evasion`]: what a scan may change about the packets it sends, and which of those a
+//!   given strategy can honour. A profile is checked before any packet is built and refused
+//!   up front when no scan could carry it.
+//! - [`resolve`]: turning names a person writes into addresses a scan probes, over unicast
+//!   and multicast DNS. It runs before a scan; naming hosts a scan has found is the
+//!   scanner's own [`rdns`](scanner::rdns). [`resolve::for_discovery`] is the one call a
+//!   front end makes: grammar, interface table, hostname lookup and the segment-sweep
+//!   question answered together.
 //! - [`fingerprint`]: identifying the service behind an open port.
 //! - [`report`]: what a scan was and what it found: [`ScanReport`],
-//!   [`ScanPhase`](report::ScanPhase), the settings it ran under and the
-//!   counters it kept. Below [`scanner`] rather than inside it, because a report
-//!   outlives the scan that made one. It is journalled, read back without a
-//!   network, compared against a file from last year, merged with an nmap
-//!   document somebody else wrote, and exported in five formats, and only the
-//!   first of those involves a scanner at all.
-//! - [`cve`]: joining what a scan identified against known vulnerabilities.
-//!   A step rather than a phase: it sends nothing, and everything it needs is
-//!   already in hand, so it runs equally well over a host read back out of a
-//!   file as over one a scan just found.
-//! - [`detect`]: running a detection over what a scan has already established,
-//!   and recording what it read so the run can be replayed offline. A step, like
-//!   [`cve`], rather than a phase.
+//!   [`ScanPhase`](report::ScanPhase), the settings it ran under and the counters it kept.
+//!   Below [`scanner`] because a report outlives its scan: it is journalled, read back
+//!   offline, compared, merged and exported without a scanner involved.
+//! - [`cve`]: joining what a scan identified against known vulnerabilities. A step, not a
+//!   phase: it sends nothing, so it works as well on a host read from a file as on one a
+//!   scan just found.
+//! - [`detect`]: running a detection over what a scan has already established, and
+//!   recording what it read so the run can be replayed offline. Also a step.
 //! - [`record`]: the same information in a shape that survives a file.
-//! - [`journal`]: what a scan writes down as it runs, so one that did not finish
-//!   can be continued rather than restarted. It holds the plan, how far the scan
-//!   got, and what it found; [`record`] is the shape all three are written in.
-//! - [`scanner`]: the two entry points, the [`plan`](scanner::plan) behind
-//!   them, and the [`strategy`](scanner::strategy) implementations behind that,
-//!   together with the live [`session`](scanner::session), the
-//!   [`handle`](scanner::handle) that stops it, the
-//!   [`recorder`](scanner::recorder) that closes a phase into a [`ScanReport`],
-//!   and the [`checkpoint`](scanner::checkpoint) timer that carries a running
-//!   scan into a [`journal`].
-//! - [`diff`]: what changed between two scans. It sits above [`scanner`]
-//!   because it reads the report the scanner leaves behind, and below the file
-//!   formats because it compares reports rather than documents: where either
-//!   report came from is not its business.
-//! - [`merge`]: several scans as one report. Above [`diff`] rather than beside
-//!   it, because it folds hosts under the same [`HostIdentity`](diff::HostIdentity)
-//!   a comparison pairs them by, and deciding which record is which host is one
-//!   argument that both of them make.
-//! - [`format`](mod@crate::format): what a reader and a writer of the same document have to agree
-//!   on, and nothing else. It sits below both so that reading a format never
-//!   requires compiling the code that writes it.
-//! - [`export`], [`import`]: the file formats themselves, which sit above the
-//!   report because they describe it and it does not know they exist.
-//! - [`signature`](mod@crate::signature): detached Ed25519 over a document, for
-//!   the two things here worth signing. It sits beside the formats rather than
-//!   inside one, because its two callers point in opposite directions: an
-//!   [`export`] signs bytes on the way out, and [`detect`] checks a signature
-//!   over bytes on the way in before it compiles them.
-//! - `fetch`: downloading what the engine reasons with and does not ship, the
-//!   distributions' security feeds first, into a directory the caller names.
-//!   Behind the `fetch` feature and run only when called, since it is the one
-//!   part of the crate that talks to hosts nobody asked it to scan. Above
-//!   [`journal`], whose rules for creating files in the invoking user's home
-//!   under `sudo` it follows. Unlinked because it is there only in a build
-//!   with the feature.
-//! - [`error`](mod@crate::error): the stable code every error a public entry
-//!   point hands back carries, as one trait over all of them. Last, because it
-//!   names each module's own error type and none of them names it.
+//! - [`journal`]: what a scan writes down as it runs, so an unfinished one can be
+//!   continued. It holds the plan, how far the scan got, and what it found, all written in
+//!   [`record`] shapes.
+//! - [`scanner`]: the entry points, the [`plan`](scanner::plan) behind them and the
+//!   [`strategy`](scanner::strategy) implementations behind that, plus the live
+//!   [`session`](scanner::session), the [`handle`](scanner::handle) that stops it, the
+//!   [`recorder`](scanner::recorder) that closes a phase into a [`ScanReport`], and the
+//!   [`checkpoint`](scanner::checkpoint) timer that carries a running scan into a
+//!   [`journal`].
+//! - [`diff`]: what changed between two scans. It compares reports, so where either came
+//!   from does not matter.
+//! - [`merge`]: several scans as one report. Above [`diff`] because it folds hosts under
+//!   the same [`HostIdentity`](diff::HostIdentity) a comparison pairs them by.
+//! - [`format`](mod@crate::format): what a reader and a writer of the same document have to
+//!   agree on. It sits below both, so reading a format never compiles the code that writes
+//!   it.
+//! - [`export`], [`import`]: the file formats themselves.
+//! - [`signature`](mod@crate::signature): detached Ed25519 signatures. An [`export`] signs
+//!   bytes on the way out, and [`detect`] checks a signature on bytes coming in before it
+//!   compiles them.
+//! - `fetch`: downloading data the engine reasons with but does not ship, starting with
+//!   the distributions' security feeds, into a directory the caller names. Behind the
+//!   `fetch` feature and run only when called, since it is the one part of the crate that
+//!   contacts hosts nobody asked it to scan. It follows [`journal`]'s rules for creating
+//!   files in the invoking user's home under `sudo`. (Unlinked because it exists only in
+//!   builds with the feature.)
+//! - [`error`](mod@crate::error): the stable code carried by every error a public entry
+//!   point returns, as one trait over all of them. Last, because it names each module's
+//!   error type.
 //!
 //! # What the public surface promises
 //!
-//! Every public item is a commitment, so the surface is held to five rules,
-//! and `tests/hygiene/surface.rs` checks each of them against the published
-//! API listing.
+//! Every public item is a commitment, so the surface follows five rules, and
+//! `tests/hygiene/surface.rs` checks each against the published API listing.
 //!
-//! - **Machinery stays inside.** What a strategy is built from, its retry
-//!   ledger, adaptive deadline, congestion window, probe pool and the loop the
-//!   raw port scanners share, is not public. A caller driving a strategy builds
-//!   it through its constructor, which takes the settings that tune all of it.
-//!   Opening any of it later is an addition; withdrawing it would be a break.
-//! - **Structs can grow.** A struct whose fields are public is
-//!   `#[non_exhaustive]` and is built through a constructor or `Default`, with
-//!   the fields set afterwards. The exceptions are types a caller writes out
-//!   whole on purpose: the interchange shapes in [`record`], the `*Parts`
-//!   structs that mirror what they rebuild, and packet headers, whose fields
-//!   the protocol fixes. A public function takes such a struct only where a
-//!   caller can come by one, from a constructor, `Default`, a conversion or
-//!   what another function returns; one taking a struct nobody outside can
-//!   build is kept to the crate.
-//! - **Enums can grow.** A vocabulary is `#[non_exhaustive]`, and its `ALL` is
-//!   a slice: an array's length is part of its type, and would make the next
-//!   variant a break after all.
-//! - **Lists can grow.** Every other public constant that lists something,
-//!   ports, protocols, bounds or characters, is a slice for the same reason,
-//!   and a public field that holds one is a `Vec`. The arrays left are values
-//!   whose length is their definition, such as the byte-order mark or a
-//!   header field the protocol fixes the width of.
-//! - **Other crates' types stay out.** A public signature names this crate's
-//!   types, the standard library's, and two dependencies it cannot usefully
-//!   hide: `tokio`, whose runtime every scan runs on, and `serde`, whose
-//!   derives are what the file formats are. Everything else, the packet
-//!   library and the capture binding among them, is converted at the boundary.
+//! - **Machinery stays inside.** What a strategy is built from (its retry ledger, adaptive
+//!   deadline, congestion window, probe pool, and the loop the raw port scanners share) is
+//!   private. A caller builds a strategy through its constructor, which takes the settings
+//!   that tune all of it. Opening any of it later is an addition; withdrawing it would be a
+//!   break.
+//! - **Structs can grow.** A struct with public fields is `#[non_exhaustive]` and built
+//!   through a constructor or `Default`, with fields set afterwards. The exceptions are
+//!   types a caller writes out whole on purpose: the interchange shapes in [`record`], the
+//!   `*Parts` structs that mirror what they rebuild, and packet headers, whose fields the
+//!   protocol fixes. A public function takes such a struct only where a caller can obtain
+//!   one, from a constructor, `Default`, a conversion or another function's return value.
+//! - **Enums can grow.** A vocabulary is `#[non_exhaustive]`, and its `ALL` is a slice,
+//!   because an array's length is part of its type and the next variant would be a break.
+//! - **Lists can grow.** Every other public constant that lists something (ports,
+//!   protocols, bounds, characters) is a slice for the same reason, and a public field
+//!   holding one is a `Vec`. The remaining arrays are values whose length is their
+//!   definition, such as the byte-order mark or a fixed-width header field.
+//! - **Other crates' types stay out.** Public signatures name this crate's types, the
+//!   standard library's, and two dependencies that cannot usefully be hidden: `tokio`,
+//!   whose runtime every scan runs on, and `serde`, whose derives are the file formats.
+//!   Everything else, including the packet library and the capture binding, is converted
+//!   at the boundary.
 //!
 //! # Platforms
 //!
 //! Linux, macOS and Windows.
 //!
-//! On Windows, raw scanning goes through [Npcap](https://npcap.com), whose
-//! `wpcap.dll` has to be installed for a program built on this crate to start.
-//! Windows refuses raw TCP sockets, so an elevated process builds whole
-//! Ethernet frames and sends them through Npcap, and reaches by connect what a
-//! frame cannot; an unelevated one takes the connect path. Journals live under
-//! `%LOCALAPPDATA%`. The IPv6 neighbour table is not read there, so a sweep
-//! learns IPv6 neighbours from what answers it alone.
+//! On Windows, raw scanning goes through [Npcap](https://npcap.com), whose `wpcap.dll` must
+//! be installed for a program built on this crate to start. Windows refuses raw TCP
+//! sockets, so an elevated process sends whole Ethernet frames through Npcap and uses
+//! connect for what a frame cannot reach; an unelevated one takes the connect path.
+//! Journals live under `%LOCALAPPDATA%`. The IPv6 neighbour table is not read there, so a
+//! sweep learns IPv6 neighbours only from what answers it.
 
-// A public item without a doc comment is a gap in this crate's contract, so the
-// standard is enforced rather than kept by hand.
+// A public item without a doc comment is a gap in the crate's contract.
 #![warn(missing_docs)]
-// Most of this crate's public surface sits behind a cargo feature, and a
-// rendered page that does not say which one leaves a reader to find out by
-// compiling. Nightly-only, so it is set for the docs.rs build alone; see
-// `Cargo.toml`.
+// Labels feature-gated items on the rendered docs. Nightly-only, so it is set for the
+// docs.rs build alone; see `Cargo.toml`.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod config;
@@ -331,23 +276,16 @@ pub mod system;
 pub mod transport;
 pub(crate) mod version;
 
-// Fixtures the tests share, such as loopback services that hear only this
-// process. Compiled for tests alone.
+// Fixtures the tests share, such as loopback services that hear only this process.
 #[cfg(test)]
 pub(crate) mod testing;
 
-// Nothing here is public: it is the five macros the engine emits its own
-// diagnostics through, and a library that exported those would shadow
-// `tracing`'s and `log`'s macros of the same names in any consumer that
-// glob-imported it. See the module for the rest of the argument.
+// The engine's diagnostic macros. Private because exporting them would shadow `tracing`'s
+// and `log`'s macros of the same names in any consumer that glob-imported this crate.
 pub(crate) mod logging;
 
-// The names a consumer reaches for, at the root rather than four modules deep.
-//
-// Deliberately a short list. Everything here stays reachable at its full path as
-// well, so this is a convenience and never the only way to name a type; what it
-// costs is that each name is a commitment, which is why the crate's whole
-// vocabulary is not re-exported wholesale.
+// The names a consumer reaches for most. Kept short because each name here is a
+// commitment; everything stays reachable at its full path too.
 pub use crate::config::{RetryConfig, ScanEffort, ScanPace, ZondConfig};
 pub use crate::error::Coded;
 pub use crate::evasion::EvasionProfile;
@@ -368,13 +306,9 @@ pub use crate::scanner::{ListenScope, ScanError, ScanTask, Until, discover, list
 pub use crate::scanner::{discover_with_journal, listen_with_journal, scan_with_journal};
 pub use crate::transport::probe::SendMode;
 
-// The engine's own diagnostic macros, reachable as `crate::info!` and friends
-// from anywhere in the crate. They are not part of the public API;
-// see `logging` for what exporting them would cost a consumer.
+// Reachable as `crate::info!` and friends from anywhere in the crate.
 //
-// `error!` is not among them, and is imported from `logging` where it is used.
-// A macro here would share the root with the `error` module, and `use
-// crate::error;` would then bring in both without saying which the file wanted
-// — which a reader cannot tell apart and `tests/hygiene/architecture.rs` reads
-// as a dependency on the module. The public module keeps the plain name.
+// `error!` is imported from `logging` where it is used. At the root it would share a name
+// with the `error` module, so `use crate::error;` would bring in both, and
+// `tests/hygiene/architecture.rs` would read it as a dependency on the module.
 pub(crate) use crate::logging::{counted, info, success, warn};
