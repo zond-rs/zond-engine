@@ -41,7 +41,9 @@
 //! (machines recorded), `MAX_DECLARING_MACS` (claims held against unidentified
 //! machines) and `LISTEN_QUEUE_DEPTH` (frames waiting to be read). Each reports
 //! itself when it bites, as the kernel's drop counter does at the end of every
-//! run, since a silent limit looks like a quiet network.
+//! run, since a silent limit looks like a quiet network. Within a record,
+//! [`Host`]'s own ceilings bound the addresses, names and hardware addresses
+//! one machine can pile onto it.
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;

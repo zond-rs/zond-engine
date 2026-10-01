@@ -355,6 +355,22 @@ const MAX_OS_EVIDENCE: usize = 8;
 /// and held ones stay.
 const MAX_NAMES: usize = 16;
 
+/// The most addresses one host will have recorded against it.
+///
+/// A machine holds an IPv4 address or two, a global IPv6 address per prefix and a
+/// temporary one for each day it is up, and a proxy-ARP router answers for a subnet, so
+/// only a sender inventing source addresses reaches this. Past it, a new address is
+/// turned away unless it [ranks](Host::consider_primary_ip) above one held, which it
+/// displaces, so a flood of link-locals cannot keep out the address a person would use.
+const MAX_IPS: usize = 1024;
+
+/// The most names one host will hold [set aside](Host::set_aside_names).
+///
+/// Above [`MAX_NAMES`], since a fold sets aside every name a record knew the host by
+/// that it does not keep. Only a peer naming itself afresh each time reaches it; past
+/// it, a new name is turned away, and redaction cannot mask it in folded-in text.
+const MAX_SET_ASIDE_NAMES: usize = 64;
+
 /// A single machine, and what a scan established about it.
 ///
 /// Identity first: the addresses it answers at, its name and its hardware. Then
@@ -369,7 +385,8 @@ pub struct Host {
     /// The primary IP address used to target or identify this host.
     primary_ip: IpAddr,
 
-    /// All known IP addresses for this host (multi-homed support).
+    /// All known IP addresses for this host (multi-homed support). Bounded by
+    /// [`MAX_IPS`].
     ips: BTreeSet<IpAddr>,
 
     /// The resolved hostname (FQDN or local network name).
@@ -385,7 +402,7 @@ pub struct Host {
     /// machine's former name or one the ceiling turned away.
     ///
     /// For redaction only, which masks them in that text. Nothing exports, compares
-    /// or writes them.
+    /// or writes them. Bounded by [`MAX_SET_ASIDE_NAMES`].
     set_aside_names: BTreeSet<String>,
 
     /// The current reachability status.
@@ -709,6 +726,10 @@ impl Host {
     pub fn consider_primary_ip(&mut self, candidate: IpAddr) -> bool {
         self.add_ip(candidate);
 
+        // Turned away at the ceiling, so it cannot lead.
+        if !self.ips.contains(&candidate) {
+            return false;
+        }
         if identity_rank(&candidate) >= identity_rank(&self.primary_ip) {
             return false;
         }
@@ -720,16 +741,46 @@ impl Host {
 
     /// Adds a new IP address to the host's record and bumps `last_seen`.
     /// Returns `true` if the IP was newly added.
+    ///
+    /// Past a ceiling of 1024 addresses, a new one is turned away unless it ranks above
+    /// one held, as [`consider_primary_ip`](Self::consider_primary_ip) ranks them.
     pub fn add_ip(&mut self, ip: IpAddr) -> bool {
-        let is_new = self.ips.insert(ip);
+        let is_new = self.admit_ip(ip);
         self.last_seen = SystemTime::now();
         is_new
     }
 
     /// Adds multiple IP addresses to the host's record and bumps `last_seen`.
+    ///
+    /// Each is admitted as [`add_ip`](Self::add_ip) admits it.
     pub fn extend_ips(&mut self, ips: impl IntoIterator<Item = IpAddr>) {
-        self.ips.extend(ips);
+        for ip in ips {
+            self.admit_ip(ip);
+        }
         self.last_seen = SystemTime::now();
+    }
+
+    /// Records `ip` unless [`MAX_IPS`] turns it away, returning whether it is new.
+    ///
+    /// At the ceiling it displaces the lowest-ranked address held other than the
+    /// primary, if it ranks above that one.
+    fn admit_ip(&mut self, ip: IpAddr) -> bool {
+        if self.ips.len() < MAX_IPS || self.ips.contains(&ip) {
+            return self.ips.insert(ip);
+        }
+        let lowest = self
+            .ips
+            .iter()
+            .copied()
+            .filter(|held| *held != self.primary_ip)
+            .max_by_key(identity_rank);
+        match lowest {
+            Some(lowest) if identity_rank(&lowest) > identity_rank(&ip) => {
+                self.ips.remove(&lowest);
+                self.ips.insert(ip)
+            }
+            _ => false,
+        }
     }
 
     /// Joins `ips`, a set built elsewhere, to the host's addresses, leaving
@@ -739,8 +790,9 @@ impl Host {
     /// that set and the document's timestamps stand.
     #[cfg(feature = "import-json")]
     pub(crate) fn adopt_ips(&mut self, ips: BTreeSet<IpAddr>) {
-        let held = std::mem::replace(&mut self.ips, ips);
-        self.ips.extend(held);
+        for ip in ips {
+            self.admit_ip(ip);
+        }
     }
 
     /// Drops every address `keep` refuses, and returns whether any is left.
@@ -866,11 +918,15 @@ impl Host {
         }
     }
 
-    /// Sets `name` aside, unless this record states it.
+    /// Sets `name` aside, unless this record states it or [`MAX_SET_ASIDE_NAMES`]
+    /// turns it away.
     fn set_aside(&mut self, name: &str) {
         let stated = self.hostname.as_deref() == Some(name)
             || self.names.iter().any(|held| held.name() == name);
-        if !stated && !self.set_aside_names.contains(name) {
+        if !stated
+            && self.set_aside_names.len() < MAX_SET_ASIDE_NAMES
+            && !self.set_aside_names.contains(name)
+        {
             self.set_aside_names.insert(name.to_owned());
         }
     }
@@ -1474,7 +1530,9 @@ impl Host {
         let first_seen = self.first_seen.min(other_first_seen);
         let last_seen = self.last_seen.max(other_last_seen);
 
-        self.ips.extend(ips);
+        for ip in ips {
+            self.admit_ip(ip);
+        }
         self.consider_primary_ip(other_primary);
 
         // A name the fold does not keep is set aside, since the text folded in
@@ -1766,6 +1824,60 @@ mod tests {
             "a name already held is not news"
         );
         assert_eq!(flooded.names().count(), MAX_NAMES);
+    }
+
+    /// A sender inventing source addresses is held to [`MAX_IPS`], and an address that
+    /// outranks the flood still gets in and leads.
+    #[test]
+    fn a_host_holds_at_most_max_ips_and_keeps_room_for_a_better_one() {
+        let link_local = |n: usize| {
+            IpAddr::V6(std::net::Ipv6Addr::new(
+                0xfe80,
+                0,
+                0,
+                0,
+                0,
+                0,
+                (n >> 16) as u16,
+                n as u16,
+            ))
+        };
+
+        let mut flooded = Host::new(link_local(0));
+        for n in 1..MAX_IPS + 100 {
+            flooded.add_ip(link_local(n));
+        }
+        let mut merged = Host::new(link_local(0));
+        merged.merge(flooded.clone());
+        assert_eq!(flooded.ips().len(), MAX_IPS, "one by one");
+        assert_eq!(merged.ips().len(), MAX_IPS, "through a merge");
+
+        let ipv4 = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));
+        assert!(flooded.consider_primary_ip(ipv4), "the IPv4 address leads");
+        assert!(flooded.ips().contains(&ipv4));
+        assert!(
+            flooded.ips().contains(&link_local(0)),
+            "the address the record was keyed by stays"
+        );
+        assert_eq!(flooded.ips().len(), MAX_IPS);
+    }
+
+    /// A machine renaming itself on every request is held to [`MAX_SET_ASIDE_NAMES`]
+    /// across the merges that set the names aside.
+    #[test]
+    fn set_aside_names_stop_at_their_ceiling() {
+        let mut host = Host::new(IP_ADDR);
+        host.set_hostname(Some("first.example".to_owned()));
+        for n in 0..MAX_SET_ASIDE_NAMES + 10 {
+            let mut renamed = Host::new(IP_ADDR);
+            renamed.set_hostname(Some(format!("host{n}.example")));
+            host.merge(renamed);
+        }
+        assert_eq!(host.set_aside_names().count(), MAX_SET_ASIDE_NAMES);
+        assert!(
+            host.set_aside_names().any(|name| name == "host0.example"),
+            "the ceiling turns new names away and keeps held ones"
+        );
     }
 
     /// A merge keeps what only the later record knows, such as a path and hop counter
