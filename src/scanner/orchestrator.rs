@@ -1516,6 +1516,10 @@ pub(super) async fn run_traceroute(
 /// identification produces; with that pass off there is nothing to join on.
 ///
 /// A scan runs it through [`correlate`], off the runtime's workers.
+///
+/// The correlator reads versions a server stated, so a host it panics on is
+/// left without CVE findings and the rest are judged; the count is filed as a
+/// [`Detection`](ScannerKind::Detection) failure.
 pub(super) fn run_correlation(ctx: &ScanContext, detection: ServiceDetection) {
     if detection == ServiceDetection::Off {
         return;
@@ -1526,10 +1530,22 @@ pub(super) fn run_correlation(ctx: &ScanContext, detection: ServiceDetection) {
         .with_advisories(ctx.detections.advisories())
         .with_exploited(ctx.detections.exploited());
     let mut withdrawn = crate::cve::Withdrawn::default();
+    let mut panicked = 0usize;
     for key in ctx.hosts_owed_passes() {
-        let judged = ctx
-            .read_host(&key, |host| correlator.judgements(host))
-            .unwrap_or_default();
+        let judging = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ctx.read_host(&key, |host| {
+                #[cfg(test)]
+                if host.hostname() == Some(tests::PANICS_THE_CORRELATOR) {
+                    panic!("a correlator defect, staged by a test");
+                }
+                correlator.judgements(host)
+            })
+        }));
+        let Ok(judged) = judging else {
+            panicked += 1;
+            continue;
+        };
+        let judged = judged.unwrap_or_default();
         for port in &judged {
             if port.withdrawn.total() > 0 {
                 info!(
@@ -1554,6 +1570,17 @@ pub(super) fn run_correlation(ctx: &ScanContext, detection: ServiceDetection) {
             "{} CVEs not reported: {}",
             withdrawn.total(),
             withdrawn_reasons(&withdrawn)
+        );
+    }
+
+    if panicked > 0 {
+        ctx.record_failure(
+            ScannerKind::Detection,
+            format!(
+                "CVE correlation panicked on {} and left them without CVE findings; \
+                 this is a defect in the engine rather than a fact about the network",
+                counted(panicked as u128, "host", "hosts")
+            ),
         );
     }
 }
@@ -1607,16 +1634,25 @@ fn record_correlations(
 /// carrying another scan, whose connections would be timed that much slower if a
 /// worker were busy decoding. The join over every host is kept off the workers
 /// too.
+///
+/// A panic outside the per-host judging is filed as a failure, keeping the
+/// scan's results without the correlation it did not finish.
 pub(super) async fn correlate(ctx: &ScanContext, detection: ServiceDetection) {
     if detection == ServiceDetection::Off {
         return;
     }
-    let ctx = ctx.clone();
-    let joined = tokio::task::spawn_blocking(move || run_correlation(&ctx, detection)).await;
+    let correlating = ctx.clone();
+    let joined =
+        tokio::task::spawn_blocking(move || run_correlation(&correlating, detection)).await;
     if let Err(failed) = joined
         && failed.is_panic()
     {
-        std::panic::resume_unwind(failed.into_panic());
+        ctx.record_failure(
+            ScannerKind::Detection,
+            "CVE correlation panicked and did not finish; this is a defect in the \
+             engine rather than a fact about the network"
+                .to_owned(),
+        );
     }
 }
 
@@ -2784,6 +2820,10 @@ mod tests {
     use super::*;
     use crate::model::host::{Host, HostStatus};
     use crate::report::Refusal;
+
+    /// A hostname [`run_correlation`] panics on, standing in for a correlator
+    /// defect a banner reaches.
+    pub(super) const PANICS_THE_CORRELATOR: &str = "panics-the-correlator.example";
     use crate::scanner::session::ScanSession;
     use tokio::sync::mpsc;
 
@@ -4206,6 +4246,38 @@ mod tests {
             port.findings()
                 .any(|f| f.detection().id() == "zond:cve-kev")
         );
+    }
+
+    /// A correlator panic on one host costs that host its CVE findings, not the
+    /// scan: the other host is still judged, and the panic is filed as a failure.
+    #[tokio::test]
+    async fn a_correlator_panic_costs_one_host_its_findings_and_is_filed() {
+        use crate::model::port::{Port, PortState, Protocol, Service};
+
+        let (session, ctx) = ScanSession::new();
+        let staged: IpAddr = "203.0.113.1".parse().expect("literal");
+        let judged: IpAddr = "203.0.113.2".parse().expect("literal");
+        for ip in [staged, judged] {
+            ctx.update_host(ip, |host| {
+                let service = Service::new("http", 90).with_cpe("cpe:/a:apache:http_server:2.4.49");
+                host.add_port(Port::new(80, Protocol::Tcp, PortState::Open).with_service(service));
+            });
+        }
+        ctx.update_host(staged, |host| {
+            host.set_hostname(Some(PANICS_THE_CORRELATOR.to_owned()));
+        });
+
+        correlate(&ctx, ServiceDetection::Probe).await;
+
+        let findings = |ip| {
+            let host = session.hosts().get(ip).expect("the scanned host");
+            host.ports().flat_map(|port| port.findings()).count()
+        };
+        assert!(findings(judged) > 0, "the other host was still judged");
+        assert_eq!(findings(staged), 0);
+        let failures = ctx.failures_snapshot();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert_eq!(failures[0].scanner(), ScannerKind::Detection);
     }
 
     /// **The scanme host end to end.** Its SSH and HTTP services as the banner
