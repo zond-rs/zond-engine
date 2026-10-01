@@ -8,51 +8,36 @@
 
 //! # The names a host gives for itself
 //!
-//! A Windows server answering an SMB session setup names itself before anyone
-//! has authenticated: its NetBIOS name, its DNS name, the domain it belongs to
-//! and the forest that domain sits in. A domain controller's LDAP root entry
-//! says the same, readable by anyone who asks. These are some of the most
-//! useful facts a scan learns about a machine, and some of the most sensitive
-//! a report can carry, since a domain name names the organisation.
+//! A Windows server answering an SMB session setup names itself before anyone has
+//! authenticated: its NetBIOS name, its DNS name, its domain and its forest. A domain
+//! controller's LDAP root entry says the same to anyone who asks. These are among the
+//! most useful facts a scan learns, and among the most sensitive a report carries,
+//! since a domain name names the organisation.
 //!
-//! [`HostName`] is where they are kept: one name, what it names, and which
-//! protocol said it. A report masks every one of them where it is asked to,
-//! the way it masks a hostname. That is why they are not a service's
-//! description: a port's extra detail is a service's account of itself and no
-//! report masks it, so a name put there would reach every redacted document
-//! in the clear.
+//! [`HostName`] holds one name, what it names, and which protocol said it. A report
+//! masks these where asked, as it masks a hostname; a service's description is never
+//! masked, so they are kept out of it.
 //!
-//! ## Not the hostname
+//! ## Separate from the hostname
 //!
-//! [`Host::hostname`](super::Host::hostname) is what name resolution answered
-//! for the address: the hosts file, a reverse lookup, the host's own multicast
-//! DNS responder or the DHCP request it broadcast, ranked by the resolver that
-//! asked. It stays the name a host is displayed under, and nothing recorded
-//! here displaces it or fills it in.
+//! [`Host::hostname`](super::Host::hostname) is what name resolution answered for the
+//! address (the hosts file, a reverse lookup, multicast DNS, a DHCP request), and stays
+//! the name a host is displayed under. Nothing here displaces or fills it.
 //!
-//! The two answer different questions. A hostname is what the network calls an
-//! address, and it is what the rest of a scan works from: the multicast DNS
-//! device-info question is asked under it, and a default name such as
-//! `DESKTOP-` is read from it as a witness about the operating system in its
-//! own right. A name a service states is that service's claim about the
-//! machine. Promoted into the hostname, an NTLM challenge would count twice
-//! towards the same operating system, once for the build it states and once
-//! for the default name beside it, and a report would show a machine's claim
-//! about itself in the place a reader takes for the network's answer.
+//! A hostname is what the network calls an address, and the rest of a scan works from
+//! it: the multicast DNS device-info question is asked under it, and a default name
+//! such as `DESKTOP-` is itself an operating-system witness. A name a service states is
+//! the machine's claim about itself. Promoted into the hostname, an NTLM challenge would
+//! count twice toward the same operating system.
 //!
-//! Names resolution found are therefore not repeated here either. The hostname
-//! already carries its own answer, and a copy here would be a second account of
-//! one fact that two readers, a merge and a comparison, would each have to keep
-//! in step with the first.
+//! Names resolution found are not repeated here either.
 
 use std::fmt;
 
 /// The longest name recorded, in characters.
 ///
-/// A DNS name is at most 253 characters written out (RFC 1035 §2.3.4) and a
-/// NetBIOS name fifteen, so nothing a host legitimately states comes near it.
-/// What it bounds is a peer that sends a field the length of its whole reply,
-/// which would otherwise be carried into every report of the host.
+/// A DNS name is at most 253 characters written out (RFC 1035 §2.3.4) and a NetBIOS
+/// name fifteen. This bounds a peer sending a field the length of its whole reply.
 const MAX_NAME_CHARS: usize = 255;
 
 /// What a name names.
@@ -70,11 +55,9 @@ pub enum NameKind {
     NetbiosHost,
     /// The DNS name of the domain the machine belongs to: `corp.example`.
     ///
-    /// A Kerberos realm is recorded as one, in the case the KDC wrote it:
-    /// `CORP.EXAMPLE`. RFC 4120 §6.1 gives realms the style of a domain name,
-    /// Active Directory makes a domain's realm its DNS name in capitals, and
-    /// the source says the name was a realm, so a separate kind would put the
-    /// one fact under two headings.
+    /// A Kerberos realm is recorded as one, in the KDC's case: `CORP.EXAMPLE`. RFC 4120
+    /// §6.1 gives realms the style of a domain name, Active Directory uses the DNS name
+    /// in capitals, and the source already says it was a realm.
     Domain,
     /// The NetBIOS name of the domain or workgroup the machine belongs to:
     /// `CORP`.
@@ -82,11 +65,9 @@ pub enum NameKind {
     /// On a machine joined to no domain this is whatever it answers for
     /// itself, often its own name, and it is recorded as stated.
     NetbiosDomain,
-    /// The DNS name of the forest root, the domain at the top of the tree the
-    /// machine's domain belongs to. Equal to [`Domain`](Self::Domain) in a
-    /// forest of one domain, which is most of them, and recorded anyway: the
-    /// two are separate claims, and a report that left one out would say
-    /// nothing about which of them the host made.
+    /// The DNS name of the forest root, the domain at the top of the machine's domain
+    /// tree. Usually equal to [`Domain`](Self::Domain), and recorded anyway as a
+    /// separate claim.
     Forest,
 }
 
@@ -120,10 +101,7 @@ impl NameKind {
 
 /// Which protocol a host stated a name in.
 ///
-/// A variant exists only once something records a name under it, the rule
-/// [`NetworkRole`](super::NetworkRole) keeps: a source nothing reads would
-/// promise a consumer the engine asks it, and an empty list would then mean
-/// "said none" where it means "never asked".
+/// A variant exists only once something records a name under it.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NameSource {
@@ -201,15 +179,10 @@ impl HostName {
     /// A name as a host stated it, or `None` where it states nothing a report
     /// should carry.
     ///
-    /// Surrounding whitespace is trimmed, and what is left is refused where it
-    /// is empty, longer than any name a protocol allows, or holds a control
-    /// character. Every one of those is a peer's bytes that name nothing: an
-    /// empty field is a server declining to answer, and a line break in a name
-    /// would split the line a report writes it on.
-    ///
-    /// Nothing else is refused. A name is a stranger's text and every exporter
-    /// escapes it as one; refusing what looks unusual here would decide on the
-    /// reader's behalf which of a host's claims to hear.
+    /// Surrounding whitespace is trimmed, and the rest is refused if empty, longer than
+    /// any protocol allows, or holding a control character (which would break a
+    /// report's line). Nothing else is refused; every exporter escapes names as
+    /// untrusted text.
     #[must_use]
     pub fn new(kind: NameKind, source: NameSource, name: &str) -> Option<Self> {
         let name = name.trim();
@@ -274,9 +247,7 @@ mod tests {
         assert_eq!(name.to_string(), "corp.example (domain, NTLM)");
     }
 
-    /// Each of these is a peer's field that names nothing, and a report that
-    /// carried one would hold an empty entry, a line broken in two, or a
-    /// kilobyte of whatever the peer chose to send.
+    /// Empty, control-character and oversized names are refused.
     #[test]
     fn a_field_that_names_nothing_is_refused() {
         for refused in ["", "   ", "dc01\ncorp", "dc01\0", &"a".repeat(256)] {
@@ -289,8 +260,7 @@ mod tests {
         assert!(HostName::new(NameKind::Host, NameSource::Ldap, &"a".repeat(255)).is_some());
     }
 
-    /// The machine reads before what it belongs to, whichever arrived first,
-    /// so two scans that heard the same names render them the same way.
+    /// The machine sorts before what it belongs to, whichever arrived first.
     #[test]
     fn names_order_by_what_they_name_before_who_said_them() {
         let forest = HostName::new(NameKind::Forest, NameSource::Ntlm, "corp.example").unwrap();

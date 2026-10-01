@@ -12,10 +12,9 @@
 //! summaries a report draws from them: the fastest, the typical, and how much
 //! they vary.
 //!
-//! The design turns on one distinction. Not every reply is equally good evidence
-//! of a path, and the two kinds are not pooled. See [`RttSource`] for what
-//! separates them and [`HostTelemetry`] for how the ranking is applied. Averaging
-//! them together is how a router answering in 7 ms came to be reported at 37.
+//! Not every reply is equally good evidence of a path, and the kinds are not pooled;
+//! see [`RttSource`] and [`HostTelemetry`]. Pooling them once reported a router
+//! answering in 7 ms at 37.
 
 use std::{
     collections::VecDeque,
@@ -26,47 +25,30 @@ use crate::model::host::status::StatusProtocol;
 
 /// How many round trips a host keeps by default.
 ///
-/// Every latency figure in every report is computed over this many samples, so
-/// it is a named constant with its reasoning under it, like every other bound
-/// in the module, rather than a bare `10` inside the [`Default`] impl.
-///
-/// Ten is enough for a median to mean something and short enough that the window
-/// describes the host now rather than an average over an afternoon, which is
-/// what [`HostTelemetry`] keeps a window for at all. A caller that wants a
-/// longer view sets its own with [`HostTelemetry::new`].
+/// Ten is enough for a median to mean something and short enough to describe the host
+/// now. A caller wanting a longer view sets its own with [`HostTelemetry::new`].
 pub const DEFAULT_RTT_SAMPLES: usize = 10;
 
 /// The smallest window [`HostTelemetry::new`] will build.
 ///
-/// One, because zero is a telemetry that accepts every sample and keeps none:
-/// `add_rtt` returns as though it recorded something, every statistic answers
-/// `None` for ever, and nothing says why. A caller asking for no history is
-/// asking for something this type cannot mean, and the nearest thing it can is
-/// the most recent reply.
+/// One: a window of zero would accept every sample and keep none, and every statistic
+/// would answer `None` forever.
 const MIN_RTT_SAMPLES: usize = 1;
 
 /// What kind of question a round-trip sample answers, which decides whether it
 /// describes the network or the responder.
 ///
-/// Not every reply is equally good evidence of a path. A probe aimed at one
-/// address is answered as fast as the host and the link allow, so the elapsed
-/// time is the round trip and nothing else. A probe put to the whole segment is
-/// not: implementations spread their replies to keep every
-/// neighbour from answering at once, and a device asleep on wifi answers when it
-/// next wakes. Observed on a wireless segment, that difference is an order of
-/// magnitude. It shows up as several neighbours reporting the same figure to
-/// the millisecond, which is the giveaway that it describes the probe rather
-/// than any of them.
+/// A probe aimed at one address is answered as fast as the host and link allow, so the
+/// elapsed time is the round trip. A probe to the whole segment is not: implementations
+/// spread their replies, and a device asleep on wifi answers when it wakes. On a
+/// wireless segment that is an order of magnitude, visible as several neighbours
+/// reporting the same figure to the millisecond.
 ///
-/// So the two are not comparable and must not be pooled. Both are kept, and the
-/// weaker one is used only where there is nothing better: for the neighbour that
-/// answers the segment-wide probe and no other, an upper bound is the only
-/// latency there is, and it beats a blank.
+/// So the two are never pooled. The weaker is used only where there is nothing better,
+/// such as a neighbour that answers the segment-wide probe and nothing else.
 ///
-/// A probe aimed at one address can be an upper bound too, where it waited on
-/// something before it left: the first probe to a neighbour, whose hardware
-/// address this host resolves first. Such a sample is kept and ranked as a
-/// segment-wide one is.
+/// The first probe to a neighbour, which waits on address resolution, is also an
+/// upper bound and is ranked like a segment-wide sample.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RttSource {
@@ -83,19 +65,17 @@ pub enum RttSource {
     FirstToNeighbour,
 }
 
-/// One round-trip measurement: when it was taken, what it measured, and what
-/// kind of question produced it.
-/// Not [`Copy`]: [`protocol`](Self::protocol) may name a probe the engine has no
-/// variant for, and that name is an [`Arc<str>`](std::sync::Arc).
+/// One round-trip measurement: when it was taken, what it measured, and what kind of
+/// question produced it.
+///
+/// Not [`Copy`]: [`protocol`](Self::protocol) may hold an [`Arc<str>`](std::sync::Arc).
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RttSample {
     /// When the reply arrived, on the monotonic clock.
     ///
-    /// [`Instant`] rather than the wall clock, since this orders samples against
-    /// each other: [`HostTelemetry::merge`] sorts by it and
-    /// [`jitter`](HostTelemetry::jitter) differences consecutive pairs, and a
-    /// clock adjustment mid-scan must not reorder a history.
+    /// Monotonic, so a clock adjustment mid-scan cannot reorder the history that
+    /// [`HostTelemetry::merge`] sorts and [`jitter`](HostTelemetry::jitter) reads.
     pub at: Instant,
     /// The elapsed time between sending the probe and reading the reply.
     pub rtt: Duration,
@@ -104,11 +84,9 @@ pub struct RttSample {
     pub source: RttSource,
     /// Which probe drew the reply this was measured from.
     ///
-    /// An ARP reply comes off the link layer and a SYN/ACK crosses the target's
-    /// IP and TCP stacks, so the two measure different distances to the same
-    /// host and a figure that does not say which is a figure a reader cannot
-    /// place. `None` where the caller did not say, which is a rebuilt host and
-    /// a test.
+    /// An ARP reply comes off the link layer and a SYN/ACK crosses the target's IP and
+    /// TCP stacks, so they measure different distances. `None` where the caller did not
+    /// say, as for a rebuilt host.
     pub protocol: Option<StatusProtocol>,
 }
 
@@ -143,16 +121,13 @@ impl RttSample {
 
 /// A host's recent round trips, and the summaries drawn from them.
 ///
-/// A sliding window rather than every sample ever taken: a monitor watching one
-/// segment for days would otherwise grow without bound, and what a report says
-/// about latency should describe the host now rather than an average over an
-/// afternoon.
+/// A sliding window, so a long-running monitor stays bounded and figures describe the
+/// host now.
 ///
-/// Every statistic is computed over the host's [`RttSource::Direct`] samples
-/// when it has any, and falls back to the upper bounds, the segment-wide ones
-/// and a neighbour's first, only when it has none. The ranking is applied at the point the numbers are read rather than
-/// when they are recorded, so a host that answers a broadcast first and a
-/// direct probe afterwards is not left describing itself by the weaker sample.
+/// Every statistic uses the host's [`RttSource::Direct`] samples when it has any, and
+/// falls back to the upper bounds only when it has none. The ranking is applied when
+/// read, so a host answering a broadcast before a direct probe is still described by
+/// the better sample.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostTelemetry {
     /// The recent round-trip time measurements with confirmation timestamps.
@@ -161,45 +136,30 @@ pub struct HostTelemetry {
 
     /// How many samples the window holds before the oldest is dropped.
     ///
-    /// Private because lowering it has to trim `rtt_history` to match, and a
-    /// field a caller can set directly would leave the two disagreeing. See
+    /// Private because lowering it must trim `rtt_history`; see
     /// [`set_max_samples`](Self::set_max_samples).
     max_samples: usize,
 
     /// The hop counter the most recent reply from this host arrived with.
     ///
-    /// Not the value the host wrote: every router on the way decrements it, so
-    /// what arrives is the starting value minus the distance. It is kept because
-    /// every captured reply carries one and the scan reads it anyway, where
-    /// re-obtaining it costs a probe and a round trip.
+    /// The starting value minus the distance, since every router decrements it. Kept
+    /// so [`traceroute`](crate::scanner::strategy::topology::traceroute), which needs
+    /// the host's distance to measure the path backwards, does not spend a probe
+    /// re-learning it.
     ///
-    /// What reads it is [`traceroute`](crate::scanner::strategy::topology::traceroute),
-    /// which needs to know how far away a host is before it can measure the path
-    /// backwards from it. Without this the trace has to send a probe of its own
-    /// purely to be answered, which is a round trip spent re-learning something
-    /// the port scan already saw, and one more thing that can fail.
+    /// The most recent, since a route that changed mid-scan is better described by the
+    /// later reply.
     ///
-    /// The most recent rather than the first: a route that changed mid-scan is
-    /// better described by the reply that came after it.
-    ///
-    /// Which of two is more recent is not something this type can see, having no
-    /// clock of its own for it. [`merge`](Self::merge) takes the other record's,
-    /// which is right because of how the engine folds: every call is
-    /// `stored.merge(fresh)`, so the argument is always the later account. A
-    /// fold across two *documents* has no such guarantee and does not come
-    /// through here at all, [`merge`](crate::merge) picking the newest account by
-    /// the documents' own clocks and taking its telemetry whole, because an
-    /// `Instant` from another process orders against nothing.
+    /// [`merge`](Self::merge) takes the other record's, because the engine always calls
+    /// `stored.merge(fresh)`. A fold across documents does not come through here;
+    /// [`merge`](crate::merge) picks the newest account by the documents' clocks.
     hop_counter: Option<u8>,
 }
 
 impl HostTelemetry {
     /// A telemetry whose window holds `max_samples` round trips.
     ///
-    /// Raised to one if it is smaller. A window of zero is a telemetry that
-    /// accepts every sample and keeps none: `add_rtt` returns as though it had
-    /// recorded something, every statistic answers `None` for ever, and nothing
-    /// says why. [`DEFAULT_RTT_SAMPLES`] is what [`Default`] uses.
+    /// Raised to one if smaller. [`Default`] uses [`DEFAULT_RTT_SAMPLES`].
     pub fn new(max_samples: usize) -> Self {
         let max_samples = max_samples.max(MIN_RTT_SAMPLES);
         Self {
@@ -216,10 +176,8 @@ impl HostTelemetry {
 
     /// Resizes the window, discarding the oldest samples if it shrinks.
     ///
-    /// Trimming here rather than at the next insertion means the history never
-    /// holds more than the window says it does, so a caller reading
-    /// [`history`](Self::history) immediately afterwards sees what it asked
-    /// for.
+    /// Trims immediately, so [`history`](Self::history) never holds more than the
+    /// window.
     pub fn set_max_samples(&mut self, max_samples: usize) {
         self.max_samples = max_samples.max(MIN_RTT_SAMPLES);
         while self.rtt_history.len() > self.max_samples {
@@ -234,8 +192,7 @@ impl HostTelemetry {
 
     /// Whether this host produced a reply to a probe aimed at it alone.
     ///
-    /// One such reply retires the whole segment-wide class, so this is what
-    /// every statistic below branches on.
+    /// One such reply retires the whole weaker class; every statistic branches on this.
     fn has_direct(&self) -> bool {
         self.rtt_history
             .iter()
@@ -244,11 +201,8 @@ impl HostTelemetry {
 
     /// The direct samples, oldest first.
     ///
-    /// A host is described by the best evidence it produced, not by the average
-    /// of good evidence and bad. One direct reply is a better account of the
-    /// path than a dozen segment-wide ones, so a single direct sample retires
-    /// the whole weaker class, and what remains is a set of ordinary round trips
-    /// the usual statistics describe properly.
+    /// One direct reply is a better account of the path than a dozen segment-wide ones,
+    /// so a single direct sample retires the whole weaker class.
     fn direct(&self) -> impl Iterator<Item = Duration> + '_ {
         self.rtt_history
             .iter()
@@ -263,21 +217,13 @@ impl HostTelemetry {
     /// [`tightest_bound`](Self::tightest_bound). Empty until something has
     /// answered.
     ///
-    /// An answer to an address resolution, ARP or a neighbour solicitation,
-    /// is a round trip to the host but not across what a wait on the path
-    /// waits for. The request goes to every station on the link, which a
-    /// wireless access point holds for a dozing station until its next
-    /// delivery beacon, a tenth of a second or more apart, and it is the
-    /// first frame a neighbour asleep has to wake for. The segments of a
-    /// conversation go to that one host once it is awake. Measured on one
-    /// segment, neighbours answered ARP in 80 to 250 ms and SYNs in 10 to 20,
-    /// and pooled, the slow resolution became the smoothed round trip every
-    /// wait is sized from: each wait of a TLS port's conversation took about
-    /// 800 ms of allowance rather than 50, and naming the port took twice as
-    /// long. So the resolution sizes waits only for a host that answered
-    /// nothing else. A sample whose probe is not named, as a record rebuilt
-    /// from a journal holds when two probes measured it, is counted as having
-    /// crossed the IP stack, since nothing says it did not.
+    /// An address resolution (ARP or a neighbour solicitation) goes to every station
+    /// on the link, which a wireless access point holds for a dozing station until its
+    /// next delivery beacon, a tenth of a second or more apart. On one segment
+    /// neighbours answered ARP in 80 to 250 ms and SYNs in 10 to 20; pooled, each wait
+    /// of a TLS conversation allowed about 800 ms rather than 50. So resolutions size
+    /// waits only for a host that answered nothing else. A sample with no named probe
+    /// counts as having crossed the IP stack.
     pub(crate) fn round_trips(&self) -> Vec<Duration> {
         if !self.has_direct() {
             return self.tightest_bound().into_iter().collect();
@@ -298,26 +244,17 @@ impl HostTelemetry {
     /// The one figure a host with nothing but segment-wide samples is described
     /// by: the smallest of them.
     ///
-    /// Those are not round trips to average. Each is the path plus however long
-    /// the responder held its reply back, and that hold-off is deliberate and
-    /// unbounded, so the smallest is the tightest bound available on the path
-    /// and every other summary of them describes the responder's manners
-    /// instead.
-    ///
-    /// Not a refinement. A neighbour that answers one echo request promptly and
-    /// a later one after a wake contributes two samples an order of magnitude
-    /// apart, whose median is a figure neither reply supports. Every host
-    /// answering both requests lands on that same midpoint, since they share the
-    /// pair it is derived from, so a whole segment would report a latency
-    /// nothing on it produced.
+    /// Each is the path plus a deliberate, unbounded hold-off, so the smallest is the
+    /// tightest bound on the path. A median of a prompt answer and one after a wake
+    /// would be a figure neither supports, and every host answering both requests
+    /// would report the same midpoint.
     fn tightest_bound(&self) -> Option<Duration> {
         self.rtt_history.iter().map(|sample| sample.rtt).min()
     }
 
     /// Adds a new RTT measurement at the current system time.
     ///
-    /// Recorded as [`RttSource::Direct`], since a probe aimed at one address is
-    /// what almost every caller sends. A segment-wide reply has to say so.
+    /// Recorded as [`RttSource::Direct`]; a segment-wide reply has its own method.
     pub fn add_rtt(&mut self, rtt: Duration) {
         self.add_rtt_at(Instant::now(), rtt, None);
     }
@@ -365,14 +302,10 @@ impl HostTelemetry {
     /// Adds a sample read back from a record, of the kind and from the probe
     /// the record names, stamped now.
     ///
-    /// Now is a sound stamp, and the only one there is: an [`Instant`] from
-    /// the process that wrote the record orders against nothing here. What the
-    /// stamp has to get right is the order, and it does. A record lists its
-    /// samples oldest first and they are added in that order, and a scan reads
-    /// its journal before it sends anything, so every restored sample is
-    /// stamped before any this process measures, as it was taken before them.
-    /// [`merge`](Self::merge) keeps samples stamped alike in the order it was
-    /// handed them. The spacing between samples is lost, and nothing reads it.
+    /// An [`Instant`] from another process means nothing here, and now preserves the
+    /// order: a record lists samples oldest first, and a scan reads its journal before
+    /// sending anything, so restored samples precede new ones. [`merge`](Self::merge)
+    /// keeps equally stamped samples in order. The spacing is lost; nothing reads it.
     pub(crate) fn restore_rtt(
         &mut self,
         rtt: Duration,
@@ -389,9 +322,7 @@ impl HostTelemetry {
 
     /// [`add_rtt`](Self::add_rtt) at a caller-chosen instant.
     ///
-    /// Private: the only reason to record a sample under a time other than now
-    /// is to reconstruct a history, and a window whose ordering callers can
-    /// choose is one [`merge`](Self::merge) cannot keep in time order.
+    /// Private, so callers cannot break the time order [`merge`](Self::merge) keeps.
     fn add_rtt_at(&mut self, time: Instant, rtt: Duration, protocol: Option<StatusProtocol>) {
         self.push(RttSample {
             at: time,
@@ -403,10 +334,8 @@ impl HostTelemetry {
 
     /// The probe every sample here was drawn from, where they agree on one.
     ///
-    /// `None` where no sample says, and where two disagree. A host answered by
-    /// both ARP and an echo has no single distance to report, and naming one of
-    /// the two beside a figure drawn from both would be worse than naming
-    /// neither.
+    /// `None` where no sample says, or where two disagree (ARP and an echo measure
+    /// different distances).
     #[must_use]
     pub fn rtt_protocol(&self) -> Option<StatusProtocol> {
         let mut named = self.rtt_history.iter().filter_map(|s| s.protocol.clone());
@@ -429,7 +358,7 @@ impl HostTelemetry {
 
     /// Records the hop counter a reply from this host arrived with.
     ///
-    /// See [`hop_counter`](Self::hop_counter) for what the value is and is not.
+    /// See [`hop_counter`](Self::hop_counter).
     pub fn record_hop_counter(&mut self, arrived: u8) {
         self.hop_counter = Some(arrived);
     }
@@ -439,13 +368,11 @@ impl HostTelemetry {
         self.hop_counter
     }
 
-    /// The fastest round trip in the window, and the closest this type comes to
-    /// a measurement of the path alone.
+    /// The fastest round trip in the window, the closest thing to a measurement of the
+    /// path alone.
     ///
-    /// Taken over the [`RttSource::Direct`] samples where the window holds any.
-    /// Where it holds only [`RttSource::SegmentWide`] ones, the smallest of
-    /// those is the tightest bound they support and is what comes back. `None`
-    /// until something has answered.
+    /// Over the [`RttSource::Direct`] samples where there are any; otherwise the
+    /// smallest upper bound. `None` until something has answered.
     pub fn min_rtt(&self) -> Option<Duration> {
         if self.has_direct() {
             self.direct().min()
@@ -456,15 +383,9 @@ impl HostTelemetry {
 
     /// The slowest round trip in the window.
     ///
-    /// Taken over the [`RttSource::Direct`] samples, as every statistic here is.
-    /// A host with only [`RttSource::SegmentWide`] samples has no slowest round
-    /// trip, and this answers with the same one figure the rest do: the
-    /// tightest bound those samples support, which is the *smallest* of them.
-    /// That is the same fallback [`min_rtt`](Self::min_rtt) describes, and it is
-    /// worth restating here because the name says the opposite. A caller
-    /// computing
-    /// spread from `max_rtt() - min_rtt()` gets zero for such a host, which is
-    /// the honest answer: there is one bound and no spread to report.
+    /// Over the [`RttSource::Direct`] samples. A host with only upper bounds gets the
+    /// same fallback as [`min_rtt`](Self::min_rtt): the *smallest* bound, despite the
+    /// name. `max_rtt() - min_rtt()` is then zero, since there is no spread to report.
     pub fn max_rtt(&self) -> Option<Duration> {
         if self.has_direct() {
             self.direct().max()
@@ -475,17 +396,11 @@ impl HostTelemetry {
 
     /// The typical round trip in the window.
     ///
-    /// Unlike [`average_rtt`](Self::average_rtt), the median is robust against
-    /// outliers: a single anomalously slow sample, a retransmit or a scheduling
-    /// hiccup, barely moves it, which makes it the better single-number summary
-    /// of a host's latency. For an even number of samples the two middle values
-    /// are averaged.
+    /// Robust against outliers such as a retransmit or a scheduling hiccup, so the best
+    /// single-number summary. For an even count the two middle values are averaged.
     ///
-    /// Taken over the [`RttSource::Direct`] samples. A host with only
-    /// [`RttSource::SegmentWide`] ones gets the same tightest bound
-    /// [`min_rtt`](Self::min_rtt) describes, because their median is a figure no
-    /// reply supports and every host answering the same pair of probes would
-    /// report it.
+    /// Over the [`RttSource::Direct`] samples; a host with only upper bounds gets the
+    /// same fallback as [`min_rtt`](Self::min_rtt).
     ///
     /// `None` until something has answered.
     pub fn median_rtt(&self) -> Option<Duration> {
@@ -497,8 +412,7 @@ impl HostTelemetry {
 
     /// The median of [`round_trips`](Self::round_trips): the figure a scan
     /// times its first probes to this host from, before it has measured the
-    /// host for itself. The median for the reason
-    /// [`median_rtt`](Self::median_rtt) gives.
+    /// host for itself.
     pub(crate) fn median_round_trip(&self) -> Option<Duration> {
         median(self.round_trips())
     }
@@ -516,20 +430,14 @@ impl HostTelemetry {
 
     /// The arithmetic mean of the window's round trips.
     ///
-    /// Taken over the [`RttSource::Direct`] samples, and replaced by the same
-    /// tightest bound for a host that produced none, exactly as
-    /// [`median_rtt`](Self::median_rtt) is. Averaging segment-wide replies is
-    /// the specific mistake this type was reshaped to prevent: it is how a
-    /// router answering in 7 ms came to be reported at 37.
+    /// Over the [`RttSource::Direct`] samples, with the same fallback as
+    /// [`median_rtt`](Self::median_rtt).
     pub fn average_rtt(&self) -> Option<Duration> {
         if !self.has_direct() {
             return self.tightest_bound();
         }
 
-        // Saturating, as `median_rtt` above is careful to be and as every other
-        // count in the model is. A window of samples cannot realistically reach
-        // `Duration::MAX`, but the samples are a caller's to supply and a
-        // library has no business panicking in its caller's process over it.
+        // Saturating: the samples are caller-supplied and must not cause a panic.
         let (sum, count) = self
             .direct()
             .fold((Duration::ZERO, 0u32), |(sum, count), rtt| {
@@ -545,8 +453,7 @@ impl HostTelemetry {
     /// Jitter provides a measure of network stability. A high jitter relative
     /// to the average RTT often indicates network congestion or bufferbloat.
     pub fn jitter(&self) -> Option<Duration> {
-        // Only the direct samples have consecutive pairs worth differencing:
-        // the weaker class collapses to a single figure, which has no jitter.
+        // The weaker class collapses to one figure, which has no jitter.
         let mut samples = self.direct();
         let mut previous = samples.next()?;
 
@@ -564,7 +471,7 @@ impl HostTelemetry {
     /// Takes `later`'s round trips in place of these, where it holds any,
     /// keeping the wider of the two windows.
     ///
-    /// For a later account of the same window rather than new samples; see
+    /// For a later account of the same window; see
     /// [`Host::merge_later_account`](crate::model::host::Host::merge_later_account).
     /// The hop counter is left as [`merge`](Self::merge) left it.
     pub(crate) fn take_window(&mut self, later: HostTelemetry) {
@@ -581,25 +488,13 @@ impl HostTelemetry {
     /// Folds another record's samples into this one, keeping the combined
     /// history in time order and dropping the oldest of it past the window.
     ///
-    /// The window widens to the larger of the two, never narrows: two records
-    /// of one host disagreeing about how much history to keep are two callers'
-    /// requests, and honouring the smaller would discard samples the other
-    /// asked for.
+    /// The window widens to the larger of the two.
     ///
-    /// Re-sorted rather than concatenated because the two records were filled
-    /// by probes running at the same time, so neither one's samples are wholly
-    /// older than the other's. [`jitter`](Self::jitter) reads consecutive
-    /// pairs, so an out-of-order history would report a difference between
-    /// samples that were never consecutive.
+    /// Re-sorted, since both records were filled by concurrent probes and
+    /// [`jitter`](Self::jitter) reads consecutive pairs.
     pub fn merge(&mut self, mut other: HostTelemetry) {
-        // Before the sample-window guard below, which returns early. A hop
-        // counter is not a sample and is not bounded by the window, so folding
-        // it after that check would lose it on exactly the records that keep no
-        // round trips.
-        //
-        // Taken unconditionally, there being nothing here to order two of them
-        // by. See the field, which has why that is the right answer for the way
-        // the engine folds and where the case it would be wrong for is handled.
+        // Before the early return below, which records with no round trips take.
+        // Taken unconditionally; see the field.
         if let Some(arrived) = other.hop_counter {
             self.hop_counter = Some(arrived);
         }
@@ -612,7 +507,7 @@ impl HostTelemetry {
             return;
         }
 
-        // Interleave and re-sort samples to maintain network timeline
+        // Interleave and re-sort by time.
         let mut combined: Vec<_> = self
             .rtt_history
             .drain(..)
@@ -660,8 +555,7 @@ impl Default for HostTelemetry {
 #[cfg(test)]
 mod tests {
 
-    /// The figures are named by the probe that measured them, so a reader can
-    /// place an ARP round trip against a handshake to the same host.
+    /// The figures are named by the probe that measured them.
     #[test]
     fn round_trips_are_named_by_the_probe_that_measured_them() {
         let mut telemetry = HostTelemetry::default();
@@ -671,8 +565,7 @@ mod tests {
         assert_eq!(telemetry.rtt_protocol(), Some(StatusProtocol::Arp));
     }
 
-    /// Two probes measure two distances, so the pair has no one name and the
-    /// figures go unnamed rather than borrowing whichever came first.
+    /// Two different probes leave the figures unnamed.
     #[test]
     fn round_trips_from_two_probes_are_named_by_neither() {
         let mut telemetry = HostTelemetry::default();
@@ -685,11 +578,7 @@ mod tests {
     /// **A wait on the path is sized from the host's answers across its IP
     /// stack once it has any, not from the address resolution before them.**
     ///
-    /// The resolution goes to the whole link and can wait on a dozing
-    /// neighbour: one segment's hosts answered ARP in 80 to 250 ms and SYNs in
-    /// 10 to 20. Pooled as the oldest sample, a 246 ms ARP answer anchored the
-    /// smoothed round trip every wait of a conversation allows for, and a TLS
-    /// port that never answered HTTP took twice as long to name.
+    /// One segment's hosts answered ARP in 80 to 250 ms and SYNs in 10 to 20.
     #[test]
     fn a_wait_is_sized_from_answers_across_the_ip_stack_rather_than_the_resolution() {
         let mut telemetry = HostTelemetry::default();
@@ -705,8 +594,7 @@ mod tests {
         );
     }
 
-    /// A host that answered nothing but the resolution is still waited on for
-    /// it, since a guess is all the alternative would be.
+    /// A host that answered only the resolution is waited on by it.
     #[test]
     fn a_host_that_answered_only_the_resolution_is_sized_from_it() {
         let mut telemetry = HostTelemetry::default();
@@ -721,7 +609,7 @@ mod tests {
         );
     }
 
-    /// A caller that did not say leaves them unnamed, which is a rebuilt host.
+    /// A caller that did not name the probe leaves the figures unnamed.
     #[test]
     fn round_trips_nobody_named_stay_unnamed() {
         let mut telemetry = HostTelemetry::default();
@@ -731,12 +619,7 @@ mod tests {
     }
     use super::*;
 
-    /// A window of zero is a telemetry that accepts every sample and keeps
-    /// none, so it is not a window this type will build.
-    ///
-    /// `add_rtt` returned as though it had recorded something, every statistic
-    /// answered `None` for ever, and nothing said why. A caller asking for no
-    /// history is asking for something this type cannot mean.
+    /// A window of zero is raised to one.
     #[test]
     fn a_window_is_never_smaller_than_one_sample() {
         let mut asked_for_none = HostTelemetry::new(0);
@@ -746,7 +629,7 @@ mod tests {
         assert_eq!(asked_for_none.history().len(), 1, "the sample is kept");
         assert_eq!(asked_for_none.min_rtt(), Some(Duration::from_millis(5)));
 
-        // And the same floor when a window is narrowed afterwards.
+        // The same floor when narrowed afterwards.
         let mut narrowed = HostTelemetry::new(4);
         narrowed.add_rtt(Duration::from_millis(1));
         narrowed.add_rtt(Duration::from_millis(2));
@@ -762,12 +645,7 @@ mod tests {
     /// A host with nothing but segment-wide replies is described by one figure,
     /// and every statistic answers with it.
     ///
-    /// The behaviour was right and three of the four documents describing it
-    /// were three revisions behind: `max_rtt` said it returned the slowest,
-    /// `median_rtt` the median and `average_rtt` the mean, where all three
-    /// return the smallest. This pins what they do so the sentences and the code
-    /// cannot drift apart again, and `max_rtt` is the one worth having in a test
-    /// at all, since a caller reading its name would predict 90.
+    /// Including `max_rtt`, whose name would suggest 90.
     #[test]
     fn segment_wide_samples_alone_give_every_statistic_one_figure() {
         let mut bounded = HostTelemetry::new(10);
@@ -780,15 +658,14 @@ mod tests {
         assert_eq!(bounded.median_rtt(), tightest, "not their median, 50");
         assert_eq!(bounded.average_rtt(), tightest, "not their mean, 50");
 
-        // One direct reply retires the class, and the four part company again.
+        // One direct reply retires the class.
         bounded.add_rtt(Duration::from_millis(20));
         assert_eq!(bounded.min_rtt(), Some(Duration::from_millis(20)));
         assert_eq!(bounded.max_rtt(), Some(Duration::from_millis(20)));
     }
 
-    /// Every statistic is `Option`, and an empty window is the case that makes
-    /// that necessary: there is no average of nothing, and returning zero would
-    /// read as an instantaneous host.
+    /// An empty window answers `None` everywhere; zero would read as an instantaneous
+    /// host.
     #[test]
     fn a_window_with_no_samples_reports_no_statistics() {
         let empty = HostTelemetry::new(10);
@@ -800,11 +677,8 @@ mod tests {
         assert_eq!(empty.max_rtt(), None);
     }
 
-    /// A directed probe's answer describes the path; a segment-wide probe's
-    /// answer describes the path plus however long the responder waited before
-    /// replying. Averaging them together is how a router answering ARP in 7 ms
-    /// and a neighbor solicitation in 5 came to be reported at 37: its two
-    /// echo replies, at 71 and 72 ms, dragged the median between them.
+    /// A router answering ARP in 7 ms and a neighbour solicitation in 5 is not reported
+    /// at 37 because of two segment-wide echo replies at 71 and 72 ms.
     #[test]
     fn a_segment_wide_sample_never_dilutes_a_direct_one() {
         let mut t = HostTelemetry::new(10);
@@ -823,11 +697,7 @@ mod tests {
         );
     }
 
-    /// The order they arrive in must not decide the answer. A neighbour often
-    /// answers the segment-wide echo before the probe addressed to it, and a
-    /// rule applied when samples are recorded rather than when they are read
-    /// would leave exactly those hosts describing themselves by the worse
-    /// number.
+    /// Arrival order does not decide the answer.
     #[test]
     fn ranking_does_not_depend_on_which_reply_arrived_first() {
         let mut early = HostTelemetry::new(10);
@@ -842,10 +712,7 @@ mod tests {
         assert_eq!(early.median_rtt(), Some(Duration::from_millis(5)));
     }
 
-    /// With nothing better, the upper bound is the only latency there is, and it
-    /// beats a blank: this is the neighbour that answers the all-nodes echo and
-    /// no solicitation at all, which would otherwise be reported with a MAC, a
-    /// vendor and an empty space where every IPv4 host has a number.
+    /// With nothing better, the upper bound is reported.
     #[test]
     fn a_host_with_only_segment_wide_samples_still_reports_latency() {
         let mut t = HostTelemetry::new(10);
@@ -856,16 +723,7 @@ mod tests {
         assert!(t.average_rtt().is_some());
     }
 
-    /// Upper bounds are not averaged, they are tightened.
-    ///
-    /// A neighbour answering one echo request promptly and a later one after a
-    /// wake gives two samples an order of magnitude apart, whose median is a
-    /// figure neither reply supports, and every host answering both requests
-    /// lands on the same midpoint, so a whole segment reports a latency nothing
-    /// on it produced.
-    ///
-    /// A segment-wide sample is the path plus a hold-off the responder chose,
-    /// so the smallest is the only one that says anything about the path.
+    /// Upper bounds are tightened to the smallest, not averaged.
     #[test]
     fn segment_wide_samples_report_the_tightest_bound_not_their_midpoint() {
         let mut t = HostTelemetry::new(10);
@@ -886,9 +744,7 @@ mod tests {
         );
     }
 
-    /// The collapse applies to the weaker class only. Genuine round trips are
-    /// still summarized as round trips, where an outlier is noise to be
-    /// smoothed rather than a hold-off to be discarded.
+    /// Direct round trips are still summarized normally.
     #[test]
     fn direct_samples_are_still_summarized_by_the_median() {
         let mut t = HostTelemetry::new(10);
@@ -910,9 +766,7 @@ mod tests {
         assert_eq!(t.average_rtt(), Some(Duration::from_millis(15)));
     }
 
-    /// Jitter is the mean absolute difference between consecutive samples rather
-    /// than the spread of the window. It measures instability over time, which is
-    /// why the history has to stay in time order.
+    /// Jitter is the mean absolute difference between consecutive samples.
     #[test]
     fn jitter_averages_the_gaps_between_consecutive_samples() {
         let mut t = HostTelemetry::new(5);
@@ -926,20 +780,18 @@ mod tests {
         );
     }
 
-    /// Sorted internally, so the order samples arrived in does not change the
-    /// answer.
+    /// The median does not depend on arrival order.
     #[test]
     fn the_median_of_an_odd_window_is_its_middle_sample() {
         let mut t = HostTelemetry::new(5);
-        // Inserted out of order to confirm the median sorts internally.
+        // Inserted out of order.
         t.add_rtt(Duration::from_millis(30));
         t.add_rtt(Duration::from_millis(10));
         t.add_rtt(Duration::from_millis(20));
         assert_eq!(t.median_rtt(), Some(Duration::from_millis(20)));
     }
 
-    /// With no single middle sample the two central ones are averaged, and the
-    /// subtraction is written to avoid overflowing on their sum.
+    /// With an even count the two central samples are averaged.
     #[test]
     fn the_median_of_an_even_window_averages_the_two_central_samples() {
         let mut t = HostTelemetry::new(5);
@@ -951,8 +803,7 @@ mod tests {
         assert_eq!(t.median_rtt(), Some(Duration::from_millis(25)));
     }
 
-    /// The reason a report leads with the median rather than the mean: one
-    /// retransmit or scheduling hiccup should not redescribe a host's latency.
+    /// One outlier barely moves the median.
     #[test]
     fn the_median_barely_moves_for_a_single_outlier() {
         let mut t = HostTelemetry::new(5);
@@ -961,13 +812,11 @@ mod tests {
         t.add_rtt(Duration::from_millis(12));
         t.add_rtt(Duration::from_secs(5)); // outlier
         t.add_rtt(Duration::from_millis(13));
-        // Median stays near the cluster despite the 5s spike.
+        // The median stays near the cluster.
         assert_eq!(t.median_rtt(), Some(Duration::from_millis(12)));
     }
 
-    /// Two records of one host disagreeing about how much history to keep are
-    /// two callers' requests, and honouring the smaller would discard samples
-    /// the other asked for.
+    /// A merge keeps the wider window.
     #[test]
     fn a_merge_widens_the_window_to_the_larger_of_the_two() {
         let mut t1 = HostTelemetry::new(3);
@@ -976,8 +825,7 @@ mod tests {
         assert_eq!(t1.max_samples(), 10);
     }
 
-    /// A window of zero holds nothing, and a merge of two of them must not be
-    /// the way a sample gets in.
+    /// Merging two empty telemetries adds no samples.
     #[test]
     fn a_window_of_zero_stays_empty_across_a_merge() {
         let mut t1 = HostTelemetry::new(0);

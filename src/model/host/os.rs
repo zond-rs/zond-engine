@@ -11,49 +11,39 @@
 //! [`OsFingerprint`] is an operating system as one technique identified it,
 //! carrying the accuracy that says how much to believe it.
 //!
-//! Several techniques answer the same question from different evidence, whether
-//! the shape of a TCP/IP stack's replies or a service banner or an SNMP response,
-//! and they disagree. The accuracy is what makes them combinable: it ranks two
-//! findings without either having to know how the other was reached.
-//! [`OsFingerprint::merge`] is that rule.
+//! Several techniques answer the question from different evidence (a TCP/IP stack's
+//! replies, a service banner, an SNMP response) and they disagree. The accuracy ranks
+//! two findings regardless of how each was reached; [`OsFingerprint::merge`] applies
+//! it.
 
 use std::{collections::BTreeSet, sync::Arc};
 
 /// The most CPE identifiers one fingerprint will have recorded against it.
 ///
-/// A bound on what a single target can make this process allocate. The
-/// identifiers are derived from what the target said and how its stack behaved,
-/// neither of which this engine controls, and a host that produces a few
-/// thousand plausible ones would otherwise have every one of them held.
+/// Bounds what a single target can make this process allocate, since the identifiers
+/// derive from what the target said and how its stack behaved.
 ///
-/// [`MAX_CPES_PER_SERVICE`](crate::model::port::service::MAX_CPES_PER_SERVICE)
-/// is the same bound for a service, and reads its number from here so that
-/// "the same" stays true. It matters more there: a banner is text the target
-/// chose outright, where a fingerprint is derived from how a stack behaved.
+/// [`MAX_CPES_PER_SERVICE`](crate::model::port::service::MAX_CPES_PER_SERVICE) reads
+/// its number from here.
 pub const MAX_CPES_PER_OS: usize = 50;
 
 /// The accuracy at which [`OsFingerprint::is_highly_confident`] answers true.
 ///
-/// A named number rather than one written into the comparison, since it is a
-/// threshold two other modules read a verdict against and one somebody will want
-/// to argue with. Eighty-five is where a stack reading and a second source
-/// agreeing land, and below where a single weakly-scored source does.
+/// Eighty-five is where a stack reading plus an agreeing second source lands, and
+/// above what a single weakly scored source reaches.
 pub const HIGH_CONFIDENCE_ACCURACY: u8 = 85;
 
 /// A host's operating system as one technique identified it, and how sure that
 /// technique was.
 ///
-/// The accuracy is what makes several techniques combinable: a better-informed
-/// finding replaces a worse one and equally-informed ones fill each other's
-/// gaps. See [`merge`](Self::merge).
+/// A better-informed finding replaces a worse one, and equally informed ones fill each
+/// other's gaps. See [`merge`](Self::merge).
 #[must_use]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OsFingerprint {
     /// The operating system's name, such as `"Linux"` or `"Windows"`.
     ///
-    /// Shared rather than owned because a scan of any size finds the same few
-    /// names over and over, and the string is then one allocation across the
-    /// whole result rather than one per host.
+    /// Shared, since a scan finds the same few names over and over.
     name: Arc<str>,
 
     /// The broad family, such as `"Unix-like"` or `"Windows NT"`.
@@ -61,12 +51,9 @@ pub struct OsFingerprint {
 
     /// What kind of box this is, such as `"Printer"` or `"Switch"`.
     ///
-    /// A second axis, not a coarser name. What a machine runs and what it is
-    /// are separate facts, and a source often knows one without the other: a hop
-    /// counter says infrastructure and never a vendor, an SNMP agent names a
-    /// printer's firmware and never its kernel. Held apart, the two corroborate;
-    /// folded into one field they contradicted, and a Brother print server that
-    /// had answered ARP, ICMP, TCP and SNMP was reported as unidentified.
+    /// A separate axis from the name: what a machine runs and what it is are separate
+    /// facts, and a source often knows only one (a hop counter says infrastructure, an
+    /// SNMP agent names a printer's firmware). Held apart, the two corroborate.
     device: Option<Arc<str>>,
 
     /// The version or generation, such as `"5.15.0"` or `"11"`.
@@ -77,47 +64,34 @@ pub struct OsFingerprint {
 
     /// How sure this identification is, as a percentage.
     ///
-    /// Private because [`new`](Self::new) clamps it to 100 and
-    /// [`merge`](Self::merge) ranks findings by it. A value above 100 would
-    /// outrank a completed match and could never be displaced.
+    /// Private because [`new`](Self::new) clamps it to 100; [`merge`](Self::merge)
+    /// ranks by it, and a larger value could never be displaced.
     accuracy: u8,
 
     /// The kernel release, where something read one.
     ///
-    /// Beside the generation rather than a finer form of it. A distribution
-    /// release and the kernel it ships are two facts about one machine, since
-    /// Debian 12 runs kernel 6.1, and neither is the better answer. Held as one
-    /// field they contradicted: an SSH banner naming `12` and an SNMP agent
-    /// naming `6.1.0` read as two sources disagreeing, and a host that had told
-    /// this engine
-    /// both was reported as neither.
+    /// Separate from the generation: Debian 12 runs kernel 6.1, and an SSH banner naming
+    /// `12` and an SNMP agent naming `6.1.0` do not disagree.
     ///
-    /// It is also the single most actionable thing a scan can learn about a Unix
-    /// host, because it is what a known-vulnerability lookup keys on.
+    /// The most actionable thing a scan learns about a Unix host, since a
+    /// known-vulnerability lookup keys on it.
     kernel: Option<Arc<str>>,
 
     /// The instruction set the system runs on, where something read one.
     ///
-    /// A third axis beside what a machine runs and what it is: `mips` on a
-    /// consumer router and `x86_64` on the server beside it are the same family
-    /// on different silicon, and a vulnerability that needs one does not reach
-    /// the other. An SNMP agent hands it over for nothing, since `sysDescr` on a
-    /// Unix host is `uname -a` and ends with the machine type.
+    /// A third axis: `mips` on a router and `x86_64` on a server are the same family on
+    /// different silicon, and a vulnerability may need one. `sysDescr` on a Unix host is
+    /// `uname -a`, which ends with the machine type.
     arch: Option<Arc<str>>,
 
     /// How well supported everything past the family is, where the finding says
     /// more than a family at all.
     ///
-    /// The family is what every source can speak to, and [`accuracy`] describes
-    /// agreement about it. A release is usually named by one source, typically a
-    /// service banner, so reporting it under the family's figure launders one
-    /// weaker claim through the agreement of several stronger ones. Measured, on
-    /// a real host: two sources agreeing on Linux scored 84, the release came
-    /// from a single banner worth 55, and `Debian 12.0 [84%]` claimed the second
-    /// number was as well attested as the first.
+    /// [`accuracy`] describes agreement about the family. A release is usually named by
+    /// one source, typically a banner, so it gets its own figure: on a real host two
+    /// sources agreed on Linux at 84 while the release came from one banner worth 55.
     ///
-    /// `None` where the finding stops at the family, and there is nothing extra
-    /// to qualify.
+    /// `None` where the finding stops at the family.
     ///
     /// [`accuracy`]: Self::accuracy
     detail_accuracy: Option<u8>,
@@ -127,22 +101,18 @@ pub struct OsFingerprint {
 
     /// What this identification was read off, in one line.
     ///
-    /// A verdict nobody can check is a verdict nobody can dispute, and a wrong
-    /// confident one is where checking matters most. Carrying the evidence beside
-    /// the conclusion lets a false positive be diagnosed, and turned into a corpus
-    /// entry, without re-running the scan.
+    /// Lets a false positive be diagnosed, and turned into a corpus entry, without
+    /// re-running the scan.
     ///
-    /// Written for a person, not for a parser. It is a rendering of whatever
-    /// technique produced the finding, and different techniques render different
-    /// things; nothing should try to read a value back out of it. The fields a
-    /// consumer is meant to act on are the named ones beside it.
+    /// Written for a person; its format varies by technique, so do not parse it. Act on
+    /// the named fields.
     evidence: Option<Arc<str>>,
 }
 
 impl OsFingerprint {
     /// Creates a new `OsFingerprint` with a name and a confidence score.
     ///
-    /// Accuracy is strictly clamped to the range `[0, 100]`.
+    /// Accuracy is clamped to `[0, 100]`.
     ///
     /// # Examples
     ///
@@ -291,21 +261,12 @@ impl OsFingerprint {
 
     /// Folds another technique's identification of this host into this one.
     ///
-    /// The identity comes from whichever record is more accurate, and a tie
-    /// keeps what is already recorded. All of it: the name, and the family,
-    /// device, generation, vendor, kernel, architecture, detail accuracy and
-    /// evidence line beside it, each filling a gap in the other where the winner
-    /// has none. The body destructures `other`, so the list here is the one that
-    /// can fall behind, and it named four of the eight.
+    /// The identity (name and every field beside it) comes from the more accurate
+    /// record, a tie keeping what is recorded; the other fills gaps.
     ///
-    /// CPEs are unioned whatever the accuracies are, which is the one part
-    /// that does not follow the ranking, and it matches
-    /// [`Service::merge`](crate::model::port::Service::merge) next door. A CPE
-    /// is not a claim about which operating system this is; it is a claim that
-    /// this identifier applies, and a technique that was less sure of the name
-    /// can still have extracted a valid one. Discarding them cost real findings:
-    /// a low-accuracy pass that named three CPEs was erased entire by a
-    /// higher-accuracy pass that named none.
+    /// CPEs are unioned regardless, as in
+    /// [`Service::merge`](crate::model::port::Service::merge): a CPE says an identifier
+    /// applies, and a less certain technique can still extract a valid one.
     pub fn merge(&mut self, other: OsFingerprint) {
         let OsFingerprint {
             name,
@@ -325,35 +286,21 @@ impl OsFingerprint {
             self.name = name;
             self.accuracy = accuracy;
             self.family = family.or(self.family.take());
-            // Kept across a losing merge, unlike the name: what the box *is* does
-            // not stop being true because a stronger technique named what it
-            // runs. The two answers are about different things.
+            // Kept across a losing merge: what the box *is* is a separate question
+            // from what it runs.
             self.device = device.or(self.device.take());
             self.generation = generation.or(self.generation.take());
             self.vendor = vendor.or(self.vendor.take());
             self.kernel = kernel.or(self.kernel.take());
             self.arch = arch.or(self.arch.take());
-            // Travels with the parts it qualifies, never on its own: a figure
-            // describing a release this finding no longer names would attach a
-            // confidence to nothing.
+            // Travels with the parts it qualifies.
             self.detail_accuracy = detail_accuracy.or(self.detail_accuracy.take());
-            // The evidence follows the identity it explains. Keeping the losing
-            // technique's line beside the winning technique's name would be a
-            // rationale for a conclusion nobody reached.
+            // The evidence follows the identity it explains.
             self.evidence = evidence.or(self.evidence.take());
         } else if accuracy == self.accuracy {
-            // Two findings of equal strength about one host.
-            //
-            // Where they name the same system they are two *readings* of it and
-            // both belong in the record. This is how the active series probe's
-            // reading arrives: it corroborates the passive one exactly, so it
-            // ties, and keeping only the first discarded the one measurement
-            // that says what the host's counters do, which is the whole reason
-            // the probe was sent.
-            //
-            // Where they name different systems the loser's line is a rationale
-            // for a conclusion nobody reached, and it goes, for the same reason
-            // it does above.
+            // A tie. Naming the same system, both lines are readings worth keeping
+            // (the active series probe ties with the passive reading and adds what
+            // the counters do). Naming different systems, the loser's line goes.
             self.evidence = if self.name == name {
                 join_evidence(self.evidence.take(), evidence)
             } else {
@@ -379,24 +326,19 @@ impl OsFingerprint {
 
 /// What separates two readings in an evidence line.
 ///
-/// The same separator [`resolve`](crate::fingerprint::os::resolve) folds its
-/// sources with, so a person reading a report meets one convention rather than
-/// two.
+/// The same separator [`resolve`](crate::fingerprint::os::resolve) uses.
 const SEPARATOR: &str = " | ";
 
 /// The most evidence one fingerprint carries, in bytes.
 ///
-/// Readings accumulate, since a host read passively, then followed, then pinged
-/// contributes three, and each is worth keeping. A caller running strategies in a
-/// loop over one host is not, so this bounds the record where it stops describing
-/// a host and starts logging a session.
+/// A host read passively, then followed, then pinged contributes three readings; this
+/// bounds a caller running strategies in a loop over one host.
 const MAX_EVIDENCE_LEN: usize = 512;
 
 /// Joins two evidence lines, keeping each reading once and in the order it
 /// arrived.
 ///
-/// Truncates a whole reading rather than half of one: a line cut mid-value would
-/// read as a measurement that says something it does not.
+/// Drops whole readings at the bound, never half of one.
 fn join_evidence(existing: Option<Arc<str>>, incoming: Option<Arc<str>>) -> Option<Arc<str>> {
     match (existing, incoming) {
         (Some(existing), Some(incoming)) => Some(join_readings(&existing, &incoming).into()),
@@ -407,21 +349,17 @@ fn join_evidence(existing: Option<Arc<str>>, incoming: Option<Arc<str>>) -> Opti
 /// Joins two evidence lines, keeping each reading once and in the order it
 /// arrived.
 ///
-/// Shared with the evidence a host retains per source, so a reading that arrives
-/// twice by two routes reads the same either way.
+/// Shared with the evidence a host keeps per source.
 ///
-/// A reading that another one extends is dropped. The passive path and the active
-/// one describe the same reply, and the active one appends what several replies
-/// added up to, so its line begins with the passive line and continues. Keeping
-/// both would print the same observation twice with the second copy longer.
+/// A reading another one extends is dropped: the active path's line begins with the
+/// passive path's and continues.
 ///
-/// Truncates a whole reading rather than half of one: a line cut mid-value would
-/// read as a measurement that says something it does not.
+/// Drops whole readings at the bound, never half of one.
 pub(super) fn join_readings(existing: &str, incoming: &str) -> String {
     let mut parts: Vec<&str> = Vec::new();
 
     for part in existing.split(SEPARATOR).chain(incoming.split(SEPARATOR)) {
-        // Already said, or already said at greater length.
+        // Already said, possibly at greater length.
         if parts.iter().any(|kept| kept.starts_with(part)) {
             continue;
         }
@@ -445,15 +383,12 @@ pub(super) fn join_readings(existing: &str, incoming: &str) -> String {
 
 impl std::fmt::Display for OsFingerprint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The family and its agreement first, since that is the part several
-        // sources can vouch for. Anything finer follows with its own figure: one
-        // source usually names a release, and printing it under the family's
-        // number would claim it was as well attested.
+        // The family and its agreement first; anything finer follows with its own
+        // figure.
         let family = self.family.as_deref().unwrap_or(&self.name);
         write!(f, "{family} [{}%]", self.accuracy)?;
 
-        // Then the distribution, where one was named. `·` separates facts of
-        // different strengths rather than parts of one name.
+        // Then the distribution. `·` separates facts of different strengths.
         let names_a_release = &*self.name != family || self.generation.is_some();
         if names_a_release {
             write!(f, " · {}", self.name)?;
@@ -465,8 +400,7 @@ impl std::fmt::Display for OsFingerprint {
             }
         }
 
-        // And the kernel last, labelled, because `Debian 12 · 6.1.0` reads as
-        // two guesses at one number where `kernel 6.1.0` reads as what it is.
+        // The kernel last, labelled: `Debian 12 · 6.1.0` would read as two guesses.
         if let Some(kernel) = &self.kernel {
             write!(f, " · kernel {kernel}")?;
             if let Some(accuracy) = self.detail_accuracy {
@@ -490,10 +424,7 @@ impl std::fmt::Display for OsFingerprint {
 #[cfg(test)]
 mod tests {
 
-    /// The defect this exists to prevent. The active series probe corroborates
-    /// the passive reading exactly, so the two tie, and keeping only the first
-    /// would throw away the only line that says what the host's counters do,
-    /// which is the whole reason the probe was sent.
+    /// The active series probe ties with the passive reading, and both lines are kept.
     #[test]
     fn two_readings_of_one_system_are_both_kept() {
         let mut passive = OsFingerprint::new("Linux", 65)
@@ -510,12 +441,7 @@ mod tests {
         );
     }
 
-    /// Three facts about one machine, each with what it is actually worth.
-    ///
-    /// The family is what several sources agreed on, the distribution release
-    /// came from one banner, and the kernel from one agent. Rendering them as one
-    /// name, `Debian 12`, hid the kernel entirely, and rendering the kernel as a
-    /// version made the two look like rival answers to one question.
+    /// Family, release and kernel render as three facts, each with its own strength.
     #[test]
     fn a_finding_shows_the_family_the_release_and_the_kernel_apart() {
         let os = OsFingerprint::new("Debian", 93)
@@ -530,16 +456,14 @@ mod tests {
         );
     }
 
-    /// A finding that knows only a family says only that. The separators are for
-    /// facts that exist.
+    /// A finding that knows only a family says only that.
     #[test]
     fn a_family_alone_renders_as_a_family_alone() {
         let os = OsFingerprint::new("Linux", 65).with_family("Linux");
         assert_eq!(os.to_string(), "Linux [65%]");
     }
 
-    /// A kernel with no distribution behind it, as an SNMP agent on a host with
-    /// nothing else to say leaves, still reports the kernel.
+    /// A kernel with no distribution still reports the kernel.
     #[test]
     fn a_kernel_without_a_release_is_still_reported() {
         let os = OsFingerprint::new("Linux", 84)
@@ -550,9 +474,7 @@ mod tests {
         assert_eq!(os.to_string(), "Linux [84%] · kernel 6.1.0 [55%]");
     }
 
-    /// Joining is for readings of the same system. A tie between two different
-    /// names keeps the winner's line alone, since the loser's is a rationale for
-    /// a conclusion nobody reached.
+    /// A tie between two different names keeps only the winner's line.
     #[test]
     fn a_tie_between_two_names_does_not_borrow_the_losers_reasoning() {
         let mut linux = OsFingerprint::new("Linux", 65).with_evidence("a Linux-shaped reply");
@@ -562,8 +484,7 @@ mod tests {
         assert_eq!(linux.evidence(), Some("a Linux-shaped reply"));
     }
 
-    /// One reading, however many times it is filed. A scan that identifies a
-    /// host twice by the same route has learned one thing.
+    /// One reading, however many times it is filed.
     #[test]
     fn the_same_reading_twice_is_recorded_once() {
         let mut host = OsFingerprint::new("Linux", 65).with_evidence("syn-ack hops>=64");
@@ -572,9 +493,7 @@ mod tests {
         assert_eq!(host.evidence(), Some("syn-ack hops>=64"));
     }
 
-    /// Readings accumulate, so the record needs a ceiling, and it has to fall
-    /// between readings rather than inside one: half a reading reads as a
-    /// measurement claiming something it never said.
+    /// The ceiling falls between readings, never inside one.
     #[test]
     fn a_long_accumulation_is_cut_between_readings_not_inside_one() {
         let reading = |n: usize| format!("reading {n} {}", "x".repeat(60));
@@ -595,27 +514,21 @@ mod tests {
     }
     use super::*;
 
-    /// Accuracy is what ranks two findings, so a value above 100 would outrank
-    /// a completed match and could never afterwards be displaced. Clamping at
-    /// construction is what keeps a caller computing a score from producing
-    /// one.
+    /// Accuracy is clamped at construction.
     #[test]
     fn an_accuracy_above_100_is_clamped_rather_than_kept() {
         assert_eq!(OsFingerprint::new("Linux", 200).accuracy(), 100);
         assert_eq!(OsFingerprint::new("Linux", 100).accuracy(), 100);
     }
 
-    /// The threshold a caller uses to stop fingerprinting, so where exactly it
-    /// falls decides whether a further, more intrusive probe is sent.
+    /// The threshold decides whether a more intrusive probe is sent.
     #[test]
     fn high_confidence_starts_at_85() {
         assert!(OsFingerprint::new("Linux", 85).is_highly_confident());
         assert!(!OsFingerprint::new("Linux", 84).is_highly_confident());
     }
 
-    /// The surer technique names the host. Without this a scan reports whichever
-    /// identification happened to finish last, and a stack fingerprint sure to
-    /// 90% loses to a banner guess.
+    /// The surer technique names the host, whichever finished last.
     #[test]
     fn the_more_accurate_finding_names_the_host() {
         let mut banner = OsFingerprint::new("Linux", 50);
@@ -625,10 +538,7 @@ mod tests {
         assert_eq!(banner.accuracy(), 90);
     }
 
-    /// Two equally accurate findings are equally good sources, so a tie keeps
-    /// what is already recorded and fills only what is missing. Preferring the
-    /// later one would make the report depend on which technique finished
-    /// first.
+    /// A tie keeps what is recorded and fills only what is missing.
     #[test]
     fn a_tie_keeps_the_incumbent_and_fills_only_its_gaps() {
         let mut first = OsFingerprint::new("Linux", 80).with_family("Unix-like");
@@ -643,10 +553,7 @@ mod tests {
         assert_eq!(first.generation(), Some("5.15.0"), "a gap, so filled");
     }
 
-    /// A CPE says "this identifier applies", not "this is the operating
-    /// system", so it survives a merge that overrules the identity around it.
-    /// Replacing the whole record on higher accuracy erased every identifier a
-    /// less certain technique had extracted.
+    /// CPEs survive a merge that overrules the identity around them.
     #[test]
     fn a_more_accurate_finding_takes_the_identity_but_not_at_the_cost_of_cpes() {
         let mut banner = OsFingerprint::new("Linux", 40).with_vendor("Canonical");
@@ -667,10 +574,7 @@ mod tests {
         assert_eq!(banner.cpes().len(), 2, "both identifiers still apply");
     }
 
-    /// The identifiers come from what the target said and how its stack
-    /// behaved, so their number is not this engine's to choose. Both the direct
-    /// route and a merge have to respect the bound, or the merge is a way
-    /// around it.
+    /// Both adding and merging respect the CPE bound.
     #[test]
     fn the_cpe_list_is_bounded_by_both_routes_into_it() {
         let mut os = OsFingerprint::new("Windows", 100);
@@ -690,9 +594,8 @@ mod tests {
 
 /// Which evidence produced a verdict.
 ///
-/// A report says *why* a host was named and not only what it was named, and the
-/// variants are ordered by nothing: what each is worth is decided where the
-/// evidence is made, not here.
+/// Lets a report say *why* a host was named. The variants carry no ordering; what each
+/// is worth is decided where the evidence is made.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OsSource {
@@ -705,37 +608,29 @@ pub enum OsSource {
     /// A management agent answering for the machine itself, such as `sysDescr`
     /// out of SNMP.
     ///
-    /// Held apart from [`ServiceBanner`](Self::ServiceBanner) because it is worth
-    /// more, and the reason is not that SNMP is trustworthy. A banner is a string
-    /// a daemon was *compiled* with, so a container reports its base image and a
-    /// proxy reports itself. `sysDescr` on a Unix host is `uname -a` rendered at
-    /// the moment of asking: the running kernel, from the machine, now. On an
-    /// appliance it is the firmware build the box is actually executing. See
+    /// Worth more than [`ServiceBanner`](Self::ServiceBanner): a banner is a string a
+    /// daemon was *compiled* with, so a container reports its base image, while
+    /// `sysDescr` on a Unix host is `uname -a` at the moment of asking, and on an
+    /// appliance the firmware actually running. See
     /// [`ceiling`](crate::fingerprint::os::ceiling).
     SnmpAgent,
     /// A Bonjour responder answering for the machine itself: the mDNS
     /// device-info record it serves, and the `.local` name it announces.
     ///
-    /// The same kind of statement as [`SnmpAgent`](Self::SnmpAgent) and worth
-    /// the same, for the same reason: `model=Mac16,10` and `osxvers=25` are what
-    /// the machine says it is when asked, not a string a daemon was compiled
-    /// with. It also reaches something no other source here can, since macOS and
-    /// iOS share a kernel and answer a stack probe identically while their
-    /// device-info records name the hardware outright.
+    /// Worth the same as [`SnmpAgent`](Self::SnmpAgent): `model=Mac16,10` and
+    /// `osxvers=25` are what the machine says when asked. It also separates macOS from
+    /// iOS, which share a kernel and answer a stack probe identically.
     ///
-    /// One source for both, because both are one daemon speaking: the record is
-    /// asked for under the very name the responder announced. A default name
-    /// heard this way is priced as any default name is, and counts once with the
-    /// record rather than as a second witness beside it.
+    /// One source for both, since one daemon serves both and the record is asked for
+    /// under the announced name. A default name heard this way counts once with the
+    /// record.
     MdnsResponder,
     /// The host's own name, where it is one an operating system generates by
     /// default and something other than the host's own responder gave it: a
     /// resolver answering a reverse lookup, or the host's DHCP request.
     ///
-    /// The weakest source there is, kept because a default name is sometimes
-    /// the only thing a host gives out: a stock Windows desktop drops every
-    /// probe and still names itself `DESKTOP-`. Heard as a `.local` name, that is
-    /// its responder speaking, and it is filed as
+    /// The weakest source, but sometimes the only one: a stock Windows desktop drops
+    /// every probe and still names itself `DESKTOP-`. A `.local` name is filed as
     /// [`MdnsResponder`](Self::MdnsResponder).
     Hostname,
 }
@@ -753,21 +648,15 @@ pub struct OsEvidence {
     pub source: OsSource,
     /// The broad family, where this source can name one.
     ///
-    /// `None` is an abstention, not an unknown.
-    /// [`resolve`](crate::fingerprint::os::resolve) settles the
-    /// family by vote and every other field by agreement, so a source with
-    /// nothing to say at that level has to be able to say nothing: forced to
-    /// supply a family it would have to invent one, and an invented family votes
-    /// against the real ones. A rule reading `Brother NC-8700w` off an SNMP agent
-    /// knows the make, the model and the firmware of a box and genuinely does not
-    /// know what it runs.
+    /// `None` is an abstention. [`resolve`](crate::fingerprint::os::resolve) settles the
+    /// family by vote, and an invented family would vote against the real ones. A rule
+    /// reading `Brother NC-8700w` off an SNMP agent knows the make, model and firmware
+    /// but not what the box runs.
     pub family: Option<String>,
     /// What kind of box this is, such as `Printer` or `Switch` or `Router`, where
     /// a source says.
     ///
-    /// A second axis rather than a coarser family: what a machine is and what
-    /// it *runs* are independent, and the corpus answers them separately. A Linux
-    /// print server is both, and neither answer contradicts the other.
+    /// Independent of the family: a Linux print server is both.
     pub device: Option<String>,
     /// The vendor, where the source knew one.
     pub vendor: Option<String>,
@@ -777,8 +666,7 @@ pub struct OsEvidence {
     pub version: Option<String>,
     /// The kernel release, where the source read one.
     ///
-    /// Beside the version rather than instead of it: a distribution release and
-    /// the kernel it ships are two facts, not two answers.
+    /// Separate from the version: a distribution release and its kernel are two facts.
     pub kernel: Option<String>,
     /// The instruction set, where the source read one: `x86_64`, `mips`.
     pub arch: Option<String>,
@@ -786,9 +674,8 @@ pub struct OsEvidence {
     pub cpe: Option<String>,
     /// How much this source is worth on its own, from 0 to 1.
     ///
-    /// Not a percentage and not an accuracy: it is what this one source
-    /// contributes before anything else is taken into account, and the value a
-    /// source alone would produce is its own ceiling.
+    /// What this source contributes on its own, which is also the most it can produce
+    /// alone.
     pub confidence: f32,
     /// One line describing what was read, for the report to carry.
     pub evidence: String,

@@ -8,65 +8,43 @@
 
 //! # The route a probe took to reach a host
 //!
-//! [`NetworkPath`] is the sequence of routers between this machine and one
-//! target: what a traceroute establishes, and the one finding in this engine
-//! that describes the space *between* two addresses rather than either of them.
+//! [`NetworkPath`] is the sequence of routers between this machine and one target, as
+//! a traceroute establishes it: a finding about the space *between* two addresses.
 //!
-//! ## A hop is a distance, not an index
+//! ## A hop is a distance
 //!
-//! Every [`Hop`] carries the [`distance`](Hop::distance) it was measured at,
-//! meaning the hop limit whose expiry produced it, rather than being identified
-//! by its position in a list. The two come apart constantly:
+//! Every [`Hop`] carries the [`distance`](Hop::distance) it was measured at (the hop
+//! limit whose expiry produced it), independent of its position in the list:
 //!
-//! - **A router may decline to answer.** Many do not send Time Exceeded at all,
-//!   or rate-limit it to nothing. That leaves a gap, and a gap has to stay a gap:
-//!   collapsing the list would silently renumber every router beyond it and
-//!   report a five-hop path as four.
-//! - **A path may be spliced.** When one trace recognises a router another trace
-//!   already found, the rest is taken from the earlier one rather than measured
-//!   again; see [`Hop::inferred`]. Those hops keep the distance they were
-//!   originally measured at.
+//! - **A router may decline to answer.** Many never send Time Exceeded, or rate-limit
+//!   it to nothing. The gap stays, so routers beyond it keep their numbers.
+//! - **A path may be spliced.** When one trace meets a router another trace found, the
+//!   rest is taken from the earlier trace; see [`Hop::inferred`]. Those hops keep their
+//!   original distances.
 //!
-//! So a path is stored sorted by distance, may have holes in it, and a reader
-//! that wants "the third router" should ask for distance three rather than index
-//! two.
+//! So a path is sorted by distance and may have holes; ask for distance three, not
+//! index two.
 //!
 //! ## A router the scan may not name
 //!
 //! A router whose address falls under the scan's
-//! [`Exclusions`](crate::model::exclusion::Exclusions) keeps its distance and
-//! loses its address: see [`Hop::withheld`]. The policy promises that no
-//! excluded address appears in the report, and a trace hears from such a
-//! router without having asked it anything, since the probe it discarded was
-//! addressed to somebody else. Nothing was sent to it, so the recording half of
-//! the promise is the only half a path can break.
+//! [`Exclusions`](crate::model::exclusion::Exclusions) keeps its distance and loses its
+//! address; see [`Hop::withheld`]. A trace hears from such a router without sending to
+//! it, so recording is the only part of the policy a path could break. Recording it as
+//! silent would claim nothing answered, and leaving it out could make the path read a
+//! router shorter.
 //!
-//! Each of the other shapes that would keep the address out says something
-//! false. Recorded as silent, the hop claims nothing answered when a router did.
-//! Left out, the distance reads as one the trace knows nothing about, and where
-//! it is the furthest router a trace reached, the path reads a router shorter
-//! than it is. What a withheld hop says instead is exactly what the report may
-//! say: a router stood at this distance on the way to this host, and the scan
-//! will not say which.
+//! ## What a hop establishes
 //!
-//! ## What a hop does and does not establish
+//! A router at that address discarded a packet of ours that had travelled that far. A
+//! router must identify itself when it discards a packet (RFC 792, RFC 4443 §3.3).
 //!
-//! It establishes that a router at that address discarded a packet of ours that
-//! had travelled that far. That is a strong statement: a router is
-//! obliged to identify itself when it discards a packet (RFC 792, RFC 4443
-//! §3.3), where it is under no obligation at all when it forwards one.
+//! The address is the one the router chose to reply from, not always the interface
+//! the probe used, so two traces can name different addresses for one device.
 //!
-//! It does not establish that the router is *on* the path in any other sense.
-//! The address a router replies from is the one it chose, usually the
-//! interface the probe arrived on but not always the same one on the way back.
-//! Two traces to neighbouring hosts can name different addresses for what is
-//! physically one device, and nothing here can tell.
-//!
-//! A round-trip time is to the router rather than between routers. It is measured
-//! from this machine, so hop three's timing includes hops one and two. It is also
-//! the time a router took to generate an error, which many treat as the
-//! lowest-priority work they do, so a hop slower than the one after it is ordinary
-//! and says nothing about the path.
+//! A round-trip time is measured from this machine to the router, so hop three's
+//! includes hops one and two. Routers treat generating errors as low priority, so a hop
+//! slower than the next is ordinary.
 
 use std::net::IpAddr;
 use std::time::Duration;
@@ -82,8 +60,7 @@ pub struct Hop {
 
 /// What was heard from a distance.
 ///
-/// One value rather than an address and a flag beside it, so that a withheld
-/// hop carrying an address cannot be built.
+/// One value, so a withheld hop carrying an address cannot be built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Answer {
     /// Nothing answered.
@@ -107,9 +84,7 @@ impl Hop {
 
     /// A distance nothing answered at.
     ///
-    /// Recorded rather than omitted, because the two are different findings and
-    /// only one of them is about the network. A missing entry would say the path
-    /// is shorter than it is; this says a router is there and would not say so.
+    /// Recorded, since omitting it would make the path read shorter than it is.
     pub fn silent(distance: u8) -> Self {
         Self {
             distance,
@@ -122,16 +97,11 @@ impl Hop {
     /// A distance a router answered at, from an address the scan's exclusions
     /// forbid it to report.
     ///
-    /// Neither [`silent`](Self::silent), which would say nothing answered, nor
-    /// left out, which would say nothing is known; the module documentation
-    /// weighs the three. It carries no round trip either: that times the
-    /// router's own generation of an error, which is a fact about the router
-    /// rather than about the route.
+    /// See the module documentation. Carries no round trip, which would be a fact about
+    /// the router.
     ///
-    /// A scan does not build these by hand. A router is recorded as it
-    /// answered, and the scan withholds its address where the policy names it,
-    /// on every way a hop reaches a host's record. This is how a record of one
-    /// is read back.
+    /// For reading a record back; a scan records a router as it answered and withholds
+    /// the address afterwards.
     pub fn withheld(distance: u8) -> Self {
         Self {
             distance,
@@ -146,8 +116,7 @@ impl Hop {
     #[must_use]
     pub fn as_inferred(mut self) -> Self {
         self.inferred = true;
-        // A round trip belongs to the trace that measured it. Carrying one
-        // across would report a timing for a probe this host never drew.
+        // A round trip belongs to the trace that measured it.
         self.rtt = None;
         self
     }
@@ -175,10 +144,8 @@ impl Hop {
 
     /// Whether a router answered here from an address the scan may not report.
     ///
-    /// The one case where [`address`](Self::address) is `None` and something
-    /// answered, so a reader drawing a path has to ask this before it draws a
-    /// gap: a withheld router is there and did identify itself, and the scan
-    /// declines to repeat what it said. See [`withheld`](Self::withheld).
+    /// The one case where [`address`](Self::address) is `None` but something answered,
+    /// so check it before drawing a gap. See [`withheld`](Self::withheld).
     pub fn is_withheld(&self) -> bool {
         self.answer == Answer::Withheld
     }
@@ -192,13 +159,8 @@ impl Hop {
     /// Whether this hop was measured on the way to *this* host, or copied from
     /// an earlier trace that passed through the same router.
     ///
-    /// A path assembled partly from another host's trace is a weaker claim than
-    /// one probed end to end: the two hosts were assumed to share everything
-    /// upstream of the router where the traces met, which is true of nearly every
-    /// network and is still an assumption. A reader acting
-    /// on a single hop should know which kind they are looking at, and a report
-    /// that did not distinguish them would present an inference as a
-    /// measurement.
+    /// A spliced path assumes the two hosts share everything upstream of the router
+    /// where the traces met, which is nearly always true but still an assumption.
     pub fn inferred(&self) -> bool {
         self.inferred
     }
@@ -206,10 +168,8 @@ impl Hop {
 
 /// The routers between this machine and one host, in order of distance.
 ///
-/// Sorted by distance and holding at most one hop per distance. Both invariants
-/// are established by [`record`](Self::record), which is the only way in, and
-/// the only other change a path takes is withholding a router's address, which
-/// rewrites a hop where it stands and never moves one.
+/// Sorted by distance, with at most one hop per distance. [`record`](Self::record) is
+/// the only way in; withholding an address rewrites a hop in place.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NetworkPath {
     hops: Vec<Hop>,
@@ -223,13 +183,9 @@ impl NetworkPath {
 
     /// Records `hop`, replacing whatever was known at that distance.
     ///
-    /// A measurement replaces an inference and never the reverse. A trace
-    /// that spliced in another host's hops and then measured one of them for
-    /// itself has learned something; the same in reverse would throw away the
-    /// stronger of two claims about the same router. An answered hop likewise
-    /// replaces a silent one, since silence is the absence of a finding rather
-    /// than a finding of absence. A [withheld](Hop::withheld) hop is an answered
-    /// one: a router answered there, and only its address goes unreported.
+    /// An answered hop replaces a silent one, since silence is the absence of a
+    /// finding. Between two that agree on that, a measurement replaces an inference
+    /// and never the reverse. A [withheld](Hop::withheld) hop counts as answered.
     pub fn record(&mut self, hop: Hop) {
         match self
             .hops
@@ -237,16 +193,9 @@ impl NetworkPath {
         {
             Ok(index) => {
                 let known = &self.hops[index];
-                // The two rules above are ranked rather than added together.
-                // Whether anything answered comes first, because silence is the
-                // absence of a finding and an answer is one; provenance decides
-                // only between two hops that agree about that.
-                //
-                // Or-ing them let a *measured silence* displace an *inferred
-                // answer*, which is a router's address traded for the news that
-                // it declined to answer this time. `Host::merge` replays one
-                // record's hops into another's in whatever order the two were
-                // folded, so it took no exotic trace to reach.
+                // Ranked: whether anything answered first, then provenance.
+                // Otherwise a measured silence could displace an inferred answer,
+                // which `Host::merge` replaying hops in either order would reach.
                 let stronger = match (known.is_answer(), hop.is_answer()) {
                     (false, true) => true,
                     (true, false) => false,
@@ -263,11 +212,8 @@ impl NetworkPath {
     /// Withholds the address of every router `keep` refuses, and returns
     /// whether it withheld any.
     ///
-    /// For the exclusion policy, which holds for the routers on a host's path as
-    /// it does for the host's own addresses. Each refused hop becomes
-    /// [`Hop::withheld`] at the same distance and with the same provenance, so a
-    /// spliced router stays marked as spliced, and loses its round trip with
-    /// its address.
+    /// For the exclusion policy. Each refused hop becomes [`Hop::withheld`] at the same
+    /// distance and provenance, losing its round trip with its address.
     pub(crate) fn withhold(&mut self, keep: impl Fn(&IpAddr) -> bool) -> bool {
         let mut withheld = false;
         for hop in &mut self.hops {
@@ -296,8 +242,8 @@ impl NetworkPath {
 
     /// How far away the furthest known router is, or `None` for an empty path.
     ///
-    /// The last *known* distance rather than a count of hops, which differ
-    /// whenever a router declined to answer.
+    /// The last *known* distance, which differs from a hop count when a router
+    /// declined to answer.
     pub fn length(&self) -> Option<u8> {
         self.hops.last().map(Hop::distance)
     }
@@ -333,12 +279,7 @@ mod tests {
     /// An answer displaces silence whatever measured it, and provenance decides
     /// only between two hops that agree about whether anything answered.
     ///
-    /// The two rules are ranked. Added together, as they were, a *measured
-    /// silent* hop displaced an *inferred answered* one: a router's address
-    /// traded for the news that it declined to answer this time, which is the
-    /// absence of a finding rather than a finding of absence. `Host::merge`
-    /// replays one record's hops into another's in whatever order the two were
-    /// folded, so it took no exotic trace to reach.
+    /// A measured silent hop does not displace an inferred answered one.
     #[test]
     fn an_answer_is_never_traded_for_a_silence_that_measured_it() {
         let spliced = Hop::answered(4, ip(4), None).as_inferred();
@@ -352,21 +293,19 @@ mod tests {
             "a measured silence does not erase a router somebody found"
         );
 
-        // And the other way round, which was already right.
+        // The other way round.
         let mut reverse = NetworkPath::new();
         reverse.record(Hop::silent(4));
         reverse.record(spliced);
         assert_eq!(reverse.at(4), Some(ip(4)));
 
-        // Where both answered, the measurement wins, which is the rule that
-        // ranking these did not weaken.
+        // Where both answered, the measurement wins.
         let mut both = NetworkPath::new();
         both.record(Hop::answered(1, ip(9), None).as_inferred());
         both.record(Hop::answered(1, ip(1), None));
         assert_eq!(both.at(1), Some(ip(1)), "a measurement beats an inference");
 
-        // And where neither did, an inference has nothing to offer a
-        // measurement, so the record stands.
+        // Where neither did, the measurement stands.
         let mut neither = NetworkPath::new();
         neither.record(Hop::silent(2));
         neither.record(Hop::silent(2).as_inferred());
@@ -377,9 +316,7 @@ mod tests {
     /// Hops arrive in whatever order their replies do, and a path reads in
     /// order of distance regardless.
     ///
-    /// Traces run their probes concurrently, so hop five is answered before hop
-    /// two often enough that ordering on arrival would be the common case rather
-    /// than the odd one.
+    /// Traces probe concurrently, so hop five often answers before hop two.
     #[test]
     fn a_path_reads_in_order_of_distance_however_the_replies_arrived() {
         let mut path = NetworkPath::new();
@@ -395,8 +332,7 @@ mod tests {
 
     /// A router that will not answer leaves a hole, and the hole is the finding.
     ///
-    /// Dropping it would renumber everything past it: this path would read as
-    /// two hops long when the target is three routers away.
+    /// Dropping it would make this three-router path read as two.
     #[test]
     fn a_silent_router_holds_its_place() {
         let mut path = NetworkPath::new();
@@ -411,10 +347,8 @@ mod tests {
 
     /// What is known about a distance only ever gets stronger.
     ///
-    /// The three transitions that must hold, and the three that must not. A
-    /// trace which splices another host's hops and then measures one for itself
-    /// has to keep the measurement; the same events in the other order must not
-    /// throw it away, and reply ordering decides which order they arrive in.
+    /// The three transitions that must hold, and the three that must not, in either
+    /// arrival order.
     #[test]
     fn a_measurement_outranks_an_inference_and_an_answer_outranks_silence() {
         let measured = Hop::answered(2, ip(2), Some(Duration::from_millis(5)));
@@ -450,10 +384,8 @@ mod tests {
     /// A withheld router ranks as the answer it was, not as the silence its
     /// missing address resembles.
     ///
-    /// Ranked by whether an address is present, a measured silence would
-    /// displace a spliced router whose address was withheld, and the path
-    /// would claim nothing answered at a distance where a router did. The
-    /// order `Host::merge` replays two records in decides which comes first.
+    /// A measured silence does not displace a spliced router whose address was
+    /// withheld.
     #[test]
     fn a_withheld_router_still_outranks_silence() {
         let spliced = Hop::withheld(3).as_inferred();
@@ -471,8 +403,8 @@ mod tests {
         assert!(!measured.hops()[0].inferred());
     }
 
-    /// Withholding takes what is about the router and leaves what is about the
-    /// route: the distance, and whether this host's own trace measured it.
+    /// Withholding keeps the distance and provenance and drops the address and round
+    /// trip.
     #[test]
     fn withholding_a_router_keeps_its_place_and_its_provenance() {
         let mut path = NetworkPath::new();
@@ -497,8 +429,7 @@ mod tests {
         );
     }
 
-    /// An inferred hop carries no round-trip time, because the probe that
-    /// produced one was sent to somewhere else.
+    /// An inferred hop carries no round-trip time.
     #[test]
     fn an_inferred_hop_reports_no_timing_of_its_own() {
         let inferred = Hop::answered(4, ip(4), Some(Duration::from_millis(9))).as_inferred();

@@ -11,20 +11,14 @@
 //! [`HostStatus`] is the verdict and [`StatusReason`] is the evidence behind
 //! it: which protocol produced it, which address sent it, and what it said.
 //!
-//! Probes answer in an order nobody controls, so the verdict has to be
-//! independent of arrival order. That is what the ordering on `HostStatus` is
-//! for, with a scan promoting along it and never lowering, and the type's own
-//! documentation carries the rule that makes the ordering defensible.
+//! A scan promotes along `HostStatus`'s ordering and never lowers, so the verdict does
+//! not depend on arrival order.
 //!
-//! A host keeps every reason it collected, not just the one that settled the
-//! verdict. Reachability is a claim someone will want to check, and "up" with
-//! nothing behind it cannot be checked.
+//! A host keeps every reason it collected, so "up" can be checked.
 //!
-//! Who sent a reason is [`EvidenceSource`], which has a third answer besides
-//! the host and a named middlebox: a middlebox the scan's
-//! [`Exclusions`](crate::model::exclusion::Exclusions) forbid it to name. That
-//! is the policy a traced path applies to its routers, for the same reason;
-//! see [`Hop::withheld`](crate::model::host::Hop::withheld).
+//! Who sent a reason is [`EvidenceSource`]: the host, a named middlebox, or a middlebox
+//! the scan's [`Exclusions`](crate::model::exclusion::Exclusions) forbid it to name, as
+//! with [`Hop::withheld`](crate::model::host::Hop::withheld).
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -34,34 +28,25 @@ use std::sync::Arc;
 /// Ordered by how strong the evidence is: `Unknown < Down < Blocked < Up`.
 ///
 /// [`Host::merge`](crate::model::host::Host::merge) and
-/// [`Host::record_evidence`](crate::model::host::Host::record_evidence) both
-/// promote along it and never lower: a router's ICMP unreachable arriving after
-/// the host's own ARP reply must not overwrite proof the host answered for
-/// itself.
+/// [`Host::record_evidence`](crate::model::host::Host::record_evidence) promote along
+/// it and never lower, so a router's late ICMP unreachable cannot overwrite the host's
+/// own ARP reply.
 ///
-/// The ordering is only defensible because of the rule below, which every
-/// producer of a status obeys: **silence never moves the status.** Each variant
-/// other than `Unknown` is backed by a packet the engine received, so ranking by
-/// aliveness also ranks by strength of evidence. Were a timeout allowed to
-/// produce `Blocked`, a host nobody ever heard from would outrank an explicit
-/// unreachable, and this ordering would invert the evidence it claims to rank.
+/// The ordering depends on one rule every producer obeys: **silence never moves the
+/// status.** Every variant but `Unknown` is backed by a received packet, so ranking by
+/// aliveness also ranks by strength of evidence.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HostStatus {
-    /// Nothing was received that says anything about this host. This is what a
-    /// timeout means, and it is not [`HostStatus::Down`]: an
-    /// address that answers nothing is indistinguishable from one that was never
-    /// reachable in the first place, and the engine declines to guess between
-    /// them.
+    /// Nothing was received about this host. A timeout means this, not
+    /// [`HostStatus::Down`]: silence cannot tell a dead host from an unreachable one.
     Unknown,
     /// An intermediary reported this address unreachable, by an ICMP host
     /// unreachable, no route, or address unreachable quoting a probe this scan
     /// sent. Never inferred from silence.
     Down,
-    /// An intermediary explicitly rejected traffic to this address by policy, so
-    /// something is enforcing a perimeter around it even though the host itself
-    /// has not answered. Distinct from an address nothing answers for, which is
-    /// [`HostStatus::Unknown`].
+    /// An intermediary explicitly rejected traffic to this address by policy, so a
+    /// perimeter is enforced around it though the host has not answered.
     Blocked,
     /// The host answered for itself. Any packet sourced by the host proves this,
     /// including ones that are negative about the port they report on: a TCP RST
@@ -73,18 +58,13 @@ impl HostStatus {
     /// Every reachability verdict, in declaration order, which is least
     /// definitive first.
     ///
-    /// Here for the reason [`Protocol::ALL`](crate::model::port::Protocol::ALL)
-    /// gives: the enum is `#[non_exhaustive]`, so a status added without a name
-    /// on the wire or a place in the exported schema would be a finding that
-    /// survives a scan and cannot be written down.
+    /// The wire round trip and the exported schema are checked against this list.
     pub const ALL: &'static [Self] = &[Self::Unknown, Self::Down, Self::Blocked, Self::Up];
 }
 
 /// Known protocols or events that provide evidence of host reachability.
 ///
-/// Marked `#[non_exhaustive]`: probe types are added as the engine learns to
-/// speak them, and a consumer matching on this enum should pay for that with a
-/// recompile rather than a major version.
+/// Probe types are added as the engine learns them.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum StatusProtocol {
@@ -100,9 +80,8 @@ pub enum StatusProtocol {
     /// Answered an ICMP timestamp request (RFC 792), which is a different
     /// question from an echo and is answered by hosts that drop one.
     ///
-    /// IPv4 only: RFC 4443 defines no timestamp message, so there is nothing to
-    /// ask an IPv6 address. What the reply adds beyond liveness is the target's
-    /// own clock, which no other probe here obtains.
+    /// IPv4 only: RFC 4443 defines no timestamp message. The reply also carries the
+    /// target's clock.
     IcmpTimestamp,
     /// Discovered via an ICMP Destination Unreachable quoting one of this scan's
     /// probes. What it proves depends on who sent it and which code it carried,
@@ -114,46 +93,30 @@ pub enum StatusProtocol {
     /// a handshake it completed, or a reset it surfaced as a refused
     /// connection.
     ///
-    /// Kept apart from [`TcpSyn`](Self::TcpSyn), which proves the same thing
-    /// about the host, because the two differ in how visible they are. A
-    /// half-open probe is reset before any connection exists, and a
-    /// completed one reaches the service, which may log it. A reader weighing
-    /// what a scan left behind on its targets, or comparing two scans of the
-    /// same host, has to be able to tell which one asked.
+    /// Separate from [`TcpSyn`](Self::TcpSyn) because it is more visible: a completed
+    /// connection reaches the service, which may log it.
     TcpConnect,
     /// Discovered via a TCP segment answering a raw probe that was not a SYN.
     ///
-    /// Kept apart from [`TcpSyn`](Self::TcpSyn) because the probes differ in
-    /// what they prove and in how visible they are: a RST answering a FIN, a
-    /// flagless segment or a bare ACK says the host's stack is alive and
-    /// nothing more, and it says so about a port that was never asked to accept
-    /// a connection. Which probe drew it is named in
+    /// A RST answering a FIN, a flagless segment or a bare ACK says only that the stack
+    /// is alive. Which probe drew it is in
     /// [`StatusReason::details`](super::StatusReason::details).
     Tcp,
     /// Discovered via a DHCP server reply overheard on the segment.
     ///
-    /// Kept apart from [`Udp`](Self::Udp) for the reason [`Tcp`](Self::Tcp) is
-    /// kept apart from [`TcpSyn`](Self::TcpSyn): the two prove different things,
-    /// and a reader of the evidence should not have to work out which. `Udp`
-    /// names nothing above the transport because a reply to an arbitrary probed
-    /// port has nothing above it to name. This frame is a DHCP server reply, and
-    /// naming it is what makes the line worth reading. `udp` in an evidence list
-    /// tells a reader that something answered; `dhcp` tells them what.
+    /// Separate from [`Udp`](Self::Udp) because it names what answered.
     ///
-    /// Unsolicited, like a router advertisement and unlike everything else here:
-    /// a DHCP server answers the segment's own traffic and a sweep is listening
-    /// anyway, so this is evidence that arrives without a probe having been sent
-    /// for it.
+    /// Unsolicited, unlike everything else here: a DHCP server answers the segment's
+    /// traffic while a sweep is listening.
     ///
-    /// Proves only that the sender is there. Whether it also makes the sender a
-    /// [`NetworkRole::DhcpServer`](crate::model::host::NetworkRole::DhcpServer)
-    /// is a separate question a relay can answer differently; see `DhcpProtocol`.
+    /// Proves only that the sender is there; whether it is a
+    /// [`NetworkRole::DhcpServer`](crate::model::host::NetworkRole::DhcpServer) is a
+    /// separate question a relay can confuse. See `DhcpProtocol`.
     Dhcp,
     /// Discovered via a valid application-level response over UDP.
     ///
-    /// The transport and nothing above it, which is the honest answer for a
-    /// reply to a port the scan probed without knowing what would be listening.
-    /// Where the engine *can* name what answered, it has a variant for it.
+    /// Names only the transport. Where the engine can name what answered, it has a
+    /// variant for it.
     Udp,
     /// Discovered via an SCTP chunk answering an INIT probe.
     ///
@@ -170,19 +133,11 @@ pub enum StatusProtocol {
 impl StatusProtocol {
     /// Every protocol event this build names, in declaration order.
     ///
-    /// [`Custom`](Self::Custom) is not here and cannot be: it carries a name a
-    /// strategy chose, so there is no fixed set of them to list. What a document
-    /// says about it is a `custom:` prefix rather than a member of an
-    /// enumeration, and the exported schema matches on the prefix.
+    /// [`Custom`](Self::Custom) carries a strategy-chosen name, so it is written with a
+    /// `custom:` prefix that the exported schema matches on.
     ///
-    /// Here because the schema does hold the eight below as a closed list, and
-    /// until this existed that list was maintained by hand against this enum
-    /// with nothing comparing the two. The export conformance suite reads only
-    /// the vocabularies that publish an `ALL`, and its own documentation says
-    /// why: a name the schema advertises and the engine cannot produce is a
-    /// promise to a third party that both report readers then refuse, and it is
-    /// how `sctp` sat in `$defs/protocol` for a release. This was the one closed
-    /// enum in the document the suite could not see.
+    /// The schema holds the rest as a closed list, and the export conformance suite
+    /// checks it against this.
     pub const ALL: &'static [Self] = &[
         Self::Arp,
         Self::Ndp,
@@ -212,22 +167,15 @@ pub struct StatusReason {
     /// Who sent this evidence: the host it is about, or something in the path
     /// speaking for it.
     ///
-    /// An ICMP error names two addresses: the router or firewall that generated
-    /// it, and the destination of the datagram it quotes. They are different
-    /// claims. A port unreachable sourced by the target proves the target is
-    /// alive; the same message from a middlebox proves only that something in
-    /// the path speaks for that address, and recording the two identically would
-    /// let a NAT answering on another host's behalf be reported as that host
-    /// being up.
-    ///
-    /// [`EvidenceSource::Host`] is the common case and the one needing no
-    /// qualification.
+    /// An ICMP error names two addresses: its sender and the destination of the
+    /// datagram it quotes. A port unreachable from the target proves it alive; from a
+    /// middlebox it proves only that something in the path speaks for the address, as
+    /// a NAT may.
     pub source: EvidenceSource,
 
     /// Extended details about the response (e.g., "Received TCP RST", "TTL Exceeded in transit").
     ///
-    /// Stored as an `Arc<str>` to minimize heap churn when thousands of hosts report
-    /// identical rationales.
+    /// An `Arc<str>`, since thousands of hosts report identical rationales.
     pub details: Option<Arc<str>>,
 }
 
@@ -252,9 +200,7 @@ impl StatusReason {
 
     /// Attributes this evidence to the address that actually sent it.
     ///
-    /// Only call this when `source` is not the host the reason is recorded
-    /// against, since an unqualified reason already means the host answered for
-    /// itself.
+    /// Only when `source` is not the host the reason is recorded against.
     pub fn from_source(mut self, source: IpAddr) -> Self {
         self.source = EvidenceSource::Intermediary(source);
         self
@@ -263,16 +209,11 @@ impl StatusReason {
 
 /// Who sent a piece of evidence about a host.
 ///
-/// One value rather than an address and a flag beside it, so that a withheld
-/// sender carrying an address cannot be built: the shape
-/// [`Hop`](crate::model::host::Hop) gives a router, for the same reason.
+/// One value, so a withheld sender carrying an address cannot be built, as with
+/// [`Hop`](crate::model::host::Hop).
 ///
-/// Not `#[non_exhaustive]`, unlike most vocabularies in this module. The three
-/// variants are a partition rather than a list that grows: the host sent it,
-/// somebody else did and the report names them, somebody else did and the
-/// report may not. A reader rendering one has to handle each, because the
-/// defect this type exists to prevent is one of them read as another, and a
-/// wildcard arm is where that would happen.
+/// Not `#[non_exhaustive]`: the three variants partition the cases, and a reader must
+/// handle each without a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EvidenceSource {
     /// The host the evidence is about sent it, which is the strongest claim a
@@ -285,15 +226,11 @@ pub enum EvidenceSource {
     /// Something in the path sent it about the host, from an address the
     /// scan's exclusions forbid it to report.
     ///
-    /// Neither [`Host`](Self::Host), which would say the host answered for
-    /// itself, nor the evidence dropped, which would lose a finding about a host
-    /// the scan was allowed to probe. It says exactly what the report may say:
-    /// this came second-hand, and the scan will not say from whom.
+    /// Second-hand evidence whose sender the scan will not name. The finding about the
+    /// host is kept.
     ///
-    /// A scan does not build these by hand. Evidence is recorded as it arrived,
-    /// and the scan withholds the sender where the policy names it, on every
-    /// way a reason reaches a host's record. This is how a record of one is read
-    /// back.
+    /// For reading a record back; a scan records evidence as it arrived and withholds
+    /// the sender afterwards.
     Withheld,
 }
 
@@ -310,9 +247,8 @@ impl EvidenceSource {
     /// Whether the evidence came second-hand from an address the scan may not
     /// report.
     ///
-    /// The one case where [`address`](Self::address) is `None` and the host
-    /// did not answer for itself, so a reader weighing a reason has to ask this
-    /// before it takes a missing address for the stronger claim.
+    /// The one case where [`address`](Self::address) is `None` but the host did not
+    /// answer for itself.
     pub fn is_withheld(&self) -> bool {
         *self == Self::Withheld
     }
@@ -375,10 +311,7 @@ impl std::fmt::Display for HostStatus {
 mod tests {
     use super::*;
 
-    /// The derived ordering is load-bearing: `Host::record_evidence` promotes
-    /// along it, so the variants' declaration order *is* the merge rule. Adding
-    /// a variant in the wrong place would silently let weaker evidence overrule
-    /// stronger, and nothing else would say so.
+    /// The declaration order is the promotion rule `Host::record_evidence` follows.
     #[test]
     fn the_variant_order_ranks_evidence_from_weakest_to_strongest() {
         assert!(HostStatus::Unknown < HostStatus::Down);
@@ -386,10 +319,7 @@ mod tests {
         assert!(HostStatus::Blocked < HostStatus::Up);
     }
 
-    /// "Alive" means something is there, which a perimeter enforcing policy
-    /// around an address proves as surely as the host answering. It is what
-    /// decides whether a host is carried into a port scan, so a `Blocked` host
-    /// wrongly excluded is a host never scanned.
+    /// A `Blocked` host is alive, so it is carried into a port scan.
     #[test]
     fn a_blocked_host_counts_as_alive_and_an_unanswered_one_does_not() {
         assert!(HostStatus::Up.is_alive());
@@ -398,9 +328,7 @@ mod tests {
         assert!(!HostStatus::Unknown.is_alive());
     }
 
-    /// Every variant renders, and renders distinctly. `Display` reaches a
-    /// report's reader directly, and two states sharing a rendering would be
-    /// indistinguishable in the output whatever the model held.
+    /// Every variant renders distinctly.
     #[test]
     fn every_status_renders_under_its_own_name() {
         let rendered: Vec<String> = [
@@ -416,11 +344,8 @@ mod tests {
         assert_eq!(rendered, ["Unknown", "Down", "Blocked", "Up"]);
     }
 
-    /// A reason carries the protocol that produced it and, when the evidence
-    /// came from somewhere other than the host itself, the address that sent
-    /// it. The attribution is the point: a port unreachable from a middlebox
-    /// proves something quite different from the same message sourced by the
-    /// target.
+    /// A reason carries its protocol and, when someone other than the host sent it,
+    /// the sender's address.
     #[test]
     fn a_reason_records_its_protocol_and_who_it_came_from() {
         let unattributed = StatusReason::new(
@@ -449,9 +374,8 @@ mod tests {
         assert_eq!(attributed.details, None);
     }
 
-    /// Withholding reaches only a named sender the policy refuses. The host's
-    /// own evidence has no sender to withhold, and marking it withheld would
-    /// demote the strongest claim a reason makes to a second-hand one.
+    /// Withholding reaches only a named sender the policy refuses, never the host's
+    /// own evidence.
     #[test]
     fn only_a_refused_sender_is_withheld() {
         let refused: IpAddr = "198.51.100.1".parse().expect("a valid address");
