@@ -9,25 +9,20 @@
 //! # TLS transport
 //!
 //! The I/O half of TLS fingerprinting: complete a handshake against an open port
-//! and capture the certificate chain the peer presents. Interpreting that chain
-//! is the analyzer's job (see [`TlsCertAnalyzer`]); this module only gathers
-//! bytes.
+//! and capture the certificate chain the peer presents. [`TlsCertAnalyzer`]
+//! interprets it.
 //!
-//! ## Why we complete a real handshake
+//! ## A real handshake
 //!
-//! In TLS 1.3 the server's `Certificate` message is *encrypted*, so a cert
-//! cannot be scraped by parsing raw handshake records, the handshake must
-//! actually complete. We therefore run a real rustls client, but with a
-//! verifier that [accepts any certificate](AcceptAnyServerCert): a scanner
-//! wants the *presented* chain, not a trust decision, and the ports we probe
-//! routinely serve expired, self-signed, or wrong-host certs that a validating
-//! client would reject before we ever see them.
+//! In TLS 1.3 the server's `Certificate` message is encrypted, so the handshake
+//! must complete. The rustls client uses a verifier that
+//! [accepts any certificate](AcceptAnyServerCert), since scanned ports routinely
+//! serve expired, self-signed or wrong-host certificates.
 //!
 //! ## Crypto provider
 //!
-//! We pin the pure-Rust **ring** provider rather than rustls's default
-//! `aws-lc-rs`, which needs cmake/NASM at build time and is a known Windows-build
-//! friction point for a cross-platform product.
+//! The **ring** provider is pinned; rustls's default `aws-lc-rs` needs
+//! cmake/NASM at build time, which is a problem on Windows.
 //!
 //! [`TlsCertAnalyzer`]: super::tls_cert::TlsCertAnalyzer
 
@@ -47,21 +42,17 @@ use super::response::TlsInfo;
 /// probes *through* this to fingerprint the protocol carried inside.
 pub type TlsTunnel = tokio_rustls::client::TlsStream<TcpStream>;
 
-/// How long to wait for a handshake on a port where we *expect* TLS (an
-/// implicit-TLS port). Patient: a handshake is the whole point here, worth
-/// waiting out a slow server.
+/// How long to wait for a handshake on an implicit-TLS port, where TLS is
+/// expected.
 pub(super) const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// A tighter budget for a *speculative* handshake on a silent, non-standard
-/// port. The prior probability of TLS there is low, and a real TLS server on a
-/// reachable open port completes well under a second; the extra patience would
-/// mostly buy tarpits. Since this is paid on every silent port, it is where
-/// latency blast-radius on a many-port host concentrates.
+/// port. A real TLS server completes well under a second, and this is paid on
+/// every silent port.
 pub(super) const SPECULATIVE_TLS_TIMEOUT: Duration = Duration::from_millis(1_500);
 
-/// Ports that speak TLS immediately on connect (no `STARTTLS` upgrade), where we
-/// go straight to a handshake instead of waiting for a plaintext banner that
-/// will never come.
+/// Ports that speak TLS immediately on connect (no `STARTTLS`), so the handshake
+/// starts without waiting for a banner.
 const IMPLICIT_TLS_PORTS: &[u16] = &[
     443,  // https
     465,  // smtps
@@ -87,9 +78,8 @@ pub fn is_tls_port(port: u16) -> bool {
 
 /// A certificate verifier that accepts everything.
 ///
-/// Sound **only** because we are fingerprinting, not establishing a trusted
-/// channel: we complete the handshake purely to read the presented chain and
-/// send no sensitive data over it. Never reuse this config for a real client.
+/// Sound **only** for fingerprinting: the handshake reads the presented chain
+/// and carries no sensitive data. Never reuse this config for a real client.
 #[derive(Debug)]
 struct AcceptAnyServerCert;
 
@@ -124,7 +114,7 @@ impl ServerCertVerifier for AcceptAnyServerCert {
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        // Advertise the common schemes so servers pick one we will "verify".
+        // Advertise the common schemes so servers pick one.
         vec![
             SignatureScheme::RSA_PKCS1_SHA256,
             SignatureScheme::RSA_PKCS1_SHA384,
@@ -166,9 +156,8 @@ pub async fn handshake(
     handshake_within(stream, server, TLS_HANDSHAKE_TIMEOUT).await
 }
 
-/// *Speculative* handshake on a silent, un-probed port that might be TLS on a
-/// non-standard port. Tighter budget (see [`SPECULATIVE_TLS_TIMEOUT`]) because
-/// the prior is low and this cost is paid on every silent port.
+/// *Speculative* handshake on a silent, unprobed port that might be TLS. Tighter
+/// budget (see [`SPECULATIVE_TLS_TIMEOUT`]).
 pub async fn speculative_handshake(
     stream: TcpStream,
     server: ServerName<'static>,
@@ -180,18 +169,15 @@ pub async fn speculative_handshake(
 /// the path (see [`on_path`](super::on_path)), returning the live tunnel and
 /// the certificate chain the peer presented (owned DER).
 ///
-/// `server` is who the handshake asks for, from
-/// [`Authority::server_name`](super::authority::Authority::server_name): the
-/// name a target reached the address by, which goes on the wire as the server
-/// name indication, or the address, which puts none there. A server holding
-/// several sites at one address picks the certificate by it, and one keeping
-/// no certificate for a nameless client refuses the handshake without it, so
-/// the name is what reaches the site the target named. Without one, what comes
-/// back is whatever certificate the default site serves. The accept-any
-/// verifier means the name never decides whether the handshake completes on
-/// this side. The tunnel is returned so the caller can re-probe *through* it;
-/// the certificate may be empty (anonymous handshake) without failing. Returns
-/// `None` only on timeout or handshake failure.
+/// `server` comes from
+/// [`Authority::server_name`](super::authority::Authority::server_name): a name
+/// goes on the wire as SNI, an address sends none. A server with several sites
+/// picks the certificate by it, and without it returns the default site's or
+/// refuses.
+///
+/// The tunnel is returned so the caller can probe through it. The chain may be
+/// empty (anonymous handshake). Returns `None` only on timeout or handshake
+/// failure.
 async fn handshake_within(
     stream: TcpStream,
     server: ServerName<'static>,
@@ -201,8 +187,7 @@ async fn handshake_within(
 
     let given = super::on_path(budget);
     let Ok(done) = timeout(given, connect).await else {
-        // A handshake with no answer in time, which the identification is
-        // told as it is told a read that heard nothing.
+        // Reported like a read that heard nothing.
         super::tell(|tally| tally.ran_out(given));
         return None;
     };
@@ -217,7 +202,7 @@ async fn handshake_within(
         .map(|der| der.as_ref().to_vec())
         .collect();
 
-    // Read off the live connection: these are gone the moment the tunnel is.
+    // Only available while the connection is live.
     let version = protocol_version_name(connection.protocol_version());
     let cipher_suite = connection
         .negotiated_cipher_suite()
@@ -239,19 +224,14 @@ async fn handshake_within(
 
 /// How long to wait on the legacy probe.
 ///
-/// Reached only after a modern handshake has already failed on this port, so it
-/// is paid on a port that has otherwise been given up on. A server old enough to
-/// need it is old enough to answer promptly.
+/// Used only after a modern handshake has failed on the port.
 pub(super) const LEGACY_PROBE_TIMEOUT: Duration = Duration::from_millis(1_500);
 
 /// A ClientHello offering the versions rustls will not.
 ///
-/// Fixed bytes, because everything in it is a constant: TLS 1.0, six RSA and
-/// 3DES suites a legacy server actually implements, null compression, and **no
-/// extension block at all**. A hello with no extensions is what an SSLv3-era
-/// stack expects, and it is what keeps this free of the negotiation a modern
-/// handshake needs. The random is fixed too; nothing here is a security context,
-/// only a question.
+/// Fixed bytes: TLS 1.0, six RSA and 3DES suites legacy servers implement, null
+/// compression, a fixed random, and **no extension block**, which is what an
+/// SSLv3-era stack expects.
 const LEGACY_CLIENT_HELLO: &[u8] = &[
     // Record: handshake, TLS 1.0, 55 bytes.
     // Handshake: client hello, 51 bytes, offering TLS 1.0.
@@ -265,20 +245,12 @@ const LEGACY_CLIENT_HELLO: &[u8] = &[
 
 /// What a peer that refused a modern handshake turns out to speak.
 ///
-/// rustls implements TLS 1.2 and 1.3 and implements neither 1.0
-/// nor 1.1, so a server offering only the older versions fails
-/// [`handshake`] and, without this, is reported as a port that answered nothing
-/// at all. For a security scanner that is the wrong way round: "this host still
-/// negotiates TLS 1.0" is among the most actionable single facts a scan can
-/// report, and it is the one configuration the modern handshake cannot see.
+/// rustls implements only TLS 1.2 and 1.3, so a server offering only 1.0 or 1.1
+/// fails [`handshake`]. This sends one ClientHello and reads the version from
+/// the answer; no tunnel is returned.
 ///
-/// One ClientHello and the version out of the answer. No tunnel comes back and
-/// none is wanted, the finding *is* the version, and nothing is worth carrying
-/// over a channel this weak anyway.
-///
-/// `None` where the peer said nothing, or said something that is not TLS. A
-/// server that answers with an alert spoke TLS and refused these terms, which is
-/// itself an answer and is reported as [`REFUSED`].
+/// `None` where the peer said nothing, or nothing that is TLS. An alert means
+/// the peer speaks TLS and refused these terms, reported as [`REFUSED`].
 pub async fn legacy_version(stream: TcpStream) -> Option<&'static str> {
     timeout(
         super::on_path(LEGACY_PROBE_TIMEOUT),
@@ -290,9 +262,7 @@ pub async fn legacy_version(stream: TcpStream) -> Option<&'static str> {
 
 /// What a peer speaking TLS says when it will not accept the terms offered.
 ///
-/// Recorded rather than discarded: it establishes the port speaks TLS, which is
-/// more than a scan that gave up on it knew, even though it leaves the version
-/// unsettled.
+/// It establishes that the port speaks TLS, though not the version.
 pub const REFUSED: &str = "TLS (version not established)";
 
 /// Sends [`LEGACY_CLIENT_HELLO`] and reads the version out of the answer.
@@ -301,9 +271,7 @@ async fn legacy_exchange(mut stream: TcpStream) -> Option<&'static str> {
 
     stream.write_all(LEGACY_CLIENT_HELLO).await.ok()?;
 
-    // A ServerHello is small and this reads the first record and no more. The
-    // buffer is the largest a record header can promise for the part that
-    // matters; nothing beyond the version is read, so nothing beyond it is kept.
+    // Only the first record's start is needed, up to the version.
     let mut buffer = [0u8; 128];
     let read = stream.read(&mut buffer).await.ok()?;
     server_version(&buffer[..read])
@@ -312,22 +280,18 @@ async fn legacy_exchange(mut stream: TcpStream) -> Option<&'static str> {
 /// The version a TLS server named in its first record, or [`REFUSED`] where it
 /// answered with an alert.
 ///
-/// Every offset is checked against what actually arrived: these bytes are a
-/// remote host's and the walk must terminate on any input rather than merely on
-/// a well-formed one.
+/// Every offset is checked against what arrived.
 ///
 /// ```text
 /// 16 03 01 00 4a | 02 00 00 46 | 03 01 | ...
 /// └── record ──┘ └─ handshake ┘ └ version
 /// ```
 fn server_version(record: &[u8]) -> Option<&'static str> {
-    // Record header: content type, version, length. The record's own version is
-    // not the answer: servers write the negotiated one in the ServerHello and
-    // a conservative one here.
+    // Record header: content type, version, length. The record's version is a
+    // conservative one; the negotiated version is in the ServerHello.
     let content_type = *record.first()?;
 
-    // An alert is a peer speaking TLS and declining the terms. It settles that
-    // the port speaks TLS and nothing more.
+    // An alert: TLS, terms declined.
     if content_type == 0x15 {
         return Some(REFUSED);
     }
@@ -350,9 +314,8 @@ fn version_name(version: u16) -> Option<&'static str> {
         0x0300 => Some("SSLv3"),
         0x0301 => Some("TLSv1.0"),
         0x0302 => Some("TLSv1.1"),
-        // A server that answers this hello with 1.2 was reachable by the modern
-        // connector and something else stopped it. Named honestly rather than
-        // filed under a version this probe did not establish.
+        // A 1.2 answer means something other than the version stopped the modern
+        // connector.
         0x0303 => Some("TLSv1.2"),
         _ => None,
     }
@@ -360,10 +323,8 @@ fn version_name(version: u16) -> Option<&'static str> {
 
 /// The negotiated version under the name the RFCs give it.
 ///
-/// Spelled out rather than taken from `Debug`, which renders `TLSv1_3`, a
-/// string no reader of a report expects and no other tool prints. Only the two
-/// versions [`connector`] offers are named; anything else is reported as
-/// unknown rather than guessed at.
+/// `Debug` would render `TLSv1_3`. Only the two versions [`connector`] offers are
+/// named; anything else is `None`.
 fn protocol_version_name(version: Option<rustls::ProtocolVersion>) -> Option<&'static str> {
     match version? {
         rustls::ProtocolVersion::TLSv1_3 => Some("TLSv1.3"),
@@ -393,13 +354,8 @@ mod tests {
         assert!(!is_tls_port(22));
     }
 
-    /// A server that speaks only TLS 1.0 is a finding, not a silence.
-    ///
-    /// rustls implements 1.2 and 1.3 and implements neither 1.0
-    /// nor 1.1, so such a server fails the modern handshake. Without this probe
-    /// it would be reported as a port that answered nothing, which loses the
-    /// identification and the finding together, and "this host still negotiates
-    /// TLS 1.0" is among the most actionable things a scan can say.
+    /// A server that speaks only TLS 1.0 is identified, though rustls cannot
+    /// handshake with it.
     #[test]
     fn a_legacy_server_hello_names_its_version() {
         // Record header, then a ServerHello naming the version.
@@ -417,8 +373,7 @@ mod tests {
         assert_eq!(server_version(&hello([0x03, 0x09])), None, "not a version");
     }
 
-    /// An alert is a peer speaking TLS and declining these terms, which settles
-    /// that the port speaks TLS and nothing more. Reported as exactly that.
+    /// An alert is reported as [`REFUSED`].
     #[test]
     fn an_alert_establishes_tls_without_establishing_a_version() {
         // Alert, TLS 1.0, two bytes: fatal, handshake_failure.
@@ -428,8 +383,7 @@ mod tests {
         );
     }
 
-    /// Anything that is not a TLS record names nothing, and a truncated one is
-    /// refused rather than read past.
+    /// A non-TLS or truncated record names nothing.
     #[test]
     fn what_is_not_a_server_hello_names_nothing() {
         assert_eq!(server_version(b"HTTP/1.1 200 OK"), None);
@@ -449,8 +403,8 @@ mod tests {
         );
     }
 
-    /// The hello is a fixed record and its own length fields have to agree with
-    /// it, or a server drops it without a word and the port reads as silent.
+    /// The hello's length fields agree with its bytes; a server silently drops
+    /// one that does not.
     #[test]
     fn the_client_hello_declares_its_own_length_correctly() {
         let record_length = u16::from_be_bytes([LEGACY_CLIENT_HELLO[3], LEGACY_CLIENT_HELLO[4]]);
@@ -476,9 +430,7 @@ mod tests {
     }
 
     proptest::proptest! {
-        /// These bytes come off a socket a scanner opened to a stranger, so the
-        /// walk has to terminate on any input rather than merely on a well-formed
-        /// one.
+        /// The walk terminates on any input.
         #[test]
         fn the_version_walk_never_panics(record in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..256)) {
             let _ = server_version(&record);
@@ -487,8 +439,7 @@ mod tests {
 
     #[test]
     fn connector_builds_with_ring_provider() {
-        // Exercises the accept-any config + ring provider path; a panic here
-        // would mean the process cannot perform any TLS fingerprinting.
+        // Builds the accept-any config with the ring provider.
         let _ = connector();
     }
 }

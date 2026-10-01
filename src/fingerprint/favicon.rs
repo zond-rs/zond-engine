@@ -8,30 +8,23 @@
 
 //! # The icon a web application serves, as an identifier
 //!
-//! A self-hosted application very often names itself nowhere in its HTTP
-//! response: no `Server` value of its own, a generic title, a body that is one
-//! script tag. It still serves `/favicon.ico`, and that file is part of the
-//! product rather than of the deployment, so the same application serves the
-//! same bytes everywhere it is installed.
+//! A self-hosted application often names itself nowhere in its HTTP response:
+//! no `Server` value of its own, a generic title, a body that is one script tag.
+//! Its icon ships with the product, so the same application serves the same
+//! bytes everywhere it is installed.
 //!
 //! The corpus is keyed on the MD5 of those bytes and holds several hundred
-//! products under it, which makes this the largest single identification source
-//! here that costs one request.
+//! products.
 //!
-//! ## MD5 because the data says so
+//! ## MD5
 //!
-//! The digest is fixed by the corpus, which was imported already keyed on it.
-//! Nothing here is a security decision: the hash is a lookup key, a collision
-//! would name the wrong product rather than admit anything, and an attacker who
-//! wants to be identified as something else can simply serve that product's icon.
+//! The corpus was imported keyed on MD5. The hash is only a lookup key; a
+//! collision names the wrong product.
 //!
-//! ## What it costs, and when it is paid
+//! ## Cost
 //!
-//! One `GET` on a connection of its own, and only where first contact already
-//! drew an HTTP response. That is what
-//! [`speaks_http`](super::analyzer::PortContext::speaks_http) is for: gating on
-//! the port number instead would skip the long tail, which is exactly where an
-//! application declines to name itself and the icon is the only thing left.
+//! One `GET` on a connection of its own, only where first contact drew an HTTP
+//! response ([`speaks_http`](super::analyzer::PortContext::speaks_http)).
 
 use async_trait::async_trait;
 use md5::{Digest, Md5};
@@ -49,31 +42,25 @@ use crate::transport::dial::pacing;
 
 /// How long the whole exchange may take, connect included.
 ///
-/// Shorter than a banner read, because this is a second request to a server that
-/// has already answered once: it is known reachable, and a server that has
-/// started responding and then stops is not worth waiting out. Set for a path
-/// that costs nothing; a scan allows for the path it measured on top (see
-/// [`on_path`](super::on_path)).
+/// Short, since the server has already answered once. A scan adds the path
+/// delay it measured (see [`on_path`](super::on_path)).
 const FETCH_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// The least an icon request waits for its response to begin where the server
-/// has answered this search before, on a path that costs nothing; see
-/// [`icon_patience`].
+/// The least an icon request waits for its response to begin, where the server
+/// has answered this search before; see [`icon_patience`].
 const ICON_PATIENCE_FLOOR: Duration = Duration::from_secs(1);
 
-/// How many times the slowest the server began answering for its page an icon
-/// request waits for its response to begin; see [`icon_patience`].
+/// An icon request waits this multiple of the page's slowest time to first
+/// byte; see [`icon_patience`].
 const ICON_PACE_MULTIPLE: u32 = 4;
 
 /// The most of a response body to read.
 ///
-/// A favicon is a few kilobytes. The cap is generous enough for the ones that
-/// are not, and is what stops a server that answers this request with an endless
-/// stream from being able to.
+/// A favicon is a few kilobytes; the cap allows for larger ones and bounds an
+/// endless stream.
 const MAX_ICON_BYTES: usize = 256 * 1024;
 
-/// Where an icon lives when a page declares none. Still worth asking for: it is
-/// the convention every browser falls back on, and plenty of servers honour it.
+/// Where an icon lives when a page declares none, by browser convention.
 const CONVENTIONAL_PATH: &str = "/favicon.ico";
 
 /// One request, for the site `peer` names; see [`Authority`].
@@ -95,8 +82,6 @@ impl Analyzer for FaviconAnalyzer {
     }
 
     fn interested(&self, ctx: &PortContext) -> bool {
-        // A second TCP request, so it needs a peer to dial and a reason to think
-        // one is worth making.
         ctx.speaks_http && ctx.addr.is_some()
     }
 
@@ -109,10 +94,8 @@ impl Analyzer for FaviconAnalyzer {
             Some(Tunnel::Tls) => peer.through_tls(),
             None => peer,
         };
-        // One budget for the whole search, however many requests it takes, so a
-        // slow server cannot cost more by declaring its icon than by not.
-        // The scan's gaps before the search's connections are not its time;
-        // see `dial::pacing`.
+        // One budget for the whole search, however many requests it takes. The
+        // scan's pacing gaps are not counted; see `dial::pacing`.
         match pacing::timeout(super::on_path(FETCH_TIMEOUT), || icon_of(&peer, responses)).await {
             Ok(Some(icon)) => Collected::from_frames(vec![icon]),
             _ => Collected::default(),
@@ -129,9 +112,8 @@ impl Analyzer for FaviconAnalyzer {
             return Vec::new();
         };
 
-        // The digest is the whole text a rule reads, so it goes to the field
-        // matcher rather than through a port's signatures: a favicon rule is
-        // registered under whatever service owns the product, never under 80.
+        // Field matcher, not port signatures: a favicon rule is registered under
+        // the product's service, not under 80.
         let digest = md5_hex(icon);
         super::db::SignatureDb::global()
             .identify_field(&digest)
@@ -143,19 +125,13 @@ impl Analyzer for FaviconAnalyzer {
 /// Marks a corpus match as this analyzer's, and states the name it found in both
 /// the product slot and beside it.
 ///
-/// Twice on purpose. An icon names the *application*; a `Server` value names the
-/// listener in front of it. Metabase behind nginx is both, and they are two
-/// facts about one port rather than a disagreement.
-///
-/// Only one of them can hold the product, and it will not be this one: a
-/// `Server: nginx/1.24.0` captures a version, which makes it `Strong`, and it is
-/// port-confirmed, so it takes the slot on both tiebreaks. Without the second
-/// statement the application name is discarded on every reverse-proxied host,
-/// which is a large share of the deployments these rules exist for.
+/// An icon names the *application*; a `Server` value names the listener in front
+/// of it (Metabase behind nginx). `Server: nginx/1.24.0` is `Strong` and
+/// port-confirmed, so it wins the product slot, and the second statement keeps
+/// the application name on reverse-proxied hosts.
 ///
 /// [`ServiceVerdict::resolve`](super::model::ServiceVerdict::resolve) drops the
-/// duplicate where the icon does take the product slot, so an anonymous server
-/// reports the application once rather than twice.
+/// duplicate where the icon does take the product slot.
 fn as_application(mut evidence: Evidence) -> Evidence {
     evidence.source = SourceId::Favicon;
     match evidence.product.clone() {
@@ -166,21 +142,15 @@ fn as_application(mut evidence: Evidence) -> Evidence {
 
 /// The digest of the icon `addr` serves, found exactly as a scan finds it.
 ///
-/// An instrument for the container tier, which measures real software so a rule
-/// can be written against what an application serves today. It goes through
-/// `icon_of` rather than reimplementing the search, because a harvester that
-/// measured differently from the scanner would produce hashes no scan can match:
-/// that is how the certificate work nearly shipped two hundred dead rules.
+/// For the container tier, which measures real software to write rules
+/// against. It uses `icon_of` so the hashes it harvests are ones a scan can
+/// match.
 ///
-/// `None` covers a port serving no icon and a port that was never going to
-/// answer. Nothing here checks that the peer speaks HTTP, so an endpoint
-/// speaking something else is asked for a page and given
-/// `FETCH_TIMEOUT` to not answer. That budget is the same one
-/// `Favicon::collect` spends, which is what makes the sentence above true;
-/// without it a caller aimed at an LDAP port waits for as long as the directory
-/// is willing to hold the connection, which is indefinitely.
+/// `None` covers a port serving no icon and a port that never answers. The peer
+/// is not checked for HTTP; the search is bounded by `FETCH_TIMEOUT`, as in
+/// `Favicon::collect`.
 ///
-/// Behind `test-support`, since nothing in a scan needs it.
+/// Behind `test-support`.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn digest_of(addr: std::net::SocketAddr) -> Option<String> {
     let icon = timeout(
@@ -202,17 +172,13 @@ fn md5_hex(bytes: &[u8]) -> String {
 
 /// The icon this endpoint serves, found the way a browser finds one.
 ///
-/// Asking for `/favicon.ico` and stopping there reaches almost none of the
-/// applications the corpus is for.
 /// Anything built with a bundler serves its icon under a content-hashed name
-/// (`favicon.bc8d51405ec040305a87.ico`) and declares it in a `<link>`; Jellyfin
-/// answers the conventional path with a 404 while serving an icon whose digest
-/// the corpus holds. So the page is read first and its declaration followed,
-/// with the conventional path as the fallback.
+/// (`favicon.bc8d51405ec040305a87.ico`) declared in a `<link>`; Jellyfin answers
+/// `/favicon.ico` with a 404. So the page's declaration is followed first, with
+/// the conventional path as the fallback.
 ///
-/// The page usually costs nothing: first contact already fetched `/`, and only a
-/// root that redirects (which a self-hosted application very often does) needs a
-/// request to reach the markup.
+/// The page is usually already in first contact's reply; a root that redirects
+/// costs one request.
 async fn icon_of(peer: &Authority, responses: &ResponseSet) -> Option<Vec<u8>> {
     let Page { markup, base, pace } = page_of(peer, responses).await;
     let patience = icon_patience(pace);
@@ -222,9 +188,7 @@ async fn icon_of(peer: &Authority, responses: &ResponseSet) -> Option<Vec<u8>> {
         .and_then(declared_icon)
         .and_then(|href| resolve(&base, href));
 
-    // The declared path first, then the convention. A page that names its icon
-    // is describing itself, and the fallback exists for the servers that say
-    // nothing rather than to second-guess the ones that do.
+    // The declared path first, then the convention.
     for path in declared
         .iter()
         .map(String::as_str)
@@ -241,25 +205,19 @@ async fn icon_of(peer: &Authority, responses: &ResponseSet) -> Option<Vec<u8>> {
 /// the slowest the same server began answering this search's requests for its
 /// page, or [`None`] where the search asked it nothing.
 ///
-/// A server that answered for its page promptly and has not begun answering
-/// for its icon several times as long after is holding the request rather
-/// than preparing a file: a WebSocket endpoint or an embedded API that answers
-/// its own paths and leaves any other open, as a smart TV's control port does
-/// over TLS. Waiting that out spends the search's whole budget on every such
-/// port for an icon that is not coming. An icon is a static file served by the
-/// process that just served the page, no more work than the page, so
-/// [`ICON_PACE_MULTIPLE`] times the page's pace covers a busy server's
-/// scheduling and an application woken behind a proxy that answered the root
-/// itself; the slowest of the page's answers is the pace for that reason. The
-/// pace was measured across the path, so it carries the path's round trip;
-/// the [floor](ICON_PATIENCE_FLOOR), which keeps a page answered from a cache
-/// in a millisecond from making its server's icon a race, is allowed for the
-/// path on top, as every fixed wait here is.
+/// A server that answered for its page promptly but has not begun answering
+/// for its icon after several times as long is holding the request: a
+/// WebSocket endpoint or an embedded API that leaves unknown paths open, as a
+/// smart TV's control port does over TLS. An icon is no more work than the
+/// page, so [`ICON_PACE_MULTIPLE`] times the page's slowest answer allows for a
+/// busy server or an application woken behind a proxy. The pace already
+/// includes the path's round trip; the [floor](ICON_PATIENCE_FLOOR), which
+/// stops a page served from cache in a millisecond from making the icon a race,
+/// gets the path delay added.
 ///
-/// Where the search asked nothing, because first contact's reply already was
-/// the page, there is no pace to go by and the request has the search's
-/// budget. The patience bounds only the wait for the first byte: a large icon
-/// still takes the time its bytes need to arrive, within that budget.
+/// Where the search asked nothing (first contact already had the page) there
+/// is no pace, and the request has the search's budget. This bounds only the
+/// wait for the first byte.
 fn icon_patience(pace: Option<Duration>) -> Option<Duration> {
     pace.map(|pace| {
         super::on_path(ICON_PATIENCE_FLOOR).max(pace.saturating_mul(ICON_PACE_MULTIPLE))
@@ -282,18 +240,15 @@ struct Page {
 /// The markup this endpoint serves at its root, the path it was served from,
 /// and how promptly the server answered for it.
 ///
-/// The path matters because a declared icon is usually relative to it: Jellyfin
-/// redirects `/` to `/web/index.html` and declares `favicon.<hash>.ico`, which
-/// resolves under `/web/` and nowhere else.
+/// A declared icon is usually relative to the path: Jellyfin redirects `/` to
+/// `/web/index.html` and declares `favicon.<hash>.ico`, which resolves under
+/// `/web/`.
 ///
-/// Reuses what first contact read and follows one same-host redirect from it. A
-/// second hop is not followed: one is what a self-hosted root costs, and a chain
-/// is a server that does not want to be read.
+/// Reuses what first contact read and follows at most one same-host redirect.
 async fn page_of(peer: &Authority, responses: &ResponseSet) -> Page {
     let root = "/".to_string();
 
-    // `None` where nothing was read, which is how the container tier drives this
-    // with no scan behind it. The root is asked for either way below.
+    // `None` where nothing was read, as when the container tier drives this.
     let first = responses
         .banners
         .iter()
@@ -308,12 +263,9 @@ async fn page_of(peer: &Authority, responses: &ResponseSet) -> Page {
         };
     }
 
-    // Otherwise ask for the root. A port some service registered a probe for is
-    // answered with that probe rather than with `GET /`, so on a claimed port the
-    // banners hold whatever the probe drew and never the markup: Grafana on 3000
-    // answers its registered probe with a `400` and its root with the page that
-    // names it. The banner is still consulted for a redirect first, so an
-    // unclaimed port that already fetched `/` spends no request re-fetching it.
+    // Otherwise ask for the root. On a port with a registered probe the banners
+    // hold what that probe drew, not the markup (Grafana on 3000 answers its
+    // probe with a `400`). A redirect in the banner is followed first.
     let path = first
         .and_then(|page| super::redirect_path(page, Some(peer)))
         .unwrap_or_else(|| root.clone());
@@ -326,8 +278,7 @@ async fn page_of(peer: &Authority, responses: &ResponseSet) -> Page {
     };
     let page = answer.text();
 
-    // The root may redirect on this request rather than on the scan's. One hop,
-    // because a chain is a server that does not want to be read.
+    // The root may redirect on this request too. One hop.
     let followed = match super::redirect_path(&page, Some(peer)) {
         Some(next) => exchange(peer, &next, None)
             .await
@@ -350,10 +301,8 @@ async fn page_of(peer: &Authority, responses: &ResponseSet) -> Page {
 
 /// The icon a page declares, as the `href` of a `<link>` whose `rel` names one.
 ///
-/// Reads `rel` and `href` in either order and matches `rel` on a word rather
-/// than a whole value, because the attribute is a list and the ones in use are
-/// `icon`, `shortcut icon` and `apple-touch-icon`. Case-insensitive throughout:
-/// markup is not consistent about it and nothing here depends on the casing.
+/// Reads `rel` and `href` in either order and matches `rel` by word, since it is
+/// a list (`icon`, `shortcut icon`, `apple-touch-icon`). Case-insensitive.
 fn declared_icon(page: &str) -> Option<&str> {
     let lower = page.to_ascii_lowercase();
     let mut at = 0;
@@ -368,8 +317,7 @@ fn declared_icon(page: &str) -> Option<&str> {
         if !names_an_icon {
             continue;
         }
-        // Taken from the original rather than the lowered copy: a path is
-        // case-sensitive and the lowered one would 404.
+        // From the original markup: paths are case-sensitive.
         if let Some(href) = attribute(tag, "href") {
             let offset = tag.find(href)?;
             return page.get(start + offset..start + offset + href.len());
@@ -389,22 +337,17 @@ fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
 
 /// Resolves a declared `href` against the path the page was served from.
 ///
-/// An absolute path is taken as written. A relative one is joined to the page's
-/// own directory, which is what puts Jellyfin's icon under `/web/`. Anything
-/// naming a scheme or another host is declined: the corpus is keyed on what
-/// *this* endpoint serves, and hashing a content delivery network's bytes would
-/// key another host's icon to this port.
+/// An absolute path is taken as written; a relative one is joined to the page's
+/// directory. Anything naming a scheme or another host is declined, since
+/// another host's icon says nothing about this port.
 fn resolve(base: &str, href: &str) -> Option<String> {
     let href = href.trim();
     if href.is_empty() || href.starts_with("//") {
         return None;
     }
 
-    // Anything naming a scheme. An absolute URL is another host's bytes, and a
-    // `data:` icon is inline rather than fetchable: Portainer declares one, and
-    // reading it as a path would put four kilobytes of base64 into a request
-    // line. A scheme is what precedes the first `:`, and only before the first
-    // `/`, so a path may still contain a colon of its own.
+    // Decline any scheme, including `data:` (Portainer declares an inline icon).
+    // A scheme is what precedes the first `:` before any `/`.
     let scheme_end = href
         .find(':')
         .filter(|at| *at < href.find('/').unwrap_or(usize::MAX));
@@ -420,21 +363,17 @@ fn resolve(base: &str, href: &str) -> Option<String> {
         None => "/",
     };
 
-    // `./` is legal and common (Prometheus declares `./favicon.svg`). Servers
-    // tolerate it, but a path this engine may later compare or record should not
-    // carry a segment that means nothing.
+    // Prometheus declares `./favicon.svg`.
     let href = href.strip_prefix("./").unwrap_or(href);
     Some(format!("{directory}{href}"))
 }
 
 /// Fetches `path` and returns its body, or [`None`] where there is not one.
 ///
-/// A body is returned only for a `200`. A `404` is the ordinary answer from a
-/// server that serves no icon at the path asked for.
+/// A body is returned only for a `200`.
 ///
-/// One same-host redirect is followed, because an icon is very often served from
-/// somewhere other than where it is asked for: Grafana answers `/favicon.ico`
-/// with a `302` to the file it actually holds.
+/// One same-host redirect is followed: Grafana answers `/favicon.ico` with a
+/// `302` to the file it holds.
 ///
 /// Each request waits no longer than `patience` for its response to begin,
 /// where the search has one; see [`icon_patience`].
@@ -455,9 +394,8 @@ async fn fetch(peer: &Authority, path: &str, patience: Option<Duration>) -> Opti
 struct Answer {
     /// The response, whole and bounded; see [`exchange`].
     bytes: Vec<u8>,
-    /// From the request written to the response's first byte read, or to the
-    /// close where the server sent none: the path's round trip and the
-    /// server's own work on the request.
+    /// From the request written to the response's first byte, or to the close
+    /// where the server sent none.
     began_after: Duration,
 }
 
@@ -470,19 +408,14 @@ impl Answer {
 
 /// One request and the response it draws, whole and bounded.
 ///
-/// Whole means where the response says it ends, a `Content-Length` or a
-/// chunked body's closing chunk, as a detection's exchange reads it, and the
-/// close only for a response that says neither. A server that ignores the
-/// request's `Connection: close` and holds the socket until an idle timeout of
-/// its own would otherwise have each request wait that timeout out, and one
-/// longer than [`FETCH_TIMEOUT`] leave the icon unread.
+/// Read to the end the response declares (`Content-Length` or the closing
+/// chunk), or to the close if it declares neither, since many servers ignore
+/// `Connection: close` and hold the socket.
 ///
-/// Through a handshake of its own where the port answered through TLS, and
-/// never in the clear there: a request an HTTPS port can only refuse is
-/// traffic with nothing to learn from it.
+/// Over TLS where the port answered through TLS.
 ///
-/// A response that has not begun `patience` after the request was written is
-/// no response; [`None`] leaves the wait to the caller's budget.
+/// A response that has not begun `patience` after the request was written
+/// counts as none; with [`None`] the caller's budget bounds the wait.
 async fn exchange(peer: &Authority, path: &str, patience: Option<Duration>) -> Option<Answer> {
     let stream = super::analyzer_connect(peer.socket()).await.ok()?;
     match peer.is_tls() {
@@ -543,9 +476,7 @@ where
 
 /// The body of a `200` response, or [`None`] for anything else.
 ///
-/// Split on the header terminator rather than parsed: nothing here reads a
-/// header, and an icon is bytes rather than text, so the response cannot be
-/// handled as a string without corrupting exactly the thing being hashed.
+/// Split on the header terminator, as bytes, so the icon is hashed exactly.
 fn body_of(response: &[u8]) -> Option<&[u8]> {
     let status = response.get(..response.iter().position(|b| *b == b'\r')?)?;
     if !status.starts_with(b"HTTP/") || !is_success(status) {
@@ -561,8 +492,7 @@ fn body_of(response: &[u8]) -> Option<&[u8]> {
 
 /// Whether a status line carries a `200`, whatever reason phrase follows it.
 ///
-/// Read as the second field rather than by matching `200 OK`, because the reason
-/// phrase is the server's to choose and several embedded stacks choose their own.
+/// Reads the second field; embedded stacks use their own reason phrases.
 fn is_success(status: &[u8]) -> bool {
     status
         .split(|byte| *byte == b' ')
@@ -575,8 +505,7 @@ mod tests {
     use super::*;
     use crate::testing::loopback::accept_from_this_process;
 
-    /// The digest of the empty string, which is the one MD5 vector everybody
-    /// knows by sight, so a broken hash is visible rather than merely different.
+    /// The well-known MD5 of the empty string.
     #[test]
     fn the_digest_is_lowercase_hex() {
         assert_eq!(md5_hex(b""), "d41d8cd98f00b204e9800998ecf8427e");
@@ -592,8 +521,7 @@ mod tests {
         assert_eq!(body_of(missing), None);
     }
 
-    /// A redirect names somewhere else's bytes, and hashing those would key
-    /// another host's icon to this port.
+    /// A redirect to another host is not followed.
     #[test]
     fn a_redirect_is_declined_rather_than_followed() {
         let moved = b"HTTP/1.1 302 Found\r\nLocation: https://cdn.example/favicon.ico\r\n\r\n";
@@ -613,8 +541,7 @@ mod tests {
         assert_eq!(body_of(b""), None);
     }
 
-    /// The gate, both halves. A port that never spoke HTTP is not dialled again,
-    /// and neither is one with no address to dial.
+    /// A port that never spoke HTTP, or has no address, is not dialled.
     #[test]
     fn only_a_port_that_answered_in_http_is_asked_for_an_icon() {
         use crate::model::port::Protocol;
@@ -634,8 +561,7 @@ mod tests {
         assert!(!FaviconAnalyzer.interested(&no_socket));
     }
 
-    /// The fallback, end to end: a page that declares no icon still gets the
-    /// conventional path asked for, which is what the convention is for.
+    /// A page that declares no icon falls back to the conventional path.
     #[tokio::test]
     async fn a_page_declaring_no_icon_falls_back_to_the_conventional_path() {
         use crate::model::port::Protocol;
@@ -697,8 +623,7 @@ mod tests {
         );
     }
 
-    /// The other half, without a socket: a digest the corpus knows names its
-    /// product. Metabase, whose icon MD5 is one of the shipped rules.
+    /// A digest the corpus knows names its product: Metabase.
     #[test]
     fn a_known_digest_names_the_application_that_serves_it() {
         let evidence = crate::fingerprint::SignatureDb::global()
@@ -735,9 +660,8 @@ mod tests {
         assert_eq!(as_application(found).extrainfo, None);
     }
 
-    /// A server answering with a stream that does not end cannot hold the scan.
-    /// The read stops at the cap and what was collected is still hashed, so a
-    /// hostile peer costs a bounded amount rather than the process.
+    /// An endless stream is read up to the cap and what was collected is
+    /// hashed.
     #[tokio::test]
     async fn an_endless_response_is_cut_off_at_the_cap() {
         use tokio::net::TcpListener;
@@ -753,7 +677,7 @@ mod tests {
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: image/x-icon\r\n\r\n")
                 .await
                 .unwrap();
-            // More than the cap, in chunks, until the reader gives up on us.
+            // More than the cap, in chunks.
             let chunk = vec![0xab; 32 * 1024];
             for _ in 0..64 {
                 if stream.write_all(&chunk).await.is_err() {
@@ -775,8 +699,8 @@ mod tests {
         assert!(!icon.is_empty(), "what was read is still worth hashing");
     }
 
-    /// Jellyfin's real markup, which is why this analyzer was rewritten: the
-    /// icon is under a bundler's content hash and named only in a `<link>`.
+    /// Jellyfin's real markup: the icon is under a content hash and named only in
+    /// a `<link>`.
     const JELLYFIN: &str = r#"<html><head>
         <link rel="apple-touch-icon" sizes="180x180" href="touchicon.f5bbb798cb2c65908633.png">
         <link rel="shortcut icon" href="favicon.bc8d51405ec040305a87.ico">
@@ -814,9 +738,7 @@ mod tests {
         );
     }
 
-    /// The path is taken from the original markup rather than the lowered copy
-    /// used for scanning, because a path is case-sensitive and a lowered one
-    /// would 404.
+    /// The path keeps its original case.
     #[test]
     fn a_mixed_case_path_survives_the_search() {
         assert_eq!(
@@ -839,8 +761,7 @@ mod tests {
         );
     }
 
-    /// An icon somewhere else is another host's bytes, and hashing them would
-    /// key that host's identity to this port.
+    /// An icon on another host is declined.
     #[test]
     fn an_icon_on_another_host_is_declined() {
         assert_eq!(resolve("/", "https://cdn.example/f.ico"), None);
@@ -848,9 +769,7 @@ mod tests {
         assert_eq!(resolve("/", ""), None);
     }
 
-    /// Portainer declares its icon inline. Read as a path it would put four
-    /// kilobytes of base64 into a request line, so a scheme of any kind is
-    /// declined.
+    /// Portainer declares its icon inline; any scheme is declined.
     #[test]
     fn an_inline_data_icon_is_not_mistaken_for_a_path() {
         let inline = "data:image/vnd.microsoft.icon;base64,AAABAAEAEBAAAAEAIABoBAAA";
@@ -876,9 +795,8 @@ mod tests {
         assert_eq!(declared_icon(""), None);
     }
 
-    /// The whole path against a server shaped like Jellyfin: the root redirects,
-    /// the page declares a hashed icon under `/web/`, and only that path serves
-    /// the bytes. The conventional path 404s, exactly as the real one does.
+    /// A server shaped like Jellyfin: the root redirects, the page declares a
+    /// hashed icon under `/web/`, and the conventional path 404s.
     #[tokio::test]
     async fn the_declared_icon_is_fetched_from_a_root_that_redirects() {
         use crate::model::port::Protocol;
@@ -915,8 +833,7 @@ mod tests {
                             .await
                             .unwrap();
                         stream.write_all(ICON).await.unwrap();
-                        // The search stops here, so accepting again would block
-                        // on a connection that is never made.
+                        // The search stops here; don't accept again.
                         asked.push(path);
                         break;
                     }
@@ -955,8 +872,7 @@ mod tests {
         );
     }
 
-    /// Prometheus declares `./favicon.svg`, and a segment meaning "here" should
-    /// not survive into a path this engine records.
+    /// Prometheus declares `./favicon.svg`; the `./` is dropped.
     #[test]
     fn a_here_segment_is_dropped_from_a_declared_path() {
         assert_eq!(
@@ -969,10 +885,8 @@ mod tests {
         );
     }
 
-    /// A port some service registered a probe for is answered with that probe
-    /// rather than with `GET /`, so the banners hold whatever the probe drew.
-    /// Grafana on 3000 answers its registered probe with a `400` and its root
-    /// with the page that names it, and reading only the banner found neither.
+    /// On a port with a registered probe the banners hold what the probe drew.
+    /// Grafana on 3000 answers its probe with a `400` and its root with the page.
     #[tokio::test]
     async fn a_banner_that_is_not_the_page_still_leads_to_the_root() {
         use crate::model::port::Protocol;
@@ -1045,8 +959,8 @@ mod tests {
         assert_eq!(asked, vec!["/", "/login", "/static/fav32.png"]);
     }
 
-    /// Grafana answers `/favicon.ico` with a redirect to the file it actually
-    /// holds, so the fallback has to follow one hop too.
+    /// Grafana answers `/favicon.ico` with a redirect, so the fallback follows
+    /// one hop.
     #[tokio::test]
     async fn a_redirect_on_the_icon_itself_is_followed() {
         use tokio::net::TcpListener;
@@ -1089,13 +1003,9 @@ mod tests {
     /// A response that says how long it is ends there, whatever the server then
     /// does with the connection.
     ///
-    /// Plenty of servers ignore the request's `Connection: close` and keep the
-    /// socket until an idle timeout of their own. Read to the close, each of
-    /// the two requests this analyzer makes waited out that timeout, and one
-    /// longer than [`FETCH_TIMEOUT`] left the icon unread altogether. The server
-    /// here answers both requests in full and then holds every connection far
-    /// past that budget, so the icon arrives only if each reply is read to its
-    /// declared length and no further.
+    /// The server here answers in full and then holds every connection past
+    /// [`FETCH_TIMEOUT`], so the icon arrives only if each reply is read to its
+    /// declared length.
     #[tokio::test]
     async fn an_icon_is_read_to_its_declared_length_on_a_connection_held_open() {
         const ICON: &[u8] = b"\x00\x00\x01\x00held-open-icon";
@@ -1146,13 +1056,9 @@ mod tests {
     /// unanswered is given up on at a multiple of how fast it answered, not
     /// at the end of the search's budget.**
     ///
-    /// A WebSocket endpoint or an embedded API answers its own paths and
-    /// leaves any other open; a smart TV's control port over TLS does. The
-    /// icon is not coming, and waiting out the budget made every such port's
-    /// identification three seconds longer. The server here answers the root
-    /// at once and never answers the icon, so the search can end before
-    /// [`FETCH_TIMEOUT`] only by giving up at the patience the root's pace
-    /// earned; a search that waited out its budget cannot come in under it.
+    /// The server here answers the root at once and never answers the icon, so
+    /// the search ends before [`FETCH_TIMEOUT`] only if it gives up at the
+    /// patience the root's pace earned.
     #[tokio::test]
     async fn an_icon_request_held_unanswered_is_given_up_on_at_the_pages_pace() {
         const HOLD: Duration = Duration::from_secs(30);
@@ -1205,8 +1111,8 @@ mod tests {
         );
     }
 
-    /// The patience scales with the pace the server showed, never falls
-    /// below the floor, and is not imposed where the search measured nothing.
+    /// The patience scales with the pace, has a floor, and is absent where
+    /// nothing was measured.
     #[test]
     fn an_icons_patience_follows_the_pages_pace_above_a_floor() {
         assert_eq!(icon_patience(None), None);
