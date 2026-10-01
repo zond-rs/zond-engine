@@ -746,6 +746,44 @@ JSEncryptRSAKey.prototype.getPrivateKey = function () {
         );
     }
 
+    /// **A Google browser key in a page is the design, not a leak.** Firebase
+    /// and Maps put the key in the page that calls them, so it is listed at
+    /// `info` and not called a credential that should never reach a client; a
+    /// provider secret is still high. The keys are filler in each provider's
+    /// shape, assembled here.
+    #[test]
+    fn api_key_in_body_lists_a_google_browser_key_and_flags_a_secret() {
+        let google = format!("AIza{}", "SyZond0Zond1Zond2Zond3Zond4Zond5ZZZ");
+        let firebase = format!(
+            "<script>\nconst firebaseConfig = {{\n  apiKey: \"{google}\",\n  \
+             authDomain: \"zond-lab.firebaseapp.com\",\n  projectId: \"zond-lab\"\n}};\n</script>"
+        );
+        let finding = shipped("api-key-in-body", &served("text/html", &firebase))
+            .expect("a Google key is still listed");
+        assert_eq!(
+            finding.severity(),
+            Severity::Info,
+            "a Firebase web config was rated as a leaked credential"
+        );
+        assert!(
+            !finding
+                .excerpt()
+                .as_str()
+                .contains("should never reach a client")
+        );
+
+        let github = format!("gh{}_{}", "p", "Zond".repeat(9));
+        let finding = shipped(
+            "api-key-in-body",
+            &served(
+                "text/html",
+                &format!("<script>const t = \"{github}\";</script>"),
+            ),
+        )
+        .expect("a GitHub token was missed");
+        assert_eq!(finding.severity(), Severity::High);
+    }
+
     #[test]
     fn a_journalled_run_of_a_shipped_detection_replays() {
         use crate::detect::compute::{CapTape, CapTapeRecord, DetectionRunRecord};
