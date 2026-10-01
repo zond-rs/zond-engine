@@ -8,26 +8,17 @@
 
 //! # Running the flow corpus over a host
 //!
-//! The Tier-1 detection stage. For each open port a host holds, every enabled
-//! flow whose `when` gate fits the port is run against it, and the findings it
-//! produces are recorded on the port. It is the active analogue of the [CVE
-//! correlator](crate::cve): that reads what a scan already gathered, this
-//! exchanges bytes with the port to decide, and both hand a [`Finding`] to the
-//! subject it concerns.
+//! The Tier-1 detection stage. For each open port, every flow the envelope
+//! permits and whose `when` gate fits is run against it, and its findings are
+//! recorded on the port.
 //!
-//! ## What runs, and how it reaches the port
+//! ## Reaching the port
 //!
-//! A flow runs for a port when its `when` fits the port's service, number and
-//! protocol, and its class is one the default policy enables, `passive` and
-//! `active-benign`, the intrusive classes staying off until an operator opts
-//! them in through an envelope. The [`Probe`] each flow
-//! speaks through is supplied per port by the caller: that is the seam the live
-//! transport plugs into, and it keeps this stage testable with a canned socket
-//! and free of any transport of its own. A caller that cannot reach a port
-//! returns [`None`], and the port is skipped.
+//! The caller supplies each flow's [`Probe`] per port, which is where the live
+//! transport plugs in and what lets tests use a canned socket. A caller that
+//! cannot reach a port returns [`None`], and the port is skipped.
 
-// `run_flows` is a synchronous convenience the scanner bypasses, driving
-// `detect_port` directly, so only the tests exercise it.
+// `run_flows` is used only by tests; the scanner drives `detect_port`.
 #![allow(dead_code)]
 
 use crate::config::DetectionEnvelope;
@@ -64,12 +55,9 @@ pub(crate) fn run_flows(
     probe_for: impl Fn(&Port) -> Option<Box<dyn Probe>> + Sync,
 ) {
     let host_addr = host.scoped_ip().addr().to_string();
-    // One contention for the whole host: its ports' exchanges join it, so a
-    // wait behind another of its ports is seen for what it is. See
-    // [`HostContention`].
+    // One contention for the whole host; see `HostContention`.
     let contention = HostContention::default();
-    // Collect first, mutate second: reading the ports borrows the host, and
-    // recording a finding needs them back mutably, so the two cannot overlap.
+    // Collect first, then record: the two borrows cannot overlap.
     let mut hits: Vec<(u16, Protocol, Finding)> = Vec::new();
     for port in host.ports() {
         if port.state() != PortState::Open {
@@ -78,8 +66,7 @@ pub(crate) fn run_flows(
         let number = port.number();
         let protocol = port.protocol();
         let service = port.service().map(|service| service.name());
-        // run_flows is a synchronous convenience; the scanner drives detect_port
-        // directly and surfaces the shortfalls this discards.
+        // Shortfalls are discarded here; the scanner reports them.
         let (produced, _shortfalls) = detect_port(
             corpus,
             envelope,
@@ -103,15 +90,11 @@ pub(crate) fn run_flows(
 /// The findings `corpus`'s enabled, applicable flows produce for one port with
 /// these facts. `probe_for` is handed the running flow's declared
 /// [`CapabilitySpec`] (its budget) and yields a fresh [`Probe`] bound to the port,
-/// or [`None`] to skip that flow. This is the per-port core the live detection
-/// phase drives: it holds no host and does no I/O of its own, so a caller can run
-/// it wherever the socket lives.
+/// or [`None`] to skip that flow. Holds no host and does no I/O of its own.
 ///
-/// Beside the findings it returns each flow that stopped short of its questions,
-/// a [`Shortfall`] saying whether its own budget or the port's silence stopped
-/// it, in corpus order like the findings. A flow the port was given up on before
-/// it could ask is among them: a question left unasked is reported, never
-/// dropped.
+/// Also returns, in corpus order, a [`Shortfall`] for each flow that stopped
+/// short of its questions, including one the port was given up on before it
+/// could ask.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn detect_port(
     corpus: &FlowDb,
@@ -123,9 +106,7 @@ pub(crate) fn detect_port(
     contention: &HostContention,
     probe_for: impl Fn(&CapabilitySpec) -> Option<Box<dyn Probe>> + Sync,
 ) -> (Vec<Finding>, Vec<Shortfall>) {
-    // Which flows this port answers to, settled before any of them runs. The pass
-    // is cheap, it decides how wide the run below should be, and it gives every
-    // flow the index that puts its findings back in corpus order afterwards.
+    // The applicable flows, settled first; the index restores corpus order later.
     let applicable: Vec<_> = corpus
         .flows()
         .filter(|flow| {
@@ -138,12 +119,9 @@ pub(crate) fn detect_port(
         return (Vec::new(), Vec::new());
     }
 
-    // One seed for the port serves every flow that runs against it: the address
-    // and number are the port's, not any flow's, so a `{host}`/`{port}` template
-    // resolves to the endpoint under probe whichever detection names it.
+    // One seed for the port serves every flow.
     let seed = FlowSeed::new(host, number);
-    // What the port's flows share: its replies and strikes, over the host
-    // contention its exchanges join. See [`PortShare`] and [`HostContention`].
+    // See `PortShare`.
     let port = PortShare::new(contention);
 
     let run_one = |index: usize| -> Option<Run> {
@@ -173,16 +151,10 @@ pub(crate) fn detect_port(
         })
     };
 
-    // The first flow runs alone, and the rest widen out behind it only if that one
-    // came back without the port proving slow.
-    //
-    // Widening from the start defeats the very thing that makes a slow host
-    // bearable. [`DEAD_PORT_STRIKES`] works because the flows that follow a dead
-    // wait can be spared it, and eight flows launched together are all already
-    // waiting when the first strike lands: a port that stalls costs eight dead
-    // waits instead of two, and eight connections instead of two, for exactly the
-    // wall clock it cost before. So the port answers one question first, and only
-    // a port that answered it in good time is asked the rest at once.
+    // The first flow runs alone; the rest run concurrently only if the port was
+    // not slow to it. Otherwise `DEAD_PORT_STRIKES` could not spare the later
+    // flows: eight launched together would all be waiting when the first strike
+    // landed.
     let mut runs: Vec<Run> = Vec::with_capacity(applicable.len());
     let first = run_one(0);
     let widen = first.as_ref().is_none_or(|run| !run.slow);
@@ -194,26 +166,18 @@ pub(crate) fn detect_port(
         1
     };
 
-    // The flows left to ask one at a time, in corpus order: every flow after
-    // the first when the port is not widened onto, and otherwise the ones the
-    // wide run never took up and the ones it has to ask again.
+    // Flows to run serially, in corpus order: all the rest if not widened,
+    // otherwise those the wide run left or must repeat.
     let mut alone: Vec<usize> = Vec::new();
     if width <= 1 {
         alone.extend(1..applicable.len());
     } else {
-        // The port stays wide only while it keeps pace. A flow that comes back
-        // slow, a dead wait or its clock run out, says the port is being asked
-        // more at once than it answers, and from then on no worker takes up
-        // another flow: the ones already running finish, and everything left is
-        // asked one at a time below. A slow flow that shared the port with
-        // others is not taken at its word either. Its wait was the queue in
-        // front of it as much as the port, so its run is set aside and the flow
-        // is asked again alone, where the answers it already drew in full come
-        // back from the cache and only what it never heard goes to the port.
-        //
-        // Narrowing rather than a strike because a port answering one request
-        // at a time is alive, and costs its flows their budgets only when they
-        // queue behind each other. Asked in turn, it answers every one.
+        // Stay wide only while the port keeps pace. Once a flow comes back slow
+        // (a dead wait, or its clock ran out), no worker starts another flow and
+        // the rest run serially below. A slow flow that shared the port is run
+        // again alone, its complete answers served from the cache. A port
+        // answering one request at a time is alive, so it is narrowed, not
+        // struck.
         let next = AtomicUsize::new(1);
         let narrowed = AtomicBool::new(false);
         let done: Mutex<Vec<Run>> = Mutex::new(Vec::with_capacity(applicable.len()));
@@ -254,14 +218,10 @@ pub(crate) fn detect_port(
         alone.extend(next.into_inner().min(applicable.len())..applicable.len());
         alone.sort_unstable();
     }
-    // Serially, which is where the strike count does its work: each dead wait is
-    // seen before the next flow opens a socket, and no wait here is anyone's but
-    // the port's.
+    // Serially, so each strike is seen before the next flow opens a socket.
     runs.extend(alone.into_iter().filter_map(&run_one));
 
-    // Back into corpus order. A scan is written down and read back, and a report
-    // whose findings are in whatever order the threads happened to finish is one
-    // that cannot be diffed against the same scan run twice.
+    // Back into corpus order, so repeated scans diff cleanly.
     runs.sort_by_key(|run| run.index);
 
     let mut findings = Vec::new();
@@ -290,11 +250,9 @@ struct Run {
 /// Whether a flow may be asked a second time after a run the port's queue
 /// spoiled.
 ///
-/// Only a flow that leaves the target as it found it. A second run repeats
-/// every request the first sent without hearing a whole reply, and a request
-/// that changes the target or tests a weakness may have taken effect unheard:
-/// the operator who opted such a flow in granted it one attempt, not two. Its
-/// crowded run stands, cut short or not, and is reported as it came out.
+/// Only a flow that leaves the target as it found it: a repeated request that
+/// changes the target may already have taken effect unheard. Other flows'
+/// crowded runs stand as they came out.
 fn repeatable(flow: &super::db::CompiledFlow) -> bool {
     matches!(
         flow.flow().detection.capabilities.class,
@@ -305,13 +263,8 @@ fn repeatable(flow: &super::db::CompiledFlow) -> bool {
 /// A flow that stopped short of what it set out to ask: which flow, what
 /// stopped it, and how far it had got.
 ///
-/// Carried to the report as its own fact because it is neither of the two
-/// things it would otherwise read as. It is not a clean run, since a question
-/// the flow meant to ask went unasked or unanswered and its silence clears
-/// nothing. And it is not a fault, since nothing broke: the detection declared
-/// a ceiling and the ceiling held, or the port stopped answering and was not
-/// waited on further. A reader deciding whether to look again needs which of
-/// those, and how much of the flow was left when it happened.
+/// Reported on its own: it is neither a clean run (its silence clears nothing)
+/// nor a fault (a ceiling held, or the port stopped answering).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Shortfall {
     /// The flow's id.
@@ -336,21 +289,15 @@ pub(crate) enum Stopped {
         /// milliseconds, bytes, or connections.
         limit: u64,
     },
-    /// The port stopped answering in time, with nothing else of the scan's
-    /// waiting on it, and was given up on: this flow either held one of the
-    /// [`DEAD_PORT_STRIKES`] dead waits itself or came after them and had
-    /// questions only the port could answer. The shortfall is the port's, so
-    /// it names no budget of the flow's.
+    /// The port stopped answering, with nothing else of the scan's waiting on
+    /// it, and was given up on: this flow held one of the [`DEAD_PORT_STRIKES`]
+    /// dead waits or came after them.
     PortUnresponsive,
-    /// The process had no socket to give one of the flow's exchanges for as
-    /// long as the flow's time allowed, so a question went unasked. The
-    /// shortfall is this machine's, neither the port's nor the flow's budget,
-    /// and raising the process's descriptor limit is its remedy.
+    /// No socket was available for one of the flow's exchanges within its time.
+    /// Raise the process's descriptor limit.
     Starved,
-    /// The scan stopped, or the host ran out of the time the scan gave it,
-    /// while one of the flow's exchanges waited for its turn under the scan's
-    /// pacing, so a question went unasked. The scan's record already says
-    /// which, as the pass it left or the host it left early.
+    /// The scan stopped, or the host's time ran out, while an exchange waited for
+    /// its pacing slot.
     Withheld,
 }
 
@@ -387,10 +334,8 @@ impl Limits {
     }
 }
 
-/// How many requests `flow` makes when every step runs, which is the number a
-/// reader weighs a shortfall against: what the flow set out to ask. A guard
-/// that would have skipped a step the budget already stopped is not something
-/// the run can know. See [`exchanges`](super::interp::exchanges).
+/// How many requests `flow` makes when every step runs. See
+/// [`exchanges`](super::interp::exchanges).
 fn requests(flow: &FlowDetection) -> u32 {
     super::interp::exchanges(flow)
 }
@@ -401,21 +346,12 @@ struct PortShare<'h> {
     /// Replies read to a clean end, by the request that drew them. See
     /// [`CachingProbe`].
     cache: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
-    /// Exchanges that held the whole host to themselves and still ran past the
-    /// dead-wait mark, so the flows that follow can stop paying for them. See
-    /// [`DEAD_PORT_STRIKES`]. Kept per port, since a dead port is written off
-    /// while its live neighbours are not.
+    /// Exchanges that had the host to themselves and still ran past the
+    /// dead-wait mark. Per port; see [`DEAD_PORT_STRIKES`].
     strikes: AtomicU32,
-    /// The host's exchanges in flight and begun, shared with its other ports,
-    /// so a wait behind one of them is seen for what it is.
-    ///
-    /// What this decides is whether a slow exchange is written off as the
-    /// port's silence or read as a queue the scan itself built. A port
-    /// answering one request at a time is alive, and a wait behind another of
-    /// the host's ports is the scan's doing, not the port's: counted against
-    /// the host, it narrows the port rather than striking it, so a
-    /// single-worker host's ports are asked in turn instead of one of them
-    /// written off for the others' traffic. See [`HostContention`].
+    /// The host's exchanges, shared with its other ports. A slow exchange that
+    /// overlapped another narrows the port instead of striking it, so a
+    /// single-worker host's ports are asked in turn. See [`HostContention`].
     contention: &'h HostContention,
 }
 
@@ -432,49 +368,26 @@ impl<'h> PortShare<'h> {
 
 /// A [`Probe`] that shares one port's replies across the flows run against it.
 ///
-/// Many flows gate onto the same HTTP port and send the same bytes, most often a
-/// bare `GET /`, and without this each would open its own connection for an
-/// identical answer. This wraps the port's real probe and a cache the whole port
-/// shares: a request already answered is served from the cache, and only a
-/// request not seen before reaches the socket.
+/// Many flows send the same bytes to one port (often a bare `GET /`). A request
+/// already answered is served from a cache the port's flows share; only a new
+/// request reaches the socket.
 ///
-/// The reuse is exact, not approximate. Only a reply read to a clean close is
-/// cached, so nothing a budget cut short is ever replayed, and a cached reply is
-/// served only when it fits within `budget`, the flow's own `max_bytes`. A reply
-/// that fits is the whole of what the port sent, which is byte-for-byte what a
-/// fresh fetch under a budget that large would have read, so a cached hit and a
-/// real fetch are indistinguishable to the flow. A reply larger than this flow's
-/// budget is not served: that flow fetches its own, which its smaller budget
-/// truncates exactly as it would have without the cache.
+/// Only a reply read to a clean end is cached, and it is served only if it fits
+/// within the flow's own `budget`, so a hit is byte-for-byte what a fresh fetch
+/// would have read. A flow with a smaller budget fetches its own.
 ///
-/// The wrapper also cuts a port loose once it has proven unresponsive. A port that
-/// takes a probe's connection but then answers slowly or not at all holds the flow
-/// until its whole time budget is spent, and a port that does this to
-/// [`DEAD_PORT_STRIKES`] fresh exchanges will do it to every detection that gates
-/// onto it. After that many the wrapper stops opening new sockets: a request already
-/// cached is still served, and a request not seen before yields nothing rather than
-/// another dead wait. On an HTTP port this is the difference between one slow host
-/// and that host multiplied across the dozens of flows a web port attracts.
+/// After [`DEAD_PORT_STRIKES`] exchanges that held the port alone past the
+/// dead-wait mark, no new socket is opened: cached requests are still served,
+/// new ones yield nothing. A wait shared with other exchanges does not count
+/// (the stage narrows such a port; see [`detect_port`]), nor does a wait for a
+/// socket the process could not give ([`Stopped::Starved`]).
 ///
-/// A wait counts toward that only when the exchange had the port to itself. One
-/// that shared it with other flows' exchanges waited behind them as well as on
-/// the port, and a port that answers one request at a time is slow in company
-/// and prompt alone: it is live, and writing it off for the queue the scan
-/// itself built would leave its detections unasked. The stage narrows such a
-/// port instead. See [`detect_port`]. Nor does a wait for a socket the process
-/// had none to give: the port was never asked, and the flow reports
-/// [`Stopped::Starved`].
-///
-/// Nothing the cut leaves unasked goes unsaid. A flow the port left short, by
-/// stalling it or by being given up on before its questions reached the socket,
-/// reports a [`Stopped::PortUnresponsive`] shortfall rather than the budget
-/// refusal its stalled wait would otherwise read as.
+/// A flow the port left short reports [`Stopped::PortUnresponsive`].
 struct CachingProbe<'a> {
     inner: Box<dyn Probe>,
     port: &'a PortShare<'a>,
-    /// How long a fresh exchange may run before it counts as a dead wait, three
-    /// quarters of the flow's time budget. A real reply lands well inside this; a
-    /// port that holds the socket to its read timeout does not.
+    /// How long a fresh exchange may run before it counts as a dead wait: three
+    /// quarters of the flow's time budget.
     dead_after: Duration,
     /// Whether one of this flow's exchanges ran past `dead_after`, alone or in
     /// company.
@@ -490,16 +403,12 @@ struct CachingProbe<'a> {
     budget: u64,
     /// The first budget that refused one of this flow's requests.
     ///
-    /// Kept from the first rather than read off the last exchange, because a
-    /// refused request is a question left unasked whatever the flow does
-    /// next: a flow whose large request the byte budget turned away and whose
-    /// smaller one then fitted still left the first unanswered.
+    /// The first, since a refused request stays unasked whatever follows.
     refused: Option<ProbeRefusal>,
     /// Whether one of this flow's exchanges was refused a socket, whichever
     /// refusal came first.
     starved: bool,
-    /// How many of this flow's requests drew a reply, from the socket or the
-    /// cache, which is how far a flow a budget stopped had got.
+    /// How many of this flow's requests drew a reply, from socket or cache.
     answered: u32,
     /// Whether the reply the last `speak` returned was read to a clean end,
     /// wherever it came from. See [`Probe::reply_complete`].
@@ -531,13 +440,9 @@ impl<'a> CachingProbe<'a> {
         }
     }
 
-    /// What left this flow short of what it set out to ask, or [`None`] when
-    /// nothing did. The process is to blame when it had no socket for one of
-    /// the flow's exchanges, whatever else happened, since that is the one
-    /// shortfall with a remedy outside the target. The port is to blame when
-    /// it was given up on before one of the flow's questions, or when it
-    /// stalled this flow alone and the flow then ran out of budget on it; the
-    /// flow's own budget otherwise.
+    /// What left this flow short, or [`None`]. Starvation takes precedence, then
+    /// the port (written off, or it stalled this flow alone before a budget ran
+    /// out), then the flow's own budget.
     fn stopped(&self, limits: &Limits) -> Option<Stopped> {
         if self.starved {
             return Some(Stopped::Starved);
@@ -554,26 +459,19 @@ impl<'a> CachingProbe<'a> {
     }
 
     /// Whether the port was slow to this flow: an exchange ran past the
-    /// dead-wait mark, or the flow's clock ran out before its questions did.
-    /// Either says the port did not keep pace with what it was being asked.
+    /// dead-wait mark, or the flow's clock ran out.
     fn slow(&self) -> bool {
         self.stalled || self.refused == Some(ProbeRefusal::Deadline)
     }
 }
 
-/// How many dead exchanges a port may cost before its remaining flows stop opening
-/// sockets to it and read only from the shared cache. A live service answers a
-/// simple request in milliseconds, so holding one exchange past three quarters of a
-/// detection's whole budget, with nothing else of the scan's asking it anything, is
-/// already aberrant; two is the port, not the network, and the rest of its flows
-/// are spared the same wait.
+/// How many dead exchanges a port may cost before its remaining flows read only
+/// from the shared cache. A live service answers in milliseconds, so two
+/// exchanges held alone past three quarters of the budget mean the port is dead.
 ///
-/// Only an exchange that had the port to itself counts, so the strikes land on
-/// the stage's serial path, where each is seen before the next flow opens a
-/// socket and a silent port costs two dead exchanges. The flows already running
-/// when the stage narrowed a wide port finish their own waits first, a bound of
-/// [`DETECTION_FLOW_CONCURRENCY`] more, which is far below the dozens of flows a
-/// web port attracts.
+/// Strikes land on the serial path, so a silent port costs two dead exchanges,
+/// plus at most [`DETECTION_FLOW_CONCURRENCY`] already running when a wide port
+/// was narrowed.
 const DEAD_PORT_STRIKES: u32 = 2;
 
 impl Probe for CachingProbe<'_> {
@@ -589,8 +487,7 @@ impl Probe for CachingProbe<'_> {
                 && reply.len() as u64 <= self.budget
             {
                 self.answered += 1;
-                // Only a whole reply is ever cached, so one served from the
-                // cache is whole, whatever this flow's own last fetch was.
+                // Only whole replies are cached.
                 self.last_complete = true;
                 return Some(reply.clone());
             }
@@ -600,26 +497,20 @@ impl Probe for CachingProbe<'_> {
             return None;
         }
 
-        // Alone means no exchange was in flight when this one began and none
-        // began before it ended: the whole wait was the port's.
+        // Alone: no other exchange overlapped this one.
         let visit = self.port.contention.enter();
         let started = Instant::now();
         let held = held_here();
         let reply = self.inner.speak(bytes);
-        // What the exchange waited for its slot under the scan's pacing is
-        // the scan's time and not the port's, and a port slow only by the
-        // scan's gap is no dead port.
+        // Pacing waits are the scan's time, not the port's.
         let elapsed = started
             .elapsed()
             .saturating_sub(held_here().saturating_sub(held));
         let alone = visit.leave();
 
         self.crowded |= !alone;
-        // An exchange the process had no socket for spent its wait on the
-        // descriptor table, not on the port, which was never asked: counted
-        // as a dead wait, a full table would write off every port it met and
-        // file each flow left behind as the port's silence. One the scan
-        // withheld was never asked either.
+        // An exchange refused a socket, or withheld by the scan, never reached
+        // the port, so it is not a dead wait.
         let unasked = reply.is_none()
             && matches!(
                 self.inner.last_refusal(),
@@ -669,10 +560,8 @@ impl Probe for CachingProbe<'_> {
 /// Whether any enabled flow in `corpus` gates onto a port with these facts, so a
 /// caller can skip opening a socket to a port no flow would probe.
 ///
-/// `require_speak` narrows the answer to flows whose own first exchange is a
-/// probe, for a port whose state a flow that only reads cannot be run against;
-/// see [`interested_ports`](crate::scanner::detection). A flow always sends, so
-/// this excludes only the rare one that declares no `speak`.
+/// `require_speak` limits the answer to flows that declare `speak`; see
+/// [`interested_ports`](crate::scanner::detection).
 pub(crate) fn interested(
     corpus: &FlowDb,
     envelope: &DetectionEnvelope,
@@ -689,8 +578,7 @@ pub(crate) fn interested(
     })
 }
 
-/// Whether `envelope` permits a flow of this class to run. The class is the
-/// flow's declared intrusiveness; the envelope is the operator's grant.
+/// Whether `envelope` permits a flow of this class to run.
 fn enabled(class: Class, envelope: &DetectionEnvelope) -> bool {
     envelope.permits(class.into_model())
 }
@@ -708,8 +596,7 @@ mod tests {
         DetectionEnvelope::default()
     }
 
-    /// The grant a `-d` scan runs under, which is what a flow needs: every flow
-    /// speaks, so a test about one running names this rather than the default.
+    /// Up to `active-benign`, which flows that speak need.
     fn benign_envelope() -> DetectionEnvelope {
         DetectionEnvelope::up_to(Class::ActiveBenign.into_model())
     }
@@ -744,14 +631,13 @@ mod tests {
         let findings: Vec<_> = port.findings().collect();
         assert_eq!(findings.len(), 1, "the redis flow fired");
         assert_eq!(findings[0].detection().id(), "redis-unauth-access");
-        // Its provenance is the flow's real content hash, not an empty one.
+        // The flow's real content hash.
         assert_eq!(findings[0].detection().content_hash().len(), 64);
     }
 
     #[test]
     fn the_envelope_decides_which_classes_run() {
-        // The default reads what the scan gathered and withholds everything that
-        // would open a connection of its own.
+        // The default permits only passive classes.
         let default = default_envelope();
         assert!(enabled(Class::Passive, &default));
         assert!(!enabled(Class::ActiveBenign, &default));
@@ -766,8 +652,7 @@ mod tests {
 
     #[test]
     fn a_flow_is_skipped_when_its_gate_or_the_port_does_not_fit() {
-        // Wrong service: the redis flow's `when.service = "redis"` does not fit an
-        // http port, so nothing fires even though the socket would answer.
+        // Wrong service: the redis flow does not fit an http port.
         let mut http = host_with(open(6379, Protocol::Tcp, "http"));
         run_flows(&mut http, FlowDb::global(), &benign_envelope(), |_| {
             Some(Box::new(Canned(b"# Server\r\nredis_version:7.2.4")))
@@ -775,7 +660,7 @@ mod tests {
         let port = http.ports().find(|port| port.number() == 6379).unwrap();
         assert_eq!(port.findings().count(), 0, "the service gate did not match");
 
-        // A closed port is never probed, whatever runs on it.
+        // A closed port is never probed.
         let mut closed = host_with(
             Port::new(6379, Protocol::Tcp, PortState::Closed)
                 .with_service(Service::new("redis", 100)),
@@ -792,8 +677,8 @@ mod tests {
         use crate::detect::flow::db::CompiledFlow;
         use crate::detect::flow::schema::FlowDetection;
 
-        // A flow whose class is off by default. Even on a matching port answering
-        // just what its `expect` wants, the stage must refuse to run it.
+        // A flow whose class is off by default does not run, even on a matching
+        // port.
         let source = r#"
             [detection]
             id      = "dangerous"
@@ -843,9 +728,8 @@ mod tests {
 
     #[test]
     fn a_flow_whose_budget_cuts_it_short_is_returned_as_a_refusal() {
-        // A probe that refuses every exchange on its byte budget, standing in for a
-        // flow cut short. detect_port must return the refusal, not swallow it into a
-        // silent empty result the way a quiet port would leave.
+        // A probe refusing every exchange on its byte budget; the refusal must be
+        // returned.
         struct Refusing;
         impl Probe for Refusing {
             fn speak(&mut self, _bytes: &[u8]) -> Option<Vec<u8>> {
@@ -883,11 +767,7 @@ mod tests {
         );
     }
 
-    /// A flow the process had no socket for is reported as starved, not as a
-    /// quiet port and not as a budget of its own: a question went unasked for
-    /// a reason outside both the target and the detection. Starved wins over
-    /// a budget refusal that came first, since it is the one with a remedy the
-    /// operator holds.
+    /// Starved is reported over a budget refusal that came first.
     #[test]
     fn a_flow_refused_a_socket_is_reported_as_starved_whatever_came_first() {
         struct Starving {
@@ -925,16 +805,12 @@ mod tests {
         assert!(!probe.slow(), "a starved flow says nothing about the port");
     }
 
-    /// A request a budget turned away is a question the flow did not get
-    /// answered, even when a later, smaller one fitted and the flow ended on a
-    /// reply. What the stage reports is the first refusal and how far the flow
-    /// got, not whatever its last exchange happened to do.
+    /// The first refusal is reported, even when a later request was answered.
     #[test]
     fn a_flow_refused_partway_is_reported_even_when_its_last_request_was_answered() {
         use crate::detect::flow::db::CompiledFlow;
 
-        /// Turns the first request away on its byte budget and answers the
-        /// rest, as a probe whose budget one large reply had nearly spent does.
+        /// Refuses the first request on its byte budget and answers the rest.
         struct RefusesFirst {
             calls: u32,
             refused: Option<ProbeRefusal>,
@@ -1005,10 +881,8 @@ mod tests {
         );
     }
 
-    /// The count of exchanges a flow plans reaches the port's own probe through
-    /// the cache that wraps it. A probe told nothing gives its first unanswered
-    /// datagram the whole of the flow's time, so a wrapper that swallowed the
-    /// plan would bring back the flow that never tries its second guess.
+    /// The planned exchange count reaches the probe beneath the cache, which
+    /// needs it to share the time between datagrams.
     #[test]
     fn a_flows_planned_exchanges_reach_the_probe_beneath_the_cache() {
         struct Planned(std::sync::Arc<Mutex<Vec<u32>>>);
@@ -1036,9 +910,8 @@ mod tests {
         assert_eq!(*told.lock().expect("uncontended"), vec![4]);
     }
 
-    /// A probe that counts its socket exchanges, so a test can tell a cached hit
-    /// from a real fetch, and can be told to answer with a complete reply or one
-    /// a budget would have cut short.
+    /// A probe that counts its socket exchanges, answering with a complete or a
+    /// truncated reply.
     struct Counting {
         calls: std::sync::Arc<AtomicU32>,
         reply: Vec<u8>,
@@ -1093,10 +966,8 @@ mod tests {
         );
     }
 
-    /// What a flow's probe says about the completeness of a reply describes
-    /// the reply it returned, whichever of the socket and the cache it came
-    /// from. A cached reply is whole by construction, so after a hit the probe
-    /// says so, even when its own last trip to the socket was cut short.
+    /// After a cache hit the reply is reported whole, even if the probe's own last
+    /// fetch was truncated.
     #[test]
     fn a_reply_served_from_the_cache_is_reported_whole_after_a_truncated_fetch() {
         let contention = HostContention::default();
@@ -1164,13 +1035,12 @@ mod tests {
         let contention = HostContention::default();
         let port = PortShare::new(&contention);
 
-        // The first flow reads a large page under a large budget and caches it.
+        // A large page cached under a large budget.
         let (first, _) = counting(&[b'x'; 100], true);
         let mut a = CachingProbe::new(first, &port, Duration::from_millis(1500), 4096);
         a.speak(request);
 
-        // A flow whose budget could not have read the whole page fetches its own,
-        // which its budget truncates exactly as it would without the cache.
+        // A smaller budget fetches its own.
         let (second, second_calls) = counting(&[b'y'; 40], true);
         let mut b = CachingProbe::new(second, &port, Duration::from_millis(1500), 40);
         let from_b = b.speak(request);
@@ -1211,19 +1081,13 @@ mod tests {
         );
     }
 
-    /// A port's flows run several at a time, so the findings they draw come back
-    /// out of order, and the run puts them back into the order the corpus holds.
-    ///
-    /// A scan is written down and read back: a report whose findings arrive in
-    /// whatever order the threads happened to finish is one that cannot be diffed
-    /// against the same scan run twice.
+    /// Concurrent flows' findings come back in corpus order.
     #[test]
     fn findings_come_back_in_corpus_order_however_the_flows_finish() {
         use crate::detect::flow::db::CompiledFlow;
         use crate::detect::flow::schema::FlowDetection;
 
-        // More flows than there are workers, so the run fills more than one round
-        // and the last of them cannot simply finish last.
+        // More flows than workers.
         let corpus = FlowDb::from_flows(
             (0..DETECTION_FLOW_CONCURRENCY * 3)
                 .map(|n| {
@@ -1252,8 +1116,7 @@ mod tests {
                 .collect(),
         );
 
-        // Each flow sleeps for a different slice of a millisecond, so a run that
-        // reported findings as the threads finished would come back shuffled.
+        // Varied sleeps, so finishing order differs from corpus order.
         let answered = std::sync::atomic::AtomicU64::new(0);
         let ordered = || {
             let (findings, _) = detect_port(
@@ -1291,21 +1154,13 @@ mod tests {
         }
     }
 
-    /// A port that stalls on the first flow is not then asked eight questions at
-    /// once.
-    ///
-    /// The strike count only saves anything if the flows that follow a dead wait
-    /// can be spared it, and flows launched together are all already waiting when
-    /// the first strike lands. So the widening waits on one flow coming back
-    /// clean, and a port that stalls stays on the serial path where the count
-    /// does its work.
+    /// A port that stalls on the first flow stays on the serial path.
     #[test]
     fn a_stalling_port_is_not_widened_onto() {
         use crate::detect::flow::db::CompiledFlow;
         use crate::detect::flow::schema::FlowDetection;
 
-        // Budgets in milliseconds rather than seconds, so a dead wait is a dead
-        // wait at test speed: `dead_after` is three quarters of this.
+        // Millisecond budgets; `dead_after` is three quarters of this.
         let corpus = FlowDb::from_flows(
             (0..DETECTION_FLOW_CONCURRENCY * 4)
                 .map(|n| {
@@ -1331,8 +1186,7 @@ mod tests {
                 .collect(),
         );
 
-        // Every exchange holds past the dead-wait mark and answers nothing, which
-        // is what a port that accepts a connection and then says nothing does.
+        // Every exchange holds past the dead-wait mark and answers nothing.
         struct Stalling(std::sync::Arc<AtomicU32>);
         impl Probe for Stalling {
             fn speak(&mut self, _bytes: &[u8]) -> Option<Vec<u8>> {
@@ -1355,9 +1209,7 @@ mod tests {
             move |_caps| Some(Box::new(Stalling(std::sync::Arc::clone(&counted))) as Box<dyn Probe>),
         );
 
-        // The flow that earns each strike is the only flow that pays for it. A run
-        // that widened first would have a worker already waiting for every one of
-        // the eight it launched.
+        // Only the striking flows paid.
         let sockets = opened.load(Ordering::Relaxed);
         assert!(
             sockets <= DEAD_PORT_STRIKES + 1,
@@ -1366,10 +1218,8 @@ mod tests {
         );
     }
 
-    /// A port served by one worker that takes its requests in turn, the way a
-    /// small embedded web server or a single-threaded dev server does. Every
-    /// exchange waits for the worker, so flows asked at once queue behind each
-    /// other and each waits for all the requests ahead of it.
+    /// A port served by one worker taking requests in turn, like a small
+    /// embedded or single-threaded dev server.
     struct OneWorker {
         worker: Mutex<()>,
         /// How long the worker takes over each request.
@@ -1378,9 +1228,8 @@ mod tests {
         served: Mutex<Vec<String>>,
     }
 
-    /// One flow's connection to a [`OneWorker`], holding the flow's clock the
-    /// way the live socket probe does: a request still queued when the clock
-    /// runs out is abandoned unserved and refused on the time budget.
+    /// One flow's connection to a [`OneWorker`]. A request still queued when the
+    /// flow's clock runs out is refused on the time budget.
     struct Queued {
         port: std::sync::Arc<OneWorker>,
         deadline: Instant,
@@ -1448,13 +1297,8 @@ mod tests {
     /// A port that answers every request, but one at a time, is asked every
     /// question its flows hold.
     ///
-    /// Asked by several flows at once, such a port answers each of them only
-    /// after everything queued ahead, so an exchange that takes a fraction of
-    /// a flow's budget alone takes most of it in company. That wait is the
-    /// scan's own doing, not the port's, and a port written off for it is a
-    /// live service whose detections were silently never run. Asked one flow
-    /// at a time, every question here is answered with its budget five times
-    /// over.
+    /// In company each exchange waits behind the queue; asked one flow at a
+    /// time, every question here is answered well within its budget.
     #[test]
     fn a_port_that_answers_one_request_at_a_time_is_asked_every_question() {
         let flows = 10;
@@ -1502,21 +1346,12 @@ mod tests {
     /// A slow exchange on one of a host's ports that overlapped an exchange on
     /// another of them is crowded, not a strike against its port.
     ///
-    /// Contention is the host's: one process serving several ports answers each
-    /// only after everything queued ahead across all of them, so an exchange to
-    /// one waits behind the exchanges to the others. Held past the dead-wait
-    /// mark, that wait is the scan's own queue and not the port's silence, and
-    /// striking the port for it would write off a live service. Two ports whose
-    /// exchanges overlap over one [`HostContention`] each see the other's, so
-    /// neither is struck; the same wait alone on the host is the port's own and
-    /// strikes it.
+    /// Two ports whose exchanges overlap over one [`HostContention`] are not
+    /// struck; the same wait alone on the host strikes.
     #[test]
     fn a_wait_behind_another_of_the_hosts_ports_is_crowded_not_a_strike() {
-        // A probe that answers once every exchange sharing its gate is in
-        // flight, so a test can make two overlap to the byte. A dead_after of
-        // zero makes every exchange count as having run past the dead-wait
-        // mark, so which of them strike turns on company alone and never on
-        // how long the machine took to run them.
+        // Answers once every exchange sharing its barrier is in flight. With a
+        // dead_after of zero, whether an exchange strikes turns on company alone.
         struct Held(std::sync::Arc<std::sync::Barrier>);
         impl Probe for Held {
             fn speak(&mut self, _bytes: &[u8]) -> Option<Vec<u8>> {
@@ -1525,8 +1360,7 @@ mod tests {
             }
         }
 
-        // Two ports of one host, their exchanges made to overlap: the barrier
-        // releases both only once both are in flight over the shared contention.
+        // Two ports of one host, their exchanges overlapping.
         let contention = HostContention::default();
         let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
         let (port_a, port_b) = (PortShare::new(&contention), PortShare::new(&contention));
@@ -1590,10 +1424,8 @@ mod tests {
         let port = PortShare::new(&contention);
         let calls = std::sync::Arc::new(AtomicU32::new(0));
 
-        // Each flow over the port gets its own probe but shares the strike count,
-        // as detect_port hands them out. Every probe answers nothing and, with a
-        // dead_after of zero, does so only after the whole budget, the way a port
-        // that accepts the connection and then stays silent holds a real socket.
+        // Each flow gets its own probe over the shared strike count, as in
+        // detect_port. With a dead_after of zero every silent exchange is dead.
         for n in 0..DEAD_PORT_STRIKES + 5 {
             let mut probe =
                 CachingProbe::new(Box::new(Silent(calls.clone())), &port, Duration::ZERO, 4096);
@@ -1608,10 +1440,8 @@ mod tests {
         );
     }
 
-    /// A flow the port stalled with nothing else waiting on it is reported
-    /// as the port's shortfall, and one that merely outran its own budget as
-    /// that budget's. Neither is dropped: both left a question unanswered, and
-    /// a reader deciding whether to look again needs to know which it was.
+    /// A flow the port stalled alone is reported as the port's shortfall, and
+    /// one that outran its own budget as that budget's.
     #[test]
     fn a_stalled_flow_is_reported_as_the_ports_shortfall_and_a_fast_refusal_as_its_budgets() {
         // A probe that gives nothing and always blames its own budget.
@@ -1630,8 +1460,7 @@ mod tests {
             connections: 4,
         };
 
-        // A fast refusal with no dead wait is the flow outrunning its own budget on
-        // a port still answering.
+        // A fast refusal with no dead wait is the flow's budget.
         let contention = HostContention::default();
         let port = PortShare::new(&contention);
         let mut live = CachingProbe::new(Box::new(Refuser), &port, Duration::from_secs(3600), 4096);
@@ -1645,9 +1474,7 @@ mod tests {
             })
         );
 
-        // The same refusal after a dead wait alone on the port is the port's
-        // doing. A dead_after of zero makes the exchange count as having run the
-        // clock out.
+        // After a dead wait alone on the port (dead_after of zero), the port's.
         let contention = HostContention::default();
         let port = PortShare::new(&contention);
         let mut dead = CachingProbe::new(Box::new(Refuser), &port, Duration::ZERO, 4096);
@@ -1655,8 +1482,7 @@ mod tests {
         assert!(dead.stalled);
         assert_eq!(dead.stopped(&limits), Some(Stopped::PortUnresponsive));
 
-        // And a flow that came after the port was given up on, and so never had
-        // its question sent, is the port's shortfall too.
+        // A flow after the port was given up on is the port's too.
         let (inner, calls) = counting(b"never read", true);
         let mut late = CachingProbe::new(inner, &port, Duration::ZERO, 4096);
         port.strikes.store(DEAD_PORT_STRIKES, Ordering::Relaxed);
@@ -1669,10 +1495,7 @@ mod tests {
         assert_eq!(late.stopped(&limits), Some(Stopped::PortUnresponsive));
     }
 
-    /// A wait spent sharing the port with other flows' exchanges is not held
-    /// against the port. It was the queue in front of the exchange as much as
-    /// the port, and a port that answers one request at a time would otherwise
-    /// be written off for the scan's own crowding.
+    /// A wait spent sharing the port with other flows' exchanges is not a strike.
     #[test]
     fn a_slow_exchange_in_company_is_not_a_strike() {
         /// Holds each exchange until every flow sharing the barrier has one in
@@ -1693,8 +1516,7 @@ mod tests {
                 .map(|n| {
                     let (port, barrier) = (&port, std::sync::Arc::clone(&barrier));
                     scope.spawn(move || {
-                        // A dead_after of zero makes each exchange count as
-                        // having run the clock out.
+                        // A dead_after of zero: every exchange is dead.
                         let mut probe = CachingProbe::new(
                             Box::new(Together(barrier)),
                             port,
@@ -1722,8 +1544,7 @@ mod tests {
     }
 
     /// A port that goes silent is given up on, and every flow it left without
-    /// its answers says so. The cut saves the scan the dead waits; it must not
-    /// also hide that the questions went unasked.
+    /// its answers reports a shortfall.
     #[test]
     fn every_flow_a_silent_port_left_unanswered_is_reported() {
         let flows = DETECTION_FLOW_CONCURRENCY * 2;
@@ -1763,12 +1584,8 @@ mod tests {
         );
     }
 
-    /// A process with no socket to give is not a port that stopped answering,
-    /// however long each exchange waited for one. A full descriptor table
-    /// holds every exchange to its flow's time, which is as long as a dead
-    /// port holds it, and read as the port's silence it would write the port
-    /// off and file every flow left behind against the port, sending the
-    /// reader to the target for what the file limit did.
+    /// A full descriptor table holds every exchange as long as a dead port does,
+    /// but is not struck against the port.
     #[test]
     fn flows_a_full_file_table_starved_are_the_limits_shortfall_and_never_the_ports() {
         let flows = DETECTION_FLOW_CONCURRENCY * 2;
@@ -1817,9 +1634,8 @@ mod tests {
         let contention = HostContention::default();
         let port = PortShare::new(&contention);
 
-        // A dead_after of zero makes every exchange count as having run the clock
-        // out, standing in for a port that dribbles a reply back only as its read
-        // timeout expires. Such a reply is real but as slow as silence.
+        // A dead_after of zero stands in for a port that dribbles a reply back
+        // only as its read timeout expires: real, but as slow as silence.
         for n in 0..DEAD_PORT_STRIKES + 5 {
             let (inner, calls) = counting(b"slow but complete", true);
             let mut probe = CachingProbe::new(inner, &port, Duration::ZERO, 4096);
