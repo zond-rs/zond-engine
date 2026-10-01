@@ -96,6 +96,83 @@ impl DnsConfig {
             scoped: read_scoped(),
         }
     }
+
+    /// This configuration less the servers `policy` will not ask.
+    ///
+    /// A domain left with no server is asked of nobody, as when its servers
+    /// cannot be reached; its names do not fall through to the global servers.
+    pub(crate) fn withholding(self, policy: &mut ServerPolicy<'_>) -> Self {
+        let global = self.global.and_then(|(config, opts)| {
+            let listed = config.name_servers();
+            let kept: Vec<NameServerConfig> = listed
+                .iter()
+                .filter(|server| policy.asks(server.ip))
+                .cloned()
+                .collect();
+            if kept.is_empty() && !listed.is_empty() {
+                return Err("every server it names is excluded".into());
+            }
+            let domain = config.domain().cloned();
+            let search = config.search().to_vec();
+            Ok((ResolverConfig::from_parts(domain, search, kept), opts))
+        });
+        let scoped = self
+            .scoped
+            .into_iter()
+            .map(|scope| ScopedServers {
+                servers: scope.servers.and_then(|servers| {
+                    let kept: Vec<SocketAddr> = servers
+                        .into_iter()
+                        .filter(|at| policy.asks(at.ip()))
+                        .collect();
+                    if kept.is_empty() {
+                        Err("its servers are excluded".into())
+                    } else {
+                        Ok(kept)
+                    }
+                }),
+                domain: scope.domain,
+            })
+            .collect();
+        Self { global, scoped }
+    }
+}
+
+/// Which name servers a pass may put a question to.
+///
+/// A scan's [exclusions](crate::model::exclusion) cover the servers it asks
+/// as much as its targets: an excluded router is sent no query either.
+pub(crate) struct ServerPolicy<'a> {
+    may_ask: Box<dyn Fn(&IpAddr) -> bool + 'a>,
+    /// The servers already said to be skipped, each said once.
+    said: Vec<IpAddr>,
+}
+
+impl<'a> ServerPolicy<'a> {
+    /// A policy asking the servers `may_ask` allows.
+    pub(crate) fn new(may_ask: impl Fn(&IpAddr) -> bool + 'a) -> Self {
+        Self {
+            may_ask: Box::new(may_ask),
+            said: Vec::new(),
+        }
+    }
+
+    /// A policy asking every server.
+    pub(crate) fn every() -> Self {
+        Self::new(|_| true)
+    }
+
+    /// Whether `server` may be asked, saying once when it may not.
+    pub(crate) fn asks(&mut self, server: IpAddr) -> bool {
+        if (self.may_ask)(&server) {
+            return true;
+        }
+        if !self.said.contains(&server) {
+            self.said.push(server);
+            info!(verbosity = 1, "DNS server {server} not asked (excluded)");
+        }
+        false
+    }
 }
 
 /// Unicast DNS ready to ask, for the length of one resolution pass.

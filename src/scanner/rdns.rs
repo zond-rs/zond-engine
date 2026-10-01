@@ -64,7 +64,7 @@ use crate::protocols::{
     mdns::{self, MdnsHost},
 };
 use crate::resolve::{
-    DnsConfig, HostsTable, Reverse, ScopedServers, Snapshot, covers, reverse_name,
+    DnsConfig, HostsTable, Reverse, ScopedServers, ServerPolicy, Snapshot, covers, reverse_name,
 };
 use crate::scanner::session::ScanContext;
 use crate::{counted, info, model::ip, warn};
@@ -74,6 +74,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::Instant;
 
+use crate::model::ip::Exposure;
 use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;
 use crate::transport::probe::{ProbeKind, ProbeTransport, TransportError};
@@ -136,10 +137,8 @@ type TransID = u16;
 /// socket of its address family.
 struct QueryTarget {
     server: SocketAddr,
-    /// The reverse zone this server is asked for, an index into the
-    /// resolver's scopes, or `None` for a server asked about every address no
-    /// scope claims.
-    scope: Option<usize>,
+    /// Which addresses this server is asked about.
+    asks: Asks,
     socket: Arc<UdpSocket>,
     /// Whether this resolver has answered any query, which keeps it asked
     /// however many others it ignores.
@@ -158,6 +157,31 @@ impl QueryTarget {
     /// slow resolver has answered, and is kept.
     fn is_asked(&self) -> bool {
         self.answered || self.unanswered < REVERSE_LOOKUPS_IN_FLIGHT
+    }
+}
+
+/// Which addresses a server is asked about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asks {
+    /// Those under the scoped reverse zone at this index into the resolver's
+    /// scopes.
+    Scope(usize),
+    /// Every address no scope claims.
+    Unscoped,
+    /// The addresses no scope claims that the internet does not route, whose
+    /// names only the local network has. See [`Routes::of`].
+    Internal,
+}
+
+impl Asks {
+    /// Whether a server asking this is asked about `ip`, which lies under the
+    /// scope at `scope`, or under none.
+    fn about(self, ip: IpAddr, scope: Option<usize>) -> bool {
+        match self {
+            Self::Scope(index) => scope == Some(index),
+            Self::Unscoped => scope.is_none(),
+            Self::Internal => scope.is_none() && Exposure::of(ip) == Exposure::Internal,
+        }
     }
 }
 
@@ -257,13 +281,14 @@ impl HostnameResolver {
     /// hosts file and sniffed traffic; the missing configuration is reported
     /// once.
     pub fn new(dns_rx: UnboundedReceiver<IpAddr>) -> Result<Self, ResolverError> {
-        let routes = Routes::from_system();
+        let routes = Routes::from_system(&mut ServerPolicy::every());
         let transport = ProbeTransport::open_receiver(ProbeKind::UdpResolve)?;
         Self::with_routes(dns_rx, transport, routes)
     }
 
-    /// [`new`](Self::new), sniffing only on `links` and the links replies
-    /// from the resolvers it queries arrive by.
+    /// [`new`](Self::new), asking only the servers `may_ask` allows and
+    /// sniffing only on `links` and the links replies from the resolvers it
+    /// queries arrive by.
     ///
     /// An mDNS answer about a target arrives over the target's link, a unicast
     /// answer over the link toward its server. See
@@ -271,8 +296,9 @@ impl HostnameResolver {
     pub(crate) fn capturing_on(
         dns_rx: UnboundedReceiver<IpAddr>,
         links: &[Zone],
+        may_ask: impl Fn(&IpAddr) -> bool,
     ) -> Result<Self, ResolverError> {
-        let routes = Routes::from_system();
+        let routes = Routes::from_system(&mut ServerPolicy::new(may_ask));
         let mut servers = IpSet::new();
         for (server, _) in &routes.servers {
             servers.insert(server.ip());
@@ -308,7 +334,10 @@ impl HostnameResolver {
     ) -> Result<Self, ResolverError> {
         let routes = Routes {
             hosts: HostsTable::default(),
-            servers: dns_servers.into_iter().map(|at| (at, None)).collect(),
+            servers: dns_servers
+                .into_iter()
+                .map(|at| (at, Asks::Unscoped))
+                .collect(),
             scopes: Vec::new(),
         };
         let resolver = Self::with_routes(dns_rx, transport, routes)?;
@@ -508,7 +537,8 @@ impl HostnameResolver {
     ///
     /// The zone's resolvers are the servers of the longest scoped reverse zone
     /// covering the address, as the OS asks them, or otherwise every global
-    /// resolver and gateway (see [`Routes`]). All are asked, because a resolver
+    /// resolver, and every gateway for an address the internet does not route
+    /// (see [`Routes::of`]). All are asked, because a resolver
     /// that declines to serve a reverse zone answers as fast and as confidently
     /// as one that looked and found nothing.
     async fn send_dns_query(&mut self, ip: &IpAddr) -> std::io::Result<Vec<TransID>> {
@@ -531,7 +561,7 @@ impl HostnameResolver {
         let mut last_error = None;
 
         for (index, target) in self.query_targets.iter().enumerate() {
-            if target.scope != scope || !target.is_asked() {
+            if !target.asks.about(*ip, scope) || !target.is_asked() {
                 continue;
             }
             let id = self.get_next_trans_id();
@@ -837,21 +867,18 @@ async fn recv_reply(socket: &Option<Arc<UdpSocket>>) -> (Vec<u8>, SocketAddr) {
 ///
 /// A family whose socket will not bind (IPv6 disabled, say) loses its servers;
 /// each refusal is warned about.
-fn bind_query_targets(
-    servers: &[(SocketAddr, Option<usize>)],
-    scopes: &[ReverseScope],
-) -> Vec<QueryTarget> {
+fn bind_query_targets(servers: &[(SocketAddr, Asks)], scopes: &[ReverseScope]) -> Vec<QueryTarget> {
     let addresses: Vec<SocketAddr> = servers.iter().map(|(at, _)| *at).collect();
     let v4 = bind_family(&addresses, SocketAddr::is_ipv4, "0.0.0.0:0");
     let v6 = bind_family(&addresses, SocketAddr::is_ipv6, "[::]:0");
 
     let targets: Vec<QueryTarget> = servers
         .iter()
-        .filter_map(|&(server, scope)| {
+        .filter_map(|&(server, asks)| {
             let socket = if server.is_ipv4() { &v4 } else { &v6 };
             Some(QueryTarget {
                 server,
-                scope,
+                asks,
                 socket: Arc::clone(socket.as_ref()?),
                 answered: false,
                 unanswered: 0,
@@ -865,9 +892,10 @@ fn bind_query_targets(
             "reverse queries go to {}",
             targets
                 .iter()
-                .map(|t| match t.scope {
-                    Some(scope) => format!("{} (for {})", t.server, scopes[scope].domain),
-                    None => t.server.to_string(),
+                .map(|t| match t.asks {
+                    Asks::Scope(scope) => format!("{} (for {})", t.server, scopes[scope].domain),
+                    Asks::Internal => format!("{} (for internal addresses)", t.server),
+                    Asks::Unscoped => t.server.to_string(),
                 })
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -920,46 +948,60 @@ struct ReverseScope {
 struct Routes {
     /// The hosts file, which names an address it lists without a query.
     hosts: HostsTable,
-    /// Every server a query may go to, each with the scope it is asked for,
-    /// an index into `scopes`, or `None` for every address no scope claims.
-    servers: Vec<(SocketAddr, Option<usize>)>,
+    /// Every server a query may go to, each with the addresses it is asked
+    /// about.
+    servers: Vec<(SocketAddr, Asks)>,
     /// The scoped reverse zones, longest first, so the first that covers an
     /// address is the one the OS would ask.
     scopes: Vec<ReverseScope>,
 }
 
 impl Routes {
-    /// The routes the host has now.
-    fn from_system() -> Self {
+    /// The routes the host has now, through the servers `policy` allows.
+    fn from_system(policy: &mut ServerPolicy<'_>) -> Self {
         Self::of(
             HostsTable::read_system(),
             DnsConfig::read_system(),
             gateways(),
+            policy,
         )
     }
 
     /// The routes a hosts file, a resolver configuration and the interfaces'
-    /// default gateways make.
+    /// default gateways make, through the servers `policy` allows.
     ///
     /// An address under a scoped reverse zone is asked of that zone's servers
     /// alone. A VPN serving the reverse zone of its own addresses installs one,
     /// and asking any other server would fail and leak which private address the
     /// scan found.
     ///
-    /// Every other address goes to the configured resolvers and to each
-    /// interface's default gateway. Under RFC 6303 a general-purpose resolver
-    /// answers private reverse zones itself with NXDOMAIN, whatever names the
-    /// local network has. On a home or office LAN the gateway is the DHCP server,
-    /// the one host that can map a lease to a name. Gateways are taken per
+    /// Every other address goes to the configured resolvers. One the internet
+    /// does not route goes to each interface's default gateway too. Under RFC
+    /// 6303 a general-purpose resolver answers those reverse zones itself with
+    /// NXDOMAIN, whatever names the local network has. On a home or office LAN
+    /// the gateway is the DHCP server, the one host that can map a lease to a
+    /// name. A public address it is not asked about: behind a full-tunnel VPN
+    /// the query would leave outside the tunnel. Gateways are taken per
     /// interface, since with a VPN up the default route belongs to the tunnel.
-    fn of(hosts: HostsTable, dns: DnsConfig, gateways: Vec<SocketAddr>) -> Self {
+    fn of(
+        hosts: HostsTable,
+        dns: DnsConfig,
+        gateways: Vec<SocketAddr>,
+        policy: &mut ServerPolicy<'_>,
+    ) -> Self {
+        let dns = dns.withholding(policy);
+        let gateways: Vec<SocketAddr> = gateways
+            .into_iter()
+            .filter(|gateway| policy.asks(gateway.ip()))
+            .collect();
         let mut servers = Vec::new();
 
         match &dns.global {
             Ok((config, _options)) => {
                 for name_server in config.name_servers() {
                     if let Some(port) = udp_port(name_server) {
-                        push_unique(&mut servers, (SocketAddr::new(name_server.ip, port), None));
+                        let at = SocketAddr::new(name_server.ip, port);
+                        push_unique(&mut servers, (at, Asks::Unscoped));
                     }
                 }
             }
@@ -976,7 +1018,10 @@ impl Routes {
             ),
         }
         for gateway in gateways {
-            push_unique(&mut servers, (gateway, None));
+            // A gateway that is a resolver already is asked about everything.
+            if !servers.contains(&(gateway, Asks::Unscoped)) {
+                push_unique(&mut servers, (gateway, Asks::Internal));
+            }
         }
 
         // Only a reverse zone can cover a reverse name.
@@ -994,7 +1039,7 @@ impl Routes {
             let unasked = match scope.servers {
                 Ok(zone_servers) => {
                     for at in zone_servers {
-                        push_unique(&mut servers, (at, Some(index)));
+                        push_unique(&mut servers, (at, Asks::Scope(index)));
                     }
                     None
                 }
@@ -1128,8 +1173,14 @@ const REVERSE_LOOKUPS_IN_FLIGHT: usize = 32;
 /// Reads the hosts file and resolver configuration once and asks every address
 /// against that reading; see [`Snapshot::reverse`].
 pub(crate) async fn resolve(ctx: &ScanContext, unheard: Unheard) {
-    let snapshot = Arc::new(crate::resolve::Resolver::from_system().snapshot());
-    resolve_from(ctx, unheard, snapshot).await;
+    resolve_by(ctx, unheard, &crate::resolve::Resolver::from_system()).await;
+}
+
+/// [`resolve`], reading `resolver`'s sources and asking only the servers the
+/// scan may probe.
+async fn resolve_by(ctx: &ScanContext, unheard: Unheard, resolver: &crate::resolve::Resolver) {
+    let snapshot = resolver.snapshot_asking(&mut ServerPolicy::new(|server| ctx.may_probe(server)));
+    resolve_from(ctx, unheard, Arc::new(snapshot)).await;
 }
 
 /// [`resolve`], against a reading already taken.
@@ -2117,7 +2168,7 @@ mod tests {
         let (global_at, scoped_at) = (global.addr(), scoped.addr());
         let routes = Routes {
             hosts: HostsTable::default(),
-            servers: vec![(global_at, None), (scoped_at, Some(0))],
+            servers: vec![(global_at, Asks::Unscoped), (scoped_at, Asks::Scope(0))],
             scopes: vec![
                 ReverseScope {
                     domain: "100.51.198.in-addr.arpa".into(),
@@ -2153,7 +2204,7 @@ mod tests {
         let at = server.addr();
         let routes = Routes {
             hosts: HostsTable::parse("198.51.100.23 box.example\n"),
-            servers: vec![(at, None)],
+            servers: vec![(at, Asks::Unscoped)],
             scopes: Vec::new(),
         };
         let (tx, resolver) = resolver_routed(routes);
@@ -2362,6 +2413,149 @@ mod tests {
                 .get(&ip)
                 .map(|named| named.hostname.as_str()),
             Some("overheard.example.com")
+        );
+    }
+
+    /// A global configuration naming `at`, giving up on a silent server fast.
+    fn global_at(
+        at: SocketAddr,
+    ) -> Result<
+        (
+            hickory_resolver::config::ResolverConfig,
+            hickory_resolver::config::ResolverOpts,
+        ),
+        String,
+    > {
+        let mut server = hickory_resolver::config::NameServerConfig::udp(at.ip());
+        for connection in &mut server.connections {
+            connection.port = at.port();
+        }
+        let mut opts = hickory_resolver::config::ResolverOpts::default();
+        opts.attempts = 1;
+        opts.timeout = Duration::from_millis(200);
+        let config =
+            hickory_resolver::config::ResolverConfig::from_parts(None, Vec::new(), vec![server]);
+        Ok((config, opts))
+    }
+
+    /// A gateway is asked about the addresses the internet does not route,
+    /// whose names only the local network has, and not about a public one,
+    /// which behind a full-tunnel VPN would leave outside the tunnel. The
+    /// configured resolver is asked about both.
+    #[tokio::test]
+    async fn a_gateway_is_asked_only_about_addresses_the_internet_does_not_route() {
+        let (resolver_port, gateway) = (SilentUdpPort::open(), SilentUdpPort::open());
+        let dns = DnsConfig {
+            global: global_at(resolver_port.addr()),
+            scoped: Vec::new(),
+        };
+        let routes = Routes::of(
+            HostsTable::default(),
+            dns,
+            vec![gateway.addr()],
+            &mut ServerPolicy::every(),
+        );
+        let (tx, resolver) = resolver_routed(routes);
+        for ip in [v4(10, 0, 0, 7), v4(203, 0, 113, 7)] {
+            tx.send(ip).expect("the resolver is listening");
+        }
+        drop(tx);
+
+        tokio::time::timeout(Duration::from_secs(60), resolver.run())
+            .await
+            .expect("the resolver finishes");
+
+        assert_eq!(
+            questions_asked(&gateway),
+            vec!["7.0.0.10.in-addr.arpa."],
+            "the gateway was asked about a public address"
+        );
+        let mut asked = questions_asked(&resolver_port);
+        asked.sort();
+        assert_eq!(
+            asked,
+            vec!["7.0.0.10.in-addr.arpa.", "7.113.0.203.in-addr.arpa."]
+        );
+    }
+
+    /// A resolver or gateway at an excluded address is sent no query, and a
+    /// line at verbosity 1 says it was skipped.
+    #[tokio::test]
+    async fn an_excluded_resolver_or_gateway_is_asked_nothing() {
+        let excluded = SilentUdpPort::open();
+        let configured_there = DnsConfig {
+            global: global_at(excluded.addr()),
+            scoped: Vec::new(),
+        };
+        let none_configured = DnsConfig {
+            global: Err("no nameservers found in config".into()),
+            scoped: Vec::new(),
+        };
+        for (dns, gateways) in [
+            (configured_there, Vec::new()),
+            (none_configured, vec![excluded.addr()]),
+        ] {
+            let mut routes = None;
+            let lines = crate::logging::logged(|| {
+                let mut policy = ServerPolicy::new(|server| *server != excluded.addr().ip());
+                routes = Some(Routes::of(
+                    HostsTable::default(),
+                    dns,
+                    gateways,
+                    &mut policy,
+                ));
+            });
+            let (tx, resolver) = resolver_routed(routes.expect("the routes were built"));
+            tx.send(v4(10, 0, 0, 7)).expect("the resolver is listening");
+            drop(tx);
+            tokio::time::timeout(Duration::from_secs(60), resolver.run())
+                .await
+                .expect("the resolver finishes");
+
+            assert_eq!(questions_asked(&excluded), Vec::<String>::new());
+            assert!(
+                lines.iter().any(|line| line.verbosity == 1
+                    && line.message == "DNS server 127.0.0.1 not asked (excluded)"),
+                "the skipped server went unsaid: {:?}",
+                lines.iter().map(|line| &line.message).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// An unprivileged scan's lookups are not sent to an excluded resolver
+    /// either.
+    #[test]
+    fn a_lookup_without_privilege_asks_no_excluded_resolver() {
+        use crate::model::exclusion::Exclusions;
+
+        let excluded = SilentUdpPort::open();
+        let mut forbidden = crate::model::ip::set::IpSet::new();
+        forbidden.insert(excluded.addr().ip());
+        let (_session, ctx) = ScanSession::builder()
+            .excluding(Exclusions::new(forbidden))
+            .build();
+        ctx.update_host(v4(192, 0, 2, 1), |host| host.set_status(HostStatus::Up));
+        let at = excluded.addr();
+        let resolver = crate::resolve::Resolver::given(Default::default(), move || {
+            (
+                String::new(),
+                DnsConfig {
+                    global: global_at(at),
+                    scoped: Vec::new(),
+                },
+            )
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime builds");
+
+        runtime.block_on(resolve_by(&ctx, Unheard::Skipped, &resolver));
+
+        assert_eq!(
+            questions_asked(&excluded),
+            Vec::<String>::new(),
+            "the excluded resolver was asked"
         );
     }
 }

@@ -2090,7 +2090,9 @@ pub(super) async fn spawn_resolver(
     ctx: ScanContext,
 ) -> JoinHandle<Option<HostnameResolver>> {
     tokio::spawn(async move {
-        match HostnameResolver::capturing_on(dns_rx, &ctx.capture_links()) {
+        match HostnameResolver::capturing_on(dns_rx, &ctx.capture_links(), |server| {
+            ctx.may_probe(server)
+        }) {
             Ok(resolver) => {
                 // Routine; only the failure is worth a normal-level line.
                 success!(verbosity = 3, "successfully initialized hostname resolver");

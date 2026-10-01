@@ -100,7 +100,9 @@ use std::time::Duration;
 use crate::warn;
 
 pub(crate) use hosts::HostsTable;
-pub(crate) use unicast::{DnsConfig, Reverse, ScopedServers, Unicast, covers, reverse_name};
+pub(crate) use unicast::{
+    DnsConfig, Reverse, ScopedServers, ServerPolicy, Unicast, covers, reverse_name,
+};
 
 /// The default mDNS reply window. See [`ResolveConfig::mdns_timeout`] for why it
 /// is a whole second.
@@ -245,6 +247,11 @@ impl Resolver {
     /// against it with [`resolve_in`](Self::resolve_in), so every name in a
     /// target list sees the same file and the same servers.
     pub(crate) fn snapshot(&self) -> Snapshot {
+        self.snapshot_asking(&mut ServerPolicy::every())
+    }
+
+    /// [`snapshot`](Self::snapshot), asking only the servers `policy` allows.
+    pub(crate) fn snapshot_asking(&self, policy: &mut ServerPolicy<'_>) -> Snapshot {
         let (hosts, dns) = match &self.origin {
             Origin::System => (
                 HostsTable::read_system(),
@@ -258,7 +265,7 @@ impl Resolver {
         };
         Snapshot {
             hosts,
-            unicast: dns.map(Unicast::from_config),
+            unicast: dns.map(|dns| Unicast::from_config(dns.withholding(policy))),
         }
     }
 
