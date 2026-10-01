@@ -1,4 +1,4 @@
-<h1 align="center">zond-engine</h1>
+<h1 align="center">Zond Engine</h1>
 
 <p align="center">
   <a href="https://crates.io/crates/zond-engine"><img src="https://img.shields.io/crates/v/zond-engine.svg" alt="Crates.io"></a>
