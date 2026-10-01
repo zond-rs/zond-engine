@@ -28,7 +28,7 @@
 //!
 //! On a labelled segment five of eight hosts answered from a
 //! locally-administered (randomised) address. [`HardwareInfo`] names no vendor
-//! for one, so this source stays quiet rather than matching a random block.
+//! for one, so this source stays quiet.
 //!
 //! ## Worth
 //!

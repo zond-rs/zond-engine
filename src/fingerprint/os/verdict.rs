@@ -47,7 +47,7 @@ pub const MAX_STACK_ACCURACY: u8 = 70;
 
 /// The least a finding may score and still be reported.
 ///
-/// Under this, [`classify`] yields nothing rather than the least bad guess.
+/// Under this, [`classify`] yields nothing.
 pub const MIN_REPORTABLE_ACCURACY: u8 = 40;
 
 /// What a rule measured by this engine is worth before its own weight applies.
@@ -497,7 +497,7 @@ mod tests {
         );
     }
 
-    /// An unknown host gets no answer rather than a guess.
+    /// An unknown host gets no answer.
     #[test]
     fn a_shape_no_rule_describes_is_reported_as_nothing() {
         // An option layout nothing emits: an MSS, an unknown kind, and padding.

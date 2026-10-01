@@ -104,7 +104,7 @@ fn tcp_observation_from(example: &Example) -> StackReply {
 /// [`matches_with_series`](rules::matches_with_series), so its examples run that
 /// way.
 ///
-/// A class name nothing produces panics, rather than silently failing to match.
+/// A class name nothing produces panics.
 fn series_from(example: &Example) -> Option<SeriesClasses> {
     if !example.records_a_series() {
         return None;

@@ -247,7 +247,7 @@ mod tests {
     }
 
     /// A banner naming a release, arriving after a stack reading, must
-    /// corroborate it rather than lose to it.
+    /// corroborate it.
     ///
     /// Stack `Linux` at 0.65 and banner `Debian 12.0` at 0.55 agree, and the
     /// release survives.
