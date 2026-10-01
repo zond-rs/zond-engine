@@ -8,89 +8,73 @@
 
 //! # Reading nmap's XML as a report
 //!
-//! The same `-oX` file [`import::nmap`](crate::import::nmap) reads as targets,
-//! read instead as what that scan found: hosts with their reachability, ports
-//! with their states, services with their versions, and the operating system
-//! nmap settled on. What comes back is a [`ScanReport`], so an nmap scan from
-//! last quarter and a scan this engine ran tonight are the same input to
-//! [`diff`](crate::diff).
+//! The nmap XML file [`import::nmap`](crate::import::nmap) reads as targets, read
+//! here as what that scan found: hosts with their reachability, ports with their
+//! states, services with their versions, and the operating system nmap settled
+//! on. The result is a [`ScanReport`], ready for [`diff`](crate::diff).
 //!
-//! The parsing is `xml`'s, refusals and bounds included. This module is the
-//! mapping.
+//! Parsing, refusals and bounds come from `xml`; this module is the mapping.
 //!
-//! ## Nmap's vocabulary is not this engine's, and the gaps are where the care is
+//! ## Where nmap's vocabulary differs
 //!
 //! Four places where a literal translation would record something the scan did
 //! not establish.
 //!
-//! A host nmap calls `down` is [`Unknown`](HostStatus::Unknown) unless
-//! something said otherwise. Nmap uses one word both for an intermediary
-//! reporting an address unreachable and for nothing coming back, where
-//! [`HostStatus::Down`] refuses to be inferred from silence. So the `reason`
-//! attribute decides: `host-unreach` and its relatives give
+//! A host nmap calls `down` is [`Unknown`](HostStatus::Unknown) unless its
+//! `reason` says otherwise. Nmap uses the word both for an intermediary reporting
+//! an address unreachable and for silence, and [`HostStatus::Down`] is never
+//! inferred from silence. `host-unreach` and its relatives give
 //! [`Down`](HostStatus::Down), `admin-prohibited` and its relatives give
-//! [`Blocked`](HostStatus::Blocked), and everything else, a bare `no-response`
-//! included, gives `Unknown`.
+//! [`Blocked`](HostStatus::Blocked), and everything else, including
+//! `no-response`, gives `Unknown`.
 //!
-//! A host nmap calls `up` for the reason `user-set` is `Unknown`. That is
-//! what nmap records when it was told to skip host discovery: no probe was sent
-//! and nothing answered, so `up` there is an instruction echoed back rather than
-//! a finding. Where such a host has a port that answered, the port proves the
-//! stack is alive and the status is promoted on that evidence, which is the
-//! inference this engine's own port scanner makes.
+//! A host nmap calls `up` for the reason `user-set` is `Unknown`. Nmap records
+//! that when told to skip host discovery, so no probe was sent. If such a host
+//! has a port that answered, the status is promoted on that evidence, as this
+//! engine's own port scanner does.
 //!
-//! A service nmap identified by `method="table"` is recorded at confidence
-//! zero. That method means nmap looked the port number up in a file, which is
-//! what this engine's own
-//! [`baseline_service`](crate::fingerprint::baseline_service) does to every
-//! classified port. Recording it the same way keeps the two symmetrical, and
-//! [`Service::is_inferred`](crate::model::port::Service::is_inferred) tells
-//! either apart from an identification. A comparison ignores both, so two tools
-//! with different port catalogues do not appear to disagree about every port on
-//! the network.
+//! A service nmap identified by `method="table"` is recorded at confidence zero.
+//! That method is a lookup of the port number, which is what
+//! [`baseline_service`](crate::fingerprint::baseline_service) does here, and
+//! [`Service::is_inferred`](crate::model::port::Service::is_inferred) marks both.
+//! A comparison ignores inferred services, so two tools with different port
+//! catalogues do not appear to disagree about every port.
 //!
-//! The hostname is the first `<hostname>` nmap names the address by, whichever
-//! its type, except that a `user` name in a document this engine wrote is not
-//! read as one. Nmap types a name the operator gave as a target `user`; this
-//! engine's exporter types the DNS names a host gave for itself that way, and
-//! those are not the name a lookup resolved.
+//! The hostname is the first `<hostname>` of any type, except a `user` name in a
+//! document this engine wrote. Nmap uses `user` for a name the operator gave as a
+//! target; this engine's exporter uses it for DNS names a host gave for itself,
+//! which are not what a lookup resolved.
 //!
-//! ## What the report says it covered
+//! ## Scope
 //!
-//! [`TargetScope`] is what lets a comparison tell a host that went away from one
-//! nobody looked for, and nmap's XML does not record its resolved target set.
-//! What it does record is a `<host>` element per address it accounted for, and
-//! whether that accounting is complete is knowable: nmap lists the addresses that
-//! did not answer only when asked to, so a document containing any host that is
-//! not `up` lists everything it considered.
+//! [`TargetScope`] lets a comparison tell a host that went away from one nobody
+//! looked for, but nmap's XML does not record its resolved target set. It writes
+//! a `<host>` per address it accounted for, and lists addresses that did not
+//! answer only when asked to. So a document containing any host that is not `up`
+//! lists everything it considered.
 //!
-//! So the scope is the addresses the document accounts for, claimed only when
-//! such a host appears. A document of nothing but live hosts states no scope at
-//! all, and every question a comparison asks of it answers
-//! [`Unstated`](crate::diff::Coverage::Unstated). Under-claiming costs a
-//! comparison some confirmations. Over-claiming would have it report hosts as
-//! gone on the strength of a scan that never looked.
+//! The scope is therefore the addresses the document accounts for, claimed only
+//! when such a host appears. A document of only live hosts states no scope, and a
+//! comparison answers [`Unstated`](crate::diff::Coverage::Unstated) for it.
+//! Under-claiming costs some confirmations; over-claiming would report hosts as
+//! gone that were never looked for.
 //!
 //! ## What is not read
 //!
 //! Traceroute hops, `<distance>`, `<times>`, `<uptime>`, the sequence
 //! predictions, `<owner>`, the raw service fingerprints, and every `<script>`
-//! element on a port or under `<hostscript>`. None of them bears on what
+//! element on a port or under `<hostscript>`. None bears on what
 //! [`diff`](crate::diff) compares.
 //!
-//! Two of those are worth stating separately, because this engine's own nmap
-//! exporter writes them. A report exported to nmap XML and read back here has no
-//! findings and no path: nmap's format carries a finding as `<script output>`
-//! text meant for a person, and a rebuilt `Finding` needs the detection identity,
-//! version and content hash that text does not hold. `<distance>` and `<times>`
-//! are recoverable and are not read yet. [`json`](super::json) is the round trip
-//! that keeps everything.
+//! This engine's own nmap exporter writes findings and paths, so a report
+//! exported to nmap XML and read back here loses both: nmap carries a finding as
+//! `<script output>` text, without the detection identity, version and content
+//! hash a `Finding` needs. `<distance>` and `<times>` are recoverable but not read
+//! yet. [`json`](super::json) is the round trip that keeps everything.
 //!
-//! Read against the shape of that list: `<extraports>` and the
-//! `<extrareasons ports="…">` beneath it. Nmap names the ports it summarised
-//! there whenever it was asked to, and those hundreds of closed ports are the
-//! difference between a readable comparison and a wall of endpoints that appear
-//! to have opened.
+//! `<extraports>` and its `<extrareasons ports="…">` are read. Nmap names the
+//! summarised ports there when asked to, and without them hundreds of closed
+//! ports would appear to have opened in a comparison.
 
 use std::collections::BTreeMap;
 use std::io::BufRead;
@@ -120,18 +104,15 @@ const FORMAT: &str = "nmap XML";
 
 /// The attributes this reader keeps. Everything else is skipped unbuffered.
 ///
-/// Longer than the target reader's four, since a finding is more than an address.
-/// Several names appear on more than one element, `version` on both `<nmaprun>`
-/// and `<service>` and `name` on three, and which is meant is decided
-/// by the element the parser is inside, never by the name alone.
+/// Several names appear on more than one element (`version` on `<nmaprun>` and
+/// `<service>`, `name` on three), so the element being read decides which is
+/// meant.
 ///
-/// `args` is deliberately absent: it runs to kilobytes and nothing reads it.
-/// `services` and `ports` are kept despite doing the same, since between them
-/// they are what nmap knows and its port list does not say: which ports were
-/// walked, and which of them it found uninteresting enough to leave out. Both are
-/// [lossy](crate::import::xml::Parser::with_lossy), since a sparse sweep of every
-/// port could write several hundred kilobytes of either and neither is worth
-/// refusing a file over.
+/// `args` is left out: it runs to kilobytes and nothing reads it. `services` and
+/// `ports` can be as long, but say which ports were probed and which were left
+/// out of the port list. Both are [lossy](crate::import::xml::Parser::with_lossy),
+/// since a sparse sweep of every port could write several hundred kilobytes of
+/// either.
 const KEPT: &[&[u8]] = &[
     b"addr",
     b"addrtype",
@@ -162,23 +143,19 @@ const KEPT: &[&[u8]] = &[
     b"scanner",
 ];
 
-/// The attributes dropped rather than refused when they run long.
+/// The attributes dropped, not refused, when they run long.
 ///
-/// Both are port lists, and both only ever enrich: without them a comparison
-/// falls back to saying it cannot tell whether an endpoint was probed, which is
-/// the honest answer rather than a wrong one.
+/// Without them a comparison can only say it cannot tell whether an endpoint was
+/// probed, which is still correct.
 const LOSSY: &[&[u8]] = &[b"services", b"ports"];
 
 /// The longest attribute value kept, in bytes.
 ///
-/// Well past the parser's default, because of `services`. Nmap writes its default
-/// port set out as an explicit list of a thousand entries, which runs to
-/// several kilobytes. Every other kept value here is free text a service
-/// reported about itself and runs to a few dozen bytes. The element's whole
-/// markup is still bounded by
+/// Well past the parser's default because nmap writes its default port set to
+/// `services` as an explicit list of a thousand entries, several kilobytes. The
+/// element's markup is still bounded by
 /// [`ImportLimits::max_line_bytes`](crate::import::ImportLimits::max_line_bytes),
-/// and the document by [`ReportOptions::max_document_bytes`], which is where an
-/// unbounded one is actually stopped.
+/// and the document by [`ReportOptions::max_document_bytes`].
 const MAX_VALUE_BYTES: usize = 16 * 1024;
 
 /// nmap's `conf` runs 0 to 10, and this engine's confidence runs 0 to 100.
@@ -205,10 +182,8 @@ impl ReportReader for NmapXmlReportReader {
 }
 
 impl NmapXmlReportReader {
-    /// The parser a document is read with, bounded as this reader's options
-    /// say: the element ceiling is the one the document ceiling implies, so a
-    /// caller who raises the byte ceiling for a large scan is not refused its
-    /// document by a fixed element count.
+    /// The parser a document is read with. The element ceiling is derived from
+    /// the document ceiling, so raising the byte ceiling raises both.
     fn parser<'a>(&self, input: &'a mut dyn BufRead) -> Parser<'a> {
         Parser::new(input, self.options.limits.max_line_bytes, FORMAT, KEPT)
             .with_max_value_bytes(MAX_VALUE_BYTES)
@@ -255,10 +230,7 @@ impl NmapXmlReportReader {
             });
         }
 
-        // The host ceiling is checked as each `<host>` closes instead. A
-        // ceiling on what a document may make the process allocate has to refuse
-        // before the allocation rather than describe it
-        // afterwards.
+        // The host ceiling was checked as each `<host>` closed.
         Ok(run.into_report())
     }
 }
@@ -269,9 +241,8 @@ impl NmapXmlReportReader {
 
 /// Everything the document has said so far, as the parser walks it.
 ///
-/// The run being assembled, the host and port an element is currently being
-/// read into, and the two pieces of context that decide what a nested element
-/// belongs to.
+/// The run being assembled, the host and port currently being read, and the
+/// context that decides what a nested element belongs to.
 #[derive(Debug, Default)]
 struct State {
     run: Run,
@@ -295,10 +266,9 @@ impl State {
 
     /// Takes one opening element and folds what it carries in.
     ///
-    /// `self_closing` is here because an element with no content opens nothing.
-    /// The arms that record what the parser is inside of, and the one that begins
-    /// capturing text, skip that for such an element.
-    /// [`close_element`](Self::close_element) decides what it closes.
+    /// A self-closing element opens nothing, so the arms that set what the parser
+    /// is inside, or begin capturing text, skip it. The caller closes it through
+    /// [`close_element`](Self::close_element).
     fn on_start(
         &mut self,
         tag: Tag,
@@ -327,11 +297,8 @@ impl State {
                 }
             }
             Tag::Address => self.record_address(parser)?,
-            // The first name for the address is the hostname, except a
-            // `user` name in this engine's own document: that is a DNS name
-            // the host gave for itself, which this format cannot carry back as
-            // one, and taking it for the resolved name would have a document
-            // read back disagree with the report it was written from.
+            // The first name is the hostname, except a `user` name in this
+            // engine's own document, which is a DNS name the host gave for itself.
             Tag::HostName => {
                 let stated = self.run.scanner.as_deref() == Some(crate::format::NMAP_SCANNER)
                     && attr(&parser.element, b"type").as_deref() == Some("user");
@@ -343,8 +310,7 @@ impl State {
                 }
             }
             Tag::Port => self.port = Some(PortAcc::open(&parser.element, parser)?),
-            // The ports nmap did not think worth listing one by one. It still
-            // probed them and still knows what it found, and both are here.
+            // Ports nmap probed but summarised, not listed one by one.
             Tag::ExtraPorts => self.bulk = attr(&parser.element, b"state"),
             Tag::ExtraReasons => {
                 if let (Some(host), Some(state)) = (self.host.as_mut(), self.bulk.as_deref()) {
@@ -418,10 +384,7 @@ impl State {
         match tag {
             Tag::Host => {
                 self.run.close(self.host.take());
-                // Checked as the host closes rather than over the finished
-                // list. The document decides how many of these there are, and a
-                // ceiling reporting the overrun afterwards has already paid
-                // for it.
+                // Checked as each host closes, before the next allocation.
                 if self.run.hosts.len() as u128 > self.max_hosts {
                     return Err(ImportError::TooManyHosts {
                         limit: self.max_hosts,
@@ -444,9 +407,8 @@ impl State {
 
     /// Records what an `<address>` names on the host being read.
     ///
-    /// One outside a `<host>` is skipped without being read at all, so an
-    /// address nmap could not have written refuses the document only where
-    /// there is a host it would have belonged to.
+    /// One outside a `<host>` is skipped unread, so a malformed address refuses
+    /// the document only where it belongs to a host.
     fn record_address(&mut self, parser: &Parser<'_>) -> Result<(), ImportError> {
         if self.host.is_none() {
             return Ok(());
@@ -462,8 +424,8 @@ impl State {
 
     /// Settles the port being read on the verdict its `<state>` names.
     ///
-    /// One outside a `<port>` is skipped without being read, for the reason
-    /// [`record_address`](Self::record_address) gives.
+    /// One outside a `<port>` is skipped unread, as in
+    /// [`record_address`](Self::record_address).
     fn settle_port(&mut self, parser: &Parser<'_>) -> Result<(), ImportError> {
         if self.port.is_none() {
             return Ok(());
@@ -513,11 +475,10 @@ enum Inside {
     Os,
 }
 
-/// The elements this reader acts on. Everything else is `Other` and is skipped
-/// without its content being examined.
+/// The elements this reader acts on. Everything else is `Other` and skipped.
 ///
-/// Resolved from the name once per element, so nothing borrows the parser across
-/// the work of handling one.
+/// Resolved from the name once per element, so nothing borrows the parser while
+/// the element is handled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tag {
     NmapRun,
@@ -561,18 +522,15 @@ impl Tag {
     }
 }
 
-/// One attribute as an owned string, which ends the parser borrow before
-/// anything is done with the value.
+/// One attribute as an owned string, ending the parser borrow.
 fn attr(element: &Element, name: &[u8]) -> Option<String> {
     element.value(name).map(str::to_owned)
 }
 
 /// The port set a `<scaninfo>` names, in this engine's specification grammar.
 ///
-/// Nmap writes a bare list of numbers and ranges and says which transport it
-/// means in a sibling attribute; this grammar carries the transport in the
-/// specification itself, so a UDP list is rewritten with the prefix each entry
-/// needs.
+/// Nmap writes a bare list and names the transport in a sibling attribute. This
+/// grammar carries the transport in each entry, so every entry gets its prefix.
 fn services(spec: &str, protocol: Protocol) -> Option<PortSet> {
     let prefix = protocol.spec_prefix();
     let spec = spec
@@ -586,11 +544,9 @@ fn services(spec: &str, protocol: Protocol) -> Option<PortSet> {
 
 /// Seconds since the epoch, as nmap writes every time in its document.
 ///
-/// `None` for a count no clock can name. A `u64` of seconds reaches five
-/// hundred billion years and a [`SystemTime`] does not, so the addition is
-/// checked: `+` panics on the difference, and a panic belongs to the process
-/// that embedded this engine rather than to the file it was handed.
-/// `start="16847805878974283974"` is such a count.
+/// `None` for a count [`SystemTime`] cannot represent, such as
+/// `start="16847805878974283974"`. The addition is checked because `+` would
+/// panic on such a value from an untrusted file.
 fn epoch(seconds: &str) -> Option<SystemTime> {
     let seconds = seconds.parse::<u64>().ok()?;
     SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
@@ -623,25 +579,23 @@ struct Run {
 }
 
 impl Run {
-    /// Takes a `<scaninfo>`, which is where nmap says which probe it sent and
-    /// which ports it sent it to.
+    /// Takes a `<scaninfo>`, where nmap says which probe it sent and to which
+    /// ports.
     fn scan_info(&mut self, element: &Element) {
-        // `ip` names no transport, since a protocol scan walks protocol
-        // numbers rather than ports. Ignored rather than refused, as anything
-        // else unreadable is: an unreadable `<scaninfo>` is not a reason to
-        // refuse the findings under it.
+        // `ip` (a protocol scan) names no transport and is ignored, as is any
+        // other unreadable value: a bad `<scaninfo>` does not refuse the
+        // findings.
         let protocol = element
             .value(b"protocol")
             .and_then(crate::record::wire::protocol);
         if let Some(protocol) = protocol {
-            // Nmap writes one `<scaninfo>` per scan type, so `-sS -sA` names TCP
-            // twice. The scope is a set of transports and the document says it is
-            // ascending, so the second mention adds nothing.
+            // Nmap writes one `<scaninfo>` per scan type, so a SYN and an ACK
+            // scan name TCP twice.
             if !self.protocols.contains(&protocol) {
                 self.protocols.push(protocol);
             }
 
-            // The resolved port set, which nmap applies to every host it scans.
+            // The resolved port set, applied to every host.
             if let Some(ports) = element
                 .value(b"services")
                 .and_then(|spec| services(spec, protocol))
@@ -653,12 +607,8 @@ impl Run {
             }
         }
 
-        // Saturating, because nothing bounds how many `<scaninfo>` elements a
-        // document may carry and each one names its own count. Two naming
-        // `u128::MAX` would panic a debug build and wrap a release one into a
-        // probe count of nearly zero, which is the worse of the two: a wrapped
-        // total reads as a plausible number. A saturated one is visibly the
-        // ceiling.
+        // Saturating: the number of `<scaninfo>` elements is unbounded, and a
+        // wrapped total would read as a plausible count.
         if let Some(count) = element
             .value(b"numservices")
             .and_then(|n| n.parse::<u128>().ok())
@@ -667,8 +617,8 @@ impl Run {
             *probes = probes.saturating_add(count);
         }
 
-        // The scan type says both which segment went out and whether it took a
-        // raw socket to send it.
+        // The scan type says which segment went out and whether it needed a
+        // raw socket.
         match element.value(b"type") {
             Some("syn") => self.raw(Some(TcpScanTechnique::Syn)),
             Some("ack") => self.raw(Some(TcpScanTechnique::Ack)),
@@ -678,8 +628,7 @@ impl Run {
             Some("maimon") => self.raw(Some(TcpScanTechnique::Maimon)),
             Some("window") => self.raw(Some(TcpScanTechnique::Window)),
             Some("udp" | "ipproto" | "sctpinit" | "sctpcookieecho") => self.raw(None),
-            // A connect scan is the one nmap performs without privileges, and
-            // this engine records the same fallback the same way.
+            // A connect scan, nmap's unprivileged fallback, records nothing.
             _ => {}
         }
     }
@@ -687,9 +636,8 @@ impl Run {
     /// Records that a raw probe was sent, and which one where this engine has a
     /// word for it.
     ///
-    /// The technique and nothing else. That nmap sent raw probes says nmap was
-    /// privileged, which is a fact about nmap's run: see the phase's own
-    /// `privileged`, which stays `None` for exactly that reason.
+    /// Records only the technique. Nmap's privileges are a fact about nmap's run,
+    /// so the phase's `privilege` stays `None`.
     fn raw(&mut self, technique: Option<TcpScanTechnique>) {
         if let Some(technique) = technique {
             self.technique.get_or_insert(technique);
@@ -706,9 +654,8 @@ impl Run {
             self.accounted.insert(*ip);
         }
 
-        // An address nmap listed as anything but up is one it was asked to
-        // account for whether or not it answered, which is what makes the
-        // listing a statement of scope.
+        // Nmap lists a host that is not up only when asked to account for every
+        // address, which makes the listing a statement of scope.
         if accumulated
             .state
             .as_deref()
@@ -730,8 +677,7 @@ impl Run {
             ScanKind::Discovery
         };
 
-        // Nmap gives every host it scans the same port set, so what
-        // `<scaninfo>` names is true of every address the scan covered.
+        // Nmap scans every host on the same port set.
         let ports = match self.ports.take() {
             Some(ports) if !ports.is_empty() => PortScope::Every(ports),
             _ => PortScope::NoPorts,
@@ -740,11 +686,10 @@ impl Run {
         let targets = if self.exhaustive {
             let mut scope = TargetScope::from_ip_set(&mut self.accounted, &Exclusions::none());
             scope = TargetScope::from_parts(ScopeParts {
-                // Nmap sends probes; it has no notion of a phase that only listens.
+                // Nmap has no listen-only phase.
                 listened: Vec::new(),
                 ranges: scope.ranges().to_vec(),
-                // Nmap's document names no interface, so it cannot say it swept
-                // a link whole even where it did.
+                // The document names no interface.
                 links: Vec::new(),
                 addresses: scope.addresses(),
                 probes: self.probes,
@@ -756,7 +701,6 @@ impl Run {
             scope
         } else {
             TargetScope::from_parts(ScopeParts {
-                // Nmap sends probes; it has no notion of a phase that only listens.
                 listened: Vec::new(),
                 ranges: Vec::new(),
                 links: Vec::new(),
@@ -770,34 +714,27 @@ impl Run {
         };
 
         let phase = ScanPhase::from_parts(PhaseParts {
-            // Nmap's format has no place for one, and a scan it ran was not run
-            // from here.
+            // Nmap's format has none.
             attachments: Vec::new(),
             kind,
             started_at: self.started.unwrap_or(SystemTime::UNIX_EPOCH),
             elapsed: self.elapsed.unwrap_or_default(),
-            // Not this engine's question to answer. A scan another program ran
-            // says nothing about whether these strategies held the sockets they
-            // need, and answering `false` claimed a sweep nmap performed over
-            // ARP as root had none, putting this engine's advice about running
-            // as root under findings that contradicted it.
+            // Unknown: nmap's privileges say nothing about this engine's
+            // strategies, and `false` would contradict a root ARP sweep.
             privilege: None,
             targets,
             settings: self.settings(),
             failures: Vec::new(),
-            // Nothing in nmap's output distinguishes ground it declined from
-            // ground it covered, so nothing is invented here.
+            // Nmap's output does not distinguish ground it declined.
             refusals: Vec::new(),
             unroutable: Vec::new(),
             refused_by_route: Vec::new(),
             timed_out: Vec::new(),
             icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),
-            // The scope holds only addresses the document gave a verdict on, up
-            // or down, so none of it is left undecided.
+            // The scope holds only addresses the document gave a verdict on.
             undecided: Vec::new(),
-            // An nmap document does not say whether host discovery ran, only
-            // what it concluded, so no reason is claimed.
+            // The document does not say whether host discovery ran.
             liveness_skipped: None,
             silent: Vec::new(),
             stopped: None,
@@ -816,9 +753,9 @@ impl Run {
     /// The settings, as far as the document states them.
     ///
     /// Nmap records which probe it sent and whether it looked for services and an
-    /// operating system. It does not record a retransmission budget, a rate
-    /// ceiling or a redaction policy, and those keep this engine's defaults, so
-    /// read this for what nmap stated rather than as how nmap was tuned.
+    /// operating system. Everything else, such as retries, rate limits and
+    /// redaction, keeps this engine's defaults and says nothing about how nmap
+    /// was tuned.
     fn settings(&self) -> ScanSettings {
         let mut settings = ScanSettings::from(&ZondConfig::default());
         if let Some(technique) = self.technique {
@@ -866,10 +803,8 @@ struct HostAcc {
     hostname: Option<String>,
     state: Option<String>,
     reason: Option<String>,
-    /// Keyed as the host keys them, and folded as they are read, so a
-    /// document naming one endpoint many times, in `<port>` elements or in
-    /// an `<extrareasons>` list, builds it once rather than growing a list
-    /// the host would have collapsed anyway.
+    /// Keyed as the host keys them and folded as read, so an endpoint named many
+    /// times, in `<port>` elements or an `<extrareasons>` list, is built once.
     ports: BTreeMap<(u16, Protocol), Port>,
     ip_protocols: Vec<(u8, IpProtocolState)>,
     os: Option<OsFingerprint>,
@@ -896,9 +831,7 @@ impl HostAcc {
                 })?;
                 Some(Address::Ip(ip))
             }
-            // A hardware address that will not parse is not a reason to refuse
-            // the host: the addresses and ports under it are the finding, and
-            // this is decoration on top of them.
+            // An unparseable hardware address is dropped; the host is kept.
             Some("mac") => MacAddr::from_str(addr).ok().map(Address::Hardware),
             _ => None,
         })
@@ -914,22 +847,18 @@ impl HostAcc {
     /// Takes an `<extrareasons>`, which names every port nmap left out of its
     /// list along with what it found there.
     ///
-    /// This is the difference between a readable comparison and a wall. Nmap
-    /// lists the interesting ports and summarises the rest, where this engine's
-    /// own scans record every port they probed. Without this the hundreds nmap
-    /// summarised read as ports that appeared the moment the two were compared,
-    /// when both scans found them closed.
+    /// This engine's scans record every port they probed, so without this the
+    /// hundreds of ports nmap summarised would appear in a comparison as newly
+    /// opened.
     ///
-    /// A `ports` attribute that ran past the parser's bound is absent, and then
-    /// nothing is recorded, which reads as not probed rather than as a wrong
-    /// verdict. See [`LOSSY`].
+    /// A `ports` attribute past the parser's bound is absent, so nothing is
+    /// recorded and the ports read as not probed. See [`LOSSY`].
     fn extend(&mut self, state: PortState, element: &Element) {
         let Some(list) = element.value(b"ports") else {
             return;
         };
-        // TCP where the attribute is absent, as it is from the nmap releases
-        // that predate it, and anything this engine has no word for is left
-        // alone rather than recorded as TCP.
+        // Older nmap releases omit `proto`, which means TCP. An unknown
+        // transport is skipped.
         let protocol = match element.value(b"proto") {
             Some(name) => match crate::record::wire::protocol(name) {
                 Some(protocol) => protocol,
@@ -954,9 +883,8 @@ impl HostAcc {
 
     /// Takes an `<osmatch>`, keeping only the first.
     ///
-    /// Nmap lists every candidate it considered, best first. Keeping the rest
-    /// would make a comparison report a change every time the also-rans
-    /// reshuffled beneath an unchanged winner.
+    /// Nmap lists candidates best first. Keeping the rest would make a comparison
+    /// report a change whenever the runners-up reshuffled.
     fn match_os(&mut self, element: &Element) {
         if self.os.is_some() {
             return;
@@ -973,8 +901,8 @@ impl HostAcc {
     }
 
     /// Takes an `<osclass>`, which carries the family, generation, vendor and
-    /// device type the match above it does not. Only the first class of the first match contributes,
-    /// for the reason [`match_os`](Self::match_os) gives.
+    /// device type. Only the first class of the first match contributes, as in
+    /// [`match_os`](Self::match_os).
     fn classify_os(&mut self, element: &Element) {
         let Some(os) = self.os.take() else {
             return;
@@ -984,9 +912,7 @@ impl HostAcc {
             return;
         }
 
-        // An empty value is one the writer had to give and did not know, which
-        // is what this engine's own exporter writes for a vendor it did not
-        // establish: absent, not named "".
+        // An empty value means unknown, as this engine's exporter writes it.
         let value = |name: &[u8]| element.value(name).filter(|value| !value.is_empty());
         let mut os = os;
         if let Some(family) = value(b"osfamily") {
@@ -1038,9 +964,8 @@ impl HostAcc {
             host.record_ip_protocol(number, state);
         }
 
-        // A port that accepted a connection or refused one was answered by the
-        // host's own stack, whatever the discovery phase concluded. This is the
-        // inference that recovers a host nmap was told not to probe.
+        // An open or closed port was answered by the host's own stack, whatever
+        // discovery concluded. This recovers hosts nmap was told not to probe.
         if answered {
             host.record_evidence(
                 HostStatus::Up,
@@ -1052,8 +977,7 @@ impl HostAcc {
             host.set_os(os);
         }
 
-        // Last, because every mutator above stamps the current time and this is
-        // the record of when the scan saw the host.
+        // Last, because every mutator above stamps the current time.
         let first = self.started.or(run_started);
         let last = self.ended.or(first);
         if let (Some(first), Some(last)) = (first, last) {
@@ -1067,19 +991,16 @@ impl HostAcc {
 /// What a `<status>` establishes, in this engine's four states.
 fn status_of(state: Option<&str>, reason: Option<&str>) -> HostStatus {
     match state {
-        // `user-set` is what nmap records when it was told to skip discovery.
-        // Nothing was sent and nothing answered, so the word is an instruction
-        // echoed back rather than a finding.
+        // `user-set` means nmap was told to skip discovery; nothing was sent.
         Some("up") if reason == Some("user-set") => HostStatus::Unknown,
-        // This engine's own word for a host it found blocked, which nmap's
-        // vocabulary has no state for and which its exporter writes `up`.
+        // This engine's exporter writes a blocked host as `up` with this reason,
+        // since nmap has no such state.
         Some("up") if reason == Some("probes-blocked") => HostStatus::Blocked,
         Some("up") => HostStatus::Up,
         Some("down") => match reason {
             Some(reason) if reason.ends_with("-prohibited") => HostStatus::Blocked,
             Some(reason) if reason.ends_with("-unreach") => HostStatus::Down,
-            // Including `no-response`, which is silence, and silence is not
-            // evidence of absence.
+            // Including `no-response`: silence is not evidence of absence.
             _ => HostStatus::Unknown,
         },
         Some("filtered") => HostStatus::Blocked,
@@ -1119,9 +1040,8 @@ struct PortAcc {
     state: PortState,
     reason: Option<String>,
     service: Option<Service>,
-    /// Whether this element was `protocol="ip"`, which is a protocol verdict
-    /// wearing a port's shape rather than a port. [`protocol`](Self::protocol)
-    /// is then meaningless and is not read.
+    /// Whether this element was `protocol="ip"`: an IP protocol verdict in a
+    /// port's shape. [`protocol`](Self::protocol) is then meaningless.
     ip_protocol: bool,
 }
 
@@ -1133,15 +1053,11 @@ impl PortAcc {
             .and_then(|id| id.parse::<u16>().ok())
             .ok_or_else(|| parser.malformed("a port with no readable number".to_string()))?;
 
-        // An unrecognised transport is refused rather than guessed at, for the
-        // reason the target reader gives: it is not a field a reader can skip,
-        // it is the value that decides what the record says.
+        // An unrecognised transport is refused: it decides what the record says.
         let protocol = match element.value(b"protocol") {
-            // Not a transport at all. Nmap reports a protocol scan by reusing
-            // this element with `protocol="ip"`, where `portid` is an IP
-            // protocol number rather than a port; this engine keeps the two
-            // apart and reads it into the host's protocol verdicts instead. See
-            // `export::nmap::write_ip_protocols`, which writes the same shape.
+            // Nmap reports a protocol scan as `<port protocol="ip">`, with an IP
+            // protocol number in `portid`. Read into the host's protocol verdicts;
+            // `export::nmap::write_ip_protocols` writes the same shape.
             Some("ip") => {
                 let number = u8::try_from(number).map_err(|_| {
                     parser.malformed(format!(
@@ -1194,16 +1110,12 @@ impl PortAcc {
     /// One of nmap's six verdicts, in this engine's terms, read beside the
     /// reason nmap gave for it.
     ///
-    /// Nmap's `filtered` is two of this engine's states. It is
-    /// [`Blocked`](PortState::Blocked) where the reason names a refusal, an
-    /// ICMP prohibition or unreachable, and [`NoReply`](PortState::NoReply)
-    /// otherwise: silence is the claim that needs no packet behind it, so a
-    /// `filtered` with no reason, or one this engine does not recognise, is
-    /// not credited with a refusal nobody recorded.
+    /// Nmap's `filtered` maps to [`Blocked`](PortState::Blocked) when the reason
+    /// names a refusal, an ICMP prohibition or unreachable, and to
+    /// [`NoReply`](PortState::NoReply) otherwise, including when the reason is
+    /// missing or unrecognised.
     ///
-    /// An unrecognised state is refused rather than guessed at, for the reason
-    /// the target reader gives: it is the value that decides what the record
-    /// says.
+    /// An unrecognised state is refused, since it decides what the record says.
     fn state_named(
         state: &str,
         reason: Option<&str>,
@@ -1236,10 +1148,8 @@ impl PortAcc {
             return;
         };
 
-        // `table` means nmap read the port number out of a file rather than
-        // asking the service. Confidence zero is how this engine records the
-        // same thing about its own port-number labels, and what a comparison
-        // reads to know it is not a finding.
+        // `table` is a port-number lookup. Confidence zero marks it inferred, as
+        // this engine's own port-number labels are, so a comparison ignores it.
         let confidence = if element.value(b"method") == Some("probed") {
             element
                 .value(b"conf")
@@ -1250,10 +1160,9 @@ impl PortAcc {
             0
         };
 
-        // Nmap names a protocol read through TLS by the protocol, with the
-        // tunnel in an attribute of its own. This engine's label carries both,
-        // `ssl/http`, and it is the label that decides whether a later probe of
-        // the port speaks through a handshake, so the two are joined here.
+        // Nmap puts the tunnel in its own attribute; this engine's label carries
+        // both, as `ssl/http`, and later probes use it to decide whether to
+        // speak through a handshake.
         let mut service = match element.value(b"tunnel") {
             Some("ssl") => Service::new(format!("ssl/{name}"), confidence),
             _ => Service::new(name, confidence),
@@ -1289,23 +1198,18 @@ impl PortAcc {
     /// The protocol verdict this record describes, for an element that was
     /// `protocol="ip"`.
     ///
-    /// The state comes back through the port vocabulary it was written in, since
-    /// nmap has one set of words for both questions. A protocol scan writes
-    /// `filtered` for a refusal and names it in the reason, so that reads as
-    /// [`Blocked`](IpProtocolState::Blocked); one whose reason names no refusal
-    /// is silence, as `open|filtered` is. `unfiltered` and `closed|filtered`
-    /// cannot be reached by a protocol scan and are read as the nearest thing a
-    /// protocol verdict can say rather than refused, because a document is a
-    /// foreign tool's and refusing a whole host over one word nmap's own scan
-    /// would not have written is the wrong trade.
+    /// Nmap uses the port vocabulary for protocol verdicts too. A refusal is
+    /// `filtered` with the refusal named in the reason, which reads as
+    /// [`Blocked`](IpProtocolState::Blocked); `filtered` without one is silence,
+    /// as `open|filtered` is. `unfiltered` and `closed|filtered`, which a
+    /// protocol scan cannot produce, are read as silence too, so one odd word
+    /// does not refuse the host.
     fn into_ip_protocol(self) -> (u8, IpProtocolState) {
         let state = match self.state {
             PortState::Open => IpProtocolState::Open,
             PortState::Closed => IpProtocolState::Closed,
             PortState::Blocked => IpProtocolState::Blocked,
-            // Silence, whichever word it came in. `unfiltered` says a probe
-            // arrived and nothing more, and `closed|filtered` says the two
-            // could not be told apart; both amount to the same silence here.
+            // All of these amount to silence for a protocol verdict.
             PortState::NoReply
             | PortState::OpenOrNoReply
             | PortState::Reachable
@@ -1313,7 +1217,7 @@ impl PortAcc {
             PortState::Unasked => IpProtocolState::Unasked,
         };
 
-        // Held to a byte on the way in, which is what `open` checked.
+        // `open` checked that the number fits in a byte.
         (self.number as u8, state)
     }
 }
@@ -1362,11 +1266,8 @@ mod tests {
     /// The element ceiling follows the document ceiling, at its default and at
     /// one a caller set.
     ///
-    /// Only a document past the parser's fixed count, some 134 MB of the
-    /// smallest element, could show the difference by reading it, which is too
-    /// much for a test to stream; so the parser the reader builds is asked
-    /// directly. Without the wiring, a caller who raised the byte ceiling to
-    /// read a full-range scan of a few hundred hosts would be refused it.
+    /// Showing it by reading would take a document past the parser's fixed count,
+    /// some 134 MB, so the parser is inspected directly.
     #[test]
     fn the_element_ceiling_is_the_one_the_document_ceiling_implies() {
         for reader in [
@@ -1385,12 +1286,7 @@ mod tests {
         }
     }
 
-    /// A timestamp no clock can name is a field to drop, not a process to end.
-    ///
-    /// `SystemTime + Duration` panics on overflow and a `u64` of seconds reaches
-    /// far past what a `SystemTime` holds, so unchecked, a document carrying
-    /// twenty digits in `start` would take down whatever had embedded the
-    /// engine.
+    /// A timestamp past what [`SystemTime`] holds is dropped without panicking.
     #[test]
     fn a_time_past_what_a_clock_can_hold_is_dropped_rather_than_fatal() {
         for seconds in ["16847805878974283974", "18446744073709551615"] {
@@ -1407,13 +1303,12 @@ mod tests {
             assert_eq!(report.host_count(), 1, "the host survived the bad stamp");
         }
 
-        // And a time it can hold is still read, so the guard is not refusing
-        // every document that carries one.
+        // A representable time still reads.
         assert!(read(SWEEP).is_ok());
     }
 
-    /// What nmap writes for `-sS -sV -O --reason` over two addresses, one of
-    /// which did not answer.
+    /// What nmap writes for a SYN scan with service and OS detection and reasons
+    /// over two addresses, one of which did not answer.
     const SWEEP: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE nmaprun>
 <nmaprun scanner="nmap" args="nmap -sS -sV" start="1690000000" version="7.94">
@@ -1495,9 +1390,8 @@ mod tests {
     /// A service nmap found inside TLS reads as this engine labels one, with
     /// the tunnel in its name.
     ///
-    /// Nmap writes HTTPS as `name="http" tunnel="ssl"`. Read by the name alone
-    /// it is plain HTTP, which a comparison against this engine's own scan
-    /// reports as a changed service and a detection speaks to in the clear.
+    /// Nmap writes HTTPS as `name="http" tunnel="ssl"`. Read by name alone it
+    /// would be plain HTTP, a changed service against this engine's own scan.
     #[test]
     fn a_service_nmap_found_inside_tls_keeps_its_tunnel() {
         let document = r#"<nmaprun scanner="nmap" version="7.94">
@@ -1514,12 +1408,8 @@ mod tests {
         assert_eq!(https.service_name(), Some("ssl/http"));
     }
 
-    /// A port-number lookup is recorded, and recorded as the guess it is.
-    ///
-    /// This engine seeds the same label on every classified port of its own, so
-    /// dropping nmap's would make the two asymmetrical and a comparison would
-    /// report a service on every well-known port the moment an nmap scan entered
-    /// one.
+    /// A port-number lookup is kept, marked as inferred, matching the labels this
+    /// engine puts on its own classified ports.
     #[test]
     fn a_service_nmap_looked_up_in_a_table_is_marked_as_inferred() {
         let report = read(SWEEP).expect("a readable document");
@@ -1534,18 +1424,17 @@ mod tests {
             "nothing asked the port what it was running"
         );
 
-        // And a probed one is not.
+        // A probed one is not inferred.
         let ssh = host.ports().find(|port| port.number() == 22).expect("22");
         assert!(!ssh.service().expect("a probed service").is_inferred());
     }
 
-    /// The property the one above exists to protect.
+    /// Port-number labels from different catalogues do not show as changes.
     #[test]
     fn a_port_number_label_never_reaches_a_comparison() {
         let report = read(SWEEP).expect("a readable document");
 
-        // The same scan with nmap's table label changed to another one, which is
-        // what a different port catalogue amounts to.
+        // The same scan with a different port catalogue's label.
         let renamed = SWEEP.replace(
             r#"<service name="http" method="table" conf="3"/>"#,
             r#"<service name="www" method="table" conf="3"/>"#,
@@ -1559,7 +1448,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Nmap's `down` is not this engine's
+    // Host status mapping
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1604,8 +1493,7 @@ mod tests {
 
     #[test]
     fn a_host_up_only_because_discovery_was_skipped_is_unknown() {
-        // What `-Pn --reason` writes: nmap was told the host is up and repeats
-        // it back, having sent nothing.
+        // What nmap writes when told to skip discovery: `up`, with nothing sent.
         let document = r#"<nmaprun scanner="nmap" start="1690000000" version="7.94">
 <host><status state="up" reason="user-set"/>
 <address addr="192.0.2.11" addrtype="ipv4"/>
@@ -1639,7 +1527,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // What the document says it covered
+    // Scope
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1669,7 +1557,7 @@ mod tests {
              a document without one cannot say what it walked"
         );
 
-        // And a comparison against it therefore confirms nothing.
+        // So a comparison against it confirms nothing.
         let baseline = ScanReport::recorded("test", Vec::new(), vec![Host::new(ip(99))]);
         let diff = ScanDiff::between(&baseline, &report);
         let gone = diff
@@ -1715,14 +1603,11 @@ mod tests {
         assert!(error.to_string().contains("DOCTYPE"), "{error}");
     }
 
-    /// A connect scan's refusal keeps its own name rather than becoming a
-    /// reset.
+    /// A connect scan's refusal reads as a refusal, not a reset.
     ///
-    /// nmap records `conn-refused` for the error a connect is handed, which
-    /// is a reset or an ICMP port unreachable, and the engine's own connect
-    /// scan records the same thing under the same meaning. Read as a reset,
-    /// an imported connect scan would claim a packet nobody saw, and a
-    /// comparison with the engine's own would differ where the two agree.
+    /// `conn-refused` is the error a connect is handed, from a reset or an ICMP
+    /// port unreachable, and this engine's connect scan records it the same way.
+    /// Read as a reset, it would claim a packet nobody saw.
     #[test]
     fn a_refused_connect_is_read_as_a_refusal_rather_than_a_reset() {
         assert_eq!(
@@ -1733,7 +1618,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // The whole point: comparing an nmap scan with something else
+    // Comparing an nmap scan with something else
     // -----------------------------------------------------------------------
 
     #[test]

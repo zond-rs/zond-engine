@@ -9,81 +9,60 @@
 //! # Reading this engine's own report back
 //!
 //! The document [`export::json`](crate::export::json) writes, read back as the
-//! [`ScanReport`] it was written from. An exported file is what people archive,
-//! so this is what lets a comparison run against last quarter's scan without a
-//! journal still being on disk.
+//! [`ScanReport`] it was written from, so a comparison can run against an archived
+//! export without the scan's journal.
 //!
-//! ## It translates a shape and nothing more
+//! ## Mapping onto `record`
 //!
-//! [`record`](crate::record) is already the model as data that can be written
-//! down and read back, and every one of its types rebuilds a model value through
-//! the model's own constructors, so a rebuilt host passes the same checks a
-//! scanned one does. Repeating that here would be a second place that knows how to
-//! assemble a [`Host`].
+//! [`record`](crate::record) already rebuilds every model value through the
+//! model's own constructors, so a rebuilt host passes the same checks a scanned
+//! one does. This module only maps the exported shape onto the recorded one. The
+//! two differ in encoding: timestamps are RFC 3339 strings, durations are integer
+//! microseconds, and counts too large for a JSON number are decimal strings.
 //!
-//! So this module maps the exported shape onto the recorded shape and stops. The
-//! two differ only in encoding: timestamps are RFC 3339 strings rather than epoch
-//! pairs, durations are integers of microseconds rather than [`Duration`]s, and
-//! counts too large for a JSON number are decimal strings. Everything past that
-//! is `record`'s.
+//! ## Compatibility rules
 //!
-//! ## What it promises
-//!
-//! The same bargain the exported document offers its consumers, from the other
-//! side of it:
-//!
-//! - **Unknown fields are ignored.** A report from a newer engine stays readable.
-//! - **An unknown enum string is an error naming it.** Not a field a reader may
-//!   skip, but the value that decides what the record says.
-//! - **`schema_version` is required and checked**, and a document from a version
-//!   past this build's is refused rather than read approximately.
-//! - **`engine.name` is required and checked.** It is how a report is told apart
-//!   from any other JSON that happens to have a `hosts` key.
-//! - **`produced_by` is optional**, because documents written before it existed
-//!   carried the same value in `engine.version`. That is what it falls back to.
+//! - **Unknown fields are ignored**, so a report from a newer engine stays
+//!   readable.
+//! - **An unknown enum string is an error naming it**, since that value decides
+//!   what the record says.
+//! - **`schema_version` is required and checked.** A document from a newer schema
+//!   version is refused.
+//! - **`engine.name` is required and checked.** It tells a report apart from any
+//!   other JSON that happens to have a `hosts` key.
+//! - **`produced_by` is optional.** Documents written before it existed carried
+//!   the same value in `engine.version`, which is the fallback.
 //!
 //! ## What the document cannot give back
 //!
-//! Three things, and the export is right about all of them.
+//! Round-trip samples. The document carries the summary statistics (least,
+//! median, mean, greatest and jitter) but not the samples, whose timestamps are
+//! monotonic [`Instant`](std::time::Instant)s meaningless outside the process that
+//! took them. A host read back here reports no round trips.
 //!
-//! Round-trip samples. The document carries the summary statistics, meaning
-//! least, median, mean, greatest and jitter, and not the measurements behind them,
-//! since a sample's timestamp is a monotonic [`Instant`](std::time::Instant) that
-//! means nothing outside the process that took it. A host read back here reports
-//! no round trips rather than a fabricated set that averages correctly.
+//! Per-source operating-system evidence. The document carries the verdict only. A
+//! host read back keeps what it was identified as and starts its evidence fresh.
 //!
-//! Per-source operating-system evidence. The document carries the verdict
-//! and not the sources that corroborated it. A host read back keeps what it was
-//! identified as and starts its evidence fresh.
+//! [`diff`](crate::diff) compares neither of these, so a comparison loses nothing.
 //!
-//! Neither is compared by [`diff`](crate::diff), which reads verdicts and not the
-//! evidence behind them, so neither costs a comparison anything.
+//! A phase's [`attachments`](crate::report::Attachment). They name a switch port
+//! on the network the scan ran from, which means nothing on the machine reading
+//! the document, so they are dropped.
 //!
-//! Where the machine that scanned was plugged in. A phase's
-//! [`attachments`](crate::report::Attachment) are dropped rather than rebuilt.
-//! They name a switch port on the network the scan ran from, so a document read
-//! on another machine describes a place this process was never standing.
-//!
-//! ## Streaming, and the ceiling on it
+//! ## Streaming
 //!
 //! Hosts are converted one at a time as the array is parsed, so a report of a /16
-//! costs one host's worth of document on top of the report being built. A
-//! host's ports are too, and folded by endpoint as they arrive, so a host
-//! scanned across the full range is never held as a list of its ports beside
-//! the host they become.
+//! costs one host's worth of document on top of the report being built. A host's
+//! ports are converted the same way and folded by endpoint as they arrive.
 //!
-//! [`ImportLimits::max_addresses`](crate::import::ImportLimits::max_addresses)
-//! is counted against as they arrive rather than against the finished list. A
-//! ceiling on what a document may make the process allocate has to be checked
-//! before the allocation happens, or it reports the overrun from the far side of
-//! it.
+//! [`ImportLimits::max_addresses`](crate::import::ImportLimits::max_addresses) is
+//! checked as hosts arrive, before the allocation it bounds.
 //!
 //! ## Both shapes, one mapping
 //!
 //! [`JsonReportReader`] reads the single document and [`JsonLinesReportReader`]
 //! the record-per-line one. They share every record type below, since a `host`
-//! line is the document's host object with a `type` field added. Only how the
-//! records are found in the bytes differs.
+//! line is the document's host object with a `type` field added.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -124,11 +103,10 @@ const FORMAT: &str = "JSON";
 /// The format's name in errors, for the record-per-line reader.
 const LINES_FORMAT: &str = "JSON Lines";
 
-/// What a record-per-line document calls its header record. Compact JSON has no
-/// spaces in it, so this is exactly how the exporter writes it.
+/// The `type` of a record-per-line document's header record.
 const REPORT_RECORD: &str = "report";
 
-/// What a record-per-line document calls a host's record.
+/// The `type` of a host's record in a record-per-line document.
 const HOST_RECORD: &str = "host";
 
 /// Reads this engine's exported JSON report back as the report it was written
@@ -168,8 +146,7 @@ impl JsonReportReader {
         }
         .deserialize(&mut deserializer);
 
-        // The real error is the one the host count produced; serde's is only the
-        // vehicle that carried the stop signal out.
+        // The host count overrun is the real error; serde's only carried it out.
         if overrun.get() {
             return Err(ImportError::TooManyHosts { limit: max_hosts });
         }
@@ -182,11 +159,9 @@ impl JsonReportReader {
 /// Reads this engine's record-per-line export back as the report it was written
 /// from.
 ///
-/// The format exists because a JSON document is only valid when it is complete,
-/// and a scan killed half way through a `/16` should leave something readable
-/// behind. A file whose last line is truncated reads here as the hosts before it,
-/// and
-/// the truncated line is what refuses.
+/// The format exists because a JSON document is only valid when complete, and a
+/// scan killed half way through should leave something readable. A file whose
+/// last line is truncated is refused at that line.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JsonLinesReportReader {
     options: ReportOptions,
@@ -213,11 +188,9 @@ impl JsonLinesReportReader {
         crate::import::skip_bom(input)?;
 
         let max_hosts = self.options.limits.max_addresses;
-        // A line here is a record of a document, and a host record is as long
-        // as its port list: megabytes for one scanned across the full range.
-        // So the document's ceiling bounds it. The target readers' line limit
-        // is sized for an expression and would refuse any host past a few
-        // hundred ports.
+        // A host record is as long as its port list, megabytes for a full-range
+        // host, so the document ceiling bounds lines. The target readers' line
+        // limit would refuse any host past a few hundred ports.
         let max_line_bytes = usize::try_from(self.options.max_document_bytes).unwrap_or(usize::MAX);
         let mut buffer = Vec::new();
         let mut line_number = 0u64;
@@ -246,11 +219,8 @@ impl JsonLinesReportReader {
             })?;
 
             match record {
-                // Wherever it appears, not necessarily first: a record means
-                // the same thing wherever it sits, which is what lets these
-                // files split, filter and concatenate. Two of them is refused,
-                // since they describe one scan
-                // and cannot both be it.
+                // Accepted anywhere in the file, so files can be split, filtered
+                // and concatenated. A second one is refused: one file is one scan.
                 LineRecord::Report(next) => {
                     if header.is_some() {
                         return Err(ImportError::Malformed {
@@ -274,8 +244,7 @@ impl JsonLinesReportReader {
                     })?;
                     hosts.push(host);
                 }
-                // A record kind this build does not know, skipped so a newer
-                // engine's output stays readable.
+                // Skipped so a newer engine's output stays readable.
                 LineRecord::Unknown => {}
             }
         }
@@ -316,12 +285,10 @@ impl LineRecord {
     /// Reads one line: its `type` first, then the whole of it as the record
     /// that names.
     ///
-    /// Two passes rather than the tagged enum serde derives, because that one
-    /// reads a record into a generic tree of its values before it knows which
-    /// record it is, and a host record is as long as its port list. Read that
-    /// way a full-range host costs several times its line in the tree alone,
-    /// and entries repeated along it are all kept before [`PortsDto`] could
-    /// fold them. The first pass keeps nothing but the one value it looks for.
+    /// Two passes, because serde's derived tagged enum buffers the whole record
+    /// as a generic value tree before choosing a variant. For a full-range host
+    /// that costs several times the line, and repeated entries are all kept
+    /// before [`PortsDto`] can fold them. The first pass keeps only the tag.
     fn parse(text: &str) -> serde_json::Result<Self> {
         let LineKind { kind } = serde_json::from_str(text)?;
         Ok(match kind.as_str() {
@@ -363,8 +330,7 @@ fn malformed(format: &'static str, error: &serde_json::Error) -> ImportError {
 // ---------------------------------------------------------------------------
 // The document root
 //
-// Hand-written rather than derived, so that hosts are converted as the array is
-// parsed rather than collected and converted afterwards.
+// Hand-written so hosts are converted as the array is parsed.
 // ---------------------------------------------------------------------------
 
 /// The document, with its hosts already rebuilt.
@@ -373,7 +339,7 @@ struct Document {
     engine: EngineDto,
     /// What produced the findings, as that scanner attributed itself.
     ///
-    /// Absent from a document written before this had a field of its own, where
+    /// Absent from documents written before the field existed, where
     /// `engine.version` carried it. See [`Document::into_report`].
     produced_by: Option<String>,
     phases: Vec<PhaseDto>,
@@ -411,10 +377,8 @@ impl Document {
             .collect::<Result<_, _>>()
             .map_err(|message| refuse(format, message))?;
 
-        // `produced_by` where the document has one. A document written before
-        // that field existed puts the same value in `engine.version`, which in
-        // such a document is the attribution rather than the build that wrote
-        // it.
+        // In documents without `produced_by`, `engine.version` holds the
+        // attribution.
         let produced_by = self.produced_by.unwrap_or(self.engine.version);
 
         Ok(ScanReport::recorded(produced_by, phases, self.hosts))
@@ -432,14 +396,12 @@ fn refuse(format: &'static str, message: String) -> ImportError {
 
 /// Reads the document under a ceiling on how many hosts it may name.
 ///
-/// A seed rather than a [`Deserialize`] impl, since the ceiling has to reach the
-/// `hosts` array while it is being walked. Checking afterwards would report the
-/// overrun from the far side of the allocation it exists to
-/// bound.
+/// A seed, since the ceiling has to reach the `hosts` array while it is being
+/// walked, before the allocation it bounds.
 struct DocumentSeed<'a> {
     max_hosts: u128,
-    /// Set when the ceiling was passed, so the real error survives the trip out
-    /// through `serde`'s error type.
+    /// Set when the ceiling was passed, so the real error survives `serde`'s
+    /// error type.
     overrun: &'a Cell<bool>,
 }
 
@@ -458,20 +420,13 @@ impl<'de> Visitor<'de> for DocumentSeed<'_> {
         f.write_str("a zond scan report")
     }
 
-    /// A repeated key assigns again: last wins. A document carrying one host
-    /// and then a second `"hosts":[]` reads back with none. That is serde's own
-    /// behaviour for the derived DTOs below, so this hand-written visitor matches
-    /// it rather than being the one place in the document where a duplicate means
-    /// something else. JSON's specification is famously undecided about
-    /// duplicates and last-wins is at least a rule that is the same every time.
+    /// A repeated key assigns again, so the last one wins: a document carrying one
+    /// host and then a second `"hosts":[]` reads back with none. This matches
+    /// serde's behaviour for the derived DTOs below. JSON leaves duplicates
+    /// unspecified.
     ///
-    /// Worth knowing that this crate's other reader of a document somebody else
-    /// wrote answers the opposite, since `xml`'s `Element::value` takes the first
-    /// of a repeated attribute. Neither is wrong, and they are not unified because
-    /// unifying them means picking a winner for two formats whose own
-    /// specifications disagree, and nothing downstream of either can tell the
-    /// difference: both are deterministic, and the values are compared against
-    /// fixed names rather than merged.
+    /// The XML reader's `Element::value` takes the first of a repeated attribute.
+    /// Both rules are deterministic, and neither format's specification picks one.
     fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
         let mut schema_version = None;
         let mut engine = None;
@@ -485,19 +440,16 @@ impl<'de> Visitor<'de> for DocumentSeed<'_> {
                 "engine" => engine = Some(map.next_value()?),
                 "produced_by" => produced_by = Some(map.next_value()?),
                 "phases" => phases = map.next_value()?,
-                // The one array worth streaming: every other key is a handful
-                // of values whatever the size of the scan.
+                // The only key whose size grows with the scan.
                 "hosts" => {
                     hosts = Some(map.next_value_seed(HostsSeed {
                         max_hosts: self.max_hosts,
                         overrun: self.overrun,
                     })?);
                 }
-                // Everything else in the document, the summary and the totals
-                // and whether the run was partial, is derived from what is read
-                // here, and a reader that trusted them could report counts its
-                // own
-                // hosts disagree with.
+                // The summary, totals and partial flag are derived from what is
+                // read here; trusting them could report counts the hosts disagree
+                // with.
                 _ => {
                     map.next_value::<IgnoredAny>()?;
                 }
@@ -510,13 +462,9 @@ impl<'de> Visitor<'de> for DocumentSeed<'_> {
             engine: engine.ok_or_else(|| de::Error::missing_field("engine"))?,
             produced_by,
             phases,
-            // Required, and what tells this document from one record of a
-            // record-per-line file. That file's first line is a complete object
-            // carrying `schema_version` and `engine` and nothing else, so a
-            // reader letting `hosts` default would parse it, never reach the
-            // lines holding the hosts, and hand back a correctly attributed
-            // report of a scan that found nothing. An empty scan writes
-            // `"hosts": []`, so present-and-empty is the shape that means it.
+            // Required: a JSON lines file's first line is a complete object with
+            // `schema_version` and `engine`, and defaulting `hosts` would read it
+            // as an empty report. An empty scan writes `"hosts": []`.
             hosts: hosts.ok_or_else(|| de::Error::missing_field("hosts"))?,
         })
     }
@@ -544,9 +492,8 @@ impl<'de> Visitor<'de> for HostsSeed<'_> {
     }
 
     fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<Vec<Host>, S::Error> {
-        // No `with_capacity` from the sequence's own hint: for a document being
-        // read from anywhere untrusted, that is a length the document chooses
-        // and this reader allocates.
+        // No `with_capacity` from the size hint, which an untrusted document
+        // chooses.
         let mut hosts: Vec<Host> = Vec::new();
 
         while let Some(dto) = seq.next_element::<HostDto>()? {
@@ -565,13 +512,13 @@ impl<'de> Visitor<'de> for HostsSeed<'_> {
 // Reading the encodings the document uses
 // ---------------------------------------------------------------------------
 
-/// An RFC 3339 timestamp, which is the only form a time takes in the document.
+/// An RFC 3339 timestamp, the only form a time takes in the document.
 fn timestamp(text: &str) -> Result<SystemTime, String> {
     parse_rfc3339(text).ok_or_else(|| format!("'{text}' is not an RFC 3339 timestamp in UTC"))
 }
 
-/// A count written as a decimal string, which is what the document does for
-/// anything that can exceed what a JSON number holds exactly.
+/// A count written as a decimal string, as the document writes anything that can
+/// exceed what a JSON number holds exactly.
 fn count(text: &str) -> Result<u128, String> {
     text.parse().map_err(|_| format!("'{text}' is not a count"))
 }
@@ -585,12 +532,10 @@ fn address(text: &str) -> Result<IpAddr, String> {
 /// An enumerated value this build recognises, or an error naming the one it does
 /// not.
 ///
-/// The opposite of what [`record`](crate::record) does with the same string. A
-/// journal is a file this engine wrote, so a value it cannot read there belongs
-/// to a newer build of itself and the format's version bargain covers it. A
-/// document handed in from outside has made no such promise, and a
-/// port state read as `unasked` because this build did not recognise the word
-/// is a report claiming something the scan never established.
+/// [`record`](crate::record) reads an unknown value leniently, since a journal is
+/// written by this engine and covered by its versioning. A document from outside
+/// carries no such guarantee, and a port state read as `unasked` because the word
+/// was unrecognised would claim something the scan never established.
 fn known<T>(parsed: Option<T>, what: &str, value: &str) -> Result<(), String> {
     parsed
         .map(|_| ())
@@ -613,14 +558,13 @@ fn maybe<T, U>(
 // ---------------------------------------------------------------------------
 // The document's objects
 //
-// One per `$defs` entry in the published schema, owned and `#[serde(default)]`
-// throughout so a document that omits a field this build knows about is read
-// rather than refused.
+// One per `$defs` entry in the published schema, `#[serde(default)]` throughout
+// so a document that omits a known field is still read.
 // ---------------------------------------------------------------------------
 
-/// `engine`, which is how a document is told apart from any other JSON that
-/// happens to carry a `hosts` key. `name` is required and checked; `version` is
-/// the fallback for a document written before `produced_by` existed.
+/// `engine`, which tells a report apart from other JSON with a `hosts` key.
+/// `name` is required and checked; `version` is the fallback for a document
+/// written before `produced_by` existed.
 #[derive(Debug, Deserialize)]
 struct EngineDto {
     name: String,
@@ -628,8 +572,8 @@ struct EngineDto {
     version: String,
 }
 
-/// One `phases[]` entry: what a scan walked, under what settings, and what went
-/// wrong on the way. Everything a [`ScanReport`] knows that is not a host.
+/// One `phases[]` entry: what a scan covered, under what settings, and what went
+/// wrong. Everything a [`ScanReport`] knows that is not a host.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct PhaseDto {
@@ -681,9 +625,7 @@ impl PhaseDto {
 
         Ok(PhaseRecord {
             open: self.open,
-            // Not read back: a phase somebody else's document describes was
-            // not run from this machine, so where it was plugged in is not
-            // something the reader can learn or has any business inventing.
+            // Dropped: they describe the scanning machine's network, not this one.
             attachments: Vec::new(),
             kind: self.kind,
             started_at: timestamp(&self.started_at)?,
@@ -764,11 +706,8 @@ impl PhaseDto {
     }
 }
 
-/// `targets`, which is what a phase says it covered rather than what it found.
-///
-/// The half that makes a comparison honest: a narrowed scan reads as a narrowed
-/// scan rather than as a network that emptied out, and it can only do that
-/// because the coverage is written down beside the results.
+/// `targets`, what a phase covered. A comparison needs it to tell a narrowed scan
+/// from a network that emptied out.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct ScopeDto {
@@ -796,8 +735,8 @@ impl ScopeDto {
                 .into_iter()
                 .map(RangeDto::record)
                 .collect::<Result<_, _>>()?,
-            // The document carries the interface name and not its index, which
-            // is what an unresolved zone is: a name nothing has looked up yet.
+            // The document carries interface names without indices, which is an
+            // unresolved zone.
             listened: self
                 .listened
                 .into_iter()
@@ -822,8 +761,8 @@ impl ScopeDto {
     }
 }
 
-/// How a phase's port coverage was expressed, the kind of specification and the
-/// text of it, rather than the ports it expanded to. `-` stays `-`.
+/// A phase's port coverage as written: the kind of specification and its text,
+/// unexpanded. `-` stays `-`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct PortScopeDto {
@@ -839,9 +778,8 @@ impl PortScopeDto {
             &self.kind,
         )?;
 
-        // A specification that will not parse would rebuild as a scope stating
-        // nothing, which is a comparison losing its ability to
-        // say an endpoint was probed. Refused instead.
+        // An unparseable specification would rebuild as an empty scope, so a
+        // comparison could not say an endpoint was probed.
         if !self.spec.is_empty() {
             known(
                 PortSet::try_from(self.spec.as_str()).ok(),
@@ -858,7 +796,7 @@ impl PortScopeDto {
 }
 
 /// One address range, as its two ends. Used for both what a phase covered and
-/// what it was forbidden to touch.
+/// what it excluded.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct RangeDto {
@@ -871,8 +809,8 @@ impl RangeDto {
         Ok(RangeRecord {
             start: address(&self.start)?,
             end: address(&self.end)?,
-            // The document does not scope a range to an interface. A range that
-            // needs one is a link-local sweep, whose zone travels on the host.
+            // Ranges carry no zone in the document. A link-local sweep's zone is
+            // on the host.
             zone: None,
         })
     }
@@ -880,9 +818,9 @@ impl RangeDto {
 
 /// `settings`, the request a phase ran under.
 ///
-/// Read so a report says what was asked for and not only what came back, a port
-/// reported closed by a SYN scan and by a connect scan are different claims.
-/// Every named value here is checked, including the two records at the end.
+/// A port reported closed by a SYN scan and by a connect scan are different
+/// claims, so the settings are read too. Every named value here is checked,
+/// including the two records at the end.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct SettingsDto {
@@ -906,40 +844,33 @@ struct SettingsDto {
     characterise: bool,
     ip_protocols: Vec<u8>,
     tls_enumeration: bool,
-    /// The TCP ports the scan only listened on, absent in a document written
-    /// before a scan held any back, which probed every port alike.
+    /// The TCP ports the scan only listened on. Absent in older documents, whose
+    /// scans probed every port alike.
     listen_only_ports: Vec<u16>,
-    /// The ports the scan sent nothing to, as a port specification, absent
-    /// when it excluded none and in a document written before a scan could.
+    /// The ports the scan sent nothing to, as a port specification. Absent when
+    /// it excluded none, and in older documents.
     #[serde(default)]
     excluded_ports: String,
     /// What the scan changed about its packets, absent when it changed nothing.
     /// Deserialized into the journal's own record, then checked by
-    /// [`checked_evasion`]: four of its fields are named vocabularies or
-    /// addresses, not plain scalars.
+    /// [`checked_evasion`].
     evasion: Option<EvasionSettingsRecord>,
     /// The zombie a TCP port scan ran through, absent for an ordinary scan.
     /// Checked the same way, by [`checked_idle_scan`].
     idle_scan: Option<IdleScanRecord>,
-    /// Whether the capture kept ICMP errors a technique did not need, absent in
-    /// a document written before the option existed.
+    /// Whether the capture kept ICMP errors a technique did not need. Absent in
+    /// older documents.
     #[serde(default)]
     icmp_evidence: bool,
 }
 
-/// Holds the evasion record to the promise the module documentation makes.
+/// Refuses unknown values in the evasion record, per the module's compatibility
+/// rules.
 ///
-/// Four of its fields are not plain scalars. `flags` is a named vocabulary,
-/// `spoof_mac` is a hardware address, `decoys` is a list of addresses, and the
-/// record layer reads every one of them *downward*: an unrecognised flag name
-/// contributes nothing, an unparseable address is filtered out of the list, and
-/// a bad `spoof_mac` becomes `None`. Unchecked, a document claiming something
-/// this build cannot express would read back as a document claiming less,
-/// silently, and against this reader's own rule that an unknown named value is
-/// an error naming it rather than a field to skip.
-///
-/// `"syn|nonsense"` is the sharpest case: it would read back as `syn`, which is
-/// not what the document said and not nothing either.
+/// The record layer reads `flags`, `spoof_mac` and `decoys` leniently: an
+/// unrecognised flag name contributes nothing, an unparseable decoy is dropped,
+/// and a bad `spoof_mac` becomes `None`. Unchecked, a document would silently read
+/// back as claiming less than it said; `"syn|nonsense"` would read as `syn`.
 fn checked_evasion(evasion: &EvasionSettingsRecord) -> Result<(), String> {
     if let Some(flags) = &evasion.flags {
         known(wire::tcp_flags_checked(flags), "a TCP flag set", flags)?;
@@ -953,10 +884,9 @@ fn checked_evasion(evasion: &EvasionSettingsRecord) -> Result<(), String> {
     Ok(())
 }
 
-/// [`checked_evasion`] for the idle-scan record, whose `zombie` is an address the
-/// record layer parses downward: an unparseable one takes the whole marker with
-/// it, so unchecked, a document that said a scan ran through a zombie would read
-/// back as one that said it did not.
+/// [`checked_evasion`] for the idle-scan record. The record layer drops the whole
+/// record on an unparseable `zombie`, so a scan that ran through a zombie would
+/// read back as one that did not.
 fn checked_idle_scan(idle: &IdleScanRecord) -> Result<(), String> {
     known(
         idle.zombie.parse::<IpAddr>().ok(),
@@ -977,9 +907,8 @@ impl SettingsDto {
             "a TCP scan technique",
             &self.tcp_technique,
         )?;
-        // Absent on a document written before the technique was a choice, and
-        // on every document from a scanner that has no SCTP scan. Empty reads as
-        // unstated rather than as a name nobody wrote.
+        // Empty in older documents and from scanners without an SCTP scan; read
+        // as unstated.
         if !self.sctp_technique.is_empty() {
             known(
                 self.sctp_technique.parse::<SctpScanTechnique>().ok(),
@@ -1002,12 +931,9 @@ impl SettingsDto {
             "a service detection level",
             &self.service_detection,
         )?;
-        // Absent from a document written before this field existed, where an
-        // empty string is what `serde(default)` leaves behind and the record
-        // reads as the default envelope. A value that is *present* and
-        // unrecognised is a different thing: this field states the ceiling on
-        // what the scan was permitted to do, so reading it down to the default
-        // would understate a document that was claiming more.
+        // Empty in older documents, and read as the default envelope. A present
+        // but unrecognised value is refused: it states the ceiling on what the
+        // scan was permitted to do, and the default could understate it.
         if !self.detection.is_empty() {
             known(
                 wire::detection_class(&self.detection),
@@ -1021,9 +947,8 @@ impl SettingsDto {
         if let Some(idle) = &self.idle_scan {
             checked_idle_scan(idle)?;
         }
-        // Checked for the reason `detection` is: it states what the scan was
-        // forbidden to send, and reading an unreadable one as empty would say a
-        // scan sent to ports it kept out.
+        // Checked like `detection`: read as empty, an unreadable value would say
+        // the scan sent to ports it kept out.
         known(
             crate::model::port::PortSet::try_from(self.excluded_ports.as_str()).ok(),
             "a port specification",
@@ -1064,10 +989,8 @@ impl SettingsDto {
 
 /// One entry of `host.ip_protocols`.
 ///
-/// `name` is not read. It is the registry keyword the exporter writes for a
-/// reader, derivable from the number, and a document naming it differently is
-/// describing the same protocol; taking it would let a foreign document rename
-/// GRE.
+/// `name` is not read: it is the registry keyword, derived from the number, and
+/// reading it would let a foreign document rename GRE.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct IpProtocolDto {
@@ -1075,9 +998,8 @@ struct IpProtocolDto {
     state: String,
 }
 
-/// One `hosts[].names[]` entry: a name the host gave for itself, and which
-/// protocol it gave it in. Read as written, masked or not: a redacted
-/// document's names are the masks, as its hostnames are.
+/// One `hosts[].names[]` entry: a name the host gave for itself, and the protocol
+/// it gave it in. Read as written, so a redacted document's names are its masks.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct NameDto {
@@ -1096,9 +1018,8 @@ struct RetryDto {
     dampen_silent_hosts: bool,
 }
 
-/// One `failures[]` entry: a strategy that did not complete, and when. The
-/// difference between a network with nothing on it and a scan that never
-/// started.
+/// One `failures[]` entry: a strategy that did not complete, and when. Tells a
+/// network with nothing on it from a scan that never started.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct FailureDto {
@@ -1128,7 +1049,7 @@ impl FailureDto {
 /// Ground a phase declined to cover, as a document holds it.
 ///
 /// No timestamp, unlike [`FailureDto`]: a refusal is decided before the phase
-/// runs, so there is no moment to record and none is read.
+/// runs.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct RefusalDto {
@@ -1153,9 +1074,9 @@ impl RefusalDto {
 
 /// One `probe_stats[]` entry: what one scanner sent, saw and concluded.
 ///
-/// The largest object in the document and the one that says whether a phase's
-/// silence is evidence. A sweep that sent ten thousand probes and saw nothing is
-/// a different fact from one whose capture dropped nine thousand frames.
+/// Says whether a phase's silence is evidence: a sweep that sent ten thousand
+/// probes and saw nothing differs from one whose capture dropped nine thousand
+/// frames.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct ProbeStatsDto {
@@ -1207,8 +1128,8 @@ impl ProbeStatsDto {
             replies_without_rtt: self.replies_without_rtt,
             refusals_unattributed: self.refusals_unattributed,
             hosts_found: self.hosts_found,
-            // Both histograms are written as one object per bucket, in the order
-            // the counters hold them, so the counts alone rebuild the vector.
+            // Both histograms are written one object per bucket, in order, so the
+            // counts alone rebuild the vector.
             answered_on: self.answered_on.into_iter().map(|a| a.count).collect(),
             answered_unattributed: self.answered_unattributed,
             first_reply: self.first_reply_us.map(micros),
@@ -1235,8 +1156,7 @@ struct BucketDto {
     count: u64,
 }
 
-/// `capture`, the kernel's own account of what the capture did and did not see.
-/// A dropped frame is a probe this scan sent and cannot reason about.
+/// `capture`, the kernel's account of what the capture saw and dropped.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct CaptureDto {
@@ -1258,8 +1178,8 @@ impl CaptureDto {
     }
 }
 
-/// `window`, the in-flight window a scanner finished at and the largest it
-/// reached. How hard the scan was allowed to push, and whether it backed off.
+/// `window`, the in-flight window a scanner finished at, the largest it reached,
+/// and whether it backed off.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct WindowDto {
@@ -1271,16 +1191,9 @@ struct WindowDto {
 }
 
 impl WindowDto {
-    /// The document carries `u64` because JSON has one integer width and the
-    /// writer emits what a `usize` held. Reading it back on a narrower target is
-    /// where that stops being reversible, and `as usize` truncated: a capacity of
-    /// `2^32` came back as zero on a 32-bit build, which reads as a window that
-    /// closed rather than one this build cannot represent.
-    ///
-    /// Clamped instead. A window is a count of things this process could hold, so
-    /// `usize::MAX` is the honest reading of a number larger than this build can
-    /// count to, and it is wrong in the direction that says "a great many" rather
-    /// than "none".
+    /// The document carries a `usize` written as `u64`. On a 32-bit build a value
+    /// that does not fit is clamped to `usize::MAX`, since truncating `2^32` would
+    /// read as a closed window.
     fn record(self) -> WindowRecord {
         WindowRecord {
             capacity: usize::try_from(self.capacity).unwrap_or(usize::MAX),
@@ -1296,7 +1209,7 @@ impl WindowDto {
 // One host
 // ---------------------------------------------------------------------------
 
-/// One `hosts[]` entry, and the whole of what a scan concluded about one machine.
+/// One `hosts[]` entry: everything a scan concluded about one machine.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct HostDto {
@@ -1323,8 +1236,8 @@ struct HostDto {
 impl HostDto {
     /// The host this entry describes.
     ///
-    /// Its ports were rebuilt as the array was parsed, so they join the host
-    /// directly rather than passing through the record the rest of it does.
+    /// Its ports and addresses were rebuilt as the arrays were parsed, so they
+    /// join the host directly, bypassing the record.
     fn into_host(mut self) -> Result<Host, String> {
         let ports = std::mem::take(&mut self.ports);
         let ips = std::mem::take(&mut self.ips);
@@ -1334,7 +1247,7 @@ impl HostDto {
     }
 
     /// Everything but the addresses and ports, which
-    /// [`into_host`](Self::into_host) holds already rebuilt.
+    /// [`into_host`](Self::into_host) adds already rebuilt.
     fn record(self) -> Result<HostRecord, String> {
         known(
             wire::host_status(&self.status),
@@ -1390,12 +1303,10 @@ impl HostDto {
                 .map(ReasonDto::record)
                 .collect::<Result<_, _>>()?,
             os: self.os.map(OsDto::record),
-            // The document carries the verdict and not the sources behind it.
-            // See the module documentation.
+            // The document carries the verdict only; see the module documentation.
             os_evidence: Vec::new(),
             hardware: maybe(self.hardware, |hardware| hardware.record(last_seen))?,
-            // The document names the interface and not its index, which is what
-            // an unresolved zone is: a name nothing has looked up yet.
+            // An interface name without an index: an unresolved zone.
             zone: self
                 .zone
                 .map(|name| crate::record::ZoneRecord { index: None, name }),
@@ -1407,9 +1318,7 @@ impl HostDto {
                 .collect::<Result<_, _>>()?,
             roles: self.roles,
             filtering: self.filtering,
-            // The registry keyword the document carries is dropped: it is
-            // derivable from the number, and the journal holds only what it
-            // cannot derive.
+            // The registry keyword is dropped; it is derived from the number.
             ip_protocols: self
                 .ip_protocols
                 .into_iter()
@@ -1432,11 +1341,9 @@ impl HostDto {
 
 /// `ips[]`, parsed into the set a host keeps as the array is read.
 ///
-/// For the same reason [`PortsDto`] is: the array is as long as the document
-/// makes it, and read as strings to be parsed afterwards it would be held as
-/// text, then as addresses, then as the host's set, the first two at once. An
-/// address is parsed from the document's own bytes and nothing else is
-/// allocated for it, so what a host's array costs is its set.
+/// Like [`PortsDto`], this bounds memory by what the host keeps: each address is
+/// parsed straight from the document's bytes into the set, so the array is never
+/// held as text or as a list.
 #[derive(Debug, Default)]
 struct IpsDto(BTreeSet<IpAddr>);
 
@@ -1490,10 +1397,8 @@ impl Visitor<'_> for IpVisitor {
 }
 
 /// One `reasons[]` entry: which protocol established a host's status, and from
-/// where. A host up by ARP and one up by a TCP reset are the same status reached
-/// two ways, and a reader who cannot tell them apart cannot weigh either.
-/// `source_withheld` marks evidence a middlebox sent from an address the scan
-/// that wrote the document was forbidden to report.
+/// where. `source_withheld` marks evidence a middlebox sent from an address the
+/// writing scan was forbidden to report.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct ReasonDto {
@@ -1522,8 +1427,8 @@ impl ReasonDto {
 
 /// `os`, the operating-system verdict and how sure it is.
 ///
-/// The verdict only. The evidence behind it does not survive the document, by
-/// the export's deliberate choice; see the module docs.
+/// The verdict only; the document does not carry the evidence. See the module
+/// documentation.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct OsDto {
@@ -1558,29 +1463,28 @@ impl OsDto {
     }
 }
 
-/// `hardware`, the link-layer addresses a host answered from. Present only where
-/// a scan was on the same segment as the host, since nothing routed carries one.
+/// `hardware`, the link-layer addresses a host answered from. Present only when
+/// the scan was on the host's segment.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct HardwareDto {
     mac: Option<String>,
     macs: Vec<String>,
-    /// A vendor the document carries, which is one a service named: a vendor
-    /// read from an address block is re-derived on rebuild and never written.
+    /// A vendor a service named. One derived from the address block is not
+    /// written; it is derived again on rebuild.
     vendor: Option<String>,
     product: Option<String>,
     family: Option<String>,
     cpe23: Option<String>,
     model: Option<String>,
     version: Option<String>,
-    /// Absent from a redacted document, which drops it rather than masking it.
+    /// Absent from a redacted document.
     serial_number: Option<String>,
 }
 
 impl HardwareDto {
-    /// The document records which addresses were seen and not when each was, so
-    /// they are all placed at the host's last sighting, the latest moment any of
-    /// them can have been seen.
+    /// The document does not record when each address was seen, so all are
+    /// placed at the host's last sighting, the latest moment any could have been.
     fn record(self, seen: SystemTime) -> Result<HardwareRecord, String> {
         let mut macs: Vec<String> = self.macs;
         if let Some(mac) = self.mac
@@ -1602,19 +1506,15 @@ impl HardwareDto {
     }
 }
 
-/// `telemetry`, which the schema defines and the document does not yet fill.
-///
-/// Empty rather than absent: the field is in the published schema, so a reader
-/// that refused an object here would refuse a valid document the moment the
-/// writer starts emitting one.
+/// `telemetry`, which the schema defines and the exporter leaves empty. Accepted
+/// so a document that fills it stays readable.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct TelemetryDto {}
 
 impl TelemetryDto {
-    /// The document carries round-trip *summaries* and not the samples they were
-    /// computed from, so a host read back reports none. See the module
-    /// documentation for why the export is right about that.
+    /// The document carries round-trip summaries without the samples, so a host
+    /// read back reports none. See the module documentation.
     fn record(self) -> TelemetryRecord {
         TelemetryRecord {
             rtts: Vec::new(),
@@ -1625,10 +1525,10 @@ impl TelemetryDto {
     }
 }
 
-/// One `path[]` entry: a router between this scan and the host, at its distance.
-/// `inferred` marks a hop taken from a path already measured to a neighbour
-/// rather than probed for again, and `withheld` one whose router answered from
-/// an address the scan that wrote the document was forbidden to report.
+/// One `path[]` entry: a router between the scanner and the host, at its
+/// distance. `inferred` marks a hop taken from a path already measured to a
+/// neighbour, and `withheld` one whose router answered from an address the
+/// writing scan was forbidden to report.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct HopDto {
@@ -1654,12 +1554,10 @@ impl HopDto {
 /// A host's `ports[]`, rebuilt as the array is parsed and keyed as the host
 /// keys them.
 ///
-/// Converted an entry at a time for the reason the hosts are, and folded by
-/// endpoint as they arrive, so an entry the document repeats builds one port
-/// rather than another element of a list. A full-range host is 65,535 entries,
-/// and collected to be converted afterwards they would be held two and three
-/// times over at once. Keyed, a host costs at most the endpoints it can have
-/// however long its array runs.
+/// Converted an entry at a time and folded by endpoint, so a repeated entry
+/// updates one port. A full-range host is 65,535 entries; collecting them first
+/// would hold them two or three times over. Keyed, a host costs at most the
+/// endpoints it can have, however long its array runs.
 #[derive(Debug, Default)]
 struct PortsDto(BTreeMap<(u16, Protocol), Port>);
 
@@ -1683,8 +1581,7 @@ impl<'de> Visitor<'de> for PortsVisitor {
         let mut ports = BTreeMap::new();
         while let Some(dto) = seq.next_element::<PortDto>()? {
             let record = dto.record().map_err(de::Error::custom)?;
-            // `record` refuses a transport this build cannot read, which is
-            // the one entry `rebuild` leaves out, so this skips nothing.
+            // `record` already refused the only entries `rebuild` would skip.
             if let Some(port) = record.rebuild() {
                 port::fold(&mut ports, port);
             }
@@ -1733,9 +1630,7 @@ impl PortDto {
 
 /// `service`, what the fingerprinter concluded is listening.
 ///
-/// `confidence` travels with it because a service name is a judgement: a banner
-/// that names itself and a port number that is conventionally something are not
-/// the same claim, and a report that flattened them could not say so.
+/// `confidence` separates a banner that names itself from a guess by port number.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct ServiceDto {
@@ -1749,7 +1644,7 @@ struct ServiceDto {
     build: Option<BuildDto>,
 }
 
-/// `service.build`, whose build of the software a reply said this is.
+/// `service.build`, which distributor's build a reply identified.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct BuildDto {
@@ -1784,7 +1679,7 @@ impl ServiceDto {
 /// A finding on a host or a port.
 ///
 /// The document flattens the detection's identity into the finding; the record
-/// keeps it as a [`DetectionIdRecord`], so this is where the two shapes meet.
+/// keeps it as a [`DetectionIdRecord`].
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct FindingDto {
@@ -1807,8 +1702,7 @@ struct FindingDto {
     group: Option<GroupDto>,
 }
 
-/// `finding.group`, the group of detections that cover one weakness between
-/// them.
+/// `finding.group`, the detections that together cover one weakness.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct GroupDto {
@@ -1851,12 +1745,10 @@ impl FindingDto {
     /// Rebuilds one finding, refusing a severity, confidence or class this build
     /// does not know.
     ///
-    /// [`FindingRecord::rebuild`](crate::record::FindingRecord::rebuild) reads
-    /// all three *downward* on an unknown name, which is right for a journal
-    /// this engine wrote and wrong here for the reason [`known`] gives. It is
-    /// worse than a wrong port state: a `critical` finding whose severity word
-    /// this build cannot name would arrive as `info`, and a comparison would
-    /// then report it as having been reassessed down.
+    /// [`FindingRecord::rebuild`](crate::record::FindingRecord::rebuild) reads an
+    /// unknown name in any of the three leniently, which is wrong here for the
+    /// reason [`known`] gives: a `critical` finding with an unrecognised severity
+    /// would arrive as `info`, and a comparison would report it as downgraded.
     fn record(self) -> Result<FindingRecord, String> {
         known(wire::severity(&self.severity), "a severity", &self.severity)?;
         known(
@@ -1904,9 +1796,8 @@ impl FindingDto {
                 },
                 cves: exploited.cves,
             }),
-            // Half a group is dropped rather than rebuilt, as the record layer
-            // drops one: the model refuses it, and a finding is worth more than
-            // the membership it could not state.
+            // A group missing its id or summary is dropped, as the record layer
+            // does, and the finding is kept.
             group: self.group.and_then(|group| {
                 (!group.id.trim().is_empty() && !group.summary.trim().is_empty()).then_some(
                     FindingGroupRecord {
@@ -1928,15 +1819,11 @@ struct ReferenceDto {
 }
 
 impl ReferenceDto {
-    /// A reference is *not* checked against what this build knows, unlike every
-    /// other named value here.
+    /// Unlike every other named value here, a reference's kind is not checked.
     ///
     /// [`ReferenceRecord::rebuild`](crate::record::ReferenceRecord::rebuild)
-    /// drops a reference it cannot rebuild and keeps the finding, and that trade
-    /// is right for an unrecognised kind as much as for a malformed value:
-    /// losing a citation costs a reader one link, where refusing the document
-    /// costs them the finding. Nothing is read down into a claim the document
-    /// did not make, which is what the checks above exist to prevent.
+    /// drops a reference it cannot rebuild and keeps the finding. Losing a citation
+    /// costs one link, and dropping it makes no claim the document did not make.
     fn record(self) -> ReferenceRecord {
         ReferenceRecord {
             kind: self.kind,
@@ -1946,7 +1833,7 @@ impl ReferenceDto {
 }
 
 /// `security`, what a TLS handshake settled on. Absent for a port that speaks no
-/// TLS, which is different from one whose handshake failed.
+/// TLS, which differs from one whose handshake failed.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct SecurityDto {
@@ -2008,10 +1895,9 @@ impl UnfinishedVersionDto {
 
 /// `security.accepts`, what an enumeration established the endpoint accepts.
 ///
-/// The exported form names each suite and gives its number in hex; only the
-/// number is read back. A name is the writing engine's word for a suite and the
-/// number is what the server actually sent, so the number is what survives a
-/// document written by one build and read by another.
+/// The exported form names each suite and gives its number in hex. Only the
+/// number, which is what the server sent, is read back; names can differ between
+/// builds.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct AcceptedVersionDto {
@@ -2060,9 +1946,8 @@ fn hex_code(text: &str) -> Result<u16, String> {
 
 /// `certificate`, the presented leaf as the scan read it.
 ///
-/// Every string here is text the scanned host chose, which is why the writers
-/// that put it on a page escape it and why a reader here does no more than carry
-/// it across.
+/// Every string here is chosen by the scanned host. It is carried across as is;
+/// the writers that render it escape it.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct CertificateDto {
@@ -2092,8 +1977,8 @@ impl CertificateDto {
 }
 
 /// `discovery`, how a port's state was established: which probe drew the answer,
-/// when, and what the reply's own headers said. The provenance for a single port,
-/// where `reasons` carries it for a host.
+/// when, and what the reply's headers said. The per-port counterpart of a host's
+/// `reasons`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct DiscoveryDto {
@@ -2142,18 +2027,14 @@ mod tests {
 
     /// The fixture report, written out as the document consumers parse.
     ///
-    /// Every call builds a fresh fixture, whose timestamps are taken as it is
-    /// built. A test comparing a report with its own round trip must therefore
-    /// use [`round_trip`], which exports the very report it hands back.
+    /// Every call builds a fresh fixture with fresh timestamps, so a test comparing
+    /// a report with its own round trip must use [`round_trip`].
     fn exported() -> String {
         write(&crate::export::fixture::report())
     }
 
-    /// Compact, and asked for rather than inherited. Several tests below reach
-    /// into the document for a value by its exact spelling, `"state":"open"`,
-    /// which the indented writer separates with a space. The default exporter
-    /// agrees with `new` and indents, so inheriting it would turn each of those
-    /// searches into a silent no-op.
+    /// Compact, explicitly: several tests search the document for exact spellings
+    /// such as `"state":"open"`, which the default indented writer spaces out.
     fn write(report: &ScanReport) -> String {
         let mut out = Vec::new();
         JsonExporter::new(crate::export::ExportOptions::new())
@@ -2191,8 +2072,7 @@ mod tests {
         .to_owned()
     }
 
-    /// Replaces one value in the exported document, to see what the reader does
-    /// with a name it cannot place.
+    /// Replaces one value in the exported document, asserting it was there.
     fn with_value(document: &str, from: &str, to: &str) -> String {
         assert!(document.contains(from), "the fixture does not carry {from}");
         document.replacen(from, to, 1)
@@ -2200,9 +2080,8 @@ mod tests {
 
     // ─── A host's addresses ──────────────────────────────────────────────────
 
-    /// A host's `ips` come back as the set it names, parsed as the array is
-    /// read, beside the times the document gives rather than the time it was
-    /// read; and an entry that is no address refuses the document naming it.
+    /// A host's `ips` come back as a set, with the document's timestamps, and an
+    /// entry that is no address refuses the document naming it.
     #[test]
     fn a_hosts_addresses_read_back_as_a_set_and_a_bad_one_is_named() {
         let document = |ips: &str| {
@@ -2235,13 +2114,7 @@ mod tests {
     // ─── Names this build cannot place ───────────────────────────────────────
 
     /// A severity, confidence or class this build does not recognise refuses the
-    /// document rather than reading as the least it could have meant.
-    ///
-    /// [`FindingRecord::rebuild`](crate::record::FindingRecord::rebuild) reads
-    /// all three downward, which is right for a journal this engine wrote and
-    /// wrong for a file somebody handed over: a `critical` finding whose word
-    /// this build cannot name would arrive as `info`, and a comparison would
-    /// then report a severity that dropped on its own.
+    /// document. See [`FindingDto::record`].
     #[test]
     fn a_finding_naming_a_severity_this_build_cannot_place_is_refused() {
         let document = exported();
@@ -2276,9 +2149,7 @@ mod tests {
         }
     }
 
-    /// The ceiling a phase ran under is a name like any other, and is refused
-    /// like one when this build cannot place it. Reading it down to the default
-    /// would understate a document that was claiming more.
+    /// An unrecognised detection ceiling refuses the document.
     #[test]
     fn a_phase_naming_a_detection_ceiling_this_build_cannot_place_is_refused() {
         let document = exported();
@@ -2292,14 +2163,8 @@ mod tests {
         assert!(matches!(read(&broken), Err(ImportError::Malformed { .. })));
     }
 
-    /// The evasion and idle-scan records are named values too, and the record
-    /// layer behind this reader is documented to read them downward.
-    ///
-    /// Unchecked, each shape below would be accepted and quietly diminished:
-    /// `"nonsense"` would become no flags at all, `"syn|nonsense"` would become
-    /// `syn`, a claim the document did not make, a bad `spoof_mac` or decoy
-    /// would vanish, and an unparseable `zombie` would take the whole idle-scan
-    /// marker with it. All four refuse, naming the value.
+    /// Unrecognised values in the evasion and idle-scan records refuse the
+    /// document. See [`checked_evasion`] and [`checked_idle_scan`].
     #[test]
     fn an_evasion_setting_this_build_cannot_place_refuses_the_document() {
         let document = exported();
@@ -2324,13 +2189,11 @@ mod tests {
             );
         }
 
-        // And the fixture itself still reads, so the check is not simply refusing
-        // everything.
+        // The unmodified fixture still reads.
         let _ = read(&document).expect("the fixture's own evasion record is valid");
     }
 
-    /// An absent `detection` is not an unknown one: a document written before
-    /// the field existed carries no name at all, and reads as the default.
+    /// An absent `detection`, as in older documents, reads as the default.
     #[test]
     fn a_document_predating_the_detection_ceiling_still_reads() {
         let ceiling = fixture_detection_ceiling();
@@ -2339,9 +2202,7 @@ mod tests {
         let _ = read(&document).expect("an older document is not a broken one");
     }
 
-    /// A document written before a failure could be marked cut short reads
-    /// every entry as a failure, which is what its writer meant by all of
-    /// them, rather than refusing the document or guessing which were limits.
+    /// A document without `cut_short` markers reads every entry as a failure.
     #[test]
     fn a_document_predating_the_cut_short_marker_reads_every_entry_as_a_failure() {
         let document = with_value(&exported(), r#","cut_short":true"#, "");
@@ -2356,10 +2217,6 @@ mod tests {
     // ─── The record-per-line shape ───────────────────────────────────────────
 
     /// A record-per-line export read back as the report it was written from.
-    ///
-    /// `export-jsonl` writes a complete report, and without a reader for it the
-    /// format's argument for existing, that a scan cut short still leaves a
-    /// readable file, would stop at the file.
     #[test]
     fn a_record_per_line_export_reads_back_as_the_scan_it_records() {
         use crate::export::JsonLinesExporter;
@@ -2382,9 +2239,8 @@ mod tests {
         );
     }
 
-    /// The failure that made the reader worth writing: the single-document
-    /// reader has to refuse a record-per-line file rather than parse its first
-    /// line and hand back a well-attributed report of a scan that found nothing.
+    /// The single-document reader refuses a record-per-line file, whose first
+    /// line alone would parse as an empty report.
     #[test]
     fn the_document_reader_refuses_a_record_per_line_file() {
         use crate::export::JsonLinesExporter;
@@ -2408,7 +2264,7 @@ mod tests {
         }
     }
 
-    /// A file that names no scan is not a report, whichever shape it arrives in.
+    /// A record-per-line file without a `report` record is refused.
     #[test]
     fn a_record_per_line_file_with_no_report_record_is_refused() {
         let error = read_lines(r#"{"type":"host","primary_ip":"198.51.100.1"}"#)
@@ -2417,8 +2273,7 @@ mod tests {
         assert!(matches!(error, ImportError::Malformed { .. }));
     }
 
-    /// One file describes one scan, so a second header is a contradiction rather
-    /// than a later word on the subject.
+    /// One file describes one scan, so a second header is refused.
     #[test]
     fn a_second_report_record_is_refused() {
         use crate::export::JsonLinesExporter;
@@ -2442,8 +2297,7 @@ mod tests {
     }
 
     /// A record kind this build does not know is skipped, so a newer engine's
-    /// output stays readable. That is the same bargain the document offers with
-    /// unknown fields.
+    /// output stays readable.
     #[test]
     fn a_record_kind_this_build_does_not_know_is_skipped() {
         use crate::export::JsonLinesExporter;
@@ -2463,12 +2317,10 @@ mod tests {
         );
     }
 
-    /// The one property that matters: a report written out and read back
-    /// describes the same network.
+    /// A report written out and read back describes the same network.
     ///
-    /// Asserted through [`ScanDiff`] rather than field by field, since that is
-    /// the question the reader exists to answer, and a field the reader drops
-    /// shows up here as a change whatever field it was.
+    /// Asserted through [`ScanDiff`], so any field the reader drops shows up as a
+    /// change.
     #[test]
     fn a_report_read_back_compares_equal_to_itself() {
         let (original, restored) = round_trip();
@@ -2520,11 +2372,9 @@ mod tests {
 
     /// A path reads back hop for hop, each hop the kind it was written as.
     ///
-    /// The comparison above cannot see this, since a diff compares no paths.
-    /// A silent hop and a withheld one both write a `null` address and differ
-    /// only in the flag beside it, so a reader that dropped the flag would turn
-    /// a withheld router into a silent one: a document saying nothing answered
-    /// where a router did.
+    /// A diff compares no paths, so this is checked separately. A silent hop and
+    /// a withheld one both write a `null` address and differ only in the flag
+    /// beside it; dropping the flag would turn a withheld router into a silent one.
     #[test]
     fn a_path_reads_back_hop_for_hop() {
         let (original, restored) = round_trip();
@@ -2546,10 +2396,9 @@ mod tests {
     /// A host's evidence reads back reason for reason, each from the sender it
     /// was written with.
     ///
-    /// Evidence the host sent and evidence from a withheld middlebox both write
-    /// a `null` source and differ only in the flag beside it, so a reader that
-    /// dropped the flag would turn the second into the first: a document saying
-    /// the host answered for itself where a middlebox spoke for it.
+    /// Evidence the host sent and evidence from a withheld middlebox both write a
+    /// `null` source and differ only in the flag beside it; dropping the flag
+    /// would say the host answered where a middlebox did.
     #[test]
     fn a_hosts_evidence_reads_back_with_its_senders() {
         let (original, restored) = round_trip();
@@ -2577,10 +2426,8 @@ mod tests {
 
         for (before, after) in original.phases().iter().zip(restored.phases()) {
             assert_eq!(after.kind(), before.kind());
-            // The document keeps a time to whole microseconds and truncates the
-            // rest, so a phase comes back within a microsecond of where it was
-            // rather than on the same nanosecond. Truncation only ever moves a
-            // moment earlier, which is why this subtracts in this order.
+            // The document truncates times to whole microseconds, which only
+            // ever moves a moment earlier; hence the order of subtraction.
             let drift = before
                 .started_at()
                 .duration_since(after.started_at())
@@ -2695,9 +2542,8 @@ mod tests {
     }
 
     /// A port phase that stood in for a dropped liveness pass keeps, through a
-    /// written document and back, why it ran alone, the addresses it found
-    /// silent and what it asked them, and the document holds no host at one
-    /// of those.
+    /// round trip, why it ran alone, the addresses it found silent and what it
+    /// asked them, and no host appears at those addresses.
     #[test]
     fn a_silent_address_survives_a_round_trip_and_stays_no_host() {
         use crate::model::ip::range::{IpRange, Ipv4Range};
@@ -2751,11 +2597,10 @@ mod tests {
         assert_eq!(restored.hosts().count(), 1, "only the host that answered");
     }
 
-    /// An address a phase names as refused by a route on the scanning host is
-    /// named so through a written document and back, and through the record a
-    /// journal keeps, beside the unreachable it is among: dropped, a report
-    /// read back says the address could not be reached and not that the
-    /// remedy is a route on the machine that ran it.
+    /// An address refused by a route on the scanning host stays marked so through
+    /// a round trip and through the journal record, alongside the unreachable
+    /// list it belongs to. Without the mark, a reader cannot tell the fix is a
+    /// route on the scanning machine.
     #[test]
     fn an_address_refused_by_a_route_survives_a_round_trip() {
         use crate::report::{PhaseParts, ScanKind, ScanPhase, ScanSettings};
@@ -2806,12 +2651,9 @@ mod tests {
         assert_eq!(ScanPhase::from(&recorded).refused_by_route(), [at(2)]);
     }
 
-    /// A phase recorded before it closed stays open through a written
-    /// document and back, and the document it is read from stays partial.
-    ///
-    /// Read back closed, it is a phase that claims no stop and no target left
-    /// unasked, which is a scan that covered its ground; see
-    /// [`ScanPhase::is_open`](crate::report::ScanPhase::is_open).
+    /// A phase recorded before it closed stays open through a round trip, and the
+    /// report stays partial. Read back closed, it would claim a scan that covered
+    /// its ground; see [`ScanPhase::is_open`](crate::report::ScanPhase::is_open).
     #[test]
     fn a_phase_that_never_closed_survives_a_round_trip_open() {
         use crate::report::{PhaseParts, ScanKind, ScanPhase, ScanSettings};
@@ -2882,7 +2724,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // The bargain this side promises
+    // Compatibility rules
     // -----------------------------------------------------------------------
 
     #[test]
@@ -2907,14 +2749,8 @@ mod tests {
         assert!(error.to_string().contains("schema version"), "{error}");
     }
 
-    /// A foreign scanner's attribution survives the round trip, and does not
-    /// land on this engine's name on the way.
-    ///
-    /// Carried in `engine.version`, the attribution would make a report read out
-    /// of nmap's XML export as `engine: {name: zond-engine, version: nmap 7.94}`.
-    /// Through the nmap writer, whose `scanner="zond"` is fixed the same way, the
-    /// pair would collapse further, and this engine's name and version would
-    /// come back as the version of the next document exported from it.
+    /// A foreign scanner's attribution survives the round trip in `produced_by`,
+    /// separate from `engine`, which names the writer of the file.
     #[test]
     fn what_produced_the_findings_round_trips_apart_from_who_wrote_the_file() {
         let foreign = ScanReport::recorded(
@@ -2927,9 +2763,7 @@ mod tests {
         assert_eq!(restored.engine_version(), "nmap 7.94");
     }
 
-    /// A document written before `produced_by` existed still reads. In such a
-    /// document `engine.version` is the attribution, which is what the fallback
-    /// takes it for.
+    /// A document without `produced_by` reads `engine.version` as the attribution.
     #[test]
     fn a_document_written_before_produced_by_falls_back_to_the_engine_version() {
         let document = write(&crate::export::fixture::report());
@@ -2980,8 +2814,7 @@ mod tests {
 
     #[test]
     fn a_document_that_is_not_a_report_is_refused() {
-        // The version is what tells a report apart from any other JSON that
-        // happens to have a `hosts` key, so its absence is what is named.
+        // Missing `schema_version` is what marks other JSON with a `hosts` key.
         let error = read(r#"{"hosts": []}"#).expect_err("refused");
         assert!(error.to_string().contains("schema_version"), "{error}");
 
@@ -2990,7 +2823,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // The point of it
+    // Comparing against a later scan
     // -----------------------------------------------------------------------
 
     #[test]
@@ -3040,13 +2873,10 @@ mod tests {
         );
     }
 
-    /// Findings are what a detection concluded, and losing them on the way back
-    /// in would make every archived report read as a network nothing was ever
-    /// found on.
+    /// Findings survive the round trip.
     ///
-    /// Counted rather than compared through [`ScanDiff`], because a diff does
-    /// not look at findings: this loss would go unnoticed while the diff-based
-    /// round-trip test above passed.
+    /// Counted directly, because [`ScanDiff`] does not compare findings and the
+    /// diff-based round-trip test would miss their loss.
     #[test]
     fn every_finding_survives_the_round_trip() {
         let (original, restored) = round_trip();
@@ -3079,9 +2909,8 @@ mod tests {
 
     /// A correlation comes back naming the identifier it was drawn from.
     ///
-    /// Merging archived documents is how a merge usually meets a correlation,
-    /// and it decides whether to carry one past a newer identification by that
-    /// identifier. Read back without it, every correlation in an archive would
+    /// A merge uses the identifier to decide whether to carry a correlation past
+    /// a newer identification. Without it, every archived correlation would
     /// outlive the service version it was drawn from.
     #[test]
     fn a_correlation_keeps_the_identifier_it_was_drawn_from() {

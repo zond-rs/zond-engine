@@ -9,50 +9,37 @@
 //! # Reading a document as findings
 //!
 //! The rest of [`import`](crate::import) reads a document for the targets to scan
-//! next: addresses and ports, everything else skipped. This reads the same kind
-//! of document for what the scan that produced it found, and builds the
-//! [`ScanReport`] that scan would have produced.
+//! next: addresses and ports. This reads the same kind of document for what the
+//! scan that produced it found, and builds the [`ScanReport`] that scan would have
+//! produced.
 //!
-//! ## Why both, and why they stay apart
+//! The target readers are narrow on purpose: [`import::json`](crate::import::json)
+//! reads four fields, which leaves the exported schema free to move. The readers
+//! here are separate, and the two directions share only the `xml` parsing
+//! machinery.
 //!
-//! Rescanning what a document found and reading what it found are different jobs
-//! with opposite instincts. The target readers are narrow on purpose:
-//! [`import::json`](crate::import::json) reads four fields, which leaves the
-//! exported schema free to move while nothing promises to read most of it.
-//! Widening them to carry findings would spend that freedom on a different
-//! caller.
+//! ## Use with diff
 //!
-//! So the readers here are separate, and the two directions share only the
-//! parsing machinery that has no opinion about either, meaning `xml` for the
-//! documents that are XML.
+//! [`diff`](crate::diff) compares two [`ScanReport`]s regardless of where either
+//! came from: a scan this process ran, one read back from a
+//! [`journal`](crate::journal), or one read from a file here. That makes last
+//! quarter's nmap output against tonight's scan, or two archived exports against
+//! each other, one call.
 //!
-//! ## What this unlocks
+//! ## Attribution
 //!
-//! [`diff`](crate::diff) compares two [`ScanReport`]s and asks nothing about
-//! where either came from. A scan this process ran, a scan read back out of a
-//! [`journal`](crate::journal) and a scan read back out of a file are the same
-//! input to it. This module puts the third in reach, and a file is what people
-//! archive, where a journal is state a machine keeps and prunes.
-//!
-//! So: last quarter's nmap output against tonight's scan is one call, two nmap
-//! files against each other is one call, and an exported report from a build
-//! that has since been upgraded against a fresh one is one call.
-//!
-//! ## A report is not evidence that this engine produced it
-//!
-//! A [`ScanReport`] built here is attributed to whatever wrote the document, so
-//! `nmap 7.94` rather than this crate, through
+//! A [`ScanReport`] built here is attributed to whatever wrote the document, such
+//! as `nmap 7.94`, through
 //! [`ScanReport::recorded`](crate::report::ScanReport::recorded), and
-//! [`Provenance::engine_version`](crate::diff::Provenance::engine_version) hands
-//! that back unchanged. Nothing downstream should read a report as proof this
-//! engine's scanners ran.
+//! [`Provenance::engine_version`](crate::diff::Provenance::engine_version) returns
+//! that unchanged. A report read here is no evidence that this engine's scanners
+//! ran.
 //!
-//! ## The same bounds, and the same refusal to open anything
+//! ## Bounds
 //!
-//! Everything the module documentation of [`import`](crate::import) says applies
-//! here. A reader takes a [`BufRead`] and never opens a file,
-//! [`ImportLimits`] are part of the call rather than a constant, and exceeding
-//! one is an error naming what exceeded it.
+//! The module documentation of [`import`](crate::import) applies here too. A
+//! reader takes a [`BufRead`] and never opens a file, [`ImportLimits`] are passed
+//! with each call, and exceeding one is an error naming what exceeded it.
 
 #[cfg(feature = "import-json")]
 pub mod json;
@@ -68,10 +55,9 @@ use crate::report::ScanReport;
 
 /// Reads a document as the report of the scan that produced it.
 ///
-/// The mirror of [`Exporter`](crate::export::Exporter), which writes one. A reader
-/// takes bytes from wherever the caller got them and returns the whole report,
-/// since a report is a document with a shape rather than a stream of independent
-/// records: the phase it belongs to is stated once, at the top.
+/// The mirror of [`Exporter`](crate::export::Exporter). A reader returns the whole
+/// report at once, since a report is one document whose header applies to
+/// everything after it.
 pub trait ReportReader {
     /// Reads `input` as one report.
     fn read(&self, input: &mut dyn BufRead) -> Result<ScanReport, ImportError>;
@@ -79,61 +65,52 @@ pub trait ReportReader {
 
 /// What a report reader is allowed to spend.
 ///
-/// A struct rather than a bare [`ImportLimits`] so that a policy this side needs
-/// and the target side does not stays an additive change.
-/// [`max_document_bytes`](Self::max_document_bytes) is the first such policy.
+/// Wraps [`ImportLimits`] so that limits specific to report reading, such as
+/// [`max_document_bytes`](Self::max_document_bytes), can be added without
+/// touching the target side.
 #[must_use]
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReportOptions {
     /// The bounds shared with the target readers.
     ///
-    /// Not every one of them means something to every reader here, because a
-    /// report is a document with a shape and a target list is a stream of
-    /// expressions. [`max_addresses`](ImportLimits::max_addresses) bounds the
-    /// hosts a document may name and binds both readers.
-    /// [`max_line_bytes`](ImportLimits::max_line_bytes) bounds one element's
-    /// markup in the nmap reader. A JSON document is one value with no lines
-    /// to bound, and a record-per-line one has lines as long as a host's port
-    /// list, so [`max_document_bytes`](Self::max_document_bytes) is what bounds
-    /// both. [`max_tokens`](ImportLimits::max_tokens) counts target
-    /// expressions and a report holds none, so nothing here reads it.
+    /// [`max_addresses`](ImportLimits::max_addresses) bounds the hosts a document
+    /// may name, in every reader. [`max_line_bytes`](ImportLimits::max_line_bytes)
+    /// bounds one element's markup in the nmap reader only; a JSON lines record is
+    /// as long as a host's port list, so both JSON readers are bounded by
+    /// [`max_document_bytes`](Self::max_document_bytes) alone.
+    /// [`max_tokens`](ImportLimits::max_tokens) counts target expressions and is
+    /// ignored here.
     pub limits: ImportLimits,
 
     /// The most bytes one document may be read from.
     ///
-    /// Every reader here parses a whole document before it returns one, so this
-    /// bounds what an untrusted file may make the process do. It is checked as
-    /// the bytes are consumed, so a document past the ceiling is refused on the
-    /// way in rather than after it has been held.
+    /// Every reader parses the whole document before returning, so this bounds
+    /// what an untrusted file can make the process do. It is checked as bytes are
+    /// consumed, so an oversized document is refused on the way in.
     ///
-    /// It bounds the document, and the process holds a multiple of it. Size
-    /// this to what the process can afford rather than to a file you are willing
-    /// to read. Measured, in the shapes that cost most per byte: twenty hosts
-    /// each listing every TCP port in the fewest bytes a port entry can take,
-    /// 64 MB of document and 5.8 times that resident at the peak; one host
-    /// whose `ips` array carries four million addresses, 59.9 MB and 2.8
-    /// times. A document repeating one port entry or one address costs one,
-    /// since a host's ports are folded by endpoint and its addresses into a
-    /// set as they are read. So at the default a hostile document can leave the
-    /// process holding about 6 GiB, and a caller reading documents from
-    /// strangers on a small machine should lower this.
+    /// The process holds a multiple of the document, so size this to the memory
+    /// the process can afford. Measured in the shapes that cost most per byte:
+    /// twenty hosts each listing every TCP port in the shortest possible entries
+    /// took 64 MB of document and 5.8 times that resident at the peak; one host
+    /// whose `ips` array carries four million addresses took 59.9 MB and 2.8
+    /// times. Repeating one port entry or one address costs nothing extra, since
+    /// ports are folded by endpoint and addresses into a set as they are read. At
+    /// the default a hostile document can leave the process holding about 6 GiB,
+    /// so a caller reading untrusted documents on a small machine should lower it.
     ///
-    /// The default is 1 GiB, sized to read back what this engine writes. One
-    /// host scanned across the whole TCP range and found closed is 26 MB of
-    /// the indented JSON the exporter writes by default, 14 MB of JSON lines
-    /// and 6.5 MB of nmap XML, about 400, 216 and 99 bytes a port. The default
-    /// admits 32 such hosts in the first, 64 in the second and 128 in the
-    /// third, each with a margin for the services and findings on their open
-    /// ports, and reading them back holds less than the document in JSON and
-    /// about three times it in XML. Raise it with
-    /// [`with_max_document_bytes`](Self::with_max_document_bytes) for a document
-    /// that has been vetted, or pass [`u64::MAX`] to lift it.
+    /// The default is 1 GiB, sized to read back what this engine writes. One host
+    /// scanned across the whole TCP range and found closed is 26 MB of the
+    /// exporter's default indented JSON, 14 MB of JSON lines and 6.5 MB of nmap
+    /// XML, about 400, 216 and 99 bytes a port. The default admits 32, 64 and 128
+    /// such hosts respectively, with a margin for services and findings on open
+    /// ports. Reading them back holds less than the document in JSON and about
+    /// three times it in XML. Raise it with
+    /// [`with_max_document_bytes`](Self::with_max_document_bytes) for a vetted
+    /// document, or pass [`u64::MAX`] to lift it.
     ///
-    /// It is the one ceiling on a document's size. The most elements an XML
-    /// document may hold is derived from it, as the most a document of this
-    /// many bytes could hold, so raising it never leaves a document refused
-    /// for a count nobody can set.
+    /// The element limit for XML documents is derived from this value, so it is
+    /// the only size ceiling a caller needs to set.
     pub max_document_bytes: u64,
 }
 
@@ -170,10 +147,8 @@ impl ReportOptions {
 
 /// A document format a report can be read from.
 ///
-/// The mirror of [`ImportFormat`](crate::import::ImportFormat) for this
-/// direction, and shorter: a report is a document some scanner wrote, and only
-/// the formats that carry findings appear here. There is no list format, because
-/// a list of addresses is not a report of anything.
+/// The mirror of [`ImportFormat`](crate::import::ImportFormat), limited to the
+/// formats that carry findings.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReportFormat {
@@ -183,10 +158,8 @@ pub enum ReportFormat {
     /// The same data one record per line, which is what
     /// [`export::jsonl`](crate::export::jsonl) writes.
     ///
-    /// Read here as well as in [`ImportFormat`](crate::import::ImportFormat).
-    /// The format exists so a scan cut short still leaves a readable file, and a
-    /// file that can only be read as the
-    /// targets it names is not that.
+    /// Read here as well as in [`ImportFormat`](crate::import::ImportFormat), since
+    /// the format exists so that a scan cut short still leaves a readable report.
     #[cfg(feature = "import-json")]
     JsonLines,
     /// Nmap's XML, which this engine's own nmap exporter also writes.
@@ -204,8 +177,7 @@ impl ReportFormat {
         {
             #[cfg(feature = "import-json")]
             "json" => Some(ReportFormat::Json),
-            // `ndjson` is the other name the same format goes by, matching what
-            // the exporter and the target-side reader both accept.
+            // Matches what the exporter and the target-side reader accept.
             #[cfg(feature = "import-json")]
             "jsonl" | "ndjson" => Some(ReportFormat::JsonLines),
             #[cfg(feature = "import-nmap")]
@@ -228,9 +200,8 @@ impl ReportFormat {
 
     /// Every report format this build can read.
     ///
-    /// Front ends use this to describe their own capabilities, as
-    /// [`ImportFormat::all`](crate::import::ImportFormat::all) does: a help
-    /// text listing formats the binary was not built with is worse than none.
+    /// For front ends listing what they support, as
+    /// [`ImportFormat::all`](crate::import::ImportFormat::all) is.
     pub fn all() -> &'static [ReportFormat] {
         &[
             #[cfg(feature = "import-json")]
@@ -251,34 +222,26 @@ impl ReportFormat {
 
     /// The format the start of `input` implies, without consuming it.
     ///
-    /// Almost one byte: a report document is an object or an element and nothing
-    /// else. Not a content sniff beyond that, since which document this is
-    /// belongs to the reader, and each refuses one it does
-    /// not recognise by naming what it found.
+    /// Looks at the first byte: `<` is nmap XML and `{` is JSON. Telling a
+    /// document apart beyond that is left to the reader, which names what it
+    /// found when it refuses one.
     ///
-    /// The exception is the two JSON shapes, which both open with a brace. The
-    /// record-per-line one names itself in its first record, so that tag is what
-    /// separates them, exactly as
-    /// [`ImportFormat::sniff`](crate::import::ImportFormat::sniff) separates them
-    /// in the other direction. Without it a record-per-line export is read as a
-    /// single document, its first line parses, its hosts are never reached, and
-    /// what comes back is a correctly attributed report of a scan that found
-    /// nothing.
+    /// The two JSON shapes both open with a brace. The record-per-line one names
+    /// itself in its first record, and that tag separates them, as in
+    /// [`ImportFormat::sniff`](crate::import::ImportFormat::sniff). Read as a
+    /// single document, a record-per-line export would parse its first line and
+    /// return an empty report.
     pub fn sniff(input: &mut dyn BufRead) -> Result<Self, ImportError> {
-        /// How a record-per-line document's header record names itself, written
-        /// as the compact exporter writes it.
+        /// The header record's tag, as the compact exporter writes it.
         #[cfg(feature = "import-json")]
         const REPORT_TAG: &[u8] = br#""type":"report""#;
 
         let available = input.fill_buf()?;
-        // Excel's mark, which says nothing about the format behind it. Stripped
-        // here as the target side strips it, or a document saved by a Windows
-        // editor is refused as neither format before either reader sees it.
+        // Strip a byte order mark, as the target side does, or a document saved by
+        // a Windows editor is refused as neither format.
         let prefix = crate::import::without_bom(available).trim_ascii_start();
 
-        // Bound before the arms, because a build with only one of the two
-        // features has no arm to read it and an unused binding there is a
-        // warning nobody can act on.
+        // Silences the unused-binding warning in a build with neither feature.
         let _ = &prefix;
 
         #[cfg(feature = "import-nmap")]
@@ -309,7 +272,7 @@ impl ReportFormat {
     /// The format at `path` if its extension names one, and otherwise whatever
     /// the input begins as.
     ///
-    /// The extension wins because it is what the person who saved the file meant.
+    /// The extension wins because it records what whoever saved the file meant.
     pub fn resolve(path: Option<&Path>, input: &mut dyn BufRead) -> Result<Self, ImportError> {
         match path.and_then(Self::from_path) {
             Some(format) => Ok(format),
@@ -319,11 +282,10 @@ impl ReportFormat {
 
     /// Reads `input` as a report in this format.
     ///
-    /// Refuses a document past
-    /// [`ReportOptions::max_document_bytes`] before any reader sees the whole of
-    /// it, and refuses one naming more hosts than
-    /// [`ImportLimits::max_addresses`] allows. Each reader holds its input to
-    /// both itself, so one used directly is bounded the same way.
+    /// Refuses a document past [`ReportOptions::max_document_bytes`] before any
+    /// reader sees the whole of it, and one naming more hosts than
+    /// [`ImportLimits::max_addresses`] allows. Each reader enforces both itself,
+    /// so one used directly is bounded the same way.
     #[cfg_attr(
         not(any(feature = "import-json", feature = "import-nmap")),
         allow(unused_variables)
@@ -351,11 +313,8 @@ mod tests {
 
     use super::*;
 
-    /// A reader used directly holds its input to the ceiling its options set,
-    /// as the dispatch over formats does. Its options are the only ceiling a
-    /// caller who picked the format themselves was given, and a reader that
-    /// left the bounding to a dispatch it was not called through would read a
-    /// document of any size.
+    /// A reader used directly enforces its byte ceiling, as the dispatch over
+    /// formats does.
     #[test]
     fn a_reader_used_directly_holds_a_document_to_its_byte_ceiling() {
         let options = ReportOptions::new().with_max_document_bytes(16);
@@ -415,11 +374,7 @@ mod tests {
         );
     }
 
-    /// A document a Windows editor saved is still the document it is.
-    ///
-    /// A sniff that stripped no mark would refuse a report saved through
-    /// `Out-File` as neither format, nmap XML included, which the reader
-    /// behind it reads without complaint.
+    /// A byte order mark, as `Out-File` writes, does not hide the format.
     #[test]
     fn a_byte_order_mark_hides_neither_format() {
         let marked = |text: &str| {
@@ -443,7 +398,7 @@ mod tests {
             );
         }
 
-        // And the reader named still reads what the sniff was looking at.
+        // The chosen reader reads the same marked bytes.
         let mut input = marked(r#"<?xml version="1.0"?><nmaprun/>"#);
         let format = ReportFormat::sniff(&mut input).expect("sniffs");
         assert!(
@@ -452,8 +407,7 @@ mod tests {
         );
     }
 
-    /// What the export writers under test need, beyond the readers this module
-    /// is built with.
+    /// Tests that also need the export writers.
     #[cfg(all(
         feature = "export-json",
         feature = "export-jsonl",
@@ -472,18 +426,16 @@ mod tests {
         use crate::model::host::Host;
         use crate::model::port::{Discovery, Port, PortState, Protocol, ScanResponse};
 
-        /// How many hosts scanned across the full TCP range the documentation
-        /// of [`ReportOptions::max_document_bytes`] says the default admits, in
-        /// each format this engine writes a report in. Each leaves 15% or more
-        /// of the ceiling for what the open ports on real hosts add.
+        /// How many full-TCP-range hosts the default ceiling admits per format, as
+        /// documented on [`ReportOptions::max_document_bytes`]. Each leaves at
+        /// least 15% of the ceiling for what open ports on real hosts add.
         const FULL_RANGE_HOSTS_AS_JSON: u64 = 32;
         const FULL_RANGE_HOSTS_AS_JSON_LINES: u64 = 64;
         const FULL_RANGE_HOSTS_AS_XML: u64 = 128;
 
-        /// A host scanned across the whole TCP range with every port closed,
-        /// each carrying the fullest account a raw probe writes: the reset, its
-        /// round trip and its TTL. The largest record per port a scan leaves
-        /// when it finds nothing, which is what a full-range export is made of.
+        /// A host scanned across the whole TCP range with every port closed, each
+        /// carrying the reset, its round trip and its TTL: the largest per-port
+        /// record a scan that finds nothing writes.
         fn full_range_report() -> ScanReport {
             let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
             let mut host = Host::new(ip);
@@ -505,11 +457,9 @@ mod tests {
             out
         }
 
-        /// A record-per-line host is as long as its port list, and a
-        /// full-range one is megabytes on one line. The line is part of a
-        /// document, so the document's ceiling is what bounds it; the few
-        /// kilobytes a target expression is allowed would refuse any host
-        /// scanned across more than a few hundred ports.
+        /// A full-range host is megabytes on one JSON lines record, bounded by the
+        /// document ceiling. The line limit for target expressions would refuse
+        /// any host with more than a few hundred ports.
         #[test]
         fn a_full_range_host_reads_back_from_its_own_record_per_line_export() {
             let report = full_range_report();
@@ -523,11 +473,8 @@ mod tests {
             assert_eq!(host.port_count(), usize::from(u16::MAX));
         }
 
-        /// The default ceiling is sized in hosts scanned across the full TCP
-        /// range, and these are the counts its documentation promises, held
-        /// against what the writers produce today. A writer that grows, or a
-        /// ceiling that shrinks, fails here rather than in front of somebody
-        /// comparing last month's engagement with this one's.
+        /// Holds the documented full-range host counts against what the writers
+        /// produce, so a writer that grows or a ceiling that shrinks fails here.
         #[test]
         fn the_default_ceiling_admits_the_full_range_hosts_it_promises() {
             let report = full_range_report();
@@ -555,8 +502,8 @@ mod tests {
                 );
             }
 
-            // The element count is not the bound this engine's own XML meets
-            // first: every document the byte ceiling admits is under it.
+            // Every XML document the byte ceiling admits is also under the element
+            // limit.
             assert!(
                 ceiling / xml * elements <= elements_within(ceiling),
                 "a document of full-range hosts at the byte ceiling holds {} elements, past {}",
@@ -566,7 +513,6 @@ mod tests {
         }
     }
 
-    /// The extension is what the person who saved the file meant.
     #[test]
     fn an_extension_outranks_what_the_bytes_look_like() {
         let mut input = Cursor::new(b"{}".as_slice());
