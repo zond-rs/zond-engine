@@ -11,7 +11,7 @@
 # the identifiers are kept: a correlation marks the findings that cite them.
 
 id = "cisa:kev"
-version = "2026.9.29"
+version = "2026.9.30"
 cves = [
     "CVE-2002-0367",
     "CVE-2004-0210",
@@ -1714,6 +1714,7 @@ cves = [
     "CVE-2026-75650",
     "CVE-2026-76460",
     "CVE-2026-76461",
+    "CVE-2026-76504",
     "CVE-2026-8037",
     "CVE-2026-81578",
     "CVE-2026-81963",
