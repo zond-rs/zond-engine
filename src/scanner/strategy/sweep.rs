@@ -8,40 +8,27 @@
 
 //! # What every probing sweep keeps track of
 //!
-//! The state three strategies carry in common and the bookkeeping that goes
-//! with it: which probes are outstanding, which are owed another attempt, which
-//! targets have answered, and what the run is going to report about itself.
+//! The state three strategies carry in common: which probes are outstanding,
+//! which are owed another attempt, which targets have answered, and what the run
+//! will report about itself.
 //!
 //! [`local`](super::local) sweeps a segment, [`routed`](super::routed) sweeps
 //! through a gateway, and [`identify::echo`](super::identify::echo) pings the
 //! hosts nothing else could name. All three send a probe per target, retry it on
 //! a schedule, and file an audit when they stop.
 //!
-//! ## Why the loop is not here, when [`ports::drive`](super::ports::drive) is
-//!
-//! Because these three are not identical and the port scanners were, which is
-//! the same test `ports` applied to itself: share where two things are the same,
-//! not where they resemble each other.
-//!
-//! The receive source is the difference that settles it. A routed sweep and the
-//! echo probe both read [`CapturedSegment`](crate::transport::capture::CapturedSegment)s
-//! off a [`ProbeTransport`](crate::transport::probe::ProbeTransport); a local
-//! sweep reads Ethernet frames off a link-layer channel, because ARP and
-//! neighbour discovery have no IP layer to be captured at. One `select!` cannot
-//! await both without the receive type becoming a further parameter, and a loop
-//! generic over what it receives is a loop that has stopped describing anything.
-//!
-//! Their stop conditions differ too, and honestly. A routed sweep can finish
-//! early on [`AllResponded`](crate::report::StopReason::AllResponded) because it
-//! knows how many addresses it was given; the echo probe cannot, because the
-//! hosts it was handed may answer no ping at all and that is an ordinary result.
-//! A local sweep is the only one that lets *silence* end it, since it is the
-//! only one whose targets share a segment and so a common expectation of how
-//! fast an answer arrives.
-//!
-//! What is here is everything underneath that: three copies of `service_retries`
-//! that had already begun to say one thing in two wordings, three
-//! calculations of how long to sleep, and three audit tails.
+//! Each keeps its own loop, unlike the port scanners'
+//! [`ports::drive`](super::ports::drive), because they differ. A routed sweep
+//! and the echo probe read
+//! [`CapturedSegment`](crate::transport::capture::CapturedSegment)s off a
+//! [`ProbeTransport`](crate::transport::probe::ProbeTransport); a local sweep
+//! reads Ethernet frames off a link-layer channel, since ARP and neighbour
+//! discovery have no IP layer to capture at. Their stop conditions differ too:
+//! a routed sweep can finish on
+//! [`AllResponded`](crate::report::StopReason::AllResponded) because it knows
+//! its target count, the echo probe cannot because its hosts may answer no ping,
+//! and only a local sweep lets silence end it, since its targets share a segment
+//! and so an expected answer time.
 
 use std::collections::{HashSet, VecDeque};
 use std::net::IpAddr;
@@ -58,16 +45,13 @@ use crate::scanner::session::ScanContext;
 /// The outstanding probes of one sweep, what it has heard, and what it will
 /// report.
 ///
-/// Generic over the correlation token for the reason
+/// Generic over the correlation token, as
 /// [`RawProbeScan`](super::ports::RawProbeScan) is: an ARP request has nothing
 /// on the wire to tell one attempt from the next and uses `()`, a SYN carries a
 /// sequence number, and an echo request carries its own.
 ///
-/// The [`ScanContext`] is *not* held here and is passed to the two methods that
-/// need one. It is already a field on all three scanners and used on nearly
-/// every line of them, so moving it would have turned `self.ctx` into
-/// `self.sweep.ctx` throughout for no gain: this type exists to hold the
-/// bookkeeping nobody reads directly, not to become the scanner.
+/// The [`ScanContext`] stays on the scanners and is passed to the two methods
+/// that need it.
 pub struct HostSweep<T> {
     /// Probes sent and not yet resolved, and the schedule they are repeated on.
     pub ledger: ProbeLedger<IpAddr, T>,
@@ -77,38 +61,28 @@ pub struct HostSweep<T> {
     /// Targets owed another attempt, released by the sender ahead of anything
     /// unprobed.
     ///
-    /// A retry is an obligation the sweep already owns, where the next unprobed
-    /// address is only work it intends to do. Draining these first is also what
-    /// keeps the schedule honest: a retry queued behind thousands of first
-    /// attempts would leave long after the moment it was scheduled for.
+    /// A retry is an obligation the sweep already owns; draining these first also
+    /// keeps a retry from leaving long after its scheduled moment behind thousands
+    /// of first attempts.
     ///
     /// Every address here has its probe's clock stopped on the ledger that
-    /// scheduled it (see `ProbeLedger::defer`), so a retry held behind the
-    /// send ticker or a host's probe gap is neither overtaken by the attempt
-    /// after it nor retired unsent. Whoever takes one therefore owes that
-    /// ledger one of two calls: [`rearm`](ProbeLedger::rearm) once it has
-    /// left, or `resume` when it did not. An address
-    /// whose probe is no longer on its ledger was answered while it waited,
-    /// and is dropped unsent.
+    /// scheduled it (see `ProbeLedger::defer`), so a retry held behind the send
+    /// ticker or a host's probe gap is neither overtaken by the next attempt nor
+    /// retired unsent. Whoever takes one owes that ledger either
+    /// [`rearm`](ProbeLedger::rearm) once it has left, or `resume` when it did not.
+    /// An address whose probe is no longer on its ledger was answered while it
+    /// waited, and is dropped unsent.
     pub retries: VecDeque<IpAddr>,
     /// The targets *this sweep* has heard from.
     ///
-    /// A set rather than a counter, and kept here rather than read off the
-    /// store, because the two answer different questions.
-    /// [`write_host`](ScanContext::write_host) reports whether the **store**
-    /// gained a host, which in a discovery-only phase is the same thing and in a
-    /// port-scan phase is not: discovery runs there as enrichment beside the
-    /// port scanner, the host almost always exists already, and every one of
-    /// this sweep's own answers would report "not new".
-    ///
-    /// Not taken from the [`ProbeLedger`] either, though it is the obvious
-    /// source. `resolve` retires a probe, so a duplicate reply correctly reports
-    /// nothing, but an exhausted probe is drained out of the ledger entirely and
-    /// a reply arriving after that would go uncredited.
+    /// Kept here because [`write_host`](ScanContext::write_host) reports whether the
+    /// **store** gained a host, and in a port-scan phase the host almost always
+    /// exists already, so every answer would report "not new". The [`ProbeLedger`]
+    /// cannot supply it either: an exhausted probe is drained out of it, and a
+    /// reply arriving after that would go uncredited.
     pub responded: HashSet<IpAddr>,
     /// Per-run counters, so a sweep that finds fewer hosts than it should can be
-    /// attributed to loss, to its own deadline, or to correlation rather than
-    /// guessed at.
+    /// attributed to loss, to its own deadline, or to correlation.
     pub audit: ProbeAudit,
 }
 
@@ -127,17 +101,10 @@ impl<T: Copy + PartialEq> HostSweep<T> {
     /// Moves every probe whose timer has fired onto the retry queue, and
     /// settles the ones that have run out of attempts.
     ///
-    /// For a **sweep**, which was asked whether an address is there and has now
-    /// asked as many times as the policy allows: a spent budget is the moment
-    /// silence stops being provisional and becomes a verdict a resume may skip.
+    /// For a **sweep**, which asked whether an address is there: a spent budget
+    /// turns silence into a verdict a resume may skip.
     /// [`service_retries_without_settling`](Self::service_retries_without_settling)
-    /// is the other case, and they are two methods rather than one taking a
-    /// flag because a bare `true` at a call site says nothing about which of
-    /// the two a reader is looking at.
-    ///
-    /// Written once because it was written three times, and two of those had
-    /// already drifted into stating one claim about the ledger in two different
-    /// wordings.
+    /// is the other case.
     pub fn service_retries(&mut self, ctx: &ScanContext, now: Instant) {
         self.drain_into_retries(ctx, now, true);
     }
@@ -146,17 +113,15 @@ impl<T: Copy + PartialEq> HostSweep<T> {
     /// address a verdict.
     ///
     /// For the probes that revisit hosts the scan has already found. A spent
-    /// budget there means only that the host would not say what it runs, which
-    /// is not an answer to the question the plan is counted in, and marking a
-    /// position for it would tell a resume that an address had been covered by
-    /// a probe that never asked.
+    /// budget there means only that the host would not say what it runs, so
+    /// settling would tell a resume that a probe covered an address it never asked
+    /// about.
     pub fn service_retries_without_settling(&mut self, ctx: &ScanContext, now: Instant) {
         self.drain_into_retries(ctx, now, false);
     }
 
     fn drain_into_retries(&mut self, ctx: &ScanContext, now: Instant, settles: bool) {
-        // Taken so the ledger can borrow `self` mutably; the buffer itself is
-        // reused, so this costs no allocation.
+        // Taken so the ledger can borrow `self` mutably; the buffer is reused.
         let mut due = std::mem::take(&mut self.due);
         self.ledger.drain_due(now, &mut due);
         defer_retries(&mut self.ledger, &due);
@@ -167,10 +132,9 @@ impl<T: Copy + PartialEq> HostSweep<T> {
     /// [`service_retries`](Self::service_retries) over a second ledger, for a
     /// sweep that runs two schedules at once.
     ///
-    /// The local sweep is the one: ARP and neighbour discovery are retried on
-    /// their own policies, because a mains-powered router answers a
-    /// solicitation in five milliseconds and a phone asleep on wifi takes four
-    /// hundred.
+    /// The local sweep retries ARP and neighbour discovery on separate policies,
+    /// because a mains-powered router answers a solicitation in five milliseconds
+    /// and a phone asleep on wifi takes four hundred.
     pub fn service_second_ledger<U: Copy + PartialEq>(
         &mut self,
         ctx: &ScanContext,
@@ -191,10 +155,8 @@ impl<T: Copy + PartialEq> HostSweep<T> {
         for event in due.drain(..) {
             match event {
                 Due::Retry { key, .. } => self.retries.push_back(key),
-                // The budget is spent, which is the moment silence stops being
-                // provisional and becomes a verdict the sweep earned. Only a
-                // probe that actually left is armed, so nothing settled here
-                // went unasked.
+                // A spent budget turns silence into a verdict. Only a probe that left is
+                // armed, so nothing settled here went unasked.
                 Due::Exhausted { key, .. } => {
                     if settles {
                         ctx.settle_address(key, Settled::Exhausted);
@@ -208,9 +170,8 @@ impl<T: Copy + PartialEq> HostSweep<T> {
     /// deadline wants looking at again, or until the next probe is due,
     /// whichever comes first.
     ///
-    /// The ledger's deadline is the one that matters here. Sleeping past it
-    /// would leave a retry queued late by however long the deadline's own tick
-    /// happened to be.
+    /// Sleeping past the ledger's deadline tick would leave a retry queued late by
+    /// up to that tick.
     pub fn idle_delay(&self, deadline: &AdaptiveDeadline, now: Instant) -> Duration {
         let until_deadline_tick = deadline.time_until_next_tick();
         match self.ledger.next_due() {
@@ -233,11 +194,8 @@ impl<T: Copy + PartialEq> HostSweep<T> {
 
     /// Files what the run observed, to the log and to the report.
     ///
-    /// Both, and in that order, because they answer to different readers: the
-    /// line is for somebody watching a scan, and the record is for whatever
-    /// computes against the report afterwards. Three scanners wrote this pair
-    /// out by hand and one of them passed a bare string where the other two had
-    /// a label.
+    /// The line is for somebody watching the scan, the record for whatever reads
+    /// the report afterwards.
     pub fn report(
         &mut self,
         ctx: &ScanContext,
@@ -298,13 +256,11 @@ mod tests {
         let plan = IpSet::from_str(written).expect("a range");
         let first = plan.iter().next().expect("at least one address");
         let (_session, ctx) = ScanSession::builder().counting(plan.positions()).build();
-        // The session is dropped; the context holds every Arc that matters and
-        // nothing here reads the event stream.
+        // The context holds every Arc that matters; nothing here reads events.
         (ctx, first)
     }
 
-    /// The verdict a sweep earns. Its budget is spent and the address answered
-    /// nothing, which is the moment silence stops being provisional.
+    /// A sweep's spent budget on a silent address settles it.
     #[test]
     fn an_exhausted_probe_settles_the_address_when_the_sweep_settles() {
         let (ctx, host) = counting("127.0.0.1");
@@ -325,10 +281,8 @@ mod tests {
         );
     }
 
-    /// The echo probe's contract, and the reason there are two names. It revisits
-    /// hosts the scan already found, so a spent budget means only that the host
-    /// would not say what it runs. Settling there would mark a position no
-    /// probe of this plan had asked about.
+    /// The echo probe revisits hosts the scan already found, so a spent budget
+    /// settles nothing: no probe of this plan asked about that position.
     #[test]
     fn an_exhausted_probe_settles_nothing_when_the_sweep_does_not() {
         let (ctx, host) = counting("127.0.0.1");
@@ -349,11 +303,9 @@ mod tests {
     /// A queued retry stops its probe's clock, on whichever ledger scheduled
     /// it, until it is sent or given up on.
     ///
-    /// A retry waits in the queue behind the send ticker and a host's probe
-    /// gap. With the clock left running, a wait longer than the timeout
-    /// charges the next attempt behind it and the one after retires the probe
-    /// with the retries never sent: an address settled silent having been
-    /// asked once.
+    /// With the clock left running, a wait in the queue longer than the timeout
+    /// would charge the next attempt, and the one after would retire the probe
+    /// unsent: an address settled silent having been asked once.
     #[test]
     fn a_queued_retry_holds_its_probe_until_it_is_sent() {
         let (ctx, host) = counting("127.0.0.1");
@@ -403,8 +355,7 @@ mod tests {
         );
     }
 
-    /// A probe with budget left goes back on the queue instead, and settles
-    /// nothing: silence is still provisional while an attempt is owed.
+    /// A probe with budget left is queued and settles nothing.
     #[test]
     fn a_probe_with_budget_left_is_queued_rather_than_settled() {
         let (ctx, host) = counting("127.0.0.1");
@@ -427,11 +378,8 @@ mod tests {
         assert_eq!(ctx.settlements().settled_count(), 0);
     }
 
-    /// The local sweep's case: two schedules over one link, because a
-    /// mains-powered router answers a solicitation in five milliseconds and a
-    /// phone asleep on wifi takes four hundred. Both must reach the same
-    /// queueing and the same settling, which is what this asserts and what
-    /// three separate copies of the loop could not.
+    /// The local sweep's case: a second schedule queues and settles through the
+    /// same path as the first.
     #[test]
     fn a_second_ledger_queues_and_settles_through_the_same_path() {
         let (ctx, host) = counting("127.0.0.1");
@@ -449,10 +397,8 @@ mod tests {
         );
     }
 
-    /// The count a sweep stops on. Kept here rather than read off the store,
-    /// because in a port scan's liveness pass the store almost always holds the
-    /// host already and every one of this sweep's own answers would report
-    /// "not new".
+    /// The count a sweep stops on, kept apart from the store, which in a port
+    /// scan's liveness pass almost always holds the host already.
     #[test]
     fn a_sweep_knows_when_every_target_has_answered() {
         let mut sweep: HostSweep<()> = HostSweep::new(ProbeLedger::new(ONE_SHOT, 4));

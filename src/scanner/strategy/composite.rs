@@ -10,17 +10,10 @@
 //!
 //! A port scanner that multiplexes targets across several underlying scanners.
 //!
-//! Rather than forcing consumers of the scanning subsystem to juggle multiple
-//! scanner instances for different protocols (e.g., TCP SYN vs. raw UDP vs.
-//! connect fallbacks), the [`CompositePortScanner`] acts as a single router.
-//! It accepts a unified stream of targets, consults each internal scanner's
-//! [`PortScanner::supported_protocols`] capability, and routes the target to the
-//! correct protocol-specific engine.
-//!
-//! This design allows the engine to handle targets across different protocols
-//! concurrently without modifying the `PortScanner` consumer interface, and
-//! is what let SCTP arrive as one more scanner rather than as a branch at every
-//! call site.
+//! [`CompositePortScanner`] takes one stream of targets and routes each to the
+//! first internal scanner whose [`PortScanner::supported_protocols`] claims its
+//! protocol (TCP SYN, raw UDP, connect fallbacks, SCTP), so callers drive a single
+//! scanner whatever the protocol mix.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -39,18 +32,16 @@ use crate::{counted, info};
 
 /// How many targets one route holds while its scanner is busy.
 ///
-/// A buffer per protocol rather than a shared one, so a slow scanner cannot
-/// stall the router for the others. Deep enough to absorb a dispatcher batch
-/// arriving while a scanner is mid-send, and shallow enough that the memory is
-/// a function of the protocol count rather than of the plan.
+/// One buffer per protocol, so a slow scanner cannot stall the router for the
+/// others. Deep enough to absorb a dispatcher batch arriving mid-send; memory
+/// scales with the protocol count, not the plan size.
 const ROUTE_DEPTH: usize = 1024;
 
 /// Which addresses a scanner in a composite is handed.
 ///
-/// Every scanner takes every address unless a scan says otherwise, and one says
-/// otherwise only when its raw strategies send frames alone: a frame reaches
-/// what has Ethernet in front of it, and the rest of the targets go to a connect
-/// scanner beside it. See
+/// Every scanner takes every address unless the scan's raw strategies send
+/// frames alone: a frame reaches only what has Ethernet in front of it, and the
+/// remaining targets go to a connect scanner beside it. See
 /// [`beyond_frames`](crate::system::interface::beyond_frames).
 #[derive(Debug, Clone, Default)]
 pub(crate) enum Reach {
@@ -87,8 +78,8 @@ pub struct CompositePortScanner {
     /// Where targets that never reached a scanner are reported.
     ///
     /// The router is the one place in a scan that can drop work without any
-    /// strategy noticing, so it is the one place that has to be able to say so
-    /// through the same channel every other narrowing uses.
+    /// strategy noticing, so it reports through the same channel as every other
+    /// narrowing.
     ctx: ScanContext,
 }
 
@@ -121,12 +112,9 @@ impl CompositePortScanner {
     /// The same composite, told which targets the scan refused to probe: each
     /// protocol a refusal names, with the addresses it covers.
     ///
-    /// A target the router can place nowhere is one of two things, and only
-    /// the scan that assembled the router knows which. Either something decided
-    /// not to probe it and a refusal in the report already says so, or nothing
-    /// did and the scan has lost it. Both leave the target unprobed and owed to
-    /// a resume. Only the second is a fault: the first reported as one reads as
-    /// a defect in the engine, and tells one decision twice.
+    /// A target the router can place nowhere was either refused, and a refusal in
+    /// the report already says so, or lost by the scan. Both leave it unprobed and
+    /// owed to a resume, but only a lost target is reported as a fault.
     pub(crate) fn refusing(mut self, refused: Vec<(Protocol, Reach)>) -> Self {
         self.refused = refused;
         self
@@ -164,7 +152,6 @@ impl PortScanner for CompositePortScanner {
         let mut routes = Vec::new();
         let mut handles = Vec::new();
 
-        // Spin up an independent task for every scanner we own.
         for (mut scanner, reach) in self.scanners.drain(..) {
             let (tx, rx) = mpsc::channel(ROUTE_DEPTH);
             let supported_protocols = scanner.supported_protocols();
@@ -183,18 +170,12 @@ impl PortScanner for CompositePortScanner {
             });
         }
 
-        // Route targets from the unified stream to the first scanner that
-        // claims support. A target that finds no route, or whose scanner has
-        // already stopped listening, is counted rather than dropped in silence:
-        // either means ports the caller asked about went unprobed, and a scan
-        // that quietly answers a narrower question than it was asked is worse
-        // than one that says so. A target the scan refused is left unprobed as
-        // well, and its refusal is what says so.
+        // Route each target to the first scanner that claims it. A target with no
+        // route, or whose scanner has stopped listening, is counted so the scan can
+        // say it covered less than asked; a refused target is covered by its refusal.
         //
-        // A target whose scanner has stopped is also written down, unasked, on
-        // its host. That is the rest of a plan a scanner stopped short of, by
-        // its own deadline or because its transport died, and it reaches no
-        // scanner to record it: left off the host, a truncated port list reads
+        // A target whose scanner has stopped (its own deadline, or a dead transport)
+        // is also recorded unasked on its host, or a truncated port list would read
         // the same as a complete one.
         let mut unroutable = 0usize;
         let mut undeliverable = 0usize;
@@ -223,22 +204,13 @@ impl PortScanner for CompositePortScanner {
             }
         }
 
-        // Recorded as a failure rather than logged. Both counts mean ports the
-        // caller asked about went unprobed, and every other
-        // narrowing in the engine reaches the report and the event stream; a
-        // warning reaches neither, so a consumer that awaits the scan and reads
-        // what came back cannot tell a narrowed scan from an empty network.
+        // Recorded as a failure, not logged: a warning reaches neither the report
+        // nor the event stream, so a consumer could not tell a narrowed scan from an
+        // empty network. One entry carries both counts because they share a remedy.
         //
-        // One entry carrying both counts, because they have one remedy between
-        // them and a report listing them separately would suggest otherwise.
-        //
-        // **Except after a stop, where undeliverable targets are what stopping
-        // means.** A scanner that has been told to finish stops reading, and
-        // whatever the router still held could not be handed over. Reporting
-        // that as a strategy failure tells somebody who pressed `^C` that
-        // something went wrong, when what went wrong is what they asked for. The
-        // targets are still not covered and still reach the report as such:
-        // they simply did not fail.
+        // After a stop, undeliverable targets are what stopping means: the scanner
+        // stopped reading. They still reach the report as uncovered, but not as a
+        // failure, which would tell someone who pressed `^C` that something broke.
         let stopped = self.ctx.handle.should_stop();
         let reportable = if stopped {
             unroutable
@@ -257,17 +229,12 @@ impl PortScanner for CompositePortScanner {
             );
         }
 
-        // Drop the sender ends to signal EOF to the underlying scanners.
+        // Closing the routes signals EOF to the scanners.
         drop(routes);
 
-        // Wait for all scanners to finish and restore them so they can be
-        // interrogated for service detection.
-        //
-        // Every handle is awaited before any failure is returned. Bailing on
-        // the first one would leave the remaining scanners unrestored, so the
-        // service-detection pass would skip strategies that ran perfectly well,
-        // and their tasks would be left running against a store the scan has
-        // already moved on from.
+        // Await every scanner and restore it for service detection. All handles are
+        // awaited before any failure is returned, so one failure does not leave the
+        // others unrestored and their tasks running against a finished store.
         let mut failure: Option<StrategyError> = None;
 
         for (kind, reach, handle) in handles {
@@ -278,9 +245,8 @@ impl PortScanner for CompositePortScanner {
                         failure.get_or_insert(e);
                     }
                 }
-                // The composite never aborts its tasks, so a `JoinError` only
-                // ever means the scanner panicked - a bug, and one that would
-                // otherwise vanish along with the scanner it took down.
+                // The composite never aborts its tasks, so a `JoinError` means the scanner
+                // panicked.
                 Err(e) => {
                     failure.get_or_insert_with(|| StrategyError::Panicked {
                         scanner: kind,
@@ -305,12 +271,11 @@ impl PortScanner for CompositePortScanner {
 
 /// How a router reports the work it could not place.
 ///
-/// Two ways a target goes unprobed, kept apart in the message because they call
-/// for different fixes. Nothing claiming the protocol is a scan assembled
-/// without a strategy for it, and its targets are missing from the results; a
-/// scanner that had already finished is one that stopped early, by its own
-/// deadline or because its transport died mid-run, and its targets are on
-/// their hosts as unasked.
+/// Unroutable targets mean the scan was assembled without a strategy for their
+/// protocol and are missing from the results; undeliverable ones belong to a
+/// scanner that stopped early (its own deadline, or a dead transport) and are on
+/// their hosts as unasked. The message keeps them apart because the fixes
+/// differ.
 fn missed(unroutable: usize, undeliverable: usize) -> String {
     let reason = match (unroutable, undeliverable) {
         (_, 0) => "no scanner for their protocol".to_owned(),
@@ -461,15 +426,12 @@ mod tests {
             protocol: Protocol::Udp,
         };
 
-        // Send targets
         tx.send(PlannedTarget::new(0, target_tcp)).await.unwrap();
         tx.send(PlannedTarget::new(1, target_udp)).await.unwrap();
-        drop(tx); // Signal EOF
+        drop(tx);
 
-        // Run scanner
         composite.scan(rx).await.unwrap();
 
-        // Verify routing
         let tcp_received = tcp_rx.lock().unwrap();
         assert_eq!(tcp_received.len(), 1);
         assert_eq!(tcp_received[0].protocol, Protocol::Tcp);
@@ -480,9 +442,8 @@ mod tests {
     }
 
     /// A scan whose raw strategies send frames alone splits one protocol by
-    /// address: the raw scanner takes what a frame reaches and a connect
-    /// scanner the rest. Routed by protocol alone, every target would go to the
-    /// raw one, and loopback would come back unasked.
+    /// address: the raw scanner takes what a frame reaches, a connect scanner the
+    /// rest, so loopback is still asked.
     #[tokio::test]
     async fn targets_are_routed_by_address_where_a_scanner_says_so() {
         let (raw, raw_rx) = MockPortScanner::new(vec![Protocol::Tcp]);
@@ -533,8 +494,8 @@ mod tests {
         );
     }
 
-    /// A scanner that fails must not take its siblings' results with it: every
-    /// scanner is restored for the service-detection pass regardless.
+    /// A failing scanner does not lose its siblings' results: every scanner is
+    /// restored for the service-detection pass.
     #[tokio::test]
     async fn a_failing_scanner_is_reported_without_losing_the_others() {
         let (failing, _) =
@@ -557,8 +518,7 @@ mod tests {
         assert_eq!(composite.scanners.len(), 2, "both scanners restored");
     }
 
-    /// A panicking scanner would otherwise vanish along with its task, leaving
-    /// the run looking clean. It has to surface as a failure like any other.
+    /// A panicking scanner surfaces as a failure.
     #[tokio::test]
     async fn a_panicking_scanner_surfaces_as_a_failure() {
         let (panicking, _) = MockPortScanner::with_behaviour(vec![Protocol::Tcp], Behaviour::Panic);
@@ -575,8 +535,7 @@ mod tests {
         assert_eq!(udp_rx.lock().unwrap().len(), 1, "sibling still ran");
     }
 
-    /// Targets nothing claims are counted rather than silently discarded - a
-    /// scan that answers a narrower question than it was asked has to say so.
+    /// Targets nothing claims are counted, and the run carries on.
     #[tokio::test]
     async fn targets_with_no_route_do_not_stop_the_run() {
         let (tcp_scanner, tcp_rx) = MockPortScanner::new(vec![Protocol::Tcp]);
@@ -593,11 +552,8 @@ mod tests {
         assert_eq!(received[0].protocol, Protocol::Tcp);
     }
 
-    /// Saying so has to mean saying so where a consumer will see it. Ports the
-    /// caller asked about went unprobed, and a warning on the log is the one
-    /// channel a library consumer never receives: they await the scan and read
-    /// the report, where a scan that quietly covered less than it was asked
-    /// looks exactly like one that found nothing there.
+    /// Unprobed targets reach the report as a failure, since a library consumer
+    /// never sees the log.
     #[tokio::test]
     async fn targets_that_went_unprobed_reach_the_report() {
         let (_session, ctx) = ScanSession::new();
@@ -629,10 +585,9 @@ mod tests {
         );
     }
 
-    /// A target the scan refused is left to the refusal that already names it,
-    /// and only there: the same protocol at an address the refusal does not
-    /// cover is still work the scan lost. Both stay unprobed and owed, so a
-    /// resume with the sockets the refusal wanted asks about them again.
+    /// A refused target is left to the refusal that names it; the same protocol
+    /// at an address the refusal does not cover is reported as lost. Both stay
+    /// owed to a resume.
     #[tokio::test]
     async fn a_refused_target_is_left_to_its_refusal_and_no_other_is() {
         let (_session, ctx) = ScanSession::new();
@@ -667,8 +622,7 @@ mod tests {
         assert_eq!(ctx.settlements().count(Outcome::Unroutable), 2);
     }
 
-    /// And nothing to report when nothing was missed, or every clean scan ends
-    /// with a failure describing zero targets.
+    /// A scan that probed everything reports no narrowing.
     #[tokio::test]
     async fn a_scan_that_probed_everything_reports_no_narrowing() {
         let (_session, ctx) = ScanSession::new();
@@ -685,13 +639,9 @@ mod tests {
         assert!(ctx.take_failures().is_empty());
     }
 
-    /// The rest of a plan whose scanner stopped short of it is on its hosts as
-    /// never asked, and owed to a resume.
-    ///
-    /// A scanner that runs out of its own deadline stops reading with targets
-    /// still to come, and those reach no scanner that could record them. Left
-    /// off their hosts, a port list cut short reads the same as a complete
-    /// one, and the report counts ports it never names.
+    /// The rest of a plan whose scanner stopped short of it is recorded on its
+    /// hosts as unasked and owed to a resume, so a truncated port list does not
+    /// read as complete.
     #[tokio::test]
     async fn the_plan_a_stopped_scanner_never_took_is_recorded_unasked() {
         let (session, ctx) = ScanSession::new();
@@ -706,8 +656,8 @@ mod tests {
         let routing = tokio::spawn(async move {
             composite.scan(rx).await.expect("a narrowing, not an error");
         });
-        // Only once the scanner has stopped listening, so neither target can
-        // be buffered on its way to it.
+        // Send only after the scanner has stopped listening, so neither target is
+        // buffered on its way to it.
         stopped.notified().await;
         for (position, port) in [80u16, 443].into_iter().enumerate() {
             tx.send(PlannedTarget::new(
@@ -742,13 +692,8 @@ mod tests {
         );
     }
 
-    /// Stopping a scan is not a strategy failing.
-    ///
-    /// A scanner told to finish stops reading, so whatever the router still held
-    /// cannot be handed over. Reporting that as a failure tells somebody who
-    /// pressed `^C` that something went wrong, when what went wrong is what they
-    /// asked for. The targets are still uncovered, and still unsettled, so a
-    /// resume asks about them again.
+    /// Stopping a scan is not a strategy failing. The targets the router still
+    /// held stay uncovered and unsettled, so a resume asks about them again.
     #[tokio::test]
     async fn a_stopped_scan_does_not_report_a_failure() {
         let (session, ctx) = ScanSession::new();

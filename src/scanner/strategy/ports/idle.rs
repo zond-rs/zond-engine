@@ -33,37 +33,31 @@
 //! Between the two readings the zombie sent one packet for the second reading
 //! itself, plus one per forged probe the target bounced off it. So `after -
 //! before` is about `SPOOFED_PROBES + 1` for an open port and about `1` for a
-//! closed or unreached one, and [`OPEN_MIN_DELTA`] is the line between them. The
-//! several probes per port are the whole of the method's noise tolerance: one
-//! stray packet from the zombie shifts the count by one, where the signal is
-//! [`SPOOFED_PROBES`] wide.
+//! closed or unreached one, and [`OPEN_MIN_DELTA`] is the line between them.
+//! Sending several probes per port is the method's only noise tolerance: a stray
+//! packet from the zombie shifts the count by one, the signal by
+//! [`SPOOFED_PROBES`].
 //!
-//! ## Open, or closed-or-no-reply, and nothing finer
+//! A closed port's reset and a dropped probe's silence both leave the counter
+//! still, so the verdicts are [`PortState::Open`] and
+//! [`PortState::ClosedOrNoReply`] and nothing finer.
 //!
-//! A closed port's reset and a dropped probe's silence both leave the zombie's
-//! counter still, so the scan cannot tell them apart: its verdicts are
-//! [`PortState::Open`] and [`PortState::ClosedOrNoReply`], the honest pair for a
-//! technique that reads a port only through what a third party bounced off it.
+//! ## Requirements
 //!
-//! ## What it demands, and what it refuses
+//! - **A suitable zombie.** Its counter must be a single shared one advancing in
+//!   small steps, the *counting* class the OS-detection series reads
+//!   ([`IdClass::Counting`]). A random, per-connection or zero IP-ID carries no
+//!   signal, and IPv6 has no such field. The scan qualifies the zombie first and
+//!   refuses, naming the class it found, when it is unsuitable.
+//! - **A self-built frame.** The kernel will not send from a forged source
+//!   address, so the spoofed probe goes out over an Ethernet frame this engine
+//!   builds, the same path fragmentation and decoys need. A host without that
+//!   path, or the privilege to open it, is refused: scanning under its own
+//!   address would defeat the technique.
 //!
-//! - **A suitable zombie.** The counter has to be a single shared one, advancing
-//!   in small steps: the *counting* class the OS-detection series already reads
-//!   ([`IdClass::Counting`]). A zombie whose IP-ID is random, per-connection, or
-//!   zero carries no usable signal, and one that is IPv6 has no such field at
-//!   all; the scan qualifies the zombie first and is refused, with the class it
-//!   found named, when the zombie is not the kind this needs.
-//! - **A self-built frame.** A forged source address is one the kernel would
-//!   never place, so the spoofed probe can only go out over an Ethernet frame
-//!   this engine builds itself: the same path fragmentation and decoys need. A
-//!   host with no such path, or without the privilege to open one, is refused
-//!   rather than scanned under its own address, which would betray the whole
-//!   point of the technique.
-//!
-//! Both refusals are recorded and no port is given a verdict, because a silent
-//! fallback to an ordinary scan is the one outcome an idle scan must never
-//! have. Every port the scan was handed is still recorded, unasked, so the
-//! target reaches the report as one nothing asked about.
+//! A refusal is recorded and no port gets a verdict; there is never a fallback
+//! to an ordinary scan. Every port the scan was handed is recorded unasked, so
+//! the target reaches the report as one nothing asked about.
 
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
@@ -101,25 +95,23 @@ const DEFAULT_ZOMBIE_PORT: u16 = 80;
 /// How many times the zombie's counter is sampled to decide whether it is the
 /// counting kind an idle scan needs.
 ///
-/// The same count the OS-detection series settled on: enough that "counting" and
-/// "constant" are different observations rather than one reading that happened
-/// to repeat, and no more, since each sample is a round trip to the zombie.
+/// The same count the OS-detection series uses: enough that "counting" and
+/// "constant" are distinct observations, and no more, since each sample is a
+/// round trip to the zombie.
 const QUALIFICATION_SAMPLES: usize = 6;
 
-/// The gap left between qualification samples, so the counter's rate of advance
-/// is readable rather than an artefact of how fast the path answered.
+/// The gap between qualification samples, so the counter's rate of advance is
+/// readable and not an artefact of how fast the path answered.
 ///
-/// A step of one across five milliseconds is two hundred a second, well inside
-/// what a shared counter plausibly runs at; the same step across the microsecond
-/// a local reply can return in would read as tens of thousands a second, which is
-/// noise, not a counter. The whole qualification pays this six times, once.
+/// A step of one across five milliseconds is two hundred a second, plausible for
+/// a shared counter; across the microsecond a local reply can take it would read
+/// as tens of thousands a second, which is noise. Paid six times, once per scan.
 const QUALIFICATION_SPACING: Duration = Duration::from_millis(5);
 
 /// How many forged SYNs are sent to each target port per measurement.
 ///
-/// This is the method's signal-to-noise ratio made concrete: an open port moves
-/// the zombie's counter by this many where a stray packet moves it by one, so a
-/// wider count is a measurement that survives a zombie that is not perfectly
+/// An open port moves the zombie's counter by this many where a stray packet
+/// moves it by one, so a wider count survives a zombie that is not perfectly
 /// idle. The cost is this many spoofed packets per port.
 pub const SPOOFED_PROBES: u16 = 6;
 
@@ -134,19 +126,17 @@ pub const OPEN_MIN_DELTA: u16 = SPOOFED_PROBES / 2 + 1;
 
 /// How long to wait for the zombie's reset to one probe of its counter.
 ///
-/// A ceiling, not a pace: a responsive zombie answers in a round trip and the
-/// next sample follows at once. It is bounded because two samples further apart
-/// than the identifier classifier's `MAX_INTERVAL_FOR_ID`, the same half second,
-/// cannot support a counter reading at all, so a zombie slow enough to approach
-/// it is one whose signal has already gone.
+/// A ceiling, not a pace: a responsive zombie answers in a round trip. Two
+/// samples further apart than the identifier classifier's
+/// `MAX_INTERVAL_FOR_ID`, the same half second, cannot support a counter
+/// reading, so a zombie that slow has already lost its signal.
 const ZOMBIE_REPLY_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// How many times one reading of the zombie's counter is retried before it is
 /// given up as lost.
 ///
-/// A probe of the zombie can go missing like any other; a reading that cannot be
-/// had after this many tries is treated as the zombie having gone quiet, which
-/// costs the port its verdict rather than inventing one.
+/// A reading that cannot be had after this many tries is treated as the zombie
+/// having gone quiet, which costs the port its verdict.
 const ZOMBIE_READ_ATTEMPTS: usize = 3;
 
 /// One reading of the zombie's IP-ID counter, and the shape of the reply it came
@@ -158,22 +148,21 @@ struct Reading {
     /// When the reply was read, for the interval the classifier reasons about.
     at: Instant,
     /// The reset's flags and sequence, so a qualification sample describes the
-    /// segment it was read from rather than an assumed one.
+    /// segment it was read from.
     flags: u8,
     sequence: u32,
 }
 
 /// Scans TCP ports through a zombie's IP-ID counter, addressing the target only
-/// as the zombie and never as itself.
+/// as the zombie.
 pub struct IdlePortScanner {
     /// Shared store, event channel and abort signal for the scan.
     ctx: ScanContext,
     /// The Ethernet transport: it forges the spoofed probes to the target and
     /// probes the zombie, and its capture reads the zombie's resets back.
     transport: ProbeTransport,
-    /// This host's own source address on the route to the zombie, or `None` when
-    /// there is no route to it: resolved once, since the route to one zombie
-    /// does not change across a scan.
+    /// This host's source address on the route to the zombie, or `None` when
+    /// there is no route; resolved once per scan.
     source: Option<IpAddr>,
     /// The zombie whose counter is the side channel.
     zombie: IpAddr,
@@ -189,11 +178,9 @@ pub struct IdlePortScanner {
 impl IdlePortScanner {
     /// Opens the Ethernet transport an idle scan needs, or refuses.
     ///
-    /// The transport is the environmental gate: a forged source address needs a
-    /// self-built frame, so a host without that path fails here rather than
-    /// quietly falling back to a scan under its own address. Whether the *zombie*
-    /// is usable is a separate question, answered against the wire once the scan
-    /// runs.
+    /// A forged source address needs a self-built frame, so a host without that
+    /// path fails here. Whether the *zombie* is usable is answered against the wire
+    /// once the scan runs.
     pub fn new(
         ctx: ScanContext,
         zombie: IpAddr,
@@ -222,9 +209,9 @@ impl IdlePortScanner {
         })
     }
 
-    /// Builds the scanner around a transport and source the caller supplies:
-    /// the seam a test drives it through, against a synthetic zombie, with no
-    /// privilege, no interface, and no route to resolve.
+    /// Builds the scanner around a caller-supplied transport and source, so a test
+    /// can drive it against a synthetic zombie with no privilege, interface or
+    /// route.
     #[cfg(test)]
     fn with_transport(
         ctx: ScanContext,
@@ -248,11 +235,9 @@ impl IdlePortScanner {
     /// keeps between probes, then hands back the slot it claimed, or `None`
     /// where the scan stopped while it waited.
     ///
-    /// Taken immediately before a send, so a slot is never held while the wire
-    /// is idle, and given back by the caller with
-    /// [`ScanContext::refund_probe`] where the send did not leave. Waiting
-    /// costs nothing this scan measures: the counter is read from the zombie's
-    /// own reply, timed from that reply.
+    /// Taken immediately before a send and given back by the caller with
+    /// [`ScanContext::refund_probe`] when the send did not leave. Waiting costs
+    /// nothing this scan measures: the counter is timed from the zombie's reply.
     async fn claim_paced(&self, address: IpAddr) -> Option<ProbeClaim> {
         loop {
             match self.ctx.claim_probe(address) {
@@ -269,14 +254,12 @@ impl IdlePortScanner {
 
     /// Probes the zombie once and reads its counter, retrying a lost reply.
     ///
-    /// The probe is an unsolicited SYN+ACK, which any port resets; the reset's
-    /// acknowledgement carries the nonce this probe put in its own, so a reset
-    /// echoing it is this scan's and its IP-ID is the reading. `None` means the
-    /// zombie did not answer within [`ZOMBIE_READ_ATTEMPTS`] tries, or the scan
-    /// stopped while a slot was held back.
+    /// The probe is an unsolicited SYN+ACK, which any port resets; the reset
+    /// echoes the probe's nonce, so a reset carrying it is this scan's and its
+    /// IP-ID is the reading. `None` means the zombie did not answer within
+    /// [`ZOMBIE_READ_ATTEMPTS`] tries, or the scan stopped while waiting for a slot.
     ///
-    /// Each read is a probe at the zombie, since the zombie is the host it is
-    /// addressed to and answers, so it takes its slot on the zombie's address.
+    /// Each read takes its slot on the zombie's address.
     async fn read_counter(&mut self, source: IpAddr) -> Option<Reading> {
         for _ in 0..ZOMBIE_READ_ATTEMPTS {
             let nonce: u32 = rand::random();
@@ -334,16 +317,15 @@ impl IdlePortScanner {
             let Ok(tcp) = tcp::parse(&reply.bytes) else {
                 continue;
             };
-            // The reset takes its sequence from our probe's acknowledgement
-            // field (RFC 793 §3.4), which is where a SYN+ACK's nonce rides, so
-            // this reads the nonce straight back out.
+            // The reset takes its sequence from our probe's acknowledgement field
+            // (RFC 793 §3.4), where a SYN+ACK's nonce rides.
             if tcp::echoed_nonce_with_flags(flags::SYN | flags::ACK, &tcp, 0) != nonce {
                 self.audit.record_off_target();
                 continue;
             }
             let Some(IpObservation::V4(observation)) = reply.observation else {
-                // No IPv4 header to read a counter from: an IPv6 zombie, which
-                // has no such field. Qualification turns this into a refusal.
+                // No IPv4 header, so an IPv6 zombie with no counter. Qualification
+                // turns this into a refusal.
                 return None;
             };
             return Some(Reading {
@@ -358,17 +340,13 @@ impl IdlePortScanner {
     /// Reads the zombie's counter a handful of times and decides whether it is
     /// the counting kind an idle scan can use.
     ///
-    /// Returns the disqualifying class on refusal, so the caller can name it:
-    /// [`IdClass::TooFew`] stands in for a zombie that would not answer at all,
-    /// which is the same practical outcome as an unusable counter.
+    /// Returns the disqualifying class on refusal, so the caller can name it.
+    /// [`IdClass::TooFew`] stands in for a zombie that would not answer at all.
     async fn qualify(&mut self, source: IpAddr) -> Result<(), IdClass> {
         let mut samples = Vec::with_capacity(QUALIFICATION_SAMPLES);
         for sample in 0..QUALIFICATION_SAMPLES {
-            // Space the samples deliberately. The counter is judged a followable
-            // one by its rate of advance, and a reply that returns in
-            // microseconds off a fast path would make a single step look like
-            // tens of thousands a second and read as noise, so a small gap is
-            // left for the rate to be meaningful, at a cost paid once per scan.
+            // Spaced so the rate of advance is meaningful; see
+            // QUALIFICATION_SPACING.
             if sample > 0 {
                 tokio::time::sleep(QUALIFICATION_SPACING).await;
             }
@@ -393,22 +371,17 @@ impl IdlePortScanner {
     /// Measures one target port through the zombie's counter.
     ///
     /// Reads the counter, forges [`SPOOFED_PROBES`] SYNs from the zombie to the
-    /// port, reads the counter again, and reads the advance: an open port bounced
-    /// each probe off the zombie and moved it, a closed one or one the probes
-    /// never reached did not. A counter reading that cannot be had leaves the
-    /// port [`PortState::Unasked`]: no verdict was reached, since nothing about
-    /// the target was learned, and a silence filed against it would be the
-    /// zombie's rather than the target's.
+    /// port, reads the counter again, and judges the advance. A counter reading
+    /// that cannot be had leaves the port [`PortState::Unasked`], since a silence
+    /// filed against the target would be the zombie's.
     async fn measure(&mut self, source: IpAddr, target: IpAddr, port: u16) -> PortState {
         let Some(before) = self.read_counter(source).await else {
             return PortState::Unasked;
         };
 
-        // Each forged probe is a probe at the target, however it is addressed
-        // on the wire, so it takes its slot on the target's address and the
-        // burst is held to the same gaps every other pass's probes are. A slot
-        // turned away waits; one the scan stopped over abandons the burst, and
-        // the measurement then reads the target as unasked rather than closed.
+        // Each forged probe takes its slot on the target's address, so the burst
+        // keeps the same gaps as every other probe. If the scan stops while waiting,
+        // the burst is abandoned and the port reads as unasked.
         for _ in 0..SPOOFED_PROBES {
             let nonce: u32 = rand::random();
             let spoofed_port: u16 = rand::random_range(50_000..u16::MAX);
@@ -425,8 +398,8 @@ impl IdlePortScanner {
             let Some(claim) = self.claim_paced(target).await else {
                 return PortState::Unasked;
             };
-            // Forged from the zombie: the target's answer, if any, goes to the
-            // zombie and never here. The reply is neither awaited nor captured.
+            // Forged from the zombie: the target's answer goes there, so nothing is
+            // awaited.
             let sent = self
                 .transport
                 .tx
@@ -447,9 +420,8 @@ impl IdlePortScanner {
 
     /// Files a port's verdict, and the host as up when the verdict proves it.
     ///
-    /// An open port is one the target answered, to the zombie, but answer it
-    /// did, so it is proof the host is alive; a closed-or-no-reply verdict
-    /// proves nothing about the host and records nothing about it.
+    /// An open port is one the target answered (to the zombie), so it proves the
+    /// host is up; a closed-or-no-reply verdict records nothing about the host.
     fn record(&self, target: IpAddr, port: u16, state: PortState) {
         let recorded = fingerprint::baseline_port(port, Protocol::Tcp, state);
         self.ctx.update_host(target, |host| {
@@ -520,10 +492,9 @@ impl PortScanner for IdlePortScanner {
                 break;
             }
             let target = planned.target;
-            // TCP only, and IPv4 only: the side channel is the IPv4 IP-ID field,
-            // and a forged probe has to share the zombie's address family. A
-            // target this scan cannot read this way is left for no one: an idle
-            // scan has, by design, no second way to reach it.
+            // TCP and IPv4 only: the side channel is the IPv4 IP-ID field, and a forged
+            // probe must share the zombie's address family. Other targets are recorded
+            // unasked; an idle scan has no second way to reach them.
             if target.protocol != Protocol::Tcp || !target.ip.is_ipv4() || !self.zombie.is_ipv4() {
                 record_unasked(&self.ctx, &planned);
                 continue;
@@ -537,10 +508,9 @@ impl PortScanner for IdlePortScanner {
             });
         }
 
-        // Anything still queued when a stop cut the loop was never asked.
-        // Closed first, so a target the router hands over meanwhile finds this
-        // scanner gone and is recorded by the router, rather than put in a
-        // queue nothing reads.
+        // Anything still queued when a stop cut the loop was never asked. Closed
+        // first, so a target handed over meanwhile finds this scanner gone and the
+        // router records it.
         targets.close();
         while let Ok(planned) = targets.try_recv() {
             record_unasked(&self.ctx, &planned);
@@ -562,12 +532,9 @@ impl PortScanner for IdlePortScanner {
 /// Records every target a refused scan is handed as unasked on its host, read
 /// until the router has handed over the last one.
 ///
-/// Read to the end rather than drained of what is queued and dropped: a
-/// target handed over after the drop finds no scanner and the router records
-/// it, while one queued before is lost with the queue, so which of them reach
-/// the report would turn on how the refusal and the routing interleave. Read
-/// here, every one is on its host with its ports unasked, and the refusal is
-/// the one failure the scan reports for them.
+/// Reads to the end, so every target is on its host with its ports unasked
+/// whether it was queued before the refusal or routed after it, and the
+/// refusal is the one failure reported for them.
 async fn refuse(ctx: &ScanContext, mut targets: mpsc::Receiver<PlannedTarget>) {
     while let Some(planned) = targets.recv().await {
         record_unasked(ctx, &planned);
@@ -577,12 +544,9 @@ async fn refuse(ctx: &ScanContext, mut targets: mpsc::Receiver<PlannedTarget>) {
 /// The flag a refusal names for a zombie whose IP-ID counter classified as
 /// `class`, terse and parenthesised as the console wants it.
 ///
-/// The classifier's own names are wire-facts a rule matches on, not English: a
-/// refusal built from `class.name()` reads "a too-few IP-ID counter". This
-/// gives each the short reason the console line carries in parentheses.
-/// `Counting` is the class an idle scan accepts and never reaches here; it is
-/// named anyway so the match is exhaustive and a class added later is not
-/// silently unflagged.
+/// The classifier's names are wire facts, so `class.name()` would read "a
+/// too-few IP-ID counter". `Counting` never reaches here but keeps the match
+/// exhaustive.
 fn unsuitable_zombie(class: IdClass) -> &'static str {
     match class {
         IdClass::Absent => "IPv6, no IP-ID",
@@ -595,15 +559,12 @@ fn unsuitable_zombie(class: IdClass) -> &'static str {
     }
 }
 
-/// The verdict a counter advance implies, read between two counter samples that
-/// bracket one port's forged probes.
+/// The verdict a counter advance implies, between two samples that bracket one
+/// port's forged probes.
 ///
 /// The counter is sixteen bits and wraps, so the advance is a wrapping
-/// difference; `before` already accounts for the reading that produced it, so
-/// every step past the one `after`'s own reading causes is a probe the target
-/// bounced off the zombie. An advance that reaches [`OPEN_MIN_DELTA`] is an open
-/// port; anything less is a closed or unreached one, which this technique cannot
-/// tell apart.
+/// difference. An advance reaching [`OPEN_MIN_DELTA`] is an open port; anything
+/// less is closed or unreached, which this technique cannot tell apart.
 fn verdict(before: u16, after: u16) -> PortState {
     if after.wrapping_sub(before) >= OPEN_MIN_DELTA {
         PortState::Open
@@ -633,12 +594,8 @@ mod tests {
     const CLOSED_PORT: u16 = 81;
 
     /// The counter advance is read as open exactly when it clears the threshold,
-    /// and the reading wraps with the sixteen-bit field rather than around it.
-    ///
-    /// The arithmetic is the whole of the method: a version that read the advance
-    /// off the wrong end of a wrap, or moved the line by one, would turn open
-    /// ports closed and closed ones open while every packet still went out
-    /// correctly.
+    /// and the reading wraps with the sixteen-bit field. An off-by-one here
+    /// swaps open and closed while every packet still goes out correctly.
     #[test]
     fn a_counter_advance_reads_open_only_when_it_clears_the_threshold() {
         // The clean cases: an open port advances the counter by SPOOFED_PROBES
@@ -653,27 +610,24 @@ mod tests {
             PortState::ClosedOrNoReply
         );
 
-        // Across the field's wrap the advance is the true short distance, not the
-        // huge one a plain subtraction would see: an open port whose probes
-        // carried the counter over the top is still read open.
+        // Across the wrap the advance is the short distance, so an open port
+        // whose probes carried the counter over the top still reads open.
         assert_eq!(verdict(65_530, 2), PortState::Open); // an advance of eight
         assert_eq!(verdict(u16::MAX, 0), PortState::ClosedOrNoReply); // an advance of one
     }
 
-    /// How the synthetic zombie writes its IP-ID: a shared counter that advances,
-    /// or a fixed value that does not: the difference between a usable zombie and
-    /// one the scan must refuse.
+    /// How the synthetic zombie writes its IP-ID: a shared counter that advances
+    /// (usable), or a fixed value (refused).
     enum Counter {
         Counting,
         Constant,
     }
 
     /// A responsive zombie. It resets every probe of its counter, carrying the
-    /// counter's value in the reset's IP-ID, and, for an *open* target port, it
-    /// advances the counter as if it had reset the SYN+ACK the target bounced off
-    /// it, sending nothing back. Its resets are assembled from RFC 793's offsets
-    /// by hand, so a shared misreading of a TCP header cannot pass for agreement
-    /// between the scanner and its test.
+    /// counter's value in the reset's IP-ID, and for an *open* target port advances
+    /// the counter as if it had reset the target's SYN+ACK. Its resets are built
+    /// from RFC 793's offsets by hand, so a shared misreading of a TCP header cannot
+    /// pass as agreement between the scanner and its test.
     struct Zombie {
         replies: mpsc::Sender<CapturedSegment>,
         counter: AtomicU16,
@@ -709,9 +663,8 @@ mod tests {
                 return Ok(());
             };
             if dst == ZOMBIE {
-                // A probe of the counter. The reset takes its sequence from the
-                // probe's acknowledgement field, which is where a SYN+ACK's nonce
-                // rides, so the scanner reads it straight back.
+                // A probe of the counter; the reset echoes the probe's acknowledgement
+                // field, where the nonce rides.
                 let reset = reset(
                     tcp.destination_port(),
                     tcp.source_port(),
@@ -719,8 +672,8 @@ mod tests {
                 );
                 let _ = self.replies.try_send(captured(reset, self.next_id()));
             } else if dst == TARGET && self.open_ports.contains(&tcp.destination_port()) {
-                // An open target bounced a SYN+ACK off the zombie, which reset it
-                // and advanced the counter: a step this scan reads but never sees.
+                // An open target bounced a SYN+ACK off the zombie, which reset it and
+                // advanced the counter.
                 let _ = self.next_id();
             }
             Ok(())
@@ -817,11 +770,8 @@ mod tests {
     /// The whole side channel, end to end: an open port and a closed one read
     /// through a counting zombie come back open and closed-or-no-reply.
     ///
-    /// Nothing here addresses the target directly: the open verdict is the
-    /// counter having advanced the extra steps the target bounced off the zombie,
-    /// and the closed one is the counter having moved only for the readings
-    /// themselves. A version that miscounted, mis-correlated a reset, or forged
-    /// the probes wrong would turn one verdict into the other.
+    /// Nothing addresses the target directly: the open verdict is the counter's
+    /// extra advance, the closed one its movement for the readings alone.
     #[tokio::test]
     async fn an_open_and_a_closed_port_are_read_through_a_counting_zombie() {
         let (session, ctx) = ScanSession::new();
@@ -839,9 +789,7 @@ mod tests {
     /// A zombie whose counter does not move is refused before any port is
     /// measured, and the refusal is recorded against the idle scanner.
     ///
-    /// The guard is that nothing is guessed: a constant counter carries no
-    /// signal, so the target is left unasked rather than given a made-up
-    /// verdict.
+    /// A constant counter carries no signal, so the target is left unasked.
     #[tokio::test]
     async fn a_zombie_whose_counter_does_not_move_is_refused() {
         let (session, ctx) = ScanSession::new();
@@ -862,14 +810,8 @@ mod tests {
         );
     }
 
-    /// Under a gap the scan keeps between probes, no two probes at one address
-    /// leave nearer than the per-host gap, and the whole scan still reaches its
-    /// verdict.
-    ///
-    /// A zombie read is a probe at the zombie and a forged probe is a probe at
-    /// the target, so the per-host gap spaces the zombie's readings among
-    /// themselves and the target's burst among itself, and each verdict is
-    /// still reached.
+    /// Under a per-host gap, zombie reads are spaced among themselves and the
+    /// forged burst among itself, and the verdict is still reached.
     #[tokio::test]
     async fn a_gap_spaces_the_zombie_reads_and_the_forged_burst() {
         let gap = Duration::from_millis(20);
@@ -900,15 +842,9 @@ mod tests {
         }
     }
 
-    /// A refused scan records every target it is handed as unasked on its
-    /// host, both the ones already queued when it refused and the ones the
-    /// router hands over after, so the target reaches the report with its
-    /// ports unasked however the refusal and the routing happen to interleave.
-    ///
-    /// Discarding the queue and dropping the receiver leaves the result to
-    /// timing: the targets queued in time vanish, while those routed later
-    /// find the scanner gone and are recorded by the router, so one run
-    /// reports the host and the next reports none.
+    /// A refused scan records every target it is handed as unasked on its host,
+    /// whether queued before the refusal or routed after it, so the result does not
+    /// depend on how the refusal and the routing interleave.
     #[tokio::test]
     async fn a_refused_scan_records_every_target_it_is_handed_unasked() {
         let (session, ctx) = ScanSession::new();

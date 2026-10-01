@@ -8,33 +8,18 @@
 
 //! # Reading what a machine is off what it answers
 //!
-//! The two active operating-system probes. Both are aimed at hosts the scan has
-//! already found, and neither discovers anything: [`series`] revisits a TCP port
-//! whose state is already settled and asks it the same question several times,
-//! so the identifier, sequence and clock policies behind the answers become
-//! visible; [`echo`] pings the machine that answered no TCP probe at all, where
-//! a hop counter and an echoed code are the whole of what is available.
+//! The two active operating-system probes, aimed at hosts the scan has already found.
+//! [`series`] revisits a TCP port whose state is settled and asks it the same question
+//! several times, so the identifier, sequence and clock policies behind the answers
+//! become visible. [`echo`] pings a machine that answered no TCP probe, where a hop
+//! counter and an echoed code are all there is to read.
 //!
-//! ## Which one reaches which host
+//! The series probe is the stronger of the two, so the orchestrator runs it first and
+//! leaves the echo probe the hosts it could not reach.
 //!
-//! The series probe is the stronger of the two wherever it applies, so it runs
-//! first and the echo probe is left with what it could not reach. That ordering
-//! is the orchestrator's, and it is the reason these are two modules rather than
-//! one: they read different evidence off different hosts and share only the fact
-//! that both are asking what a machine *is* rather than what it has open.
-//!
-//! ## Why neither is a `HostScanner`
-//!
-//! [`HostScanner`](super::HostScanner)'s summary says a strategy which finds
-//! which hosts are reachable. Neither does: every address they are handed came
-//! out of the store because something else already found it.
-//!
-//! An impl would buy a method name, and the method name would be untrue.
-//! Nothing dispatches either of them dynamically -- `Box<dyn HostScanner>` is
-//! built in one place, from the three strategies that really do discovery, and
-//! the `ScannerKind` these two report under is written at the call site rather
-//! than read from `kind()`. So the entry point is `probe`, which says what each
-//! of them does.
+//! Neither implements [`HostScanner`](super::HostScanner): they discover nothing, and
+//! nothing dispatches them dynamically. Each one's entry point is `probe`, and the
+//! `ScannerKind` they report under is set at the call site.
 
 pub mod echo;
 pub mod series;
