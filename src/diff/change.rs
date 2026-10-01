@@ -6,28 +6,23 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # The three words every comparison is written in
+//! # The building blocks of every delta
 //!
 //! [`Change`] is a field that moved, [`Presence`] is a record that one side has
-//! and the other does not, and [`Coverage`] is what a report says about whether
-//! it looked. Every delta in this module is built out of these, so a consumer
-//! learns them once and can then read a host, a port, a service or a
-//! certificate without learning anything new.
+//! and the other lacks, and [`Coverage`] is what a report says about whether it
+//! looked. Host, port, service and certificate deltas are all built from these.
 
 use std::fmt;
 
 /// A value that differs between the two scans.
 ///
-/// The one shape every field-level difference takes. A field that is always
-/// present carries the values directly, as `Change<PortState>`; a field that may
-/// be absent carries `Option`s, as `Change<Option<String>>`, where `before:
-/// None` reads as gained and `after: None` as lost. That is one type rather than
-/// three, and `match (&change.before, &change.after)` covers every case a
-/// renderer has.
+/// Every field-level difference takes this shape. A field that is always present
+/// carries the values directly, as `Change<PortState>`; a field that may be absent
+/// carries `Option`s, as `Change<Option<String>>`, where `before: None` reads as
+/// gained and `after: None` as lost.
 ///
-/// A `Change` never holds two equal values. [`between`](Self::between) is the
-/// constructor a comparison uses and returns `None` when nothing moved, so a
-/// delta's change list contains only changes.
+/// The changes a comparison builds never hold two equal values:
+/// [`between`](Self::between) returns `None` when nothing moved.
 ///
 /// ```
 /// use zond_engine::diff::Change;
@@ -59,7 +54,7 @@ impl<T> Change<T> {
     ///
     /// For fields whose equality is not the derived one. An operating system
     /// identified at 80% and then at 92% confidence is the same finding, so the
-    /// host comparison decides that question itself and builds the change here.
+    /// host comparison decides equality itself and builds the change here.
     pub fn new(before: T, after: T) -> Self {
         Self { before, after }
     }
@@ -100,10 +95,8 @@ impl<T: fmt::Display> fmt::Display for Change<T> {
 /// having looked.
 ///
 /// A host missing from tonight's scan is gone if tonight's scan covered its
-/// address and merely unobserved if it did not. Collapsing those two into
-/// "removed" is what makes a monitoring tool cry wolf every time somebody narrows
-/// a scan, so the coverage travels with the presence and a consumer never has to
-/// go looking for it.
+/// address, and merely unobserved if it did not. The coverage travels with the
+/// presence so a consumer can tell the two apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Presence {
     /// Both scans have a record. The difference between them, if any, is in the
@@ -112,8 +105,8 @@ pub enum Presence {
     /// Only the current scan has a record, and `before` is what the baseline
     /// says about whether it covered this target.
     ///
-    /// [`Coverage::Covered`] makes this a genuine appearance. Anything else
-    /// makes it a target the baseline never asked about.
+    /// [`Coverage::Covered`] makes this a real appearance. Anything else makes
+    /// it a target the baseline never asked about.
     Added {
         /// What the baseline scan says about having covered this target.
         before: Coverage,
@@ -121,8 +114,8 @@ pub enum Presence {
     /// Only the baseline has a record, and `after` is what the current scan says
     /// about whether it covered this target.
     ///
-    /// [`Coverage::Covered`] makes this a genuine disappearance. Anything else
-    /// makes it a target tonight's scan never asked about.
+    /// [`Coverage::Covered`] makes this a real disappearance. Anything else
+    /// makes it a target the current scan never asked about.
     Removed {
         /// What the current scan says about having covered this target.
         after: Coverage,
@@ -147,7 +140,7 @@ impl Presence {
 
     /// What the scan lacking a record says about having covered the target.
     ///
-    /// `None` when both scans hold one, where the question does not arise.
+    /// `None` when both scans hold one.
     pub fn counterpart_coverage(&self) -> Option<Coverage> {
         match self {
             Presence::Both => None,
@@ -156,9 +149,9 @@ impl Presence {
         }
     }
 
-    /// Whether the scan lacking a record is known to have covered the target
-    /// anyway, which is what makes an appearance or a disappearance a finding
-    /// about the network rather than about the scan.
+    /// Whether the scan lacking a record is known to have covered the target,
+    /// which makes an appearance or disappearance a finding about the network.
+    /// True when both scans hold a record.
     pub fn is_confirmed(&self) -> bool {
         self.counterpart_coverage()
             .is_none_or(|coverage| coverage == Coverage::Covered)
@@ -168,18 +161,15 @@ impl Presence {
 /// What a report says about whether it looked at a target.
 ///
 /// Mostly read off the [`TargetScope`](crate::report::TargetScope) of the
-/// report's phases, which record the ranges a scan iterated after its exclusion
-/// policy was applied and the ranges that policy withheld. A report carrying no
-/// scope, such as one rebuilt from a foreign scanner's output or from a scan that
-/// stopped before it wrote a phase down, answers [`Unstated`](Self::Unstated)
-/// rather than guessing.
+/// report's phases, which record the ranges a scan walked after its exclusion
+/// policy and the ranges that policy withheld. A report with no scope, such as one
+/// rebuilt from a foreign scanner's output or from a scan that stopped before
+/// writing a phase, answers [`Unstated`](Self::Unstated).
 ///
-/// [`Unreached`](Self::Unreached) is the one answer that comes from somewhere
-/// else, and it overrules the scope where the two meet: a scope says what a scan
-/// set out to walk, and a port recorded
-/// [`Unasked`](crate::model::port::PortState::Unasked) or an address a phase
-/// names as [`undecided`](crate::report::ScanPhase::undecided) is the scan
-/// saying how far it actually got.
+/// [`Unreached`](Self::Unreached) comes from the record itself and overrules the
+/// scope: a scope says what a scan set out to walk, while a port recorded
+/// [`Unasked`](crate::model::port::PortState::Unasked) or an address a phase names
+/// as [`undecided`](crate::report::ScanPhase::undecided) says how far it got.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Coverage {
@@ -188,19 +178,17 @@ pub enum Coverage {
     /// The report says an exclusion policy withheld this target. The scan was
     /// forbidden to look, so nothing here is evidence about the network.
     Withheld,
-    /// The report states what it walked, and this target was not in it. Nobody
-    /// asked about this target, which is different from being forbidden to.
+    /// The report states what it walked, and this target was not in it.
     OutOfScope,
-    /// The scan named this target, meant to probe it, and ran short before it
-    /// did. The record itself says so, by carrying the endpoint at
+    /// The scan named this target and ran short before probing it. The record
+    /// says so by carrying the endpoint at
     /// [`PortState::Unasked`](crate::model::port::PortState::Unasked), or by
     /// naming the address among a phase's
     /// [`undecided`](crate::report::ScanPhase::undecided) ones where no phase
     /// reached a verdict on it.
     ///
-    /// The one answer that is a measurement rather than a reading of intent, and
-    /// it is what keeps a scan cut short by its own wall clock from reporting
-    /// every port it did not reach as one that closed.
+    /// This keeps a scan cut short by its wall clock from reporting every port it
+    /// did not reach as closed.
     Unreached,
     /// The report does not say what it covered, so whether it looked is unknown.
     Unstated,
@@ -209,12 +197,9 @@ pub enum Coverage {
 impl Coverage {
     /// Every answer, in declaration order.
     ///
-    /// Here for the reason
-    /// [`PortState::ALL`](crate::model::port::PortState::ALL) gives: the enum is
-    /// `#[non_exhaustive]`, and an answer added without a name in the exported
-    /// comparison schema is one a document can carry and no consumer's validator
-    /// will accept. The export conformance suite reads this and the schema's own
-    /// list and fails unless they hold the same names.
+    /// The export conformance suite checks this against the exported comparison
+    /// schema's list, so a new answer cannot ship without a schema name that
+    /// consumers' validators accept.
     pub const ALL: &'static [Self] = &[
         Self::Covered,
         Self::Withheld,
@@ -231,9 +216,8 @@ impl Coverage {
     /// Whether the report is known not to have walked the target, for either
     /// reason.
     ///
-    /// A target the scan meant to reach and did not is not excluded from
-    /// anything, so [`Unreached`](Self::Unreached) answers false here and false
-    /// to [`is_covered`](Self::is_covered) alike.
+    /// [`Unreached`](Self::Unreached) answers false here and to
+    /// [`is_covered`](Self::is_covered).
     pub fn is_excluded(&self) -> bool {
         matches!(self, Coverage::Withheld | Coverage::OutOfScope)
     }
@@ -264,8 +248,7 @@ impl fmt::Display for Coverage {
 mod tests {
     use super::*;
 
-    /// The invariant the rest of the module rests on. A delta's change list
-    /// holds only changes.
+    /// A delta's change list holds only changes.
     #[test]
     fn a_value_that_did_not_move_is_not_a_change() {
         assert!(Change::between(1, 1).is_none());

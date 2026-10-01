@@ -8,27 +8,22 @@
 
 //! # What changed about one host
 //!
-//! A [`HostDelta`] is one machine as the two scans between them describe it: the
-//! record each side holds, what moved between them, and every endpoint that
-//! moved with it.
+//! A [`HostDelta`] is one machine as the two scans describe it: the record each
+//! side holds, what moved between them, and every endpoint that moved.
 //!
 //! ## Only the verdicts
 //!
-//! The status is compared and the evidence behind it is not. A host that was up
-//! by ARP and is up by TCP has not changed, and a diff reporting it would bury
-//! the host that went from up to unreachable. The same rule leaves out round-trip
-//! times, hop counters, measured routes and the per-source operating-system
-//! evidence: all of them are how well the scan saw the host rather than what the
-//! host is.
+//! The status is compared and the evidence behind it is not: a host that was up
+//! by ARP and is up by TCP has not changed. Round-trip times, hop counters,
+//! measured routes and per-source operating-system evidence are left out for the
+//! same reason. They describe how well the scan saw the host.
 //!
-//! Operating-system identification follows the rule one step further. Two
-//! fingerprints are the same finding when they name the same system, whatever
-//! confidence each was recorded at, so a second scan that grew more certain of
-//! the same answer reports nothing. A current scan that identified no system at
-//! all reports nothing either: it was run without the probes, or answered too
-//! thinly to match, and says nothing about what runs there now. The hardware
-//! addresses and the vendor read off them follow the same rule, since a scan
-//! that did not reach the host's segment sees neither.
+//! Two operating-system fingerprints are the same finding when they name the same
+//! system, whatever confidence each was recorded at. A current scan that
+//! identified no system reports nothing: it ran without the probes or got too
+//! little back to match. Hardware addresses and the vendor read off them follow
+//! the same rule, since a scan that did not reach the host's segment sees
+//! neither.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
@@ -96,10 +91,9 @@ impl HostDelta {
     /// Whether the two scans grouped this host's addresses differently: what one
     /// holds as a single record the other holds as several.
     ///
-    /// It happens when one scan reached the link layer and the other did not,
-    /// since the evidence that two addresses are one machine is what a privileged
-    /// scan has and an unprivileged one does not. Both sides are still compared,
-    /// merged; this says the comparison had to do that.
+    /// Typically one scan reached the link layer and the other did not, since
+    /// link-layer evidence is what shows two addresses are one machine. Both
+    /// sides are still compared, merged.
     pub fn is_regrouped(&self) -> bool {
         self.baseline_records > 1 || self.current_records > 1
     }
@@ -124,17 +118,14 @@ impl HostDelta {
 
 /// Something that moved about a host.
 ///
-/// `#[non_exhaustive]`, since a scan learns to establish more about a host as it
-/// learns to speak more protocols, and a consumer matching on this should pay
-/// for that with a recompile rather than with a major version.
+/// `#[non_exhaustive]` because new protocols let a scan establish more about a
+/// host, and adding a variant should not need a major version.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum HostChange {
-    /// Whether the host answers changed. The four states are
-    /// [`HostStatus`]'s own documentation, and silence is
-    /// [`Unknown`](HostStatus::Unknown) rather than
-    /// [`Down`](HostStatus::Down): a host that stopped answering has moved to
-    /// `Unknown`, and only an intermediary saying so produces `Down`.
+    /// Whether the host answers changed. A host that stopped answering moves to
+    /// [`Unknown`](HostStatus::Unknown); only an intermediary saying so produces
+    /// [`Down`](HostStatus::Down).
     Status(Change<HostStatus>),
     /// The resolved name changed.
     Hostname(Change<Option<String>>),
@@ -142,11 +133,9 @@ pub enum HostChange {
     /// order.
     ///
     /// Compared only within the protocols the current scan heard names in. A
-    /// scan that asked no SMB server for a session, or read no directory,
-    /// established nothing about the names those state, and reporting them lost
-    /// on its word would have a quick scan compared against a thorough one
-    /// announce every domain controller renamed. The rule
-    /// [`Os`](Self::Os) follows, for the same reason.
+    /// scan that opened no SMB session or read no directory established nothing
+    /// about those names, so a quick scan against a thorough one does not report
+    /// them lost. [`Os`](Self::Os) follows the same rule.
     Names {
         /// Names the current scan heard and the baseline did not.
         gained: Vec<HostName>,
@@ -161,32 +150,27 @@ pub enum HostChange {
         /// Addresses the baseline found it at and the current scan does not.
         lost: Vec<IpAddr>,
     },
-    /// What the host was identified as running changed, or was identified where
-    /// it was not.
+    /// What the host was identified as running changed, or was first identified.
     ///
-    /// Only the identification moved. A fingerprint recorded at a different
-    /// confidence for the same system is not a change and is not reported, and
-    /// neither is a current scan that identified nothing: it did not say what
-    /// runs there now, so `after` is never `None`.
+    /// The same system at a different confidence is not a change, and a current
+    /// scan that identified nothing is not reported, so `after` is never `None`.
     ///
     /// Boxed because a pair of fingerprints is several times the size of any
-    /// other variant and a change list is mostly the other variants. Unboxed,
-    /// every hostname change in a diff would sit in a slot wide enough for
-    /// two operating systems. A reader dereferences it like any other change.
+    /// other variant, and a change list is mostly the other variants.
     Os(Box<Change<Option<OsFingerprint>>>),
     /// The hardware addresses the host was seen at changed, each list ascending.
     ///
-    /// Only a scan that reached the link layer sees these at all, so both lists
-    /// are empty between two scans where one of them did not.
+    /// Only a scan that reached the link layer sees these, so both lists are
+    /// empty when either scan did not.
     Macs {
         /// Addresses the current scan saw and the baseline did not.
         gained: Vec<MacAddr>,
         /// Addresses the baseline saw and the current scan does not.
         lost: Vec<MacAddr>,
     },
-    /// The hardware vendor the address resolves to changed, or was named where
-    /// it was not. A current scan that named none established nothing about
-    /// it, so `after` is never `None`.
+    /// The hardware vendor the address resolves to changed or was first named.
+    /// A current scan that named none is not reported, so `after` is never
+    /// `None`.
     Vendor(Change<Option<String>>),
     /// The roles inferred for the host changed, each list ascending.
     Roles {
@@ -198,17 +182,13 @@ pub enum HostChange {
     /// What the filter in front of the host was shown to be doing changed, each
     /// list ascending.
     ///
-    /// A verdict about the network rather than a measurement of the scan, which
-    /// is why it is compared where round-trip times and probe counts are not. A
-    /// stateful filter appearing in front of a host, or one that stopped
-    /// reassembling fragments, is a change to the path somebody has to know
-    /// about.
+    /// A verdict about the network path, such as a stateful filter appearing or
+    /// one that stopped reassembling fragments.
     ///
-    /// Each conclusion is drawn by a comparative probe that only a scan asking
-    /// for it runs, so both lists are empty between two scans where
-    /// [`characterise`](crate::report::ScanSettings::characterise) was off, the
-    /// same reading [`Macs`](Self::Macs) has between two scans that never
-    /// reached the link layer.
+    /// Each conclusion comes from a comparative probe that runs only when asked
+    /// for, so both lists are empty when
+    /// [`characterise`](crate::report::ScanSettings::characterise) was off in
+    /// either scan.
     Filtering {
         /// Conclusions the current scan drew and the baseline did not.
         gained: Vec<Filtering>,
@@ -217,24 +197,20 @@ pub enum HostChange {
     },
     /// The IP protocols whose verdict moved, ascending by number.
     ///
-    /// Only the protocols *both* scans established something about. One that
-    /// only one of them asked about is a difference in what was asked rather
-    /// than in the network, which is the same reading
-    /// [`PortState::Unasked`](crate::model::port::PortState::Unasked) gets in
-    /// [`port`]: a scan that named a protocol and never
-    /// reached it holds
-    /// [`IpProtocolState::Unasked`] there, and comparing that against a verdict would report the second scan
-    /// having looked as the host having changed.
+    /// Only the protocols *both* scans established something about. One that only
+    /// one scan asked about is a difference in what was asked, read the same way
+    /// as [`PortState::Unasked`](crate::model::port::PortState::Unasked) in
+    /// [`port`]. A scan that named a protocol and never reached it holds
+    /// [`IpProtocolState::Unasked`] for it.
     IpProtocols {
         /// What moved, ascending by protocol number.
         changed: Vec<IpProtocolChange>,
     },
-    /// Findings that appeared on the host, and findings no longer claimed about
-    /// it.
+    /// Findings that appeared on the host, findings the current scan stopped
+    /// claiming, and findings whose severity moved.
     ///
-    /// Paired by [`ClaimId`], which is what keeps a detection's own version bump
-    /// from reading as the old finding going away and a new one arriving. A
-    /// finding whose severity moved under the same claim is not reported here.
+    /// Paired by [`ClaimId`], so a detection's own version bump does not read as
+    /// one finding going away and another arriving.
     Findings {
         /// Findings the current scan claims and the baseline did not.
         appeared: Vec<Finding>,
@@ -257,13 +233,11 @@ pub struct IpProtocolChange {
 
 /// One claim both scans make, graded differently.
 ///
-/// A finding going from `Medium` to `Critical` is the most consequential thing a
-/// rescan can say about a host it already knew, and it is invisible in
-/// `appeared` and `resolved`: the claim is on both sides.
+/// A finding going from `Medium` to `Critical` is on both sides, so it shows up
+/// here and not in `appeared` or `resolved`.
 ///
 /// Only the severity is compared. A detection re-running writes a fresh excerpt
-/// almost every time, so treating any difference as a reassessment would report
-/// every finding on every scan.
+/// almost every time.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reassessment {
@@ -282,9 +256,8 @@ impl Reassessment {
 
 /// Compares one host's two records, either of which may be absent.
 ///
-/// `baseline_coverage` and `current_coverage` are what each report says about
-/// having walked this address, and they turn an absent record into either a
-/// host that went away or a host nobody asked about.
+/// Each scope says whether that report walked this address, which decides
+/// whether an absent record is a host that went away or one nobody asked about.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compare(
     baseline: Option<&Host>,
@@ -298,9 +271,8 @@ pub(crate) fn compare(
 ) -> HostDelta {
     let address = *address;
 
-    // Each scope is asked about the record the *other* side holds, because that
-    // is the host whose absence is in question. Where only one side has a
-    // record, both questions are about it.
+    // Each scope is asked about the record the *other* side holds, whose absence
+    // is in question. Where only one side has a record, both ask about it.
     let known = current
         .or(baseline)
         .expect("a delta has a record on one side");
@@ -368,8 +340,7 @@ fn changes_between(before: &Host, after: &Host) -> Vec<HostChange> {
         changes.push(HostChange::Hostname(hostname));
     }
 
-    // Only the protocols the current scan heard names in, so a scan that never
-    // asked reports nothing lost. See `HostChange::Names`.
+    // Only protocols the current scan heard names in. See `HostChange::Names`.
     let heard: BTreeSet<NameSource> = after.names().map(HostName::source).collect();
     let (gained, lost) = difference(
         before
@@ -387,12 +358,8 @@ fn changes_between(before: &Host, after: &Host) -> Vec<HostChange> {
         changes.push(HostChange::Addresses { gained, lost });
     }
 
-    // Only a current scan that identified the system can say it changed. One
-    // that identified nothing, run without the probes or answered too thinly to
-    // match, said nothing about what runs there now, and reporting the system
-    // gone on its word would have a quick scan compared against a thorough one
-    // announce every machine's operating system lost. The baseline's
-    // identification stays readable on the delta's baseline record.
+    // Only a current scan that identified the system can say it changed. The
+    // baseline's identification stays readable on the delta's baseline record.
     if let Some(now) = after.os()
         && !same_system(before.os(), Some(now))
     {
@@ -402,9 +369,8 @@ fn changes_between(before: &Host, after: &Host) -> Vec<HostChange> {
         ))));
     }
 
-    // Hardware addresses are seen at the link layer or not at all, so a record
-    // holding none is a scan that did not reach the host's segment, and its
-    // silence is not the host losing them.
+    // A record with no hardware addresses is a scan that did not reach the
+    // host's segment.
     let seen_on_link = |host: &Host| {
         host.hardware()
             .is_some_and(|hardware| !hardware.macs().is_empty())
@@ -425,8 +391,7 @@ fn changes_between(before: &Host, after: &Host) -> Vec<HostChange> {
         }
     }
 
-    // The vendor is read off the hardware, and held to the rule the operating
-    // system is: a current scan that named none established nothing about it.
+    // Same rule as the operating system: a current scan naming none says nothing.
     if let Some(now) = after.vendor()
         && before.vendor() != Some(now)
     {
@@ -473,9 +438,7 @@ fn changes_between(before: &Host, after: &Host) -> Vec<HostChange> {
 ///
 /// A protocol either scan holds at
 /// [`Unasked`](crate::model::host::IpProtocolState::Unasked), or does not hold at
-/// all, is left out: that scan established nothing about it, and a verdict
-/// compared against nothing is the second scan having looked rather than the
-/// host having changed.
+/// all, is left out: that scan established nothing about it.
 fn ip_protocols_between(before: &Host, after: &Host) -> Vec<IpProtocolChange> {
     let established = |host: &Host, number: &u8| {
         host.ip_protocols()
@@ -500,8 +463,8 @@ fn ip_protocols_between(before: &Host, after: &Host) -> Vec<IpProtocolChange> {
 
 /// The findings one subject gained and lost between two scans.
 ///
-/// Paired on [`ClaimId`] rather than on the whole finding, so that a detection
-/// re-running and producing the same claim with a fresh excerpt is not a change.
+/// Paired on [`ClaimId`], so a detection re-running with a fresh excerpt for the
+/// same claim is not a change.
 pub(super) fn findings_between<'a>(
     before: impl Iterator<Item = &'a Finding>,
     after: impl Iterator<Item = &'a Finding>,
@@ -535,9 +498,8 @@ pub(super) fn findings_between<'a>(
 
 /// Whether two fingerprints name the same system.
 ///
-/// Everything the identification consists of, and nothing about how sure of it
-/// the scan was: the accuracy figures and the evidence string are the
-/// fingerprinter describing itself.
+/// Compares the identification only, ignoring accuracy figures and the evidence
+/// string.
 fn same_system(before: Option<&OsFingerprint>, after: Option<&OsFingerprint>) -> bool {
     match (before, after) {
         (None, None) => true,
@@ -619,14 +581,9 @@ mod tests {
         })
     }
 
-    /// A filter that appeared in front of a host is a change to the network, and
-    /// was the one host verdict this module never looked at.
-    ///
-    /// It reads like a measurement and is not: `characterise` draws each
-    /// conclusion from a comparative probe, so what is recorded is a fact about
-    /// the path rather than about how well the scan saw it. A stateful filter
-    /// standing where none stood last week is exactly the line a rescan exists
-    /// to surface.
+    /// A filter that appeared in front of a host is a change to the network.
+    /// `characterise` draws each conclusion from a comparative probe, so it is a
+    /// fact about the path.
     #[test]
     fn a_filter_that_appeared_in_front_of_a_host_is_reported() {
         use crate::model::host::Filtering;
@@ -647,8 +604,7 @@ mod tests {
         assert_eq!(filtering.0, &[Filtering::StatefulFilter]);
         assert!(filtering.1.is_empty());
 
-        // And two scans that both went without the probe report nothing, the way
-        // two scans that never reached the link layer report no hardware.
+        // Two scans that both went without the probe report nothing.
         assert!(
             changes_between(&host(1), &host(1))
                 .iter()
@@ -656,11 +612,9 @@ mod tests {
         );
     }
 
-    /// **A name is compared only in a protocol the current scan heard.** A
-    /// domain controller renamed is the change a rescan exists to surface, and
-    /// a rescan that asked no directory said nothing about what the directory
-    /// calls itself: reported as lost, every name a thorough baseline heard
-    /// would read as gone after a quick scan.
+    /// A name is compared only in a protocol the current scan heard. A rescan
+    /// that asked no directory said nothing about what the directory calls
+    /// itself, so a thorough baseline's names do not read as gone.
     #[test]
     fn a_name_is_compared_only_in_a_protocol_the_current_scan_heard() {
         use crate::model::host::NameKind;
@@ -699,12 +653,9 @@ mod tests {
         );
     }
 
-    /// **A system the current scan did not identify is not a change.** A scan
-    /// run without operating-system probes, or one whose probes were answered
-    /// too thinly to match, records no fingerprint, and reported as a change a
-    /// quick scan compared against a thorough one would say every machine on
-    /// the network stopped running what it ran. A different system named is
-    /// still the change it is.
+    /// A system the current scan did not identify is not a change: the scan ran
+    /// without operating-system probes or got too little back to match. A
+    /// different system named is still a change.
     #[test]
     fn a_system_the_current_scan_did_not_identify_is_not_a_change() {
         let mut before = host(1);
@@ -734,11 +685,9 @@ mod tests {
         );
     }
 
-    /// **A current scan that did not reach the host's segment loses none of
-    /// its hardware.** Hardware addresses are seen at the link layer or not at
-    /// all, so a scan from beyond a router records none, and reading that as
-    /// the host losing them, and its vendor with them, would report every
-    /// machine on a LAN changed when the same LAN is scanned from elsewhere.
+    /// A current scan that did not reach the host's segment loses none of its
+    /// hardware. A scan from beyond a router records no hardware addresses or
+    /// vendor, and that is not the host losing them.
     #[test]
     fn a_scan_that_did_not_reach_the_segment_loses_no_hardware() {
         let mac = MacAddr::new(0x02, 0, 0, 0, 0, 1);
@@ -782,11 +731,7 @@ mod tests {
         assert!(changes_between(&before, &after).is_empty());
     }
 
-    /// A finding arriving is a change.
-    ///
-    /// This comparison reported hosts, ports and services that moved and said
-    /// nothing when a finding appeared on one that had not, so a host that gained
-    /// a critical vulnerability between two runs compared as unchanged.
+    /// A finding arriving is a change, even on a host where nothing else moved.
     #[test]
     fn a_finding_that_appeared_is_reported() {
         let before = host(1);
@@ -823,9 +768,8 @@ mod tests {
         assert!(findings_change(&changes_between(&before, &after)).is_none());
     }
 
-    /// A detection publishing a new version of itself is the same claim, not a
-    /// finding that went away and another that arrived. This is what
-    /// [`ClaimId`] is for.
+    /// A detection publishing a new version of itself keeps the same
+    /// [`ClaimId`], so it is the same claim.
     #[test]
     fn a_detection_version_bump_is_not_a_finding_appearing() {
         let mut before = host(1);

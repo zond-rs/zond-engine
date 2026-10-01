@@ -8,12 +8,11 @@
 
 //! # Deciding which record describes which host
 //!
-//! Ports pair by number and transport, which is exact. Hosts do not: a machine
-//! can change address between two scans, answer at one address in one scan and
+//! Ports pair by number and transport, which is exact. Hosts do not: a machine can
+//! change address between two scans, answer at one address in one scan and
 //! another in the next, or be seen as one record by a privileged scan and two by
-//! an unprivileged one. Something has to decide which of tonight's records
-//! continues which of last night's, and getting it wrong invents a host that
-//! appeared and one that vanished out of a machine that did neither.
+//! an unprivileged one. Pairing them wrong invents a host that appeared and one
+//! that vanished.
 //!
 //! ## How the decision is made
 //!
@@ -22,24 +21,20 @@
 //! when they share a token. The links form a bipartite graph, and each connected
 //! component of that graph is one host as far as the comparison is concerned.
 //!
-//! Components rather than pairs, since pairing greedily would have to break ties
-//! and the tie is information. A component with one record on each side is the
-//! ordinary case. A component with one record on one side and two on the other
-//! says the two scans grouped the same addresses differently, which is a real
-//! event and is reported as one rather than resolved by picking a winner.
+//! Greedy pairing would have to break ties, and a tie is information. A component
+//! with one record on each side is the ordinary case. One record on one side and
+//! two on the other means the scans grouped the same addresses differently, which
+//! is reported as such.
 //!
 //! ## Link-local addresses carry their interface
 //!
-//! `fe80::1` names a different machine on every segment, so an address token for
-//! a link-local address includes the zone the record was found on. Without that
-//! two hosts on two interfaces would share a token and be folded into one.
+//! `fe80::1` names a different machine on every segment, so the token for a
+//! link-local address includes the zone the record was found on.
 //!
 //! A record that names no zone gets no zone in its token, and two of those at one
-//! address fold together. Only a scan that reached the link layer records one, so
-//! this is what a report rebuilt from a foreign scanner's output gets: the
-//! addresses are all it has, and the comparison can only be as precise as the
-//! record. Pairing under [`PrimaryAddress`](HostIdentity::PrimaryAddress) is how
-//! a caller declines the guess.
+//! address fold together. Only a scan that reached the link layer records a zone,
+//! so a report rebuilt from a foreign scanner's output always lands here. Pairing
+//! under [`PrimaryAddress`](HostIdentity::PrimaryAddress) declines the guess.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -51,26 +46,23 @@ use crate::model::mac::MacAddr;
 
 /// What makes two records, in two different scans, the same host.
 ///
-/// The default is [`AnyAddress`](Self::AnyAddress), which is the policy that
-/// survives a dual-stack host being keyed under IPv4 one night and IPv6 the
-/// next.
+/// The default is [`AnyAddress`](Self::AnyAddress), which follows a dual-stack
+/// host keyed under IPv4 one night and IPv6 the next.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum HostIdentity {
     /// Two records are the same host when their primary addresses match.
     ///
-    /// The strictest policy and the most literal. A host whose primary address
-    /// changed reads as one host gone and another arrived, which is right when
-    /// addresses are the identity, as in an external scan of a public range where
-    /// the address is the asset and the machine behind it is not.
+    /// The strictest policy. A host whose primary address changed reads as one
+    /// host gone and another arrived, which is right when the address is the
+    /// asset, as in an external scan of a public range.
     PrimaryAddress,
 
     /// Two records are the same host when they share any address.
     ///
-    /// Follows a host whose primary address was re-picked between scans, which
-    /// happens whenever a better address turns up: a global address displacing a
-    /// link-local one, or a dual-stack host answering over the other family
-    /// first.
+    /// Follows a host whose primary address was re-picked between scans, as
+    /// happens when a global address displaces a link-local one or a dual-stack
+    /// host answers over the other family first.
     #[default]
     AnyAddress,
 
@@ -78,14 +70,13 @@ pub enum HostIdentity {
     /// host when they share a hardware address.
     ///
     /// Follows a machine across a DHCP lease change on a segment where the scan
-    /// reached the link layer. Not the default, since a hardware address is not
-    /// always the host's own: a router answering ARP on another machine's behalf
-    /// lends its address to everything behind it, and under this policy those
-    /// records fold into one.
+    /// reached the link layer. Not the default because a hardware address is not
+    /// always the host's own: a router answering ARP for the machines behind it
+    /// lends them its address, and under this policy they fold into one.
     Hardware,
 }
 
-/// One host, as the two scans between them hold it.
+/// One host, as the two scans hold it.
 ///
 /// Indices into the baseline and current host lists the comparison was given.
 /// Both are ascending. An empty side is a host only the other scan has.
@@ -98,8 +89,7 @@ pub(crate) struct Component {
 /// What links two records into one host.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Token {
-    /// An address, with the zone it is valid on where that is what makes it
-    /// unambiguous.
+    /// An address, with its zone when it is link-local.
     Address(IpAddr, Option<Arc<str>>),
     /// A hardware address the record was seen at.
     Hardware(MacAddr),
@@ -138,15 +128,11 @@ pub(crate) fn components(
         let mut baseline_queue = vec![start];
         let mut current_queue: Vec<usize> = Vec::new();
 
-        // Alternating flood fill across the two sides. A record is queued at
-        // most once, and a token's list is walked at most once; the second visit
-        // finds every record on it already queued, so the walk is pure cost.
-        //
-        // The case that makes it matter is the one `Hardware` warns about. A
-        // router answering ARP for everything behind it lends its address to
-        // every record on the segment, and without taking the token out the
-        // walk was one full list per record carrying it: four thousand hosts
-        // behind one router cost sixteen million steps to reach the same answer.
+        // Alternating flood fill across the two sides. Each record is queued at
+        // most once, and each token's list is removed as it is walked, so it is
+        // walked at most once. That matters under `Hardware`: a router answering
+        // ARP for a segment puts its address on every record, and walking the
+        // list per record would be quadratic.
         while !baseline_queue.is_empty() || !current_queue.is_empty() {
             while let Some(i) = baseline_queue.pop() {
                 component.baseline.push(i);
@@ -200,23 +186,17 @@ pub(crate) fn components(
 
 /// Groups records from any number of sources into one entry per host.
 ///
-/// The N-way form of the question [`components`] answers for two. Records are
-/// given flattened, in whatever order the caller wants them folded, and come
-/// back as groups of indices into that list: ascending within a group, and the
-/// groups ascending by their lowest index, so the same input always groups the
-/// same way.
+/// Records are given flattened, in the order the caller wants them folded, and
+/// come back as groups of indices into that list: ascending within a group, and
+/// the groups ascending by their lowest index, so the same input always groups
+/// the same way.
 ///
-/// Not the same question as [`components`], and not the same code. A comparison
-/// asks which of tonight's records continues which of last night's, a relation
-/// between two sides: two baseline records that share an address stay two
-/// records, and `HostDelta::is_regrouped` reports that the scans disagreed. This
-/// asks which records are one host, an equivalence over all of them at once,
-/// where two records sharing an address are one host whichever documents they
-/// came from. Sharing an implementation would
-/// force one of the two to answer the other's question.
-///
-/// The tokens, the identity policy and the link-local zone rule are shared, and
-/// those are the parts that carry the argument.
+/// [`components`] answers a different question: which of tonight's records
+/// continues which of last night's. There, two baseline records that share an
+/// address stay two records and `HostDelta::is_regrouped` reports the
+/// disagreement. Here, records sharing an address are one host whichever
+/// document they came from. The tokens, identity policy and link-local zone rule
+/// are shared.
 pub(crate) fn groups(records: &[&Host], identity: HostIdentity) -> Vec<Vec<usize>> {
     let mut sets = DisjointSet::new(records.len());
     let mut first_holder: HashMap<Token, usize> = HashMap::new();
@@ -232,8 +212,7 @@ pub(crate) fn groups(records: &[&Host], identity: HostIdentity) -> Vec<Vec<usize
         }
     }
 
-    // Keyed by root, then flattened in first-appearance order, which is the
-    // order the roots were minted in and therefore ascending by lowest member.
+    // Roots in first-appearance order are ascending by lowest member.
     let mut grouped: HashMap<usize, Vec<usize>> = HashMap::new();
     let mut order: Vec<usize> = Vec::new();
     for i in 0..records.len() {
@@ -311,9 +290,8 @@ fn tokens(host: &Host, identity: HostIdentity) -> HashSet<Token> {
     tokens
 }
 
-/// The zone that disambiguates `ip`, which is only link-local addresses. A
-/// global address means the same machine on every interface, so scoping one
-/// would split a host that answered over two of them.
+/// The zone that disambiguates `ip`, for link-local addresses only. A global
+/// address is the same machine on every interface.
 fn scope_of(ip: &IpAddr, zone: &Option<Arc<str>>) -> Option<Arc<str>> {
     is_link_local(ip).then(|| zone.clone()).flatten()
 }
@@ -409,8 +387,7 @@ mod tests {
         );
     }
 
-    /// The case `AnyAddress` exists for: a machine answering at a second address
-    /// in the later scan is one host, not two.
+    /// A machine answering at a second address in the later scan is one host.
     #[test]
     fn a_shared_secondary_address_pairs_two_records() {
         let mut before = host(v4(1));
@@ -436,8 +413,7 @@ mod tests {
         );
     }
 
-    /// Two records on one side and one on the other is a regrouping, and is
-    /// reported as one component rather than resolved by picking a winner.
+    /// Two records on one side and one on the other form one component.
     #[test]
     fn records_the_two_scans_grouped_differently_form_one_component() {
         let mut merged = host(v4(1));

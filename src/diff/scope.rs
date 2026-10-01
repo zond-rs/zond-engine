@@ -23,11 +23,9 @@ use crate::report::{PortScope, ScanReport, TargetScope};
 /// The ranges and port sets a report says it walked, gathered once so an address
 /// can be placed without walking the phases again.
 ///
-/// A set rather than a list. Held as two `Vec<IpRange>`, placing one address
-/// asked every range of every phase in turn, once per address of every host, and
-/// a report merged from a `/16` scanned in chunks carries hundreds of ranges
-/// against tens of thousands of questions. [`IpSet`] canonicalises on
-/// construction and answers by binary search over disjoint ranges.
+/// Held as [`IpSet`]s, which answer by binary search over disjoint ranges: a
+/// report merged from a `/16` scanned in chunks carries hundreds of ranges
+/// against tens of thousands of lookups.
 pub(crate) struct ScopeIndex {
     covered: IpSet,
     /// What the report as a whole reached no verdict on; see
@@ -36,8 +34,7 @@ pub(crate) struct ScopeIndex {
     withheld: IpSet,
     stated: bool,
     ports: Vec<PortScope>,
-    /// The phases' scopes, kept whole because a link sweep is not a range and
-    /// cannot be flattened into one.
+    /// The phases' scopes, kept whole because a link sweep is not a range.
     scopes: Vec<TargetScope>,
 }
 
@@ -61,8 +58,6 @@ impl ScopeIndex {
             scopes.push(scope.clone());
         }
 
-        // Both are searched and never extended again, so the ordering the
-        // search needs is established once here.
         // The report's own reading, so a comparison and the report's
         // `is_partial` agree about what is still open.
         for range in report.undecided() {
@@ -92,19 +87,15 @@ impl ScopeIndex {
 
     /// What the report says about having covered a host.
     ///
-    /// Asked of every address the host is known at rather than only the one it
-    /// is keyed by. A host is covered if the scan walked ground it was standing
-    /// on, and which address a report keys it under is the report's business
-    /// rather than the network's: a dual-stack machine keyed under IPv6 in one
-    /// scan and IPv4 in the other was in reach of a sweep of the IPv4 range both
-    /// times.
+    /// Asked of every address the host is known at, since a host is covered if
+    /// the scan walked any ground it stood on: a dual-stack machine keyed under
+    /// IPv6 in one scan was in reach of a sweep of its IPv4 range.
     ///
-    /// The strongest answer over those addresses wins, on the same reasoning
-    /// that makes covered beat withheld for one of them.
+    /// The strongest answer over those addresses wins, as covered beats withheld
+    /// for a single address.
     pub(crate) fn of_host(&self, host: &Host) -> Coverage {
-        // A sweep of the link the host was found on covers it whatever
-        // addresses it holds, so this is asked first and once rather than per
-        // address. See `TargetScope::swept`.
+        // A sweep of the link the host was found on covers it whatever addresses
+        // it holds. See `TargetScope::swept`.
         if self.scopes.iter().any(|scope| scope.swept(host.zone())) {
             return Coverage::Covered;
         }
@@ -131,14 +122,12 @@ impl ScopeIndex {
     /// discovery sweep that walked an address and a port scan that was forbidden
     /// it still means somebody looked.
     ///
-    /// An address the report left [`undecided`](ScanReport::undecided)
-    /// answers [`Unreached`](Coverage::Unreached) instead. The scan set out to ask it
-    /// and stopped short of an answer, so a host missing there is one nobody
-    /// found out about rather than one that went away.
+    /// An address the report left [`undecided`](ScanReport::undecided) answers
+    /// [`Unreached`](Coverage::Unreached): the scan stopped short of an answer
+    /// there.
     ///
-    /// Whether a link was swept is a separate question, asked by
-    /// [`of_host`](Self::of_host), since it is about the host rather than about
-    /// any one of its addresses.
+    /// Whether a link was swept is asked by [`of_host`](Self::of_host), since it
+    /// is about the host and not any one address.
     pub(crate) fn address(&self, ip: &IpAddr) -> Coverage {
         if self.undecided.contains(ip) {
             Coverage::Unreached
@@ -156,13 +145,10 @@ impl ScopeIndex {
     /// What the report says about having probed one endpoint of an address whose
     /// own coverage is `address`.
     ///
-    /// An address nothing walked has no endpoint anything walked, so a withheld
-    /// or out-of-scope address carries its answer straight down, and so does
-    /// one the scan never reached a verdict on. Otherwise the
-    /// phases decide and any phase that cannot say vetoes the rest: a job whose
-    /// sweep walked no ports and whose port scan did not record which ports it
-    /// walked knows nothing about this endpoint, and the sweep's certainty about
-    /// its own half is not the job's.
+    /// A withheld, out-of-scope or unreached address passes its answer down to
+    /// its endpoints. Otherwise the phases decide, and any phase that cannot say
+    /// vetoes the rest: a job whose sweep walked no ports and whose port scan did
+    /// not record which ports it walked knows nothing about this endpoint.
     pub(crate) fn endpoint(&self, address: Coverage, port: u16, protocol: Protocol) -> Coverage {
         if address.is_excluded() || address == Coverage::Unreached {
             return address;
@@ -219,9 +205,7 @@ mod tests {
     /// A report stating what it walked and what its policy withheld.
     ///
     /// Built through [`TargetScope::from_ip_set`] with real [`Exclusions`], so
-    /// the withheld ranges are subtracted from the walked ones the way a scan
-    /// subtracts them. Listing a range as both walked and excluded would make a
-    /// fixture no scan can produce.
+    /// the withheld ranges are subtracted from the walked ones as a scan does.
     fn report(covered: &[&str], excluded: &[&str], ports: PortScope) -> ScanReport {
         let exclusions = if excluded.is_empty() {
             Exclusions::none()
@@ -312,11 +296,9 @@ mod tests {
         })
     }
 
-    /// **An address a port phase asked and found silent is covered.** The phase
-    /// stood in for a liveness pass and asked every port there, so a host last
-    /// seen at that address and absent now reads as the liveness pass would
-    /// have left it, gone from a place that was looked at, and never as ground
-    /// the scan did not reach.
+    /// An address a port phase asked and found silent is covered. The phase
+    /// stood in for a liveness pass, so a host last seen there and absent now is
+    /// gone from a place that was looked at.
     #[test]
     fn an_address_a_port_phase_found_silent_is_covered() {
         let mut walked = to_set(&["203.0.113.0/24"], None, None).expect("a range");
@@ -356,11 +338,8 @@ mod tests {
         );
     }
 
-    /// **An address a stopped sweep never decided is unreached, not covered.**
-    /// Its scope says the sweep set out to ask, and its undecided list says it
-    /// never got an answer, so a host last seen there is not one that went
-    /// away. Read as covered, every host past the point a sweep was stopped
-    /// would be reported gone.
+    /// An address a stopped sweep never decided is unreached. Read as covered,
+    /// every host past the point the sweep stopped would be reported gone.
     #[test]
     fn an_address_a_phase_left_undecided_is_unreached_and_so_are_its_ports() {
         let report = ScanReport::recorded(
@@ -408,8 +387,7 @@ mod tests {
         assert_eq!(index.address(&ip(7)), Coverage::Covered);
     }
 
-    /// A range the policy withheld is not the same as one the scan never named:
-    /// the report says it was told not to look.
+    /// A range the policy withheld differs from one the scan never named.
     #[test]
     fn an_address_the_policy_withheld_is_reported_as_withheld() {
         let index = ScopeIndex::of(&report(
@@ -427,8 +405,7 @@ mod tests {
         assert_eq!(index.address(&ip(200)), Coverage::OutOfScope);
     }
 
-    /// A report that states no scope cannot answer the question, and says so
-    /// rather than guessing.
+    /// A report that states no scope answers unstated.
     #[test]
     fn a_report_that_states_no_scope_answers_unstated() {
         let index = ScopeIndex::of(&report(&[], &[], PortScope::NoPorts));

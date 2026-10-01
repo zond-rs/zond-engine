@@ -8,21 +8,17 @@
 
 //! # What changed about one endpoint
 //!
-//! A port pairs with a port by number and transport, which needs no policy: 443
-//! over TCP is 443 over TCP in both scans. What is left is reporting what moved,
-//! and this module holds the vocabulary for it: the state, what is listening, and
-//! what it presents at the TLS handshake.
+//! Ports pair by number and transport, which needs no policy: 443 over TCP is 443
+//! over TCP in both scans. This module holds the vocabulary for what moved: the
+//! state, what is listening, and what it presents at the TLS handshake.
 //!
 //! ## Only the verdicts
 //!
-//! A port carries its verdict and the evidence behind it, and only the verdict
-//! is compared. [`Discovery`](crate::model::port::Discovery) says which packet
-//! settled the state, when it arrived, how long it took and who sent it; none
-//! of that is the verdict, and a diff carrying it would report a change every
-//! time a reply took a millisecond longer or a different router on the path
-//! answered for a blocked port. The same
-//! reasoning excludes a service's confidence score, which measures how sure the
-//! fingerprinter is rather than what is running.
+//! A port carries its verdict and the evidence behind it, and only the verdict is
+//! compared. [`Discovery`](crate::model::port::Discovery) (which packet settled
+//! the state, when, how long it took, who sent it) changes whenever a reply is a
+//! millisecond slower or a different router answers for a blocked port. A
+//! service's confidence score is left out for the same reason.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -36,10 +32,9 @@ use crate::model::port::{Build, Port, PortState, Protocol, Security, Service};
 
 /// One endpoint, as the two scans hold it.
 ///
-/// The number and transport identify it in both. Everything else is what moved,
-/// in [`changes`](Self::changes), with the whole record from each side kept
-/// alongside so a consumer rendering the change has the context around it
-/// without going back to the reports.
+/// The number and transport identify it in both. What moved is in
+/// [`changes`](Self::changes), and the whole record from each side is kept
+/// alongside for context.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PortDelta {
     number: u16,
@@ -69,10 +64,8 @@ impl PortDelta {
 
     /// The baseline scan's record, if it has one.
     ///
-    /// [`None`] where the baseline's own record is [`PortState::Unasked`], since
-    /// a port nobody probed is a scan holding no finding for that endpoint. The
-    /// module documentation of [`diff`](crate::diff) is the argument for that
-    /// reading.
+    /// [`None`] also where the baseline's record is [`PortState::Unasked`]: a
+    /// port nobody probed holds no finding. See [`diff`](crate::diff).
     pub fn baseline(&self) -> Option<&Port> {
         self.baseline.as_ref()
     }
@@ -98,12 +91,11 @@ impl PortDelta {
 
     /// Whether this endpoint accepts connections now and did not before.
     ///
-    /// Reads the records. An endpoint the baseline has no record for counts,
-    /// since a report is the whole of what a scan wrote down, and so does one the
-    /// baseline recorded [`Unasked`](PortState::Unasked), which is a scan saying
-    /// outright that it holds none. Whether the baseline looked at all is
-    /// [`presence`](Self::presence)'s question, and [`Presence::is_confirmed`] is
-    /// the test that separates a port that opened from one nobody had checked.
+    /// Reads the records only. An endpoint the baseline has no record for counts,
+    /// as does one it recorded [`Unasked`](PortState::Unasked). Whether the
+    /// baseline looked at all is [`presence`](Self::presence)'s question:
+    /// [`Presence::is_confirmed`] separates a port that opened from one nobody had
+    /// checked.
     pub fn is_opened(&self) -> bool {
         self.state_of(self.current.as_ref()) == Some(PortState::Open)
             && self.state_of(self.baseline.as_ref()) != Some(PortState::Open)
@@ -124,40 +116,34 @@ impl PortDelta {
 
 /// Something that moved about one endpoint.
 ///
-/// `#[non_exhaustive]`, since a scan learns to establish more about a port as it
-/// learns to speak more protocols, and a consumer matching on this should pay
-/// for that with a recompile rather than with a major version.
+/// `#[non_exhaustive]` because new protocols let a scan establish more about a
+/// port, and adding a variant should not need a major version.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum PortChange {
-    /// The verdict moved. What each state means is
-    /// [`PortState`]'s own documentation, and the two are not ordered by how
-    /// alarming they are: `NoReply` to `Closed` is a firewall that stopped
-    /// dropping probes, not a port that shut.
+    /// The verdict moved. States are not ordered by how alarming they are:
+    /// `NoReply` to `Closed` is a firewall that stopped dropping probes, not a
+    /// port that shut.
     State(Change<PortState>),
-    /// What is listening changed, or was identified where it was not.
+    /// What is listening changed or was first identified.
     Service(ServiceChange),
     /// What the endpoint presents at the TLS handshake changed.
     Security(SecurityChange),
-    /// Findings that appeared on the port, and findings no longer claimed about
-    /// it. Paired the way [`HostChange::Findings`](super::host::HostChange::Findings)
-    /// pairs its own.
+    /// Findings that appeared on the port, findings the current scan stopped
+    /// claiming, and findings whose severity moved. Paired as
+    /// [`HostChange::Findings`](super::host::HostChange::Findings) pairs its own.
     ///
-    /// A claim the current scan does not make is resolved only where that
-    /// scan settled what the claim rests on. One drawn from what the endpoint
-    /// accepts rests on the versions whose walk drew it, and where the current
-    /// scan cut one of those walks short, or made none, its silence is the
-    /// finding's [`Coverage::Unreached`]: the claim goes under `unsettled`
-    /// rather than `resolved`, for the reason an endpoint the scan never
-    /// reached is not a port that closed. One drawn from the certificate's
-    /// posture rests on that certificate, and a current scan that recorded
-    /// none was not shown whether it is still presented, so the claim goes
-    /// under `unsettled` beside the
-    /// [`Withdrawn`](CertificateChange::Withdrawn) that reports the absence.
-    /// A vulnerability correlation rests on the identification it was drawn
-    /// from, and a current scan that identified nothing there, or named the
-    /// software without a version, did not say what runs there now, so that
-    /// claim goes under `unsettled` too.
+    /// A claim the current scan does not make is resolved only where that scan
+    /// settled what the claim rests on; otherwise it goes under `unsettled`, the
+    /// finding-level [`Coverage::Unreached`]. That covers:
+    ///
+    /// - a claim drawn from what the endpoint accepts, where the current scan cut
+    ///   a version walk it rests on short, or made none;
+    /// - a claim drawn from the certificate's posture, where the current scan
+    ///   recorded no certificate (reported beside the
+    ///   [`Withdrawn`](CertificateChange::Withdrawn) for the absence);
+    /// - a vulnerability correlation, where the current scan identified nothing
+    ///   there or named the software without a version.
     Findings {
         /// Findings the current scan claims and the baseline did not.
         appeared: Vec<Finding>,
@@ -165,9 +151,7 @@ pub enum PortChange {
         /// than those under `unsettled`.
         resolved: Vec<Finding>,
         /// Findings the baseline claimed that the current scan neither claims
-        /// nor settled: part of the evidence each rests on is a walk the
-        /// current scan left unfinished or never made, a certificate it
-        /// recorded none of, or an identification it did not make.
+        /// nor settled.
         unsettled: Vec<Finding>,
         /// Findings both scans claim, where the severity moved.
         reassessed: Vec<Reassessment>,
@@ -176,18 +160,16 @@ pub enum PortChange {
 
 /// Something that moved about what is listening on an endpoint.
 ///
-/// [`Version`](Self::Version) is the one most monitoring is looking for: a
-/// service that moved from 1.18.0 to 1.24.0 is a patch that landed, and one that
-/// moved the other way is a rollback worth asking about.
+/// [`Version`](Self::Version) is the one most monitoring looks for: 1.18.0 to
+/// 1.24.0 is a patch that landed, and the other way is a rollback.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServiceChange {
     /// Nothing was identified here before, and something is now.
     Identified(Service),
-    /// Something was identified here before and nothing is now. Not the same as
-    /// the service being gone: the endpoint may not have been asked, which
-    /// the phase's
-    /// [`service_detection`](crate::report::ScanSettings::service_detection)
+    /// Something was identified here before and nothing is now. The service is
+    /// not necessarily gone: the endpoint may not have been asked, which the
+    /// phase's [`service_detection`](crate::report::ScanSettings::service_detection)
     /// setting records.
     Unidentified(Service),
     /// The service is called something else.
@@ -200,9 +182,9 @@ pub enum ServiceChange {
     Version(Change<Option<String>>),
     /// The trailing detail the fingerprint carried changed.
     ExtraInfo(Change<Option<String>>),
-    /// Whose build it is, or which build, changed: a new package revision of
-    /// the same upstream version is how a distribution's security update
-    /// looks from outside.
+    /// Whose build it is, or which build, changed. A new package revision of the
+    /// same upstream version is how a distribution's security update looks from
+    /// outside.
     Build(Change<Option<Build>>),
     /// The platform identifiers changed, each list ascending.
     Cpes {
@@ -234,15 +216,13 @@ pub enum SecurityChange {
 
 /// Something that moved about the certificate an endpoint presents.
 ///
-/// Identity is the SHA-256 fingerprint, so two certificates are the same one when
-/// they are byte for byte the same. That is why there are no field-level variants
-/// here: a certificate whose issuer or validity differs is a different
-/// certificate, and [`Rotated`](Self::Rotated) is what that is.
+/// Identity is the SHA-256 fingerprint, so there are no field-level variants: a
+/// certificate whose issuer or validity differs is a different certificate, and
+/// [`Rotated`](Self::Rotated).
 ///
-/// [`Expiring`](Self::Expiring) and [`Expired`](Self::Expired) are the two
-/// changes an unchanged certificate can undergo. Nothing about it moved; the
-/// clock did, and a threshold was crossed between the two scans. See the module
-/// documentation of [`diff`](crate::diff) for which clock is used.
+/// [`Expiring`](Self::Expiring) and [`Expired`](Self::Expired) can happen to an
+/// unchanged certificate: the clock crossed a threshold between the two scans.
+/// See [`diff`](crate::diff) for which clock is used.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum CertificateChange {
@@ -257,16 +237,16 @@ pub enum CertificateChange {
         /// What the current scan was shown.
         after: Box<CertificateInfo>,
     },
-    /// The certificate is still valid and now falls inside the expiry threshold,
-    /// where at the baseline's clock it did not.
+    /// The certificate is still valid and inside the expiry threshold at the
+    /// current clock, and was outside it at the baseline's.
     Expiring {
         /// The certificate now inside the threshold.
         certificate: Box<CertificateInfo>,
         /// How long it has left, at the current scan's clock.
         remaining: Duration,
     },
-    /// The certificate is past its validity end, where at the baseline's clock
-    /// it was not.
+    /// The certificate is past its validity end at the current clock, and was
+    /// not at the baseline's.
     Expired {
         /// The certificate that lapsed.
         certificate: Box<CertificateInfo>,
@@ -277,14 +257,12 @@ pub enum CertificateChange {
 
 /// Where a certificate stands at one moment.
 ///
-/// The five states are exhaustive and unordered. A comparison reads them as
-/// labels and reports a transition into [`Expiring`](Self::Expiring) or
-/// [`Expired`](Self::Expired) because those are the two a person has to act on.
+/// Unordered. A comparison reports transitions into [`Expiring`](Self::Expiring)
+/// or [`Expired`](Self::Expired), the two a person has to act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Validity {
-    /// Nothing was presented, or what is presented now was not what the
-    /// baseline was shown, so there is no earlier standing for this certificate
-    /// to have moved from.
+    /// Nothing was presented, or the baseline was shown a different certificate,
+    /// so there is no earlier standing to move from.
     Absent,
     NotYetValid,
     Valid,
@@ -302,27 +280,22 @@ pub(crate) struct Clocks {
 
 /// Compares the endpoints of two hosts, ascending by number and then transport.
 ///
-/// Endpoints that are identical in both scans are left out entirely, so the
-/// result is what moved and nothing else.
+/// Endpoints identical in both scans are left out.
 ///
 /// ## An unasked port is not a record
 ///
-/// A port a scan named and never probed is on its host at
-/// [`PortState::Unasked`], and it is indexed here as a side holding no record at
-/// all for that endpoint rather than as one whose state happens to be that.
-/// It answers [`Coverage::Unreached`] instead, which is the same machinery that
-/// already keeps a narrowed scope from reading as a network that emptied. The
-/// module documentation of [`diff`](crate::diff) is the whole argument.
+/// A port a scan named and never probed is on its host at [`PortState::Unasked`],
+/// and is indexed here as that side holding no record for the endpoint, with
+/// coverage [`Coverage::Unreached`]. See [`diff`](crate::diff).
 pub(crate) fn compare<'a>(
     baseline: &[&'a Port],
     current: &[&'a Port],
     presence: PresenceFor<'_>,
     clocks: &Clocks,
 ) -> Vec<PortDelta> {
-    // Indexed rather than searched. Every settled port is on the record, so a
-    // host from a full-port scan carries tens of thousands of them, and a linear
-    // find per endpoint made a comparison quadratic in the one number that grows
-    // fastest. The maps also give the ascending order the result promises.
+    // Indexed: a host from a full-port scan carries tens of thousands of ports,
+    // and a linear find per endpoint would be quadratic. The maps also give the
+    // ascending order the result promises.
     let index = |ports: &[&'a Port]| -> BTreeMap<(u16, Protocol), &'a Port> {
         ports
             .iter()
@@ -382,8 +355,8 @@ pub(crate) fn compare<'a>(
 
 /// What each report says about having probed a given endpoint.
 ///
-/// Asked per endpoint rather than once per host, because a scope names the ports
-/// it walked and the answer differs between 443 and 8080 on the same address.
+/// Asked per endpoint, since a scope names the ports it walked and the answer can
+/// differ between 443 and 8080 on the same address.
 pub(crate) struct PresenceFor<'a> {
     pub(crate) baseline: &'a dyn Fn(u16, Protocol) -> Coverage,
     pub(crate) current: &'a dyn Fn(u16, Protocol) -> Coverage,
@@ -415,10 +388,8 @@ impl PresenceFor<'_> {
     /// What one side says about having probed an endpoint it holds no record
     /// for.
     ///
-    /// Its own record answers first where it has one. A scope is what a scan set
-    /// out to walk and [`PortState::Unasked`] is how far it got, so a port the
-    /// scan wrote down as never probed is not covered however wide the scope it
-    /// declared was.
+    /// The side's own record answers first: a port it wrote down as
+    /// [`PortState::Unasked`] is unreached however wide its declared scope.
     fn coverage(
         scope: &dyn Fn(u16, Protocol) -> Coverage,
         number: u16,
@@ -464,8 +435,8 @@ fn changes_between(
     let (appeared, gone, reassessed) =
         super::host::findings_between(before.findings(), after.findings());
 
-    // What the baseline's claim rests on is in the baseline's own record, and
-    // whether the current scan settled it is in the current one's.
+    // The claim's evidence is in the baseline's record; whether the current scan
+    // settled it is in the current one's.
     let (unsettled, resolved): (Vec<Finding>, Vec<Finding>) = gone
         .into_iter()
         .partition(|finding| standing(finding, before, after) == Some(Standing::Unsettled));
@@ -490,12 +461,11 @@ fn changes_between(
 /// baseline's account, `before`, carried, or `None` where the claim is not
 /// one drawn from evidence either record holds.
 ///
-/// A claim drawn from the TLS handshake asks the current record's security,
-/// and a scan that made no enumeration at all holds no record to ask, which is
-/// the same answer as one holding an empty one; see [`Security::standing`].
+/// A claim drawn from the TLS handshake asks the current record's security; a
+/// scan that made no enumeration is treated as an empty one. See
+/// [`Security::standing`].
 ///
-/// A vulnerability correlation rests on the identification it was drawn from,
-/// and asks [`correlation_standing`].
+/// A vulnerability correlation asks [`correlation_standing`].
 fn standing(finding: &Finding, before: &Port, after: &Port) -> Option<Standing> {
     if finding.is_correlation() {
         return correlation_standing(finding, before.service()?, after.service());
@@ -509,18 +479,14 @@ fn standing(finding: &Finding, before: &Port, after: &Port) -> Option<Standing> 
 /// identification drew, or `None` where `basis` carries none of the
 /// identifiers the claim names and so is not what the claim rests on.
 ///
-/// Upheld where `now` carries one of them, and overturned where it says
-/// something else runs there: another service, another product, or another
-/// version of the same one. That is a newer identification that no longer
-/// backs the claim, and its absence is the upgrade or the replacement the
-/// comparison was run to see.
+/// Upheld where `now` carries one of them, and overturned where it says something
+/// else runs there: another service, product, or version. That is the upgrade or
+/// replacement the comparison exists to see.
 ///
-/// Unsettled where `now` said nothing that tells: no service, a label read off
-/// the port number, or the same software named without a version. A scan run
-/// without service detection, or one whose probe matched a product and not
-/// its release, did not say what runs there now, and reporting the claim
-/// resolved on its word would announce a vulnerability fixed by a scan that
-/// never looked. The same reading a merge makes, which keeps an older
+/// Unsettled where `now` says nothing that tells: no service, a label read off the
+/// port number, or the same software named without a version. A scan without
+/// service detection, or one that matched a product but not its release, did not
+/// say what runs there now. A merge reads it the same way, keeping an older
 /// identification's identifiers beside a newer one that states no version.
 fn correlation_standing(
     finding: &Finding,
@@ -553,11 +519,9 @@ fn correlation_standing(
 
 /// What moved about the service on an endpoint.
 ///
-/// A service the scan *inferred* from the port number is not one it found, and
-/// is read here as no service at all. Every scan path seeds one on every
-/// classified port, and so does nmap; comparing them would have two tools with
-/// different port catalogues disagree about every port on the network, and two
-/// releases of one tool disagree whenever the catalogue grew.
+/// A service *inferred* from the port number is read as no service. Scanners seed
+/// one on every classified port from their own catalogue, so comparing them would
+/// report every catalogue difference between tools or releases.
 fn service_changes(before: Option<&Service>, after: Option<&Service>) -> Vec<ServiceChange> {
     let before = before.filter(|service| !service.is_inferred());
     let after = after.filter(|service| !service.is_inferred());
@@ -646,8 +610,8 @@ fn security_changes(
     changes
 }
 
-/// What moved about the certificate, including the two changes that happen to a
-/// certificate nobody touched.
+/// What moved about the certificate, including the expiry crossings that happen to
+/// a certificate nobody touched.
 fn certificate_changes(
     before: Option<&Security>,
     after: Option<&Security>,
@@ -675,20 +639,10 @@ fn certificate_changes(
         }
     }
 
-    // **The standing of one certificate at two moments, not of two certificates.**
-    //
-    // A certificate nobody touched still crosses a threshold when enough time
-    // passes between the two scans, and that is the change a renewal queue is
-    // built from. Read as the standing of whatever each side happened to
-    // present, a rotation onto a certificate that is *also* expiring cancelled
-    // the alert: both sides answered `Expiring`, nothing had "changed", and an
-    // endpoint that needs renewing today reported a rotation and nothing else.
-    //
-    // So the question is what the certificate presented *now* stood at when the
-    // baseline ran, and a certificate the baseline was not shown stood at
-    // nothing. Where both sides present the same one this is exactly the reading
-    // above; where they do not, the standing has no incumbent to be measured
-    // against and the current one is reported on its own terms.
+    // The standing of one certificate at two moments: where the certificate
+    // presented now stood when the baseline ran. A certificate the baseline was
+    // not shown stood nowhere, so a rotation onto one that is itself expiring
+    // still reports the expiry.
     let same_certificate = matches!(
         (before_cert, after_cert),
         (Some(before), Some(after))
@@ -739,10 +693,8 @@ fn validity(security: Option<&Security>, threshold: Duration, at: SystemTime) ->
         return Validity::Absent;
     };
 
-    // The two bounds are asked here and again inside `is_cert_expiring_at`,
-    // which is the one place they belong: this reads them to tell `NotYetValid`
-    // and `Expired` apart, and that reads them because it is public and answers
-    // for itself. Restating either here would be the bound written down twice.
+    // `is_cert_expiring_at` checks the bounds again; they are read here only to
+    // tell `NotYetValid` and `Expired` apart.
     if at < certificate.validity_start() {
         Validity::NotYetValid
     } else if at > certificate.validity_end() {
@@ -860,8 +812,7 @@ mod tests {
         )));
     }
 
-    /// A finding arriving on an endpoint is a change, the port half of the
-    /// property `diff::host` holds for a whole host.
+    /// A finding arriving on an endpoint is a change, as on a host.
     #[test]
     fn a_finding_that_appeared_on_the_endpoint_is_reported() {
         let before = port(PortState::Open);
@@ -888,7 +839,7 @@ mod tests {
     }
 
     /// An endpoint enumerated as `support` says, carrying the findings drawn
-    /// from it, which is how a scan records one.
+    /// from it, as a scan records one.
     fn enumerated(support: TlsSupport) -> Port {
         let findings = support.findings();
         let mut port = port(PortState::Open).with_security(Security::new().with_support(support));
@@ -913,12 +864,8 @@ mod tests {
     }
 
     /// A walk the current scan did not finish settled nothing the baseline's
-    /// claim rests on, so the claim's absence is not a fix.
-    ///
-    /// The false fix a comparison already refuses for a port the scan never
-    /// reached: a scheduled scan whose budget ran out during the TLS 1.0 walk
-    /// would otherwise tell whoever reads the comparison that the withdrawn
-    /// version had been switched off.
+    /// claim rests on, so the claim's absence is not a fix. A scan whose budget
+    /// ran out during the TLS 1.0 walk must not report TLS 1.0 switched off.
     #[test]
     fn a_finding_a_cut_short_walk_did_not_get_back_to_is_not_resolved() {
         let before = enumerated(ten_accepted());
@@ -947,8 +894,7 @@ mod tests {
     }
 
     /// The counterpart: a walk that finished and found TLS 1.0 refused is the
-    /// fix, and holding it back would hide the one change the comparison was
-    /// run to see.
+    /// fix.
     #[test]
     fn a_finding_a_finished_walk_refuted_is_resolved() {
         let before = enumerated(ten_accepted());
@@ -966,7 +912,7 @@ mod tests {
 
     /// An endpoint that completed a handshake and was shown a self-signed
     /// certificate with `fingerprint`, carrying the posture findings the scan
-    /// draws from it, which is how a scan records one.
+    /// draws from it.
     fn presenting(fingerprint: &str) -> Port {
         let certificate = CertificateInfo::new(
             "www.example.test",
@@ -990,13 +936,8 @@ mod tests {
 
     /// A handshake the current scan did not complete settled nothing about the
     /// certificate a posture claim rests on, so the claim's absence is not a
-    /// fix.
-    ///
-    /// The certificate side of the cut-short walk above. The service pass
-    /// records no security at all for an endpoint whose handshake failed, and
-    /// no certificate for one whose leaf would not parse, so an endpoint that
-    /// timed out this once would otherwise report its self-signed certificate
-    /// replaced by nothing and the problem fixed.
+    /// fix. The service pass records no security for an endpoint whose handshake
+    /// failed, and no certificate for one whose leaf would not parse.
     #[test]
     fn a_posture_finding_the_current_scan_saw_no_certificate_for_is_not_resolved() {
         let before = presenting("aaaa");
@@ -1029,9 +970,9 @@ mod tests {
         }
     }
 
-    /// The counterpart: a scan shown a different certificate settled the
-    /// claim, since the posture belonged to bytes the endpoint no longer
-    /// presents.
+    /// The counterpart: a scan shown a different certificate settled the claim,
+    /// since the posture belonged to a certificate the endpoint stopped
+    /// presenting.
     #[test]
     fn a_posture_finding_the_current_scan_was_shown_another_certificate_for_is_resolved() {
         let before = presenting("aaaa");
@@ -1057,7 +998,7 @@ mod tests {
     }
 
     /// An endpoint identified as Apache httpd 2.4.49, carrying the CVE
-    /// correlation drawn from its CPE, which is how a scan records one.
+    /// correlation drawn from its CPE.
     fn correlated() -> Port {
         const CPE: &str = "cpe:/a:apache:http_server:2.4.49";
         let mut port = port(PortState::Open);
@@ -1077,13 +1018,9 @@ mod tests {
         port
     }
 
-    /// **A correlation the current scan identified nothing to test is not
-    /// resolved.** It rests on the identification it was drawn from, and a
-    /// scan run without service detection, one that labelled the port by its
-    /// number alone, or one that named the software without reading a version
-    /// did not say what runs there now. Reported resolved, a quick port scan
-    /// compared against last month's thorough one would announce every
-    /// vulnerability on the network fixed.
+    /// A correlation is not resolved by a scan that ran without service
+    /// detection, labelled the port by its number alone, or named the software
+    /// without a version: none of them said what runs there now.
     #[test]
     fn a_correlation_the_current_scan_identified_nothing_to_test_is_not_resolved() {
         let before = correlated();
@@ -1113,9 +1050,8 @@ mod tests {
         }
     }
 
-    /// The counterpart: a newer identification that no longer carries the
-    /// identifier the claim was drawn from settled it, and that is the upgrade
-    /// the comparison was run to see.
+    /// The counterpart: a newer identification without the identifier the claim
+    /// was drawn from settles it, as an upgrade.
     #[test]
     fn a_correlation_a_newer_identification_no_longer_backs_is_resolved() {
         let before = correlated();
@@ -1142,7 +1078,7 @@ mod tests {
     }
 
     /// One side missing is an endpoint that appeared or went away, which the
-    /// presence of the delta already says. Comparing fields would restate it.
+    /// delta's presence already says, so no field changes are listed.
     #[test]
     fn an_endpoint_present_on_one_side_only_reports_no_field_changes() {
         let only = port(PortState::Open);

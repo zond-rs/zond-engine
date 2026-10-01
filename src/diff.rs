@@ -8,11 +8,10 @@
 
 //! # Comparing two scans
 //!
-//! Scan a network, scan it again a week later, and ask what changed. A host that
-//! was not there before, a port that opened, a service that moved a version, a
-//! certificate that rotated or is about to lapse: [`ScanDiff`] is all of that as
-//! a structure, computed from two [`ScanReport`]s and holding no opinion about
-//! how any of it is shown.
+//! Scan a network, scan it again a week later, and ask what changed: a host that
+//! appeared, a port that opened, a service that moved a version, a certificate that
+//! rotated or is about to lapse. [`ScanDiff`] holds all of that as a structure,
+//! computed from two [`ScanReport`]s, and leaves presentation to the caller.
 //!
 //! ```no_run
 //! use zond_engine::diff::{ScanDiff, Significance};
@@ -41,124 +40,100 @@
 //!
 //! ## Which of it matters
 //!
-//! Two scans of a live network are never equal, so a comparison that only listed
-//! what moved would hand somebody a page of reverse names to read every morning.
-//! [`Significance`] is the grade that separates the line they needed from the
-//! rest, and [`significance`] is the whole of the policy behind it,
-//! written down in one place.
+//! Two scans of a live network always differ somewhere, mostly in things like reverse
+//! names. [`Significance`] grades each change by how much it is worth acting on, and
+//! [`significance`] holds the whole policy behind that grade.
 //!
-//! It answers how much a change is worth acting on, and nothing about whether it
-//! happened: that is [`Presence::is_confirmed`], below. The two meet only at the
-//! delta, where a caller wants one number to sort by.
+//! Whether a change happened at all is a separate question, answered by
+//! [`Presence::is_confirmed`] below. The two meet only at the delta, where a caller
+//! wants one number to sort by.
 //!
-//! ## Two scans, not two of this engine's scans
+//! ## Any two reports
 //!
-//! The comparison takes [`ScanReport`]s and asks nothing about where they came
-//! from. One can be a scan this process just ran, one can be read back from a
-//! [`journal`](crate::journal), and one can be a report some other scanner
-//! produced and something built a `ScanReport` out of. Comparing last quarter's
-//! nmap output against tonight's scan is the same call as comparing two of this
-//! engine's own runs.
+//! The comparison takes [`ScanReport`]s from any source: a scan this process just
+//! ran, one read back from a [`journal`](crate::journal), or a report built from
+//! another scanner's output. Comparing last quarter's nmap output against tonight's
+//! scan is the same call as comparing two of this engine's own runs.
 //!
-//! So nothing here reaches for a field only this engine fills in. A report with
-//! no phases, no scope, no probe statistics and no hardware addresses still
-//! compares, answering unstated to the questions its record cannot answer, which
-//! is covered below.
+//! So nothing here depends on a field only this engine fills in. A report with no
+//! phases, scope, probe statistics or hardware addresses still compares, and answers
+//! "unstated" where its record has nothing to say (see below).
 //!
-//! ## Verdicts are compared. Evidence is not.
+//! ## Verdicts are compared, evidence is not
 //!
-//! A report carries two kinds of record, which [`report`](crate::report) keeps
-//! apart: findings about the network, and measurements about the scan. Only the
-//! findings are compared.
+//! A report carries findings about the network and measurements about the scan,
+//! which [`report`](crate::report) keeps apart. Only the findings are compared.
 //!
-//! So a host's status is compared and the probe that established it is not. A
-//! port's state is compared and the packet that settled it is not. A service's
-//! identity is compared and the confidence behind it is not. An operating system
-//! is compared by what it names, not by how sure the fingerprinter was, and only
-//! where the current scan named one: a scan that identified no system, or saw no
-//! hardware address, found nothing out about either, so their absence from its
-//! record is not a change.
+//! A host's status, a port's state and a service's identity are compared; the probe,
+//! packet or confidence behind each is not. An operating system is compared by what
+//! it names, and only where the current scan named one: a scan that identified no
+//! system or saw no hardware address found nothing out about either, so their
+//! absence is not a change.
 //!
 //! Left out entirely: round-trip times, hop counters, measured routes, capture
 //! counters, per-scanner probe statistics, first- and last-seen timestamps, and
-//! strategy failures. Every one of them moves between two scans of an unchanged
-//! network, and a diff reporting them would drown the line that mattered.
+//! strategy failures. All of them move between two scans of an unchanged network.
 //!
-//! ## What "gone" is allowed to mean
+//! ## What "gone" can mean
 //!
-//! A host in last week's report and not in tonight's has two very different
-//! explanations, and a monitoring tool that cannot tell them apart raises an
-//! alarm every time somebody narrows a scan. So every appearance and every
-//! disappearance carries [`Coverage`]: what the other scan says about whether it
-//! covered that target at all.
+//! A host in last week's report and missing from tonight's either went away or was
+//! not scanned, and a monitoring tool that cannot tell those apart raises an alarm
+//! every time somebody narrows a scan. So every appearance and disappearance carries
+//! [`Coverage`]: what the other scan says about whether it covered that target.
 //!
-//! [`TargetScope`](crate::report::TargetScope) is where that comes
-//! from. Each phase of a report records the ranges it walked after exclusions and
-//! the ranges its policy withheld, so an address can be placed in one, the other,
-//! or neither. A report carrying no scope answers [`Coverage::Unstated`], and
-//! [`Presence::is_confirmed`] is the one test that separates a host that went
-//! away from a host nobody asked about.
+//! That comes from [`TargetScope`](crate::report::TargetScope). Each phase records the
+//! ranges it walked after exclusions and the ranges its policy withheld, so an
+//! address falls in one, the other, or neither. A report with no scope answers
+//! [`Coverage::Unstated`], and [`Presence::is_confirmed`] is the test that separates a
+//! host that went away from a host nobody asked about.
 //!
-//! A scope is what a phase set out to walk, and a phase stopped partway names
-//! what it walked and never reached a verdict on in
-//! [`ScanPhase::undecided`](crate::report::ScanPhase::undecided). An address
-//! no phase decided answers [`Coverage::Unreached`], as do its endpoints: a
-//! sweep cut short by a stop reports the hosts it never got to as hosts it
-//! never got to, rather than as hosts that went away.
+//! A phase stopped partway names the addresses it never reached a verdict on in
+//! [`ScanPhase::undecided`](crate::report::ScanPhase::undecided). Those addresses and
+//! their endpoints answer [`Coverage::Unreached`], so a sweep cut short reports the
+//! hosts it never got to as unreached.
 //!
-//! Ports are a weaker case and say so. A scope records the addresses a phase
-//! walked, not the ports it walked on each, so an endpoint of a covered address
-//! answers `Unstated` too. Where the address itself was withheld or out of scope
-//! the endpoint inherits that, since nothing was probed there at all.
+//! Ports are a weaker case. A scope records the addresses a phase walked but not the
+//! ports it walked on each, so an endpoint of a covered address answers `Unstated`.
+//! Where the address itself was withheld or out of scope, the endpoint inherits that.
 //!
-//! One endpoint answers better than its scope can. A port the scan named and
-//! never reached is recorded
-//! [`PortState::Unasked`](crate::model::port::PortState::Unasked). A scope says
-//! what a scan set out to walk and that says how far it got, so the record
-//! overrules the scope and the endpoint answers [`Coverage::Unreached`].
+//! A port the scan named and never reached is recorded
+//! [`PortState::Unasked`](crate::model::port::PortState::Unasked). That record says
+//! how far the scan got, which is more than the scope says, so it overrules the
+//! scope and the endpoint answers [`Coverage::Unreached`].
 //!
-//! Such a port is read here as a side holding no record at all, rather than as a
-//! record whose state happens to be that one. The alternative reads worse in
-//! every case: 443 unasked against 443 open is a state that moved, so the delta
-//! would be a [`Presence::Both`] where [`Presence::is_confirmed`] answers true,
-//! and a consumer alerting on that field is told a port opened on the strength of
-//! a scan that never looked. Read as no record it is the appearance it is, and a
-//! run the wall clock cut short reports the ports it never got to as ports it
-//! never got to rather than as ports that closed.
+//! Such a port is read as a side with no record at all. Read as a state, 443 unasked
+//! against 443 open would be a state that moved: a [`Presence::Both`] where
+//! [`Presence::is_confirmed`] answers true, telling a consumer that alerts on it that
+//! a port opened when the scan never looked. Read as no record, a run the wall clock
+//! cut short reports the ports it never got to as unreached.
 //!
-//! A finding drawn from what a TLS endpoint accepts asks the same question one
-//! level down. It rests on the versions whose walk drew it, and the current
-//! scan's record says whether each of those walks finished. Where one was cut
-//! short, or the current scan made no enumeration at all, the claim's absence
-//! is how far the scan got, and the endpoint's
-//! [`PortChange::Findings`] carries it as unsettled rather than resolved. A
-//! finding drawn from a certificate's posture rests on that certificate, and a
-//! current scan that recorded none, because its handshake failed or the leaf
-//! would not parse, is unsettled the same way. So is a vulnerability
-//! correlation, which rests on the identification it was drawn from, where the
-//! current scan identified nothing on the endpoint, labelled it by its port
-//! number alone, or named the software without its version.
+//! Findings ask the same question one level down. A finding drawn from what a TLS
+//! endpoint accepts rests on the version walks that drew it; where the current scan
+//! cut one short or made no enumeration, the finding's absence only says how far
+//! the scan got, and [`PortChange::Findings`] carries it as unsettled. A finding
+//! drawn from a certificate's posture is unsettled when the current scan recorded no
+//! certificate (a failed handshake, or a leaf that would not parse). A vulnerability
+//! correlation is unsettled when the current scan identified nothing on the
+//! endpoint, labelled it by port number alone, or named the software without a
+//! version.
 //!
 //! ## Which record continues which
 //!
 //! Hosts do not pair by address alone: a machine can change address between two
 //! scans, and one scan can see as a single host what another sees as two. That
-//! decision is [`HostIdentity`]'s, it is a field of [`DiffOptions`], and
-//! [`pairing`] is the whole argument for how it is made.
+//! decision belongs to [`HostIdentity`], a field of [`DiffOptions`], and [`pairing`]
+//! explains how it is made.
 //!
 //! ## Which clock a certificate is judged against
 //!
-//! Expiring within thirty days is a question about a moment, and the moment a
-//! diff is taken is not the moment either scan ran. So each side is judged
-//! against its own scan's clock: the baseline's standing at the baseline's start
-//! time, the current standing at the current scan's. A certificate nobody touched
-//! then crosses the threshold once, between the two scans that straddle it, which
-//! is what makes it a change rather than a property.
+//! "Expiring within thirty days" depends on the moment it is asked, so each side is
+//! judged against its own scan's clock: the baseline at the baseline's start time,
+//! the current side at the current scan's. An untouched certificate then crosses the
+//! threshold once, between the two scans that straddle it, which makes it a change.
 //!
-//! A report with no phases has no start time to take, and the latest sighting
-//! among its hosts is used instead. [`DiffOptions::as_of`] overrides the current
-//! side, for a caller asking where things stand now rather than where they stood
-//! when the scan ran.
+//! A report with no phases has no start time, so the latest sighting among its hosts
+//! is used. [`DiffOptions::as_of`] overrides the current side's clock, for a caller
+//! asking where things stand today.
 
 pub mod change;
 pub mod host;
@@ -186,17 +161,16 @@ use crate::diff::scope::ScopeIndex;
 /// How long before a certificate lapses it counts as expiring, when a caller
 /// does not say.
 ///
-/// Thirty days is the interval the public web has settled on. It is when the
-/// major certificate authorities send their first renewal notice, and what most
-/// monitoring templates ship with.
+/// Thirty days is when the major certificate authorities send their first renewal
+/// notice, and what most monitoring templates ship with.
 pub const DEFAULT_EXPIRY_THRESHOLD: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// What a comparison is allowed to assume.
 ///
 /// The defaults suit two scans of the same network by the same tool. Change
 /// [`identity`](Self::with_identity) when addresses are not stable between the
-/// two, and [`as_of`](Self::as_of) when the question is where certificates stand
-/// now rather than when the scan ran.
+/// two, and [`as_of`](Self::as_of) to judge certificates at a moment other than
+/// when the scan ran.
 #[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffOptions {
@@ -235,12 +209,11 @@ impl DiffOptions {
         self
     }
 
-    /// Judges the current scan's certificates as of `at` rather than as of when
-    /// that scan ran.
+    /// Judges the current scan's certificates as of `at`.
     ///
     /// For asking where a stored scan's certificates stand today. The baseline is
-    /// still judged at its own clock, since it is the two standings differing
-    /// that makes the change.
+    /// still judged at its own clock, since the change is the two standings
+    /// differing.
     pub fn as_of(mut self, at: SystemTime) -> Self {
         self.as_of = Some(at);
         self
@@ -265,9 +238,8 @@ impl DiffOptions {
 
 /// Which scan one side of a comparison was.
 ///
-/// Carried so a diff can be rendered on its own, without the reports it was taken
-/// from still being in hand, which is what a front end that computed the
-/// diff on a server and sent it to a browser has.
+/// Carried so a diff can be rendered without the reports it was taken from, as a
+/// front end that computes the diff on a server and sends it to a browser must.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Provenance {
     engine_version: String,
@@ -280,15 +252,14 @@ pub struct Provenance {
 impl Provenance {
     /// The engine that produced the report, as it attributed itself.
     ///
-    /// A report built out of another scanner's output says whatever the thing
-    /// that built it recorded, so this is not a guarantee that this crate ran the
-    /// scan.
+    /// A report built from another scanner's output says whatever its builder
+    /// recorded, so this does not prove this crate ran the scan.
     pub fn engine_version(&self) -> &str {
         &self.engine_version
     }
 
-    /// The moment the scan is judged to have happened, which is what
-    /// certificates were judged against.
+    /// The moment the scan is taken to have happened, which certificates were
+    /// judged against.
     pub fn at(&self) -> SystemTime {
         self.at
     }
@@ -335,17 +306,16 @@ impl ScanDiff {
 
     /// Compares two scans.
     ///
-    /// `baseline` is the earlier scan and `current` the later one. Nothing
-    /// enforces that. Two reports compare in whichever order they are given, and
-    /// a caller who hands them over the other way round gets a diff that reads
-    /// backwards rather than an error.
+    /// `baseline` is the earlier scan and `current` the later one. The order is not
+    /// checked: reports handed over the other way round give a diff that reads
+    /// backwards.
     ///
     /// An address either scan found [`silent`](crate::report::ScanPhase::silent)
-    /// on every port is compared as no host on both sides where the other lists
-    /// it with nothing heard from it. One scan asked for every address as a
-    /// host and the other stood its port probes in for a liveness pass; neither
-    /// heard anything there, and reading the difference as a host leaving or
-    /// arriving would report the two scans' settings as the network changing.
+    /// on every port, and the other lists with nothing heard from it, is compared
+    /// as no host on both sides. That case arises when one scan recorded every
+    /// address as a host and the other used its port probes as the liveness pass;
+    /// neither heard anything, so the difference is the scans' settings and not
+    /// the network.
     pub fn compare(baseline: &ScanReport, current: &ScanReport, options: &DiffOptions) -> Self {
         let quiet = silent_in(baseline, current);
         let heard = |host: &&Host| {
@@ -372,8 +342,8 @@ impl ScanDiff {
                 let before = merged(&baseline_hosts, &component.baseline);
                 let after = merged(&current_hosts, &component.current);
 
-                // The address each side's coverage is asked about is the one the
-                // delta is keyed by, which is the record that exists.
+                // Both sides' coverage is asked about the address the delta is
+                // keyed by.
                 let address = after
                     .as_ref()
                     .or(before.as_ref())
@@ -432,19 +402,16 @@ impl ScanDiff {
 
     /// Whether the two scans describe the same network.
     ///
-    /// True means nothing this module compares moved. It does not mean the two
-    /// reports are identical, since the measurements about each scan are not
-    /// compared and two runs that timed differently and found the same things are
-    /// equal
-    /// here.
+    /// True means nothing this module compares moved. The reports may still
+    /// differ in their measurements, which are not compared.
     pub fn is_empty(&self) -> bool {
         self.hosts.is_empty()
     }
 
     /// Counts derived from the deltas.
     ///
-    /// Computed on demand rather than stored, so a summary cannot disagree with
-    /// the deltas it describes.
+    /// Computed on demand, so a summary cannot disagree with the deltas it
+    /// describes.
     pub fn summary(&self) -> DiffSummary {
         let mut summary = DiffSummary::default();
 
@@ -470,10 +437,8 @@ impl ScanDiff {
                     summary.ports_changed += 1;
                 }
 
-                // Matched with no wildcard, so a change this crate learns to
-                // report fails to compile here until somebody decides whether it
-                // belongs in the counters a front end leads with. A `_` arm
-                // would leave it silently at zero.
+                // No wildcard arm: a new kind of change fails to compile here
+                // until somebody decides whether it belongs in the counters.
                 let mut service_moved = false;
                 for change in port.changes() {
                     match change {
@@ -489,25 +454,22 @@ impl ScanDiff {
                                 CertificateChange::Expired { .. } => {
                                     summary.certificates_expired += 1;
                                 }
-                                // A certificate appearing or being withdrawn is
-                                // the endpoint's security changing, which
-                                // `ports_changed` already counts. Neither is a
-                                // renewal queue's business.
+                                // Already counted by `ports_changed`, and not
+                                // a renewal concern.
                                 CertificateChange::Presented(_)
                                 | CertificateChange::Withdrawn(_) => {}
                             }
                         }
                         // Counted above, through `is_opened` and `is_closed`.
                         PortChange::State(_) => {}
-                        // The version and cipher a handshake agreed are reported
-                        // in the deltas and are not a headline number.
+                        // Reported in the deltas, not a headline number.
                         PortChange::Security(
                             SecurityChange::TlsVersion(_)
                             | SecurityChange::CipherSuite(_)
                             | SecurityChange::Alpn { .. },
                         ) => {}
-                        // A finding's own severity is what a reader sorts by, so
-                        // it is read off the delta rather than totalled here.
+                        // Readers sort findings by their own severity, read off
+                        // the delta.
                         PortChange::Findings { .. } => {}
                     }
                 }
@@ -524,17 +486,16 @@ impl ScanDiff {
 /// A count of records, and how many of them the other scan is known to have
 /// looked for.
 ///
-/// The two are not the same number and the difference matters. Three hosts
-/// appearing is a finding when the baseline covered all three addresses and is a
-/// wider scan when it covered none of them. A front end printing only one of
-/// these should print [`confirmed`](Self::confirmed).
+/// Three hosts appearing is a finding when the baseline covered all three addresses,
+/// and only a wider scan when it covered none of them. A front end printing one of
+/// the two should print [`confirmed`](Self::confirmed).
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Confirmed {
     /// How many records, whatever the other scan covered.
     pub total: usize,
-    /// How many of them the other scan is known to have covered, which are the
-    /// ones that are findings about the network rather than about the scan.
+    /// How many of them the other scan is known to have covered: the ones that
+    /// are findings about the network.
     pub confirmed: usize,
 }
 
@@ -549,9 +510,8 @@ impl Confirmed {
 
 /// Counts derived from a comparison.
 ///
-/// The numbers a front end leads with. Everything here is derived from
-/// [`ScanDiff::hosts`], so a consumer wanting the detail behind any of these
-/// walks the deltas instead.
+/// The numbers a front end leads with, all derived from [`ScanDiff::hosts`], where
+/// the detail behind each one is.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DiffSummary {
@@ -561,21 +521,20 @@ pub struct DiffSummary {
     pub hosts_removed: Confirmed,
     /// Hosts both scans have, that differ.
     pub hosts_changed: usize,
-    /// Endpoints accepting connections now that were not before, whether by
-    /// changing state or by appearing.
+    /// Endpoints that started accepting connections, by changing state or by
+    /// appearing.
     pub ports_opened: Confirmed,
-    /// Endpoints that were accepting connections and are not now, whether by
-    /// changing state or by disappearing.
+    /// Endpoints that stopped accepting connections, by changing state or by
+    /// disappearing.
     pub ports_closed: Confirmed,
     /// Endpoints both scans have, that differ.
     pub ports_changed: usize,
-    /// Endpoints where what is listening changed, or was identified where it was
-    /// not.
+    /// Endpoints where what is listening changed or was first identified.
     pub services_changed: usize,
-    /// Endpoints presenting a different certificate than before.
+    /// Endpoints presenting a different certificate than the baseline.
     pub certificates_rotated: usize,
-    /// Endpoints whose certificate is now inside the expiry threshold and was not
-    /// at the baseline's clock.
+    /// Endpoints whose certificate is inside the expiry threshold at the current
+    /// clock and was outside it at the baseline's.
     pub certificates_expiring: usize,
     /// Endpoints whose certificate has lapsed since the baseline ran.
     pub certificates_expired: usize,
@@ -638,11 +597,10 @@ mod tests {
 
     /// How long the phases these helpers build ran for.
     ///
-    /// Zero, so the moment a report is placed at is the `at` each helper was
-    /// given. A report is placed by when it finished looking, and a duration
-    /// would put its clock somewhere no test named, which the certificate tests
-    /// below would read as a threshold crossed a second
-    /// early. How long a scan took is not what any of them is about.
+    /// Zero, so a report's clock is the `at` its helper was given. A report is
+    /// placed by when it finished, and any duration would move its clock off the
+    /// named `at`, which the certificate tests would read as a threshold crossed
+    /// early.
     const PROMPT: Duration = Duration::ZERO;
 
     /// A port scan over `covered` that ran with no liveness pass and found the
@@ -685,8 +643,8 @@ mod tests {
         ScanReport::recorded("test", vec![phase], Vec::new())
     }
 
-    /// A report that says nothing about what it covered, which is what a foreign
-    /// scanner's output reads as.
+    /// A report that says nothing about what it covered, as a foreign scanner's
+    /// output reads.
     fn unscoped(hosts: Vec<Host>) -> ScanReport {
         ScanReport::recorded("test", Vec::new(), hosts)
     }
@@ -1229,10 +1187,8 @@ mod tests {
         assert_eq!(summary.ports_opened.confirmed, 0);
     }
 
-    /// The false alarm this whole reading exists to stop. The baseline's scope
-    /// says it walked 443, and the baseline's own record says it never got there,
-    /// so the record wins and an open port today is news about the scan rather
-    /// than about the network.
+    /// The baseline's scope says it walked 443 and its own record says it never got
+    /// there, so the record wins and an open port today is news about the scan.
     #[test]
     fn a_port_the_baseline_ran_short_of_is_not_a_confirmed_opening() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
@@ -1282,9 +1238,8 @@ mod tests {
         );
     }
 
-    /// The mirror, which is the one a scheduled scan hits: tonight's run spent
-    /// its wall-clock budget before reaching a port that was open last night.
-    /// Nothing closed.
+    /// The mirror case: tonight's run spent its wall-clock budget before reaching
+    /// a port that was open last night. Nothing closed.
     #[test]
     fn a_port_the_later_scan_ran_short_of_is_not_a_confirmed_closing() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
@@ -1322,10 +1277,8 @@ mod tests {
         assert_eq!(summary.ports_closed.confirmed, 0);
     }
 
-    /// A port the baseline never reached and tonight's scan holds no record for
-    /// at all is not a port that went away. Neither side has a finding, so there
-    /// is nothing to compare and no delta is emitted: reporting one would file
-    /// the baseline's own admission that it never looked as a disappearance.
+    /// A port the baseline never reached, and tonight's scan has no record for,
+    /// gives no delta: neither side has a finding.
     #[test]
     fn an_endpoint_neither_scan_has_a_finding_for_is_reported_by_neither() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
@@ -1351,9 +1304,8 @@ mod tests {
         assert!(diff.is_empty(), "{:?}", diff.hosts());
     }
 
-    /// The two axes meeting, which is the whole of what the grade adds over a
-    /// change list. Both scans walked 443; last week nothing was listening and
-    /// tonight something is, so somebody has to know.
+    /// Both scans walked 443; last week nothing was listening and tonight
+    /// something is, so the grade is high.
     #[test]
     fn a_port_that_opened_on_ground_both_scans_walked_is_urgent() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
@@ -1386,9 +1338,8 @@ mod tests {
         assert_eq!(diff.significance(), Significance::Urgent);
     }
 
-    /// And the same opening, where the baseline ran out of wall clock before it
-    /// reached the port. The change would mean the same thing; the comparison
-    /// cannot say it happened, so it does not rank as though it did.
+    /// The same opening where the baseline ran out of wall clock before reaching
+    /// the port. The comparison cannot say it happened, so it ranks lower.
     #[test]
     fn the_same_opening_against_a_scan_that_ran_short_is_routine() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
@@ -1424,10 +1375,7 @@ mod tests {
     }
 
     /// A scan widened to a range nobody had scanned before turns up hosts with
-    /// open ports on them, and none of it is news. This is the alarm every
-    /// monitoring tool raises the first time somebody edits a target list, and
-    /// the grade is where a caller keying on one field is stopped from raising
-    /// it.
+    /// open ports, and none of it is news.
     #[test]
     fn a_host_found_by_a_wider_scan_is_routine_open_ports_and_all() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
@@ -1455,9 +1403,8 @@ mod tests {
         assert_eq!(diff.significance(), Significance::Routine);
     }
 
-    /// A host that started taking delivery of a protocol is a change, and the
-    /// grade says it is worth reading: a machine that answers for GRE where it
-    /// did not is one end of a tunnel that was not there last week.
+    /// A host that starts answering for a protocol is worth reading: a machine
+    /// newly answering for GRE is one end of a new tunnel.
     #[test]
     fn a_protocol_a_host_started_accepting_is_a_notable_change() {
         use crate::model::host::IpProtocolState;
@@ -1492,9 +1439,8 @@ mod tests {
     }
 
     /// The second scan asking about a protocol the first never did is the scan
-    /// changing, not the network. It is the same reading an unasked port gets,
-    /// and it is what stops turning the pass on reading as every host on the
-    /// network having changed overnight.
+    /// changing. It reads as an unasked port does, so enabling the pass does not
+    /// make every host look changed.
     #[test]
     fn a_protocol_only_one_scan_established_anything_about_is_not_a_change() {
         use crate::model::host::IpProtocolState;
@@ -1502,8 +1448,8 @@ mod tests {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
 
         let mut before = host(10);
-        // Named and never reached, which is what a run cut short leaves, and
-        // absent entirely for 89, which is what a scan that never asked leaves.
+        // Named and never reached (a run cut short), and absent for 89 (a scan
+        // that never asked).
         before.record_ip_protocol(47, IpProtocolState::Unasked);
         let mut after = host(10);
         after.record_ip_protocol(47, IpProtocolState::Open);
@@ -1517,8 +1463,7 @@ mod tests {
         assert!(diff.is_empty(), "{:?}", diff.hosts());
     }
 
-    /// A whole night of a network being a network. Nothing here is worth waking
-    /// anybody, and the grade says so.
+    /// A night of ordinary churn grades as nothing worth waking anybody for.
     #[test]
     fn a_diff_of_nothing_but_drift_is_routine() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
@@ -1629,10 +1574,9 @@ mod tests {
     // A link is covered ground, and no range says so
     // -----------------------------------------------------------------------
 
-    /// A sweep of a local segment reaches every IPv6 neighbour on the link,
-    /// holding addresses no target set could have named. Without this the
-    /// neighbours read as ground nobody covered, and a new device on a watched
-    /// segment never counts as having appeared.
+    /// A sweep of a local segment reaches every IPv6 neighbour on the link, at
+    /// addresses no target set could have named. A new device there counts as
+    /// having appeared.
     #[test]
     fn a_neighbour_on_a_swept_link_is_covered_ground() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
@@ -1698,11 +1642,9 @@ mod tests {
 
     /// A host found on a swept link is covered whatever address it is keyed by.
     ///
-    /// A case real segments produce, and one a check asking whether the
-    /// *address* is link-local would get wrong. A neighbour
-    /// that answers an all-nodes solicitation is routinely keyed under a global
-    /// address, because this engine prefers a routable one when both are known.
-    /// The sweep still reached it, on the link.
+    /// A neighbour that answers an all-nodes solicitation is often keyed under a
+    /// global address, since this engine prefers a routable one, so checking
+    /// whether the *address* is link-local would get this wrong.
     #[test]
     fn a_host_on_a_swept_link_is_covered_whatever_it_is_keyed_by() {
         use crate::model::ip::scoped::Zone;
@@ -1761,9 +1703,8 @@ mod tests {
     // A host is covered if the scan walked ground it stood on
     // -----------------------------------------------------------------------
 
-    /// Which address a report keys a host under is the report's business. A
-    /// dual-stack machine keyed under IPv6 was in reach of a sweep of the IPv4
-    /// range all the same.
+    /// A dual-stack machine keyed under IPv6 was in reach of a sweep of its IPv4
+    /// range.
     #[test]
     fn a_host_is_covered_by_any_address_it_answers_at() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
@@ -1865,22 +1806,13 @@ mod tests {
         assert_eq!(diff.summary().certificates_expiring, 1);
     }
 
-    /// A renewal that lands on a certificate which is *itself* expiring is the
-    /// case a standing read off "whatever each side presented" cancels out.
-    ///
-    /// Both sides answer `Expiring`, so nothing appears to have moved, and the
-    /// endpoint that most needs renewing reports a rotation and no expiry. The
-    /// standing belongs to one certificate at two moments, and the baseline was
-    /// never shown this one.
     /// A threshold no clock can reach is an answer, not a panic.
     ///
-    /// `with_expiry_threshold` takes any `Duration` there is and nothing checks
-    /// it where it is set, so `Duration::MAX` reached `SystemTime + Duration`
-    /// inside the model and brought the whole comparison down with it. Read as
-    /// the horizon it is, every certificate is inside it: the one presented at
-    /// both scans was already inside it when the baseline ran and so crossed
-    /// nothing, and the one that replaced another is reported, because the
-    /// baseline was never shown it.
+    /// `with_expiry_threshold` accepts any `Duration`, and `Duration::MAX` must
+    /// not overflow `SystemTime + Duration`. Every certificate is inside such a
+    /// horizon: the one presented at both scans was already inside it at the
+    /// baseline and crossed nothing, and a replacement is reported because the
+    /// baseline never saw it.
     #[test]
     fn an_expiry_horizon_past_the_end_of_time_reports_rather_than_panics() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
@@ -1912,6 +1844,10 @@ mod tests {
         assert_eq!(rotated.summary().certificates_expiring, 1);
     }
 
+    /// A renewal onto a certificate that is itself expiring. Comparing whatever
+    /// each side presented, both answer `Expiring` and the expiry cancels out; the
+    /// standing belongs to one certificate at two moments, and the baseline never
+    /// saw this one.
     #[test]
     fn a_rotation_onto_an_expiring_certificate_still_reports_the_expiry() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
@@ -1959,8 +1895,8 @@ mod tests {
         );
     }
 
-    /// The same, one step worse: a renewal that installs a certificate which had
-    /// already lapsed. `certificates_expired` counted none of these.
+    /// The same, one step worse: a renewal that installs an already lapsed
+    /// certificate.
     #[test]
     fn a_rotation_onto_an_already_lapsed_certificate_still_reports_it() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
@@ -2150,7 +2086,7 @@ mod tests {
         );
 
         // The two records were folded, so both endpoints are compared against
-        // the baseline rather than one of them being lost.
+        // the baseline.
         let numbers: Vec<u16> = delta.ports().iter().map(PortDelta::number).collect();
         assert_eq!(numbers, vec![22, 80]);
     }
@@ -2226,20 +2162,15 @@ mod tests {
         assert!(diff.baseline().kinds().is_empty());
     }
 
-    /// **The whole port-state grading table, as a table.**
+    /// The port-state grading table from [`significance`](crate::diff::significance),
+    /// executed. It lives here because it pins the composition: the grade, and the
+    /// presence that decides whether the grade is reported.
     ///
-    /// The module documentation for
-    /// [`significance`](crate::diff::significance) says the policy "can be read
-    /// as a table"; this is that table, executed. It is here rather than beside
-    /// the grader because what it pins is the *composition* — the grade, and the
-    /// presence that decides whether the grade is even reported.
-    ///
-    /// The rows carrying [`PortState::Unasked`] are the ones worth the space. A
-    /// scan that ran out of budget writes the port down rather than dropping it,
-    /// so every transition into or out of `Unasked` has to read as ground one
-    /// side never reached — `Routine`, and `Unreached` — and never as a port
-    /// that opened or closed. `merge` had the same lesson to learn and had not
-    /// learned it; see `fold_port`.
+    /// The rows with [`PortState::Unasked`] matter most. A scan that ran out of
+    /// budget writes the port down, so every transition into or out of `Unasked`
+    /// reads as ground one side never reached (`Routine`, `Unreached`), never as
+    /// a port that opened or closed. `merge` follows the same rule; see
+    /// `fold_port`.
     #[test]
     fn every_port_state_transition_grades_the_way_the_table_says() {
         use crate::model::port::{Port, PortState, Protocol};
@@ -2318,12 +2249,9 @@ mod tests {
         }
     }
 
-    /// **A port nobody asked about is ground one side never reached, and grades
-    /// as that in both directions.**
-    ///
-    /// Never as a port that opened or closed. The presence says which side fell
-    /// short, so a reader can tell "we did not look" from "it went away" — the
-    /// distinction the whole `Unasked` variant exists for.
+    /// A port nobody asked about is ground one side never reached, in both
+    /// directions. The presence says which side fell short, so a reader can tell
+    /// "we did not look" from "it went away".
     #[test]
     fn a_transition_through_unasked_reads_as_ground_nobody_walked() {
         use crate::model::port::{Port, PortState, Protocol};
@@ -2356,12 +2284,9 @@ mod tests {
         }
     }
 
-    /// An address one scan listed as a host it heard nothing from, and the
-    /// other found silent on every port, is the same quiet address both times:
-    /// neither a host that went away nor one that arrived. The first is what a
-    /// caller asking for every address as a host gets, the second what a scan
-    /// standing in for its liveness pass leaves, and a comparison of the two is
-    /// not a change in the network.
+    /// An address one scan listed as a host it heard nothing from, and the other
+    /// found silent on every port, is the same quiet address both times: no host
+    /// went away or arrived.
     #[test]
     fn a_quiet_address_listed_once_and_found_silent_once_is_no_change() {
         let start = SystemTime::UNIX_EPOCH;
@@ -2380,8 +2305,8 @@ mod tests {
         );
     }
 
-    /// A host that answered and is silent now went away, exactly as it would
-    /// read had a liveness pass found it silent: the address was covered.
+    /// A host that answered and is silent now went away, as it would had a
+    /// liveness pass found it silent: the address was covered.
     #[test]
     fn a_host_that_answered_and_is_silent_now_is_removed_from_covered_ground() {
         let start = SystemTime::UNIX_EPOCH;
