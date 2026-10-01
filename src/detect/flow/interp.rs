@@ -1143,6 +1143,71 @@ mod tests {
         assert!(finding.excerpt().as_str().contains("Linux router 6.1"));
     }
 
+    /// The single finding `flow` reports against `host` through `probe`.
+    fn graded(flow: &FlowDetection, host: &str, probe: &mut dyn Probe) -> (Severity, String) {
+        let findings = run(flow, "", &FlowSeed::new(host, 80), probe);
+        assert_eq!(findings.len(), 1, "{} at {host}", flow.detection.id);
+        (findings[0].severity(), findings[0].title().to_string())
+    }
+
+    /// A Kubernetes Dashboard: its index page for `/`, and `skippable` for the
+    /// login API.
+    struct Dashboard {
+        skippable: bool,
+    }
+    impl Probe for Dashboard {
+        fn speak(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
+            if contains(bytes, b"/api/v1/login/skippable") {
+                let body = format!("{{\n  \"skippable\": {}\n}}", self.skippable);
+                Some(
+                    format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{body}")
+                        .into_bytes(),
+                )
+            } else {
+                Some(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n\
+                      <!doctype html>\n<html lang=\"en\" dir=\"ltr\">\n<head>\n\
+                      <meta charset=\"utf-8\">\n<title>Kubernetes Dashboard</title>\n\
+                      </head>\n<body>\n<kd-root></kd-root>\n</body>\n</html>\n"
+                        .to_vec(),
+                )
+            }
+        }
+    }
+
+    /// **A dashboard's login page is not access to it.** A dashboard that
+    /// requires a token is listed; one that lets its login be skipped is the
+    /// finding, each rated by who can reach it.
+    #[test]
+    fn k8s_dashboard_open_tells_a_login_page_from_a_skippable_login() {
+        let dashboard = flow("k8s-dashboard-open");
+        let login = || Dashboard { skippable: false };
+        let open = || Dashboard { skippable: true };
+
+        let (severity, title) = graded(&dashboard, "192.168.0.10", &mut login());
+        assert_eq!(
+            severity,
+            Severity::Info,
+            "a dashboard asking for a login on a private address was rated as access"
+        );
+        assert_eq!(
+            title,
+            "Kubernetes Dashboard served its interface over the network"
+        );
+        assert_eq!(
+            graded(&dashboard, "198.51.100.7", &mut login()).0,
+            Severity::Medium
+        );
+
+        let (severity, title) = graded(&dashboard, "198.51.100.7", &mut open());
+        assert_eq!(severity, Severity::High);
+        assert_eq!(title, "Kubernetes Dashboard lets its login be skipped");
+        assert_eq!(
+            graded(&dashboard, "192.168.0.10", &mut open()).0,
+            Severity::Medium
+        );
+    }
+
     /// Whether `haystack` contains `needle` as a contiguous run.
     fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         haystack

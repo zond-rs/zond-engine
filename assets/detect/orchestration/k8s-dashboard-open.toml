@@ -1,13 +1,21 @@
 # Kubernetes Dashboard reachable over the network. The dashboard is a cluster
-# control surface and is not meant to face untrusted networks; a reachable one
-# serves its single-page app, whose title names it. Reaching the login page is
-# not cluster access on its own, but an exposed dashboard is a well-worn path to
-# one when it is deployed with a permissive service account or login skipped. A
-# single read-only GET.
+# control surface and is not meant to face untrusted networks. Two read-only GETs.
+#
+# The first identifies it: a reachable one serves its single-page app, whose title
+# names it. That page is the same whether or not a login is required, so it is not
+# access on its own. The second asks the dashboard whether its login can be
+# skipped, which it can when deployed with `--enable-skip-login`; then anyone who
+# reaches it acts as the dashboard's service account without a token.
+#
+# One finding either way, graded by who can reach it. A skippable login on the
+# internet is the cluster, to whatever extent that account is bound; inside a
+# network it is the same account handed to a neighbour, a rung lower because how
+# much it grants depends on that binding. A dashboard that requires a login is
+# worth listing when it faces the internet and a note inside a network.
 
 [detection]
 id      = "k8s-dashboard-open"
-version = "1.0.0"
+version = "1.1.0"
 title   = "Kubernetes Dashboard is reachable over the network"
 
 [detection.when]
@@ -22,11 +30,23 @@ max_millis = 3000
 
 [[step]]
 send   = "GET / HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
-expect = ["HTTP/[0-9.]+ 200", "Kubernetes Dashboard"]
+expect = ["HTTP/[0-9.]+ 200", "<title>Kubernetes Dashboard</title>"]
+
+[[step]]
+send        = "GET /api/v1/login/skippable HTTP/1.1\r\nHost: {host}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+expect      = ["HTTP/[0-9.]+ 200", '"skippable"\s*:\s*true']
+on_no_match = "continue"
   [[step.finding]]
   when         = "matched"
-  severity     = "high"
+  severity     = { internet = "high", internal = "medium" }
+  summary      = "Kubernetes Dashboard lets its login be skipped"
+  detail       = "The dashboard reports its login as skippable, so anyone who reaches it acts as the dashboard's service account without a token."
+  references   = [{ cwe = 306 }]
+  excerpt_from = "$response"
+
+  [[step.finding]]
+  when         = "not matched"
+  severity     = { internet = "medium", internal = "info" }
   summary      = "Kubernetes Dashboard served its interface over the network"
   detail       = "GET / returned the Kubernetes Dashboard app; the dashboard is a cluster control surface and should not be reachable from untrusted networks."
   references   = [{ cwe = 284 }]
-  excerpt_from = "$response"
