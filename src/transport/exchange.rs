@@ -47,7 +47,7 @@
 //! link-layer sender builds it with the frame. That is the seam
 //! [`ProbeSender`](crate::transport::probe::ProbeSender) draws.
 //!
-//! So a packet with a deliberately wrong *IP header* cannot be sent this way.
+//! So a packet with a malformed *IP header* cannot be sent this way.
 //! Everything above it can: a TCP header claiming a data offset it does not have, a
 //! UDP length that counts the wrong bytes, an ICMP message of a type nothing answers.
 //! Write those with [`Field::Exact`](crate::protocols::craft::Field); nothing checks

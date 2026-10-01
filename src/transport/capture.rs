@@ -940,30 +940,26 @@ impl std::fmt::Display for LibraryError {
 
 impl std::error::Error for LibraryError {}
 
-/// Opens a filtered capture on each named link and starts reading, parsing
-/// every admitted frame down to the Layer-4 segment a scanner reads.
+/// Opens a filtered capture on each named link and starts reading, parsing every
+/// admitted frame down to the Layer-4 segment a scanner reads.
 ///
-/// Frames that are not IP are dropped here, since the segment is what a scanner
-/// reads and there is none behind an ARP frame. A caller that wants those is
-/// asking a different question and wants the whole frame; see
-/// [`frames`], which this is otherwise the twin of.
+/// Non-IP frames are dropped, since there is no segment behind an ARP frame. For
+/// those, use [`frames`], this function's twin, which forwards whole frames.
 ///
-/// # The stream is bounded, and has to be
+/// # The stream is bounded
 ///
-/// Most of what arrives is bounded by what this host sent: a reply exists
-/// because a probe was emitted, and the scanner emitting them is the same task
-/// reading this. The rest is not, and the filters say so themselves. Only
-/// [`ProbeKind::UdpResolve`](crate::transport::probe::ProbeKind) narrows to this
-/// scan in both address families. A SYN sweep admits every IPv6 TCP segment
-/// because `tcp[tcpflags]` will not compile over a next-header chain, and the
-/// three kinds that read ICMP errors admit `icmp or icmp6` whole because an
-/// error names no ports of its own. Each of those is the right trade and each
-/// leaves a rate the network sets rather than the scan.
+/// Most arrivals are bounded by what this host sent, and the task sending probes is
+/// the one reading this. The rest are not, as the filters show. Only
+/// [`ProbeKind::UdpResolve`](crate::transport::probe::ProbeKind) narrows to this scan
+/// in both address families. A SYN sweep admits every IPv6 TCP segment because
+/// `tcp[tcpflags]` will not compile over a next-header chain, and the three kinds that
+/// read ICMP errors admit `icmp or icmp6` whole because an error names no ports. Each
+/// is the right trade, and each leaves a rate the network sets.
 ///
-/// So `queue_depth` bounds what may wait, exactly as it does for [`frames`], and
-/// a full queue stalls the reader rather than discarding: the kernel buffer
-/// takes up the slack, `libpcap` counts what it drops, and the loss lands in
-/// [`CaptureCounts::dropped`] where a report already carries it.
+/// So `queue_depth` bounds what may wait, as for [`frames`], and a full queue stalls
+/// the reader instead of discarding: the kernel buffer takes up the slack, `libpcap`
+/// counts what it drops, and the loss lands in [`CaptureCounts::dropped`], which a
+/// report already carries.
 pub fn segments(
     links: &[Zone],
     options: &CaptureOptions,
@@ -988,15 +984,14 @@ pub fn segments(
                 received_at: Instant::now(),
             };
 
-            // Waits rather than drops, for the reason `frames` gives.
+            // Waits instead of dropping, for the reason `frames` gives.
             loop {
                 match tx.try_send(segment) {
                     Ok(()) => return ControlFlow::Continue(()),
                     Err(mpsc::error::TrySendError::Closed(_)) => return ControlFlow::Break(()),
                     Err(mpsc::error::TrySendError::Full(returned)) => {
-                        // A guard being dropped is not a reason to keep waiting
-                        // for room, and the join it is about to do would wait
-                        // on this thread. See `CaptureGuard`.
+                        // A guard being dropped ends the wait for room, since its
+                        // join would wait on this thread. See `CaptureGuard`.
                         if stop.load(Ordering::Relaxed) {
                             return ControlFlow::Break(());
                         }
@@ -1011,31 +1006,25 @@ pub fn segments(
     Ok((rx, guard))
 }
 
-/// Opens a filtered capture on each named link and starts reading, forwarding
-/// every admitted frame whole.
+/// Opens a filtered capture on each named link and starts reading, forwarding every
+/// admitted frame whole.
 ///
-/// The twin of [`segments`], and the one to reach for when the answer is not in
-/// a Layer-4 segment: an ARP exchange, a neighbour advertisement, a switch
-/// announcing itself, the VLAN a frame was tagged with, or the hardware address
-/// behind any of them. Each frame arrives with the link it came off, so a
-/// finding that only means something on one segment can say which.
+/// The twin of [`segments`], for answers outside a Layer-4 segment: an ARP exchange, a
+/// neighbour advertisement, a switch announcing itself, the VLAN a frame was tagged
+/// with, or the hardware address behind any of them. Each frame arrives with its link,
+/// so a finding that only means something on one segment can say which.
 ///
-/// `queue_depth` bounds how many frames may wait for the consumer at once.
-/// Multiplied by [`CaptureOptions::with_snaplen`] it is also the memory this
-/// costs, which is the reason it is a number the caller states rather than one
-/// this module picks.
+/// `queue_depth` bounds how many frames may wait for the consumer at once. Multiplied
+/// by [`CaptureOptions::with_snaplen`] it is also the memory this costs, so the caller
+/// states it.
 ///
-/// # A full queue stalls the reader rather than dropping
+/// # A full queue stalls the reader
 ///
-/// When the consumer falls behind, the reader thread waits instead of discarding
-/// the frame it is holding. The kernel buffer then takes up the slack, and when
-/// that fills, `libpcap` counts what it discards, so the loss lands in
-/// [`CaptureCounts::dropped`], which a report already carries and a reader
-/// already knows how to interpret.
-///
-/// Discarding here instead would be a fourth kind of loss, counted nowhere and
-/// indistinguishable in the record from a network that had nothing to say. The
-/// stall makes the existing counter tell the whole truth.
+/// When the consumer falls behind, the reader thread waits with the frame it holds.
+/// The kernel buffer takes up the slack, and when that fills, `libpcap` counts what it
+/// discards, so the loss lands in [`CaptureCounts::dropped`], which a report already
+/// carries. Discarding here would be a loss counted nowhere and indistinguishable from
+/// a network with nothing to say.
 pub fn frames(
     links: &[Zone],
     options: &CaptureOptions,
@@ -1055,16 +1044,15 @@ pub fn frames(
                 received_at: Instant::now(),
             };
 
-            // Waits rather than drops; see this function's documentation for why
-            // the loss belongs in the kernel's counter and not in a new one.
+            // Waits instead of dropping, so the loss lands in the kernel's counter;
+            // see this function's documentation.
             loop {
                 match tx.try_send(frame) {
                     Ok(()) => return ControlFlow::Continue(()),
                     Err(mpsc::error::TrySendError::Closed(_)) => return ControlFlow::Break(()),
                     Err(mpsc::error::TrySendError::Full(returned)) => {
-                        // A guard being dropped is not a reason to keep waiting
-                        // for room, and the join it is about to do would wait
-                        // on this thread. See `CaptureGuard`.
+                        // A guard being dropped ends the wait for room, since its
+                        // join would wait on this thread. See `CaptureGuard`.
                         if stop.load(Ordering::Relaxed) {
                             return ControlFlow::Break(());
                         }
@@ -1080,22 +1068,17 @@ pub fn frames(
 }
 
 /// Opens a capture on every link that will have one, starts a reader thread per
-/// capture, and hands back the guard that keeps them alive.
+/// capture, and returns the guard that keeps them alive.
 ///
-/// `deliver_for` builds the per-link closure that decides what to do with each
-/// frame, which is the whole of the difference between [`segments`] and
-/// [`frames`]. Everything else, meaning which failures are survivable and how
-/// threads are named and stopped and when counters refresh, is identical and
-/// lives
-/// here so that it cannot come to differ.
+/// `deliver_for` builds the per-link closure that handles each frame, the only
+/// difference between [`segments`] and [`frames`]. Everything else (which failures are
+/// survivable, how threads are named and stopped, when counters refresh) lives here so
+/// the two cannot drift.
 ///
-/// Interfaces that fail to open, or whose data-link type this crate cannot
-/// parse, are skipped rather than aborting the whole capture, and told about by
-/// [`tell_unheard`]: a host
-/// has many, most of them irrelevant to any given capture, and refusing because
-/// a virtual bridge declined would be wrong. Only *every* link failing is an
-/// error, since a capture with no link is a receive path that can never hear
-/// anything, and so is any link refused for want of a descriptor; see
+/// Interfaces that fail to open, or whose data-link type this crate cannot parse, are
+/// skipped and reported by [`tell_unheard`]: a host has many, most irrelevant to a
+/// given capture. Only *every* link failing is an error, since a capture with no link
+/// can never hear anything, and so is any link refused for want of a descriptor; see
 /// [`CaptureError::OutOfDescriptors`].
 fn spawn_captures<D>(
     links: &[Zone],
@@ -1109,17 +1092,15 @@ where
     let mut handles = Vec::new();
     let mut stats = Vec::new();
 
-    // Named here and counted, in one line beside the per-interface ones. A scan
-    // opens a capture on every interface that is up, twenty-six on an ordinary
-    // laptop with a VPN and a hypervisor, and does it once per transport, so
-    // both belong with the engine's working at verbosity 3, where somebody
-    // asking whether it captured at all, and on which links with which filter,
-    // finds them.
+    // Named and counted in one line beside the per-interface ones, at verbosity 3. A
+    // scan opens a capture on every interface that is up (twenty-six on an ordinary
+    // laptop with a VPN and a hypervisor) once per transport, and that is where
+    // someone asking which links were captured with which filter will look.
     let mut opened = 0usize;
     // Why the last reader thread refused to start, for the case where none did.
     let mut unstarted: Option<std::io::Error> = None;
-    // The links that would not open, told about together once it is known
-    // whether any did. See `tell_unheard`.
+    // The links that would not open, reported together once it is known whether any
+    // did. See `tell_unheard`.
     let mut unheard: Vec<(&Zone, CaptureError)> = Vec::new();
 
     for zone in links {
@@ -1158,9 +1139,9 @@ where
                     reader_loop(capture, &stop, &name, counters, deliver)
                 }) {
                     Ok(handle) => handles.push(handle),
-                    // The same trade the open failure above takes. A host near
-                    // its thread limit still captures on the links it managed,
-                    // and only losing every one of them is an error.
+                    // As with an open failure: a host near its thread limit still
+                    // captures on the links it managed, and only losing all of them is
+                    // an error.
                     Err(e) => {
                         warn!("no reader thread for {}: {e}", zone.name());
                         stats.pop();
@@ -1214,21 +1195,19 @@ where
     Ok(CaptureGuard::running(stop, handles, stats))
 }
 
-/// Says which links could not be captured on, and why: once per link for the
-/// life of the process, and on the default console only where the scan's
-/// answers depend on it and no error will say so.
+/// Reports which links could not be captured on, and why: once per link for the life
+/// of the process, and on the default console only where the scan's answers depend on
+/// it and no error will say so.
 ///
-/// Every transport opens its own capture on every link, so a link that refuses
-/// one refuses them all, three or four times a scan, and a front end that runs
-/// several scans asks again each time. What refused is a fact about this
-/// machine rather than about any one of those opens: an adapter Npcap is not
-/// bound to, such as a hypervisor's or a VPN's, stays that way. So it is said
-/// the first time and not again, unless it later matters more than it did.
+/// Every transport opens its own capture on every link, so a link that refuses one
+/// refuses them all, several times a scan, and again in every scan a front end runs.
+/// The refusal is a fact about the machine (an adapter Npcap is not bound to, such as
+/// a hypervisor's or a VPN's, stays that way), so it is reported once, and again only
+/// if it comes to matter more.
 ///
-/// How much it matters is [`loudness`]'s question. The link is named as a
-/// person knows it, with the system's name beside it on the quiet line, where
-/// somebody matching it against the capture library's own device list will be
-/// reading.
+/// How much it matters is [`loudness`]'s question. The link is named as a person knows
+/// it, with the system's name beside it on the quiet line, for someone matching it
+/// against the capture library's device list.
 fn tell_unheard(unheard: &[(&Zone, CaptureError)], every_link_failed: bool) {
     let links = crate::system::interface::interfaces_or_none();
     let mut told = TOLD
@@ -1266,26 +1245,23 @@ fn tell_unheard(unheard: &[(&Zone, CaptureError)], every_link_failed: bool) {
 /// How a link that could not be captured on is told about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Loudness {
-    /// At verbosity 1, with the decisions behind a result: a link nothing
-    /// in the scan was shown to need.
+    /// At verbosity 1, with the decisions behind a result: a link nothing in the scan
+    /// was shown to need.
     Quiet,
     /// On the default console, because the scan's answers depend on it.
     Aloud,
 }
 
-/// How loudly a link that could not be captured on is told about.
+/// How loudly a link that could not be captured on is reported.
 ///
-/// Aloud when the scan's answers depend on it and nothing else will say so.
-/// They depend on a link carrying the default route, since every target beyond
-/// this machine's own segments is reached through it and answers through it,
-/// and while other links were captured on the scan goes on without it, so this
-/// line is the only place its loss is told. Where no link could be captured on
-/// at all the capture fails, and its error names every link and what refused
-/// it: the lines here go quiet rather than say each cause a second time, beside
-/// the error that is already saying it. Otherwise the link is one of the
-/// adapters a host keeps beside the one it uses, a hypervisor's switch, a VPN's
-/// tunnel, a bridge, and a target only reaches it by sitting on its own
-/// segment: quiet, where a reader asking what went uncovered will find it.
+/// Aloud when the scan's answers depend on it and nothing else will say so: a link
+/// carrying the default route, through which every target beyond this machine's own
+/// segments is reached and answers, while the scan goes on without it on the other
+/// links. Where no link could be captured on at all, the capture fails with an error
+/// naming every link and its cause, so these lines go quiet. Otherwise the link is one
+/// of the adapters a host keeps beside the one it uses (a hypervisor's switch, a VPN's
+/// tunnel, a bridge), reached only by a target on its own segment: quiet, where a
+/// reader asking what went uncovered will find it.
 fn loudness(every_link_failed: bool, carries_default_route: bool) -> Loudness {
     if carries_default_route && !every_link_failed {
         Loudness::Aloud
@@ -1302,8 +1278,8 @@ impl Told {
         Self(std::collections::BTreeMap::new())
     }
 
-    /// Whether `link` is to be told about at `loudness`: never told about, or
-    /// told about more quietly than it now deserves. Records it either way.
+    /// Whether `link` should be reported at `loudness`: never reported, or reported
+    /// more quietly than it now deserves. Records it either way.
     fn first_time(&mut self, link: &str, loudness: Loudness) -> bool {
         match self.0.get(link) {
             Some(&said) if said >= loudness => false,
@@ -1318,19 +1294,18 @@ impl Told {
 /// Every link this process has said it cannot capture on. See [`tell_unheard`].
 static TOLD: std::sync::Mutex<Told> = std::sync::Mutex::new(Told::new());
 
-/// Starts the thread that reads one capture, marking the capture stopped early
-/// if that thread dies.
+/// Starts the thread that reads one capture, marking the capture stopped early if that
+/// thread dies.
 ///
-/// **A reader that panicked is a link that went deaf, and the record has to say
-/// so while the scan can still read it.** The thread is the only thing reading
-/// its interface, so every reply that would have arrived on it becomes silence a
-/// scanner cannot tell from a host that did not answer, and a log line is not
-/// the record: [`reader_loop`] sets the same flag when pcap ends the link, for
-/// the same reason. The mark is made in the unwind, by the dying thread, because
-/// every scanner reads its capture counts with the guard still alive. Set when
-/// the guard joined its threads, it would be set after the only read.
+/// **A reader that panicked is a link that went deaf, and the record must say so while
+/// the scan can still read it.** The thread is the only reader of its interface, so
+/// every reply that would have arrived becomes silence a scanner cannot tell from a
+/// host that did not answer; [`reader_loop`] sets the same flag when pcap ends the
+/// link. The dying thread sets the mark as it unwinds, because every scanner reads its
+/// capture counts while the guard is alive; set at join, it would come after the only
+/// read.
 ///
-/// Every reader goes through here, so no path starts one without the mark.
+/// Every reader starts here, so none runs without the mark.
 fn spawn_reader(
     name: &str,
     counters: Arc<CaptureStats>,
@@ -1369,11 +1344,9 @@ impl Drop for DeafOnUnwind<'_> {
 
 /// When the kernel says it saw this frame.
 ///
-/// Wall-clock rather than measured elapsed time, because the question it answers
-/// is "when was this host last heard from", which a reader places against
-/// everything else in the record. A frame whose timestamp cannot be represented
-/// is stamped with the epoch rather than dropped: the frame is still evidence,
-/// and losing it over a clock would be the wrong trade.
+/// Wall-clock, because it answers "when was this host last heard from", which a reader
+/// places against everything else in the record. A frame whose timestamp cannot be
+/// represented is stamped with the epoch: the frame is still evidence.
 fn timestamp_of(packet: &pcap::Packet<'_>) -> SystemTime {
     let seconds = u64::try_from(packet.header.ts.tv_sec).unwrap_or(0);
     let micros = u32::try_from(packet.header.ts.tv_usec).unwrap_or(0);
@@ -1398,11 +1371,10 @@ fn device_name(name: &str) -> String {
 
 /// The name Npcap gives the adapter an interface list names `name`.
 ///
-/// Npcap lists an adapter as `\Device\NPF_` followed by the GUID Windows
-/// names it by, and that full form is the one its device list hands out and
-/// its open call is documented against. A name already in that form, or one
-/// that is not a GUID at all, such as Npcap's own loopback adapter, is passed
-/// through unchanged.
+/// Npcap lists an adapter as `\Device\NPF_` followed by the GUID Windows names it by,
+/// and its device list and open call use that full form. A name already in that form,
+/// or one that is not a GUID, such as Npcap's own loopback adapter, is passed through
+/// unchanged.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn npcap_device_name(name: &str) -> String {
     if name.starts_with('{') {
@@ -1412,30 +1384,28 @@ fn npcap_device_name(name: &str) -> String {
     }
 }
 
-/// A capture [`open`] brought up, with what it is and what `libpcap` had to say
-/// about bringing it up.
+/// A capture [`open`] brought up, with what it is and what `libpcap` said about
+/// bringing it up.
 struct Opened {
     capture: Capture<Active>,
     /// How its frames are framed.
     link: LinkType,
-    /// The warning `libpcap` activated it under, if it gave one. See
-    /// [`libpcap`].
+    /// The warning `libpcap` activated it under, if any. See [`libpcap`].
     warning: Option<String>,
-    /// The clauses of its filter this link could not express, and so does not
-    /// admit. See [`CaptureFilter`].
+    /// The clauses of its filter this link could not express, and so does not admit.
+    /// See [`CaptureFilter`].
     left_out: Vec<String>,
 }
 
-/// Opens and activates a single filtered capture, returning it alongside the
-/// [`LinkType`] its frames must be parsed as.
+/// Opens and activates a single filtered capture, returning it with the [`LinkType`]
+/// its frames must be parsed as.
 ///
 /// On Unix the capture is put into non-blocking mode and the reader waits on the
-/// descriptor itself. `libpcap`'s read timeout is not a usable substitute:
-/// Linux's memory-mapped `TPACKET` path treats it only as the timeout of its own
-/// internal `poll`, and loops back to poll again instead of returning to the
-/// caller, so a blocking read on an interface seeing no matching frames never
-/// returns and the stop flag is never observed. BSD's `BPF` (macOS) does return
-/// on timeout, but relying on that would leave Linux broken.
+/// descriptor itself. `libpcap`'s read timeout cannot replace that: Linux's
+/// memory-mapped `TPACKET` path uses it only as the timeout of its own internal `poll`
+/// and polls again instead of returning, so a blocking read on an interface seeing no
+/// matching frames never returns and the stop flag is never checked. BSD's `BPF`
+/// (macOS) does return on timeout.
 fn open(name: &str, options: &CaptureOptions) -> Result<Opened, CaptureError> {
     let (capture, warning) = libpcap::activate(
         name,
@@ -1444,10 +1414,8 @@ fn open(name: &str, options: &CaptureOptions) -> Result<Opened, CaptureError> {
             promiscuous: options.promiscuous,
             timeout_ms: READ_TIMEOUT_MS,
             immediate: true,
-            // Left alone unless asked for, so that not choosing a buffer size
-            // keeps whatever the platform's `libpcap` decided rather than this
-            // crate picking a number for every capture on every operating
-            // system it runs on.
+            // Left alone unless asked for, so an unchosen buffer size keeps the
+            // platform `libpcap`'s default.
             buffer_bytes: options.buffer_bytes.map(saturating_i32),
         },
     )?;
@@ -1483,31 +1451,27 @@ fn open(name: &str, options: &CaptureOptions) -> Result<Opened, CaptureError> {
     })
 }
 
-/// Narrows a byte count to the signed width `libpcap` takes, saturating rather
-/// than wrapping.
+/// Narrows a byte count to the signed width `libpcap` takes, saturating.
 ///
-/// Both settings this converts are sizes, and both are meaningless as negative
-/// numbers: a wrapped snapshot length is a capture that keeps nothing, which
-/// would read as a quiet network rather than as a bad argument. The `u32` on
-/// [`CaptureOptions`] is the honest type for the engine to speak; this is the
-/// one place the library's `i32` is met.
+/// Both settings this converts are sizes, meaningless when negative: a wrapped
+/// snapshot length is a capture that keeps nothing, which would read as a quiet
+/// network. [`CaptureOptions`] uses `u32`; this is where the library's `i32` is met.
 fn saturating_i32(bytes: u32) -> i32 {
     i32::try_from(bytes).unwrap_or(i32::MAX)
 }
 
-/// Read loop for one capture: hand every admitted frame to `deliver` until it
-/// asks to stop, the stop flag is set, or the capture fails. Having no frame
-/// ready is the normal idle case, not an error.
+/// Read loop for one capture: hands every admitted frame to `deliver` until it asks to
+/// stop, the stop flag is set, or the capture fails. No frame ready is the normal idle
+/// case.
 ///
-/// `deliver` is given the whole `libpcap` packet, its bytes and the header
-/// carrying the kernel's timestamp, and says whether to carry on. Both outputs
-/// this module offers are one of these, which is the point: the shutdown
-/// discipline, the poll, and the counter cadence are subtle enough that having
-/// two copies of them would mean having one of them wrong.
+/// `deliver` gets the whole `libpcap` packet, its bytes and the header carrying the
+/// kernel's timestamp, and returns whether to carry on. Both outputs this module offers
+/// are built on it, so the shutdown discipline, the poll and the counter cadence exist
+/// once.
 ///
-/// The loop also keeps `counters` current, since what this thread fails to read
-/// in time is invisible everywhere else: a frame the kernel discards for want of
-/// buffer space never reaches the channel, so no downstream counter can miss it.
+/// The loop also keeps `counters` current, since what this thread fails to read in time
+/// is invisible everywhere else: a frame the kernel discards for lack of buffer space
+/// never reaches the channel.
 fn reader_loop(
     mut capture: Capture<Active>,
     stop: &AtomicBool,
@@ -1520,9 +1484,9 @@ fn reader_loop(
     let mut since_refresh: u32 = 0;
 
     while !stop.load(Ordering::Relaxed) {
-        // Whether this iteration read a frame, decided inside the match and
-        // acted on after it: the packet borrows the capture, and refreshing the
-        // counters needs it back.
+        // Whether this iteration read a frame, decided inside the match and acted on
+        // after it: the packet borrows the capture, and refreshing the counters needs
+        // it back.
         let mut read_frame = false;
 
         match capture.next_packet() {
@@ -1534,13 +1498,11 @@ fn reader_loop(
             }
             Err(pcap::Error::TimeoutExpired) => {}
             Err(e) => {
-                // Recorded as well as logged, where the link is actually lost.
-                // This thread is the only thing reading this interface, so
-                // ending here makes it deaf for the rest of the scan, and every
-                // reply that would have arrived on it is silence a scanner
-                // cannot tell from a host that did not answer. That is the loss
-                // `CaptureCounts` exists to carry, and a log line is not the
-                // record.
+                // Recorded as well as logged. This thread is the only reader of this
+                // interface, so ending here makes it deaf for the rest of the scan,
+                // and every reply that would have arrived is silence a scanner cannot
+                // tell from a host that did not answer. `CaptureCounts` is the record
+                // of that loss.
                 if ends_the_link(&e) {
                     counters.stopped_early.store(true, Ordering::Relaxed);
                     error!(
@@ -1558,8 +1520,8 @@ fn reader_loop(
             since_refresh = 0;
         }
 
-        // Idle is also the cheapest moment to refresh: nothing is waiting on
-        // this thread, and a scan that ends quietly gets a final count for free.
+        // Idle is the cheapest moment to refresh: nothing waits on this thread, and a
+        // scan that ends quietly gets a final count.
         if !read_frame {
             refresh(&mut capture, counters);
             since_refresh = 0;
@@ -1581,14 +1543,13 @@ fn reader_loop(
     }
 }
 
-/// Whether a capture ending on `error` leaves the link deaf, or merely reached
-/// the end of what it had to give.
+/// Whether a capture ending on `error` leaves the link deaf, or just reached the end
+/// of its input.
 ///
-/// The distinction is the whole of what [`CaptureCounts::stopped_early`] means,
-/// and it is a function so that it can be stated and tested rather than living
-/// in the shape of a match nothing can reach. A live capture never runs out of
-/// packets, so `NoMorePackets` is a savefile ending normally; everything else
-/// is a receive path that stopped part-way through a scan.
+/// This is what [`CaptureCounts::stopped_early`] means, as a function so it can be
+/// tested. A live capture never runs out of packets, so `NoMorePackets` is a savefile
+/// ending normally; anything else is a receive path that stopped part-way through a
+/// scan.
 ///
 /// [`CaptureCounts::stopped_early`]: crate::model::capture::CaptureCounts::stopped_early
 fn ends_the_link(error: &pcap::Error) -> bool {
@@ -1600,20 +1561,18 @@ fn ends_the_link(error: &pcap::Error) -> bool {
 
 /// Copies `libpcap`'s current counters into `counters`.
 ///
-/// A failure is not reported. `pcap_stats` is unsupported on some capture
-/// sources, so a thread that cannot answer would otherwise log once per refresh
-/// for the life of the scan; the counters simply stay where they were, and a
-/// stalled count is visible as such next to a running scan.
+/// Failures are not reported. `pcap_stats` is unsupported on some capture sources,
+/// which would otherwise log once per refresh for the whole scan; the counters stay
+/// where they were, and a stalled count is visible next to a running scan.
 fn refresh(capture: &mut Capture<Active>, counters: &CaptureStats) {
     if let Ok(stat) = capture.stats() {
         counters.store(&stat);
     }
 }
 
-/// Waits for `fd` to have a frame ready, giving up after `timeout_ms` so the
-/// caller can re-check its stop flag or its deadline. Poll failures are not
-/// reported: the caller's next read reports anything genuinely wrong, and an
-/// interrupted poll simply costs one extra loop.
+/// Waits for `fd` to have a frame ready, giving up after `timeout_ms` so the caller can
+/// re-check its stop flag or deadline. Poll failures are not reported: the next read
+/// reports anything really wrong, and an interrupted poll costs one extra loop.
 #[cfg(not(windows))]
 fn wait_readable(fd: std::os::unix::io::RawFd, timeout_ms: i32) {
     let mut poll_fd = libc::pollfd {
@@ -1622,22 +1581,20 @@ fn wait_readable(fd: std::os::unix::io::RawFd, timeout_ms: i32) {
         revents: 0,
     };
 
-    // SAFETY: `poll_fd` is a single initialized `pollfd` and the count says so;
-    // `poll` reads it and writes only `revents`.
+    // SAFETY: `poll_fd` is a single initialized `pollfd` and the count says so; `poll`
+    // reads it and writes only `revents`.
     unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
 }
 
 /// A handle for putting whole frames on a link.
 ///
-/// The send half of the same library the receive half already uses. Sending
-/// through another library would put two open on one interface for one scan:
-/// a `pnet` channel, say, whose receiver is discarded beside the `pcap`
-/// capture that reads, and a discarded receiver is a kernel buffer nothing
-/// drains.
+/// The send half of the library the receive half uses. Sending through another library
+/// would open two on one interface for one scan, such as a `pnet` channel whose
+/// receiver is discarded beside the `pcap` capture, and a discarded receiver is a
+/// kernel buffer nothing drains.
 ///
 /// A separate handle from the reading one, because a capture cannot be read and
-/// written through the same borrow while a reader thread is parked in
-/// `next_packet`. What it is not is a separate *library*.
+/// written through the same borrow while a reader thread is parked in `next_packet`.
 pub struct FrameSender {
     capture: Capture<Active>,
 }
@@ -1645,10 +1602,8 @@ pub struct FrameSender {
 impl FrameSender {
     /// Opens a send-only handle on `link`.
     ///
-    /// The filter is one that cannot match. This handle exists to write, and a
-    /// capture with no filter at all would fill a kernel buffer nobody reads,
-    /// the defect a discarded receiver has. `less 0` asks for frames shorter
-    /// than nothing.
+    /// The filter cannot match: a capture with no filter would fill a kernel buffer
+    /// nobody reads. `less 0` asks for frames shorter than nothing.
     pub fn open(link: &str) -> Result<Self, CaptureError> {
         let (mut capture, _) = libpcap::activate(
             link,
@@ -1680,49 +1635,41 @@ impl FrameSink for FrameSender {
 
 /// Somewhere to put a frame.
 ///
-/// A trait rather than the concrete sender for one reason: it is the seam a test
-/// drives a scanner through, the way [`FrameStream`] is on the receive side. A
-/// fake segment implements this, observes what a scanner emits, and answers on
-/// the stream, with no interface and no privileges involved.
+/// A trait because it is the seam a test drives a scanner through, as [`FrameStream`]
+/// is on the receive side. A fake segment implements this, observes what a scanner
+/// emits, and answers on the stream, with no interface and no privileges.
 pub trait FrameSink: Send {
     /// Puts `frame` on the wire whole, link header included.
     ///
-    /// The error is a string because there is nothing a caller can do with it
-    /// but report it, and the two libraries that have ever implemented this
-    /// disagree about everything else. What matters at the call site is that a
-    /// failure means the frame did not leave.
+    /// The error is a string because a caller can only report it. What matters at the
+    /// call site is that a failure means the frame did not leave.
     fn send_frame(&mut self, frame: &[u8]) -> Result<(), String>;
 }
 
 /// One link, opened for both directions and driven by a single thread.
 ///
-/// The shape a request-and-wait exchange wants: put a frame on the wire, then
-/// read until the answer arrives or the deadline passes. Both halves borrow the
-/// same handle mutably, which is why this is one type rather than a pair, and why
-/// it is not what [`frames`] gives a scanner, whose reader lives on its own thread
-/// and cannot share a borrow with anybody.
+/// The shape a request-and-wait exchange wants: put a frame on the wire, then read
+/// until the answer arrives or the deadline passes. Both halves borrow the same handle
+/// mutably, so this is one type, and not what [`frames`] gives a scanner, whose reader
+/// lives on its own thread.
 ///
-/// The filter is the caller's, for the reason it always is here: what a frame is
-/// worth is decided by whoever reads it.
+/// The filter is the caller's, since the reader decides what a frame is worth.
 pub struct FrameChannel {
     capture: Capture<Active>,
-    /// How long [`next_frame`](Self::next_frame) waits for a frame to arrive.
-    /// Windows has no descriptor to wait on, and its capture's own read
-    /// timeout does the waiting there.
+    /// How long [`next_frame`](Self::next_frame) waits for a frame. Windows has no
+    /// descriptor to wait on, and its capture's own read timeout does the waiting.
     #[cfg(not(windows))]
     wait_ms: i32,
-    /// The frame [`next_frame`](Self::next_frame) last read, copied out of
-    /// `libpcap`'s buffer so that reading it and waiting for it can be
-    /// separate steps. See [`next_frame`](Self::next_frame).
+    /// The frame [`next_frame`](Self::next_frame) last read, copied out of `libpcap`'s
+    /// buffer so reading it and waiting for it can be separate steps.
     frame: Vec<u8>,
 }
 
 impl FrameChannel {
     /// Opens `link` for sending and receiving, admitting what `filter` admits.
     ///
-    /// `read_timeout` bounds how long [`next_frame`](Self::next_frame) waits, so
-    /// a caller with a deadline can honour it rather than parking until a frame
-    /// happens to arrive.
+    /// `read_timeout` bounds how long [`next_frame`](Self::next_frame) waits, so a
+    /// caller with a deadline can honour it.
     pub fn open(
         link: &str,
         filter: &str,
@@ -1740,9 +1687,9 @@ impl FrameChannel {
             },
         )?;
 
-        // Non-blocking, with the wait done on the descriptor, for the reason
-        // `open` gives: on Linux a blocking read waits until a frame arrives
-        // whatever the read timeout says. See `next_frame`.
+        // Non-blocking, with the wait done on the descriptor, as in `open`: on Linux a
+        // blocking read waits for a frame whatever the read timeout says. See
+        // `next_frame`.
         #[cfg(not(windows))]
         let capture = capture.setnonblock().map_err(|source| CaptureError::Open {
             interface: link.to_owned(),
@@ -1765,26 +1712,20 @@ impl FrameChannel {
         })
     }
 
-    /// The next frame the filter admitted, or `None` if none arrived within
-    /// the read timeout.
-    ///
-    /// `None` is not the end of anything. It means nothing arrived inside the
-    /// timeout, and a caller with a deadline left should ask again.
+    /// The next frame the filter admitted, or `None` if none arrived within the read
+    /// timeout. A caller with deadline left should ask again.
     ///
     /// # How the wait is bounded
     ///
-    /// On Unix the read never blocks. A frame already waiting is returned at
-    /// once; otherwise the wait is a `poll` on the capture's descriptor, bounded
-    /// by the read timeout, followed by one more read. That is the discipline
-    /// every reader thread in this module keeps, and for the same reason:
-    /// `libpcap`'s own read timeout does not bound a blocking read on Linux, and
-    /// a caller relying on it, such as an address resolution waiting on a
-    /// neighbour that will never answer, would wait until some unrelated frame
-    /// happens to pass the filter, which on a quiet link is never.
+    /// On Unix the read never blocks. A frame already waiting is returned at once;
+    /// otherwise the wait is a `poll` on the capture's descriptor, bounded by the read
+    /// timeout, followed by one more read. Every reader thread here does the same,
+    /// because `libpcap`'s read timeout does not bound a blocking read on Linux: an
+    /// address resolution waiting on a neighbour that will never answer would wait for
+    /// an unrelated frame to pass the filter, which on a quiet link is never.
     ///
-    /// The read comes before the wait rather than after it because `libpcap`
-    /// may already hold frames it read from the kernel in one batch, which a
-    /// descriptor that has nothing more to give would not announce. Windows
+    /// The read comes before the wait because `libpcap` may already hold frames it read
+    /// from the kernel in one batch, which the descriptor would not announce. Windows
     /// keeps the blocking read, whose timeout Npcap honours.
     pub fn next_frame(&mut self) -> Option<&[u8]> {
         if self.read_one() {
@@ -1821,41 +1762,35 @@ impl FrameSink for FrameChannel {
     }
 }
 
-/// Bringing a capture handle up, the one step taken through `libpcap` itself
-/// rather than through the `pcap` crate.
+/// Brings a capture handle up: the one step taken through `libpcap` directly instead
+/// of the `pcap` crate.
 ///
-/// # Why this step, and only this one
+/// # Why this step
 ///
-/// `pcap_activate` has three kinds of answer, not two. Zero is success and a
-/// negative status is failure. A positive status is a *warning*: the handle is
-/// live and capturing, and `libpcap` wants it known that it is not quite what
-/// was asked for. `PCAP_WARNING_PROMISC_NOTSUP` is a link that will not go
-/// promiscuous. `PCAP_WARNING` is, among other things, how Linux brings up a
-/// link whose hardware type `libpcap` has no mapping for, a GRE tunnel or an
-/// `ip6tnl` or `ip6gre` link, which it serves cooked as `DLT_LINUX_SLL` and
-/// [`LinkType::LinuxSll`] reads.
+/// `pcap_activate` has three kinds of answer. Zero is success and a negative status is
+/// failure. A positive status is a *warning*: the handle is live and capturing, but not
+/// quite what was asked for. `PCAP_WARNING_PROMISC_NOTSUP` is a link that will not go
+/// promiscuous. `PCAP_WARNING` is, among other things, how Linux brings up a link whose
+/// hardware type `libpcap` cannot map (a GRE tunnel, an `ip6tnl` or `ip6gre` link),
+/// which it serves cooked as `DLT_LINUX_SLL` and [`LinkType::LinuxSll`] reads.
 ///
-/// The `pcap` crate's `Capture::open` treats every non-zero status as failure
-/// and closes the handle, warnings included. Through it, a GRE tunnel cannot be
-/// captured on at all, and neither can any link that merely declined to be
-/// promiscuous, so a scan through one hears nothing and reads its targets as
-/// down.
+/// The `pcap` crate's `Capture::open` treats every non-zero status as failure and
+/// closes the handle, warnings included. Through it, a GRE tunnel, or any link that
+/// declined to be promiscuous, could not be captured on, and a scan through one would
+/// read its targets as down.
 ///
-/// The crate leaves no way round that. A handle becomes an active capture only
-/// through that call, and it cannot be moved out of the crate's inactive type
-/// into its active one without closing it or leaking the wrapper that owns it.
-/// So the handle is created and activated here and adopted into a
-/// `Capture<Active>` the moment it exists, through the conversion the crate
-/// provides for a raw handle. From then on it is the crate's: every read,
-/// filter, statistic and send goes through its API, and so does the close.
+/// The crate offers no way round that: a handle becomes active only through that call,
+/// and cannot move from the crate's inactive type to its active one without closing
+/// it or leaking its wrapper. So the handle is created and activated here and adopted
+/// into a `Capture<Active>` immediately, through the crate's conversion for a raw
+/// handle. From then on every read, filter, statistic, send and the close go through
+/// the crate's API.
 ///
-/// The alternatives were worse. Forking the crate to change one comparison is
-/// a dependency this tree would have to carry. Capturing on Linux's `any`
-/// device and filtering by interface index would serve only Linux, and would
-/// copy every link's traffic into the kernel filter to find one link's. The
-/// seam here is eight functions `libpcap` has exported unchanged since 1.5,
-/// every one of which the crate declares too, so linking it asks nothing of
-/// `libpcap` or Npcap that the crate did not already.
+/// Forking the crate would mean carrying a fork for one comparison, and capturing on
+/// Linux's `any` device would serve only Linux and copy every link's traffic into the
+/// filter. The seam here is eight functions `libpcap` has exported unchanged since 1.5,
+/// all of which the crate also declares, so linking asks nothing new of `libpcap` or
+/// Npcap.
 mod libpcap {
     use std::ffi::{CStr, CString, c_char, c_int};
     use std::marker::{PhantomData, PhantomPinned};
@@ -1865,25 +1800,24 @@ mod libpcap {
 
     use super::{CaptureError, LibraryError, device_name};
 
-    /// `libpcap`'s capture handle, which this side only ever holds a pointer
-    /// to.
+    /// `libpcap`'s capture handle, which this side only holds a pointer to.
     ///
-    /// Declared here rather than named from the `pcap` crate, which keeps its
-    /// bindings private. The pointer is converted to the crate's own type once,
-    /// in [`activate`], and the two name the same C struct.
+    /// Declared here because the `pcap` crate keeps its bindings private. The pointer
+    /// is converted to the crate's type once, in [`activate`]; both name the same C
+    /// struct.
     #[repr(C)]
     struct Handle {
         _opaque: [u8; 0],
         _unmovable: PhantomData<(*mut u8, PhantomPinned)>,
     }
 
-    /// The size `libpcap` requires of the buffer `pcap_create` writes an error
-    /// into, `PCAP_ERRBUF_SIZE`.
+    /// The size `libpcap` requires of the buffer `pcap_create` writes an error into,
+    /// `PCAP_ERRBUF_SIZE`.
     const ERRBUF_SIZE: usize = 256;
 
-    // `pcap_activate`'s statuses, from `pcap/pcap.h`. Every negative status is a
-    // failure and every positive one a warning; these are the ones this module
-    // has words of its own for, where `libpcap` left its error buffer empty.
+    // `pcap_activate`'s statuses, from `pcap/pcap.h`. Negative statuses are failures
+    // and positive ones warnings; these are the ones this module names itself where
+    // `libpcap` left its error buffer empty.
     const PCAP_WARNING: c_int = 1;
     const PCAP_WARNING_PROMISC_NOTSUP: c_int = 2;
     const PCAP_WARNING_TSTAMP_TYPE_NOTSUP: c_int = 3;
@@ -1905,9 +1839,8 @@ mod libpcap {
 
     /// What a handle is set to before it is activated.
     ///
-    /// Together because `libpcap` accepts every one of them only on a handle
-    /// not yet activated, and the crate's builders for them are on the type
-    /// this module does not use.
+    /// Grouped because `libpcap` accepts each only on a handle not yet activated, and
+    /// the crate's builders for them are on the type this module does not use.
     pub(super) struct Setup {
         pub(super) snaplen: c_int,
         pub(super) promiscuous: bool,
@@ -1917,12 +1850,11 @@ mod libpcap {
         pub(super) buffer_bytes: Option<c_int>,
     }
 
-    /// Creates a capture handle on `link`, sets it up, and activates it,
-    /// returning it with the warning it was activated under, if any.
+    /// Creates a capture handle on `link`, sets it up, and activates it, returning it
+    /// with the warning it was activated under, if any.
     ///
-    /// A warning is not a failure. The handle is live, and the warning says in
-    /// what way it differs from what was asked for; the caller decides whether
-    /// that is worth saying.
+    /// A warning is not a failure: the handle is live, and the warning says how it
+    /// differs from what was asked for. The caller decides whether to report it.
     pub(super) fn activate(
         link: &str,
         setup: &Setup,
@@ -1937,9 +1869,8 @@ mod libpcap {
         // and `errbuf` is the `PCAP_ERRBUF_SIZE` bytes `pcap_create` may write.
         let created = unsafe { pcap_create(device.as_ptr(), errbuf.as_mut_ptr()) };
         let Some(created) = NonNull::new(created) else {
-            // SAFETY: on failure `pcap_create` has written a NUL-terminated
-            // message into `errbuf`, which was zeroed, so it is terminated
-            // either way.
+            // SAFETY: on failure `pcap_create` has written a NUL-terminated message
+            // into `errbuf`, which was zeroed, so it is terminated either way.
             let message = unsafe { CStr::from_ptr(errbuf.as_ptr()) };
             return Err(CaptureError::Open {
                 interface: link.to_owned(),
@@ -1949,18 +1880,17 @@ mod libpcap {
             });
         };
 
-        // Adopted before it is activated, so that every path out of this
-        // function, the failures below included, closes it through the
-        // crate's own `Drop`, which is what `libpcap` asks of a handle whose
-        // activation failed. Nothing but the pointer is read from it until
-        // activation has succeeded.
+        // Adopted before activation, so every path out of this function, the failures
+        // below included, closes it through the crate's `Drop`, as `libpcap` asks for a
+        // handle whose activation failed. Only the pointer is read from it until
+        // activation succeeds.
         let capture: Capture<Active> = Capture::from(created.cast());
         let handle = capture.as_ptr().cast::<Handle>();
 
         // SAFETY: `handle` is the live handle `pcap_create` returned, owned by
-        // `capture` for the rest of this function, and not yet activated,
-        // which is the only state in which these calls are defined. Each
-        // returns an error only for an activated handle.
+        // `capture` for the rest of this function, and not yet activated, the only
+        // state in which these calls are defined. Each errors only on an activated
+        // handle.
         unsafe {
             pcap_set_snaplen(handle, setup.snaplen);
             pcap_set_promisc(handle, c_int::from(setup.promiscuous));
@@ -1971,7 +1901,7 @@ mod libpcap {
             }
         }
 
-        // SAFETY: as above; activation is the call these settings were for.
+        // SAFETY: as above; these settings were made for this activation.
         let status = unsafe { pcap_activate(handle) };
         let message = || status_message(handle, status);
 
@@ -1982,14 +1912,11 @@ mod libpcap {
         }
     }
 
-    /// The error a handle that failed to activate with `status` is reported
-    /// as.
+    /// The error reported for a handle that failed to activate with `status`.
     ///
-    /// Privilege is read from the status and from nothing else. `libpcap`
-    /// reports a missing privilege as its own status, on every platform, while
-    /// its words for it differ between them and between releases, and a check
-    /// that matched the words would come to blame privilege for a failure it
-    /// did not cause, or miss the one it did.
+    /// Privilege is read from the status alone. `libpcap` reports a missing privilege
+    /// as its own status on every platform, while its wording differs between
+    /// platforms and releases, so matching the words would misattribute failures.
     pub(super) fn refusal(link: &str, status: c_int, message: String) -> CaptureError {
         let source = LibraryError::new(pcap::Error::PcapError(message));
         match status {
@@ -2004,18 +1931,14 @@ mod libpcap {
         }
     }
 
-    /// What `libpcap` said about `status`, in its own words where it wrote
-    /// some.
+    /// What `libpcap` said about `status`, in its own words where it wrote some.
     ///
-    /// `pcap_geterr` holds the detail for most statuses and is empty for a
-    /// few, where the status alone is the whole of what is known. Those are
-    /// named here in the words `pcap_statustostr` would use, rather than
-    /// through that function, which is the one this module would declare that
-    /// the crate does not.
+    /// `pcap_geterr` holds the detail for most statuses and is empty for a few, where
+    /// the status is all that is known. Those are named here as `pcap_statustostr`
+    /// would, since that function is not declared by the crate.
     fn status_message(handle: *mut Handle, status: c_int) -> String {
-        // SAFETY: `handle` is live, and `pcap_geterr` returns a pointer into
-        // it, NUL-terminated, valid until the next call on the handle. It is
-        // copied out before anything else is.
+        // SAFETY: `handle` is live, and `pcap_geterr` returns a NUL-terminated pointer
+        // into it, valid until the next call on the handle. It is copied out first.
         let said = unsafe { CStr::from_ptr(pcap_geterr(handle)) }
             .to_string_lossy()
             .into_owned();
@@ -2054,10 +1977,10 @@ mod libpcap {
 #[cfg(test)]
 mod tests {
 
-    /// An adapter that refuses is named once, and the capture library's own
-    /// words say why. The `pcap` crate prefixes every message with `libpcap
-    /// error:`, which on Windows reads as a missing library when Npcap is
-    /// installed and has said exactly what is wrong.
+    /// An adapter that refuses is named once, and the capture library's own words say
+    /// why. The `pcap` crate prefixes every message with `libpcap error:`, which on
+    /// Windows reads as a missing library when Npcap is installed and has said exactly
+    /// what is wrong.
     #[test]
     fn a_refused_open_names_the_adapter_once_and_quotes_the_library() {
         let guid = "{4D36E972-E325-11CE-BFC1-08002BE10318}";
@@ -2074,13 +1997,12 @@ mod tests {
         assert_eq!(refused.reason(), message, "the reason leaves the name out");
     }
 
-    /// A link refused for want of privilege is said to be, and one refused for
+    /// A link refused for want of privilege is reported as such, and one refused for
     /// anything else is not.
     ///
-    /// The status decides it, which is the property: `libpcap` reports a
-    /// missing privilege as a status of its own, and a message blaming
-    /// privilege for a failure it did not cause sends somebody who holds it
-    /// looking in the one place the fault is not.
+    /// The status decides it: `libpcap` reports a missing privilege as its own status,
+    /// and blaming privilege for a failure it did not cause misleads someone who
+    /// already has it.
     #[test]
     fn only_a_refusal_libpcap_reports_as_denied_is_blamed_on_privilege() {
         for status in [
@@ -2100,12 +2022,11 @@ mod tests {
         }
     }
 
-    /// A link refused because the process had no descriptor left is told
-    /// apart from one that declined, so the capture can refuse whole rather
-    /// than listen on the links it reached and read the replies of the rest
-    /// as silence. `libpcap` gives the shortage the status of any failure to
-    /// open, and says which it was only in the C library's words for the
-    /// errno.
+    /// A link refused because the process had no descriptor left is told apart from
+    /// one that declined, so the capture can refuse whole instead of listening on the
+    /// links it reached and reading the rest's replies as silence. `libpcap` gives the
+    /// shortage the status of any failure to open, and says which it was only in the C
+    /// library's words for the errno.
     #[cfg(unix)]
     #[test]
     fn a_link_refused_for_want_of_a_descriptor_is_told_apart_from_one_that_declined() {
@@ -2141,8 +2062,8 @@ mod tests {
         );
     }
 
-    /// A capture no link would take names each link and its reason, and
-    /// blames privilege in one sentence only where privilege refused them all.
+    /// A capture no link would take names each link and its reason, and blames
+    /// privilege in one sentence only where privilege refused them all.
     #[test]
     fn a_capture_no_link_would_take_says_why_each_refused() {
         let denied = |link: &str| CaptureError::Denied {
@@ -2208,12 +2129,12 @@ mod tests {
         );
     }
 
-    /// Links refused for one reason are told it once, with how many there
-    /// were, and a link refused for its own reason keeps its name.
+    /// Links refused for one reason are told it once, with how many there were, and a
+    /// link refused for its own reason keeps its name.
     ///
-    /// A process out of descriptors is refused on every link it tries, in the
-    /// same words each time; told per link, one fact runs to a line of two
-    /// thousand characters on a machine with a few dozen interfaces.
+    /// A process out of descriptors is refused on every link in the same words; told
+    /// per link, one fact would run to two thousand characters on a machine with a few
+    /// dozen interfaces.
     #[test]
     fn links_refused_for_one_reason_are_told_it_once() {
         let exhausted = |link: &str| {
@@ -2256,15 +2177,13 @@ mod tests {
         );
     }
 
-    /// And through the real opening path: a link that does not exist is
-    /// refused, and the error blames privilege exactly when the refusal was
-    /// one.
+    /// Through the real opening path: a link that does not exist is refused, and the
+    /// error blames privilege exactly when the refusal was one.
     ///
-    /// Which refusal a machine gives depends on it. An unprivileged Linux
-    /// process is denied before the device is ever looked up, and a macOS user
-    /// in `access_bpf` or a root process is told there is no such device. The
-    /// property holds in both, and the link is named wherever privilege is not
-    /// the whole of the answer.
+    /// Which refusal a machine gives varies. An unprivileged Linux process is denied
+    /// before the device is looked up, and a macOS user in `access_bpf` or a root
+    /// process is told there is no such device. The property holds in both, and the
+    /// link is named wherever privilege is not the whole answer.
     #[test]
     fn a_capture_that_could_not_open_blames_privilege_only_when_it_was_denied() {
         let link = Zone::unresolved("zondnone0");
@@ -2293,8 +2212,8 @@ mod tests {
     /// `DLT_RAW`, how a WireGuard or IP-in-IP tunnel comes up on Linux.
     const RAW: i32 = 12;
 
-    /// Of a set of alternatives, a link keeps the ones it can express and
-    /// leaves out the ones it cannot, and says which it left out.
+    /// Of a set of alternatives, a link keeps the ones it can express, leaves out the
+    /// rest, and says which it left out.
     #[test]
     fn alternatives_are_narrowed_to_what_a_link_can_express() {
         let filter = CaptureFilter::any_of(["(ether dst 01:00:0c:cc:cc:cc)", "(tcp)"]);
@@ -2310,13 +2229,11 @@ mod tests {
         assert!(left_out.is_empty());
     }
 
-    /// A clause nothing can express is a mistake, and is refused rather than
-    /// left out.
+    /// A clause nothing can express is a mistake, and is refused.
     ///
-    /// Leaving a clause out is sound only because the link could not have
-    /// carried what it matches. A typo matches nothing anywhere, and dropping
-    /// it silently would turn a mistake in the filter into traffic that is
-    /// never seen, on every link, with nothing said.
+    /// Leaving a clause out is sound only because the link could not carry what it
+    /// matches. A typo matches nothing anywhere, and dropping it silently would hide
+    /// traffic on every link with nothing said.
     #[test]
     fn a_clause_no_link_can_express_is_refused_rather_than_left_out() {
         let filter = CaptureFilter::any_of(["(tcp)", "(ether dts 01:00:0c:cc:cc:cc)"]);
@@ -2331,8 +2248,8 @@ mod tests {
         }
     }
 
-    /// A link that can express none of the alternatives is refused, naming the
-    /// filter whole.
+    /// A link that can express none of the alternatives is refused, naming the whole
+    /// filter.
     #[test]
     fn a_link_that_can_express_no_alternative_is_refused() {
         let filter =
@@ -2346,10 +2263,9 @@ mod tests {
         }
     }
 
-    /// An expression is compiled whole, never narrowed. A scan's reply filter
-    /// is one, since every part of it is needed to hear the answers, and a link
-    /// that can express only some of it is refused rather than captured on in
-    /// part.
+    /// An expression is compiled whole. A scan's reply filter is one, since every part
+    /// is needed to hear the answers, and a link that can express only some of it is
+    /// refused.
     #[test]
     fn an_expression_is_never_narrowed() {
         let written = "tcp and ether src 02:00:00:00:00:01";
@@ -2365,18 +2281,16 @@ mod tests {
         );
     }
 
-    /// A frame channel bounds its own wait, on the descriptor, rather than
-    /// trusting `libpcap`'s read timeout to end a blocking read.
+    /// A frame channel bounds its own wait on the descriptor, since `libpcap`'s read
+    /// timeout does not end a blocking read.
     ///
-    /// Linux does not end one on the timeout: its memory-mapped path polls
-    /// again, and the read returns only when a frame passes the filter. An
-    /// address resolution waiting there on a neighbour that will never answer
-    /// waits for as long as the link stays quiet. So the capture must not be a
-    /// blocking one, which is the property this holds; that the wait then ends
-    /// on a quiet Linux link is Tier 3's to show.
+    /// On Linux the memory-mapped path polls again, and the read returns only when a
+    /// frame passes the filter, so an address resolution waiting on a neighbour that
+    /// will never answer waits as long as the link stays quiet. This holds that the
+    /// capture is non-blocking; that the wait then ends on a quiet Linux link is Tier
+    /// 3's to show.
     ///
-    /// Needs the right to capture on the loopback, and says nothing where the
-    /// process lacks it.
+    /// Needs the right to capture on loopback, and passes silently without it.
     #[test]
     fn a_frame_channel_bounds_its_wait_itself_rather_than_trusting_libpcap() {
         let Some(loopback) = crate::system::interface::interfaces()
@@ -2409,14 +2323,13 @@ mod tests {
         );
     }
 
-    /// A link the scan's answers depend on goes to the default console, and
-    /// one they do not goes where a reader asking what went uncovered looks.
-    /// A host keeps hypervisor, VPN and bridge adapters beside the one it
-    /// uses, and a default console telling of each on every scan is noise
-    /// about links no target was reached through.
+    /// A link the scan's answers depend on is reported on the default console, and one
+    /// they do not where a reader asking what went uncovered looks. A host keeps
+    /// hypervisor, VPN and bridge adapters beside the one it uses, and reporting each on
+    /// every scan would be noise.
     ///
-    /// Where no link was heard at all the capture's error names every link and
-    /// its cause, so the lines here would only repeat it.
+    /// Where no link was heard at all the capture's error names every link and its
+    /// cause, so the lines here would only repeat it.
     #[test]
     fn a_failed_link_is_told_aloud_only_when_answers_depend_on_it() {
         assert_eq!(loudness(false, false), Loudness::Quiet, "a spare adapter");
@@ -2437,8 +2350,8 @@ mod tests {
         );
     }
 
-    /// Every transport a scan opens asks every link again, so a link that
-    /// refused is told about once, and again only if it comes to matter more.
+    /// Every transport a scan opens asks every link again, so a link that refused is
+    /// reported once, and again only if it comes to matter more.
     #[test]
     fn a_failed_link_is_told_about_once_unless_it_comes_to_matter_more() {
         let mut told = Told::new();
@@ -2458,9 +2371,9 @@ mod tests {
         assert!(told.first_time("eth1", Loudness::Quiet), "another link");
     }
 
-    /// Npcap opens an adapter by its own name, the Windows GUID under the
-    /// driver's prefix. Handed the bare GUID an interface list gives, the
-    /// capture every raw strategy stands on would fail to open.
+    /// Npcap opens an adapter by its own name, the Windows GUID under the driver's
+    /// prefix. Given the bare GUID from an interface list, the capture every raw
+    /// strategy relies on would fail to open.
     #[test]
     fn an_adapter_guid_is_named_the_way_npcap_names_it() {
         let guid = "{4D36E972-E325-11CE-BFC1-08002BE10318}";
@@ -2473,8 +2386,8 @@ mod tests {
         assert_eq!(npcap_device_name("en0"), "en0");
     }
 
-    /// The stamp is taken where the segment is taken, so a round trip measured
-    /// against it carries the path and not the queue behind it.
+    /// The stamp is taken where the segment is taken, so a round trip measured against
+    /// it carries the path and not the queue.
     #[test]
     fn a_segment_is_stamped_before_it_is_queued() {
         use std::net::Ipv4Addr;
@@ -2493,14 +2406,10 @@ mod tests {
     }
     use super::*;
 
-    /// A snapshot length below what the deepest header stack needs is raised to
-    /// it.
+    /// A snapshot length below what the deepest header stack needs is raised to it.
     ///
-    /// The field carries an explicit claim: it bounds what this process can see
-    /// of a payload it has no business reading, and the kernel enforces that
-    /// rather than userspace promising it. A zero handed to `libpcap` is a value
-    /// its own manual page does not define, so the claim rested on a number the
-    /// library was free to reinterpret.
+    /// The field bounds what this process can see of a payload, enforced by the
+    /// kernel. `libpcap`'s manual leaves a zero undefined, so it must never be passed.
     #[test]
     fn a_snapshot_length_too_short_to_read_a_reply_is_raised_to_one_that_can() {
         for asked in [0, 1, MIN_SNAP_LEN - 1] {
@@ -2511,8 +2420,7 @@ mod tests {
             );
         }
 
-        // A length the caller meant is the length they get, in both directions
-        // from the floor.
+        // A length the caller meant is kept, on either side of the floor.
         for asked in [MIN_SNAP_LEN, MIN_SNAP_LEN + 1, REPLY_SNAP_LEN] {
             assert_eq!(
                 CaptureOptions::for_replies("tcp")
@@ -2523,21 +2431,19 @@ mod tests {
         }
     }
 
-    /// A scan's captures keep everything a reply is read for, and no more than
-    /// a standard Ethernet frame, at the platform's own buffer.
+    /// A scan's captures keep everything a reply is read for, and no more than a
+    /// standard Ethernet frame, at the platform's own buffer.
     ///
-    /// The upper bound is the one a generous setting breaks. Linux sizes its
-    /// capture ring's slots from the snapshot length, so a capture keeping
-    /// whole 64 KB frames holds 32 of them at the default buffer, and a scan's
-    /// own bursts overflow it: answers dropped, ports asked again, the scan
-    /// twice as slow on a path that lost nothing. The lower bound is the
-    /// longest reply read whole, an ICMPv6 error, behind a doubly tagged
-    /// Ethernet header. The buffer is left to the platform because a capture is
-    /// opened on every link that is up and its buffer is paid on each.
+    /// The upper bound is what a generous setting breaks. Linux sizes its capture
+    /// ring's slots from the snapshot length, so whole 64 KB frames fit 32 at the
+    /// default buffer, and a scan's own bursts overflow it: answers dropped, ports
+    /// asked again, the scan twice as slow on a path that lost nothing. The lower bound
+    /// is the longest reply read whole, an ICMPv6 error, behind a doubly tagged
+    /// Ethernet header. The buffer is left to the platform because a capture is opened
+    /// on every link that is up and its buffer is paid on each.
     ///
-    /// This pins the settings. That they hold a scan's bursts is a property of
-    /// the kernel's ring and is measured on the wire, by a full-range scan's
-    /// `dropped` count.
+    /// This pins the settings. That they hold a scan's bursts is measured on the wire,
+    /// by a full-range scan's `dropped` count.
     #[test]
     fn a_scans_captures_keep_a_whole_standard_frame_and_no_more() {
         const STANDARD_ETHERNET_FRAME: u32 = 14 + 2 * 4 + 1_500;
@@ -2563,8 +2469,8 @@ mod tests {
         }
     }
 
-    /// A guard over fabricated counters, standing in for one whose capture
-    /// threads would need an interface and root to exist.
+    /// A guard over fabricated counters, standing in for one whose capture threads
+    /// would need an interface and root.
     fn guard_over(stats: Vec<Arc<CaptureStats>>) -> CaptureGuard {
         CaptureGuard {
             stop: Arc::new(AtomicBool::new(true)),
@@ -2584,10 +2490,9 @@ mod tests {
         stats
     }
 
-    /// A transport captures on every interface that is up, so the drop count a
-    /// scanner acts on has to be the whole receive path's rather than one
-    /// interface's - a reply lost on the one interface the probe went out of is
-    /// lost whatever the others managed.
+    /// A transport captures on every interface that is up, so the drop count a scanner
+    /// acts on must cover the whole receive path: a reply lost on the interface the
+    /// probe went out of is lost whatever the others managed.
     #[test]
     fn counts_are_summed_across_every_live_capture() {
         let guard = guard_over(vec![stats_of(100, 3, 1), stats_of(40, 0, 0)]);
@@ -2605,11 +2510,9 @@ mod tests {
 
     /// Which endings leave a link deaf, and which are a capture finishing.
     ///
-    /// The test the counting one below could not be: setting the flag happens
-    /// inside a loop that needs a live capture, so the decision is a function
-    /// and this is what holds it. A version that counted every `Err` would
-    /// report a savefile read to its end as a lost interface; one that counted
-    /// none would put the count back where it was, which is nowhere.
+    /// The flag is set inside a loop that needs a live capture, so the decision is a
+    /// function and this tests it. Counting every `Err` would report a savefile read to
+    /// its end as a lost interface; counting none would hide every lost interface.
     #[test]
     fn a_capture_that_ran_out_of_packets_did_not_lose_its_link() {
         assert!(!ends_the_link(&pcap::Error::NoMorePackets));
@@ -2627,15 +2530,14 @@ mod tests {
         }
     }
 
-    /// A capture that stopped is counted, and counted in captures rather than
-    /// frames, so a scan across several interfaces says how many went deaf.
+    /// A capture that stopped is counted, in captures rather than frames, so a scan
+    /// across several interfaces says how many went deaf.
     ///
-    /// A log line is not enough. The counters are what a report carries, and a
-    /// capture that ended is the most total form of the loss they exist to make
-    /// visible: an interface that hears nothing more, whose silence a scanner
-    /// cannot tell from hosts that did not answer. Logged and not counted, a run
-    /// could report a healthy receive path with one of eight links dead since
-    /// the first second.
+    /// The counters are what a report carries, and a capture that ended is the most
+    /// complete form of the loss they make visible: an interface that hears nothing
+    /// more, whose silence a scanner cannot tell from hosts that did not answer. Logged
+    /// but not counted, a run could report a healthy receive path with one of eight
+    /// links dead since the first second.
     #[test]
     fn a_capture_that_stopped_early_is_counted_as_one() {
         let lasted = stats_of(100, 0, 0);
@@ -2645,8 +2547,8 @@ mod tests {
         assert_eq!(lasted.snapshot().stopped_early, 0);
         assert_eq!(stopped.snapshot().stopped_early, 1);
 
-        // Summed across the guard's captures, so the number is how many links
-        // were lost rather than whether any were.
+        // Summed across the guard's captures, so the number is how many links were
+        // lost.
         let guard = guard_over(vec![lasted, stopped, stats_of(7, 0, 0)]);
         let counts = guard.counts().expect("three captures");
         assert_eq!(counts.stopped_early, 1);
@@ -2668,17 +2570,17 @@ mod tests {
         );
     }
 
-    /// The distinction the `Option` exists for: no capture is not a capture
-    /// that lost nothing.
+    /// The distinction the `Option` exists for: no capture is not a capture that lost
+    /// nothing.
     #[test]
     fn a_guard_over_no_capture_reports_nothing_rather_than_zero() {
         assert_eq!(CaptureGuard::noop().counts(), None);
         assert_eq!(guard_over(Vec::new()).counts(), None);
     }
 
-    /// `pcap_stats` is cumulative from the start of the capture, so a refresh
-    /// replaces the previous reading. Accumulating instead would count every
-    /// dropped frame once per refresh and report a loss the network never had.
+    /// `pcap_stats` is cumulative from the start of the capture, so a refresh replaces
+    /// the previous reading. Accumulating would count every dropped frame once per
+    /// refresh.
     #[test]
     fn a_refresh_replaces_the_previous_reading_rather_than_adding_to_it() {
         let stats = CaptureStats::default();
@@ -2705,11 +2607,10 @@ mod tests {
         );
     }
 
-    /// The flag is read while the guard is alive, which is when every scanner
-    /// reads it: the counts go into the scan's own report before the transport
-    /// is dropped. So a reader that panics has to say so before the guard joins
-    /// it, and the counters here are the guard's own, with no clone held outside
-    /// it to read them through.
+    /// The flag is read while the guard is alive, as every scanner reads it: the counts
+    /// go into the scan's report before the transport is dropped. So a reader that
+    /// panics must record it before the guard joins it, and the counters here are the
+    /// guard's own, with no clone held outside to read them through.
     #[test]
     fn a_panicked_reader_is_visible_in_the_counts_while_the_guard_is_alive() {
         let counters = Arc::new(CaptureStats::default());
@@ -2734,8 +2635,7 @@ mod tests {
         );
     }
 
-    /// And a reader that ended cleanly is not reported as having stopped early,
-    /// or the count means nothing.
+    /// A reader that ended cleanly is not reported as having stopped early.
     #[test]
     fn a_capture_thread_that_finished_is_not_recorded_as_stopping_early() {
         let counters = Arc::new(CaptureStats::default());
@@ -2752,14 +2652,14 @@ mod tests {
         assert!(!counters.stopped_early.load(Ordering::Relaxed));
     }
 
-    /// Captures opened in a table the scan's connections were sized to take
-    /// the descriptors they hold out of what those connections are let hold,
-    /// for as long as they are open.
+    /// Captures opened in a table the scan's connections were sized against take the
+    /// descriptors they hold out of what those connections may hold, for as long as
+    /// they are open.
     ///
-    /// Forty free of 64 when the scan starts leaves its connections the gate
-    /// whole. Twenty-eight links' captures then take twenty-eight of those
-    /// forty, and a gate still promising thirty-two sends connections past
-    /// the table's room to wait out their patience and be filed unasked.
+    /// Forty free of 64 when the scan starts leaves its connections the whole gate.
+    /// Twenty-eight links' captures then take twenty-eight of those forty, and a gate
+    /// still promising thirty-two would send connections past the table's room to wait
+    /// out their patience and be filed unasked.
     #[cfg(unix)]
     #[test]
     fn a_capture_holds_back_the_connections_its_links_took_the_room_of() {

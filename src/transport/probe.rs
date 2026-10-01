@@ -576,7 +576,7 @@ pub(crate) fn host_is_down(error: &std::io::Error) -> bool {
 /// downstream can infer: the hop limit, and on the link-layer path a spoofed source
 /// hardware address and fragmentation.
 ///
-/// A struct so further per-probe header choices (IP options, a deliberately wrong
+/// A struct so further per-probe header choices (IP options, an intentionally wrong
 /// checksum) can be added without changing every sender's signature.
 ///
 /// Both backends honour the hop limit: the link-layer sender writes the field in the
