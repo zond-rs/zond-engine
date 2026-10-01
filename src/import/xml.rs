@@ -8,32 +8,31 @@
 
 //! # A pull parser that declares nothing
 //!
-//! The XML reader behind every format in this module that has one. It reads a
-//! file somebody else wrote, and what makes that defensible is that the dangerous
-//! constructs have no representation here rather than care in the parsing.
+//! The XML reader behind every format in this module that has one. It reads files
+//! somebody else wrote, and it is safe to do so because the dangerous constructs
+//! have no representation here.
 //!
-//! - **`<!ENTITY` is refused anywhere, unconditionally.** No entity is ever
-//!   declared, so none can be expanded, so the billion-laughs expansion has
-//!   nothing to expand and an external entity has nothing to fetch.
-//! - **A `DOCTYPE` is accepted only in its inert form**: a bare name, no
-//!   internal subset, no `SYSTEM` or `PUBLIC` identifier. Any of those is
-//!   refused.
-//! - **Any entity reference other than the five predefined and numeric
+//! - **`<!ENTITY` is refused anywhere.** No entity is ever declared, so a
+//!   billion-laughs expansion has nothing to expand and an external entity has
+//!   nothing to fetch.
+//! - **A `DOCTYPE` is accepted only in its inert form**: a bare name, with no
+//!   internal subset and no `SYSTEM` or `PUBLIC` identifier.
+//! - **Any entity reference other than the five predefined ones and numeric
 //!   character references is refused**, naming it. With no declarations
-//!   permitted there is no legitimate way for one to appear.
-//! - **Processing instructions are skipped without being interpreted.** This is
-//!   not an XSLT engine and never opens what one names.
+//!   permitted, nothing can have defined it.
+//! - **Processing instructions are skipped uninterpreted**, so a stylesheet one
+//!   names is never opened.
 //! - Nesting depth, element count, name length, attribute length and captured
-//!   text length are all bounded, and one element's markup is bounded by
+//!   text length are bounded, and one element's markup is bounded by
 //!   [`ImportLimits::max_line_bytes`](crate::import::ImportLimits::max_line_bytes).
 //!
 //! Nothing in a document can make this parser open a file, resolve a URL, or
-//! allocate without bound. The residue is processing time, which the bounds
+//! allocate without bound. What remains is processing time, which the bounds
 //! cover.
 //!
-//! ## Why a bare DOCTYPE is accepted rather than refused
+//! ## Why a bare DOCTYPE is accepted
 //!
-//! Because refusing it would reject every real nmap file. Nmap writes
+//! Every nmap file opens with
 //!
 //! ```text
 //! <?xml version="1.0" encoding="UTF-8"?>
@@ -41,39 +40,31 @@
 //! <?xml-stylesheet href="file:///usr/share/nmap/nmap.xsl" type="text/xsl"?>
 //! ```
 //!
-//! and a rule that turned all three away would leave this parser unable to read
-//! its own subject. `<!DOCTYPE nmaprun>` declares nothing and references nothing.
-//! The narrower rule is also the stronger one: a blanket refusal is the kind that
-//! acquires an option to disable it the first time somebody needs their file
-//! read.
+//! and `<!DOCTYPE nmaprun>` declares nothing and references nothing. Refusing it
+//! would reject every real nmap file.
 //!
-//! ## What a caller reads, and what is skipped unbuffered
+//! ## What is kept and what is skipped unbuffered
 //!
 //! A caller names the attributes it wants when it builds the parser, and every
-//! other value is scanned past without being stored. That lets nmap's very long
-//! `args` and `services` attributes through without a limit tuned around them,
-//! since only the element's total markup is bounded rather than the value.
+//! other value is scanned past without being stored. Only the element's total
+//! markup bounds those, which lets nmap's very long `args` and `services`
+//! attributes through.
 //!
 //! Text between elements is skipped the same way until a caller asks for it with
-//! [`Parser::begin_text`], on entering an element whose content it wants. Text
-//! nobody asked for is passed over uninterpreted, so an entity reference standing
-//! in it is so many bytes.
+//! [`Parser::begin_text`] on entering an element whose content it wants. Skipped
+//! text is not interpreted, so an entity reference in it is just bytes.
 //!
-//! An attribute value is not treated that way. Every value is scanned as it is
-//! passed, so a reference in one is resolved, and an undeclared one refused,
-//! whether or not the attribute was wanted: a `banner`
-//! attribute no reader here looks at, carrying `&whoami;`, refuses the whole
-//! document. That is not the skip-what-nobody-reads rule leaking. An undeclared
-//! reference is a well-formedness error anywhere in an XML document, and a parser
-//! that accepted one quietly in the half of a tag it had no interest in would be
-//! calling a document well-formed on the strength of not having looked.
+//! Attribute values differ: every one is scanned for references, wanted or not,
+//! so an undeclared reference refuses the document even in an attribute no
+//! reader looks at. An undeclared reference is a well-formedness error anywhere
+//! in XML.
 //!
 //! ## Who uses it
 //!
 //! [`nmap`](super::nmap) reads a document as the targets to scan next.
 //! [`report::nmap`](crate::import::report::nmap) reads the same document as the
-//! findings of the scan that produced it. One audited parser rather than two, so
-//! there is no second one to keep hardened in step.
+//! findings of the scan that produced it. Sharing one parser leaves one place to
+//! harden.
 
 use std::io::BufRead;
 
@@ -81,9 +72,8 @@ use crate::import::{ImportError, ImportOrigin};
 
 /// How deeply elements may nest.
 ///
-/// Real nmap output reaches five. Sixty-four is unreachable by anything honest and
-/// bounds the parser's own bookkeeping, which is all depth costs here, since
-/// element content is never accumulated.
+/// Real nmap output reaches five. Depth costs only the parser's own bookkeeping,
+/// since element content is never accumulated.
 pub(crate) const MAX_DEPTH: usize = 64;
 
 /// The longest element or attribute name accepted, in bytes.
@@ -91,17 +81,15 @@ pub(crate) const MAX_NAME_BYTES: usize = 64;
 
 /// The longest attribute value kept, in bytes.
 ///
-/// Applies only to the attributes a caller asked for. Every other attribute is
-/// scanned past without being stored, which is what lets nmap's very long
-/// `args` and `services` attributes through without a limit tuned around them.
+/// Applies only to the attributes a caller asked for; the rest are never stored.
 pub(crate) const MAX_VALUE_BYTES: usize = 256;
 
 /// The most elements one document may contain, for a parser no document
-/// ceiling bounds. A reader that has one sets [`elements_within`] it instead,
-/// with [`Parser::with_max_elements`].
+/// ceiling bounds. A reader with a byte ceiling sets [`elements_within`] it
+/// through [`Parser::with_max_elements`].
 ///
-/// A bound on work rather than on memory, since an element costs nothing
-/// held unless a reader builds something from it.
+/// This bounds work: an element costs no memory unless a reader builds
+/// something from it.
 pub(crate) const MAX_ELEMENTS: u64 = 1 << 25;
 
 /// The fewest bytes an element can be written in: `<a/>`.
@@ -110,15 +98,11 @@ const SMALLEST_ELEMENT_BYTES: u64 = 4;
 /// The most elements a document of at most `bytes` can hold, which is the
 /// element ceiling for a reader whose byte ceiling is `bytes`.
 ///
-/// Derived rather than fixed, because the byte ceiling is the one a caller
-/// sizes: it is what the documentation asks them to set to what the process
-/// can afford, and a separate count would refuse a document that ceiling
-/// admits, and go on refusing it however far the caller raised the ceiling.
-/// A host scanned across the full TCP range is 131,072 elements in 6.5 MB of
-/// this engine's nmap XML, so a fixed count of 2^25 refused anything past
-/// about 256 of them with the byte ceiling lifted. The count still bounds the
-/// work a parser does where the byte ceiling is not enforced on the stream it
-/// reads.
+/// Derived from the byte ceiling, which is the one a caller sizes, so raising it
+/// raises this too. A host scanned across the full TCP range is 131,072 elements
+/// in 6.5 MB of this engine's nmap XML; a fixed count of 2^25 would refuse more
+/// than about 256 such hosts whatever the byte ceiling. The count also bounds the
+/// work where the byte ceiling is not enforced on the stream.
 pub(crate) fn elements_within(bytes: u64) -> u64 {
     bytes / SMALLEST_ELEMENT_BYTES
 }
@@ -128,8 +112,8 @@ pub(crate) const MAX_ENTITY_BYTES: usize = 16;
 
 /// The longest run of element text kept, in bytes.
 ///
-/// Applies only to text a caller asked for. The longest thing anything reads
-/// this way is a CPE identifier, which runs to a few dozen bytes.
+/// Applies only to text a caller asked for. The longest text read is a CPE
+/// identifier, a few dozen bytes.
 const MAX_TEXT_BYTES: usize = 512;
 
 /// The longest terminator [`Parser::skip_until`] is asked to find: `-->` and
@@ -153,8 +137,7 @@ pub(crate) enum Event {
 /// The element the parser is currently looking at.
 ///
 /// Reused between elements, so a document of any size costs one element's worth
-/// of memory. Only the four attributes this module reads are stored; every
-/// other value is scanned past without being kept.
+/// of memory. Only the attributes the caller asked for are stored.
 #[derive(Debug, Default)]
 pub(crate) struct Element {
     pub(crate) name: Vec<u8>,
@@ -169,22 +152,14 @@ impl Element {
 
     /// One attribute's value as text, if the element carried it.
     ///
-    /// `None` means the element did not carry the attribute and nothing else. A
-    /// value that is not UTF-8 refused the document when it was read, so no
-    /// unreadable value ever reaches here.
+    /// `None` means the element did not carry the attribute. A value that is not
+    /// UTF-8 refused the document when it was read.
     ///
     /// A duplicated attribute answers with the first. XML makes a repeated
-    /// attribute a fatal error and this parser stores both, so `<address
-    /// addr="192.0.2.2" addr="192.0.2.1"/>` reads as `192.0.2.2` rather than
-    /// refusing the document. Deliberate, and cheap to change if the argument
-    /// moves: first-wins is a rule, it is the same rule every time, and the
-    /// values are byte-compared against fixed names rather than merged, so
-    /// there is no reading in which two callers of this disagree about what an
-    /// element said. What it costs is that a document no conforming parser
-    /// accepts is reinterpreted here instead of refused, which is against this
-    /// module's usual instinct; what it buys is that the instinct does not turn
-    /// into a refusal nobody asked for. Nothing downstream depends on either
-    /// answer.
+    /// attribute a fatal error, but this parser stores both, so `<address
+    /// addr="192.0.2.2" addr="192.0.2.1"/>` reads as `192.0.2.2`. First-wins is
+    /// consistent, so every caller sees the same value. Nothing downstream
+    /// depends on it, and refusing such documents would be an easy change.
     pub(crate) fn value(&self, name: &[u8]) -> Option<&str> {
         self.values
             .iter()
@@ -193,14 +168,13 @@ impl Element {
     }
 }
 
-/// The pull parser itself: a reader, the window of it currently being walked,
-/// and the counters every one of this module's refusals is measured against.
+/// The pull parser: a reader, the window of it being walked, and the counters
+/// the refusals are measured against.
 pub(crate) struct Parser<'a> {
     input: &'a mut dyn BufRead,
     buffer: Vec<u8>,
     position: usize,
-    /// The 1-based line the parser is on, counted as bytes go past so an error
-    /// can name a place in the file.
+    /// The 1-based line the parser is on, for errors.
     line: u64,
     /// Bytes consumed within the current element's markup.
     element_bytes: usize,
@@ -209,14 +183,13 @@ pub(crate) struct Parser<'a> {
     /// The most elements this document may contain. See [`MAX_ELEMENTS`].
     max_elements: u64,
     pub(crate) element: Element,
-    /// The format's name in errors, so a refusal names the document a caller
-    /// handed over rather than the parser that read it.
+    /// The format's name in errors, such as "nmap XML".
     format: &'static str,
     /// The attributes whose values are stored. Everything else is skipped
     /// unbuffered.
     kept: &'static [&'static [u8]],
-    /// Kept attributes that are dropped rather than refused when they run past
-    /// the bound. See [`with_lossy`](Parser::with_lossy).
+    /// Kept attributes that are dropped when they run past the bound. See
+    /// [`with_lossy`](Parser::with_lossy).
     lossy: &'static [&'static [u8]],
     /// The longest kept value, in bytes.
     max_value_bytes: usize,
@@ -230,28 +203,25 @@ pub(crate) struct Parser<'a> {
 
 /// What to do with one attribute's value.
 ///
-/// Three states rather than two independent flags. A value is only lossy if it is
-/// also kept, so one of the four combinations two flags could express does not
-/// exist,
-/// and two adjacent `bool`s could be swapped at a call site with no diagnostic.
+/// A value can only be lossy if it is kept, so two flags would allow a state
+/// that does not exist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValuePolicy {
-    /// Scanned past and not stored: nothing this parser was asked to keep.
+    /// Scanned past and not stored.
     Skip,
 
     /// Stored, and a value past the size bound refuses the document.
     Keep,
 
-    /// Stored, and a value past the bound is dropped rather than refused, so
-    /// what comes back is the absence of the attribute rather than a prefix of
-    /// it. For the attributes where an over-long value is somebody else's
-    /// verbosity rather than an attack.
+    /// Stored, and a value past the bound is dropped whole, so the attribute
+    /// reads as absent. For attributes where an over-long value is verbosity,
+    /// not an attack.
     KeepIfItFits,
 }
 
 impl ValuePolicy {
-    /// The policy for an attribute this parser was asked to keep, or not, and
-    /// to treat leniently, or not. Leniency without keeping is not a state.
+    /// The policy for an attribute that is kept or not, and lossy or not.
+    /// Lossy without kept is [`Skip`](Self::Skip).
     fn of(kept: bool, lossy: bool) -> Self {
         match (kept, lossy) {
             (false, _) => Self::Skip,
@@ -289,19 +259,15 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Names attributes whose value is dropped, rather than refused, when it
-    /// runs past the bound.
+    /// Names attributes whose value is dropped, not refused, when it runs past
+    /// the bound.
     ///
-    /// For a value that enriches a record without deciding what it says. Nmap
-    /// lists the ports it found uninteresting, and that list is bounded only by
-    /// how many ports were scanned, so a sparse sweep of all 65 535 could write
-    /// several hundred kilobytes of it. Refusing the file over an attribute
-    /// nothing depends on would be the wrong trade, and so would raising every
-    /// bound to fit the worst case.
+    /// For a value that enriches a record without deciding what it says. Nmap's
+    /// list of uninteresting ports is bounded only by how many were scanned, so
+    /// a sparse sweep of all 65 535 can write several hundred kilobytes of it.
     ///
-    /// Dropped whole, never truncated. A prefix of a port list is a claim that
-    /// the ports past the cut were not probed, which is a different and
-    /// worse answer than not knowing.
+    /// Dropped whole, never truncated: a prefix of a port list would claim the
+    /// ports past the cut were not probed.
     pub(crate) fn with_lossy(mut self, lossy: &'static [&'static [u8]]) -> Self {
         self.lossy = lossy;
         self
@@ -309,15 +275,14 @@ impl<'a> Parser<'a> {
 
     /// Replaces [`MAX_ELEMENTS`] as the most elements the document may contain.
     ///
-    /// For a reader whose work some other ceiling already bounds, and which
-    /// would otherwise be refused a document that ceiling admits.
+    /// For a reader whose work another ceiling already bounds, usually through
+    /// [`elements_within`].
     pub(crate) fn with_max_elements(mut self, elements: u64) -> Self {
         self.max_elements = elements;
         self
     }
 
-    /// The most elements the document may contain, for a test that a reader
-    /// set the ceiling it means to.
+    /// The most elements the document may contain, for tests.
     #[cfg(test)]
     pub(crate) fn max_elements(&self) -> u64 {
         self.max_elements
@@ -325,10 +290,8 @@ impl<'a> Parser<'a> {
 
     /// Raises the bound on a kept attribute value.
     ///
-    /// The default suits a reader whose kept attributes are addresses and port
-    /// numbers. One that keeps free text a service reported about itself needs
-    /// more room, and says how much rather than inheriting a bound chosen for a
-    /// different job.
+    /// The default suits addresses and port numbers. A reader that keeps free
+    /// text a service reported about itself needs more.
     pub(crate) fn with_max_value_bytes(mut self, bytes: usize) -> Self {
         self.max_value_bytes = bytes;
         self
@@ -337,8 +300,8 @@ impl<'a> Parser<'a> {
     /// Keeps the text that follows, until [`take_text`](Self::take_text).
     ///
     /// Called on entering an element whose content is wanted. Entity references
-    /// in kept text are resolved, and an undeclared one is refused exactly as it
-    /// is in an attribute value.
+    /// in kept text are resolved, and an undeclared one is refused as in an
+    /// attribute value.
     pub(crate) fn begin_text(&mut self) {
         self.text.clear();
         self.capture = true;
@@ -346,11 +309,9 @@ impl<'a> Parser<'a> {
 
     /// The text kept since [`begin_text`](Self::begin_text), and stops keeping.
     ///
-    /// Trimmed, since element content is written with the indentation of the
-    /// document around it. Text that is not UTF-8 refuses the document rather
-    /// than arriving with replacement characters in it: what this carries is a
-    /// CPE identifier, and one with a `U+FFFD` in the middle is a corrupted
-    /// identifier that reads as a real one.
+    /// Trimmed, since element content carries the document's indentation. Text
+    /// that is not UTF-8 refuses the document: a CPE identifier with a `U+FFFD`
+    /// in it is corrupted but reads as a real one.
     pub(crate) fn take_text(&mut self) -> Result<String, ImportError> {
         self.capture = false;
         let text = std::mem::take(&mut self.text);
@@ -429,9 +390,8 @@ impl<'a> Parser<'a> {
     /// Reads the next element, skipping text, comments and instructions.
     pub(crate) fn next_event(&mut self) -> Result<Event, ImportError> {
         loop {
-            // Text between elements is never read, which is what makes an
-            // entity reference in content
-            // harmless whatever it says.
+            // Text between elements is not interpreted unless captured, so an
+            // entity reference in it is harmless.
             loop {
                 match self.peek()? {
                     None => return Ok(Event::Eof),
@@ -496,16 +456,13 @@ impl<'a> Parser<'a> {
 
     /// Handles everything opening `<!`.
     ///
-    /// Where the refusals live. A comment declares nothing and is skipped, a
-    /// CDATA section is character data and is read as such, a `DOCTYPE` is inert
-    /// only in the one form nmap writes, and everything else that can appear here
-    /// declares something. Declaring anything is what this parser exists not to
-    /// do.
+    /// A comment is skipped, a CDATA section is read as character data, a
+    /// `DOCTYPE` is accepted only in the form nmap writes, and anything else
+    /// here declares something and is refused.
     ///
-    /// The comment and the section part company on that distinction. A comment
-    /// is not content in any document, dropping it inside captured text is what
-    /// XML says to do, where CDATA is exactly content, wearing a syntax that
-    /// lets it carry `<` and `&`. See [`capture_until`](Self::capture_until).
+    /// A comment is not content, so it is dropped even inside captured text.
+    /// CDATA is content that can carry `<` and `&`. See
+    /// [`capture_until`](Self::capture_until).
     fn declaration(&mut self) -> Result<(), ImportError> {
         self.bump()?; // '!'
 
@@ -530,21 +487,14 @@ impl<'a> Parser<'a> {
     /// Accepts `<!DOCTYPE name>` and nothing else.
     ///
     /// An internal subset is where entity declarations live, and an external
-    /// identifier is a document telling the parser to go and fetch something.
-    /// Neither is accepted in any form, so neither has to be handled safely.
+    /// identifier asks the parser to fetch something. Both are refused.
     ///
-    /// The external-identifier arm is a courtesy, not the control. It
-    /// matches `SYSTEM` and `PUBLIC` literally and case-sensitively, so a
-    /// document spelling either differently, `SY STEM`, or lowercase `system`,
-    /// is skipped as inert bytes rather than refused by name. That costs
-    /// nothing, because there is nothing here to fetch *with*: this parser
-    /// performs no I/O beyond reading the stream it was handed, and parses no
-    /// declaration of any kind, so an external identifier that slips past the
-    /// match names a document nobody will open. The security property is the
-    /// absence of the capability; the message is there to tell an honest author
-    /// why their file was turned away. Nothing downstream should treat this
-    /// refusal as an XXE control to test against, the control is that the code
-    /// to fetch anything does not exist.
+    /// The external-identifier check only explains the refusal to an honest
+    /// author; it is not the security control. It matches `SYSTEM` and `PUBLIC`
+    /// literally and case-sensitively, so `system` or `SY STEM` is skipped as
+    /// inert bytes. That is harmless: this parser performs no I/O beyond the
+    /// stream it was handed, so there is nothing to fetch with. The control is
+    /// that the fetching code does not exist.
     fn doctype(&mut self) -> Result<(), ImportError> {
         loop {
             let Some(byte) = self.bump()? else {
@@ -663,11 +613,9 @@ impl<'a> Parser<'a> {
         if let Some(value) = self.read_value(policy)?
             && policy != ValuePolicy::Skip
         {
-            // Checked here rather than where the value is read out: `None`
-            // there would mean the element did not carry the attribute, and a
-            // host whose address is not text would vanish instead of refusing
-            // the document. Every other format in this
-            // module answers the same bytes with the same error.
+            // Checked here because `Element::value` answers `None` for bytes
+            // that are not UTF-8, and a host whose address is not text would
+            // vanish without refusing the document.
             if std::str::from_utf8(&value).is_err() {
                 return Err(ImportError::InvalidUtf8 {
                     origin: self.origin(),
@@ -681,9 +629,8 @@ impl<'a> Parser<'a> {
 
     /// Reads a quoted attribute value under `policy`.
     ///
-    /// An unwanted value is not accumulated at all, which lets nmap's very long
-    /// `args` and `services` attributes through without any limit
-    /// tuned around them: only the element's total markup is bounded.
+    /// An unwanted value is not accumulated, so only the element's total markup
+    /// bounds it.
     fn read_value(&mut self, policy: ValuePolicy) -> Result<Option<Vec<u8>>, ImportError> {
         let keep = policy != ValuePolicy::Skip;
         let lossy = policy == ValuePolicy::KeepIfItFits;
@@ -697,9 +644,8 @@ impl<'a> Parser<'a> {
         self.bump()?;
 
         let mut value = Vec::new();
-        // Set once a lossy value has run past the bound. Everything after is
-        // scanned past and nothing is kept, so what comes back is the absence of
-        // the attribute rather than a prefix of it.
+        // Set once a lossy value has run past the bound. The rest is scanned
+        // past and the attribute reads as absent.
         let mut dropped = false;
 
         loop {
@@ -740,11 +686,9 @@ impl<'a> Parser<'a> {
 
     /// Resolves one entity reference, or refuses it.
     ///
-    /// The five predefined references and numeric character references are the
-    /// whole of what an attribute may contain, since this parser refuses every
-    /// declaration and no others can exist. A reference to something undeclared
-    /// is the shape an external-entity attack takes, so it
-    /// is named in the error rather than skipped.
+    /// Only the five predefined references and numeric character references can
+    /// exist, since every declaration is refused. A reference to anything else
+    /// is the shape an external-entity attack takes, and the error names it.
     fn entity(&mut self) -> Result<Vec<u8>, ImportError> {
         self.bump()?; // '&'
 
@@ -796,9 +740,9 @@ impl<'a> Parser<'a> {
 
     /// Consumes `expected` if it is next, and reports whether it was.
     ///
-    /// Only ever called where a partial match cannot be the start of anything
-    /// else this parser accepts, so a failed match leaves what it read behind
-    /// as ordinary content of something already being skipped.
+    /// Called only where a partial match cannot start anything else this parser
+    /// accepts, so the bytes a failed match consumed belong to something already
+    /// being skipped.
     fn matches(&mut self, expected: &[u8]) -> Result<bool, ImportError> {
         for wanted in expected {
             match self.peek()? {
@@ -820,13 +764,11 @@ impl<'a> Parser<'a> {
 
     /// Skips everything up to and including `terminator`.
     ///
-    /// Compares a sliding window of the last few bytes rather than advancing a
-    /// match counter. On a mismatch a counter has to decide how much of the
-    /// partial match to keep, and the cheap answers are wrong here: `]]]>` ends a
-    /// CDATA section whose content is `]`, and dropping back to one matched byte
-    /// on the third `]` runs past it to the end of the document. The window
-    /// is at most [`MAX_TERMINATOR_BYTES`] wide, so the comparison costs less
-    /// than the arithmetic it replaces.
+    /// Compares a sliding window of the last few bytes. A simple match counter
+    /// gets overlapping terminators wrong: `]]]>` ends a CDATA section whose
+    /// content is `]`, and a counter that drops back to one matched byte on the
+    /// third `]` runs past it to the end of the document. The window is at most
+    /// [`MAX_TERMINATOR_BYTES`] wide.
     fn skip_until(&mut self, terminator: &[u8]) -> Result<(), ImportError> {
         self.scan_until(terminator, false)
     }
@@ -834,26 +776,21 @@ impl<'a> Parser<'a> {
     /// [`skip_until`](Self::skip_until), keeping what it passes over as element
     /// text when text is being kept.
     ///
-    /// For CDATA, which is character data and not a construct. A section inside
-    /// an element whose content was asked for, skipped like a comment, would
-    /// read `<cpe><![CDATA[cpe:/a:openbsd:openssh:8.9]]></cpe>` back as no CPE
-    /// at all, a legal document yielding a report with a field missing, and
-    /// nothing saying so. Nmap does not write CDATA, but a reader that drops
-    /// legal content silently is the defect whether or not the writer in front
-    /// of it happens to produce it.
+    /// For CDATA, which is character data. Skipped like a comment,
+    /// `<cpe><![CDATA[cpe:/a:openbsd:openssh:8.9]]></cpe>` would silently read
+    /// back as no CPE. Nmap does not write CDATA, but other writers may.
     ///
     /// Bounded by [`keep_text`](Self::keep_text) like every other route into the
-    /// text buffer, so a section megabytes wide is refused at the same 512 bytes
-    /// rather than being the one way past the ceiling.
+    /// text buffer, so a section megabytes wide is refused at the same 512 bytes.
     fn capture_until(&mut self, terminator: &[u8]) -> Result<(), ImportError> {
         self.scan_until(terminator, self.capture)
     }
 
     /// The shared loop: read to `terminator`, keeping what precedes it or not.
     ///
-    /// A byte is kept as it is *evicted* from the window, which is what keeps the
-    /// terminator itself out of the text: when the match lands the window holds
-    /// exactly the terminator and everything else has already gone through
+    /// A byte is kept as it is *evicted* from the window, which keeps the
+    /// terminator out of the text: when the match lands, the window holds exactly
+    /// the terminator and everything before it has gone through
     /// [`keep_text`](Self::keep_text).
     fn scan_until(&mut self, terminator: &[u8], keep: bool) -> Result<(), ImportError> {
         let width = terminator.len();
@@ -906,9 +843,8 @@ impl Parser<'_> {
 /// Whether a byte may appear in an element or attribute name.
 ///
 /// Permissive about what a name may contain and strict about what ends one.
-/// Everything this parser does with a name is compare it against a fixed list, so
-/// a name it does not recognise is skipped whatever it is made
-/// of.
+/// Names are only compared against fixed lists, so an unrecognised name is
+/// skipped whatever it is made of.
 fn is_name_byte(byte: u8) -> bool {
     !matches!(
         byte,
@@ -925,11 +861,7 @@ fn is_name_byte(byte: u8) -> bool {
 // ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
 // ╚════════════════════════════════════════════╝
 
-/// The module doc makes six claims about what this parser refuses and bounds six
-/// things it accepts. These hold it to all twelve.
-///
-/// The refusals are the whole security argument for reading a file somebody else
-/// wrote, and an untested refusal is a claim rather than a control.
+/// Tests for each refusal and bound the module doc claims.
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -962,8 +894,7 @@ mod tests {
         }
     }
 
-    /// The kept attributes of one element, by name, as the parser reads them
-    /// back out.
+    /// The kept attributes of one element, by name.
     type Kept = Vec<(&'static str, Option<String>)>;
 
     /// Reads one document and hands back the first element's kept attributes.
@@ -994,8 +925,7 @@ mod tests {
 
     /// `<![CDATA[a]]]>` is a section whose content is `a]`, and the `]]>` that
     /// closes it begins inside the run of brackets. A parser that restarts its
-    /// match at the failing byte walks straight past it and reports a document
-    /// that ends unexpectedly, which is a legal file refused.
+    /// match at the failing byte walks past it and refuses a legal file.
     #[test]
     fn a_terminator_overlapping_its_own_prefix_still_ends_the_section() {
         for document in [
@@ -1010,8 +940,7 @@ mod tests {
         }
     }
 
-    /// And the ordinary shapes, whose terminator does not overlap, end the
-    /// section as well.
+    /// Terminators that do not overlap end the section too.
     #[test]
     fn a_terminator_that_does_not_overlap_still_ends_the_section() {
         for document in [
@@ -1025,12 +954,9 @@ mod tests {
 
     // ─── Bytes that are not text ─────────────────────────────────────────────
 
-    /// A value that is not UTF-8 refuses the document rather than reading as an
-    /// attribute the element did not carry.
-    ///
-    /// The silent form is the dangerous one: `addr` is how a host is named, so a
-    /// host whose address held a stray byte would have vanished from the import
-    /// with nothing counted, nothing refused and nothing said.
+    /// A value that is not UTF-8 refuses the document. Read as a missing
+    /// attribute, a host whose `addr` held a stray byte would silently vanish
+    /// from the import.
     #[test]
     fn an_attribute_value_that_is_not_text_refuses_the_document() {
         let mut document = b"<a id=\"1".to_vec();
@@ -1046,8 +972,7 @@ mod tests {
         );
     }
 
-    /// An attribute nobody asked for is never stored, so its bytes are never
-    /// examined and cannot refuse a document over a value nothing reads.
+    /// An attribute nobody asked for is not checked for UTF-8.
     #[test]
     fn an_attribute_nobody_kept_is_not_checked_for_text() {
         let mut document = b"<a other=\"".to_vec();
@@ -1061,8 +986,8 @@ mod tests {
         assert_eq!(parser.element.value(b"id"), Some("1"));
     }
 
-    /// Kept text is held to the same rule, so a CPE identifier never arrives
-    /// with a replacement character standing in for a byte.
+    /// Kept text follows the same rule, so a CPE identifier never arrives with a
+    /// replacement character in it.
     #[test]
     fn element_text_that_is_not_text_refuses_the_document() {
         let mut document = b"<a>cpe:/o:x".to_vec();
@@ -1081,8 +1006,7 @@ mod tests {
         ));
     }
 
-    /// The ordinary case, so the check above is a refusal of bad bytes rather
-    /// than of everything.
+    /// The ordinary case reads, so the checks above refuse only bad bytes.
     #[test]
     fn a_value_and_a_text_run_that_are_text_read_back_whole() {
         let kept = attributes(r#"<a id="7" name="gw" other="ignored"/>"#).expect("reads");
@@ -1095,14 +1019,8 @@ mod tests {
         );
     }
 
-    /// CDATA is character data, and a reader that drops it loses a field without
-    /// saying so.
-    ///
-    /// `<cpe><![CDATA[…]]></cpe>` is legal, and a section dispatched to
-    /// `declaration` and skipped like a comment would read back as no CPE at
-    /// all. An empty CPE qualifies nothing, so the document would parse, the
-    /// report would come out a field short, and nothing anywhere would report a
-    /// problem.
+    /// CDATA is character data. `<cpe><![CDATA[…]]></cpe>` is legal, and
+    /// skipping the section like a comment would silently lose the CPE.
     #[test]
     fn cdata_inside_kept_text_is_read_rather_than_skipped() {
         let document = r#"<a><![CDATA[cpe:/a:openbsd:openssh:8.9]]></a>"#;
@@ -1118,12 +1036,9 @@ mod tests {
         );
     }
 
-    /// The two halves either side of a section join up, and the delimiters
-    /// themselves stay out of the text.
-    ///
-    /// The terminator is found through a sliding window, and a byte is kept as
-    /// it is evicted from it, so the check that matters is that `]]>` never
-    /// lands in the buffer and nothing before it is lost.
+    /// Text either side of a section joins up, and the delimiters stay out of
+    /// it: bytes are kept as they leave the sliding window, so `]]>` must never
+    /// land in the buffer and nothing before it may be lost.
     #[test]
     fn text_around_a_cdata_section_joins_up_without_its_delimiters() {
         let document = r#"<a>before <![CDATA[<inside> & ]]]]> after</a>"#;
@@ -1139,8 +1054,7 @@ mod tests {
         );
     }
 
-    /// A comment is not content, so it stays skipped where a section does not.
-    /// The two arrive at the same dispatch and part company there.
+    /// A comment is not content, so it is dropped from kept text.
     #[test]
     fn a_comment_inside_kept_text_is_still_dropped() {
         let document = r#"<a>before <!-- not content --> after</a>"#;
@@ -1154,7 +1068,7 @@ mod tests {
     }
 
     /// A section is bounded by the same ceiling as every other route into the
-    /// text buffer, rather than being the one way past it.
+    /// text buffer.
     #[test]
     fn a_cdata_section_is_held_to_the_text_ceiling() {
         let document = format!("<a><![CDATA[{}]]></a>", "x".repeat(MAX_TEXT_BYTES + 1));
@@ -1171,9 +1085,7 @@ mod tests {
 
     // ─── The six refusals ────────────────────────────────────────────────────
 
-    /// "`<!ENTITY` is refused anywhere, unconditionally. No entity is ever
-    /// declared, so none can be expanded, so the billion-laughs expansion has
-    /// nothing to expand."
+    /// `<!ENTITY` is refused anywhere.
     #[test]
     fn an_entity_declaration_is_refused_outright() {
         let message = refusal(r#"<!DOCTYPE lolz [<!ENTITY lol "lol">]><lolz>&lol;</lolz>"#);
@@ -1198,8 +1110,7 @@ mod tests {
         assert!(!message.is_empty());
     }
 
-    /// "A `DOCTYPE` is accepted only in its inert form: a bare name, no internal
-    /// subset, no `SYSTEM` or `PUBLIC` identifier."
+    /// A `DOCTYPE` is accepted only as a bare name.
     #[test]
     fn a_bare_doctype_is_accepted_because_nmap_writes_one() {
         let events = read(r#"<?xml version="1.0"?><!DOCTYPE nmaprun><nmaprun/>"#)
@@ -1234,8 +1145,8 @@ mod tests {
         assert!(!message.is_empty());
     }
 
-    /// "Any entity reference other than the five predefined and numeric
-    /// character references is refused, naming it."
+    /// Any entity reference other than the five predefined ones and numeric
+    /// character references is refused, naming it.
     #[test]
     fn an_undeclared_entity_reference_is_refused_and_named() {
         let message = refusal(r#"<a id="&whoami;"/>"#);
@@ -1261,8 +1172,7 @@ mod tests {
         assert_eq!(parser.element.value(b"id"), Some("AB"));
     }
 
-    /// "Processing instructions are skipped without being interpreted. This is
-    /// not an XSLT engine and never opens what one names."
+    /// Processing instructions are skipped uninterpreted.
     #[test]
     fn a_processing_instruction_is_skipped_rather_than_read() {
         let events = read(
@@ -1312,14 +1222,10 @@ mod tests {
         assert!(message.contains("name"), "said: {message}");
     }
 
-    /// A kept attribute's value past the bound is a refusal; the bound itself is
-    /// accepted.
+    /// A value nobody asked for is scanned past, so the size bound does not apply
+    /// to it.
     #[test]
     fn an_unwanted_attribute_is_not_accumulated_and_so_is_not_bounded() {
-        // The claim `read_value`'s doc makes, and the reason nmap's `args` and
-        // `services` attributes need no limit tuned around them: a value this
-        // parser was not asked for is scanned past rather than collected, so
-        // the size bound never applies to it.
         let enormous = "v".repeat(MAX_VALUE_BYTES * 8);
         let events = read(&format!(r#"<a id="kept" args="{enormous}"/>"#))
             .expect("an unwanted value is never measured against the bound");
@@ -1331,11 +1237,12 @@ mod tests {
             "the element should have been read"
         );
 
-        // And the same value under a name the parser *was* asked for is refused,
-        // so the test above is about what is kept and not about the length.
+        // The same value under a kept name is refused.
         assert!(!refusal(&format!(r#"<a id="{enormous}"/>"#)).is_empty());
     }
 
+    /// A kept attribute's value past the bound is refused; one at the bound is
+    /// accepted.
     #[test]
     fn a_kept_attribute_value_is_bounded() {
         let at_bound = "v".repeat(MAX_VALUE_BYTES);
@@ -1345,9 +1252,8 @@ mod tests {
         assert!(!refusal(&format!(r#"<a id="{past}"/>"#)).is_empty());
     }
 
-    /// The element ceiling a byte ceiling implies never refuses a document
-    /// that ceiling admits, even one made of nothing but the smallest element
-    /// there is, so a caller who raises the one raises the other.
+    /// The element ceiling a byte ceiling implies admits every document that
+    /// byte ceiling admits, even one made only of the smallest element.
     #[test]
     fn a_byte_ceiling_admits_every_element_it_has_room_for() {
         let document = format!("<r>{}</r>", "<a/>".repeat(1000));
@@ -1366,8 +1272,8 @@ mod tests {
         }
         assert_eq!(starts, 1001);
 
-        // Three hundred hosts scanned across the full TCP range, in the
-        // 131,072 elements this engine writes each of them in.
+        // Three hundred hosts scanned across the full TCP range, at 131,072
+        // elements each.
         assert!(elements_within(u64::MAX) > 300 * 131_072);
     }
 
@@ -1409,16 +1315,12 @@ mod tests {
 
     proptest! {
         /// Nothing a file can contain makes this parser panic or run forever.
-        ///
-        /// The same campaign `fingerprint` runs over its own parsers, applied to
-        /// the one that reads a document somebody else wrote.
         #[test]
         fn the_parser_never_panics_on_arbitrary_input(document in "(?s).{0,2000}") {
             let _ = read(&document);
         }
 
-        /// Arbitrary bytes, not just arbitrary text: a file on disk is not
-        /// obliged to be UTF-8.
+        /// Arbitrary bytes, since a file on disk need not be UTF-8.
         #[test]
         fn the_parser_never_panics_on_arbitrary_bytes(bytes in proptest::collection::vec(any::<u8>(), 0..2000)) {
             let mut input = Cursor::new(bytes);

@@ -9,51 +9,46 @@
 //! # Reading a report back as targets
 //!
 //! Scan, export, and feed the report in again: the same hosts, on the ports they
-//! were found on. It is the shortest path to checking whether anything changed,
-//! and it is why both the document format and the record-per-line one have a
-//! reader here.
+//! were found on. This is the shortest way to check whether anything changed, and
+//! both the document format and the record-per-line one have a reader here.
 //!
-//! ## The input schema is a narrower contract than the output one
+//! ## The input schema
 //!
-//! The export DTOs are not reused and cannot be. They are borrowing, write-only
-//! types, `&'static str` for every enum name and `&'a str` for every borrowed
-//! field, and the export side's `ReportDto` is a streaming adapter holding a
-//! `&ScanReport` rather than a data structure. There is nothing there for `serde`
-//! to deserialize into, and giving them owned fields would cost the export path
-//! an allocation per enum name per port to serve a reader that wants four fields.
+//! The export DTOs cannot be reused. They borrow (`&'static str` for every enum
+//! name, `&'a str` for every borrowed field), and the export side's `ReportDto` is
+//! a streaming adapter over a `&ScanReport`, so there is nothing for `serde` to
+//! deserialize into. Owned fields would cost the export path an allocation per
+//! enum name per port.
 //!
-//! So the records below are written by hand and read only what a rescan needs:
-//! the addresses, the zone that makes a link-local address reachable, and the
-//! ports with their transport. Everything else in the document is skipped without
-//! being built, which leaves the exported schema free to move.
+//! The records below are written by hand and read only what a rescan needs: the
+//! addresses, the zone that makes a link-local address reachable, and the ports
+//! with their transport. Everything else is skipped without being built, which
+//! leaves the exported schema free to move.
 //!
 //! ## What this side promises
 //!
-//! - **Unknown fields are ignored.** A report from a newer engine stays
-//!   readable, which is the same forward-compatibility bargain the emitted
-//!   document already offers its consumers.
-//! - **An unknown enum string is an error naming it.** The opposite choice, on
-//!   purpose: a `protocol` this build does not recognise is not a field a reader
-//!   can skip but a value that decides what the record says. Reading an unknown
-//!   transport as TCP would scan the wrong thing and report success.
+//! - **Unknown fields are ignored**, so a report from a newer engine stays
+//!   readable.
+//! - **An unknown enum string is an error naming it.** A `protocol` this build
+//!   does not recognise decides what the record says, so it cannot be skipped.
+//!   Reading an unknown transport as TCP would scan the wrong thing and report
+//!   success.
 //! - **`schema_version` is required and checked.** A document from a future
-//!   major version is refused, because by construction its fields mean
-//!   something else. Its absence is how a report is told apart from any other
-//!   JSON that happens to have a `hosts` key.
+//!   major version is refused, because its fields mean something else. A missing
+//!   version marks JSON that is not a report, even if it has a `hosts` key.
 //!
 //! ## Streaming
 //!
-//! The document is not read into memory. A `hosts` array is consumed element by
-//! element through a [`serde::de::DeserializeSeed`], and each host becomes a
-//! target and is dropped before the next is parsed, so a report of a /16 costs one
-//! host's worth of memory to import.
+//! The `hosts` array is consumed element by element through a
+//! [`serde::de::DeserializeSeed`], and each host becomes targets and is dropped
+//! before the next is parsed, so importing a report of a /16 costs one host's
+//! worth of memory.
 //!
-//! ## What it does not do
+//! ## No filtering on state
 //!
-//! It does not filter on `state`. Every port in the document is a target, since a
-//! report is the caller's own selection and rescanning what it found should not
-//! quietly mean rescanning some of it. A caller who wants only the open ones
-//! filters the document, which is one line of `jq`.
+//! Every port in the document is a target, since a report is the caller's own
+//! selection. A caller who wants only the open ones filters the document first,
+//! which is one line of `jq`.
 
 use std::fmt;
 use std::io::BufRead;
@@ -77,9 +72,8 @@ const LINES_FORMAT: &str = "JSON Lines";
 
 /// One host, reduced to the parts a rescan needs.
 ///
-/// `#[serde(default)]` throughout, so a document that omits a field this build
-/// knows about is read rather than refused. Only `primary_ip` is required: a
-/// host record without an address describes nothing that can be scanned.
+/// Every field but `primary_ip` is `#[serde(default)]`, so a document that omits
+/// one still reads. A host record without an address names nothing to scan.
 #[derive(Debug, Deserialize)]
 struct HostRecord {
     /// The address the host is keyed by.
@@ -90,9 +84,8 @@ struct HostRecord {
     ips: Vec<String>,
     /// The interface `primary_ip` is valid on.
     ///
-    /// Read because without it a link-local record is a host nothing can reach:
-    /// every interface has an `fe80::/64`, and an address with no zone names a
-    /// different machine on each one.
+    /// Without it a link-local record is unreachable: every interface has an
+    /// `fe80::/64`, and an address with no zone names a different machine on each.
     #[serde(default)]
     zone: Option<String>,
     /// The ports the scan recorded, whatever state they were in.
@@ -117,8 +110,8 @@ enum LineRecord {
     /// One host.
     #[serde(rename = "host")]
     Host(HostRecord),
-    /// A record kind this build does not know, skipped so that a newer engine's
-    /// output stays readable.
+    /// A record kind this build does not know, skipped so a newer engine's output
+    /// stays readable.
     #[serde(other)]
     Unknown,
 }
@@ -136,8 +129,7 @@ struct HeaderRecord {
 /// Builds target expressions out of host records and hands them to the sink.
 struct Emitter<'a> {
     sink: &'a mut dyn TargetSink,
-    /// Reused across hosts, because a report has as many of these as it has
-    /// addresses.
+    /// Reused across hosts, since a report has one per address.
     token: String,
     ports: String,
     /// Set when the sink or a record refuses, so the real error survives the
@@ -147,19 +139,16 @@ struct Emitter<'a> {
     versioned: bool,
     /// The most addresses one host record may name.
     ///
-    /// The sink counts the running total across the whole import, the bound that
-    /// matters for a scan. This one is about the document: a record naming more
-    /// addresses than the whole import may cover is a record nothing
-    /// good comes of building the rest of.
+    /// The sink bounds the running total across the import. This bounds a single
+    /// record: one naming more addresses than the whole import may cover is
+    /// refused before the rest of it is built.
     max_addresses: u128,
     /// Whether the document carried a `hosts` array at all.
     ///
-    /// Required, and what tells a document from one record of a record-per-line
-    /// file. That file's first line is a complete object carrying
-    /// `schema_version` and nothing that names a host, so a reader letting it
-    /// pass would parse it, never reach the lines the hosts are on, and return
-    /// `Ok` with no targets. A scan of an empty report writes `"hosts": []`, so
-    /// present-and-empty is how a document means it.
+    /// Required, because it tells a document from the first line of a
+    /// record-per-line file. That line is a complete object with
+    /// `schema_version` and no hosts, so accepting it would return `Ok` with no
+    /// targets. An empty report is written as `"hosts": []`.
     hosted: bool,
 }
 
@@ -198,8 +187,7 @@ impl<'a> Emitter<'a> {
         self.ports.clear();
         for port in &host.ports {
             let name = port.protocol.to_ascii_lowercase();
-            // A transport this build cannot name is a port it cannot probe
-            // correctly, and reading it as TCP would scan something else and
+            // Reading an unknown transport as TCP would scan something else and
             // call it a success.
             let Some(protocol) = crate::record::wire::protocol(&name) else {
                 self.failure = Some(ImportError::Malformed {
@@ -212,9 +200,8 @@ impl<'a> Emitter<'a> {
                 });
                 return false;
             };
-            // Every port behind its own qualifier, TCP's included: the
-            // document lists ports in its own order, and a qualifier holds
-            // until the next one.
+            // Every port gets its qualifier, TCP's included: a qualifier holds
+            // until the next one, and the document's ports come in any order.
             let prefix = protocol.qualifier();
             if !self.ports.is_empty() {
                 self.ports.push(',');
@@ -223,8 +210,8 @@ impl<'a> Emitter<'a> {
             self.ports.push_str(&port.port.to_string());
         }
 
-        // `ips` is the full picture and `primary_ip` is the key into it. A
-        // document that carries only the key is still a host worth rescanning.
+        // `ips` lists every address; a record with only `primary_ip` falls back
+        // to that.
         let addresses: &[String] = if host.ips.is_empty() {
             std::slice::from_ref(&host.primary_ip)
         } else {
@@ -280,17 +267,15 @@ pub struct JsonImporter {
 impl JsonImporter {
     /// A reader bounded by `limits`.
     ///
-    /// Which of them bind here, since a document is not a stream of lines:
+    /// How the limits apply to a document:
     ///
-    /// - [`max_line_bytes`](ImportLimits::max_line_bytes) does not. A JSON
-    ///   document has no lines, and nothing here reads one.
-    /// - [`max_tokens`](ImportLimits::max_tokens) binds, through the sink, which
-    ///   counts every expression whatever produced it.
-    /// - [`max_addresses`](ImportLimits::max_addresses) binds twice: through the
+    /// - [`max_line_bytes`](ImportLimits::max_line_bytes) is unused; a JSON
+    ///   document is not read as lines.
+    /// - [`max_tokens`](ImportLimits::max_tokens) applies through the sink.
+    /// - [`max_addresses`](ImportLimits::max_addresses) applies twice: through the
     ///   sink as the running total, and here as the most addresses one host
-    ///   record may name. The second is what stops a document with one host and
-    ///   ten million addresses in it from being assembled before the sink has
-    ///   seen a single one.
+    ///   record may name. The second stops a host with ten million addresses
+    ///   from being assembled before the sink sees any of them.
     pub fn new(limits: ImportLimits) -> Self {
         Self { limits }
     }
@@ -313,8 +298,8 @@ impl Importer for JsonImporter {
             }
             .deserialize(&mut deserializer);
 
-            // The real error is the one the sink or a record produced; serde's is
-            // only the vehicle that carried the stop signal out.
+            // The real error is the sink's or the record's; serde's only carried
+            // the stop out.
             if let Some(failure) = emitter.failure.take() {
                 return Err(failure);
             }
@@ -388,8 +373,7 @@ impl<'de, 'a, 'e> Visitor<'de> for Document<'a, 'e> {
                         emitter: &mut *self.emitter,
                     })?;
                 }
-                // Everything else in the document is skipped without being
-                // built, which is what keeps this reader's promises narrow.
+                // Skipped without being built.
                 _ => {
                     map.next_value::<IgnoredAny>()?;
                 }
@@ -421,8 +405,8 @@ impl<'de, 'a, 'e> Visitor<'de> for Hosts<'a, 'e> {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
-        // One host is parsed, turned into targets and dropped before the next
-        // is read, so the array never exists in memory.
+        // Each host is dropped before the next is read, so the array is never
+        // held in memory.
         while let Some(host) = seq.next_element::<HostRecord>()? {
             if !self.emitter.emit(&host, FORMAT, ImportOrigin::unknown()) {
                 return Err(de::Error::custom("import stopped"));
@@ -440,8 +424,7 @@ impl<'de, 'a, 'e> Visitor<'de> for Hosts<'a, 'e> {
 /// Reads a report written one record per line.
 ///
 /// Every line stands alone, so a report whose scan was killed half way through
-/// still reads, which is why that format exists and would be
-/// a poor reader that could not take advantage of it.
+/// still reads up to where it stopped.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JsonLinesImporter {
     limits: ImportLimits,
@@ -536,8 +519,8 @@ mod tests {
     use crate::model::port::PortSet;
     use std::io::Cursor;
 
-    /// The port every test's default port set holds, named so the round-trip
-    /// expectation can say what a portless host comes back as.
+    /// The port in every test's default port set, which a portless host comes
+    /// back on.
     const DEFAULT_PORT: u16 = 80;
 
     fn options() -> ImportOptions<'static> {
@@ -568,16 +551,15 @@ mod tests {
         assert!(ports.has_tcp(22), "the TCP port came back as TCP");
         assert!(ports.has_udp(53), "the UDP port came back as UDP");
         assert!(!ports.has_tcp(53), "and not as both");
-        // A qualifier holds until the next one, so a TCP port listed after a
-        // UDP one has to be written as TCP rather than left to inherit it.
+        // A qualifier holds until the next one, so a TCP port after a UDP one
+        // must carry its own.
         assert!(
             ports.has_tcp(443) && !ports.has_udp(443),
             "a TCP port after a UDP one stays TCP"
         );
     }
 
-    /// A discovery report has no ports at all, and has to read back as the
-    /// hosts it found rather than as nothing.
+    /// A discovery report has no ports, and reads back as the hosts it found.
     #[test]
     fn a_host_with_no_ports_takes_the_default_ports() {
         let file = document(r#"{"primary_ip":"198.51.100.1"},{"primary_ip":"198.51.100.2"}"#);
@@ -588,8 +570,7 @@ mod tests {
         assert!(imported.map.units[0].ports().has_tcp(80));
     }
 
-    /// A dual-stack host is a host at both addresses, and rechecking it means
-    /// rechecking both.
+    /// A dual-stack host is rechecked at both addresses.
     #[test]
     fn every_address_of_a_host_becomes_a_target() {
         let file = document(
@@ -601,8 +582,8 @@ mod tests {
         assert_eq!(imported.addresses, 2);
     }
 
-    /// Without its zone a link-local record describes a host nothing can reach,
-    /// so the zone has to survive into the target.
+    /// A link-local record is unreachable without its zone, so the zone must
+    /// survive into the target.
     #[test]
     fn a_link_local_host_keeps_the_interface_that_makes_it_reachable() {
         fn zones(name: &str) -> Option<u32> {
@@ -623,12 +604,11 @@ mod tests {
         let v6 = imported.map.units[0].ips().v6();
         assert_eq!(v6.len(), 1);
         assert_eq!(v6[0].zone(), Some(7), "the zone was dropped on the way in");
-        // The zone belongs to the link-local address and must not be pasted
-        // onto the IPv4 one, which would make it unparseable.
+        // A zone pasted onto the IPv4 address would make it unparseable.
         assert_eq!(imported.map.units[0].ips().v4().len(), 1);
     }
 
-    /// The promise that keeps a newer engine's report readable.
+    /// Keeps a newer engine's report readable.
     #[test]
     fn fields_this_build_does_not_know_are_ignored() {
         let file = r#"{
@@ -646,7 +626,7 @@ mod tests {
         assert!(imported.map.units[0].ports().has_tcp(22));
     }
 
-    /// A transport this build does scan reads back as itself, prefix and all.
+    /// A transport this build scans reads back as itself, prefix and all.
     #[test]
     fn an_sctp_port_reads_back_as_an_sctp_port() {
         let file =
@@ -657,8 +637,7 @@ mod tests {
         assert!(ports.has_sctp(9) && !ports.has_tcp(9));
     }
 
-    /// The opposite rule, and the reason for it: an unrecognised transport is
-    /// not a field to skip, it is a value that says what the record means.
+    /// An unrecognised transport decides what the record means, so it is refused.
     /// Reading it as TCP would probe something else and report success.
     #[test]
     fn an_unknown_transport_is_refused_rather_than_assumed() {
@@ -678,15 +657,12 @@ mod tests {
         }
     }
 
-    /// A document from a future major version means something else by the same
-    /// field names, so it is refused rather than half-understood.
-    /// A record-per-line file read as a single document has to refuse rather
-    /// than parse its first line and report no targets at all.
+    /// A record-per-line file read as a single document is refused, so its
+    /// header line is not taken as an empty report.
     ///
-    /// The path this closes: `sniff` decides on whatever `fill_buf` returns, and
-    /// that is one byte on a pipe. A JSON Lines stream whose first read is short
-    /// resolves to `Json`, and without this the reader takes the header record
-    /// as the whole document and hands back `Ok` with nothing in it.
+    /// This happens in practice: `sniff` decides on whatever `fill_buf` returns,
+    /// which can be one byte on a pipe, so a JSON Lines stream whose first read is
+    /// short resolves to `Json`.
     #[test]
     fn a_record_per_line_file_read_as_a_document_is_refused() {
         let file = concat!(
@@ -708,6 +684,7 @@ mod tests {
         }
     }
 
+    /// A future major version means something else by the same field names.
     #[test]
     fn a_newer_schema_version_is_refused_and_a_missing_one_is_not_a_report() {
         let newer = r#"{"schema_version":9999,"hosts":[{"primary_ip":"198.51.100.1"}]}"#;
@@ -738,8 +715,7 @@ mod tests {
         assert_eq!(imported.map.units.len(), 1, "both on 22/tcp");
     }
 
-    /// The format exists so a truncated file is still a file. A reader that
-    /// refused one would give that up for nothing.
+    /// The format exists so a truncated file still reads.
     #[test]
     fn a_truncated_record_per_line_report_still_reads_what_survived() {
         let file = concat!(
@@ -753,8 +729,7 @@ mod tests {
         assert_eq!(imported.addresses, 1);
     }
 
-    /// A record kind from a newer engine is skipped, for the same reason an
-    /// unknown field is.
+    /// A record kind from a newer engine is skipped, like an unknown field.
     #[test]
     fn an_unknown_record_kind_is_skipped() {
         let file = concat!(
@@ -770,14 +745,10 @@ mod tests {
         assert_eq!(imported.addresses, 1);
     }
 
-    /// The round trip, held against the fixture rather than against the
-    /// document.
+    /// The round trip, checked against the fixture's hand-built `Host` values.
     ///
-    /// Comparing what came back to what the exporter wrote would only prove the
-    /// two agree; both could be wrong together. The fixture's `Host` values are
-    /// built by hand and are outside the serialization loop entirely, so this
-    /// asks the question that matters: does every host and port the scan
-    /// actually found survive being written out and read back in?
+    /// Comparing against the exported document would only prove exporter and
+    /// importer agree, and both could be wrong together.
     #[cfg(feature = "export-json")]
     #[test]
     fn every_host_and_port_in_a_report_survives_the_round_trip() {
@@ -786,10 +757,8 @@ mod tests {
 
         let report = crate::export::fixture::report();
 
-        // Taken from the fixture's own types, never from the JSON. A host the
-        // scan found no ports on comes back on the caller's default ports,
-        // which is the whole reason a discovery report is worth re-importing,
-        // so the expectation says so rather than leaving it to a subset check.
+        // Built from the fixture's types, not the JSON. A host with no ports
+        // comes back on the caller's default ports.
         let mut expected: BTreeSet<(String, u16)> = BTreeSet::new();
         let mut expected_addresses: BTreeSet<String> = BTreeSet::new();
         for host in report.hosts() {
@@ -835,9 +804,8 @@ mod tests {
         );
     }
 
-    /// The two record-per-line formats have to agree with the document format
-    /// about the same report, or a caller's choice of output format silently
-    /// changes what a rescan covers.
+    /// Both formats read the same report back as the same targets, so the choice
+    /// of output format cannot change what a rescan covers.
     #[cfg(all(feature = "export-json", feature = "export-jsonl"))]
     #[test]
     fn the_two_report_formats_read_back_as_the_same_targets() {

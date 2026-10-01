@@ -8,22 +8,20 @@
 
 //! # Reading nmap's XML as targets
 //!
-//! The file somebody already has. `-oX` is what gets saved into an engagement
-//! repository, so reading it turns a previous scan into the target list for the
-//! next one, hosts and per-host ports together. Nmap's own output and this
-//! engine's nmap export are the same format here.
+//! Nmap's XML output is what usually gets saved from an engagement, so reading it
+//! turns a previous scan into the target list for the next one, hosts and per-host
+//! ports together. Nmap's own output and this engine's nmap export read the same.
 //!
-//! ## The refusals are the security control
+//! ## Security
 //!
-//! The parsing is `xml`'s, and so are the refusals that make reading a file
-//! somebody else wrote defensible: no declaration of any kind is accepted, so no
-//! entity can be expanded or fetched, and depth, element count, name length and
-//! attribute length are all bounded. That module states the whole of it.
+//! Parsing and its refusals are the `xml` module's: no declaration is
+//! accepted, so no entity can be expanded or fetched, and depth, element count,
+//! name length and attribute length are bounded. That module documents the rules.
 //!
 //! ## What it reads
 //!
-//! Seven element names, and every other element is ignored without its content
-//! being examined:
+//! Seven element names; every other element is skipped without its content being
+//! examined:
 //!
 //! | Element | Read for |
 //! |---|---|
@@ -31,19 +29,16 @@
 //! | `host` | grouping addresses with the ports found on them |
 //! | `address` | `addr`, when `addrtype` is `ipv4` or `ipv6` |
 //! | `ports`, `port` | `protocol` and `portid` |
-//! | `state`, `hostnames` | nothing; named so their content is skipped knowingly |
+//! | `state`, `hostnames` | nothing; named so their content is skipped |
 //!
-//! Reading the same document for what the scan found rather than for what to scan
-//! next is [`report::nmap`](crate::import::report::nmap), which shares this
-//! module's parser and keeps a much longer list of attributes.
+//! [`report::nmap`](crate::import::report::nmap) reads the same document as
+//! findings, with the same parser and a much longer list of attributes.
 //!
-//! A hardware address is skipped: a MAC is not something to scan. Hostnames are
-//! skipped too, because every nmap host record carries an address and resolving
-//! a name again would be work with a worse answer.
+//! Hardware addresses are skipped. Hostnames are skipped too, since every nmap host
+//! record carries an address and resolving the name again could only give a worse
+//! answer.
 //!
-//! Ports are not filtered by state, as the JSON reader does not filter. The file
-//! is the caller's own selection, and rescanning what nmap found should not
-//! quietly mean rescanning some of it.
+//! Ports are not filtered by state: the file is the caller's own selection.
 
 use std::collections::BTreeSet;
 use std::io::BufRead;
@@ -55,11 +50,8 @@ use crate::model::port::Protocol;
 /// The format's name in errors.
 const FORMAT: &str = "nmap XML";
 
-/// The attributes worth keeping. Everything else is skipped unbuffered.
-///
-/// Four, since reading a document as targets needs an address and a port and
-/// nothing else. The reader that takes the same document as findings names a much
-/// longer list; see [`report::nmap`](crate::import::report::nmap).
+/// The attributes kept: an address and a port. Everything else is skipped
+/// unbuffered.
 const KEPT: &[&[u8]] = &[b"addr", b"addrtype", b"protocol", b"portid"];
 
 /// Reads an nmap XML document as targets.
@@ -76,9 +68,9 @@ impl NmapXmlImporter {
 }
 
 impl NmapXmlImporter {
-    /// The parser a document is read with, its element ceiling the one the
-    /// document ceiling implies, so a caller who raises the byte ceiling for a
-    /// large scan is not refused its document by a fixed element count.
+    /// The parser a document is read with. Its element ceiling follows the
+    /// document byte ceiling, so raising the byte ceiling for a large scan also
+    /// raises the element count.
     fn parser<'a>(&self, input: &'a mut dyn BufRead) -> Parser<'a> {
         Parser::new(input, self.limits.max_line_bytes, FORMAT, KEPT)
             .with_max_elements(elements_within(self.limits.max_document_bytes))
@@ -110,10 +102,9 @@ impl Importer for NmapXmlImporter {
                             b"address" => {
                                 if let Some(accumulator) = host.as_mut() {
                                     accumulator.address(&parser.element)?;
-                                    // Each address becomes a target expression,
-                                    // which the sink counts only once the host
-                                    // closes, so a host of nothing but addresses
-                                    // is held to the count here.
+                                    // The sink counts expressions only once the
+                                    // host closes, so a host of nothing but
+                                    // addresses is bounded here.
                                     let limit = self.limits.max_tokens;
                                     if accumulator.addresses.len() as u64 > limit {
                                         return Err(ImportError::TooManyTokens { limit });
@@ -157,23 +148,20 @@ impl Importer for NmapXmlImporter {
 
 /// One host's addresses and ports, gathered until its element closes.
 ///
-/// What a host holds is bounded apart from the document, so reading one costs
-/// memory in proportion to a host rather than to the file: the addresses by
-/// [`ImportLimits::max_tokens`], and the ports by there being only so many.
+/// Bounded per host: the addresses by [`ImportLimits::max_tokens`], the ports by
+/// there being only so many.
 #[derive(Debug, Default)]
 struct Accumulator {
     addresses: Vec<String>,
-    /// Port number and transport. A set, so a document repeating one port
-    /// entry costs one port and a host holds at most every port on every
-    /// transport, however long its port list runs.
+    /// Port number and transport. A set, so a repeated port entry costs nothing
+    /// and a host holds at most every port on every transport.
     ports: BTreeSet<(u16, Protocol)>,
 }
 
 impl Accumulator {
     /// Takes an `<address>` element, if it names something scannable.
     fn address(&mut self, element: &Element) -> Result<(), ImportError> {
-        // A hardware address is not a target, and neither is an address type
-        // this build has never heard of.
+        // Skips MAC addresses and unknown address types.
         let kind = element.value(b"addrtype").unwrap_or("");
         if kind != "ipv4" && kind != "ipv6" {
             return Ok(());
@@ -198,17 +186,14 @@ impl Accumulator {
             .map_err(|_| parser.malformed(format!("'{number}' is not a port number")))?;
 
         let name = element.value(b"protocol").unwrap_or("tcp");
-        // Not a port at all. Nmap reports a protocol scan by reusing this
-        // element with `protocol="ip"`, where `portid` is an IP protocol number;
-        // it names no target this reader can put in a port list, so it is passed
-        // over rather than refused. Refusing would throw away every real target
-        // in a document because one host was also protocol-scanned.
+        // Nmap reports a protocol scan with `protocol="ip"`, where `portid` is an
+        // IP protocol number. Skipped, so one protocol-scanned host does not cost
+        // the whole document.
         if name == "ip" {
             return Ok(());
         }
-        // A transport this build cannot name is a port it cannot probe
-        // correctly, and reading it as TCP would scan something else and call
-        // that a success.
+        // Reading an unknown transport as TCP would scan something else and
+        // call that a success.
         let Some(protocol) = crate::record::wire::protocol(name) else {
             return Err(parser.malformed(format!(
                 "port {number} names transport '{name}', which this build cannot probe"
@@ -222,25 +207,19 @@ impl Accumulator {
 
 /// The most (address, port) pairs one `<host>` may expand to.
 ///
-/// This reader is linear in the document everywhere except here. A host carrying
-/// K `<address>` elements and N `<port>` elements is K+N of document and K×N of
-/// work: the port list is built once, and then every address stringifies and
-/// re-parses the whole of it. Measured, release, one host: 500×500 is 33.5 KB and
-/// 20 ms, 1 000×1 000 is 67 KB and 47 ms, 2 000×2 000 is 134 KB and 158 ms, so
-/// bytes double and time quadruples.
+/// This is the one place the reader is not linear in the document. A host with K
+/// `<address>` and N `<port>` elements is K+N of document and K×N of work, since
+/// every address stringifies and re-parses the whole port list. Measured, release,
+/// one host: 500×500 is 33.5 KB and 20 ms, 1 000×1 000 is 67 KB and 47 ms,
+/// 2 000×2 000 is 134 KB and 158 ms, so bytes double and time quadruples.
 ///
-/// Nothing else bounds the product. `max_tokens` bounds the addresses, the
-/// ports are bounded by there being only so many, and neither sees the
-/// multiplication, so without this the ceiling is the two of them multiplied
-/// together.
+/// `max_tokens` bounds the addresses and the ports are finite, but neither bounds
+/// the product.
 ///
-/// 2^20 is past anything a real document can mean. A host has a handful of
-/// addresses, a MAC is skipped, so it is the IPv4 and IPv6 ones, and every port
-/// on both transports is 131 070, so this admits eight addresses at the
-/// absolute maximum port list, and one host costs at most about 40 ms at the
-/// measured rate. Refusing rather than truncating, because a target list
-/// quietly missing the hosts past a ceiling is the failure this crate's readers
-/// are arranged to prevent.
+/// 2^20 is past anything a real document means. Every port on both transports is
+/// 131 070, so this admits eight addresses at the maximum port list, about 40 ms
+/// per host at the measured rate. A host past it is refused, not truncated, so a
+/// target list never silently loses targets.
 const MAX_HOST_EXPANSION: usize = 1 << 20;
 
 /// Turns one finished host into targets.
@@ -254,8 +233,6 @@ fn emit(
         return Ok(());
     };
 
-    // Checked before the work rather than described after it, which is the
-    // arrangement the report reader's host ceiling already uses.
     let expansion = host.addresses.len().saturating_mul(host.ports.len());
     if expansion > MAX_HOST_EXPANSION {
         return Err(ImportError::Malformed {
@@ -275,8 +252,8 @@ fn emit(
         if !ports.is_empty() {
             ports.push(',');
         }
-        // TCP's qualifier too, since a qualifier holds until the next one and
-        // a host's transports interleave in port order.
+        // TCP's qualifier too: a qualifier holds until the next one, and the
+        // transports interleave in port order.
         ports.push_str(protocol.qualifier());
         ports.push_str(&number.to_string());
     }
@@ -305,8 +282,8 @@ mod tests {
     use crate::model::port::PortSet;
     use std::io::Cursor;
 
-    /// The preamble every real nmap file opens with, and which the refusal rule
-    /// as first drafted would have rejected in its entirety.
+    /// The preamble every real nmap file opens with: a DOCTYPE without an
+    /// internal subset, a stylesheet instruction and a comment.
     const REAL_PREAMBLE: &str = concat!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
         "<!DOCTYPE nmaprun>\n",
@@ -322,8 +299,8 @@ mod tests {
         ImportFormat::NmapXml.read(&mut Cursor::new(input), &options())
     }
 
-    /// The element ceiling follows the document ceiling, as the report
-    /// reader's does and for the reason its test gives.
+    /// The element ceiling follows the document ceiling, as the report reader's
+    /// does.
     #[test]
     fn the_element_ceiling_is_the_one_the_document_ceiling_implies() {
         for importer in [
@@ -342,7 +319,7 @@ mod tests {
         }
     }
 
-    /// The whole point: a file nmap actually writes, preamble and all.
+    /// A file as nmap writes it, preamble and all.
     #[test]
     fn a_real_nmap_document_reads_as_its_hosts_and_ports() {
         let document = format!(
@@ -398,9 +375,8 @@ mod tests {
         );
     }
 
-    /// The rule as first drafted refused any DOCTYPE and any processing
-    /// instruction, which would have rejected 100% of real nmap output. This is
-    /// the test that would have caught it.
+    /// Refusing every DOCTYPE or processing instruction would reject all real
+    /// nmap output.
     #[test]
     fn the_preamble_nmap_actually_writes_is_accepted() {
         let document = format!(
@@ -410,8 +386,8 @@ mod tests {
         assert_eq!(read(&document).expect("accepted").addresses, 1);
     }
 
-    /// Billion laughs. Not mitigated - unrepresentable, because the declaration
-    /// it needs is refused before any expansion could be considered.
+    /// Billion laughs: the declaration it needs is refused before anything could
+    /// expand.
     #[test]
     fn an_entity_declaration_is_refused_outright() {
         let document = concat!(
@@ -432,7 +408,7 @@ mod tests {
         );
     }
 
-    /// External entity: the file-disclosure shape. Refused at the DOCTYPE,
+    /// External entities, the file-disclosure shape, are refused at the DOCTYPE
     /// before anything could be fetched.
     #[test]
     fn an_external_entity_is_refused_at_the_doctype() {
@@ -456,8 +432,7 @@ mod tests {
     }
 
     /// With no declarations permitted, a reference to anything but the five
-    /// predefined entities cannot have been defined - so it is named rather
-    /// than quietly dropped.
+    /// predefined entities is undefined, and the error names it.
     #[test]
     fn an_undeclared_entity_reference_is_refused_naming_it() {
         let document =
@@ -467,12 +442,11 @@ mod tests {
         assert!(message.contains("secret"), "{message}");
     }
 
-    /// The five that are always defined, and numeric references, do resolve -
-    /// a parser that refused those would not be reading XML.
+    /// The five predefined entities and numeric references resolve.
     #[test]
     fn the_predefined_and_numeric_references_resolve() {
-        // Not an address, so it fails in the grammar rather than the parser,
-        // which is what proves the text arrived decoded.
+        // Not an address, so it fails in the target grammar after the parser
+        // has decoded it, which shows the decoded text.
         let document =
             r#"<nmaprun><host><address addr="a&amp;b&#65;" addrtype="ipv4"/></host></nmaprun>"#;
 
@@ -493,7 +467,7 @@ mod tests {
         assert!(message.contains("nmaprun"), "{message}");
     }
 
-    /// Unbounded nesting is the other way a parser can be made to work forever.
+    /// Unbounded nesting would let a document make the parser work forever.
     #[test]
     fn nesting_past_the_limit_is_refused() {
         let deep = format!(
@@ -506,8 +480,8 @@ mod tests {
         assert!(error.to_string().contains("nested"), "{error}");
     }
 
-    /// An element whose markup runs away has to be refused rather than
-    /// accumulated, and it is the one bound a caller can set.
+    /// An element whose markup runs away is refused at the caller-set
+    /// `max_line_bytes`.
     #[test]
     fn an_element_past_the_byte_limit_is_refused() {
         let options = options().with_limits(ImportLimits {
@@ -522,19 +496,10 @@ mod tests {
         ));
     }
 
-    /// The one place this reader is not linear in the document, and the bound
-    /// that stops it running away.
+    /// [`MAX_HOST_EXPANSION`] bounds the one non-linear cost in this reader.
     ///
-    /// A host is K+N elements and K×N of work, because every address stringifies
-    /// and re-parses the whole port list. Nothing else caps the product:
-    /// `max_tokens` caps the addresses, the port count caps the ports, and
-    /// neither multiplies. Measured, release: 2 000×2 000 is 134 KB of document and 158
-    /// ms, so bytes double and time quadruples, and a document that fits in an
-    /// email costs minutes.
-    ///
-    /// Two addresses over the square root of the ceiling, which is a hundred
-    /// kilobytes of document and would have been the cheapest way to spend a
-    /// core.
+    /// One address and one port over the square root of the ceiling: about a
+    /// hundred kilobytes of document that would otherwise cost a core.
     #[test]
     fn a_host_whose_addresses_times_its_ports_runs_away_is_refused() {
         const SIDE: usize = 1025;
@@ -560,8 +525,7 @@ mod tests {
         );
     }
 
-    /// And the ceiling admits what a real document can mean, so the check above
-    /// is a bound rather than a refusal of multi-homed hosts.
+    /// The ceiling admits a multi-homed host with a long port list.
     #[test]
     fn a_multi_homed_host_with_a_long_port_list_still_reads() {
         let addresses = concat!(
@@ -581,9 +545,8 @@ mod tests {
         );
     }
 
-    /// A host's ports are counted once each, however often the document
-    /// lists them, so repetition neither costs memory nor trips the expansion
-    /// ceiling that bounds what a host really names.
+    /// A host's ports count once each however often they are listed, so
+    /// repetition neither costs memory nor trips the expansion ceiling.
     #[test]
     fn a_port_listed_many_times_counts_once() {
         let addresses = concat!(
@@ -597,9 +560,8 @@ mod tests {
         assert_eq!(imported.addresses, 2);
     }
 
-    /// Nmap's `args` and `services` attributes are genuinely long, and this
-    /// parser must not be bounded in a way that rejects them - which is why an
-    /// unwanted value is never accumulated.
+    /// Nmap's `args` and `services` attributes can be long; values outside
+    /// `KEPT` are skipped unbuffered, so their length does not count.
     #[test]
     fn a_long_attribute_this_parser_ignores_is_not_a_problem() {
         let services: String = (1..2000).map(|port| format!("{port},")).collect();
@@ -611,9 +573,8 @@ mod tests {
         assert_eq!(read(&document).expect("reads").addresses, 1);
     }
 
-    /// An unrecognised transport is not skippable, for the reason the JSON
-    /// reader gives: reading it as TCP would probe something else and report
-    /// success.
+    /// Reading an unrecognised transport as TCP would probe something else and
+    /// report success.
     #[test]
     fn an_unknown_transport_is_refused() {
         let document = concat!(
@@ -637,10 +598,8 @@ mod tests {
 
     /// Reads a document this crate did not write.
     ///
-    /// Every other test here parses a document typed into this file, which
-    /// makes them an instrument carrying whoever wrote them's beliefs about
-    /// nmap's output - the trap this project keeps finding. This one reads a
-    /// file nmap produced:
+    /// The other tests parse documents typed into this file, which carry their
+    /// author's beliefs about nmap's output. This one reads a file nmap produced:
     ///
     /// ```text
     /// nmap -oX /tmp/real.xml -sV -p 1-1000 <host>
@@ -648,7 +607,7 @@ mod tests {
     ///   a_file_nmap_itself_wrote -- --ignored --nocapture
     /// ```
     ///
-    /// Worth re-running whenever nmap's output version moves.
+    /// Re-run it when nmap's output version changes.
     #[test]
     #[ignore = "needs a real nmap file named by ZOND_NMAP_XML"]
     fn a_file_nmap_itself_wrote() {
@@ -679,9 +638,8 @@ mod tests {
         );
     }
 
-    /// The round trip, held against the fixture rather than against the
-    /// document: the fixture's `Host` values sit outside the serialization loop
-    /// entirely, so the exporter and importer cannot be wrong together.
+    /// The round trip, checked against the fixture's hand-built `Host` values so
+    /// the exporter and importer cannot be wrong together.
     #[cfg(feature = "export-nmap")]
     #[test]
     fn a_document_this_engine_wrote_reads_back_as_its_own_targets() {
