@@ -9,32 +9,21 @@
 //! # A compute detection, as it is authored
 //!
 //! A Tier-2 detection on disk: the shared `[detection]`
-//! [manifest](crate::detect::manifest), identical to a flow's, followed by a
-//! `[compute]` section carrying the body. It is a sibling of the flow corpus in
-//! the same `assets/detect/` directory; the build tells the two apart by which
-//! body a file carries, `[[step]]` for a flow and `[compute]` for a module, and
-//! the identical manifest is what makes "one corpus, two tiers" true at the file
-//! level.
+//! [manifest](crate::detect::manifest), then a `[compute]` section carrying the
+//! body. It lives beside the flows in `assets/detect/`; a `[compute]` section
+//! marks a module and `[[step]]` a flow.
 //!
 //! ## Inline or a sibling file
 //!
-//! The body is written one of two ways, and exactly one:
+//! Exactly one of:
 //!
-//! - `source`, the code inline, the default for a small module a contributor
-//!   authors in one file.
-//! - `body`, the name of a sibling file the code lives in, for a module large
-//!   enough to want its own file with editor support, and the only form a future
-//!   binary (WebAssembly) body can take at all.
+//! - `source`, the code inline.
+//! - `body`, the name of a sibling file holding the code.
 //!
-//! The build resolves a `body` reference to its source and normalises every
-//! module to the inline form before embedding, so the runtime only ever sees
-//! `source`, the file reference is an authoring convenience the corpus does not
-//! carry.
+//! The build resolves `body` to inline `source` before embedding, so the runtime
+//! only sees `source`.
 
-// `build.rs` compiles this file to validate the module corpus; the runtime reads
-// the embedded, normalised form, so a field only the build reads (a `body`
-// reference, resolved away before runtime) is not dead: it is read in the build
-// script, where this same lint would not fire.
+// `body` is read only by `build.rs`, which compiles this file too.
 #![allow(dead_code)]
 
 use serde::Deserialize;
@@ -67,8 +56,7 @@ pub struct ComputeSection {
     pub body: Option<String>,
 }
 
-/// The language a compute body is written in. Rhai today; the enum is the room
-/// for a WebAssembly body, whose bytes could only ever be a sibling file.
+/// The language a compute body is written in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {

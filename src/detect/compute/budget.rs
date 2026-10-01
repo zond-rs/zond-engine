@@ -8,30 +8,21 @@
 
 //! # What a module is held to, and how a run can end
 //!
-//! A compute module is code, so unlike a [flow](crate::detect::flow) its cost is
-//! not knowable before it runs: it must be metered, and a breach must be a
-//! fact the report can state rather than a scan that silently stalls. This module
-//! is the vocabulary for both: the [`Budget`] a run is bounded by, and the
-//! [`RunOutcome`] that names why a run ended abnormally.
+//! A compute module's cost is unknown before it runs, so it is metered: a
+//! [`Budget`] bounds the run, and a [`RunOutcome`] names why it ended abnormally.
 //!
-//! ## Three bounds, three questions
+//! ## Bounds
 //!
-//! [`Budget`] carries bounds that answer different questions and bite in
-//! different places. `fuel` bounds work done, independent of machine speed, and
-//! is what a busy loop hits. `deadline` bounds wall-clock, and is what a run
-//! stalled in a slow exchange hits, which fuel cannot see. `max_memory` bounds
-//! allocation. `max_bytes` and `max_connections` bound the I/O at the seam:
-//! they are spent inside [`speak`](super::Capabilities::speak), the one place a
-//! module reaches the network, so a module cannot exceed them because the thing
-//! that would spend them refuses to.
+//! `fuel` bounds work, independent of machine speed (a busy loop). `deadline`
+//! bounds wall-clock (a stalled exchange burns no fuel). `max_memory` bounds
+//! allocation. `max_bytes` and `max_connections` are spent inside
+//! [`speak`](super::Capabilities::speak), which refuses past them.
 //!
 //! ## An abnormal end is not an empty result
 //!
-//! A clean run that found nothing returns `Ok(vec![])`, ran, no finding. A run
-//! that hit a bound, was refused a call, or broke returns `Err(RunOutcome)`, a
-//! different fact, so a reader never reads "it ran out of fuel" as "it cleared the
-//! host." This is the honesty the whole subsystem is built for, carried into the
-//! one place a detection can fail.
+//! A clean run that found nothing returns `Ok(vec![])`. A run that hit a bound,
+//! was refused a call, or broke returns `Err(RunOutcome)`, so running out of
+//! fuel never reads as a clean host.
 
 use std::time::Duration;
 
@@ -40,37 +31,28 @@ use crate::detect::manifest::{DEFAULT_MAX_BYTES, DEFAULT_MAX_CONNECTIONS};
 
 /// The bounds a compute module runs under.
 ///
-/// Resolved from the detection's declared budget and the operator's envelope into
-/// the concrete numbers the runtime enforces. Where each bound is checked is not
-/// uniform: `fuel`, `deadline`, and `max_memory` are enforced by the runtime that
-/// runs the code, while `max_bytes` and `max_connections` are enforced by the
-/// [`Capabilities`](super::Capabilities) that serve its I/O, which is the point,
-/// because the seam that spends a byte is the seam that can refuse to.
+/// Resolved from the detection's declared budget and the operator's envelope.
+/// `fuel`, `deadline` and `max_memory` are enforced by the runtime;
+/// `max_bytes` and `max_connections` by the
+/// [`Capabilities`](super::Capabilities) serving the I/O.
 ///
-/// A scan resolves one from the detection and the envelope, so the fields stay
-/// public to read. To build one directly, for driving a module outside a scan, start
-/// from [`new`](Self::new) and tighten a ceiling with a `with_*` setter;
-/// [`non_exhaustive`], so a bound added later is not a breaking change.
+/// To drive a module outside a scan, start from [`new`](Self::new) and tighten
+/// with the `with_*` setters. [`non_exhaustive`].
 ///
 /// [`non_exhaustive`]: https://doc.rust-lang.org/reference/attributes/type-system.html#the-non_exhaustive-attribute
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Budget {
-    /// The work bound: how much a module may compute before it is trapped. A
-    /// per-operation counter, so it bounds work regardless of how fast the
-    /// machine is, the bound a `while true {}` hits.
+    /// The work bound, a per-operation counter independent of machine speed.
     pub fuel: u64,
-    /// The wall-clock ceiling. Catches what `fuel` cannot: a run parked in a slow
-    /// exchange does no work, so it burns no fuel, but it still runs down this.
+    /// The wall-clock ceiling, which catches a run parked in a slow exchange.
     pub deadline: Duration,
-    /// The allocation ceiling, the largest string, array, or map a module may
-    /// build. A module that would grow past it fails the growth, not the scan.
+    /// The largest string, array or map a module may build.
     pub max_memory: usize,
     /// The total bytes a module may exchange across all of its
     /// [`speak`](super::Capabilities::speak) calls. Spent at the seam.
     pub max_bytes: u64,
-    /// The number of distinct exchanges a module may open. Class-bounded, one
-    /// for an `active-benign` detection that talks to a single socket.
+    /// The number of exchanges a module may open.
     pub max_connections: u32,
 }
 
@@ -78,9 +60,7 @@ impl Budget {
     /// A budget bounding `fuel` operations and `deadline` wall-clock time, with the
     /// memory, byte, and connection ceilings left at the runtime's own defaults.
     ///
-    /// For driving a module outside a scan; the scan path resolves a budget from the
-    /// detection and the envelope instead. Tighten a defaulted ceiling with the
-    /// matching `with_*` setter.
+    /// For driving a module outside a scan.
     pub fn new(fuel: u64, deadline: Duration) -> Self {
         Self {
             fuel,
@@ -114,8 +94,8 @@ impl Budget {
     }
 }
 
-/// Which bound a run hit. Each is a deterministic trap at a known point, not a
-/// timing accident, so the same inputs trap at the same place every time.
+/// Which bound a run hit. Apart from the deadline, the same inputs trap at the
+/// same point every time.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BudgetTrap {
@@ -123,24 +103,19 @@ pub enum BudgetTrap {
     Fuel,
     /// The wall-clock ceiling. A module stalled in an exchange is trapped here.
     Deadline,
-    /// The allocation ceiling. A module building an unbounded value is trapped
-    /// here, in the guest, before the allocation lands.
+    /// The allocation ceiling, trapped before the allocation lands.
     Memory,
-    /// The byte budget, spent at the seam. The exchange that would exceed it does
-    /// not happen, the trap is before the bytes leave.
+    /// The byte budget; the exchange that would exceed it is not sent.
     Bytes,
-    /// The connection budget. The exchange that would open one connection too
-    /// many is refused before it is opened.
+    /// The connection budget; the excess connection is not opened.
     Connections,
 }
 
 /// A granted capability that refused a specific call.
 ///
-/// The narrow case: not a capability the module was never given, that one is
-/// absent, and a module that names it fails without a `Denial`, because there
-/// is nothing there to refuse, but a capability the module holds declining a
-/// particular use of it, such as [`resolve`](super::Capabilities::resolve) of a
-/// name the envelope's scope forbids.
+/// A held capability declining one use, such as
+/// [`resolve`](super::Capabilities::resolve) of a name the envelope's scope
+/// forbids. (A capability never granted is simply absent.)
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Denial {
@@ -150,7 +125,7 @@ pub struct Denial {
     pub reason: String,
 }
 
-/// The module itself broke, as opposed to hitting a bound or being refused.
+/// The module itself broke.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleFault {
@@ -164,9 +139,7 @@ pub enum ModuleFault {
 
 /// Why a run ended abnormally.
 ///
-/// The `Err` half of a [`run`](super::ComputeRuntime::run): an `Ok(vec)` is a
-/// clean run (an empty vector its clean no-finding case), and every other way a
-/// run can end is one of these, recorded rather than swallowed.
+/// The `Err` half of a [`run`](super::ComputeRuntime::run).
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunOutcome {
@@ -174,25 +147,19 @@ pub enum RunOutcome {
     BudgetExceeded(BudgetTrap),
     /// A granted capability refused a specific call.
     Denied(Denial),
-    /// The process had no file descriptor to give one of the module's
-    /// exchanges, so a question went unasked. This machine's shortfall,
-    /// neither the module's nor the port's, and raising the process's file
-    /// limit is its remedy.
+    /// No file descriptor was available for an exchange. Raise the process's
+    /// file limit.
     OutOfDescriptors,
-    /// The scan stopped, or the host ran out of the time the scan gave it,
-    /// while one of the module's exchanges waited for its turn under the
-    /// scan's pacing, so a question went unasked. The scan's record says
-    /// which: the pass it left, or the host it left early.
+    /// The scan stopped, or the host's time ran out, while an exchange waited for
+    /// its pacing slot.
     Withheld,
     /// The module broke.
     Faulted(ModuleFault),
     /// A [`Capabilities`](super::Capabilities) implementation re-entered the
     /// runtime while it was serving a run.
     ///
-    /// Not the module's doing, and not a bound it hit. The trait forbids it
-    /// because two runs on one thread would hold live `&mut` to one value, and
-    /// the runtime refuses the second rather than taking the implementation at
-    /// its word.
+    /// The trait forbids it, since two runs on one thread would hold live `&mut`
+    /// to one value; the runtime checks.
     HostReentered,
 }
 
@@ -205,7 +172,7 @@ mod tests {
         let budget = Budget::new(5_000, Duration::from_millis(750));
         assert_eq!(budget.fuel, 5_000);
         assert_eq!(budget.deadline, Duration::from_millis(750));
-        // The ceilings a caller did not set are the runtime's own defaults.
+        // Unset ceilings are the runtime's defaults.
         assert_eq!(budget.max_memory, DEFAULT_MAX_MEMORY);
         assert_eq!(budget.max_bytes, DEFAULT_MAX_BYTES);
         assert_eq!(budget.max_connections, DEFAULT_MAX_CONNECTIONS);

@@ -8,18 +8,13 @@
 
 //! # The runtime seam, one trait over every compute backend
 //!
-//! [`ComputeRuntime`] is the contract a compute backend serves, and the reason
-//! there is a contract at all: WebAssembly is the destination and [Rhai] the
-//! pure-Rust on-ramp, so a runtime is chosen behind this trait rather than in the
-//! detection stage, and choosing Rhai first forecloses nothing, a WebAssembly
-//! backend is a second `impl`, not a redesign.
+//! [`ComputeRuntime`] is the contract a compute backend serves. [Rhai] is the
+//! current backend; a WebAssembly one would be a second `impl`.
 //!
 //! [Rhai]: super::RhaiRuntime
 //!
-//! ## Three stages, because a module is compiled once and run often
+//! ## Three stages
 //!
-//! A detection is validated and compiled once, then run against every open port
-//! it is interested in, so the lifecycle is three stages:
 //! [`load`](ComputeRuntime::load) turns a body into a shared, reusable module;
 //! [`instantiate`](ComputeRuntime::instantiate) draws a cheap per-port instance
 //! from it under a [grant](super::Grant); and [`run`](ComputeRuntime::run) runs
@@ -27,12 +22,10 @@
 //! the [seam](super::Capabilities). The module is `Send + Sync` and shared behind
 //! an `Arc`; an instance is not, and is owned by the one task that runs it.
 //!
-//! ## The body is bytes the host hands in
+//! ## The body is bytes
 //!
-//! A [`ModuleBody`] is source or a compiled blob a caller supplies, never a path
-//! the engine reads, per the library boundary, the engine hunts no filesystem
-//! for detections. Accepting one is safe because it grants nothing: the
-//! capability model is what lets a detection be accepted from anywhere.
+//! A [`ModuleBody`] is supplied by the caller; the engine reads no files. The
+//! capability model makes accepting one from anywhere safe.
 
 use crate::fingerprint::PortContext;
 
@@ -42,9 +35,7 @@ use crate::model::finding::Finding;
 
 /// A detection's body, as the host hands it in.
 ///
-/// Non-exhaustive because the compiled-WebAssembly variant joins the source one
-/// as the second backend lands, and a caller matching on it should not have to
-/// change when it does.
+/// Non-exhaustive, so another backend's body kind can be added.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleBody {
@@ -54,9 +45,8 @@ pub enum ModuleBody {
 
 /// Why a module could not be loaded or instantiated.
 ///
-/// A failure before any port is touched, a refusal with a cause, never a run
-/// that is quietly clamped. A body that will not compile, or one a given backend
-/// cannot serve, is rejected here.
+/// A failure before any port is touched: a body that will not compile, or that
+/// this backend cannot serve.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LoadError {
@@ -69,22 +59,17 @@ pub enum LoadError {
     UnsupportedBody,
 }
 
-/// A compute backend: loads a module once, instantiates it per port, runs it per
-/// port. The one trait a WebAssembly backend and the Rhai one both satisfy.
+/// A compute backend: loads a module once, instantiates and runs it per port.
 pub trait ComputeRuntime: Send + Sync {
     /// A validated, compiled module, built once per detection and shared across
     /// every port it runs against, so it is `Send + Sync`.
     type Module: Send + Sync;
 
-    /// A per-run instance drawn from a module. It owns the mutable state one run
-    /// needs (a scope, a store), so it is neither shared nor `Sync`; each run
-    /// owns its own.
+    /// A per-run instance owning one run's mutable state; not `Sync`.
     type Instance;
 
-    /// Validate and compile `body` into a reusable module, or reject it with a
-    /// cause. The one place a body's own validity is checked; whether a detection
-    /// may run, its class against the envelope, is decided by the caller
-    /// before instantiation.
+    /// Validate and compile `body` into a reusable module. Whether a detection
+    /// may run (its class against the envelope) is the caller's check.
     fn load(&self, body: &ModuleBody) -> Result<Self::Module, LoadError>;
 
     /// Draw a fresh instance from `module` under `grant`. The grant decides which
@@ -98,9 +83,8 @@ pub trait ComputeRuntime: Send + Sync {
     ) -> Result<Self::Instance, LoadError>;
 
     /// Run `instance` to completion against one port, serving every capability
-    /// through `caps`. `Ok(vec)` is a clean run, an empty vector its clean
-    /// no-finding case; `Err(`[`RunOutcome`]`)` is an abnormal end the report
-    /// records rather than swallows.
+    /// through `caps`. `Ok(vec)` is a clean run (empty when nothing was found);
+    /// `Err(`[`RunOutcome`]`)` is an abnormal end the report records.
     fn run(
         &self,
         instance: &mut Self::Instance,
