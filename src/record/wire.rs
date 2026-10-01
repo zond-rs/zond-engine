@@ -8,34 +8,26 @@
 
 //! # What the model's enums are called in a file
 //!
-//! One name and one parser for each, defined together so that they cannot drift
-//! apart. [`export::schema`](crate::export::schema) writes through the names
-//! here and [`journal`](crate::journal) reads through the parsers, which is why
-//! neither of them defines its own.
+//! One name and one parser for each, defined together.
+//! [`export::schema`](crate::export::schema) writes through the names and
+//! [`journal`](crate::journal) reads through the parsers.
 //!
-//! A name is a promise. It appears in exported reports and in journals on disk,
-//! so changing one is a breaking change to both. A new variant needs its name and
-//! its parse case here, and `every_name_parses_back` fails until it has both.
+//! Names appear in exported reports and journals, so changing one is a breaking change.
+//! A new variant needs its name and parse case here; `every_name_parses_back` checks.
 //!
-//! ## An unknown name is never guessed at here
+//! ## Unknown names
 //!
-//! Every parser returns [`None`] for a name this build does not know. What that
-//! becomes is the caller's, and the callers do not all answer alike.
-//! [`record`](crate::record) reads downward, to the value that claims least of
-//! the ones its type has, and says so at each field. [`reference()`] drops a
-//! malformed reference and keeps the finding it belonged to.
-//!
-//! What none of them do is substitute a neighbour. A port state read as `Open`
-//! because the file said something newer would be a scan reporting a listener
-//! that is not there, so the reading is chosen in the one direction where a
-//! stale build's mistake is always to claim too little.
+//! Every parser returns [`None`] for a name this build does not know, and the caller
+//! decides. [`record`](crate::record) reads down to the value that claims least, and
+//! [`reference()`] drops a malformed reference but keeps the finding. Nothing reads an
+//! unknown name as a neighbouring variant, so an older build only ever claims too
+//! little.
 //!
 //! ## Strategy-supplied names are prefixed
 //!
-//! [`StatusProtocol::Custom`] and [`ScanResponse::Custom`] carry a name their
-//! author chose, rendered with a `custom:` prefix so it cannot be mistaken for
-//! one this engine defines. Without it, something calling itself `arp` would be
-//! indistinguishable from a real ARP finding.
+//! [`StatusProtocol::Custom`] and [`ScanResponse::Custom`] carry an author-chosen name,
+//! rendered with a `custom:` prefix so something calling itself `arp` cannot pass for a
+//! real ARP finding.
 
 use std::borrow::Cow;
 
@@ -331,9 +323,8 @@ pub fn detection_class_name(class: DetectionClass) -> &'static str {
 /// The name a whole envelope's ceiling is written under, `off` where it grants
 /// nothing.
 ///
-/// Beside [`detection_class_name`] rather than folded into it: a finding always
-/// carries the class it ran under, and only a scan's settings can say that no
-/// class was permitted at all.
+/// Separate from [`detection_class_name`], since only a scan's settings can say no
+/// class was permitted.
 pub fn detection_ceiling_name(ceiling: Option<DetectionClass>) -> &'static str {
     match ceiling {
         Some(class) => detection_class_name(class),
@@ -354,11 +345,6 @@ pub fn detection_class(name: &str) -> Option<DetectionClass> {
 }
 
 /// How sure a finding, or a service identification, is on the wire.
-///
-/// The first wire form [`Confidence`] has. Nothing serialized it until a finding
-/// did, so its names are defined here beside every other model enum's rather
-/// than
-/// in the fingerprinting module that owns the type.
 pub fn confidence_name(confidence: Confidence) -> &'static str {
     match confidence {
         Confidence::Heuristic => "heuristic",
@@ -383,10 +369,8 @@ pub fn confidence(name: &str) -> Option<Confidence> {
 
 /// Which kind of [`Reference`] this is, on the wire.
 ///
-/// The kind travels beside a value the record carries separately, so its read-back
-/// is [`reference()`], which takes both halves. It is the one parser here needing
-/// the value alongside the name, since a reference is an enum with a
-/// payload rather than a bare one.
+/// The value travels separately, so the read-back is [`reference()`], which takes both
+/// halves.
 pub fn reference_kind_name(reference: &Reference) -> &'static str {
     match reference {
         Reference::Cve(_) => "cve",
@@ -398,8 +382,7 @@ pub fn reference_kind_name(reference: &Reference) -> &'static str {
 /// A [`Reference`] rebuilt from its wire `kind` and `value`.
 ///
 /// Returns [`None`] for an unknown kind, a CWE number that is not a number, or a
-/// CVE identifier of the wrong shape. A malformed reference is dropped rather
-/// than guessed at, the same discipline every parser here follows.
+/// malformed CVE identifier.
 pub fn reference(kind: &str, value: &str) -> Option<Reference> {
     Some(match kind {
         "cve" => Reference::cve(value)?,
@@ -429,28 +412,17 @@ pub fn tcp_flags_name(byte: u8) -> String {
     .join("|")
 }
 
-/// [`tcp_flags_name`] read back. A name this version does not know contributes
-/// nothing, so a record written by a newer engine reads back as the flags this
-/// one understands rather than failing.
-///
-/// That leniency is right for a journal, which this process wrote, and wrong for
-/// a document somebody else did. A reader that wants the unknown name reported
-/// rather than dropped uses [`tcp_flags_checked`].
+/// [`tcp_flags_name`] read back. An unknown name contributes nothing, which suits a
+/// journal this process wrote. For someone else's document use [`tcp_flags_checked`].
 pub fn tcp_flags(name: &str) -> u8 {
     tcp_flags_fold(name).0
 }
 
 /// [`tcp_flags`], refusing a name it does not know instead of skipping it.
 ///
-/// The evasion settings in an exported report reach the record layer as strings,
-/// and `tcp_flags` reading `"nonsense"` as no flags at all made a document
-/// claiming something this build cannot express read back as a document claiming
-/// nothing. `"syn|nonsense"` was worse: it read back as `syn`, which is a claim
-/// the document did not make.
-///
-/// [`import::report::json`](crate::import::report::json) checks with this so an
-/// unrecognised flag name is refused by name, the way every other named value in
-/// that document already is.
+/// Leniency would read `"syn|nonsense"` as `syn`, a claim the document did not make.
+/// [`import::report::json`](crate::import::report::json) uses this to refuse an
+/// unknown flag name by name.
 pub fn tcp_flags_checked(name: &str) -> Option<u8> {
     match tcp_flags_fold(name) {
         (mask, true) => Some(mask),
@@ -761,10 +733,9 @@ pub fn pass(name: &str) -> Option<Pass> {
 
 /// The wire name of a phase's port scope.
 ///
-/// The set itself travels separately, as a port specification; this names which
-/// of the four things that set *is*. A scope with no set has a name here all the
-/// same, because "the phase walked no ports" and "the record does not say" are
-/// the two that must never be read as each other.
+/// The set travels separately as a port specification; this names which of the four
+/// kinds it is. "Walked no ports" and "does not say" each have a name, so they cannot
+/// be confused.
 pub fn port_scope_name(scope: &PortScope) -> &'static str {
     match scope {
         PortScope::Unstated => "unstated",
@@ -784,8 +755,7 @@ pub fn port_scope(name: &str, ports: Option<PortSet>) -> Option<PortScope> {
         ("none", _) => PortScope::NoPorts,
         ("every", Some(ports)) => PortScope::Every(ports),
         ("mixed", Some(ports)) => PortScope::Mixed(ports),
-        // A set is what makes those two mean anything, so a name that needs one
-        // and did not travel with one says nothing.
+        // These two need a set; without one the scope says nothing.
         ("every" | "mixed", None) => PortScope::Unstated,
         _ => return None,
     })
@@ -807,12 +777,9 @@ mod tests {
     /// One value of every variant of `$enum`, as the arms of one exhaustive
     /// match.
     ///
-    /// The list and the match are built from the same rows, so a variant added
-    /// to the enum without a row stops the build, and a row written twice is an
-    /// unreachable arm, which the lints refuse. A list kept beside a match holds
-    /// neither: the match forces an arm for a new variant, nothing forces the
-    /// list to name it, and the variant is written to files and never read back.
-    /// A variant carrying a value is given one, and matched whatever it carries.
+    /// The list and the match come from the same rows, so a new variant without a row
+    /// fails to compile and a duplicate row is an unreachable arm. A variant carrying a
+    /// value is given one.
     macro_rules! every {
         ($enum:ident { $($variant:ident $(($($carried:expr),+))?),+ $(,)? }) => {{
             let rows = vec![$($enum::$variant $(($($carried),+))?),+];
@@ -827,19 +794,12 @@ mod tests {
 
     /// Every variant survives being written down and read back.
     ///
-    /// What it catches is a name and a parser that disagree. What it does not
-    /// catch is a variant with no name at all: the match arms above are
-    /// exhaustive, so the compiler refuses that before this runs.
+    /// Catches a name and a parser that disagree; a variant with no name fails to
+    /// compile instead.
     ///
-    /// Driven from each vocabulary's `ALL` rather than from lists written out
-    /// here, where there is one. A list written here is a second hand-maintained
-    /// list with one reader, where `ALL` is the same list with five: the
-    /// exported schema's enums, a report's ordering, a `FromStr`'s error
-    /// message, and this. A vocabulary missing from `ALL` goes untested here
-    /// either way, and being missing from `ALL` is the more visible mistake of
-    /// the two. A vocabulary with no `ALL`, or with variants an `ALL` cannot
-    /// hold because they carry a value, is listed by `every!`, which the
-    /// compiler holds to the enum.
+    /// Driven from each vocabulary's `ALL` where there is one, which other readers
+    /// share. Vocabularies without one, or with variants carrying values, are listed by
+    /// `every!`.
     #[test]
     fn every_name_parses_back() {
         for value in [
@@ -932,8 +892,7 @@ mod tests {
             assert_eq!(release_basis(release_basis_name(value)), Some(value));
         }
 
-        // A reference carries a value beside its kind, so its round trip is over
-        // both halves rather than a bare name.
+        // A reference round-trips over kind and value.
         for value in every!(Reference {
             Cve("CVE-2021-44228".to_string()),
             Cwe(79),
@@ -958,8 +917,7 @@ mod tests {
             assert_eq!(os_source(os_source_name(value)), Some(value));
         }
 
-        // `ALL` and then the variant it cannot hold, which carries a name a
-        // strategy chose rather than one this enum knows.
+        // `ALL`, plus the `Custom` variant it cannot hold.
         for value in StatusProtocol::ALL
             .iter()
             .cloned()
@@ -990,33 +948,23 @@ mod tests {
     /// Every built-in protocol is spelled in all three places at once: the
     /// writer, the reader, and the report schema.
     ///
-    /// The first two are exhaustive matches, so the compiler already refuses a
-    /// variant that has no name. The schema is a JSON file the compiler cannot
-    /// see, which is the gap that lets a finding survive a scan and disappear on
-    /// the way to the report.
-    ///
-    /// The protocols are listed by `every!` for that reason: a variant added to
-    /// [`StatusProtocol`] stops this test compiling until somebody has decided
-    /// what the document calls it, and then it is checked against the schema
-    /// and held to be in `ALL`.
+    /// The schema is a JSON file the compiler cannot see. The protocols are listed by
+    /// `every!`, so a new [`StatusProtocol`] variant fails to compile here until it is
+    /// named, then is checked against the schema and `ALL`.
     #[test]
     fn every_built_in_protocol_is_named_everywhere() {
         const SCHEMA: &str = include_str!("../../assets/schema/zond-report-v1.schema.json");
 
-        // Scoped to the one `enum` block that holds these names, because the
-        // document spells some of them twice: `dhcp` is a protocol here and a
-        // network role four hundred lines up, and a search of the whole file
-        // finds the wrong one and passes. Anchored on the description, which
-        // occurs exactly once, and running to the first `]`, which closes the
-        // enum.
+        // Scoped to the one `enum` block, since `dhcp` is also a network role
+        // elsewhere in the document: from the description, which occurs once, to
+        // the first `]`.
         let described = SCHEMA
             .find("The protocol event that produced the evidence")
             .expect("the schema describes the evidence protocol");
         let names = &SCHEMA[described..];
         let names = &names[..names.find(']').expect("the enum closes")];
 
-        // The scoping is the part that can silently stop working, so it is
-        // asserted rather than assumed: a role name has no business in here.
+        // The scoping is asserted: no role name belongs here.
         assert!(
             !names.contains("\"router\""),
             "the search caught the network-role enum instead"
@@ -1040,8 +988,7 @@ mod tests {
         .filter(|protocol| !matches!(protocol, StatusProtocol::Custom(_)))
         .collect();
 
-        // `ALL` is held to the same rows, since the schema's enum and every other
-        // reader of `ALL` count on it naming each built-in protocol.
+        // `ALL` names each built-in protocol.
         assert_eq!(built_in.len(), StatusProtocol::ALL.len());
 
         for protocol in &built_in {
@@ -1059,13 +1006,8 @@ mod tests {
         }
     }
 
-    /// A port scope travels as a name and a set, and reading one back has a rule
-    /// of its own, so it has a test of its own.
-    ///
-    /// [`PortScope`] has no `ALL`, because two of its four carry a set. The
-    /// writer is an exhaustive match and breaks when a variant is added; the
-    /// reader is a string match with a fallback and does not, so the rows are
-    /// listed by `every!`, and a variant added without one stops the build here.
+    /// A port scope travels as a name and a set. [`PortScope`] has no `ALL`, since two
+    /// variants carry a set, so the rows are listed by `every!`.
     #[test]
     fn every_port_scope_parses_back() {
         let ports = || PortSet::try_from("80,443").expect("a port set");
@@ -1084,15 +1026,13 @@ mod tests {
             );
         }
 
-        // A kind that needs a set and did not travel with one says nothing,
-        // rather than claiming the phase walked no ports.
+        // A kind that needs a set and has none says nothing.
         assert_eq!(port_scope("every", None), Some(PortScope::Unstated));
         assert_eq!(port_scope("mixed", None), Some(PortScope::Unstated));
         assert_eq!(port_scope("thorough", Some(ports())), None);
     }
 
-    /// A name this build does not know is refused rather than falling into a
-    /// neighbouring variant.
+    /// An unknown name is refused, not read as a neighbouring variant.
     #[test]
     fn an_unknown_name_is_refused() {
         assert_eq!(host_status("perhaps"), None);

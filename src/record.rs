@@ -12,54 +12,37 @@
 //! fields, and no opinion about serialization. This module is the same
 //! information in a shape that survives a file.
 //!
-//! ## Why the model does not do this itself
+//! ## Why the model does not serialize itself
 //!
-//! Deriving `serde` on [`Host`] and its neighbours would be two lines a type and
-//! would be wrong in four ways. It welds the on-disk format to the struct layout,
-//! so renaming a field breaks every file ever written. It bypasses the invariants
-//! the constructors maintain, so a rebuilt host can have an `open_port_count`
-//! that disagrees with its ports. It makes `Serialize` public API that cannot be
-//! withdrawn. And it does not compile:
-//! [`RttSample`](crate::model::host::telemetry::RttSample) carries an
-//! [`Instant`](std::time::Instant), which `serde` declines to serialize since a
-//! monotonic instant means nothing outside the process that read it.
+//! Deriving `serde` on [`Host`] and its neighbours would tie the file format to the
+//! struct layout, bypass the constructors' invariants (a rebuilt host could have an
+//! `open_port_count` that disagrees with its ports), and make `Serialize` public API.
+//! It also does not compile: [`RttSample`](crate::model::host::telemetry::RttSample)
+//! carries an [`Instant`](std::time::Instant), which means nothing outside its process.
 //!
-//! So the conversion lives here instead. Reading uses the model's getters and
-//! rebuilding uses its constructors, which means a rebuilt value passed through
-//! the same checks a scanned one did.
+//! So the conversion lives here: reading uses the model's getters and rebuilding its
+//! constructors, so a rebuilt value passes the same checks a scanned one did.
 //!
 //! ## What does not survive
 //!
-//! - **Round-trip time samples.** Their timestamps are monotonic
-//!   [`Instant`](std::time::Instant)s, comparable only within one process. A
-//!   rebuilt host keeps its summary statistics through the samples' durations and
-//!   starts its history fresh.
-//! - **Nothing else.** Every other field round-trips, and
-//!   `a_fully_populated_host_survives_a_round_trip` keeps that true as the model
-//!   grows.
+//! - **Round-trip sample timestamps**, which are monotonic
+//!   [`Instant`](std::time::Instant)s. A rebuilt host keeps the durations and restamps
+//!   them.
+//! - **Nothing else.** `a_fully_populated_host_survives_a_round_trip` checks that.
 //!
-//! ## These are not `#[non_exhaustive]`
+//! ## Not `#[non_exhaustive]`
 //!
-//! Almost everything else public in this crate is, and it stops here because of
-//! what these types are for. A record is interchange: something builds one to
-//! hand over, and a struct literal naming every field is how that is written
-//! down. Sealing them would trade a compile error for a caller who adds a field
-//! against a builder per type for a caller who wants to state one.
-//!
-//! The cost is accepted. A field added here is a breaking change, and five of the
-//! ones below arrived that way. What buys it back is that the serialized shape is
-//! versioned where it matters, by
+//! A record is interchange, written out as a struct literal naming every field. A new
+//! field is a breaking change; the serialized shape is versioned by
 //! [`JOURNAL_VERSION`](crate::journal::JOURNAL_VERSION) for a journal and
-//! [`SCHEMA_VERSION`](crate::format::SCHEMA_VERSION) for a report, so a reader is
-//! told when a document has moved.
+//! [`SCHEMA_VERSION`](crate::format::SCHEMA_VERSION) for a report, so readers are told
+//! when a document has moved.
 //!
 //! ## Who uses it
 //!
-//! [`journal`](crate::journal) writes findings as a scan produces them and reads
-//! them back to continue one. A differ over two scans wants the same reader, and
-//! so would an importer richer than [`import::json`](crate::import), which is
-//! narrow on purpose. Sitting beside the model rather than inside any one of them
-//! is what lets all three share it.
+//! [`journal`](crate::journal) writes findings as a scan produces them and reads them
+//! back to continue one. A differ, or an importer richer than
+//! [`import::json`](crate::import), would use the same reader.
 
 pub mod wire;
 
@@ -152,10 +135,8 @@ pub struct HostRecord {
     /// What a scan concluded about each IP protocol it asked this host about,
     /// ascending by number. Empty for a scan that did not ask.
     ///
-    /// A list rather than a map keyed by number, so that every key in this
-    /// document is a field name. A map's keys would be data wearing the shape of
-    /// field names, which is a difference nothing reading the file generically
-    /// can see; the report writes the same list, one field wider.
+    /// A list, so every key in the document is a field name; the report writes the
+    /// same list.
     #[serde(default)]
     pub ip_protocols: Vec<IpProtocolRecord>,
     /// When it was first seen.
@@ -177,13 +158,11 @@ impl From<&Host> for HostRecord {
             primary_ip: host.primary_ip(),
             ips: host.ips().iter().copied().collect(),
             hostname: host.hostname().map(str::to_owned),
-            // Already ordered by the model's set, so two runs that heard the
-            // same names write the same file.
+            // Already ordered by the model's set.
             names: host.names().map(NameRecord::from).collect(),
             status: wire::host_status_name(host.status()).to_owned(),
-            // Sorted, because the model holds these in a set: two runs that
-            // found the same things must write the same file, or a journal is
-            // not comparable with itself.
+            // Sorted, since the model holds these in a hash set and two runs must
+            // write the same file.
             reasons: {
                 let mut reasons: Vec<_> = host
                     .reasons()
@@ -228,8 +207,7 @@ impl From<&Host> for HostRecord {
             first_seen: host.first_seen(),
             last_seen: host.last_seen(),
             ports: host.ports().map(PortRecord::from).collect(),
-            // Already claim-ordered by the model's map, so no sort is needed for
-            // two runs to write the same file.
+            // Already claim-ordered by the model's map.
             findings: host.findings().map(FindingRecord::from).collect(),
         }
     }
@@ -237,10 +215,8 @@ impl From<&Host> for HostRecord {
 
 impl From<&HostRecord> for Host {
     fn from(record: &HostRecord) -> Self {
-        // A port under a transport this build cannot read is left out rather
-        // than filed under one it can, for the reason `PortRecord::rebuild`
-        // gives, and the omission is logged, since the host comes back with
-        // fewer ports than the file holds.
+        // A port under an unknown transport is left out (see
+        // `PortRecord::rebuild`) and the omission logged.
         let ports = record.ports.iter().filter_map(|entry| {
             let port = entry.rebuild();
             if port.is_none() {
@@ -261,10 +237,8 @@ impl From<&HostRecord> for Host {
 impl HostRecord {
     /// This record as a host, holding `ports` in place of the ones it lists.
     ///
-    /// For a reader that rebuilt a host's ports as it parsed them, which is
-    /// how a document of full-range hosts is read without holding each one's
-    /// port list twice. The ports land where they would have among the rest,
-    /// so a host rebuilt this way is the host its record describes.
+    /// For a reader that rebuilt a host's ports as it parsed them, so a full-range host's
+    /// port list is not held twice.
     pub(crate) fn rebuild_with(&self, ports: impl IntoIterator<Item = Port>) -> Host {
         let mut host = Host::new(self.primary_ip);
 
@@ -275,8 +249,7 @@ impl HostRecord {
         for name in self.names.iter().filter_map(NameRecord::rebuild) {
             host.record_name(name);
         }
-        // An unrecognised name leaves the status where `Host::new` put it,
-        // which is `Unknown`, the reading that claims least.
+        // An unrecognised name leaves the status `Unknown`, which claims least.
         if let Some(status) = wire::host_status(&self.status) {
             host.set_status(status);
         }
@@ -306,9 +279,7 @@ impl HostRecord {
         for filtering in self.filtering.iter().filter_map(|f| wire::filtering(f)) {
             host.add_filtering(filtering);
         }
-        // A state name this build cannot read is one a later build wrote, and
-        // `Unasked` is the state that claims nothing, which is the same reading
-        // `PortRecord` gives an unrecognised port state.
+        // An unknown state reads as `Unasked`, which claims nothing, as for ports.
         for entry in &self.ip_protocols {
             let state = wire::ip_protocol_state(&entry.state).unwrap_or(IpProtocolState::Unasked);
             host.record_ip_protocol(entry.protocol, state);
@@ -320,7 +291,7 @@ impl HostRecord {
             host.add_finding(finding);
         }
 
-        // Last, because everything above moves `last_seen` forward as it goes.
+        // Last, since everything above moves `last_seen`.
         host.restore_seen(self.first_seen, self.last_seen);
         host
     }
@@ -361,9 +332,8 @@ impl From<&StatusReasonRecord> for StatusReason {
 
         let mut reason = StatusReason::new(protocol, "");
         reason.details = record.details.as_deref().map(Into::into);
-        // A record claiming a withheld sender and naming one anyway is read as
-        // withheld, for the reason a hop is: of its two claims, that is the one
-        // that reports less.
+        // A withheld sender that is also named reads as withheld, which reports
+        // less.
         reason.source = match record.source {
             _ if record.source_withheld => EvidenceSource::Withheld,
             Some(address) => EvidenceSource::Intermediary(address),
@@ -448,9 +418,8 @@ impl BuildRecord {
     /// Rebuilds the build, or [`None`] for a distributor this engine does not
     /// know.
     ///
-    /// A release whose basis does not parse reads as the weaker one, a rule's
-    /// inference, rather than being dropped: the release still says which fix
-    /// data applies, and claiming less for it errs the safe way.
+    /// A release whose basis does not parse reads as the weaker basis, a rule's
+    /// inference; the release still says which fix data applies.
     pub fn rebuild(&self) -> Option<Build> {
         let mut build = Build::new(wire::distributor(&self.distributor)?);
         if let Some(revision) = &self.revision {
@@ -572,8 +541,7 @@ impl From<&OsEvidence> for OsEvidenceRecord {
 impl From<&OsEvidenceRecord> for OsEvidence {
     fn from(record: &OsEvidenceRecord) -> Self {
         OsEvidence {
-            // An unrecognised source reads as the weakest one, which is what a
-            // reading this build cannot place is worth.
+            // An unknown source reads as the weakest one.
             source: wire::os_source(&record.source).unwrap_or(OsSource::Hostname),
             family: record.family.clone(),
             device: record.device.clone(),
@@ -594,8 +562,8 @@ impl From<&OsEvidenceRecord> for OsEvidence {
 pub struct HardwareRecord {
     /// Each address and when it was last seen.
     pub macs: Vec<(String, SystemTime)>,
-    /// The vendor, where something named it rather than it being read from an
-    /// address block. A record rebuilt from addresses alone resolves its own.
+    /// The vendor, where a service named it. A vendor read from an address block is
+    /// resolved again on rebuild.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vendor: Option<String>,
     /// The model a service named.
@@ -626,15 +594,10 @@ impl From<&HardwareInfo> for HardwareRecord {
             .map(|(mac, at)| (mac.to_string(), *at))
             .collect();
 
-        // The vendor comes from whichever address arrived first and is never
-        // revised, but the model keeps its addresses sorted rather than in
-        // arrival order, so a rebuild reading them back in order would resolve
-        // the vendor from a different address and reach a different answer.
-        //
-        // Recording the one that produced it first is what makes the rebuild
-        // agree, and it keeps a vendor out of the file: it stays derived from
-        // the OUI table, so a record cannot assert one the table does not
-        // support.
+        // The vendor comes from the first address seen, but the model sorts
+        // addresses, so the one that produced it is written first for the rebuild
+        // to agree. The vendor itself stays out of the file, derived from the OUI
+        // table.
         if let Some(vendor) = hardware.vendor() {
             let source = macs.iter().position(|(mac, _)| {
                 mac.parse::<MacAddr>()
@@ -647,10 +610,9 @@ impl From<&HardwareInfo> for HardwareRecord {
             }
         }
 
-        // A vendor an address block produced stays out of the file, for the
-        // reason above. One a service *stated* cannot be re-derived from
-        // anything, so it is recorded: without this a NETGEAR ReadyNAS named by
-        // its FTP banner comes back from a journal as an unnamed box.
+        // A vendor a service *stated* cannot be re-derived, so it is recorded:
+        // otherwise a NETGEAR ReadyNAS named by its FTP banner would come back
+        // unnamed.
         let derivable = hardware.vendor().is_some_and(|vendor| {
             macs.iter().any(|(mac, _)| {
                 mac.parse::<MacAddr>()
@@ -679,18 +641,15 @@ impl HardwareRecord {
     /// Rebuilds the hardware, or `None` where the record names no address this
     /// build can read.
     ///
-    /// The vendor is not carried. It is derived from the address's OUI, so a
-    /// rebuild resolves it from the same table the scan used, and a file cannot
-    /// assert a vendor the OUI does not support.
+    /// A vendor from the address's OUI is resolved from the same table the scan used.
     pub fn rebuild(&self) -> Option<HardwareInfo> {
         let mut macs = self
             .macs
             .iter()
             .filter_map(|(mac, at)| mac.parse::<MacAddr>().ok().map(|mac| (mac, *at)));
 
-        // A record may hold no address at all: a host reached through a gateway
-        // has no MAC to read, and a banner naming `Merit LILIN PDR M800`
-        // describes the box without one.
+        // A record may hold no address, as for a host behind a gateway described
+        // by a banner.
         let described = HardwareInfo::described(crate::model::host::HardwareDescription {
             vendor: self.vendor.as_deref(),
             product: self.product.as_deref(),
@@ -748,12 +707,10 @@ impl From<&ZoneRecord> for Zone {
 /// A host's round-trip samples: each one's duration and kind, and the probe
 /// they were measured from.
 ///
-/// Not when each was taken. A sample is stamped with a monotonic
-/// [`Instant`](std::time::Instant), which orders a history within one process
-/// and means nothing outside it, so the samples are replayed in the order
-/// written and stamped as they are read. That keeps them in the order they
-/// were taken: a scan reads its journal before it sends anything, so every
-/// sample it restores is stamped before any it measures.
+/// Not when each was taken: samples are stamped with a monotonic
+/// [`Instant`](std::time::Instant), so they are replayed in written order and stamped
+/// as read. A scan reads its journal before sending, so restored samples precede new
+/// ones.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TelemetryRecord {
     /// The measured round trips, oldest first.
@@ -764,13 +721,8 @@ pub struct TelemetryRecord {
     pub hop_counter: Option<u8>,
     /// Which probe the round trips were measured from, where they agree on one.
     ///
-    /// One name for the list rather than one per sample. The figures are only
-    /// worth a name when they share it, and a record that carried a protocol per
-    /// duration would be paying per sample for a word the reader sees once.
-    ///
-    /// Absent in a record written before the field existed, which reads back as
-    /// a set of figures that do not say what measured them. That is what they
-    /// were.
+    /// One name for the list, since the figures are only named when they share it.
+    /// Absent reads back as unnamed figures.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rtt_protocol: Option<String>,
     /// What kind of round trip each of `rtts` is, position by position:
@@ -779,11 +731,9 @@ pub struct TelemetryRecord {
     /// it has no direct sample. See
     /// [`RttSource`].
     ///
-    /// Empty where every sample is direct, which is most hosts, and in a
-    /// record written before the field existed, whose samples read back
-    /// direct as they always did. A name this build does not know reads as an
-    /// upper bound, the kind that claims less; a sample the list does not
-    /// reach reads as direct.
+    /// Empty where every sample is direct, which is most hosts. An unknown name reads as
+    /// an upper bound, which claims less; a sample past the end of the list reads as
+    /// direct.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rtt_sources: Vec<String>,
 }
@@ -870,8 +820,7 @@ impl From<&Hop> for HopRecord {
 
 impl From<&HopRecord> for Hop {
     fn from(record: &HopRecord) -> Self {
-        // A record claiming a withheld router and naming one anyway is read as
-        // withheld: of its two claims, that is the one that reports less.
+        // A withheld router that is also named reads as withheld.
         let hop = match record.address {
             _ if record.withheld => Hop::withheld(record.distance),
             Some(address) => Hop::answered(record.distance, address, record.rtt),
@@ -919,7 +868,7 @@ impl From<&Port> for PortRecord {
             service: port.service().map(ServiceRecord::from),
             security: port.security().map(SecurityRecord::from),
             discovery: port.discovery().map(DiscoveryRecord::from),
-            // Already claim-ordered by the model's map.
+            // Already claim-ordered.
             findings: port.findings().map(FindingRecord::from).collect(),
         }
     }
@@ -929,19 +878,10 @@ impl PortRecord {
     /// Rebuilds the port, or [`None`] where the record names a transport this
     /// build cannot read.
     ///
-    /// A state this build cannot read is one a later build wrote, and it reads
-    /// downward to [`PortState::Unasked`], the state that holds no verdict at
-    /// all. A transport cannot read downward, because transports have no
-    /// ordering: TCP is not *less* than one this build has never heard of; it
-    /// is a different endpoint. And ports are keyed by number and transport, so
-    /// a record filed under TCP instead collides with the real TCP port of the
-    /// same number, and [`Host::add_port`] merges the two. A host holding
-    /// `443/tcp` and `443/<unknown>` would come back holding one port, with the
-    /// service named on the second reported as running on the first. Leaving
-    /// the record out is the only reading that claims nothing.
-    ///
-    /// [`Protocol`](crate::model::port::Protocol) is `#[non_exhaustive]`, so a
-    /// later build writing such a record is expected rather than hypothetical.
+    /// An unknown state reads down to [`PortState::Unasked`]. An unknown transport
+    /// cannot read down, since transports have no ordering: filed under TCP, it would
+    /// collide with the real TCP port of that number and [`Host::add_port`] would merge
+    /// the two. So the record is left out.
     pub fn rebuild(&self) -> Option<Port> {
         let protocol = wire::protocol(&self.protocol)?;
         let state = wire::port_state(&self.state).unwrap_or(PortState::Unasked);
@@ -987,12 +927,8 @@ impl From<&HostName> for NameRecord {
 impl NameRecord {
     /// The name this records, or `None` where it cannot be read.
     ///
-    /// A source or a kind this build does not know was written by a later
-    /// one, and there is no reading of it that claims less than leaving the
-    /// name out: filed under another kind, a forest would read as the host's
-    /// own name, and under another source as a claim a different protocol
-    /// made. The same holds for a name the model refuses, which no build
-    /// writes and a hand-edited file can.
+    /// An unknown source or kind, or a name the model refuses, leaves the name out:
+    /// filed under another kind, a forest would read as the host's own name.
     pub fn rebuild(&self) -> Option<HostName> {
         HostName::new(
             wire::name_kind(&self.kind)?,
@@ -1032,32 +968,22 @@ pub struct FindingRecord {
     pub references: Vec<ReferenceRecord>,
     /// Remediation advice, if any.
     ///
-    /// Omitted when absent, as the report's own field is. The two documents
-    /// describe the same finding and `export::conformance` holds them to
-    /// spelling it the same way, so a journal writing `null` where the report
-    /// writes nothing is a difference between them. Absence is the ordinary
-    /// case rather than an edge: a finding from a converted feed carries no
-    /// advice at all.
+    /// Omitted when absent, as in the report; `export::conformance` holds the two to
+    /// the same spelling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remediation: Option<String>,
-    /// The lowest of [`cpes`](Self::cpes), for a reader written before a
-    /// finding could name more than one.
-    ///
-    /// Omitted when absent, for the reason `remediation` is, and absent from
-    /// every finding a correlation did not draw. Read back beside `cpes`, so a
-    /// record that carries only this one still names what its claim rests on.
+    /// The lowest of [`cpes`](Self::cpes), for readers that expect one. Omitted when
+    /// absent. Read back beside `cpes`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpe: Option<String>,
     /// Every platform identifier a correlation drew it from, ascending.
     ///
-    /// Omitted when empty, which is every finding a correlation did not draw,
-    /// and defaulted on the way in.
+    /// Omitted when empty and defaulted on read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cpes: Vec<String>,
     /// What the claim is about, where the detection named it.
     ///
-    /// Omitted when absent, which is every finding whose detection leaves the
-    /// claim to be read off its references.
+    /// Omitted when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
     /// The distribution build a correlation judged. Omitted when absent.
@@ -1074,8 +1000,7 @@ pub struct FindingRecord {
     /// The group of detections this finding's own detection covers a weakness
     /// with, where it declared one.
     ///
-    /// Omitted when absent, for the reason `remediation` is, and absent from
-    /// every finding whose detection stands alone.
+    /// Omitted when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<FindingGroupRecord>,
 }
@@ -1128,10 +1053,8 @@ impl From<&FindingGroup> for FindingGroupRecord {
 }
 
 impl FindingGroupRecord {
-    /// Rebuilds the group, or [`None`] where either half is blank, which the
-    /// model refuses. A finding whose group does not rebuild is kept without
-    /// one, for the reason a reference that will not rebuild is dropped while
-    /// the finding is kept.
+    /// Rebuilds the group, or [`None`] where either half is blank. The finding is kept
+    /// without it.
     pub fn rebuild(&self) -> Option<FindingGroup> {
         FindingGroup::new(self.id.clone(), self.summary.clone()).ok()
     }
@@ -1163,10 +1086,9 @@ impl FindingRecord {
     /// Rebuilds the finding, or [`None`] if it names no detection or has no
     /// title, the two things a finding cannot be without.
     ///
-    /// Everything softer reads downward rather than failing. An unknown severity,
-    /// confidence or class reads as the least it could claim, and a reference
-    /// that will not rebuild is dropped while the finding is kept, since
-    /// provenance that does not parse is no reason to discard a real finding.
+    /// Everything else reads downward: an unknown severity, confidence or class reads
+    /// as the least it could claim, and an unreadable reference is dropped while the
+    /// finding is kept.
     pub fn rebuild(&self) -> Option<Finding> {
         let severity = wire::severity(&self.severity).unwrap_or(Severity::Info);
         let confidence = wire::confidence(&self.confidence).unwrap_or(Confidence::Heuristic);
@@ -1242,9 +1164,8 @@ impl From<&DetectionId> for DetectionIdRecord {
 }
 
 impl DetectionIdRecord {
-    /// Rebuilds the identity, or [`None`] if it names nothing. A version that
-    /// will not parse reads as `0.0.0`, the earliest and least trusted, rather
-    /// than discarding the finding it identifies.
+    /// Rebuilds the identity, or [`None`] if it names nothing. An unparseable version
+    /// reads as `0.0.0`, the least trusted.
     pub fn rebuild(&self) -> Option<DetectionId> {
         let version = self.version.parse().unwrap_or(Version::new(0, 0, 0));
         DetectionId::new(self.id.clone(), version, self.content_hash.clone()).ok()
@@ -1304,8 +1225,7 @@ pub struct ServiceRecord {
     pub cpes: Vec<String>,
     /// Whose build of the software it is, where the reply said.
     ///
-    /// Omitted when absent, which is every upstream build and every service a
-    /// reply did not describe that far, and defaulted on the way in.
+    /// Omitted when absent and defaulted on read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<BuildRecord>,
 }
@@ -1367,15 +1287,12 @@ pub struct SecurityRecord {
     pub certificate: Option<CertificateRecord>,
     /// What the endpoint accepts, one entry per version, where a scan asked.
     ///
-    /// Skipped when empty, which is every sitting that did not enumerate, and
-    /// defaulted on the way in so a record written before the pass existed
-    /// reads back as one that did not.
+    /// Skipped when empty and defaulted on read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accepts: Vec<AcceptedVersionRecord>,
     /// The versions whose enumeration did not finish, where any did.
     ///
-    /// Skipped when empty and defaulted on the way in, on the reasoning
-    /// `accepts` gives.
+    /// Skipped when empty and defaulted on read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unfinished: Vec<UnfinishedVersionRecord>,
 }
@@ -1391,11 +1308,9 @@ pub struct UnfinishedVersionRecord {
 
 /// One version an endpoint accepted, and the suites chosen under it.
 ///
-/// Suites are written as their wire numbers rather than their names. A number is
-/// what the server actually sent, it is half the size, and a build that has since
-/// added or renamed a suite reads an old record correctly instead of matching on
-/// a string it no longer uses. A number this build does not carry reads back into
-/// `unrecognised`, which is where it belonged in the first place.
+/// Suites are written as wire numbers: what the server sent, smaller, and stable when
+/// a suite is renamed. A number this build does not carry reads back into
+/// `unrecognised`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcceptedVersionRecord {
     /// The version, by the name it prints.
@@ -1456,8 +1371,8 @@ impl From<&SecurityRecord> for Security {
 
         let mut support = TlsSupport::new();
         for held in &record.accepts {
-            // A version this build cannot name is dropped rather than guessed
-            // at: there is nothing to file its suites under.
+            // An unknown version is dropped: there is nothing to file its suites
+            // under.
             let Ok(version) = held.version.parse::<TlsVersion>() else {
                 continue;
             };
@@ -1466,8 +1381,7 @@ impl From<&SecurityRecord> for Security {
             for code in &held.suites {
                 match CipherSuite::from_code(*code) {
                     Some(suite) => suites.push(suite),
-                    // Written by a build that carried it and read by one that
-                    // does not. Kept as a number, which is what it always was.
+                    // A suite this build does not carry stays a number.
                     None => unrecognised.push(*code),
                 }
             }
@@ -1477,10 +1391,8 @@ impl From<&SecurityRecord> for Security {
             let Ok(version) = held.version.parse::<TlsVersion>() else {
                 continue;
             };
-            // Read downward, as every other name here is. Dropping the entry
-            // would claim the walk finished, which is the one reading the file
-            // did not make; `Stopped` keeps the claim that it did not, and says
-            // nothing about the endpoint.
+            // Read downward to `Stopped`: dropping the entry would claim the walk
+            // finished.
             let interruption =
                 Interruption::from_name(&held.interruption).unwrap_or(Interruption::Stopped);
             support.record_unfinished(UnfinishedVersion::new(version, interruption));
@@ -1595,9 +1507,8 @@ impl From<&DiscoveryRecord> for Discovery {
 
 /// One sitting of a scan, as a file holds it.
 ///
-/// Mirrors [`PhaseParts`], which mirrors the
-/// phase. A field added to any of the three has to be added to all of them, and
-/// the compiler says so.
+/// Mirrors [`PhaseParts`], which mirrors the phase; the compiler keeps the three in
+/// step.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PhaseRecord {
     /// Which entry point this sitting recorded, by wire name.
@@ -1618,11 +1529,7 @@ pub struct PhaseRecord {
     pub failures: Vec<FailureRecord>,
     /// Ground the sitting declined before sending anything.
     ///
-    /// Skipped when empty, which is most sittings, and defaulted on the way in,
-    /// so a record written before this field existed reads back as a sitting
-    /// that refused nothing. That is the honest reading: a refusal was written
-    /// down as a failure then, and it stays a failure rather than being invented
-    /// as a refusal now.
+    /// Skipped when empty and defaulted on read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refusals: Vec<RefusalRecord>,
     /// Addresses the scanning host could not reach, so no probe was sent to
@@ -1632,87 +1539,63 @@ pub struct PhaseRecord {
     /// The addresses among `unroutable` the scanning host's routing table
     /// refuses.
     ///
-    /// Skipped when empty, which is most sittings, and defaulted on the way
-    /// in, so a record written before this field existed reads back as a
-    /// sitting that named no address refused by a route.
+    /// Skipped when empty and defaulted on read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refused_by_route: Vec<IpAddr>,
     /// Addresses the sitting left before it had finished with them, because
     /// their own budget ran out.
     ///
-    /// Skipped when empty, which is every sitting that set no per-host budget,
-    /// and defaulted on the way in.
+    /// Skipped when empty and defaulted on read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub timed_out: Vec<IpAddr>,
     /// Addresses whose ICMP errors the sitting found rate-limited.
     ///
-    /// Skipped when empty, which is every sitting that asked no UDP ports of a
-    /// rationing host, and defaulted on the way in.
+    /// Skipped when empty and defaulted on read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub icmp_rate_limited: Vec<IpAddr>,
     /// Addresses a raw sitting reached by TCP connect instead.
     ///
-    /// Skipped when empty, which is most sittings, and defaulted on the way in.
-    /// A record written before this field existed reads back as a sitting that
-    /// reached nothing this way, which overstates it only where that sitting
-    /// swept loopback with raw privileges: the one case that was already
-    /// happening and not yet written down.
+    /// Skipped when empty and defaulted on read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reached_by_connect: Vec<RangeRecord>,
     /// Addresses in scope the sitting reached no verdict on.
     ///
-    /// Skipped when empty, which is every sitting that finished its liveness
-    /// question, and defaulted on the way in. A record written before this
-    /// field existed reads back as a sitting that decided everything, which
-    /// overstates it only where that sitting stopped during discovery.
+    /// Skipped when empty and defaulted on read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub undecided: Vec<RangeRecord>,
     /// Why a port sitting ran with no liveness pass in front of it, by its wire
     /// name.
     ///
-    /// Skipped when absent, which is every sitting a liveness pass preceded and
-    /// every one that is not a port scan, and defaulted on the way in. A name
-    /// this build does not know reads back as absent, which claims only that
-    /// the reason is not stated, where guessing one would misstate what the
-    /// findings mean.
+    /// Skipped when absent and defaulted on read. An unknown name reads back as absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub liveness_skipped: Option<String>,
     /// Addresses a port sitting standing in for its liveness pass asked on
     /// every port and heard nothing from.
     ///
-    /// Skipped when empty, which is every sitting a liveness pass preceded, and
-    /// defaulted on the way in. Read back, it is what keeps a host record the
-    /// sitting already journalled at such an address out of the report.
+    /// Skipped when empty and defaulted on read. Keeps journalled records at these
+    /// addresses out of the report.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub silent: Vec<RangeRecord>,
     /// Why the scan was stopped while this sitting ran, by wire name.
     ///
-    /// Skipped when absent, which is every sitting that ended on its own, and
-    /// defaulted on the way in. A name this build does not know reads back as
-    /// absent: the marker qualifies the findings and changes none of them.
+    /// Skipped when absent and defaulted on read. An unknown name reads back as absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped: Option<String>,
     /// The passes a stop skipped or cut short, by wire name.
     ///
-    /// Skipped when empty, which is every sitting no stop cut, and defaulted
-    /// on the way in. A name this build does not know is dropped as it is
-    /// read back: it names a pass this build does not run.
+    /// Skipped when empty and defaulted on read. An unknown name is dropped.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub passes_cut: Vec<String>,
     /// How many of a port sitting's targets it never asked and holds on no
     /// host.
     ///
-    /// Skipped when zero, and defaulted on the way in. Read back, it is what
-    /// keeps a job resumed and stopped again reporting its remainder, since
-    /// the targets are on no host.
+    /// Skipped when zero and defaulted on read.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub unreached: u128,
     /// How many of a port sitting's targets it asked at the addresses it lists
     /// no host at.
     ///
-    /// Skipped when zero, and defaulted on the way in. Read back, it is the
-    /// one place those probes are counted, since the addresses' records were
-    /// dropped.
+    /// Skipped when zero and defaulted on read.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub unheard_probes: u128,
     /// What each strategy recorded about its own run.
@@ -1727,9 +1610,7 @@ pub struct PhaseRecord {
     /// Whether this is the sitting as it stood before it closed, as a sitting
     /// writes itself down while it runs.
     ///
-    /// Skipped when false, which is every sitting that closed, and defaulted
-    /// on the way in, so a record written before this field existed reads as
-    /// one that closed.
+    /// Skipped when false and defaulted on read.
     #[serde(default, skip_serializing_if = "is_false")]
     pub open: bool,
 }
@@ -1739,8 +1620,8 @@ pub struct PhaseRecord {
 pub struct AttachmentRecord {
     /// Which of the scanning machine's interfaces the announcement arrived on.
     pub link: String,
-    /// The interface index, where the reading host knew it. Absent rather than
-    /// zero, since zero is what "no interface" means to a kernel.
+    /// The interface index, where known. Absent, not zero, since zero means "no
+    /// interface" to a kernel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_index: Option<u32>,
     /// Which protocol the announcement was read from.
@@ -1787,9 +1668,8 @@ impl From<&AttachmentRecord> for Attachment {
             None => Zone::unresolved(record.link.as_str()),
         };
 
-        // A source this build cannot place is read as LLDP: it is the standard
-        // one, and the field says which protocol carried the fields rather than
-        // deciding what any of them mean.
+        // An unknown source reads as LLDP, the standard one; it changes no field's
+        // meaning.
         let source = wire::attachment_source(&record.source).unwrap_or(AttachmentSource::Lldp);
 
         let mut attachment = Attachment::new(link, source, record.observed_at);
@@ -1905,11 +1785,8 @@ impl From<&ScanPhase> for PhaseRecord {
 impl From<&PhaseRecord> for ScanPhase {
     fn from(record: &PhaseRecord) -> Self {
         ScanPhase::from_parts(PhaseParts {
-            // A sitting whose kind this build cannot place is read as a
-            // discovery sweep. Of the kinds that exist it claims the least
-            // while still claiming the addresses were walked: a reader is not
-            // told ports were scanned, and is not told the sitting covered
-            // nothing when its scope says it covered a range.
+            // An unknown kind reads as a discovery sweep, which claims least while
+            // still saying the addresses were walked.
             kind: wire::scan_kind(&record.kind).unwrap_or(ScanKind::Discovery),
             started_at: record.started_at,
             elapsed: record.elapsed,
@@ -1922,16 +1799,13 @@ impl From<&PhaseRecord> for ScanPhase {
             refused_by_route: record.refused_by_route.clone(),
             timed_out: record.timed_out.clone(),
             icmp_rate_limited: record.icmp_rate_limited.clone(),
-            // A range whose ends do not describe one is dropped rather than
-            // guessed at, as `TargetScope` drops one. What remains still says
-            // which addresses the sitting reached this way.
+            // A range whose ends do not describe one is dropped.
             reached_by_connect: record
                 .reached_by_connect
                 .iter()
                 .filter_map(RangeRecord::rebuild)
                 .collect(),
-            // Dropped on the same terms: a range that does not describe one
-            // names no address, undecided or otherwise.
+            // Dropped on the same terms.
             undecided: record
                 .undecided
                 .iter()
@@ -1968,14 +1842,11 @@ pub struct ScopeRecord {
     /// The ranges walked, after exclusions, as `start-end`.
     #[serde(default)]
     pub ranges: Vec<RangeRecord>,
-    /// The links swept whole, by the interface each is on. Empty for a phase that
-    /// swept no segment, and for one recorded before this field existed. The two
-    /// read back the same way, since neither claims a link was covered.
+    /// The links swept whole, by the interface each is on. Defaulted on read.
     #[serde(default)]
     pub links: Vec<ZoneRecord>,
     /// The links whose traffic was read without anything being probed on them.
-    /// Never coverage; see `TargetScope::listened`. Empty for a phase that
-    /// sent probes, and for one recorded before this field existed.
+    /// Never coverage; see `TargetScope::listened`. Defaulted on read.
     #[serde(default)]
     pub listened: Vec<ZoneRecord>,
     /// How many distinct addresses those hold.
@@ -1983,9 +1854,7 @@ pub struct ScopeRecord {
     /// How many probes the scope implies, where ports were known.
     #[serde(default)]
     pub probes: Option<u128>,
-    /// Which ports were walked, and whether uniformly. Absent for a phase that
-    /// walked no ports, and for one recorded before this field existed. The two
-    /// read back the same way, since neither can say which ports were probed.
+    /// Which ports were walked, and whether uniformly. Absent reads back as unstated.
     #[serde(default)]
     pub ports: Option<PortsRecord>,
     /// The transports covered, by wire name.
@@ -2051,17 +1920,14 @@ impl From<&ScopeRecord> for TargetScope {
 
 /// A phase's port scope, as a file holds it.
 ///
-/// The set is written as the specification
-/// [`PortSet`] parses, so a full sweep is six bytes
-/// rather than a hundred and thirty thousand entries, and a person reading the
-/// file can see what was scanned.
+/// The set is written as the specification [`PortSet`] parses, so a full sweep is six
+/// bytes and readable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortsRecord {
     /// Which of the four things the set below is, by wire name.
     ///
-    /// The single most important field here, and the reason a bare
-    /// specification would not do. `every` is the only value from which a
-    /// reader may conclude that one endpoint of a covered address was probed.
+    /// `every` is the only value from which a reader may conclude an endpoint of a
+    /// covered address was probed.
     pub kind: String,
     /// The ports, as the specification
     /// [`PortSet`] parses. Empty where the kind
@@ -2071,8 +1937,7 @@ pub struct PortsRecord {
 }
 
 impl PortsRecord {
-    /// The record of a port scope, or `None` where the scope states nothing,
-    /// which is what a record written before this field existed reads back as.
+    /// The record of a port scope, or `None` where it states nothing.
     pub fn of(scope: &PortScope) -> Option<Self> {
         match scope {
             PortScope::Unstated => None,
@@ -2085,10 +1950,8 @@ impl PortsRecord {
 
     /// The scope this records.
     ///
-    /// A kind this build does not know, or a specification that will not parse,
-    /// rebuilds as [`Unstated`](PortScope::Unstated), the reading that claims
-    /// nothing. An unreadable set is not evidence that any port was walked, nor
-    /// that none was.
+    /// An unknown kind or unparseable specification rebuilds as
+    /// [`Unstated`](PortScope::Unstated), which claims nothing.
     pub fn rebuild(&self) -> PortScope {
         let ports = PortSet::try_from(self.spec.as_str())
             .ok()
@@ -2141,10 +2004,8 @@ impl RangeRecord {
 
 /// Ground a sitting declined to cover.
 ///
-/// No timestamp, unlike [`FailureRecord`], and the difference is the point: a
-/// failure happened at a moment and a refusal was decided before the phase
-/// began. Recording a clock reading for one would invite a reader to order it
-/// against the failures, which says nothing.
+/// No timestamp, unlike [`FailureRecord`]: a refusal is decided before the phase
+/// begins.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefusalRecord {
     /// Which strategy would have taken the work, by wire name.
@@ -2180,9 +2041,8 @@ pub struct FailureRecord {
     pub reason: String,
     /// When it was recorded.
     pub at: SystemTime,
-    /// Whether a limit cut the work short rather than a fault stopping it.
-    /// Absent, and so false, in a record written before the two were told
-    /// apart, which reads every entry as a failure.
+    /// Whether a limit cut the work short rather than a fault stopping it. Absent reads
+    /// as false.
     #[serde(default, skip_serializing_if = "is_false")]
     pub cut_short: bool,
 }
@@ -2213,8 +2073,7 @@ impl From<&FailureRecord> for ScannerFailure {
 
 /// The settings one sitting ran under.
 ///
-/// The enums here already read and write their own names, so this carries those
-/// rather than restating a vocabulary.
+/// The enums here read and write their own names, so this carries those.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SettingsRecord {
     /// How raw probes were placed on the wire.
@@ -2223,21 +2082,18 @@ pub struct SettingsRecord {
     pub tcp_technique: String,
     /// Which chunk each SCTP port probe carried.
     ///
-    /// Defaulted on the way in, so a record written before the technique was a
-    /// choice reads back as the INIT scan it was.
+    /// Defaulted on read to INIT.
     #[serde(default)]
     pub sctp_technique: String,
     /// The retransmission effort in force.
     pub retry_effort: String,
     /// A caller's override of the attempt budget.
     ///
-    /// Written as a plain number, and read back through the bound the
-    /// configuration enforces: a journal from a build that accepted zero is read
-    /// as no override, which is what it was.
+    /// A plain number, read back through the configuration's bound: zero reads as no
+    /// override.
     #[serde(default)]
     pub retry_max_attempts: Option<u8>,
-    /// A caller's scaling of the timeout. Read back the same way, so a scale a
-    /// schedule could not have been built from reads as absent.
+    /// A caller's scaling of the timeout. An invalid scale reads as absent.
     #[serde(default)]
     pub retry_timeout_scale: Option<f64>,
     /// Whether silent hosts were probed less.
@@ -2247,8 +2103,7 @@ pub struct SettingsRecord {
     pub max_probe_rate: Option<u32>,
     /// The probe-rate floor, where one applied.
     ///
-    /// Defaulted on the way in, so a record written before the floor existed
-    /// reads back as a sitting that set none. That is what it was.
+    /// Defaulted on read.
     #[serde(default)]
     pub min_probe_rate: Option<u32>,
     /// The shortest gap kept between two probes at one host, where one applied.
@@ -2259,8 +2114,7 @@ pub struct SettingsRecord {
     pub probe_interval: Option<Duration>,
     /// The wall-clock budget each host was given, where one applied.
     ///
-    /// Defaulted on the way in, so a record written before the budget existed
-    /// reads back as a sitting that set none. That is what it was.
+    /// Defaulted on read.
     #[serde(default)]
     pub host_timeout: Option<Duration>,
     /// The wall-clock budget the whole sitting was given, where one applied.
@@ -2274,8 +2128,7 @@ pub struct SettingsRecord {
     pub os_detection: String,
     /// How far it went to identify services.
     pub service_detection: String,
-    /// The intrusiveness ceiling detections ran under, by wire name. Defaults on
-    /// an older journal that predates the field.
+    /// The intrusiveness ceiling detections ran under, by wire name. Defaulted on read.
     #[serde(default)]
     pub detection: String,
     /// Whether it traced the path to each host.
@@ -2284,30 +2137,25 @@ pub struct SettingsRecord {
     #[serde(default)]
     pub characterise: bool,
 
-    /// Which IP protocols it asked each host about, ascending. Empty for a
-    /// phase that ran no such pass, which is a phase written before there was
-    /// one too.
+    /// Which IP protocols it asked each host about, ascending. Empty for a phase that
+    /// ran no such pass.
     #[serde(default)]
     pub ip_protocols: Vec<u8>,
     /// Whether it established what each TLS port accepts.
     ///
-    /// Defaulted on the way in, so a record written before the pass existed
-    /// reads back as a sitting that did not enumerate. That is what it was.
+    /// Defaulted on read.
     #[serde(default)]
     pub tls_enumeration: bool,
     /// The TCP ports it connected to and listened on and sent nothing,
     /// ascending.
     ///
-    /// Defaulted on the way in, so a record written before a scan held any
-    /// port back reads as a sitting that probed every port alike. That is what
-    /// it was.
+    /// Defaulted on read.
     #[serde(default)]
     pub listen_only_ports: Vec<u16>,
     /// The ports it sent nothing to on any target, as the specification
     /// [`PortSet`] parses, omitted when it excluded none.
     ///
-    /// Defaulted on the way in, so a record written before a scan could exclude
-    /// a port reads as a sitting that excluded none. That is what it was.
+    /// Defaulted on read.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub excluded_ports: String,
     /// What the sitting changed about the packets it sent, omitted when it
@@ -2320,8 +2168,7 @@ pub struct SettingsRecord {
     pub idle_scan: Option<IdleScanRecord>,
     /// Whether the capture kept ICMP errors a technique did not need.
     ///
-    /// Defaulted on the way in, which reads a record written before the option
-    /// existed as a sitting that did not keep them. That is what it was.
+    /// Defaulted on read.
     #[serde(default)]
     pub icmp_evidence: bool,
 }
@@ -2430,10 +2277,7 @@ impl From<&SettingsRecord> for ScanSettings {
             sctp_technique: record.sctp_technique.parse().unwrap_or_default(),
             retry: RetryConfig {
                 effort: record.retry_effort.parse().unwrap_or_default(),
-                // Read downward, as every other field of this record is: a
-                // journal written by a build that accepted a zero budget or a
-                // NaN scale carries a value that never applied, and reading it
-                // as absent is what it always meant.
+                // A zero budget or a NaN scale never applied, so it reads as absent.
                 max_attempts: record.retry_max_attempts.and_then(NonZeroU8::new),
                 timeout_scale: record.retry_timeout_scale.and_then(TimeoutScale::new),
                 dampen_silent_hosts: record.retry_dampen_silent_hosts,
@@ -2459,8 +2303,8 @@ impl From<&SettingsRecord> for ScanSettings {
             ip_protocols: record.ip_protocols.clone(),
             tls_enumeration: record.tls_enumeration,
             listen_only_ports: record.listen_only_ports.clone(),
-            // Read downward as the fields around it are. This engine writes the
-            // canonical form, which always reads back.
+            // Read downward; this engine writes the canonical form, which always
+            // reads back.
             excluded_ports: PortSet::try_from(record.excluded_ports.as_str()).unwrap_or_default(),
             evasion: record.evasion.as_ref().map(|e| EvasionRecord {
                 source_port: e.source_port,
@@ -2499,8 +2343,7 @@ pub struct ProbeStatsRecord {
     /// How many never left this host, refused or unable to reach their
     /// address.
     pub sends_failed: u64,
-    /// How many were seen leaving on the wire. Defaulted, so an older record
-    /// reads as a run that witnessed nothing.
+    /// How many were seen leaving on the wire. Defaulted on read.
     #[serde(default)]
     pub sends_witnessed: u64,
     /// How many segments its capture handed it.
@@ -2563,14 +2406,11 @@ impl From<&ProbeStats> for ProbeStatsRecord {
 
 impl From<&ProbeStatsRecord> for ProbeStats {
     fn from(record: &ProbeStatsRecord) -> Self {
-        // A file written by a build that counted more attempts is read for
-        // the attempts this one counts, rather than refused: `from_parts`
-        // fits each distribution to this build.
+        // `from_parts` fits each distribution to this build.
         ProbeStats::from_parts(ProbeStatsParts {
             scanner: wire::scanner_kind(&record.scanner).unwrap_or(ScannerKind::Composite),
             targets: record.targets,
-            // An unreadable stop reason reads as the one that claims least: a
-            // run that was cut short rather than one that finished.
+            // An unknown stop reason reads as a run cut short, which claims least.
             stop_reason: wire::stop_reason(&record.stop_reason)
                 .unwrap_or(StopReason::DeadlineExpired),
             elapsed: record.elapsed,
@@ -2643,10 +2483,7 @@ pub struct CaptureRecord {
     pub if_dropped: u64,
     /// How many captures ended before they were told to.
     ///
-    /// Defaulted on read, so a journal written before this was recorded opens
-    /// and reports none, which is what it knew. A scan whose receive path was
-    /// intact writes zero, and the two are indistinguishable in an old journal
-    /// for the same reason every other field added to this record is.
+    /// Defaulted on read.
     #[serde(default)]
     pub stopped_early: u64,
 }
@@ -2675,15 +2512,11 @@ impl From<&CaptureRecord> for CaptureCounts {
 
 /// The plan a scan ran against, as a file holds it.
 ///
-/// Ranges and port lists rather than targets, so a `/16` on every port is a few
-/// dozen bytes rather than four billion records. This is what lets a scan be
-/// continued without being described again: the plan a resume needs is the one
-/// that ran, not one reconstructed from what somebody typed.
+/// Ranges and port lists, so a `/16` on every port is a few dozen bytes. A resume uses
+/// the plan that ran.
 ///
-/// A host-discovery plan is a set of addresses and no ports, and is written
-/// here as a single unit whose port list is empty. One shape covers both
-/// phases, so a reader does not have to know which it is holding to read the
-/// addresses out of it.
+/// A host-discovery plan is written as a single unit with an empty port list, so one
+/// shape covers both phases.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanRecord {
     /// The units, in the order they were walked. Order is part of the plan:
@@ -2695,9 +2528,8 @@ pub struct PlanRecord {
 impl PlanRecord {
     /// Every address the plan covers, whatever its ports.
     ///
-    /// For a discovery plan this is the whole of it. For a port-scan plan it is
-    /// the addresses with the port dimension dropped, so two units naming the
-    /// same address collapse into one; a set has no room to say a thing twice.
+    /// For a port-scan plan, the addresses with ports dropped, so units naming the same
+    /// address collapse.
     pub fn addresses(&self) -> IpSet {
         let mut ips = IpSet::new();
         for unit in &self.units {
@@ -2743,12 +2575,8 @@ pub struct UnitRecord {
     pub ranges: Vec<RangeRecord>,
     /// The ports, as the specification [`PortSet`] parses.
     ///
-    /// Written the way [`PortsRecord`] writes a phase's scope, and for the
-    /// reason given there: a full sweep is six bytes rather than a hundred and
-    /// thirty thousand entries, and a person reading the manifest can see what
-    /// is being scanned. A [`PortSet`] is canonical from construction, so the
-    /// specification and the enumeration are the same order and a position keeps
-    /// its meaning across the round trip.
+    /// As in [`PortsRecord`]. A [`PortSet`] is canonical, so the specification and the
+    /// enumeration have the same order and positions survive the round trip.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub spec: String,
 }
@@ -2788,9 +2616,8 @@ impl From<&PlanRecord> for TargetMap {
 
             let ports = unit.port_set();
 
-            // A unit with nothing left in it would renumber every position after
-            // it, so an unreadable one is kept as an empty unit rather than
-            // dropped. It contributes no targets and holds its place.
+            // An unreadable unit is kept empty, so later positions keep their
+            // numbers.
             plan.add_unit(TargetSet::new(ips, ports));
         }
 
@@ -2822,17 +2649,15 @@ mod tests {
 
     /// A host carrying something in every field the model has.
     ///
-    /// The oracle below is only as good as this is complete: a field nothing
-    /// populates is a field the round trip is not tested on. When the model
-    /// gains one, it belongs here.
+    /// The round-trip oracle is only as good as this is complete; a new model field
+    /// belongs here.
     fn maximal_host() -> Host {
         let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
         host.add_ip(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)));
         host.add_ip("2001:db8::1".parse().expect("an address"));
         host.set_hostname(Some("router.example".to_string()));
         host.set_status(HostStatus::Up);
-        // Every kind, from every source, so a name the record drops for either
-        // reason fails the round trip below.
+        // Every kind from every source.
         for &kind in crate::model::host::NameKind::ALL {
             for &source in crate::model::host::NameSource::ALL {
                 let name = format!("{kind:?}-{source:?}.example");
@@ -2981,11 +2806,8 @@ mod tests {
 
     /// The oracle.
     ///
-    /// A host rendered through the export path before and after a round trip has
-    /// to render identically. The export DTO is an independent, complete view of
-    /// a host, so a field the record forgets to carry shows up here as a
-    /// difference. That keeps this honest as the model grows, with no
-    /// hand-written comparison to maintain.
+    /// A host renders identically through the export path before and after a round
+    /// trip; the export DTO is an independent view, so a forgotten field shows up.
     #[test]
     fn a_fully_populated_host_survives_a_round_trip() {
         let original = maximal_host();
@@ -3025,9 +2847,7 @@ mod tests {
         )
     }
 
-    /// Half a group is not written back into a finding: the model refuses it,
-    /// and a record that lost one of the halves is worth more as the finding it
-    /// still describes than as nothing.
+    /// A half group is dropped and the finding kept.
     #[test]
     fn a_record_carrying_half_a_group_reads_back_without_one() {
         let mut record = FindingRecord::from(&maximal_finding());
@@ -3049,8 +2869,7 @@ mod tests {
         assert_eq!(original, rebuilt, "a field was lost in the round trip");
     }
 
-    /// A record written before a finding could name more than one identifier
-    /// carries its one in `cpe`, and reads back resting on it.
+    /// A record carrying only `cpe` reads back resting on it.
     #[test]
     fn a_finding_recorded_with_one_identifier_reads_back_resting_on_it() {
         let mut record = FindingRecord::from(&maximal_finding());
@@ -3065,9 +2884,7 @@ mod tests {
 
     #[test]
     fn a_finding_record_reads_unknown_names_downward_and_a_nameless_one_away() {
-        // A record this build does not fully understand still yields a finding,
-        // read to the least it could claim, never guessed upward and never
-        // dropped over a soft field.
+        // Unknown soft fields read to the least they could claim.
         let softened = FindingRecord {
             group: None,
             detection: DetectionIdRecord {
@@ -3105,8 +2922,7 @@ mod tests {
             "an unknown reference is dropped, the finding kept"
         );
 
-        // A finding that names no detection, or has no title, is not a finding.
-        // Those two are refused rather than softened.
+        // No detection or no title is refused.
         let nameless = FindingRecord {
             detection: DetectionIdRecord {
                 id: "  ".into(),
@@ -3124,8 +2940,7 @@ mod tests {
 
     #[test]
     fn a_hosts_findings_survive_a_record_round_trip() {
-        // The silent failure guarded here: a HostRecord that carries ports but
-        // forgets findings would round-trip a host with its findings gone.
+        // Findings must survive the round trip.
         let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)));
         host.add_finding(maximal_finding());
         let rebuilt = Host::from(&HostRecord::from(&host));
@@ -3148,8 +2963,7 @@ mod tests {
         assert_eq!(original, round, "a port's findings were lost in the record");
     }
 
-    /// The record is the same after a round trip through the model, which
-    /// catches a rebuild that drops something the record did carry.
+    /// The record is the same after a round trip through the model.
     #[test]
     fn the_record_is_stable_across_a_rebuild() {
         let record = HostRecord::from(&maximal_host());
@@ -3158,7 +2972,7 @@ mod tests {
         assert_eq!(record, rebuilt);
     }
 
-    /// And through a file, which is what it exists for.
+    /// And through a file.
     #[test]
     fn the_record_survives_json() {
         let record = HostRecord::from(&maximal_host());
@@ -3169,9 +2983,7 @@ mod tests {
         assert_eq!(record, read);
     }
 
-    /// The times a host was first and last seen are evidence, and a scan
-    /// resumed the next morning must not report having first seen everything
-    /// that morning.
+    /// First- and last-seen times survive a round trip.
     #[test]
     fn the_times_a_host_was_seen_survive() {
         let rebuilt = Host::from(&HostRecord::from(&maximal_host()));
@@ -3195,17 +3007,8 @@ mod tests {
 
         assert_eq!(rebuilt.status(), HostStatus::Unknown);
 
-        // A status and a state have an ordering with a bottom, so an unreadable
-        // one can read as the bottom and claim nothing.
-        //
-        // **A protocol has no ordering**, and that is why it is the exception.
-        // TCP is not *less* than a transport this build cannot name; it is a
-        // different one, and ports are keyed by `(number, protocol)`. Reading
-        // the unknown record as TCP therefore collides it with the real TCP port
-        // of that number and `add_port` merges the two — so the service named on
-        // an endpoint this build could not read would be reported as running on
-        // one it could. Leaving the record out is the only reading that claims
-        // nothing.
+        // A status and a state read down to their bottom. A protocol has no
+        // ordering, so an unknown one is left out; see `PortRecord::rebuild`.
         assert_eq!(
             rebuilt.ports().count(),
             recorded - 1,
@@ -3217,8 +3020,7 @@ mod tests {
             "and it is not filed under the protocol it was originally written as"
         );
 
-        // And a state this build cannot read, under a protocol it can, still
-        // reads as the bottom rather than being dropped.
+        // An unknown state under a known protocol reads as the bottom.
         let mut record = HostRecord::from(&maximal_host());
         record.ports[0].state = "ajar".to_string();
         let number = record.ports[0].port;
@@ -3240,12 +3042,8 @@ mod tests {
     /// **A record this build cannot read does not become a claim about one it
     /// can.**
     ///
-    /// `Protocol` is `#[non_exhaustive]`, so a later build may record an
-    /// endpoint under a transport this one has never heard of. Ports are keyed
-    /// by number and protocol, so misreading that as TCP collides it with the
-    /// real TCP port of the same number, and `add_port` merges rather than
-    /// replaces: the two endpoints become one, and whichever fields the unknown
-    /// one carried are reported on the known one.
+    /// A port under an unknown transport does not merge into the TCP port of the same
+    /// number.
     #[test]
     fn an_unreadable_protocol_does_not_contaminate_the_port_it_would_collide_with() {
         let mut host = Host::new("192.0.2.1".parse().expect("literal"));
@@ -3255,8 +3053,7 @@ mod tests {
         let record = HostRecord::from(&host);
         let mut value: serde_json::Value = serde_json::to_value(&record).expect("serialises");
 
-        // What a later build writes: the same number, a transport this build
-        // does not know, and a service of its own.
+        // The same number under an unknown transport, with its own service.
         let mut future = value["ports"][0].clone();
         future["protocol"] = serde_json::json!("quic");
         future["state"] = serde_json::json!("closed");
@@ -3282,11 +3079,7 @@ mod tests {
 
     /// **The same holds for a port record rebuilt on its own.**
     ///
-    /// The record types are public, so the host rebuild is not the only way
-    /// in: a caller holding a `PortRecord` rebuilds it directly. A record under
-    /// a transport this build cannot read has to come back as no port there as
-    /// well, or the collision the host rebuild avoids reappears one level down,
-    /// in whatever map of ports the caller keeps.
+    /// A `PortRecord` under an unknown transport rebuilds to `None`.
     #[test]
     fn a_port_record_under_an_unreadable_transport_rebuilds_as_no_port() {
         let mut record = PortRecord::from(&Port::new(443, Protocol::Tcp, PortState::Open));
@@ -3298,7 +3091,7 @@ mod tests {
             "a transport this build cannot read is not TCP, or any other it can"
         );
 
-        // An unreadable state is the contrast: it has a bottom to read down to.
+        // An unknown state reads down instead.
         let mut record = PortRecord::from(&Port::new(443, Protocol::Tcp, PortState::Open));
         record.state = "ajar".to_string();
         let port = record.rebuild().expect("a readable transport rebuilds");
@@ -3306,17 +3099,7 @@ mod tests {
         assert_eq!(port.state(), PortState::Unasked);
     }
 
-    /// A phase survives the round trip, statistics included.
-    ///
-    /// Rendered through the export path before and after, for the reason the
-    /// host oracle gives: it is an independent view, so a field the record
-    /// forgets shows up as a difference rather than as silence.
-    /// A plan's ports survive as a specification.
-    ///
-    /// The enumeration is what positions are counted through, so the two forms
-    /// have to agree about it exactly. They do because a `PortSet` is canonical
-    /// from construction: the specification is written from the same order it is
-    /// read back into.
+    /// A plan's ports survive as a specification, in the same enumeration order.
     #[test]
     fn a_plans_ports_round_trip_as_a_specification() {
         use crate::model::ip::set::IpSet;
@@ -3335,7 +3118,7 @@ mod tests {
             "the enumeration a position is counted through has to be identical"
         );
 
-        // Six bytes and change, rather than one entry per port.
+        // A few bytes, not one entry per port.
         assert!(record.units[0].spec.len() < 40, "{}", record.units[0].spec);
     }
 
@@ -3355,13 +3138,8 @@ mod tests {
         }
     }
 
-    /// A capture that stopped early survives the journal, and an older journal
-    /// that never recorded one still opens.
-    ///
-    /// A log line is not the record: were the count only logged, a resumed
-    /// scan, or a report read a week later, would have no way to know part of
-    /// the receive path was missing for part of the run, and the counts beside
-    /// it would look like a complete measurement.
+    /// A capture that stopped early survives the journal, and a record without the
+    /// field still opens.
     #[test]
     fn a_capture_that_stopped_early_survives_the_journal() {
         let counts = CaptureCounts {
@@ -3374,31 +3152,21 @@ mod tests {
         let record = CaptureRecord::from(counts);
         assert_eq!(CaptureCounts::from(&record), counts, "a field was lost");
 
-        // Through the serialized form the journal actually holds.
+        // Through the serialized form.
         let json = serde_json::to_string(&record).expect("a record serializes");
         assert!(json.contains("stopped_early"), "{json}");
         let read: CaptureRecord = serde_json::from_str(&json).expect("and reads back");
         assert_eq!(CaptureCounts::from(&read), counts);
 
-        // A journal written before this was recorded opens and reports none,
-        // which is what it knew.
+        // A record without the field reports none.
         let older = r#"{"received":271,"dropped":4,"if_dropped":1}"#;
         let read: CaptureRecord = serde_json::from_str(older).expect("an older journal opens");
         assert_eq!(CaptureCounts::from(&read).stopped_early, 0);
         assert_eq!(CaptureCounts::from(&read).received, 271);
     }
 
-    /// Privilege is a `Privilege` in the model and a boolean on the wire, and
-    /// this is where the two meet.
-    ///
-    /// The journal's format and the published report schema both promise a
-    /// boolean, so the conversion has to be exact in both directions and cannot
-    /// drift with the enum. A flipped polarity here would report every
-    /// unprivileged scan as privileged in an archived report, which is a claim
-    /// about what a result is worth rather than a cosmetic error.
-    ///
-    /// Driven off a real phase with only this field varied, so it stays true as
-    /// `PhaseParts` grows.
+    /// Privilege is a `Privilege` in the model and a boolean on the wire; the
+    /// conversion is exact both ways.
     #[test]
     fn privilege_crosses_the_record_boundary_as_the_boolean_the_format_promised() {
         let report = crate::export::fixture::report();
@@ -3407,8 +3175,7 @@ mod tests {
         for (privilege, written) in [
             (Some(Privilege::Raw), Some(true)),
             (Some(Privilege::Connect), Some(false)),
-            // A third state, not a missing boolean: a phase read out of another
-            // scanner's document is not a phase that ran unprivileged.
+            // Unmeasured, as for a phase imported from another scanner.
             (None, None),
         ] {
             let mut record = PhaseRecord::from(original);
@@ -3424,8 +3191,7 @@ mod tests {
         }
     }
 
-    /// A record that lost which probe measured its round trips would read them
-    /// back as figures nobody can place.
+    /// Which probe measured the round trips survives.
     #[test]
     fn the_probe_behind_a_round_trip_survives_the_record() {
         use crate::model::host::StatusProtocol;
@@ -3451,10 +3217,7 @@ mod tests {
     /// An upper bound on a round trip comes back as an upper bound, and a
     /// round trip as a round trip.
     ///
-    /// The two are never pooled: a neighbour's first reply, slowed by the
-    /// address resolution it waited on, averaged with the replies after it
-    /// reports a latency no reply had. A resumed scan reads its hosts from the
-    /// journal and sizes its waits and reports its latencies from what it read.
+    /// A resumed scan sizes waits and reports latencies from what it read back.
     #[test]
     fn what_kind_of_round_trip_a_sample_is_survives_the_journal() {
         use crate::model::host::StatusProtocol;
@@ -3491,8 +3254,7 @@ mod tests {
         }
     }
 
-    /// What a silence means depends on this, so a record that lost it would
-    /// leave every silent port's `NoReply` unreadable.
+    /// `icmp_evidence` survives a round trip.
     #[test]
     fn asking_for_icmp_evidence_survives_the_settings_round_trip() {
         use crate::config::ZondConfig;
@@ -3500,8 +3262,7 @@ mod tests {
         let mut settings = ScanSettings::from(&ZondConfig::default());
         assert!(settings.icmp_evidence, "on unless declined");
 
-        // Both ways round: a run that declined it has to say so, or a reader
-        // cannot tell a scan that saw no errors from one that never looked.
+        // Both ways round.
         settings.icmp_evidence = false;
         assert!(!ScanSettings::from(&SettingsRecord::from(&settings)).icmp_evidence);
 
@@ -3509,9 +3270,7 @@ mod tests {
         assert!(ScanSettings::from(&SettingsRecord::from(&settings)).icmp_evidence);
     }
 
-    /// The detection envelope has to come back as what the scan ran, not as the
-    /// default: a report replayed from a journal must gate a re-analysis the same
-    /// way the live scan did.
+    /// The detection envelope comes back as the scan ran it, not as the default.
     #[test]
     fn the_detection_envelope_survives_the_settings_round_trip() {
         use crate::config::DetectionEnvelope;
@@ -3519,8 +3278,7 @@ mod tests {
         use crate::model::finding::DetectionClass;
         use crate::report::ScanSettings;
 
-        // A raised ceiling, so the round trip must carry the value rather than
-        // fall back to the default it happens to start at.
+        // A raised ceiling, so the default cannot pass by accident.
         let mut settings = ScanSettings::from(&ZondConfig::default());
         settings.detection = DetectionEnvelope::up_to(DetectionClass::Exploit);
 
@@ -3546,11 +3304,7 @@ mod tests {
         }
     }
 
-    /// What a scan measured has to come back as what a scan measured.
-    ///
-    /// A replayed report is rendered by the same code the live run used, so
-    /// anything the record drops shows up as a quieter report rather than an
-    /// error: fewer protocols behind a host, a round trip with no spread.
+    /// What a scan measured comes back unchanged.
     #[test]
     fn a_hosts_measurements_survive_the_round_trip() {
         use crate::model::host::{HostStatus, StatusProtocol, StatusReason};
