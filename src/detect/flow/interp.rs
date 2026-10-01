@@ -698,7 +698,7 @@ mod tests {
             ),
             (
                 "docker-registry-catalog",
-                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"repositories\":[\"alpine\",\"nginx\"]}",
+                REGISTRY_CATALOG,
                 Severity::High,
             ),
             (
@@ -876,6 +876,37 @@ mod tests {
             ),
             "couchdb-writable read a WebDAV share's 201 as CouchDB"
         );
+    }
+
+    /// What the `registry:2` distribution server answers `GET /v2/_catalog`
+    /// with when it has no auth configured.
+    const REGISTRY_CATALOG: &[u8] = b"HTTP/1.1 200 OK\r\n\
+        Content-Type: application/json; charset=utf-8\r\n\
+        Docker-Distribution-Api-Version: registry/2.0\r\n\
+        X-Content-Type-Options: nosniff\r\n\
+        Date: Thu, 01 Oct 2026 09:00:00 GMT\r\n\
+        Content-Length: 36\r\n\r\n\
+        {\"repositories\":[\"alpine\",\"nginx\"]}\n";
+
+    /// A registry is told apart from a web app that answers every path and
+    /// happens to say `repositories`.
+    #[test]
+    fn docker_registry_catalog_fires_on_a_registry_and_not_on_an_app_answering_every_path() {
+        let registry = flow("docker-registry-catalog");
+        let fires =
+            |reply: &[u8]| !run(&registry, "", &seed(), &mut Canned(reply.to_vec())).is_empty();
+
+        assert!(fires(REGISTRY_CATALOG));
+        assert!(
+            !fires(CATCH_ALL_INDEX),
+            "docker-registry-catalog read an app's index page as a catalogue"
+        );
+        // A registry requiring a token.
+        assert!(!fires(
+            b"HTTP/1.1 401 Unauthorized\r\nDocker-Distribution-Api-Version: registry/2.0\r\n\
+              WWW-Authenticate: Bearer realm=\"https://auth.example.com/token\"\r\n\r\n\
+              {\"errors\":[{\"code\":\"UNAUTHORIZED\"}]}\n"
+        ));
     }
 
     /// The four enumeration flows against a same-protocol denial: FTP refusing

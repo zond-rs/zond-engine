@@ -2,10 +2,15 @@
 # no auth answers /v2/_catalog with the repository list; one that requires a
 # credential answers 401. A single read-only GET. An open registry lets anyone
 # pull, and often push, images.
+#
+# The reply must be the registry's: the `Docker-Distribution-Api-Version` header
+# every registry API reply carries, and a body that opens as the catalogue object.
+# A web app answering every path with its index page, which may well mention
+# repositories, has neither.
 
 [detection]
 id      = "docker-registry-catalog"
-version = "1.0.0"
+version = "1.1.0"
 title   = "Docker registry catalogue readable without authentication"
 
 [detection.when]
@@ -20,7 +25,10 @@ max_millis = 3000
 
 [[step]]
 send   = "GET /v2/_catalog HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
-expect = ["HTTP/[0-9.]+ 200", "repositories"]
+expect = [
+  '(?s)\AHTTP/[0-9.]+ 200[^\r\n]*\r\n(?:[^\r\n]+\r\n)*\r\n(?:[0-9a-fA-F]+\r\n)?\{\s*"repositories"\s*:\s*\[',
+  '(?im)^docker-distribution-api-version:[ \t]*registry/2',
+]
   [[step.finding]]
   when         = "matched"
   severity     = "high"
