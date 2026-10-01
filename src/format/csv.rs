@@ -9,21 +9,16 @@
 //! The shape of this engine's CSV: which columns there are and what order they
 //! come in.
 //!
-//! Both directions read this list rather than each keeping their own. The writer
-//! emits it as the header row and fills a field per entry; the reader matches an
-//! incoming header against it to decide whether the table is one this engine
-//! wrote, then maps each column it recognises by name.
+//! The writer emits it as the header row; the reader matches an incoming header
+//! against it to recognise this engine's tables, then maps columns by name.
 
 /// The column names, in order: host columns, then the port columns that are
 /// empty on a host with no ports, then the host columns added after them.
 ///
-/// A column is only ever added at the end. A spreadsheet finds a column by its
-/// header, but the Unix tools that are the format's other audience find it by
-/// position, and a column put anywhere else would move every one after it. So
-/// a host's names follow its port's findings rather than its hostname.
+/// Columns are only added at the end, since Unix tools find a column by position.
+/// That is why a host's names follow its port's findings.
 ///
-/// A slice rather than an array, so that a column added is not a change to the
-/// constant's type.
+/// A slice, so adding a column does not change the constant's type.
 pub const COLUMNS: &[&str] = &[
     "ip",
     "hostname",
@@ -56,18 +51,13 @@ pub const COLUMNS: &[&str] = &[
 /// The characters that make a spreadsheet read a cell as a formula, which the
 /// writer hides behind an apostrophe and the reader takes back off.
 ///
-/// A character one side guards and the other does not know to unguard reads back
-/// with a stray apostrophe in it, and nothing errors, so the list is shared for
-/// the same reason [`COLUMNS`] is.
+/// Shared so both sides agree; a mismatch reads back with a stray apostrophe.
 ///
-/// The carriage return is not a formula character. It is guarded by the same
-/// apostrophe because a cell beginning with one is a cell a spreadsheet
-/// mangles.
+/// The carriage return is not a formula character, but a spreadsheet mangles a
+/// cell beginning with one.
 #[cfg(any(feature = "export-csv", feature = "import-csv"))]
 pub const FORMULA_LEADERS: &[char] = &['=', '+', '-', '@', '\t', '\r'];
 
-/// How many of [`COLUMNS`] describe the port rather than the host.
-///
-/// The port columns run from `port` to `findings`, after the host columns
-/// [`COLUMNS`] opens with, and every column after them is the host's again.
+/// How many of [`COLUMNS`] describe the port: `port` through `findings`. The
+/// columns before and after them are the host's.
 pub const PORT_COLUMNS: usize = 12;

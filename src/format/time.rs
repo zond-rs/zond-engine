@@ -8,37 +8,23 @@
 
 //! # Wire-format timestamps
 //!
-//! A [`SystemTime`] as an RFC 3339 timestamp in UTC, which is the only form a
-//! timestamp takes in an exported report, and the same timestamp read back.
+//! A [`SystemTime`] as an RFC 3339 timestamp in UTC, the only form a timestamp
+//! takes in an exported report. [`rfc3339`] and [`parse_rfc3339`] are inverses.
 //!
-//! Both directions live here because the format is a contract rather than the
-//! writer's private business, the rule this module's parent states.
-//! [`rfc3339`] and [`parse_rfc3339`] are inverses.
+//! A string, since an `f64` of epoch seconds loses sub-microsecond precision and
+//! two equal readings could compare unequal. No calendar crate: the arithmetic
+//! below is smaller than the dependency.
 //!
-//! Compiled in unconditionally, unlike the CSV header beside it, since it costs
-//! nothing and both directions want it.
+//! ## Representation
 //!
-//! A timestamp is a string rather than a float of seconds since the epoch. An
-//! `f64` holds a microsecond-resolution epoch time to about a quarter of a
-//! microsecond today and steadily worse as the epoch recedes, so two scans of
-//! the same host can serialize to timestamps that compare unequal for no reason
-//! the data supports.
+//! Always UTC, `Z`-suffixed, six fractional digits. Fixed width makes
+//! lexicographic order chronological.
 //!
-//! The rendering is dependency-free. A calendar crate would cost more in build
-//! time and in supply-chain surface than the arithmetic below.
+//! Sub-microsecond precision is truncated, so a timestamp never names a moment
+//! that had not happened yet.
 //!
-//! ## What is and is not represented
-//!
-//! Output is always UTC, always `Z`-suffixed, always six fractional digits.
-//! Fixed width means two timestamps compare lexicographically the way they
-//! compare chronologically, which is what makes a report diffable and greppable.
-//!
-//! Sub-microsecond precision is truncated rather than rounded, so a rendered
-//! timestamp never names a moment that had not happened yet.
-//!
-//! [`Instant`](std::time::Instant) is absent. A monotonic reading has no meaning
-//! outside the process that took it, so durations measured with one are exported
-//! as durations and never as points in time.
+//! [`Instant`](std::time::Instant) readings mean nothing outside their process, so
+//! they are exported only as durations.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -65,11 +51,8 @@ const MAX_SECS: i64 = 253_402_300_799;
 /// ```
 ///
 /// Times outside the range RFC 3339 can express, before 0000-01-01 or after
-/// 9999-12-31, are clamped to the nearest representable instant. Nothing the
-/// engine measures reaches either bound: a report's timestamps come from the
-/// system clock during the scan or from an X.509 validity field, whose ASN.1
-/// encoding is itself limited to four-digit years. Clamping keeps a nonsense
-/// input from producing a document no consumer can parse.
+/// 9999-12-31, are clamped to the nearest representable instant, so the output
+/// always parses.
 pub fn rfc3339(time: SystemTime) -> String {
     let (secs, nanos) = epoch_parts(time);
     let secs = secs.clamp(MIN_SECS, MAX_SECS);
@@ -91,16 +74,8 @@ pub fn rfc3339(time: SystemTime) -> String {
 
 /// Formats a moment in the reader's own timezone, to the second.
 ///
-/// `2026-08-25 18:21:36 +0200`. For a line a person reads once, a banner or a
-/// heading, where [`rfc3339`]'s `T`, its `Z` and its six fractional digits are
-/// precision nobody is going to use.
-///
-/// The offset stays. A local time with nothing beside it cannot be lined up
-/// against a firewall log or a packet capture, and a scan whose findings cannot
-/// be correlated is a scan somebody has to run again.
-///
-/// Records keep [`rfc3339`]. This is for reading, that is for comparing, and
-/// neither is derived from the other because the precision differs.
+/// `2026-08-25 18:21:36 +0200`, for banners and headings. The offset is kept so
+/// the time can be lined up against other logs. Records use [`rfc3339`].
 ///
 /// Falls back to [`rfc3339`] where the platform will not say what the local time
 /// is, such as a container with no zone database.
@@ -115,16 +90,10 @@ pub fn local(time: SystemTime) -> String {
     rendered(secs, offset)
 }
 
-/// [`local`]'s arithmetic, given an offset rather than asking for one.
+/// [`local`]'s arithmetic for a given offset, split out so tests can fix the
+/// offset (CI runs at zero).
 ///
-/// Split from the lookup so that it can be tested against a fixed offset. Which
-/// offset this machine is on is a fact about wherever the machine is, and in CI
-/// it is zero, so a test that goes through [`local_offset`] passes whatever the
-/// arithmetic does.
-///
-/// `offset` is seconds east of UTC, the sense `tm_gmtoff` uses: positive is
-/// ahead of UTC, so it is added to reach the local reading and subtracted to get
-/// back.
+/// `offset` is seconds east of UTC, as `tm_gmtoff`: positive is ahead of UTC.
 fn rendered(secs: i64, offset: i64) -> String {
     let Civil {
         year,
@@ -145,14 +114,10 @@ fn rendered(secs: i64, offset: i64) -> String {
 
 /// How far ahead of UTC this machine's own clock reads at `secs`, in seconds.
 ///
-/// Asked per instant rather than once, because the answer moves: a scan run in
-/// January and a report of it read in July are the same machine and two offsets,
-/// and a summer reading applied to a winter timestamp is an hour of silent error
-/// in the field a reader uses to line the scan up against a firewall log.
+/// Asked per instant, since daylight saving moves it.
 ///
 /// `None` where the platform will not say, such as a container with no zone
-/// database or an instant outside what its own time type holds. [`local`] falls
-/// back to [`rfc3339`], which needs nothing from the platform at all.
+/// database or an instant outside its time type. [`local`] then uses [`rfc3339`].
 #[cfg(unix)]
 fn local_offset(secs: i64) -> Option<i64> {
     let when = libc::time_t::try_from(secs).ok()?;
@@ -175,14 +140,10 @@ fn local_offset(secs: i64) -> Option<i64> {
 
 /// [`local_offset`] where there is no `tm_gmtoff` to read.
 ///
-/// Windows states a zone as a rule rather than as an offset, so the offset is
-/// recovered by converting and differencing: the same instant expressed in both
-/// zones, subtracted. `SystemTimeToTzSpecificLocalTime` applies the daylight
-/// rule for the date it is handed, which is what makes this per-instant rather
-/// than a single reading of the current bias.
-///
-/// A null `TIME_ZONE_INFORMATION` means the machine's current zone, which is the
-/// question being asked.
+/// Windows states a zone as a rule, so the offset is the difference between the
+/// instant in both zones. `SystemTimeToTzSpecificLocalTime` applies the daylight
+/// rule for the date given. A null `TIME_ZONE_INFORMATION` means the machine's
+/// current zone.
 #[cfg(windows)]
 fn local_offset(secs: i64) -> Option<i64> {
     use windows_sys::Win32::Foundation::SYSTEMTIME;
@@ -192,7 +153,7 @@ fn local_offset(secs: i64) -> Option<i64> {
     let universal = SYSTEMTIME {
         wYear: u16::try_from(utc.year).ok()?,
         wMonth: u16::try_from(utc.month).ok()?,
-        // Ignored on input, and not worth computing to be discarded.
+        // Ignored on input.
         wDayOfWeek: 0,
         wDay: u16::try_from(utc.day).ok()?,
         wHour: u16::try_from(utc.hour).ok()?,
@@ -224,8 +185,7 @@ fn local_offset(secs: i64) -> Option<i64> {
 
 /// [`local_offset`] on a platform this crate cannot ask.
 ///
-/// Nothing is guessed. [`local`] renders UTC instead. An invented offset would
-/// be a timestamp that cannot be correlated and does not say so.
+/// Always `None`, so [`local`] renders UTC.
 #[cfg(not(any(unix, windows)))]
 fn local_offset(_secs: i64) -> Option<i64> {
     None
@@ -233,9 +193,7 @@ fn local_offset(_secs: i64) -> Option<i64> {
 
 /// A moment as a calendar reads it.
 ///
-/// Shared by [`rfc3339`] and [`local`], which differ only in the zero they count
-/// from. A struct rather than six values in a row, where a transposed pair would
-/// compile and be wrong for a century.
+/// Shared by [`rfc3339`] and [`local`]. A struct, so fields cannot be transposed.
 struct Civil {
     year: i64,
     month: u32,
@@ -263,17 +221,11 @@ fn civil_parts(secs: i64) -> Civil {
 
 /// Reads an RFC 3339 timestamp in UTC back as the moment it names.
 ///
-/// The inverse of [`rfc3339`], and no more permissive than it needs to be: the
-/// shape this engine writes, `YYYY-MM-DDTHH:MM:SS[.fff…]Z`, with the fractional
-/// part optional so a hand-written document and one from a tool that omits it
-/// are both readable. A lower-case `t` or `z` is accepted, as RFC 3339 permits.
+/// The inverse of [`rfc3339`]: `YYYY-MM-DDTHH:MM:SS[.fff…]Z`, with the fraction
+/// optional. A lower-case `t` or `z` is accepted, as RFC 3339 permits.
 ///
-/// Offsets other than `Z` are refused rather than converted, since every
-/// timestamp this format defines is UTC.
-///
-/// A date the calendar does not have is refused too. Reading `2026-02-31` as the
-/// third of March would hand back a timestamp that looks ordinary and names the
-/// wrong day.
+/// Offsets other than `Z` are refused, as are dates the calendar does not have
+/// (`2026-02-31`).
 ///
 /// ```
 /// use zond_engine::format::time::{parse_rfc3339, rfc3339};
@@ -311,8 +263,7 @@ pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
         return None;
     }
 
-    // Unix time has no room for a leap second, so 60 folds onto the second
-    // before it rather than being refused.
+    // Unix time has no leap second, so 60 folds onto 59.
     let second = second.min(59);
 
     let nanos = match fraction {
@@ -332,9 +283,8 @@ pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
 
     let days = days_from_civil(year, month, day)?;
 
-    // A day past the end of its month still counts to a real day number, and is
-    // the only day number that does not count back to the date it was written
-    // as. Round-tripping is therefore the whole calendar check.
+    // A day past the end of its month does not round-trip, so this is the whole
+    // calendar check.
     if civil_from_days(days) != (year, month, day) {
         return None;
     }
@@ -357,9 +307,8 @@ pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
 /// One field of a timestamp: exactly `width` decimal digits, as the number they
 /// spell.
 ///
-/// RFC 3339 fixes every field's width, and holding to that refuses the shapes an
-/// ordinary integer parse waves through: `-5` parses as an hour and moves the
-/// timestamp into the previous day, `+2026` parses as a year.
+/// RFC 3339 fixes every field's width, which refuses `-5` as an hour or `+2026` as
+/// a year.
 fn field(text: &str, width: usize) -> Option<u32> {
     if text.len() != width || !text.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
@@ -370,8 +319,7 @@ fn field(text: &str, width: usize) -> Option<u32> {
 /// Days from the Unix epoch to a civil date, the inverse of
 /// [`civil_from_days`].
 ///
-/// Howard Hinnant's algorithm, the same one that function inverts, so the two
-/// agree by construction.
+/// Howard Hinnant's algorithm.
 fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
     let month = i64::from(month);
     let day = i64::from(day);
@@ -392,10 +340,8 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
 /// Splits a moment into whole seconds from the Unix epoch and a non-negative
 /// nanosecond remainder.
 ///
-/// The remainder always points forward, including before the epoch, so the
-/// calendar arithmetic below can treat the two halves independently. A
-/// [`SystemTime`] far enough out to overflow the second count saturates; the
-/// caller clamps to the representable range regardless.
+/// The remainder always points forward, including before the epoch. A
+/// [`SystemTime`] that overflows the second count saturates; the caller clamps.
 fn epoch_parts(time: SystemTime) -> (i64, u32) {
     match time.duration_since(UNIX_EPOCH) {
         Ok(after) => (saturating_secs(after), after.subsec_nanos()),
@@ -411,7 +357,7 @@ fn epoch_parts(time: SystemTime) -> (i64, u32) {
     }
 }
 
-/// The whole seconds of a duration, saturating rather than wrapping.
+/// The whole seconds of a duration, saturating.
 fn saturating_secs(duration: Duration) -> i64 {
     i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
 }
@@ -419,10 +365,9 @@ fn saturating_secs(duration: Duration) -> i64 {
 /// Converts a count of days from the Unix epoch into a proleptic Gregorian
 /// date.
 ///
-/// Howard Hinnant's `civil_from_days`, the branch-free formulation C++20's
-/// `<chrono>` also uses. Shifting the year to start in March puts the leap day
-/// at the end of it and lets a 400-year era be indexed arithmetically instead of
-/// by case analysis.
+/// Howard Hinnant's `civil_from_days`, as in C++20's `<chrono>`. Starting the
+/// year in March puts the leap day at its end, so a 400-year era indexes
+/// arithmetically.
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     // Re-base onto 0000-03-01, the start of an era.
     let shifted = days + 719_468;
@@ -468,18 +413,14 @@ mod tests {
         UNIX_EPOCH + Duration::new(secs, nanos)
     }
 
-    /// A local time reads as one, and carries the offset that makes it
-    /// comparable with anything else.
-    ///
-    /// Asserted against the shape rather than against a fixed answer: what
-    /// `18:21` means depends on where the machine running the test is, and a
-    /// test that only passes in one timezone is a test that fails in CI.
+    /// A local time has the expected shape and carries its offset. Checked by
+    /// shape, since the machine's timezone varies.
     #[test]
     fn a_local_time_is_readable_and_still_unambiguous() {
         let moment = UNIX_EPOCH + Duration::from_secs(1_770_000_000);
         let shown = local(moment);
 
-        // `YYYY-MM-DD HH:MM:SS ±HHMM`, and nothing else.
+        // `YYYY-MM-DD HH:MM:SS ±HHMM`.
         assert_eq!(shown.len(), 25, "{shown}");
         assert_eq!(shown.as_bytes()[10], b' ', "{shown}");
         assert_eq!(shown.as_bytes()[19], b' ', "{shown}");
@@ -499,14 +440,8 @@ mod tests {
 
     /// A positive offset reads *ahead* of UTC, and a negative one behind.
     ///
-    /// The sign is what this guards, and nothing routed through the platform
-    /// can. Checking a rendering against the offset printed beside it passes
-    /// just as happily when both are inverted, and in CI the offset is zero and
-    /// there is nothing to invert. So the offset is handed in and the expected
-    /// string written out by hand.
-    ///
-    /// Backwards puts every banner hours off in the field whose purpose is
-    /// lining the scan up against somebody else's log, and it looks plausible.
+    /// The offset is handed in and the expected strings written by hand, since a
+    /// platform check passes with both signs inverted and CI runs at zero.
     #[test]
     fn a_positive_offset_reads_ahead_of_utc_and_a_negative_one_behind() {
         // 2026-02-02T02:40:00Z, the instant the `rfc3339` doctest uses.
@@ -527,9 +462,7 @@ mod tests {
 
     /// An offset that is not a whole number of hours is carried in the minutes.
     ///
-    /// India is `+0530` and Chatham Island is `+1245`. Dividing an offset by
-    /// 3,600 and printing the remainder as minutes is wrong for both, and so is
-    /// dropping the remainder.
+    /// India is `+0530` and Chatham Island is `+1245`.
     #[test]
     fn an_offset_of_half_an_hour_is_not_rounded_away() {
         const AT: i64 = 1_770_000_000;
@@ -565,13 +498,8 @@ mod tests {
         );
     }
 
-    /// Whatever this machine's zone is, the offset it prints puts the reading
-    /// back at the instant it renders.
-    ///
-    /// The weaker companion to the three above: it cannot see a sign convention,
-    /// but it is the only one that exercises the real platform lookup, and it is
-    /// what would notice `local` forgetting to apply the offset it just asked
-    /// for on a machine that is not in UTC.
+    /// Whatever this machine's zone is, the printed offset maps the reading back
+    /// to the instant. The only test of the real platform lookup.
     #[test]
     fn the_platforms_own_offset_recovers_the_instant() {
         // The epoch, a leap day, a winter and a summer instant, and a date past
@@ -586,8 +514,7 @@ mod tests {
             let moment = UNIX_EPOCH + Duration::from_secs(u64::try_from(secs).expect("positive"));
             let shown = local(moment);
 
-            // A platform that will not say what its zone is renders UTC instead,
-            // which `local` documents and which is not what this is testing.
+            // A platform with no zone renders UTC; not tested here.
             if shown.ends_with('Z') {
                 continue;
             }
@@ -665,9 +592,8 @@ mod tests {
         );
     }
 
-    /// A leap second is folded onto the second before it: Unix time has no room
-    /// for one, and refusing a timestamp somebody legitimately wrote would be
-    /// worse than placing it a second early.
+    /// A leap second is folded onto the second before it, since Unix time has
+    /// none and the timestamp is legitimate.
     #[test]
     fn a_leap_second_lands_on_the_second_before_it() {
         assert_eq!(
@@ -676,14 +602,8 @@ mod tests {
         );
     }
 
-    /// The shapes a naive parse accepts and should not.
-    ///
-    /// Each of these comes back as an ordinary moment on the wrong day from a
-    /// parse that puts every field through an integer parse with only an upper
-    /// bound checked: `-5` is an hour five hours before midnight and
-    /// `2026-02-31` is the third of March. Nothing fails, and the caller is the
-    /// reader that rebuilds a report out of somebody else's file, where a wrong
-    /// `cert_not_after` is an expiry alert on the wrong date.
+    /// Shapes a naive integer parse accepts as a moment on the wrong day:
+    /// `-5` as an hour, `2026-02-31` as the third of March.
     #[test]
     fn a_timestamp_that_is_not_one_is_refused_rather_than_reinterpreted() {
         for text in [
@@ -721,8 +641,7 @@ mod tests {
         assert_eq!(rfc3339(at(1_234_567_890, 0)), "2009-02-13T23:31:30.000000Z");
     }
 
-    /// Leap years are where a hand-rolled calendar breaks first, and the three
-    /// rules disagree exactly at these dates.
+    /// The three leap-year rules, at the dates where they disagree.
     #[test]
     fn leap_day_rules_hold_at_every_boundary() {
         // 2000 is a leap year: divisible by 400.
@@ -739,8 +658,7 @@ mod tests {
         );
     }
 
-    /// Truncation, not rounding: a timestamp must never name a moment that had
-    /// not yet happened when it was taken.
+    /// Truncation: a timestamp never names a moment that had not yet happened.
     #[test]
     fn sub_microsecond_precision_is_truncated() {
         assert_eq!(rfc3339(at(0, 999)), "1970-01-01T00:00:00.000000Z");
@@ -748,8 +666,7 @@ mod tests {
     }
 
     /// A moment before the epoch borrows a second, so its fraction still counts
-    /// forward. Getting this wrong renders 1969-12-31T23:59:59.75 as a time
-    /// three quarters of a second in the wrong direction.
+    /// forward.
     #[test]
     fn a_time_before_the_epoch_keeps_its_fraction_pointing_forward() {
         let quarter_second_before = UNIX_EPOCH - Duration::new(0, 250_000_000);
@@ -771,9 +688,8 @@ mod tests {
         assert_eq!(rfc3339(at(1_767_225_600, 0)), "2026-01-01T00:00:00.000000Z");
     }
 
-    /// A time outside RFC 3339's four-digit-year range still has to produce a
-    /// parseable timestamp; a document no consumer can read is worse than a
-    /// clamped one.
+    /// A time outside RFC 3339's four-digit-year range is clamped to a
+    /// parseable timestamp.
     #[test]
     fn unrepresentable_times_clamp_to_the_format_bounds() {
         // Roughly the year 11500, past the last four-digit year.
@@ -785,8 +701,7 @@ mod tests {
         assert_eq!(rfc3339(far_past), "0000-01-01T00:00:00.000000Z");
     }
 
-    /// Fixed-width output is what lets a consumer sort timestamps as text. If
-    /// any field could render narrow, that guarantee is gone.
+    /// Every field renders at fixed width, so timestamps sort as text.
     #[test]
     fn output_is_fixed_width_so_it_sorts_as_text() {
         let early = at(1_000_000, 0);
@@ -818,9 +733,7 @@ mod property_tests {
         }
 
 
-        /// Whatever the input, the output is a timestamp of exactly the shape
-        /// the schema promises. A consumer's parser is written once against
-        /// this shape and must never meet another.
+        /// Whatever the input, the output has exactly the schema's shape.
         #[test]
         fn every_time_renders_in_the_documented_shape(secs in 0..4_000_000_000u64, nanos in 0..1_000_000_000u32) {
             let rendered = rfc3339(UNIX_EPOCH + Duration::new(secs, nanos));
@@ -835,8 +748,7 @@ mod property_tests {
             prop_assert_eq!(rendered.as_bytes()[19], b'.');
         }
 
-        /// Chronological order and lexicographic order have to agree, because
-        /// consumers sort these as strings.
+        /// Chronological and lexicographic order agree.
         #[test]
         fn later_times_render_as_larger_strings(a in 0..4_000_000_000u64, b in 0..4_000_000_000u64) {
             let (earlier, later) = if a <= b { (a, b) } else { (b, a) };
@@ -847,8 +759,7 @@ mod property_tests {
             prop_assert!(rendered_earlier <= rendered_later);
         }
 
-        /// The calendar arithmetic must round-trip: rendering day N and day N+1
-        /// always yields consecutive, distinct dates.
+        /// Day N and day N+1 always render as consecutive, distinct dates.
         #[test]
         fn consecutive_days_render_as_distinct_dates(day in 0..40_000i64) {
             let secs = day * SECS_PER_DAY;
