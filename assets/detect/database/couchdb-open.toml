@@ -5,14 +5,15 @@
 #
 # The gate names http as well as couchdb: the fingerprint labels a CouchDB node
 # http with a CouchDB product rather than its own service, so a couchdb-only gate
-# never fires. The `expect` is what keeps the wider gate precise: only a real
-# /_all_dbs answers 200 with a JSON array, so a plain web server reached this way
-# matches nothing. This is the shape grafana-path-traversal uses for the same
-# reason.
+# never fires. The `expect` is what keeps the wider gate precise. A web app that
+# answers every path with its index page returns 200 here too, so the reply must
+# be CouchDB's: a body that is a JSON array from its first byte, and either the
+# `Server: CouchDB/` header CouchDB sends on every reply or one of the system
+# databases it creates, for a node behind a proxy that rewrites the header.
 
 [detection]
 id      = "couchdb-open"
-version = "1.0.0"
+version = "1.1.0"
 title   = "CouchDB reachable without authentication"
 
 [detection.when]
@@ -27,7 +28,10 @@ max_millis = 3000
 
 [[step]]
 send   = "GET /_all_dbs HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
-expect = ["HTTP/[0-9.]+ 200", "\\["]                      # 200 and a JSON array, not a 401
+expect = [
+  '(?s)\AHTTP/[0-9.]+ 200[^\r\n]*\r\n(?:[^\r\n]+\r\n)*\r\n(?:[0-9a-fA-F]+\r\n)?\[\s*(?:\]|")',  # 200, the body a JSON array
+  '(?im)^server:[ \t]*couchdb/|"_(?:users|replicator|global_changes)"',                          # and CouchDB's
+]
 
   [[step.finding]]
   when         = "matched"

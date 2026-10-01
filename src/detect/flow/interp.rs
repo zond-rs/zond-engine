@@ -593,7 +593,7 @@ mod tests {
             ),
             (
                 "couchdb-open",
-                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n[\"_users\",\"_replicator\"]",
+                COUCHDB_ALL_DBS,
                 Severity::High,
             ),
             (
@@ -793,6 +793,89 @@ mod tests {
                 "{name} fired on a 403 that denied access"
             );
         }
+    }
+
+    /// What CouchDB 3 answers `GET /_all_dbs` with on a node with no admin, its
+    /// headers as `chttpd` writes them.
+    const COUCHDB_ALL_DBS: &[u8] = b"HTTP/1.1 200 OK\r\n\
+        Cache-Control: must-revalidate\r\n\
+        Content-Length: 25\r\n\
+        Content-Type: application/json\r\n\
+        Date: Thu, 01 Oct 2026 09:00:00 GMT\r\n\
+        Server: CouchDB/3.3.3 (Erlang OTP/24)\r\n\
+        X-Couch-Request-ID: 5d1c3a0b7e\r\n\
+        X-CouchDB-Body-Time: 0\r\n\r\n\
+        [\"_replicator\",\"_users\"]\n";
+
+    /// A single-page app's index, which such an app serves with a 200 for any
+    /// path it does not route, as Uptime Kuma and Nginx Proxy Manager do. Its
+    /// inline script carries a JSON array and the word `repositories`, and a
+    /// wrapped tag puts `href=` at the start of a line.
+    const CATCH_ALL_INDEX: &[u8] = b"HTTP/1.1 200 OK\r\n\
+        Content-Type: text/html; charset=utf-8\r\n\
+        Content-Length: 512\r\n\r\n\
+        <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
+        <title>Home Lab</title>\n\
+        <link rel=\"stylesheet\"\nhref=\"/assets/index-4f2a.css\">\n\
+        <script>window.__APP__ = {\"routes\":[\"/\",\"/settings\"],\
+        \"features\":{\"repositories\":true}};</script>\n\
+        <script type=\"module\" src=\"/assets/index-9c1e.js\"></script>\n\
+        </head>\n<body><div id=\"app\"></div></body>\n</html>\n";
+
+    /// CouchDB is told apart from a web app that answers every path: a 200
+    /// with a bracket somewhere in it is not a database list.
+    #[test]
+    fn couchdb_open_fires_on_couchdb_and_not_on_an_app_answering_every_path() {
+        let couchdb = flow("couchdb-open");
+        let fires =
+            |reply: &[u8]| !run(&couchdb, "", &seed(), &mut Canned(reply.to_vec())).is_empty();
+
+        assert!(
+            !fires(CATCH_ALL_INDEX),
+            "couchdb-open read an app's index page as a database list"
+        );
+
+        // A node behind a proxy that rewrote `Server`, still listing its own.
+        assert!(fires(
+            b"HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Type: application/json\r\n\
+              Transfer-Encoding: chunked\r\n\r\n19\r\n[\"_replicator\",\"_users\"]\n\r\n0\r\n\r\n"
+        ));
+        // A fresh node with no databases, named by its header.
+        assert!(fires(
+            b"HTTP/1.1 200 OK\r\nServer: CouchDB/3.3.3 (Erlang OTP/24)\r\n\r\n[]\n"
+        ));
+        // A JSON array from something that is not CouchDB.
+        assert!(!fires(
+            b"HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Type: application/json\r\n\r\n[\"a\",\"b\"]"
+        ));
+        // CouchDB requiring an admin.
+        assert!(!fires(
+            b"HTTP/1.1 401 Unauthorized\r\nServer: CouchDB/3.3.3 (Erlang OTP/24)\r\n\r\n\
+              {\"error\":\"unauthorized\",\"reason\":\"You are not a server admin.\"}\n"
+        ));
+    }
+
+    /// The CouchDB write proof reads CouchDB's own answer to the PUT, not any
+    /// 201 that happens to hold the letters `ok`.
+    #[test]
+    fn couchdb_writable_fires_on_couchdb_and_not_on_another_server_that_creates() {
+        let writable = flow("couchdb-writable");
+        let fires =
+            |reply: &[u8]| !run(&writable, "", &seed(), &mut Canned(reply.to_vec())).is_empty();
+
+        assert!(fires(
+            b"HTTP/1.1 201 Created\r\nLocation: http://192.0.2.10:5984/zond-canary\r\n\
+              Server: CouchDB/3.3.3 (Erlang OTP/24)\r\nContent-Type: application/json\r\n\r\n\
+              {\"ok\":true}\n"
+        ));
+        assert!(
+            !fires(
+                b"HTTP/1.1 201 Created\r\nServer: Apache/2.4.62\r\n\
+                  Set-Cookie: lang=en; path=/\r\nContent-Type: text/html\r\n\r\n\
+                  <html><body><h1>Created</h1><p>Resource /zond-canary has been created.</p></body></html>"
+            ),
+            "couchdb-writable read a WebDAV share's 201 as CouchDB"
+        );
     }
 
     /// The four enumeration flows against a same-protocol denial: FTP refusing

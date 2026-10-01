@@ -1,10 +1,12 @@
 # Unauthenticated WRITE to CouchDB. couchdb-open proves the admin party is on for
 # reads; this proves it for writes by creating a zond database and deleting it.
-# active-mutating, opt-in only.
+# active-mutating, opt-in only. Only CouchDB's own answer counts: a 201 whose body
+# is `{"ok":true}`, so another server that accepts the PUT, such as a WebDAV share,
+# is not read as CouchDB.
 
 [detection]
 id      = "couchdb-writable"
-version = "1.0.0"
+version = "1.1.0"
 title   = "CouchDB accepts unauthenticated writes"
 
 [detection.when]
@@ -20,7 +22,7 @@ max_millis = 4000
 [[step]]
 send   = "PUT /zond-canary HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
 on_no_match = "continue"
-expect = ['HTTP/[0-9.]+ 201', 'ok']
+expect = ['\AHTTP/[0-9.]+ 201', '"ok"\s*:\s*true']
   [[step.finding]]
   when         = "matched"
   severity     = "high"
