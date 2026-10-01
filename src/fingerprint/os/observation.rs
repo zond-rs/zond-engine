@@ -9,36 +9,28 @@
 //! # What one reply says about the stack that sent it
 //!
 //! A [`StackObservation`] is the typed feature vector a rule is matched
-//! against: everything readable off a single TCP segment and the IP header it
-//! arrived under, and nothing else. Building one involves no sockets, no
-//! scanner, no runtime and no state, it is a function from bytes to a value,
-//! and that is deliberate. See the [module documentation](super) for why.
+//! against: everything readable off a single TCP segment and its IP header.
+//! Building one is a pure function from bytes; see the
+//! [module documentation](super).
 //!
-//! ## Read the reply kind before anything else
+//! ## Read the reply kind first
 //!
-//! A reset carries no TCP options at all, whatever the segment that provoked it
-//! offered, so half of this type is empty for one and full for the other. The
-//! two also come from different code paths inside one stack and can disagree
-//! about the same field: a host measured on a real segment wrote identifier zero
-//! on its SYN+ACK path and ran a global counter on its reset path, with
-//! don't-fragment set on both. A rule that reads the identifier without saying
-//! which segment it is reading is matching two different things at once.
+//! A reset carries no TCP options, and the SYN+ACK and reset paths in one stack
+//! can disagree: one measured host wrote IP identifier zero on its SYN+ACKs and
+//! ran a global counter on its resets. A rule reading the identifier must say
+//! which segment it reads.
 //!
-//! ## Two fields are not what they look like
+//! ## Two fields depend on the probe
 //!
-//! The option layout is decided as much by the probe as by the peer. TCP
-//! option negotiation is reciprocal, RFC 7323 §2.2 and §3.2, RFC 2018 §2, so a
-//! SYN+ACK names window scale, timestamps or SACK-permitted only if the SYN
-//! did. Against a labelled segment, a SYN offering only a maximum segment size
-//! drew back only a maximum segment size from Linux, from a router and from a
-//! wide-area server alike. What this type records is therefore a joint fact
-//! about the peer *and* the question asked, and it is only comparable across
-//! observations that asked the same question.
+//! TCP option negotiation is reciprocal (RFC 7323 §2.2 and §3.2, RFC 2018 §2): a
+//! SYN+ACK names window scale, timestamps or SACK-permitted only if the SYN did.
+//! A SYN offering only an MSS drew only an MSS back from Linux, a router and a
+//! wide-area server alike. Layouts are comparable only between observations
+//! drawn by the same probe.
 //!
-//! The advertised window is a function of the negotiated options. A stack
-//! sizes its receive window in units of the effective segment size, and
-//! negotiating timestamps costs twelve bytes of every segment, so the unit
-//! shrinks and the window moves with it. Measured, on four hosts:
+//! A stack sizes its receive window in units of the effective segment size, and
+//! a negotiated timestamp costs twelve bytes per segment, so the window moves
+//! with the options. Measured on four hosts:
 //!
 //! ```text
 //! 64240 = 44 x 1460      65160 = 45 x 1448     (two Linux hosts)
@@ -46,10 +38,9 @@
 //! 64860 = 47 x 1360+940  64296 = 47 x 1348+940 (a wide-area server)
 //! ```
 //!
-//! The multiplier is the stack's own and holds across both; the raw value does
-//! not. [`window_in_units`](StackObservation::window_in_units) is what a rule
-//! should predicate on, and [`window`](StackObservation::window) is kept beside
-//! it because a value nobody can reconstruct is a value nobody can dispute.
+//! The multiplier holds across both; the raw value does not. Rules should use
+//! [`window_in_units`](StackObservation::window_in_units);
+//! [`window`](StackObservation::window) keeps the raw value.
 
 use pnet_packet::tcp::TcpPacket;
 
@@ -57,25 +48,21 @@ use crate::model::capture::IpObservation;
 
 /// How many options to walk before giving up.
 ///
-/// A TCP header holds at most forty bytes of options, and the shortest option
-/// that is not padding is two bytes, so twenty is past anything expressible. The
-/// bound exists because these bytes are chosen by a remote host and the walk
-/// must terminate on any input, not merely on a well-formed one.
+/// A TCP header holds at most forty bytes of options, and a non-padding option
+/// is at least two bytes. Bounds the walk over remote-chosen bytes.
 const MAX_OPTIONS: usize = 20;
 
 /// What a negotiated timestamp costs on every segment after the handshake: ten
 /// option bytes plus two of padding to the next four-byte boundary.
 ///
-/// Subtracted from the announced maximum segment size to get the size a stack
-/// actually sizes its window against. See the module documentation.
+/// Subtracted from the announced MSS to get the size a stack sizes its window
+/// against. See the module documentation.
 const TIMESTAMP_OVERHEAD: u16 = 12;
 
 /// A TCP option, by kind, in the order it appeared.
 ///
-/// The *order* is the signal. Which options a stack supports is mostly a
-/// question of era and configuration, but the sequence it writes them in, and
-/// where it puts its padding, is a decision one group of authors made once and
-/// nobody else copied.
+/// The *order* is the signal: which options a stack supports depends on era and
+/// configuration, but the sequence and padding are particular to each stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum TcpOptionKind {
@@ -93,9 +80,7 @@ pub enum TcpOptionKind {
     Sack,
     /// Kind 8. Timestamp.
     Timestamp,
-    /// Anything else, by its kind byte. Kept rather than discarded: an option
-    /// this crate has no name for is the most identifying thing a header can
-    /// carry, precisely because so few stacks send one.
+    /// Anything else, by its kind byte. Rare options are highly identifying.
     Other(u8),
 }
 
@@ -113,9 +98,8 @@ impl TcpOptionKind {
         }
     }
 
-    /// The single letter this kind is written as in a layout string, matching
-    /// the notation the public fingerprint corpora use so a translated rule and
-    /// a hand-written one read the same.
+    /// The letter for this kind in a layout string, as the public fingerprint
+    /// corpora write it.
     pub fn letter(self) -> char {
         match self {
             TcpOptionKind::EndOfList => 'E',
@@ -134,9 +118,7 @@ impl TcpOptionKind {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Timestamps {
-    /// The sender's own clock. Two of these from one host, with the interval
-    /// between them, give the clock's frequency, which is a stack-build
-    /// constant. One is not enough and this type holds one.
+    /// The sender's clock. Two samples and their interval give its frequency.
     pub value: u32,
     /// The value being echoed back. Zero in a segment that has nothing to echo.
     pub echo: u32,
@@ -145,49 +127,36 @@ pub struct Timestamps {
 /// Header oddities, each of which is rare on its own and close to conclusive
 /// when present.
 ///
-/// Separated from the ordinary fields because they are read differently: an
-/// ordinary field is compared, and a quirk is a thing a conformant stack simply
-/// does not do. All of them are cheap, every one is a comparison against a
-/// field already parsed.
+/// Each is something a conformant stack does not do.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Quirks {
     /// The three reserved bits after the data offset are not all zero.
     pub reserved_bits_set: bool,
-    /// The urgent pointer is non-zero on a segment without the URG flag, where
-    /// it has no meaning at all.
+    /// The urgent pointer is non-zero on a segment without the URG flag.
     pub urgent_pointer_without_urg: bool,
-    /// The acknowledgement field is non-zero on a segment without the ACK flag,
-    /// where it likewise has none.
+    /// The acknowledgement field is non-zero on a segment without the ACK flag.
     pub acknowledgement_without_ack: bool,
     /// A segment announcing an *initial* sequence number announced zero. Legal,
     /// and vanishingly rare from a stack that generates them the way it should.
     ///
-    /// Read only off a segment carrying SYN, because only there is the
-    /// sequence field a generated value. RFC 793 §3.4 requires a reset
-    /// answering a segment without an ACK to carry sequence zero, and this
-    /// engine's probe is a bare SYN, so every conformant stack alive answers
-    /// its closed ports that way. Flagged there, this would fire on every reset
-    /// ever drawn: noise in a report, and a rule keyed on it would match every
-    /// host on earth while looking like it had found something.
+    /// Read only off a SYN segment. RFC 793 §3.4 requires a reset answering a
+    /// segment without an ACK (this engine's bare SYN) to carry sequence zero,
+    /// so every conformant reset would set it.
     pub zero_sequence: bool,
     /// The option list ended with a length that ran past the header, so what
     /// this observation holds is what could be read before it did.
     ///
-    /// A defect in the sender, not in this parse, and worth keeping for that
-    /// reason: it is a stronger signal than any well-formed field.
+    /// A sender defect, and a strong signal.
     pub malformed_options: bool,
     /// Something other than padding followed an end-of-list marker.
     pub data_after_end_of_list: bool,
     /// The option list held more options than the walk reads, so the recorded
     /// layout is the first twenty options of it and not the whole.
     ///
-    /// Reachable: forty single-byte no-ops fill the header's option space and
-    /// are forty options. Without this the observation would report a
-    /// twenty-option layout for them and flag nothing, the one parse defect in
-    /// this walk nothing else makes visible, and a rule keyed on
-    /// [`option_layout`](StackObservation::option_layout) would compare against
-    /// a truncated string.
+    /// Reachable with forty single-byte no-ops. A rule keyed on
+    /// [`option_layout`](StackObservation::option_layout) needs to know it is
+    /// partial.
     pub options_truncated: bool,
 }
 
@@ -200,19 +169,16 @@ impl Quirks {
 
 /// Everything one TCP reply says about the stack that sent it.
 ///
-/// See the [module documentation](super) for the two fields that are not what
-/// they look like, and for why the reply kind has to be read first.
+/// See the [module documentation](super) for the two probe-dependent fields,
+/// and for why the reply kind has to be read first.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackObservation {
     /// The TCP flag byte, verbatim.
     ///
-    /// Kept raw rather than classified because a classification is a decision
-    /// and this type does not make decisions. [`is_syn_ack`](Self::is_syn_ack)
-    /// and [`is_reset`](Self::is_reset) are the two readings that matter, and a
-    /// segment that is neither is a fact worth keeping rather than discarding,
-    /// a bare ACK answering a SYN is a challenge ACK, which only a host holding
-    /// a half-open connection sends.
+    /// [`is_syn_ack`](Self::is_syn_ack) and [`is_reset`](Self::is_reset) are the
+    /// usual readings. A bare ACK answering a SYN is a challenge ACK, sent only
+    /// by a host holding a half-open connection.
     pub flags: u8,
 
     /// What the IP header this segment arrived under said.
@@ -254,9 +220,8 @@ impl StackObservation {
     pub fn from_tcp(ip: IpObservation, segment: &[u8]) -> Option<Self> {
         let packet = TcpPacket::new(segment)?;
 
-        // The data offset is four bits of remote-chosen data. Below five words
-        // it describes a header shorter than the fixed one, which would make the
-        // options slice run backwards into the header itself.
+        // Below five words the data offset would put the options slice
+        // backwards into the fixed header.
         let header_len = usize::from(packet.get_data_offset()) * 4;
         if header_len < 20 || header_len > segment.len() {
             return None;
@@ -292,9 +257,9 @@ impl StackObservation {
     /// Reads a whole IP packet: the IP header for [`IpObservation`], and the TCP
     /// segment behind it.
     ///
-    /// The entry point for a caller who has bytes and nothing else, a saved
-    /// capture, their own socket, a fixture in a test. `None` for anything that
-    /// is not an IP packet carrying a TCP segment this can read.
+    /// For a caller with raw packets (a capture, their own socket, a fixture).
+    /// `None` for anything that is not an IP packet carrying a readable TCP
+    /// segment.
     pub fn from_ip_packet(packet: &[u8]) -> Option<Self> {
         let parsed = crate::transport::frame::parse_ip_segment(packet)?;
         if parsed.protocol != pnet_packet::ip::IpNextHeaderProtocols::Tcp.0 {
@@ -333,16 +298,11 @@ impl StackObservation {
     /// The advertised window as a multiple of [`effective_mss`](Self::effective_mss),
     /// and what is left over.
     ///
-    /// This, not [`window`](Self::window), is what a rule should compare.
-    /// The raw value moves when the probe changes what it offers, because the
-    /// unit moves with it; the multiplier is the stack's own and does not.
-    /// Measured on one host across two different probes: `29200 = 20 x 1460`
-    /// and `28960 = 20 x 1448`, the same twenty either way.
+    /// What a rule should compare, rather than [`window`](Self::window): one host
+    /// gave `29200 = 20 x 1460` and `28960 = 20 x 1448` to two probes.
     ///
-    /// The remainder is returned rather than hidden because not every stack
-    /// chooses a clean multiple. A wide-area server measured `47 x 1360 + 940`
-    /// and `47 x 1348 + 940`: the multiplier *and* the offset both held across
-    /// probes, and rounding either away would have lost a stable feature.
+    /// The remainder is also stable: a wide-area server gave `47 x 1360 + 940`
+    /// and `47 x 1348 + 940`.
     pub fn window_in_units(&self) -> Option<(u16, u16)> {
         let unit = self.effective_mss()?;
         if unit == 0 {
@@ -354,17 +314,9 @@ impl StackObservation {
     /// The smallest common initial hop counter the observed value could have been
     /// decremented from.
     ///
-    /// A lower bound, not the value the sender wrote. Every router on the
-    /// path decrements the counter, and the initial value is the part that
-    /// identifies a stack, so recovering it exactly needs a hop count this type
-    /// does not have. What it gives instead is true without one: a reply that
-    /// arrives at 57 cannot have started below 64.
-    ///
-    /// The bound stops being useful, not wrong, but uninformative, once a path
-    /// is longer than the gap to the next starting value. A host 40 hops away
-    /// that started at 64 arrives at 24 and is reported as "at least 32", which
-    /// is correct and says nothing. A rule needing better than that is a rule
-    /// that cannot be written from one reply.
+    /// A lower bound: a reply arriving at 57 cannot have started below 64. On a
+    /// path longer than the gap to the next starting value it stays true but
+    /// says little (a host 40 hops away that started at 64 reads "at least 32").
     pub fn initial_hops_at_least(&self) -> u8 {
         initial_hops_at_least(self.ip.remaining_hops())
     }
@@ -372,15 +324,10 @@ impl StackObservation {
     /// One line saying what this observation held, for a report to carry beside a
     /// verdict.
     ///
-    /// Written for a person: it is what somebody disputing a finding needs to
-    /// see without re-running the scan, and what turns a false positive into a
-    /// corpus entry. Nothing should parse it, the typed fields are right here.
+    /// For a person checking a finding; do not parse it.
     ///
-    /// The window is rendered as its multiple of the effective segment size,
-    /// because that is what a rule compared and what a reader needs in order to
-    /// follow why the rule matched. The raw value is beside it for the same
-    /// reason a report keeps both: a number nobody can reconstruct is a number
-    /// nobody can argue with.
+    /// The window is shown as its multiple of the effective segment size, as
+    /// rules compare it, with the raw value beside it.
     pub fn summary(&self) -> String {
         let mut out = String::with_capacity(96);
         out.push_str(if self.is_syn_ack() {
@@ -426,9 +373,8 @@ impl StackObservation {
     /// separated: `M,S,T,N,W` for a stack that sends a maximum segment size,
     /// SACK-permitted, a timestamp, a no-op and a window scale in that order.
     ///
-    /// For display and for translating rules. Matching should go through
-    /// [`option_layout`](Self::option_layout), which cannot lose an option kind
-    /// to a rendering choice.
+    /// For display and for translating rules. Match on
+    /// [`option_layout`](Self::option_layout).
     pub fn layout_string(&self) -> String {
         let mut out = String::with_capacity(self.option_layout.len() * 2);
         for (index, kind) in self.option_layout.iter().enumerate() {
@@ -446,32 +392,20 @@ impl StackObservation {
 
 /// Everything one ICMP echo reply says about the stack that sent it.
 ///
-/// A separate type from [`StackObservation`] rather than a widening of it,
-/// because the two share nothing below the IP header: an echo reply has no
-/// window, no options and no sequence number, and a type whose TCP half was
-/// optional would make every reader ask "which kind is this?" at every field
-/// instead of once.
-///
-/// The reason to send one at all is the host a TCP scan cannot describe. A
-/// machine with no open and no closed port answers nothing this crate's port
-/// scanner sends, and every feature the passive path reads starts from a reply.
-/// A great many such hosts still answer a ping.
+/// Shares nothing with [`StackObservation`] below the IP header. Useful for a
+/// host with no open or closed port, which many still answer a ping from.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EchoObservation {
-    /// What the IP header this reply arrived under said. The initial hop
-    /// counter is the strongest thing here, and it is the same field, read the
-    /// same way, as on a TCP reply.
+    /// What the IP header this reply arrived under said. The initial hop counter
+    /// is the strongest signal here.
     pub ip: IpObservation,
 
     /// The code byte the reply carried.
     ///
-    /// RFC 792 and RFC 4443 §4.2 both define the code of an echo message as
-    /// zero, and neither says what a responder should do when a request arrives
-    /// carrying something else. Stacks disagree: some echo the request's code
-    /// back, some write zero regardless. That disagreement is only visible if
-    /// the request asked the question, a probe sending code zero learns
-    /// nothing, since both behaviours produce zero.
+    /// RFC 792 and RFC 4443 §4.2 define the echo code as zero but not what to do
+    /// with a request carrying another. Some stacks echo it back, some write
+    /// zero; only a non-zero request tells them apart.
     pub code: u8,
 
     /// How many payload bytes came back.
@@ -479,10 +413,8 @@ pub struct EchoObservation {
 
     /// Whether those bytes are the ones that were sent.
     ///
-    /// Both RFCs require the data of an echo request to be returned unchanged,
-    /// so this is conformance rather than preference, but a responder that
-    /// truncates, pads, or rewrites has said something about itself, and a
-    /// scanner that never checked would read the reply as ordinary.
+    /// Both RFCs require the data returned unchanged; a responder that
+    /// truncates, pads or rewrites it is distinctive.
     pub payload_intact: bool,
 }
 
@@ -490,9 +422,8 @@ impl EchoObservation {
     /// Reads an echo reply, given what its IP header said and what was sent.
     ///
     /// `message` is the ICMP message with the IP header already stripped, which
-    /// is what [`CapturedSegment::bytes`] holds. `sent_payload` is the
-    /// payload of the request this answers, which is the only way to know
-    /// whether what came back is what went out.
+    /// is what [`CapturedSegment::bytes`] holds. `sent_payload` is the payload of
+    /// the request this answers.
     ///
     /// `None` when there are too few bytes for the eight-byte echo header.
     ///
@@ -514,8 +445,7 @@ impl EchoObservation {
     /// One line saying what this reply held, for a report to carry beside a
     /// verdict.
     ///
-    /// Written for a person, like its TCP counterpart, and to the same rule:
-    /// nothing should parse it, the typed fields are right here.
+    /// For a person; do not parse it.
     pub fn summary(&self) -> String {
         let mut out = format!(
             "echo hops>={}",
@@ -529,9 +459,7 @@ impl EchoObservation {
         out.push_str(&format!(" code={}", self.code));
         out.push_str(&format!(" payload={}", self.payload_len));
         if !self.payload_intact {
-            // Worth a word of its own: both RFCs require the payload back
-            // unchanged, so this names a stack doing something unusual rather
-            // than reporting a size.
+            // Both RFCs require the payload back unchanged.
             out.push_str(" altered");
         }
         out
@@ -540,13 +468,8 @@ impl EchoObservation {
 
 /// One reply a rule can be asked about.
 ///
-/// The matcher takes this rather than a single observation type because a rule
-/// declares which reply it reads, and the two kinds have no fields in common
-/// below the IP header. A rule written for a handshake tested against an echo
-/// reply fails on the reply kind before any predicate is reached; a rule that
-/// somehow named a TCP field *and* an echo reply fails because the value is
-/// absent, which is the same "the peer did not say" rule the matcher already
-/// applies everywhere else.
+/// A rule declares which reply kind it reads, and fails on any other. A TCP
+/// field asked of an echo reply is absent, and fails as any absent value does.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum StackReply {
@@ -576,10 +499,8 @@ impl StackReply {
 
     /// The smallest common initial hop counter this reply's is consistent with.
     ///
-    /// The same reading on both kinds, because it is the same field: the hop
-    /// counter belongs to the IP header, and a stack does not use a different
-    /// starting value for its pings than for its refusals. See
-    /// [`StackObservation::initial_hops_at_least`] for what the bound means.
+    /// The same IP field on both kinds. See
+    /// [`StackObservation::initial_hops_at_least`].
     pub fn initial_hops_at_least(&self) -> u8 {
         initial_hops_at_least(self.ip().remaining_hops())
     }
@@ -588,8 +509,7 @@ impl StackReply {
 /// The smallest of the usual initial hop counters that `arrived` could have been
 /// decremented from.
 ///
-/// A bound, not a guess: a host further away than the gap between two of these
-/// is reported against the higher one, which is still true.
+/// A lower bound; see [`StackObservation::initial_hops_at_least`].
 fn initial_hops_at_least(arrived: u8) -> u8 {
     const COMMON: [u8; 4] = [32, 64, 128, 255];
     COMMON
@@ -625,11 +545,8 @@ struct Walked {
 /// Walks a TCP option list, recording the kinds in order and extracting the
 /// values worth naming.
 ///
-/// Every length here is read from the packet and every index is checked, because
-/// these bytes are chosen by a remote host. A list that runs off its own end
-/// stops the walk and is recorded as a quirk rather than discarding the whole
-/// observation: what was read before the defect is still true, and the defect
-/// itself identifies the sender more sharply than any well-formed field would.
+/// Every index is checked. A list running off its own end stops the walk and is
+/// recorded as a quirk; what was read before it is kept.
 fn walk_options(options: &[u8]) -> Walked {
     let mut walked = Walked {
         layout: Vec::new(),
@@ -649,15 +566,13 @@ fn walk_options(options: &[u8]) -> Walked {
         };
         walked.layout.push(TcpOptionKind::from_kind(kind));
 
-        // End-of-list ends the list; what follows is padding to the next
-        // four-byte boundary and must be zero. A non-zero byte after it is
-        // somebody's data in a place the specification says there is none.
+        // End-of-list: what follows is padding and must be zero.
         if kind == 0 {
             walked.data_after_end = options[at + 1..].iter().any(|byte| *byte != 0);
             break;
         }
-        // No-op is the only other single-byte kind; everything else carries its
-        // own length, counting the kind and length bytes themselves.
+        // No-op is the only other single-byte kind; the rest carry a length that
+        // includes the kind and length bytes.
         if kind == 1 {
             at += 1;
             continue;
@@ -667,10 +582,8 @@ fn walk_options(options: &[u8]) -> Walked {
             walked.malformed = true;
             break;
         };
-        // Before the slice below, which would otherwise answer for this: a
-        // length under two describes an option shorter than its own header, and
-        // `get` refuses the inverted range it produces. Checked here so the
-        // reason is the one stated rather than a side effect of the range.
+        // A length under two is shorter than the option's own header; checked
+        // explicitly, not left to the slice below.
         let length = usize::from(length);
         if length < 2 {
             walked.malformed = true;
@@ -691,19 +604,14 @@ fn walk_options(options: &[u8]) -> Walked {
                     echo: u32::from_be_bytes([*e0, *e1, *e2, *e3]),
                 });
             }
-            // A known kind carrying the wrong number of bytes is malformed, and
-            // an unknown kind is simply unknown; neither stops the walk, because
-            // the length is still usable to step past it.
+            // A wrong-sized known kind or an unknown kind: step past by length.
             _ => {}
         }
 
         at += length;
     }
 
-    // The loop is bounded because these bytes are a remote host's, and stopping
-    // at the bound is a fact about the reading rather than about the sender. It
-    // is recorded for the same reason every other defect here is: what was read
-    // is still true, and a reader comparing a layout needs to know it is partial.
+    // Stopped at the bound: the layout is partial.
     walked.truncated = at < options.len() && !walked.malformed && !walked.data_after_end;
 
     walked
@@ -721,14 +629,7 @@ fn walk_options(options: &[u8]) -> Walked {
 #[cfg(test)]
 mod tests {
 
-    /// A list longer than the walk reads is recorded as partial rather than
-    /// silently shortened.
-    ///
-    /// Forty single-byte no-ops fill the header's whole option space and are
-    /// forty options; the walk stops at twenty because these bytes are a remote
-    /// host's and it must terminate on any input. What it stops at is a fact
-    /// about the reading, and a rule keyed on the layout needs to know the string
-    /// it is comparing is not the whole one.
+    /// Forty no-ops exceed the walk's bound and are recorded as truncated.
     #[test]
     fn a_truncated_option_walk_says_so() {
         let forty_nops = [1u8; 40];
@@ -744,7 +645,7 @@ mod tests {
         assert!(observed.quirks.any());
     }
 
-    /// And an ordinary list is not reported as truncated.
+    /// An ordinary list is not reported as truncated.
     #[test]
     fn a_list_the_walk_reads_whole_is_not_truncated() {
         // Maximum segment size, SACK permitted, timestamp, no-op, window scale.
@@ -760,8 +661,7 @@ mod tests {
         assert!(!observed.quirks.any(), "nothing odd about it");
     }
 
-    /// An option claiming a length shorter than its own header is malformed, and
-    /// is refused for that reason rather than by the slice it would produce.
+    /// An option claiming a length shorter than its own header is malformed.
     #[test]
     fn an_option_shorter_than_its_own_header_is_malformed() {
         for length in [0u8, 1] {
@@ -778,8 +678,7 @@ mod tests {
     use super::*;
     use crate::model::capture::Ipv4Observation;
 
-    /// An IPv4 observation with the values three real Linux hosts produced, so a
-    /// test's IP half is not the thing under examination.
+    /// An IPv4 observation with values real Linux hosts produced.
     fn ip() -> IpObservation {
         IpObservation::V4(Ipv4Observation {
             ttl: 64,
@@ -793,10 +692,8 @@ mod tests {
 
     /// Builds a TCP segment with `flags`, `window` and `options` verbatim.
     ///
-    /// The header is assembled here rather than through
-    /// [`crate::protocols::craft`] on purpose: that builder and this parser would
-    /// then be two views of one understanding, and a shared misreading of what a
-    /// TCP header is would pass. These are offsets from RFC 793.
+    /// Assembled from RFC 793 offsets, independently of
+    /// [`crate::protocols::craft`].
     fn segment(flags: u8, window: u16, options: &[u8]) -> Vec<u8> {
         assert_eq!(options.len() % 4, 0, "the fixture must be word-aligned");
         let mut bytes = vec![0u8; 20 + options.len()];
@@ -815,9 +712,7 @@ mod tests {
     const RST_ACK: u8 = 0b0001_0100; // RST | ACK
 
     /// The option bytes three real hosts answered a negotiating SYN with,
-    /// recorded off the wire. A fixture written to
-    /// match what this parser currently accepts would pass forever whatever the
-    /// parser did; these are what arrived.
+    /// recorded off the wire.
     mod recorded {
         /// A consumer router running Linux. Window 65160, MSS 1460.
         pub const ROUTER: [u8; 20] = [
@@ -837,9 +732,7 @@ mod tests {
         ];
     }
 
-    /// The order is the signal, so it is the thing pinned. A parse that returned
-    /// the same set in a different sequence would match a rule written for a
-    /// different stack.
+    /// The order is pinned, since it is the signal.
     #[test]
     fn a_recorded_reply_yields_its_options_in_the_order_they_arrived() {
         let observed =
@@ -867,14 +760,11 @@ mod tests {
         );
     }
 
-    /// The measurement this whole type is shaped by: the raw window moves when
-    /// the probe changes what it offers, because the unit it is counted in moves.
-    /// The multiplier does not. Both arms of the recorded A/B are checked, since
-    /// a normalisation that only holds for one of them normalises nothing.
+    /// The raw window moves with the probe; the multiplier does not. Both arms of
+    /// the recorded A/B are checked.
     #[test]
     fn the_window_is_the_same_multiple_of_the_unit_under_either_probe() {
-        // What each host answered a bare MSS-only SYN with: no timestamp, so the
-        // unit is the announced size itself.
+        // MSS-only SYN: no timestamp, so the unit is the announced size.
         let mss_only = [(65_535u16, 64_240u16, 44u16), (65_535, 29_200, 20)];
         for (_, window, expected) in mss_only {
             let observed =
@@ -884,9 +774,7 @@ mod tests {
             assert_eq!(observed.window_in_units(), Some((expected, 0)));
         }
 
-        // The same hosts answering a negotiating SYN: a timestamp is in play,
-        // so the unit is twelve bytes smaller and the raw window differs, and
-        // the multiplier is unchanged.
+        // Negotiating SYN: with timestamps the unit is twelve bytes smaller.
         let router =
             StackObservation::from_tcp(ip(), &segment(SYN_ACK, 65_160, &recorded::ROUTER)).unwrap();
         assert_eq!(router.effective_mss(), Some(1448));
@@ -903,9 +791,8 @@ mod tests {
         );
     }
 
-    /// Not every stack picks a clean multiple, and the remainder is a feature
-    /// rather than rounding error: this host held both the multiplier *and* the
-    /// offset across two different probes with two different units.
+    /// The remainder is stable too: this host kept multiplier and offset across
+    /// two probes.
     #[test]
     fn a_window_that_is_not_a_clean_multiple_keeps_its_remainder() {
         let negotiated =
@@ -924,9 +811,7 @@ mod tests {
         );
     }
 
-    /// Three hosts, three window scales, and the reason a rule can tell them
-    /// apart at all. Reading the shift out of the wrong option, or off by a byte,
-    /// yields a plausible small number and would go unnoticed.
+    /// Three hosts, three window scales. A misread shift would look plausible.
     #[test]
     fn each_recorded_host_reports_its_own_window_scale() {
         for (options, expected) in [
@@ -940,10 +825,8 @@ mod tests {
         }
     }
 
-    /// A reset carries no options whatever the segment that drew it offered, so
-    /// every option-derived reading has to be absent rather than defaulted. A
-    /// zero window scale and "no window scale" are different claims, and only one
-    /// of them is true here.
+    /// A reset carries no options, so every option-derived reading is absent, not
+    /// defaulted.
     #[test]
     fn a_reset_carries_nothing_the_options_would_have_said() {
         let observed = StackObservation::from_tcp(ip(), &segment(RST_ACK, 0, &[])).unwrap();
@@ -961,10 +844,7 @@ mod tests {
         );
     }
 
-    /// These bytes are chosen by a remote host, so a length that runs off the
-    /// end must stop the walk rather than panic, and must be *recorded*,
-    /// because a stack that emits one is far more distinctive than any
-    /// well-formed field.
+    /// A length running off the end stops the walk and is recorded.
     #[test]
     fn a_length_running_past_the_end_is_kept_as_a_quirk_not_a_panic() {
         // MSS, then a window scale claiming sixty-four bytes of value.
@@ -979,16 +859,14 @@ mod tests {
         assert!(observed.quirks.malformed_options);
     }
 
-    /// An option list that never terminates would otherwise be a loop a remote
-    /// host controls the length of.
+    /// An option list that never terminates is bounded.
     #[test]
     fn a_list_of_nothing_but_padding_terminates() {
         let observed = StackObservation::from_tcp(ip(), &segment(SYN_ACK, 1024, &[1; 40])).unwrap();
         assert!(observed.option_layout.len() <= MAX_OPTIONS);
     }
 
-    /// A data offset below five words describes a header shorter than the fixed
-    /// one; honouring it would slice the options backwards into the header.
+    /// A data offset below five words is refused.
     #[test]
     fn an_impossible_data_offset_is_refused() {
         let mut bytes = segment(SYN_ACK, 1024, &[]);
@@ -996,9 +874,7 @@ mod tests {
         assert!(StackObservation::from_tcp(ip(), &bytes).is_none());
     }
 
-    /// A conformant stack does none of these. Each is cheap to check and each is
-    /// close to conclusive on its own, which is why they are kept apart from the
-    /// fields that are merely compared.
+    /// Each quirk is detected.
     #[test]
     fn oddities_a_conformant_header_does_not_have_are_recorded() {
         let mut bytes = segment(0, 1024, &[]); // no flags at all
@@ -1013,8 +889,7 @@ mod tests {
         assert!(observed.quirks.any());
     }
 
-    /// A handshake answer's sequence number *is* the stack's initial sequence
-    /// number, so zero there is a stack that generates none, a real oddity.
+    /// A SYN+ACK with initial sequence zero is a quirk.
     #[test]
     fn a_handshake_announcing_sequence_zero_is_an_oddity() {
         let mut bytes = segment(SYN_ACK, 1024, &[]);
@@ -1024,12 +899,7 @@ mod tests {
         assert!(observed.quirks.zero_sequence);
     }
 
-    /// A reset's is not, and this is the false positive that made the quirk
-    /// useless: RFC 793 §3.4 requires a reset answering a segment without an
-    /// ACK to carry sequence zero, and this engine's probe is a bare SYN.
-    /// Flagged here it fired on every closed port of every conformant host
-    /// alive, measured, on a stock Debian guest, where it put `quirks` on a
-    /// reading that held nothing unusual whatsoever.
+    /// A reset with sequence zero is not (RFC 793 §3.4).
     #[test]
     fn a_reset_carrying_the_sequence_the_rfc_demands_is_not_an_oddity() {
         let bytes = segment(RST_ACK, 0, &[]); // sequence already zero
