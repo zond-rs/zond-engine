@@ -6,32 +6,25 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Signature Database
+//! # Signature database
 //!
-//! The compiled artifact the fingerprinting engine reads at runtime, and the
-//! access layer over it.
+//! The compiled signature set and the access layer over it.
 //!
-//! Signatures are stored flat and addressed by index; the port index and the
-//! prefilter both hand back index lists, matched uniformly by the caller. Three
-//! access patterns, separated by cost:
+//! Signatures are stored flat and addressed by index. Three access patterns,
+//! by cost:
 //!
 //! * **Name lookup** ([`SignatureDb::service_name`]): a `port -> name` index
-//!   built once at load, with no regex compilation. The scanners call it for
-//!   every classified port, so it has to be free.
+//!   built once at load, with no regex compilation. Called for every classified
+//!   port.
 //! * **Port matching** ([`SignatureDb::signatures_for_port`]): the
-//!   service-linked signatures for a port. Their regexes compile lazily (once
-//!   each, on first match); [`SignatureDb::warm`] can force a set to compile in
-//!   parallel.
+//!   service-linked signatures for a port. Their regexes compile lazily, once
+//!   each; [`SignatureDb::warm`] can compile a set in parallel.
 //! * **Global matching** ([`SignatureDb::prefilter`]): for services on
 //!   non-standard ports, an Aho-Corasick prefilter narrows the whole set to a
-//!   small candidate list so matching stays sublinear in the database size.
+//!   small candidate list.
 //!
-//! ## Artifact source
-//!
-//! Today the artifact is the `bincode` blob embedded at build time from
-//! `assets/fingerprinting/`. [`SignatureDb::global`] is the single seam where
-//! disk/mmap loading of a versioned, integrity-checked artifact will slot in
-//! without touching callers.
+//! The set is a `bincode` blob embedded at build time from
+//! `assets/fingerprinting/` and loaded by [`SignatureDb::global`].
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
@@ -91,9 +84,7 @@ static DB: OnceLock<SignatureDb> = OnceLock::new();
 
 /// A definition [`SignatureDb::try_from_definitions`] refused, and why.
 ///
-/// Carries where the definition sat and which service it was about, because a
-/// caller loading a corpus of hundreds needs to find the one that is wrong
-/// rather than be told that one of them is.
+/// Carries the definition's position and service, to find it in a large corpus.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidDefinition {
@@ -132,57 +123,45 @@ pub struct SignatureDb {
     /// The signatures whose rules read `operating_system.name`: an operating
     /// system's own name, normalised.
     ///
-    /// Held apart from every other index because they answer a different
-    /// question. A rule elsewhere in the corpus reads what a *service* said and
-    /// concludes what the host is; these read a bare operating-system name and
-    /// say what that name canonically is. `Windows Server 2008 R2 Standard` is
-    /// the Windows family, the 2008 R2 product, the Standard edition.
+    /// These say what a bare operating-system name canonically is:
+    /// `Windows Server 2008 R2 Standard` is the Windows family, the 2008 R2
+    /// product, the Standard edition.
     ///
-    /// They cannot be matched against the whole corpus, which is what
-    /// [`identify_field`](Self::identify_field) would do. Loose banner rules
-    /// elsewhere match an operating-system name as ordinary text and flatten it:
-    /// four FTP rules read `Windows Server 2008` and conclude `Windows`, which is
-    /// coarser than what went in. See [`canonical_os_name`](Self::canonical_os_name).
+    /// Kept apart because [`identify_field`](Self::identify_field) over the whole
+    /// corpus would hit loose banner rules: four FTP rules read
+    /// `Windows Server 2008` as just `Windows`. See
+    /// [`canonical_os_name`](Self::canonical_os_name).
     os_name_signatures: Vec<usize>,
-    /// The signatures whose rules read `architecture`: seven patterns thatname
+    /// The signatures whose rules read `architecture`: seven patterns that name
     /// nothing but an instruction set.
     ///
-    /// Apart for the same reason as [`os_name_signatures`](Self::os_name_signatures),
-    /// and one more: these state no product, family or vendor, so
-    /// [`evidence_from`](super::os::banner_evidence) declines them as a reading
-    /// of their own and they would be dropped whatever index held them. They are
-    /// consulted for one field and never voted with.
+    /// Kept apart like [`os_name_signatures`](Self::os_name_signatures). They state
+    /// no product, family or vendor, so
+    /// [`evidence_from`](super::os::banner_evidence) declines them; they are
+    /// consulted for one field and never vote.
     architecture_signatures: Vec<usize>,
     /// The signatures whose rules read a JARM hash.
     ///
-    /// Apart for the same reason as the two above, and it bites hardest here. A
-    /// JARM hash is sixty-two hex characters, and the corpus carries a baseline
-    /// rule that matches any run of hex as an ISAKMP responder's vendor-id list.
-    /// Through [`identify_field`](Self::identify_field) every hash the corpus
-    /// did not publish would come back named `isakmp`, which is both wrong and
-    /// unfalsifiable: nothing about the answer says it came from a rule written
-    /// for a different field. See [`identify_jarm`](Self::identify_jarm).
+    /// Kept apart because a baseline rule matches any run of hex as an ISAKMP
+    /// vendor-id list, so through [`identify_field`](Self::identify_field) every
+    /// unpublished hash would be named `isakmp`. See
+    /// [`identify_jarm`](Self::identify_jarm).
     jarm_signatures: Vec<usize>,
     /// Every `vendor:product` the corpus can name *with a version*, as a CPE
     /// spells them.
     ///
-    /// The join key a vulnerability catalogue is keyed on, and the reason it is
-    /// derived here rather than written down anywhere: an entry naming software
-    /// this corpus cannot put a version to can never match, in exactly the sense
-    /// [`Reach::Unproduced`](super::Reach) means. Two hundred and sixty-nine
-    /// products are named by some rule and never with a version, and a ranged
-    /// entry for one of those is a rule that cannot fire.
+    /// A vulnerability catalogue entry for software this corpus cannot version
+    /// can never match, as [`Reach::Unproduced`](super::Reach) describes. 269
+    /// products are named by some rule but never with a version.
     ///
-    /// The test is the corpus's own: a `service.cpe23` template carrying
-    /// `{service.version}` resolves to a versioned CPE and one without it does
-    /// not. Applications only — an operating-system CPE's version is a family
-    /// name, `windows_server_2016`, not something a scan reads off a banner.
+    /// A product counts when its `service.cpe23` template carries
+    /// `{service.version}`. Applications only: an operating-system CPE's version
+    /// is a family name such as `windows_server_2016`.
     versioned_products: BTreeSet<String>,
     /// `port -> signature indices` matchable on that port.
     ///
-    /// Service-linked: the union, over every service reachable on the port, of
-    /// all that service's signatures, so a service's port-less supplementary
-    /// signatures are matched alongside its port-indexed ones.
+    /// The union of the signatures of every service reachable on the port,
+    /// including each service's port-less ones.
     by_port: HashMap<u16, Vec<usize>>,
     /// `port -> TCP active-probe payloads` of the services reachable on it,
     /// grouped by the service that registered them; see [`Conversations`].
@@ -193,28 +172,19 @@ pub struct SignatureDb {
     /// decoded to wire bytes.
     ///
     /// Authored with `generic = true`; see
-    /// [`Probe::generic`](crate::fingerprint::signature::Probe::generic) for
-    /// what earns a probe that mark and why the set is tiny.
+    /// [`Probe::generic`](crate::fingerprint::signature::Probe::generic).
     generic_tcp_probes: Vec<Vec<u8>>,
     /// The TCP probes that may be put to a port their own service never
     /// registered, each with the intensity that unlocks it.
     ///
-    /// Ordered by rarity, so a walk over them asks the likeliest question
-    /// first and a scan that stops early stops on the best of them. Holds only
-    /// probes authored with a rarity of 1 or more; see
+    /// Ordered by rarity, likeliest first. Holds only probes authored with a
+    /// rarity of 1 or more; see
     /// [`Probe::rarity`](crate::fingerprint::signature::Probe::rarity).
     universal_tcp_probes: Vec<(u8, Vec<u8>)>,
-    /// `port -> UDP probe payloads`, indexed like [`Self::tcp_probes`], in
-    /// the same order, but kept apart, because the two are sent by different machinery for
-    /// different reasons.
+    /// `port -> UDP probe payloads`, indexed like [`Self::tcp_probes`].
     ///
-    /// A TCP probe is a *fingerprinting* payload: the port is already known to
-    /// be open, and the probe exists to make the service say something
-    /// identifying. A UDP probe is what establishes the port is open at all,
-    /// since UDP offers no handshake to infer it from. The same bytes usually
-    /// serve both, which is why they are authored together per service, but a
-    /// scanner asking "what should I send to port 161" must not be handed a TCP
-    /// payload that would mean nothing there.
+    /// A TCP probe makes a known-open service identify itself; a UDP probe also
+    /// establishes that the port is open, since UDP has no handshake.
     udp_probes: HashMap<u16, Vec<Vec<u8>>>,
     /// `service name -> the application protocol it is carried over`, for the
     /// services that declare one. See
@@ -235,19 +205,12 @@ pub struct SignatureDb {
 /// One port's TCP probes, in the order they are asked, grouped by the service
 /// that registered them.
 ///
-/// Grouped because a shared port is several services' port at once, and each
-/// asks in its own protocol. A question in one protocol is very often the end
-/// of a conversation in another: an Aerospike info request draws a `400` and a
-/// closed connection from the web server that far more often holds 3000, and
-/// the web application's own request, sent after it down the same connection,
-/// meets a socket already shut. So each service's questions are asked on a
-/// connection of their own, and the grouping is what says where one service's
-/// questions end and the next's begin.
+/// Each service's probes go on their own connection, since a question in one
+/// protocol often ends the conversation in another: an Aerospike info request
+/// draws a `400` and a close from the web server that usually holds 3000.
 ///
-/// Ordered with the services that name the port as theirs first and those
-/// that only share it after, so the service the port most likely holds is
-/// asked first, on the connection the scan already opened, and heard before
-/// anything else has had a chance to confuse it.
+/// Services that name the port come first, then those that share it, so the
+/// likeliest service is asked first on the connection the scan already opened.
 #[derive(Debug, Default)]
 struct Conversations {
     /// Every probe, flat, in the order they are asked.
@@ -291,15 +254,12 @@ impl SignatureDb {
     /// Builds a database from definitions given directly, refusing any the build
     /// would refuse.
     ///
-    /// This is how a caller supplies signatures of their own, and the reason
-    /// the authoring schema is exported at all. The checks are the ones in
-    /// [`ServiceDefinition::validate`], which `build.rs` runs over the shipped
-    /// corpus from the same code, so a definition that would fail the build fails
-    /// here with the same stated reason rather than shipping into a scan and
-    /// quietly matching nothing.
+    /// How a caller supplies signatures of their own. The checks are
+    /// [`ServiceDefinition::validate`], which `build.rs` also runs over the
+    /// shipped corpus.
     ///
-    /// Every pattern is compiled to check it, which is the expensive part and is
-    /// why [`global`](Self::global) does not repeat it: the build already did.
+    /// Every pattern is compiled to check it, which is the expensive part;
+    /// [`global`](Self::global) skips it.
     ///
     /// # Errors
     ///
@@ -321,18 +281,12 @@ impl SignatureDb {
         let mut signatures = Vec::new();
         // service name -> its signature indices (across every definition).
         let mut service_sigs: HashMap<String, Vec<usize>> = HashMap::new();
-        // service name -> its active-probe payloads (decoded to bytes), per
-        // transport. Authored in one file per service; separated here because
-        // they are sent by different code for different purposes.
+        // service name -> its active-probe payloads (decoded), per transport.
         let mut service_tcp_probes: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
         let mut service_udp_probes: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
-        // The probes worth asking of a port nobody registered. Collected across
-        // every definition rather than per service, since what makes one generic
-        // is precisely that it belongs to no port in particular.
+        // Probes for ports nobody registered, across every definition.
         let mut generic_tcp_probes: Vec<Vec<u8>> = Vec::new();
-        // The probes a scan may put to a stranger, gathered across every
-        // definition for the same reason the generic ones are: what qualifies
-        // a probe here is a property of the question, not of the port.
+        // Probes with a rarity, across every definition.
         let mut universal_tcp_probes: Vec<(u8, Vec<u8>)> = Vec::new();
         let mut os_name_signatures: Vec<usize> = Vec::new();
         let mut architecture_signatures: Vec<usize> = Vec::new();
@@ -360,8 +314,7 @@ impl SignatureDb {
                 let by_protocol = match probe.protocol.as_str() {
                     "tcp" => &mut service_tcp_probes,
                     "udp" => &mut service_udp_probes,
-                    // An unknown protocol is already a build warning; ignore it
-                    // here rather than guess which transport it belongs to.
+                    // An unknown protocol is already a build warning.
                     _ => continue,
                 };
                 let payload = unescape(&probe.payload);
@@ -378,9 +331,7 @@ impl SignatureDb {
             }
         }
 
-        // The application protocol per service, where one is declared. Keyed by
-        // name rather than by file, because a service is often authored across
-        // several: `http` alone is six.
+        // Keyed by service name: a service may span files (`http` spans six).
         let mut speaks: HashMap<Arc<str>, Arc<str>> = HashMap::new();
         for def in &defs {
             if let Some(protocol) = &def.service.speaks {
@@ -493,42 +444,29 @@ impl SignatureDb {
 
     /// What this signature set makes of one `response` read from `port`.
     ///
-    /// The whole per-response decision: text extraction, both matching
-    /// tiers, and the separate choice of a service reading and an
-    /// operating-system reading. A caller who has loaded signatures of their own
-    /// through [`try_from_definitions`](Self::try_from_definitions) matches with
-    /// them through here, and the built-in
+    /// Text extraction, both matching tiers, and the separate choice of a
+    /// service reading and an operating-system reading. Signatures loaded
+    /// through [`try_from_definitions`](Self::try_from_definitions) are matched
+    /// through here, and
     /// [`BannerRegexAnalyzer`](crate::fingerprint::BannerRegexAnalyzer) is a loop
-    /// around this and nothing else.
+    /// around it.
     ///
     /// # Two tiers
     ///
     /// The response is checked first against the signatures registered for its
-    /// port, narrowed by the prefilter to the ones that could match it, which
-    /// is a small set and the common case. The global set, narrowed
-    /// by the prefilter to a bounded candidate list and compiled on demand, is
-    /// consulted when the port set identified nothing, and also when it named a
-    /// service but said nothing about the machine**.
-    ///
-    /// That second case is not a special case. A banner identifies a service, and
-    /// what it implies about the host is a separate inference, so the signature
-    /// that answers one is very often not the signature that answers the other.
-    /// Stopping at the port tier would discard every operating-system reading
-    /// that lives only in the global set: measured on a real host, its release
-    /// sits there unread.
+    /// port, narrowed by the prefilter. The global set, narrowed the same way and
+    /// compiled on demand, is consulted when the port set identified nothing,
+    /// **and also when it named a service but said nothing about the machine**,
+    /// since operating-system readings often live only in the global set.
     ///
     /// [`Evidence::port_confirmed`](crate::fingerprint::Evidence::port_confirmed)
-    /// records which tier named the service, so the resolver can prefer a match
-    /// the port corroborates. What it does not set is the tunnel, which is a fact
-    /// about how the bytes arrived rather than about what they say.
+    /// records which tier named the service. The tunnel is not set here.
     ///
     /// # Where the match runs
     ///
-    /// On the engine's identification thread, whichever thread calls this,
-    /// which waits for it. A compiled signature keeps a search cache for each
-    /// thread that matches with it for as long as it is compiled, so matching
-    /// wherever callers happen to be would leave each signature one per
-    /// thread; kept on one, it has one.
+    /// On the engine's identification thread; the caller waits. A compiled
+    /// signature keeps a search cache per thread that matches with it, so one
+    /// thread keeps one cache.
     pub fn identify(&self, port: u16, protocol: Protocol, response: &str) -> Option<Evidence> {
         on_the_matching_thread(|| {
             let port_signatures = self.signatures_for_port(port);
@@ -540,11 +478,9 @@ impl SignatureDb {
     /// What the corpus makes of one extracted field, matched against the whole
     /// set rather than a port's.
     ///
-    /// For a text that is not a banner and belongs to no port: a certificate
-    /// name, a hash, a record a rule is written against directly. A rule reading
-    /// one of those is registered under whatever service owns it, so narrowing
-    /// by port would skip exactly the rules wanted, and the literal prefilter is
-    /// what keeps matching the whole set affordable.
+    /// For text that belongs to no port: a certificate name, a hash, a record a
+    /// rule reads directly. Such rules are registered under their own service,
+    /// not a port. The prefilter keeps this cheap.
     ///
     /// Matched on the identification thread, as [`identify`](Self::identify) is.
     pub(crate) fn identify_field(&self, text: &str) -> Option<Evidence> {
@@ -564,20 +500,15 @@ impl SignatureDb {
 
     /// What the corpus canonically calls the operating system `name`.
     ///
-    /// A second stage over a first match's own reading. A rule that identified a
-    /// service often names the operating system loosely, as the string the
-    /// service happened to report: `Windows Server 2008 R2 Standard` from an SMB
-    /// session setup, say. The corpus carries 59 rules that take exactly such a
-    /// string and say what it canonically is, and this is how they are reached.
+    /// A second stage over a match's reading. A service rule often names the
+    /// operating system as the service reported it (`Windows Server 2008 R2
+    /// Standard` from an SMB session setup), and 59 corpus rules say what such a
+    /// string canonically is.
     ///
-    /// Matched against those rules alone rather than against the corpus, because
-    /// the corpus contains banner rules loose enough to match an operating-system
-    /// name as ordinary text and answer with something coarser than the input.
-    /// Measured: `Windows Server 2008` through the whole set comes back
-    /// `Windows`, from an FTP rule written for a greeting.
+    /// Only those rules are consulted: through the whole corpus,
+    /// `Windows Server 2008` comes back as just `Windows` from an FTP rule.
     ///
-    /// [`None`] where nothing recognises the name, which is the ordinary outcome
-    /// for a product that is not an operating system at all.
+    /// [`None`] where nothing recognises the name.
     ///
     /// Matched on the identification thread, as [`identify`](Self::identify) is.
     pub(crate) fn canonical_os_name(&self, name: &str) -> Option<OsEvidence> {
@@ -595,25 +526,18 @@ impl SignatureDb {
 
     /// Every `vendor:product` the corpus can name with a version.
     ///
-    /// What a vulnerability catalogue is filtered against: an entry for software
-    /// no scan can put a version to matches nothing, so keeping it costs a
-    /// megabyte and buys a finding that cannot fire. See
-    /// [`versioned_products`](Self::versioned_products) on the field for the
-    /// test applied.
+    /// A vulnerability catalogue is filtered against this. See the
+    /// `versioned_products` field for the test applied.
     pub fn versioned_products(&self) -> &BTreeSet<String> {
         &self.versioned_products
     }
 
     /// What the corpus makes of a JARM hash.
     ///
-    /// Matched against the rules written for a hash and nothing else. The whole
-    /// corpus would answer for every hash: sixty-two hex characters satisfies
-    /// the ISAKMP baseline, so an unrecognised TLS stack would be reported as an
-    /// IKE gateway rather than as unrecognised.
+    /// Matched against the JARM rules only; the whole corpus would match the
+    /// ISAKMP baseline on any hash.
     ///
-    /// [`None`] where nothing published this hash, which is the ordinary outcome
-    /// and the honest one: JARM says two hosts run the same stack, and the
-    /// corpus says what that stack is only for the stacks somebody named.
+    /// [`None`] where nothing published this hash, the ordinary outcome.
     ///
     /// Matched on the identification thread, as [`identify`](Self::identify) is.
     pub(crate) fn identify_jarm(&self, found: &str) -> Option<Evidence> {
@@ -630,15 +554,12 @@ impl SignatureDb {
 
     /// The instruction set the corpus reads out of `text`, where it reads one.
     ///
-    /// Seven rules exist for this and nothing else: `x64|amd64|x86_64` against a
-    /// `uname` banner says what the silicon is and not what runs on it. They
-    /// state no product, family or vendor, so they cannot become an
-    /// operating-system reading and are asked directly instead.
+    /// Seven rules exist for this (`x64|amd64|x86_64` against a `uname` banner).
+    /// They state no product, family or vendor, so they are asked directly.
     ///
-    /// The most specific match wins, which is what separates `x86_64` from the
-    /// `x86` rule that matches inside it.
+    /// The most specific match wins, so `x86_64` beats the `x86` rule inside it.
     ///
-    /// [`None`] where the text names no architecture, which is most text.
+    /// [`None`] where the text names no architecture.
     ///
     /// Matched on the identification thread, as [`identify`](Self::identify) is.
     pub(crate) fn architecture_of(&self, text: &str) -> Option<String> {
@@ -669,11 +590,8 @@ impl SignatureDb {
 
     /// Every port some service registers, in no particular order.
     ///
-    /// What this engine can put a name to, which is a different set from what a
-    /// scan asks about. Exposed so the two can be held against each other, since
-    /// a signature authored for a service on a port nothing probes is a coverage
-    /// gap that ships silently, and the catalogue test in this module is what
-    /// stops it.
+    /// What this engine can name, which differs from what a scan asks about.
+    /// Exposed so the two can be checked against each other.
     pub fn indexed_ports(&self) -> impl Iterator<Item = u16> + '_ {
         self.name_index.keys().copied()
     }
@@ -681,9 +599,7 @@ impl SignatureDb {
     /// The application protocol `service` is carried over, where the corpus
     /// says it is carried over one.
     ///
-    /// A tunnelled service arrives labelled `ssl/http`, and the label is two
-    /// facts rather than a name, so the scheme is stripped before the lookup:
-    /// what a TLS-wrapped web server speaks is still HTTP.
+    /// A tunnel scheme (`ssl/http`) is stripped before the lookup.
     pub fn speaks(&self, service: &str) -> Option<&str> {
         let (_, bare) = Tunnel::split_label(service);
         self.speaks.get(bare).map(|protocol| &**protocol)
@@ -692,19 +608,14 @@ impl SignatureDb {
     /// Whether an observation filed under `other` can describe the software
     /// behind `service`.
     ///
-    /// Two names agree when they are the same, when one is carried over the
-    /// other, as Grafana is over HTTP and a `Server` header describes the web
-    /// server Grafana answers through, or when either is not a protocol any
-    /// port is registered or probed for. The last is the corpus filing rules
-    /// under a name for the text they read rather than the protocol that
-    /// carried it: a certificate subject under `x509`, an icon's digest under
-    /// `favicons.xml`, a `Server` header's modules under `apache`. Such a rule
-    /// describes whatever software presented that text, and so contradicts no
-    /// protocol.
+    /// Two names agree when they are the same, when one is carried over the other
+    /// (Grafana over HTTP), or when either is not a protocol any port is
+    /// registered or probed for. The last covers rules filed under the text they
+    /// read: a certificate subject under `x509`, an icon digest under
+    /// `favicons.xml`, a `Server` header's modules under `apache`.
     ///
-    /// Two protocols that are both carried over a third do not agree. An
-    /// Elasticsearch rule that fired on a Grafana port has read the reply as a
-    /// different application, which is the disagreement this exists to catch.
+    /// Two protocols carried over the same third do not agree: an Elasticsearch
+    /// rule firing on a Grafana port disagrees.
     pub(crate) fn agree(&self, service: &str, other: &str) -> bool {
         let carried_over = |inner: &str, outer: &str| {
             self.speaks
@@ -720,9 +631,7 @@ impl SignatureDb {
 
     /// The TCP probes to send to a port that registers none of its own.
     ///
-    /// What turns an unrecognised open port from a two-second silence into a
-    /// named service. See
-    /// [`Probe::generic`](crate::fingerprint::signature::Probe::generic).
+    /// See [`Probe::generic`](crate::fingerprint::signature::Probe::generic).
     pub fn generic_tcp_probe_payloads(&self) -> &[Vec<u8>] {
         &self.generic_tcp_probes
     }
@@ -730,15 +639,11 @@ impl SignatureDb {
     /// The TCP probes worth putting to `port` that no service registered for
     /// it, within `intensity`, likeliest first.
     ///
-    /// What a scan asks a port that has answered everything else with silence.
-    /// The port's own probes are excluded, since this is reached only after
-    /// they were sent and drew nothing, and asking twice would cost a
-    /// connection to learn what the last one already established.
+    /// What a scan asks a port that stayed silent. The port's own probes are
+    /// excluded, since they were already sent.
     ///
     /// Empty at intensity 0, which is every level below
-    /// [`ServiceDetection::Probe`](crate::config::ServiceDetection::Probe), and
-    /// empty for as long as nothing in the corpus is authored within the
-    /// intensity given.
+    /// [`ServiceDetection::Probe`](crate::config::ServiceDetection::Probe).
     pub fn universal_tcp_probe_payloads(&self, port: u16, intensity: u8) -> Vec<&[u8]> {
         if intensity == 0 {
             return Vec::new();
@@ -761,9 +666,8 @@ impl SignatureDb {
 
     /// The signature at `idx`, or `None` past the end of the set.
     ///
-    /// Crate-visible. It hands back a type a caller outside the crate cannot
-    /// name, and every question it was reachable for is answered by
-    /// [`identify`](Self::identify) without one.
+    /// Crate-visible: [`Signature`] is not public; callers use
+    /// [`identify`](Self::identify).
     pub(crate) fn signature(&self, idx: usize) -> Option<&Signature> {
         self.signatures.get(idx)
     }
@@ -777,9 +681,8 @@ impl SignatureDb {
             .map_or(&[], |conversations| conversations.payloads.as_slice())
     }
 
-    /// [`tcp_probe_payloads`](Self::tcp_probe_payloads), one run per service
-    /// that registered them, for a caller that asks each service on a
-    /// connection of its own; see [`Conversations`] for why it should.
+    /// [`tcp_probe_payloads`](Self::tcp_probe_payloads), one run per service, each
+    /// to be sent on its own connection; see [`Conversations`].
     pub(crate) fn tcp_probe_conversations(&self, port: u16) -> impl Iterator<Item = &[Vec<u8>]> {
         self.tcp_probes
             .get(&port)
@@ -790,15 +693,10 @@ impl SignatureDb {
     /// Whether every service reachable on `port` waits to be asked, so its
     /// probes go out without first listening for a greeting.
     ///
-    /// A port is listened to before it is asked because a service that greets
-    /// on connect should be heard before it is interrupted: some take a
-    /// request sent before their greeting for a client not worth answering.
-    /// HTTP never greets. Its server speaks only to answer a request, so on a
-    /// port whose every service declares it speaks HTTP the listening is a
-    /// wait that always runs out, and it is spent on every web port a scan
-    /// identifies, through TLS as well as in the clear. A port shared with a
-    /// service declaring anything else, or nothing, is listened to as before,
-    /// since that service may be the one that greets.
+    /// Normally a port is listened to first, since some services drop a client
+    /// that speaks before their greeting. HTTP never greets, so a port where
+    /// every service speaks HTTP is asked at once. A port shared with any other
+    /// service is listened to first.
     pub(crate) fn asked_first(&self, port: u16) -> bool {
         self.asked_first.contains(&port)
     }
@@ -806,9 +704,9 @@ impl SignatureDb {
     /// The UDP probe payloads registered for `port` (service-linked), as decoded
     /// bytes ready to send.
     ///
-    /// Empty for a port no service registers a UDP probe for, which a scanner
-    /// reads as "send an empty datagram": still enough to draw an ICMP error
-    /// from a closed port, never enough to make an open one speak.
+    /// Empty where no service registers a UDP probe; a scanner then sends an
+    /// empty datagram, which draws an ICMP error from a closed port but rarely a
+    /// reply from an open one.
     pub fn udp_probe_payloads(&self, port: u16) -> &[Vec<u8>] {
         self.udp_probes.get(&port).map_or(&[], Vec::as_slice)
     }
@@ -817,9 +715,7 @@ impl SignatureDb {
     /// cached. Building parses each pattern for literals; it compiles no
     /// regexes.
     ///
-    /// Crate-visible. Both the type and the trait its only method comes from are
-    /// private, so outside the crate it would return a value with nothing
-    /// callable on it; [`identify`](Self::identify) is what it is there to serve.
+    /// Crate-visible: the prefilter type is private.
     pub(crate) fn prefilter(&self) -> &LiteralPrefilter {
         self.prefilter
             .get_or_init(|| LiteralPrefilter::build(&self.signatures))
@@ -829,8 +725,7 @@ impl SignatureDb {
     /// already-compiled signatures are untouched, so a candidate set can be warmed
     /// before matching to spread compilation across cores.
     ///
-    /// Crate-visible: the indices only mean anything against this set, and
-    /// [`identify`](Self::identify) already warms what it is about to match.
+    /// Crate-visible: [`identify`](Self::identify) already warms what it matches.
     pub(crate) fn warm(&self, indices: &[usize]) {
         indices
             .par_iter()
@@ -849,21 +744,12 @@ impl SignatureDb {
 /// Evidence from the **most specific** signature in `indices` that identifies any
 /// of `texts`, by [`MatchQuality`](super::matcher::MatchQuality).
 ///
-/// Unlike a first-match scan, this evaluates every candidate so a generic
-/// signature listed earlier cannot shadow a more specific one (e.g. a bare
-/// `HTTP/1.1` match hiding a `Server:`-header match that names a product and
-/// version). Ties keep the earliest text and the lowest-indexed signature, so
-/// the result stays deterministic. Candidate sets are bounded, being the linked
-/// port set or the prefilter-narrowed global set, so evaluating all of them stays
-/// cheap.
+/// Every candidate is evaluated, so a generic signature listed earlier (a bare
+/// `HTTP/1.1`) cannot shadow a more specific one. Ties keep the earliest text
+/// and the lowest index. Candidate sets are bounded.
 ///
-/// Several texts for one banner, on the same reasoning. A structured banner
-/// carries a field the corpus is written against, and that field is where the
-/// specific rules live, so both the whole banner and the field are offered and
-/// the better match wins. Taking the first match instead would
-/// reinstate exactly the shadowing this function exists to prevent: the whole
-/// line matches a loose rule naming a family, and the field matches the rule
-/// naming the release.
+/// For the same reason all `texts` are tried: the whole line may match a loose
+/// family rule while the extracted field matches the release rule.
 fn best_match(
     db: &SignatureDb,
     indices: &[usize],
@@ -872,11 +758,8 @@ fn best_match(
 ) -> Option<Evidence> {
     let found = best_match_within(db, indices, texts, attested_by)?;
 
-    // A second stage over the name the winner produced, filling in what the
-    // corpus canonically knows about it. A rule that identified a service names
-    // the operating system as the string the service handed over, which carries
-    // a release and often no family; the rules behind `canonical_os_name`
-    // supply the family, and the merge may only add. See `os::canonicalise`.
+    // Fill in what `canonical_os_name` knows about the winner's OS name
+    // (usually the family); the merge only adds. See `os::canonicalise`.
     let os = found.os.map(|evidence| {
         let canonical = evidence
             .product
@@ -894,9 +777,8 @@ fn best_match(
 /// [`best_match`] without the canonical-name stage, which is what that stage
 /// itself runs on.
 ///
-/// The split exists because the stage would otherwise call itself: it matches a
-/// name against the corpus, that match produces a name, and so on. Nothing here
-/// consults `canonical_os_name`, so the recursion has a floor.
+/// Split out so the canonical-name stage, which matches its own output, cannot
+/// recurse.
 fn best_match_within(
     db: &SignatureDb,
     indices: &[usize],
@@ -918,25 +800,12 @@ fn best_match_within(
         .iter()
         .reduce(|best, m| if m.quality > best.quality { m } else { best })?;
 
-    // The name to report for it. Usually its own, but a generic `http` winner
-    // that captured an application as its product yields to a specific service
-    // that names the same application, so a page a title says is Grafana is named
-    // `grafana` and not `http`. A coincidental specific match that names nothing
-    // the product does is not taken. See [`resolved_service_name`].
+    // See `resolved_service_name`.
     let service_name = super::matcher::resolved_service_name(service, &matched);
 
-    // Chosen separately. `quality` ranks how well a signature identified the
-    // service, which is a different question from how much it managed to say
-    // about the machine, and the two disagree. A rule
-    // pinning `OpenSSH_9.2p1` exactly outranks one that also happens to name
-    // Debian 12, so ranking the operating system by service quality threw the
-    // release away and reported a bare family.
-    //
-    // The `Match` type already separates them for exactly this reason: a banner
-    // identifies a service, and what it implies about the host is a second
-    // inference with its own rules. So the service reading comes from the best
-    // service match and the operating-system reading from the most complete one,
-    // and neither decides the other.
+    // Chosen separately from the service: a rule pinning `OpenSSH_9.2p1` exactly
+    // outranks one that also names Debian 12, so the OS reading comes from the
+    // most complete match instead.
     let os = matched
         .iter()
         .filter_map(|m| m.os.as_ref())
@@ -949,12 +818,9 @@ fn best_match_within(
         })
         .cloned();
 
-    // Collected rather than voted on, for the reason `Match::arch` gives, and
-    // asked of the rules whose whole job it is before anything else. A rule that
-    // identified a service and named an architecture in passing took its answer
-    // from a capture, and a capture in a banner is a position rather than a
-    // meaning: one shipped rule read the distribution out of a Debian `uname`
-    // and called it the instruction set.
+    // See `Match::arch`. The dedicated rules are asked first; a service rule's
+    // captured architecture is less reliable (one read the distribution out of a
+    // Debian `uname`).
     let arch = texts
         .iter()
         .find_map(|text| db.architecture_of(text))
@@ -976,9 +842,7 @@ fn best_match_within(
         ..evidence
     });
 
-    // Merged rather than chosen. Two rules matching one response may each name a
-    // different part of the box, and a vendor from one beside a model from
-    // another is a fuller answer than either alone.
+    // Merged: two rules may each name a different part of the box.
     let hardware = matched
         .iter()
         .filter_map(|m| m.hardware.as_ref())
@@ -988,11 +852,8 @@ fn best_match_within(
             best
         });
 
-    // Merged across the matches that describe the winner's product, as the
-    // hardware is: a generic rule reads the revision out of an OpenSSH comment
-    // and a release-specific rule knows which release shipped that banner, and
-    // the build is both. A match naming another product is describing other
-    // software.
+    // Merged across matches of the winner's product: a generic rule reads the
+    // revision from an OpenSSH comment, a specific rule knows the release.
     let winner_product = service.evidence.product.as_deref();
     let mut build = matched
         .iter()
@@ -1010,11 +871,9 @@ fn best_match_within(
             best
         });
 
-    // A release the banner's own operating-system reading names completes a
-    // build that lacks one, where the reading is of the same distributor. The
-    // reading and the build are two inferences from one text, and a rule that
-    // maps `OpenSSH_6.6.1p1 Ubuntu-2` to Ubuntu 14.04 is saying which release
-    // shipped that package.
+    // The OS reading's release completes a build of the same distributor that
+    // lacks one: a rule mapping `OpenSSH_6.6.1p1 Ubuntu-2` to Ubuntu 14.04 names
+    // the release that shipped the package.
     if let (Some(held), Some(os)) = (build.as_mut(), os.as_ref())
         && held.release().is_none()
         && let Some(release) = os
@@ -1044,16 +903,11 @@ fn best_match_within(
 
 /// How much of the identity path an operating-system reading fills in.
 ///
-/// Ranks readings against each other and nothing else. A reading that names a
-/// release says strictly more than one that stops at the family, and where two
-/// say the same amount the first stands, so the answer does not depend on which
-/// signature happened to be indexed earlier.
+/// Ranks readings against each other only. Where two say the same amount the
+/// first stands.
 ///
-/// Every part counts, including any added to the model later. A field left out
-/// here is a field that cannot win a rule its ranking: a rule that reads the
-/// kernel into a field of its own would lose to an imported rule that crams the
-/// same string into `version`, purely because this function has not been told
-/// the field exists.
+/// Count every field, including new ones; an uncounted field cannot win its
+/// rule the ranking.
 pub(super) fn os_detail(os: &crate::model::host::OsEvidence) -> u8 {
     u8::from(os.version.is_some())
         + u8::from(os.kernel.is_some())
@@ -1065,27 +919,20 @@ pub(super) fn os_detail(os: &crate::model::host::OsEvidence) -> u8 {
 /// Everything one banner yields: the evidence, and whether the signature that
 /// named the service was registered for this port.
 ///
-/// The whole per-banner decision in one place: text extraction, both tiers, and
-/// the separate choice of service and operating-system readings. `analyze` is a
-/// loop around it and the tests call it directly, which is on purpose: a test
-/// that reproduced this logic instead of calling it could let the release-
-/// naming SSH rules go unreachable while a test asserting "real banners name an
-/// operating system" goes on passing.
+/// Text extraction, both tiers, and the separate choice of service and
+/// operating-system readings. `analyze` loops around it, and tests call it
+/// directly so they exercise the real path.
 fn identify_within(
     db: &SignatureDb,
     port_signatures: &[usize],
     banner: &str,
     attested_by: crate::model::host::OsSource,
 ) -> Option<Evidence> {
-    // Owned separately from the borrowed view `best_match` walks, because a
-    // field the corpus reads is not always a slice of the banner.
+    // Owned: a field is not always a slice of the banner.
     let extracted = super::extract::texts(banner);
     let texts: Vec<&str> = extracted.iter().map(AsRef::as_ref).collect();
 
-    // Every signature that could match any of the texts, narrowed by the
-    // prefilter against each and unioned: a literal that only appears in the
-    // extracted field would otherwise select no candidates and the field would
-    // go unmatched.
+    // The prefilter's candidates for each text, unioned.
     let mut candidates: Vec<usize> = texts
         .iter()
         .flat_map(|text| db.prefilter().candidates(text))
@@ -1093,14 +940,9 @@ fn identify_within(
     candidates.sort_unstable();
     candidates.dedup();
 
-    // Matched against the signatures registered for this port: port-confirmed.
-    //
-    // Only those the prefilter kept, which it keeps whenever one could match,
-    // so this is the port's answer at a fraction of the cost. A port a corpus
-    // writes for many products is registered with every rule for each, and
-    // compiling them all to find the few that could match, with a search cache
-    // for each, would compile most of the corpus for a single web server. The
-    // port's order is kept, since a tie goes to the earlier rule.
+    // The port's signatures, port-confirmed, limited to the prefilter's
+    // candidates so a busy port (every web product on 80) does not compile most
+    // of the corpus. Port order is kept for tie-breaking.
     let port_candidates: Vec<usize> = port_signatures
         .iter()
         .copied()
@@ -1110,27 +952,13 @@ fn identify_within(
     let mut found = best_match(db, &port_candidates, &texts, attested_by);
     let mut port_confirmed = found.is_some();
 
-    // The global set, narrowed by the prefilter to a small candidate list and
-    // compiled on demand, is consulted when the port set identified nothing, and
-    // also when it named a service but said nothing about the machine.
-    //
-    // That second case is not a special case: a banner identifies a service, and
-    // what it implies about the host is a separate inference, so the signature
-    // that answers one is very often not the signature that answers the other.
-    // Stopping at the port tier would discard every operating-system reading
-    // that lives only in the global set: measured on a real host, its release
-    // sits there unread.
-    //
-    // It costs an Aho-Corasick pass over the banner and a bounded candidate
-    // evaluation, even on banners the port tier already named a service for.
-    // Regex compilation is cached, so a scan pays it once per signature rather
-    // than once per host.
+    // The global set, when the port set identified nothing or said nothing
+    // about the machine. Compilation is cached per signature.
     if found.as_ref().is_none_or(|found| found.os.is_none()) {
         db.warm(&candidates);
         if let Some(global) = best_match(db, &candidates, &texts, attested_by) {
             match found.as_mut() {
-                // The port-confirmed service stands; only the reading about the
-                // machine is taken from the wider set.
+                // Keep the port-confirmed service; take only the OS reading.
                 Some(found) => found.os = global.os,
                 None => {
                     found = Some(global);
@@ -1166,8 +994,7 @@ mod tests {
         speaking(name, ports, patterns, None)
     }
 
-    /// A definition carrying one TCP probe at a given rarity, which is what the
-    /// gate on [`SignatureDb::universal_tcp_probe_payloads`] reads.
+    /// A definition carrying one TCP probe at a given rarity.
     fn probed(name: &str, ports: Vec<u16>, payload: &str, rarity: u8) -> ServiceDefinition {
         let mut definition = def(name, ports, &["^X"]);
         definition.probe = vec![Probe {
@@ -1221,8 +1048,7 @@ mod tests {
         ])
     }
 
-    /// A tunnelled port arrives labelled `ssl/http`, which is two facts and not
-    /// a name, so the scheme comes off before the corpus is asked.
+    /// The tunnel scheme is stripped before the lookup.
     #[test]
     fn a_tunnelled_label_speaks_what_the_service_inside_it_speaks() {
         let db = SignatureDb::from_defs(vec![
@@ -1237,10 +1063,9 @@ mod tests {
         assert_eq!(db.speaks("nothing-here"), None);
     }
 
-    /// Agreement over the shipped vocabulary, which is what a verdict consults:
-    /// an application agrees with the protocol carrying it, two applications
-    /// carried over the same protocol do not agree with each other, and a name
-    /// no port speaks agrees with everything.
+    /// An application agrees with its carrier protocol, two applications over
+    /// the same protocol do not agree, and a name no port speaks agrees with
+    /// everything.
     #[test]
     fn services_agree_through_what_carries_them_and_not_through_a_sibling() {
         let db = SignatureDb::global();
@@ -1262,14 +1087,7 @@ mod tests {
         assert!(db.service_name(22).is_none());
     }
 
-    /// Rarity decides which questions may be put to a stranger, and zero is
-    /// not a band on that scale.
-    ///
-    /// The default for the field, so most of the corpus is still zero and most
-    /// of the corpus must stay addressed to its own ports. A gate that read
-    /// zero as "common" would turn every unauthored probe in the set into one
-    /// sent everywhere, which is the opposite of what leaving it unauthored
-    /// says.
+    /// A rarity of zero (the default) keeps a probe on its own ports.
     #[test]
     fn only_an_authored_rarity_reaches_a_port_that_did_not_register_it() {
         let db = SignatureDb::from_defs(vec![
@@ -1281,21 +1099,15 @@ mod tests {
         let at_default: Vec<&[u8]> = db.universal_tcp_probe_payloads(8443, 1);
         assert_eq!(at_default, vec![b"PING\r\n".as_slice()]);
 
-        // Reaching further up the scale reaches the rarer question too, and
-        // still never the unauthored one.
+        // Higher intensity reaches rarer probes, never zero-rarity ones.
         let thorough = db.universal_tcp_probe_payloads(8443, 9);
         assert_eq!(thorough.len(), 2, "{thorough:?}");
         assert!(!thorough.contains(&b"\x0a".as_slice()));
 
-        // A level that asks nothing of a stranger asks nothing of a stranger.
         assert!(db.universal_tcp_probe_payloads(8443, 0).is_empty());
     }
 
     /// A port's own probe is not asked twice.
-    ///
-    /// The rung is reached only after that probe was sent and drew nothing, so
-    /// repeating it costs a connection to establish what the last one already
-    /// did.
     #[test]
     fn a_ports_own_probe_is_not_offered_back_to_it() {
         let db = SignatureDb::from_defs(vec![probed("redis", vec![6379], "PING\r\n", 1)]);
@@ -1307,11 +1119,8 @@ mod tests {
     /// A port's own service is asked before one that only shares it, however
     /// the corpus happens to be laid out, and each is asked apart.
     ///
-    /// The first question goes down the connection the scan already opened,
-    /// to a service nothing else has spoken to yet, and that is worth most
-    /// where the port most likely is what its number says. 1080 is the case in
-    /// the shipped corpus: SOCKS5 names it and SOCKS4 shares it, and the SOCKS4
-    /// file sorts first.
+    /// 1080 in the shipped corpus: SOCKS5 names it, SOCKS4 shares it, and the
+    /// SOCKS4 file sorts first.
     #[test]
     fn a_ports_own_service_is_asked_before_one_that_shares_it() {
         let mut sharer = probed("socks4", Vec::new(), "four", 0);
@@ -1356,15 +1165,10 @@ mod tests {
     /// Every port this engine can name a service on is a port it asks about by
     /// default.
     ///
-    /// The two lists are authored in different places for different reasons,
-    /// `assets/fingerprinting/` saying what can be identified and
-    /// [`catalog`](crate::model::port::catalog) saying what gets probed, and
-    /// nothing but this connects them. Authoring a signature for a service on a
-    /// port outside the catalogue is not an error the build could catch: the
-    /// signature simply never matches, because no scan ever reaches the port.
-    ///
-    /// The catalogue's two halves are taken together, since a service definition
-    /// names ports without saying which transport they are reached over.
+    /// `assets/fingerprinting/` says what can be identified and
+    /// [`catalog`](crate::model::port::catalog) what gets probed; a signature on a
+    /// port outside the catalogue never matches. Both transports' halves are
+    /// taken together, since a definition's ports carry no transport.
     #[test]
     fn every_port_with_a_signature_is_a_port_the_default_scan_reaches() {
         use crate::model::port::catalog::{
@@ -1391,13 +1195,7 @@ mod tests {
         );
     }
 
-    /// The generic probe is what an unrecognised open port is asked, and losing
-    /// it would fail nothing. It would quietly return the engine to reporting
-    /// those ports with no service at all, two seconds at a time.
-    ///
-    /// Held as a property of the shipped database rather than of any one asset
-    /// file, so moving the probe between services keeps the test passing and
-    /// dropping it does not.
+    /// The shipped database has a generic probe, whichever file holds it.
     #[test]
     fn the_shipped_database_carries_a_generic_probe() {
         let generic = SignatureDb::global().generic_tcp_probe_payloads();
@@ -1420,8 +1218,7 @@ mod tests {
         );
     }
 
-    /// A generic probe is only meaningful over TCP, see the schema, and the
-    /// index has to agree with the build-time rule that enforces it.
+    /// Generic probes are TCP only, as the build enforces.
     #[test]
     fn a_generic_udp_probe_is_not_indexed_as_generic() {
         let mut def = def("weird", vec![9999], &["^X"]);
@@ -1440,12 +1237,7 @@ mod tests {
         );
     }
 
-    /// The other half of the same door.
-    ///
-    /// The authoring schema is exported so a consumer writing signatures of
-    /// their own is held to the same bounds as the shipped corpus. Without this
-    /// constructor there would be nowhere to load what they author, and the
-    /// export would buy the types and not the thing the types are for.
+    /// Caller-authored definitions load and match.
     #[test]
     fn a_caller_can_load_signatures_of_their_own() {
         let db =
@@ -1466,10 +1258,8 @@ mod tests {
     /// **A port's signatures are compiled only where the response could match
     /// them, and the port still answers as it did.**
     ///
-    /// A port the corpus writes for many products is registered with every
-    /// rule for each, and a compiled rule and its search caches are kept for
-    /// the life of the process. Compiling the lot to match one response put
-    /// most of the corpus in memory for a scan of a web server.
+    /// Compiled rules and their caches live for the process, so a busy port must
+    /// not compile its whole list.
     #[test]
     fn a_ports_signatures_are_compiled_only_where_the_response_could_match() {
         let db = SignatureDb::try_from_definitions(vec![
@@ -1492,8 +1282,7 @@ mod tests {
         assert_eq!(compiled, [true, false], "ZENITH is nowhere in the response");
     }
 
-    /// And the checks are the build's, so a definition that would fail the build
-    /// fails here rather than shipping into a scan and matching nothing.
+    /// A definition that would fail the build fails here.
     #[test]
     fn the_checks_are_the_ones_the_build_makes() {
         // A pattern neither engine compiles.
@@ -1520,7 +1309,7 @@ mod tests {
             }
         );
 
-        // A transport nothing speaks, which the loader would silently drop.
+        // A transport nothing speaks.
         let mut d = def("odd", vec![3], &["^X"]);
         d.probe = vec![Probe {
             name: None,
@@ -1539,7 +1328,7 @@ mod tests {
             }
         );
 
-        // A generic probe over UDP is a payload aimed at every UDP port scanned.
+        // A generic probe over UDP.
         let mut d = def("weird", vec![4], &["^X"]);
         d.probe = vec![Probe {
             name: None,
@@ -1578,11 +1367,8 @@ mod tests {
     /// The canonical stage fills in the family a service rule could not state,
     /// and leaves the release it did state alone.
     ///
-    /// An SMB session setup reports `Windows Server 2008 R2 Standard 7601
-    /// Service Pack 1`. The rule reading it names a vendor, a product and a CPE
-    /// and no family, because the string carries none, so `evidence_from` reads
-    /// the product as the family and the host votes as its own edition. This is
-    /// what puts `Windows` there instead.
+    /// The rule reading `Windows Server 2008 R2 Standard 7601 Service Pack 1`
+    /// names no family; the canonical stage supplies `Windows`.
     #[test]
     fn a_canonical_name_supplies_the_family_and_keeps_the_release() {
         let found = SignatureDb::global()
@@ -1605,9 +1391,7 @@ mod tests {
     /// The family is what the stage is consulted for, and it is the same one for
     /// every release in a line.
     ///
-    /// This is the whole value: a host whose family is its own release votes as
-    /// its edition, so two Windows machines running different ones disagree
-    /// about what they are. Against a common family they agree.
+    /// So two Windows machines on different releases agree on the family.
     #[test]
     fn every_windows_release_canonicalises_to_one_family() {
         let db = SignatureDb::global();
@@ -1629,9 +1413,7 @@ mod tests {
         }
     }
 
-    /// A product that is not an operating system is left alone rather than
-    /// forced into one. Most products a scan names are software, and this stage
-    /// runs on all of them.
+    /// A product that is not an operating system is left alone.
     #[test]
     fn a_product_that_is_not_an_operating_system_is_not_canonicalised() {
         let db = SignatureDb::global();
@@ -1646,10 +1428,7 @@ mod tests {
     /// An architecture reaches the reading even though the rule that named it
     /// named nothing else.
     ///
-    /// Seven rules state an instruction set and no product, so they are not an
-    /// operating-system reading of their own and `evidence_from` declines them.
-    /// Their answer is collected instead and filled into whichever reading won,
-    /// the way hardware already is.
+    /// It is collected and filled into whichever reading won.
     #[test]
     fn an_architecture_is_collected_from_a_rule_that_named_nothing_else() {
         let found = SignatureDb::global()
@@ -1676,10 +1455,8 @@ mod tests {
     /// A version is what a pattern captured, without the line ending or the
     /// padding a greeting carried around it.
     ///
-    /// A banner arrives with its CRLF, and a rule whose group runs to the end of
-    /// the line, or stops at a parenthesis after a space, captures that too. The
-    /// version then carries a `\r` into every report format, and compares
-    /// unequal to the same version read from a banner that ended differently.
+    /// A group running to the end of the line captures the CR; one stopping at a
+    /// parenthesis captures the space before it.
     #[test]
     fn a_captured_version_keeps_no_surrounding_whitespace() {
         let db = SignatureDb::global();
@@ -1698,11 +1475,8 @@ mod tests {
         }
     }
 
-    /// ProFTPD's greeting names the daemon and its release in one phrase, and
-    /// the release is what the catalogue joins on: a version of `ProFTPD 1.3.5e
-    /// Server` under product `ftp` compares against no entry at all. A server
-    /// that hides its release is still named, with no version made up for it
-    /// and the product's identifier at no particular release.
+    /// ProFTPD's greeting yields product and release separately. A server hiding
+    /// its release is still named, with no version.
     #[test]
     fn a_proftpd_greeting_names_the_product_and_its_release() {
         let db = SignatureDb::global();
@@ -1728,12 +1502,8 @@ mod tests {
     }
 
     /// **A file-transfer or mail greeting names its daemon, and its release
-    /// apart from it, for every common daemon.** A daemon's phrase taken whole
-    /// as the version, `vsFTPd 3.0.5` under product `ftp`, compares against no
-    /// catalogue entry, and a greeting that names a daemon and no release names
-    /// no product at all. The corpus's rules for these greetings read the text
-    /// after the reply code, as the server writes it, and this is every one of
-    /// them reached from the greeting as it arrives.
+    /// apart from it, for every common daemon**, from the greeting as it
+    /// arrives.
     #[test]
     fn a_file_transfer_or_mail_greeting_names_its_daemon_and_its_release() {
         let db = SignatureDb::global();
@@ -1804,8 +1574,7 @@ mod tests {
         }
     }
 
-    /// `x86` matches inside `x86_64`, so both rules fire on one banner and the
-    /// longer read is the one that saw the whole word.
+    /// `x86` matches inside `x86_64`; the longer read wins.
     #[test]
     fn the_more_specific_architecture_wins() {
         let db = SignatureDb::global();
@@ -1821,9 +1590,8 @@ mod tests {
         }
     }
 
-    /// A rule that genuinely states the family and the product as the same word
-    /// is untouched. Linux and AIX are written that way, and the canonical
-    /// reading agrees with them rather than overriding anything.
+    /// A rule stating family and product as the same word (Linux, AIX) is
+    /// untouched.
     #[test]
     fn a_family_that_is_honestly_the_product_is_left_alone() {
         let canonical = SignatureDb::global()
@@ -1833,9 +1601,7 @@ mod tests {
         assert_eq!(canonical.product.as_deref(), Some("Linux"));
     }
 
-    /// The stage runs on the output of a match, and its own output is a match,
-    /// so it has to stop. `best_match_within` is the floor; a stage that called
-    /// back into itself would recurse until the stack ran out.
+    /// The canonical stage does not recurse.
     #[test]
     fn the_canonical_stage_does_not_call_itself() {
         for name in [
@@ -1850,11 +1616,8 @@ mod tests {
 
     /// No port number is owned twice across the shipped corpus.
     ///
-    /// The index keeps the first claim it is handed, in sorted-path order, so a
-    /// second claim loses silently: the build passes, the port is named, and the
-    /// name is somebody else's. Enumerated because that failure is invisible.
-    /// `shared_ports` is what every claimant but the owner declares, and this
-    /// permits any number of those.
+    /// The index keeps the first claim in sorted-path order, so a second claim
+    /// would lose silently. Any number of `shared_ports` claims are allowed.
     #[test]
     fn no_two_services_own_the_same_port() {
         let definitions = SignatureDb::embedded_definitions();
@@ -1888,7 +1651,7 @@ mod tests {
     }
 
     /// A shared port reaches the service's rules and probes without taking its
-    /// name, which is the whole difference between the two lists.
+    /// name.
     #[test]
     fn a_shared_port_is_matched_but_not_named() {
         let db = SignatureDb::global();
@@ -1910,8 +1673,7 @@ mod tests {
         assert_eq!(db.tcp_probe_payloads(3000).len(), 2);
     }
 
-    /// Everything the build compiled passes the check the build ran. Circular if
-    /// they were two implementations; a seal because they are one.
+    /// Everything the build compiled passes the build's own check.
     #[test]
     fn every_shipped_definition_satisfies_the_shared_check() {
         for (index, def) in SignatureDb::embedded_definitions().iter().enumerate() {
@@ -1924,8 +1686,7 @@ mod tests {
         }
     }
 
-    /// The message names the definition, because a corpus of hundreds needs the
-    /// one that is wrong rather than the fact that one of them is.
+    /// The message names the definition.
     #[test]
     fn the_refusal_names_which_definition_and_why() {
         let refused = SignatureDb::try_from_definitions(vec![
@@ -1960,7 +1721,7 @@ mod tests {
             generic: false,
         }];
         let db = SignatureDb::from_defs(vec![d]);
-        // The authored `\r\n` must reach the wire as real CRLF, not backslashes.
+        // The authored `\r\n` reaches the wire as CRLF.
         assert_eq!(
             db.tcp_probe_payloads(80),
             &[b"GET / HTTP/1.1\r\n\r\n".to_vec()]
