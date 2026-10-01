@@ -8,28 +8,22 @@
 
 //! # Serving the capabilities from a live socket
 //!
-//! The [`Capabilities`] a module is served during a scan: [`speak`](Capabilities::speak)
-//! over a fresh connection to the one scanned port, in the clear or wrapped in
-//! TLS when the port answered inside a tunnel, and [`now`](Capabilities::now) off
-//! a run-relative clock. It is the live counterpart to the recorded capabilities
-//! a test or a replay serves, and a module cannot tell which it holds, which is
-//! what the seam is for.
+//! The [`Capabilities`] a module is served during a scan:
+//! [`speak`](Capabilities::speak) over a fresh connection to the scanned port, in
+//! the clear or through TLS, and [`now`](Capabilities::now) off a run-relative
+//! clock. A module cannot tell it from the recorded capabilities a replay serves.
 //!
-//! ## The budget is enforced here
+//! ## Budgets
 //!
-//! The byte and connection budgets are spent at this boundary, so a module cannot
-//! exceed them: an exchange the budget cannot pay for is refused before a packet
-//! leaves, and a reply is capped at the bytes still available. The Tier-1
-//! [socket probe](crate::detect::flow::SocketProbe) a flow speaks through spends
-//! the same budgets over the same [exchange]; what
-//! differs is the seam, so a module's `speak` returns a typed [`CapError`] it may
-//! catch where a flow's probe reports a bare absence.
+//! An exchange the byte or connection budget cannot pay for is refused before
+//! anything is sent, and a reply is capped at the bytes left. A flow's
+//! [socket probe](crate::detect::flow::SocketProbe) spends the same budgets
+//! over the same [exchange], but reports absence where this returns a typed
+//! [`CapError`].
 //!
-//! ## What it does not resolve
+//! ## `resolve`
 //!
-//! [`resolve`](Capabilities::resolve) is declined: no detection is granted it yet,
-//! so a socket-scoped module never reaches it. When one is, this is where a
-//! resolver is served, bounded the way `speak` is.
+//! [`resolve`](Capabilities::resolve) is declined; no detection is granted it.
 
 use std::borrow::Cow;
 use std::net::{IpAddr, SocketAddr};
@@ -46,16 +40,14 @@ use super::budget::Budget;
 use super::capability::{CapError, Capabilities, ScanInstant};
 
 /// The capabilities a module is served against a live port, holding the budget
-/// and debiting it as it goes. Bound to the one address it was built for, so a
-/// module can reach nothing else. An HTTP request whose `Host` stands for that
-/// address, as `localhost` or the address itself, is sent naming the port the
-/// way a browser would.
+/// and debiting it as it goes. Bound to the one address it was built for. An HTTP
+/// request whose `Host` is a stand-in (`localhost` or the address) is sent naming
+/// the port, as a browser would.
 pub struct LiveCapabilities {
     /// The port, as a request to it and a handshake with it name it.
     peer: Authority,
     protocol: Protocol,
-    /// The tunnel the port answered inside, if any: a module speaks TLS to an
-    /// `ssl/*` service and plaintext to the rest, over the same `speak`.
+    /// The tunnel the port answered inside, if any.
     tunnel: Option<Tunnel>,
     /// Where each of the run's connections leaves from.
     egress: Egress,
@@ -72,12 +64,8 @@ pub struct LiveCapabilities {
 /// The least a module's datagram is waited on for its reply, whatever share of
 /// the run's time an even split would give it.
 ///
-/// Half a second holds an intercontinental round trip and an agent's work on
-/// the request. A share below it is no time for any reply to arrive, so a
-/// datagram given less is a guess silently not tried; the floor keeps the split
-/// from starving the datagrams of the time to be answered. The same figure the
-/// Tier-1 [socket probe](crate::detect::flow::SocketProbe) floors a flow's
-/// datagram wait at, and for the same reason.
+/// Half a second covers an intercontinental round trip and the agent's work.
+/// The same floor as a flow's [socket probe](crate::detect::flow::SocketProbe).
 const DATAGRAM_WAIT_FLOOR: Duration = Duration::from_millis(500);
 
 impl LiveCapabilities {
@@ -86,8 +74,7 @@ impl LiveCapabilities {
     /// through a handshake. The clock starts now, so [`now`](Capabilities::now)
     /// reports the time since the run began.
     ///
-    /// Its connections go where the routing table sends them. A scan forced to
-    /// a source builds its own with every connection pinned there.
+    /// Connections follow the routing table.
     pub fn new(
         addr: SocketAddr,
         protocol: Protocol,
@@ -106,9 +93,8 @@ impl LiveCapabilities {
         }
     }
 
-    /// The same capabilities, with every connection leaving by `egress`: the
-    /// way the scan reached the port, so a module speaks to it from where the
-    /// probe did.
+    /// The same capabilities, with every connection leaving by `egress`, as the
+    /// scan reached the port.
     pub(crate) fn via(mut self, egress: Egress) -> Self {
         self.egress = egress;
         self
@@ -117,14 +103,10 @@ impl LiveCapabilities {
     /// The same capabilities, asking for the port by `name`, the host name its
     /// address was reached by.
     ///
-    /// A server holding several sites at one address routes by the name a
-    /// client asks for, so without one it answers with its default site or
-    /// refuses the handshake. Named, the port is asked for that site: the
-    /// handshake with an `ssl/*` service carries it as its server name, and an
-    /// HTTP request whose `Host` stands for the port, as `localhost` or the
-    /// address itself, is sent naming it. A `Host` naming some other site is
-    /// sent as written. A name a handshake cannot carry, an address among
-    /// them, leaves the handshake without a server name.
+    /// The handshake with an `ssl/*` service carries it as SNI, and a stand-in
+    /// `Host` (`localhost` or the address) is replaced by it. A `Host` naming
+    /// another site is sent as written. A name SNI cannot carry, such as an
+    /// address, is left off the handshake.
     pub fn named(mut self, name: impl Into<Arc<str>>) -> Self {
         self.peer = self.peer.named(Some(name.into()));
         self
@@ -134,15 +116,11 @@ impl LiveCapabilities {
     /// the time left among the datagrams the connection budget still permits,
     /// never below [`DATAGRAM_WAIT_FLOOR`] or past the run's deadline.
     ///
-    /// Silence is an ordinary answer over UDP, and a module guessing over it,
-    /// one datagram per guess, draws one from every wrong guess. Given the
-    /// whole of what is left, the first unanswered guess would spend it and the
-    /// rest would go unsent; an even share hears each out and leaves the last
-    /// its turn. A module's loop is its own, so how many datagrams follow is not
-    /// known ahead as a flow's are; the connection budget is the count instead,
-    /// the most datagrams the run may yet send, `connections` including the one
-    /// about to go. A module that sends one datagram, its budget one connection,
-    /// waits the whole of what is left, as it did.
+    /// A module guessing over UDP draws silence from every wrong guess; an even
+    /// share keeps the first from spending the whole budget. The connection
+    /// budget (`connections`, including this one) stands for the number of
+    /// datagrams still to come. With a budget of one, the datagram gets all that
+    /// is left.
     fn datagram_deadline(&self, connections: u32, left: Duration) -> Instant {
         let share = (left / connections.max(1)).max(DATAGRAM_WAIT_FLOOR);
         (Instant::now() + share).min(self.deadline)
@@ -151,13 +129,13 @@ impl LiveCapabilities {
 
 impl Capabilities for LiveCapabilities {
     fn speak(&mut self, bytes: &[u8]) -> Result<Vec<u8>, CapError> {
-        // Addressed before the budget is asked, which pays for what is sent.
+        // Addressed first, since the budget pays for what is actually sent.
         let bytes = match self.protocol {
             Protocol::Tcp => self.peer.readdressed(bytes),
             _ => Cow::Borrowed(bytes),
         };
         let bytes = &*bytes;
-        // Refuse before a packet leaves what the budget cannot pay for.
+        // Refuse what the budget cannot pay for.
         if self.connections_left == 0 {
             return Err(CapError::ConnectionBudgetExhausted);
         }
@@ -175,10 +153,7 @@ impl Capabilities for LiveCapabilities {
                     .to_string(),
             ));
         }
-        // The exchange's slot under the scan's pacing, once every budget has
-        // said it may go. The wait is the scan's, and moves the run's deadline
-        // by as much; the runtime's own clock reads the same wait off the
-        // thread, see `held_here`.
+        // The pacing slot; the wait extends the run's deadline (see `held_here`).
         let (slot, waited) = exchange::slot(&self.egress, self.peer.socket().ip())?;
         self.deadline += waited;
         let Some(left) = exchange::remaining(self.deadline) else {
@@ -186,12 +161,11 @@ impl Capabilities for LiveCapabilities {
             return Err(CapError::TimedOut);
         };
         self.bytes_left -= sent;
-        // The datagram's wait is a share of the time left among the datagrams
-        // the budget still permits, this one counted in before it is spent.
+        // A share of the time left; see `datagram_deadline`.
         let datagram_until = self.datagram_deadline(self.connections_left, left);
         self.connections_left -= 1;
 
-        // The reply may consume at most what the byte budget has left.
+        // The reply is capped at the bytes left.
         let reply = match self.protocol {
             Protocol::Tcp => exchange::tcp(
                 &self.peer,
@@ -201,15 +175,11 @@ impl Capabilities for LiveCapabilities {
                 bytes,
                 self.deadline,
                 self.bytes_left,
-                // A module reads its reply with its own logic and declares no
-                // end-of-reply line; its reply ends at the idle gap or a close.
+                // No `until`: the reply ends at the idle gap or a close.
                 None,
             )
             .map_err(CapError::from),
-            // A datagram unanswered is silence, the ordinary answer over UDP, so
-            // it waits only its share of the time rather than the run's whole
-            // budget: a module trying guess after guess hears each out and still
-            // reaches the last. See [`datagram_deadline`](Self::datagram_deadline).
+            // Waits only its share; see `datagram_deadline`.
             Protocol::Udp => exchange::udp(
                 self.peer.socket(),
                 &self.egress,
@@ -241,8 +211,7 @@ impl Capabilities for LiveCapabilities {
 
 /// What an exchange's failure looks like at this seam.
 ///
-/// The distinctions are the same ones; only the vocabulary changes, since a
-/// module catches these the way a network client catches an I/O error.
+/// The same distinctions, in the vocabulary a module catches.
 impl From<ExchangeError> for CapError {
     fn from(error: ExchangeError) -> Self {
         match error {
@@ -267,10 +236,8 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    /// A module's exchange the process had no socket for ends its run as out
-    /// of descriptors, rather than coming back as a reset the module would
-    /// catch and read as the port's answer, or as a denial the report would
-    /// file as a failed detection.
+    /// No socket available ends the run as out of descriptors, not as a reset or
+    /// a denial.
     #[test]
     fn a_speak_refused_a_socket_ends_the_run_as_out_of_descriptors() {
         let error = CapError::from(ExchangeError::Starved);
@@ -278,10 +245,8 @@ mod tests {
         assert_eq!(error, CapError::OutOfDescriptors);
     }
 
-    /// A module's request reaches the site a target named on a port that
-    /// holds its sites by name: the handshake names it, and the `Host` the
-    /// module wrote as a stand-in is sent naming it. Unnamed, the handshake is
-    /// refused and the module reads a reset.
+    /// The handshake and a stand-in `Host` carry the target's name; unnamed, the
+    /// handshake is refused and the module reads a reset.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_module_speaks_to_a_named_port_as_the_site_it_was_named() {
         let addr =
@@ -315,8 +280,7 @@ mod tests {
 
     #[test]
     fn a_module_speaks_to_a_live_socket_through_the_seam() {
-        // A loopback that answers the module's probe with a banner, standing in
-        // for the service a detection is written against.
+        // A loopback that answers with a banner.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         thread::spawn(move || {
@@ -399,15 +363,10 @@ mod tests {
         );
     }
 
-    /// A module's UDP guesses each wait only their share of the time left, so a
-    /// first guess that draws silence does not spend the whole budget and leave
-    /// the rest unsent. The share comes from the connection budget, the most
-    /// datagrams the run may yet send, because a module's loop count is its own
-    /// and not known ahead as a flow's is.
+    /// Each UDP guess waits only its share of the time left.
     #[test]
     fn an_unanswered_datagram_waits_its_share_and_not_the_whole_budget() {
-        // A responder that answers only the third guess, as an agent answers a
-        // request it accepts and ignores the ones it does not.
+        // A responder that answers only the third guess.
         let agent = std::net::UdpSocket::bind("127.0.0.1:0").expect("a UDP socket");
         agent
             .set_read_timeout(Some(Duration::from_millis(50)))
@@ -427,10 +386,8 @@ mod tests {
             }
         });
 
-        // Three datagrams' worth of connection budget, and a whole-run deadline
-        // that a single unanswered datagram waiting it all out would exhaust
-        // before the third guess. The floor holds each guess's own wait well
-        // inside a loopback round trip.
+        // Three connections, and a deadline one datagram waiting it all out would
+        // exhaust before the third guess.
         let mut caps = LiveCapabilities::new(
             addr,
             Protocol::Udp,
@@ -455,9 +412,8 @@ mod tests {
 
     #[test]
     fn an_exhausted_connection_budget_refuses_before_dialing() {
-        // One connection permitted; the second is refused with a typed cause and
-        // never dials. The port is a closed one on loopback, so the one dial
-        // there is refused at once and nothing leaves the machine.
+        // One connection permitted; the second is refused without dialling. The
+        // port is closed on loopback.
         let addr: SocketAddr =
             crate::testing::loopback::refused_port(std::net::IpAddr::from([127, 0, 0, 1]));
         let mut caps = LiveCapabilities::new(
@@ -470,8 +426,7 @@ mod tests {
                 ..budget()
             },
         );
-        // The first exchange dials the closed port and fails on connect; that
-        // spends the one connection.
+        // The first dial fails on connect and spends the connection.
         assert_eq!(
             caps.speak(b"x"),
             Err(CapError::ConnectionRefused),

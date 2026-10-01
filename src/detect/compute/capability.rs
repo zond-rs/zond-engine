@@ -8,29 +8,19 @@
 
 //! # Capabilities, the one seam a module reaches the world through
 //!
-//! A compute module holds no authority of its own. Everything it can do to
-//! anything outside its own memory passes through this one trait, and a module is
-//! served only the verbs its [class](crate::model::finding::DetectionClass)
-//! grants: a `passive` module is served none and is a pure calculator; an
-//! `active-benign` one is served a [`speak`](Capabilities::speak) bound to the
-//! single socket the scan already holds. The verbs are the whole surface, which
-//! is what makes the four properties the design promises one property: safety
-//! (the module cannot do what it was not handed), metering (a budget is a bound
-//! checked inside the verb), replay (a recorded verb re-runs the module offline),
-//! and provenance (the report names which verbs a detection was granted).
+//! Everything a compute module does outside its own memory passes through this
+//! trait, and it is served only the verbs its
+//! [class](crate::model::finding::DetectionClass) grants: a `passive` module none,
+//! an `active-benign` one a [`speak`](Capabilities::speak) bound to the scanned
+//! socket. That gives safety (only what was handed), metering (budgets checked
+//! inside the verb), replay (recorded verbs re-run the module offline) and
+//! provenance (the report names the granted verbs).
 //!
-//! ## Why a verb, never a handle
+//! ## Verbs, never handles
 //!
-//! The seam is a set of verbs the host runs, not handles the
-//! module holds, and the rule is absolute: never hand a module a socket, a file
-//! descriptor, a dial-able address, or a clock. A handle is authority the module
-//! wields directly, the sandbox's memory boundary is beside the point once the
-//! thing it can reach is on the far side of a `send` the host no longer mediates;
-//! the byte budget becomes advisory the moment a module writes without the seam
-//! counting; a held socket returns what the live network says today, so replay is
-//! a lie; and a handle cannot cross a process boundary as itself, so it welds the
-//! module to in-process execution. `speak(bytes) -> bytes` has none of those
-//! problems, and it is the whole architecture.
+//! Never hand a module a socket, a file descriptor, a dialable address or a
+//! clock. A handle bypasses the budget, makes replay impossible, and ties the
+//! module to in-process execution; `speak(bytes) -> bytes` does none of that.
 
 use std::net::IpAddr;
 use std::time::Duration;
@@ -48,49 +38,35 @@ use super::budget::Budget;
 /// The verbs a compute module may be served. Each is bound and metered by the
 /// implementation; a module holds the verb, never the machinery behind it.
 ///
-/// `Send` because a module runs on the blocking pool, off the reactor, so the
-/// implementation that serves it, a live socket, a recorded tape, moves there
-/// with it. It is not `Sync`: one run owns its capabilities, and a
-/// live one drives a single socket that no second thread may touch.
+/// `Send` because a module runs on the blocking pool. Not `Sync`: one run owns
+/// its capabilities.
 ///
 /// # An implementation must not re-enter a compute runtime
 ///
-/// No method here may run a compute module, directly or through anything it
-/// calls. A runtime serves these verbs by holding a pointer to the
-/// implementation for the span of one run and handing out a `&mut` to it each
-/// time a verb is called, so a verb that started a second run would produce two
-/// live `&mut` to one value. That is undefined behaviour, and it is the quiet
-/// kind: it would work on the machine it was written on.
+/// No method may run a compute module, directly or indirectly. A runtime holds
+/// a pointer to the implementation for one run and hands out a `&mut` per verb
+/// call, so a second run would create two live `&mut` to one value: undefined
+/// behaviour.
 ///
-/// Nothing in the signature stops it, so it is stated here, where somebody
-/// adding a fourth verb will read it. A runtime also checks it, in every build:
-/// the second run is refused with
-/// [`RunOutcome::HostReentered`](super::RunOutcome::HostReentered) rather than
-/// allowed to alias, because this is a rule kept by code the crate will never
-/// see and an assertion compiled out of a release is no rule at all.
+/// The runtime also checks, in every build, refusing the second run with
+/// [`RunOutcome::HostReentered`](super::RunOutcome::HostReentered).
 pub trait Capabilities: Send {
-    /// Exchange bytes with the one socket the scan already holds open to this
-    /// port, and return the reply. There is no address to name and none in the
-    /// return: the module cannot widen its reach through this call, only use it.
-    /// The byte and connection budgets are spent here, so an exchange the budget
-    /// cannot pay for is refused before it happens.
+    /// Exchange bytes with the scanned port and return the reply. No address is
+    /// named or returned. The byte and connection budgets are spent here; an
+    /// exchange they cannot pay for is refused before it happens.
     fn speak(&mut self, bytes: &[u8]) -> Result<Vec<u8>, CapError>;
 
-    /// Resolve a name to addresses. A capability distinct from
-    /// [`speak`](Self::speak) so a module that only talks to the scanned socket
-    /// cannot also reach the resolver; served only where the class grants it.
+    /// Resolve a name to addresses. Separate from [`speak`](Self::speak) and
+    /// served only where the class grants it.
     fn resolve(&mut self, name: &str) -> Result<Vec<IpAddr>, CapError>;
 
-    /// The injected clock: a run-relative tick, the only clock a module can
-    /// read. It is not wall-clock and not a system time, which is what lets a run
-    /// be recorded and replayed, a real clock would make the same replay differ.
+    /// The injected clock: a run-relative tick, the only clock a module can read,
+    /// so runs replay identically.
     fn now(&mut self) -> ScanInstant;
 }
 
-/// A boxed capability set is itself a capability set, forwarding every verb to the
-/// value it holds. This lets the [recording wrapper](super::RecordingCapabilities)
-/// and the detection stage carry a `Box<dyn Capabilities>` without knowing which
-/// concrete set is inside.
+/// Forwards every verb, so the [recording wrapper](super::RecordingCapabilities)
+/// and the detection stage can carry a `Box<dyn Capabilities>`.
 impl Capabilities for Box<dyn Capabilities> {
     fn speak(&mut self, bytes: &[u8]) -> Result<Vec<u8>, CapError> {
         (**self).speak(bytes)
@@ -107,11 +83,8 @@ impl Capabilities for Box<dyn Capabilities> {
 
 /// A run-relative instant: milliseconds since the run's clock started.
 ///
-/// A value the engine mints and can write down, not a
-/// [`std::time::Instant`], whose monotonic reading means nothing outside the
-/// process that took it and so cannot be journalled, the same reason a captured
-/// round-trip sample's instant does not survive a report round-trip. Recording
-/// this tick is what lets a module that reads the clock still replay identically.
+/// Unlike a [`std::time::Instant`], it can be recorded, so a module reading the
+/// clock replays identically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ScanInstant {
     millis: u64,
@@ -144,11 +117,9 @@ pub enum Capability {
 
 /// Why a capability could not serve a call.
 ///
-/// The distinction the runtime draws on it: a budget or scope refusal is a hard
-/// end to the run, a module cannot loop-and-retry its way past a byte budget, so
-/// the run stops with the matching [`RunOutcome`](super::RunOutcome). An ordinary
-/// I/O failure is instead handed back to the module, which may catch it and try
-/// another approach the way any network client does.
+/// A budget or scope refusal ends the run with the matching
+/// [`RunOutcome`](super::RunOutcome). An ordinary I/O failure is handed back to
+/// the module, which may catch it.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum CapError {
@@ -163,20 +134,14 @@ pub enum CapError {
     /// scope. A hard end, carrying the reason for the report.
     #[error("the call was denied: {0}")]
     Denied(String),
-    /// The process had no file descriptor to give the exchange's socket for
-    /// as long as the run's time allowed, so nothing was sent. A hard end:
-    /// the port was never asked, so a module that caught this would read the
-    /// machine's shortfall as the port's answer, and one that retried would
-    /// find the table no emptier. Kept apart from [`Denied`](Self::Denied)
-    /// because nothing refused the call and the remedy, raising the file
-    /// limit, is the caller's.
+    /// No file descriptor was available within the run's time, so nothing was
+    /// sent. A hard end, since the port was never asked. The remedy is a higher
+    /// file limit.
     #[error("no file descriptor was free for the exchange's socket")]
     OutOfDescriptors,
-    /// The scan stopped, or the host ran out of the time the scan gave it,
-    /// while the exchange waited for its turn under the scan's pacing, so
-    /// nothing was sent. A hard end, for the reason
-    /// [`OutOfDescriptors`](Self::OutOfDescriptors) is one: the port was never
-    /// asked, and nothing the module tries next will be sent either.
+    /// The scan stopped, or the host's time ran out, while the exchange waited
+    /// for its pacing slot. A hard end, as for
+    /// [`OutOfDescriptors`](Self::OutOfDescriptors).
     #[error("the scan stopped, or left the host, before the exchange's turn came")]
     Withheld,
     /// The exchange timed out. Handed back to the module.
@@ -191,9 +156,8 @@ pub enum CapError {
 }
 
 impl CapError {
-    /// Whether this error ends the run outright, rather than being handed back to
-    /// the module to handle. Budget and policy refusals and a full descriptor
-    /// table do; I/O failures do not.
+    /// Whether this error ends the run. Budget and policy refusals, a full
+    /// descriptor table and a withheld slot do; I/O failures do not.
     pub(crate) fn is_fatal(&self) -> bool {
         matches!(
             self,
@@ -210,16 +174,12 @@ impl CapError {
 /// declares, the concrete [`Budget`] filled from what it left open, and which verbs
 /// to serve it.
 ///
-/// The grant is all a runtime needs to instantiate a module, and it
-/// is where the class becomes enforcement rather than advice: a `passive` grant
-/// carries `speak = false`, so the runtime serves no `speak` at all, and a
-/// `passive` module that names it fails because the verb is absent, not because
-/// a present verb returned an error. The identity and class are stamped onto
-/// every finding the module produces, a module cannot forge its own provenance.
+/// Everything a runtime needs to instantiate a module. A `passive` grant carries
+/// `speak = false`, so no `speak` is served at all. The identity and class are
+/// stamped onto every finding.
 ///
-/// Built by [`from_manifest`](Self::from_manifest), never by hand, so it is
-/// [`non_exhaustive`](https://doc.rust-lang.org/reference/attributes/type-system.html#the-non_exhaustive-attribute):
-/// a field a later class needs is not a breaking change for a caller who holds one.
+/// Built by [`from_manifest`](Self::from_manifest);
+/// [`non_exhaustive`](https://doc.rust-lang.org/reference/attributes/type-system.html#the-non_exhaustive-attribute).
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Grant {
@@ -229,43 +189,35 @@ pub struct Grant {
     /// The intrusiveness the module runs at, recorded on each finding.
     pub class: DetectionClass,
     /// The group stamped on every finding, where the manifest declared one.
-    /// Beside the provenance and for the same reason: which detections cover a
-    /// weakness together is the loader's to state, never the module's.
     pub group: Option<FindingGroup>,
     /// The bounds the run is held to.
     pub budget: Budget,
     /// Whether to serve [`speak`](Capabilities::speak). False for a `passive`
-    /// grant, so the verb is not merely refused but absent.
+    /// grant.
     pub speak: bool,
     /// Whether to serve [`resolve`](Capabilities::resolve).
     pub resolve: bool,
 }
 
-/// The work bound a compute detection runs under when it declares none, enough
-/// for real parsing and a stateful exchange, and bounded against a runaway. Fuel
-/// and memory are the compute tier's own; the byte, time, and connection defaults
-/// are shared with the flow tier and live in [`manifest`](crate::detect::manifest).
+/// The work bound a compute detection runs under when it declares none. The
+/// byte, time and connection defaults are shared with flows, in
+/// [`manifest`](crate::detect::manifest).
 const DEFAULT_FUEL: u64 = 10_000_000;
 /// The allocation ceiling a detection that declares none runs under: the largest
-/// string, array, or map it may build, counted in elements. Also what
-/// [`Budget::new`](super::Budget::new) leaves the ceiling at until a caller tightens
-/// it, so the two agree on what "the default" is.
+/// string, array, or map it may build, counted in elements. Also the
+/// [`Budget::new`](super::Budget::new) default.
 pub(crate) const DEFAULT_MAX_MEMORY: usize = 1_000_000;
 
 impl Grant {
-    /// The grant a [`DetectionManifest`] and the content hash of its body
-    /// resolve into: its identity and class stamped on for provenance, its
-    /// declared budget filled out with defaults for whatever it left open, and
-    /// its capability verbs exposed per the class. [`None`] only if the
-    /// manifest's id is empty, which a corpus refuses at build, so a loaded
-    /// detection always resolves.
+    /// The grant a [`DetectionManifest`] and its body's content hash resolve
+    /// into, with defaults for any budget left open and verbs per the class.
+    /// [`None`] only for an empty id, which the build refuses.
     pub fn from_manifest(manifest: &DetectionManifest, content_hash: &str) -> Option<Self> {
         let version = manifest.version.parse().unwrap_or(Version::new(0, 0, 0));
         let detection = DetectionId::new(manifest.id.clone(), version, content_hash).ok()?;
         let caps = &manifest.capabilities;
-        // The class is the boundary, not the declaration: a passive detection is
-        // served no network verb whatever it wrote, so even a manifest that slips
-        // one past the corpus validator cannot reach the network here.
+        // The class decides: a passive or derived detection gets no network verb
+        // whatever its manifest says.
         let active = !matches!(caps.class, Class::Passive | Class::Derived);
         Some(Self {
             detection,
@@ -335,7 +287,7 @@ mod tests {
         // Provenance and the declared time budget carried through.
         assert_eq!(grant.detection.version(), Version::new(2, 1, 0));
         assert_eq!(grant.budget.deadline, Duration::from_millis(500));
-        // What the manifest left open fell back to a default.
+        // Unset fields fall back to defaults.
         assert_eq!(grant.budget.max_bytes, DEFAULT_MAX_BYTES);
     }
 }
