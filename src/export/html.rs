@@ -12,72 +12,55 @@
 //!
 //! ## One file, and nothing outside it
 //!
-//! The stylesheet is inlined and there is no image, no font, no favicon and no
-//! request of any kind to anywhere. A scan report travels as an email attachment,
-//! as an artifact on a ticket, as a file on a share, and in each of those a
-//! request to a CDN either fails and leaves the reader with unstyled text or
-//! succeeds and tells a third party that the report was opened, when, and from
-//! which address.
+//! The stylesheet is inlined, and the page makes no request of any kind: no
+//! image, font or favicon. A report travels as an email attachment or a file on
+//! a ticket or share, where a request to a CDN either fails and leaves unstyled
+//! text or tells a third party that the report was opened, when, and from where.
 //!
-//! ## No JavaScript at all
+//! ## No JavaScript
 //!
-//! None, not merely none from a third party. The places a security tool's output
-//! is read are the places where scripts are blocked: a mail client, a restricted
-//! documentation viewer, a browser with strict settings, a reviewer told never to
-//! run a page built from an unknown network's data.
+//! Security output is read where scripts are blocked: mail clients, restricted
+//! documentation viewers, strict browsers, reviewers told never to run a page
+//! built from an unknown network's data.
 //!
-//! Two consequences are worth stating. Sorting and filtering the host list are
-//! not available; [`csv`](super::csv) exists for the person who wants to sort,
-//! and it opens in the tool they would sort with. The light/dark switch is CSS:
-//! the system preference decides through `prefers-color-scheme` and the control
-//! in the masthead inverts it, with `:has()` doing the work. A browser too old
-//! for `:has()` follows the system preference and hides a control that could not
-//! have functioned.
+//! So the host list cannot be sorted or filtered; [`csv`](super::csv) is for
+//! that. The light/dark switch is CSS: `prefers-color-scheme` decides and the
+//! masthead control inverts it through `:has()`. A browser without `:has()`
+//! follows the system preference and hides the control.
 //!
-//! ## Printing is a first-class output
+//! ## Printing
 //!
-//! There is no PDF exporter; a PDF crate costs more than a lightweight engine
-//! should spend. An `@media print` stylesheet does the job instead, with
-//! ink-cheap colours, no control that only exists to be clicked, and no host
-//! split across a page boundary. `Ctrl-P` produces the document that goes in the
-//! appendix.
+//! There is no PDF exporter; a PDF crate costs more than this engine should
+//! spend. An `@media print` stylesheet uses ink-cheap colours, hides controls and
+//! keeps each host on one page, so `Ctrl-P` produces the appendix copy.
 //!
-//! ## Escaping is the security control here
+//! ## Escaping is the security control
 //!
-//! A scan report is full of text the scanned network chose: hostnames, service
-//! banners, certificate subjects, script output. Written into a page unescaped, a
-//! device named `<script>…</script>` executes on whoever opens the report, the
-//! same class of attack the CSV exporter neutralises for spreadsheets.
+//! Hostnames, service banners, certificate subjects and script output are text
+//! the scanned network chose. Unescaped, a device named `<script>…</script>`
+//! runs on whoever opens the report.
 //!
-//! Everything from the report goes through one escaping writer, shared with the
-//! comparison page and living in `export::write` so there is one of it. It
-//! escapes the five characters that carry markup and renders control characters
-//! as their code point: a hostname containing U+202E reverses the text after it,
-//! which is how a report is made to display one address while carrying another.
-//! No report value is written into an attribute, so the exporter has one escaping
-//! context and no way to pick the wrong one.
+//! Everything from the report goes through one escaping writer in
+//! `export::write`, shared with the comparison page. It escapes the five markup
+//! characters and renders control characters as their code point: a hostname
+//! containing U+202E reverses the text after it, so a report could display one
+//! address while carrying another. No report value is written into an
+//! attribute, so there is only one escaping context.
 //!
-//! ## What the page says, and what it leaves out
+//! ## What the page shows
 //!
 //! The page renders the same [`schema`](super::schema) DTOs the JSON serializes,
-//! so the two cannot disagree about a value, an ordering or a name. States,
-//! protocols and stop reasons keep their wire spelling, so a reader who greps the
-//! JSON for what they saw in the browser finds it.
+//! so the two agree on every value, ordering and name. States, protocols and
+//! stop reasons keep their wire spelling, so grepping the JSON for what the page
+//! shows finds it.
 //!
-//! It parts company with the document twice.
-//!
-//! A field with no value is not shown. The JSON keeps every field so a parser
-//! never has to tell absent from empty from unknown; a page spends the reader's
-//! attention instead, and a host described by fourteen empty rows is a host
-//! nobody reads.
-//!
-//! Not everything with a value is shown either. What earns a place is what
-//! changes how the rest of the page should be read: an idle scan, since the port
-//! states were inferred through a third party rather than seen; an evasion
-//! profile, since the target answered an unusual packet; what the phase covered
-//! and what it could not route to; and which document a phase was folded in from.
-//! Instrumentation a consumer would graph stays in the document. A field added to
-//! [`schema`](super::schema) faces the same question, and the answer may be no.
+//! It differs from the JSON in two ways. A field with no value is not shown.
+//! And of the fields with a value, only those that change how the rest should be
+//! read are shown: an idle scan, since the port states were inferred through a
+//! third party; an evasion profile, since the target answered an unusual
+//! packet; what the phase covered and could not route to; and which document a
+//! phase was folded in from. Instrumentation stays in the JSON. A field added to
+//! [`schema`](super::schema) faces the same test.
 
 use std::borrow::Cow;
 use std::fmt::Write as _;
@@ -121,9 +104,7 @@ fn port_tone(state: PortState) -> &'static str {
         | PortState::Reachable
         | PortState::ClosedOrNoReply => TONE_PARTIAL,
         PortState::Closed => TONE_INERT,
-        // The tone a host of unknown status is drawn in, for the same reason:
-        // nothing was learned here, and a shade that reads as a finding would
-        // give the bar a band that is about the scan rather than the network.
+        // As for a host of unknown status: nothing was learned here.
         PortState::Unasked => TONE_NONE,
     }
 }
@@ -169,8 +150,8 @@ impl HtmlExporter {
 
     /// Sets the report's heading, which is also the page's title.
     ///
-    /// For a front end that knows what the scan was for, such as an engagement
-    /// or a change number or a customer, which the engine never does.
+    /// For a front end that knows what the scan was for, such as an engagement,
+    /// a change number or a customer.
     pub fn with_heading(mut self, heading: impl Into<String>) -> Self {
         self.heading = Some(heading.into());
         self
@@ -188,8 +169,8 @@ impl HtmlExporter {
 
     /// The page's title.
     ///
-    /// Carries the scan's date when the caller named nothing, because a tab and
-    /// a printed page header are where several reports get told apart.
+    /// Carries the scan's date when the caller named nothing, so tabs and
+    /// printed headers tell reports apart.
     fn title<'a>(&'a self, started_at: &str) -> Cow<'a, str> {
         match &self.heading {
             Some(heading) => Cow::Borrowed(heading.as_str()),
@@ -233,10 +214,8 @@ impl Exporter for HtmlExporter {
 
 /// What produced the findings, where that is not the build that wrote the page.
 ///
-/// The two were once printed as one, which read as `zond-engine nmap 7.94` on a
-/// page exported from an imported scan. They are separate facts and the page has
-/// room for both, and says nothing extra where the engine that scanned is the
-/// engine that wrote.
+/// Empty when this build produced the findings, as for any scan it ran itself;
+/// an imported scan names its own scanner here.
 fn findings_from(report: &ScanReport) -> String {
     if report.engine_version() == crate::report::ENGINE_VERSION {
         return String::new();
@@ -247,8 +226,8 @@ fn findings_from(report: &ScanReport) -> String {
 
 /// A one-line description of the scan, under the shared masthead.
 ///
-/// The description states no total the schema does not define. A figure that
-/// appears nowhere else is a figure nobody can check.
+/// It states no total the schema does not define, so every figure can be
+/// checked against the JSON.
 fn write_masthead(
     out: &mut dyn Write,
     heading: &str,
@@ -276,20 +255,18 @@ fn write_masthead(
 
 /// The things that change how the rest of the page should be read.
 ///
-/// Each is a fact about the report rather than about the network, and each makes
-/// the findings mean something other than they appear to: a partial scan did not
-/// finish, an unprivileged one saw less, an idle scan never saw a verdict at
-/// all, an evasion profile asked the question differently, and a redacted one is
-/// not showing everything it knows.
+/// Each is a fact about the report that changes what the findings mean: a
+/// partial scan did not finish, an unprivileged one saw less, an idle scan saw
+/// no verdict directly, an evasion profile asked differently, and a redacted
+/// copy hides some of what it knows.
 fn write_notices(
     out: &mut dyn Write,
     report: &ScanReport,
     phases: &[PhaseDto<'_>],
     options: &ExportOptions,
 ) -> Result<(), ExportError> {
-    // Only phases this engine measured and found unprivileged. Counting `None`
-    // as unprivileged put this engine's advice about raw sockets under another
-    // scanner's findings.
+    // Only phases this engine measured as unprivileged; `None` is an imported
+    // phase, which this engine's advice about raw sockets does not fit.
     let unprivileged = phases
         .iter()
         .filter(|phase| phase.privileged == Some(false))
@@ -298,8 +275,8 @@ fn write_notices(
         .iter()
         .any(|phase| phase.settings.idle_scan.is_some());
     let evaded = phases.iter().any(|phase| phase.settings.evasion.is_some());
-    // A privileged phase that reached some of its targets by connect, which the
-    // count above does not see and which is the same caveat about those targets.
+    // A privileged phase that reached some targets by connect: the same caveat,
+    // for those targets.
     let connected = phases
         .iter()
         .any(|phase| !phase.reached_by_connect.is_empty());
@@ -422,9 +399,8 @@ fn ranges_note(phases: &[PhaseDto<'_>]) -> String {
 
 /// The two distributions behind the headline figures.
 ///
-/// A stacked meter and a legend listing every category, including the ones
-/// nothing landed in, as the JSON summary does. A reader learns something from
-/// `blocked: 0` and nothing from a category that is missing.
+/// A stacked meter and a legend listing every category, empty ones included,
+/// as the JSON summary does: `blocked: 0` is information.
 fn write_distributions(out: &mut dyn Write, summary: &SummaryDto) -> Result<(), ExportError> {
     let statuses = &summary.hosts_by_status;
     let states = &summary.ports_by_state;
@@ -480,8 +456,7 @@ fn status_slice(status: HostStatus, count: usize) -> Slice {
     }
 }
 
-/// [`status_slice`] for port states, which are counted across every host rather
-/// than per host.
+/// [`status_slice`] for port states, counted across every host.
 fn state_slice(state: PortState, count: usize) -> Slice {
     Slice {
         label: port_state_name(state),
@@ -492,9 +467,8 @@ fn state_slice(state: PortState, count: usize) -> Slice {
 
 /// Writes one proportional bar and its legend.
 ///
-/// The widths are computed from counts, which is why they are the only numbers on
-/// this page interpolated into an attribute: a percentage this function derived
-/// cannot carry a value the scanned network chose.
+/// The widths are the only values on this page written into an attribute,
+/// which is safe because they are computed from counts.
 fn distribution(
     out: &mut dyn Write,
     title: &str,
@@ -564,8 +538,8 @@ fn write_hosts(
 
 /// One host: its identity, what it was found to be, and its ports.
 ///
-/// Every value below comes through `HostDto`, which is where redaction is applied
-/// and where each string is wrapped in the one escaper this page has.
+/// Every value comes through `HostDto`, which applies redaction, and is written
+/// through the page's one escaper.
 fn write_host(
     out: &mut dyn Write,
     host: &Host,
@@ -614,11 +588,9 @@ fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), Export
         fact(out, "addresses", &addresses.join(", "))?;
     }
 
-    // One line per name, qualified by what it names and who said it: a
-    // domain read as the machine's own name, or an LDAP claim as an NTLM one,
-    // is a different fact from the one the host stated. Beside the addresses
-    // because both say which machine this is; apart from the hostname in the
-    // header, which is what name resolution answered rather than the host.
+    // One line per name, qualified by what it names and who said it. Beside
+    // the addresses, since both identify the machine; the header's hostname is
+    // what name resolution answered.
     let mut names = String::new();
     for name in &dto.names {
         let detail = [name.kind.replace('_', " "), name.source.to_owned()];
@@ -642,9 +614,8 @@ fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), Export
     }
 
     if !dto.ip_protocols.is_empty() {
-        // The two verdicts a reader acts on. Listing the silent ones as well
-        // would put a dozen `open_or_no_reply` rows on every host and bury the two
-        // lines that mean something, and silence is what the count says.
+        // Only the two verdicts a reader acts on; the count covers the silent
+        // ones.
         let named = |state: &str| -> Vec<String> {
             dto.ip_protocols
                 .iter()
@@ -666,9 +637,8 @@ fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), Export
 
         let value = match accepted.is_empty() {
             false => accepted.join(", "),
-            // Not a failure and worth saying plainly. Most protocols answer an
-            // unsolicited header with nothing whether or not the stack
-            // implements them, so silence everywhere is the ordinary result.
+            // The ordinary result: most protocols answer an unsolicited header
+            // with nothing whether or not the stack implements them.
             true => "none answered".to_string(),
         };
         fact(out, "ip protocols", &format!("{value}{}", dim(&detail)))?;
@@ -709,11 +679,9 @@ fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), Export
     }
 
     if !dto.path.is_empty() {
-        // One line per router, distance first, so a gap where a router declined
-        // to answer reads as a gap rather than as a shorter path. An inherited
-        // hop says so: it is a claim about a router this host never met. A
-        // withheld one is not a gap, since its router answered, so it reads as
-        // what it is rather than as the `*` of a router that stayed quiet.
+        // One line per router, distance first, so a silent router reads as a
+        // gap. An inherited hop is marked, since this host's probes never met
+        // it. A withheld hop's router did answer, so it reads `excluded`.
         let mut path = String::new();
         for hop in &dto.path {
             let address = match hop.address.as_deref() {
@@ -739,10 +707,8 @@ fn write_host_facts(out: &mut dyn Write, dto: &HostDto<'_>) -> Result<(), Export
         fact(out, "path", &path)?;
     }
 
-    // Who sent a piece of evidence qualifies it: a middlebox's word about a host
-    // is not the host's own, and a page that dropped the difference would
-    // present one as the other. A withheld sender says so rather than reading
-    // as the host.
+    // A middlebox's word about a host differs from the host's own, so the
+    // sender is named, or marked excluded when withheld.
     let mut evidence = String::new();
     for reason in &dto.reasons {
         let mut detail: Vec<String> = reason.details.as_deref().map(esc).into_iter().collect();
@@ -786,9 +752,8 @@ fn write_ports(out: &mut dyn Write, host: &Host, dto: &HostDto<'_>) -> Result<()
         "<div class=\"scroll\">\n<table class=\"table\">\n<thead><tr><th>port</th><th>state</th><th>service</th><th>product</th><th>version</th><th class=\"num\">rtt</th><th>evidence</th></tr></thead>\n<tbody>"
     )?;
 
-    // `HostDto` builds its ports from the host's, in order, so the two are one
-    // sequence. Pairing them lets a row carry the document's values and take its
-    // colour from the state itself.
+    // `HostDto` builds its ports from the host's, in order, so they pair up:
+    // values from the DTO, colour from the state.
     for (port, port_dto) in host.ports().zip(dto.ports.iter()) {
         debug_assert_eq!(
             port.number(),
@@ -835,9 +800,9 @@ fn write_port(out: &mut dyn Write, port: &Port, dto: &PortDto<'_>) -> Result<(),
     let version = service
         .map(|service| {
             let mut text = service.version.as_deref().map(esc).unwrap_or_default();
-            // The build first: it is what says whose fixes the version
-            // carries. An extra detail that only restates the build's revision,
-            // as an OpenSSH comment does, would say the same thing twice.
+            // The build first, since it says whose fixes the version carries.
+            // Extra detail that only restates the revision, as an OpenSSH
+            // comment does, is skipped.
             let revision = service
                 .build
                 .as_ref()
@@ -876,16 +841,14 @@ fn write_port(out: &mut dyn Write, port: &Port, dto: &PortDto<'_>) -> Result<(),
 
 /// Appends a subject's findings to a fact list, worst-first.
 ///
-/// Every attacker-influenced field it shows, meaning the title, the excerpt, the
-/// remediation and any URL reference, is written as element content through
-/// [`Text`] or [`esc`] and never into an attribute, so a markup-bearing banner is
-/// inert on the page. The classes it reuses are the stylesheet's own, which the
-/// class-name test holds it to.
+/// The attacker-influenced fields (title, excerpt, remediation, URL references)
+/// are written as element content through [`Text`] or [`esc`]. The classes are
+/// the stylesheet's own, which the class-name test checks.
 fn write_finding_facts(facts: &mut String, findings: &[FindingDto<'_>]) {
     for finding in findings {
         let mut detail = vec![Text(finding.confidence).to_string()];
-        // Beside the confidence rather than in the severity column: it says
-        // which of these somebody is exploiting, not how bad they are.
+        // Beside the confidence: it says which are being exploited, which is
+        // separate from severity.
         if let Some(exploited) = &finding.exploited {
             detail.push(format!(
                 "known exploited: {}",
@@ -918,7 +881,7 @@ fn write_finding_facts(facts: &mut String, findings: &[FindingDto<'_>]) {
 fn write_port_detail(out: &mut dyn Write, dto: &PortDto<'_>) -> Result<(), ExportError> {
     let mut facts = String::new();
 
-    // Findings lead. The worst thing about a port is the first thing to read.
+    // Findings lead.
     write_finding_facts(&mut facts, &dto.findings);
 
     if let Some(service) = &dto.service {
@@ -947,10 +910,8 @@ fn write_port_detail(out: &mut dyn Write, dto: &PortDto<'_>) -> Result<(), Expor
             dim(&detail)
         );
 
-        // What the endpoint accepts, which is the finding a single negotiated
-        // version cannot carry: one line per version, worst suite first, so a
-        // reader scanning the page sees the withdrawn version and the broken
-        // cipher without opening anything.
+        // What the endpoint accepts: one line per version, worst suite first,
+        // so a withdrawn version or broken cipher shows at a glance.
         for accepted in &security.accepts {
             let mut detail = Vec::new();
             if accepted.deprecated {
@@ -970,8 +931,7 @@ fn write_port_detail(out: &mut dyn Write, dto: &PortDto<'_>) -> Result<(), Expor
             if !accepted.unrecognised.is_empty() {
                 detail.push(format!("{} unnamed", accepted.unrecognised.len()));
             }
-            // A walk cut short found a floor, and a reader comparing two
-            // endpoints has to know which of their lists is one.
+            // A walk cut short found only a floor.
             if let Some(unfinished) = security
                 .unfinished
                 .iter()
@@ -998,9 +958,8 @@ fn write_port_detail(out: &mut dyn Write, dto: &PortDto<'_>) -> Result<(), Expor
             );
         }
 
-        // A version whose walk ended before the endpoint said anything about
-        // it is neither accepted nor refused, and a page that left it out would
-        // be read as the second.
+        // A version whose walk ended before any answer is neither accepted nor
+        // refused; left out, it would read as refused.
         for unfinished in security.unfinished.iter().filter(|unfinished| {
             !security
                 .accepts
@@ -1078,10 +1037,8 @@ fn write_port_detail(out: &mut dyn Write, dto: &PortDto<'_>) -> Result<(), Expor
 // Scan detail
 // ---------------------------------------------------------------------------
 
-/// What the scan did, as opposed to what it found.
-///
-/// Last on the page rather than first, since a reader opens a report for the
-/// hosts. This is the section that says how far the host list can be trusted.
+/// What the scan did, which says how far the host list can be trusted. Last on
+/// the page, since a reader opens a report for the hosts.
 fn write_scan_detail(out: &mut dyn Write, phases: &[PhaseDto<'_>]) -> Result<(), ExportError> {
     writeln!(
         out,
@@ -1099,16 +1056,12 @@ fn write_scan_detail(out: &mut dyn Write, phases: &[PhaseDto<'_>]) -> Result<(),
 }
 
 /// One phase: what it covered, what it ran under, what failed, and what each
-/// scanner in it sent and saw.
-///
-/// The longest writer on the page, because a phase is the part of the report that
-/// says whether its own silence is evidence.
+/// scanner in it sent and saw: whether the phase's silence is evidence.
 fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportError> {
     let privilege = match phase.privileged {
         Some(true) => "privileged",
         Some(false) => "unprivileged",
-        // Three states, because a phase read out of another scanner's document
-        // is not a phase that ran unprivileged.
+        // A phase read from another scanner's document.
         None => "privilege not recorded",
     };
 
@@ -1145,10 +1098,9 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         .collect();
     fact(out, "ranges", &ranges.join("<br>"))?;
 
-    // A sweep of a segment reaches every host on it, which is coverage no range
-    // expresses. Listening reaches nothing, since a machine quiet during the
-    // window is indistinguishable from one that is not there, so the two are
-    // separate rows.
+    // A sweep of a segment covers every host on it, which no range expresses.
+    // Listening covers nothing, since a quiet machine looks absent, so the two
+    // are separate rows.
     if !scope.links.is_empty() {
         let links: Vec<String> = scope.links.iter().map(|name| esc(name)).collect();
         fact(out, "links swept", &links.join(", "))?;
@@ -1166,8 +1118,8 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
-    // Which ports were walked, and whether the same ones for every address.
-    // Without it, a port absent from a host could be closed or unasked.
+    // Which ports were walked, and whether the same for every address, so an
+    // absent port reads as closed or unasked correctly.
     if let Some(ports) = &scope.ports {
         let spec = if ports.spec.is_empty() {
             String::new()
@@ -1177,8 +1129,7 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         fact(out, "ports", &format!("{}{spec}", esc(ports.kind)))?;
     }
 
-    // Only when a policy was set. "excluded: nothing" on every report trains a
-    // reader to skip the row on the one where it says something.
+    // Only when a policy was set, so the row is not routinely skipped.
     if !scope.excluded.is_empty() {
         let excluded: Vec<String> = scope
             .excluded
@@ -1211,9 +1162,8 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
     fact(out, "retry", &budget.join(" · "))?;
 
     let settings = &phase.settings;
-    // Both bounds or neither, named as bounds rather than as one rate. A page
-    // saying "500 probes/s" where a floor was set reads as the pace the scan
-    // ran at, which is the one thing a bound never promises.
+    // Named as bounds: "500 probes/s" alone would read as the pace the scan
+    // ran at.
     let rate = match (settings.min_probe_rate, settings.max_probe_rate) {
         (Some(min), Some(max)) => format!("min {min} · max {max} probes/s"),
         (Some(min), None) => format!("min {min} probes/s"),
@@ -1225,10 +1175,8 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
     } else {
         "dns disabled"
     };
-    // The two wall-clock bounds, on their own line rather than folded into the
-    // wire fact: each of them is a reason the page below may be short, and a
-    // reader working out why a host has three ports should not have to find
-    // that at the end of a run-on sentence about send modes.
+    // The wall-clock bounds get their own line: each is a reason the page may
+    // be short.
     let bounds: Vec<String> = [
         settings
             .host_timeout_us
@@ -1236,8 +1184,7 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         settings
             .scan_timeout_us
             .map(|us| format!("whole scan {}", duration(us))),
-        // The gaps, not budgets, and they belong on this line anyway: each is
-        // a reason the page below may have taken as long as it did.
+        // Gaps, not budgets, but each explains how long the scan took.
         settings
             .host_probe_interval_us
             .map(|us| format!("{} between probes at one host", duration(us))),
@@ -1248,8 +1195,8 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
     .into_iter()
     .flatten()
     .collect();
-    // The technique leads: `closed` from a SYN scan and `closed` from a FIN
-    // scan are different findings, and the port table means nothing without it.
+    // The technique leads: `closed` from a SYN scan and from a FIN scan are
+    // different findings.
     fact(
         out,
         "wire",
@@ -1268,9 +1215,8 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         fact(out, "time limit", &bounds.join(" · "))?;
     }
 
-    // The two settings that change what a state means, repeated from the notice
-    // at the top because that notice was about every phase and a reader who has
-    // scrolled this far is looking at one.
+    // The two settings that change what a state means, repeated per phase from
+    // the notice at the top.
     if let Some(idle) = &settings.idle_scan {
         let port = idle
             .zombie_port
@@ -1290,8 +1236,7 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         fact(out, "evasion", &evasion_detail(evasion))?;
     }
 
-    // Ports sent nothing on purpose: one here that names no product was not
-    // asked, so it is not one that would not say.
+    // Ports sent nothing on purpose: one here with no product was never asked.
     if !settings.listen_only_ports.is_empty() {
         let ports: crate::model::port::PortSet = settings
             .listen_only_ports
@@ -1309,8 +1254,7 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
-    // Ports kept out of the scan: one missing from the ports walked was named
-    // and excluded rather than never named.
+    // Ports named and kept out of the scan.
     if !settings.excluded_ports.is_empty() {
         fact(
             out,
@@ -1323,8 +1267,7 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
-    // Addresses the caller named that nothing was sent to. No probe left this
-    // machine for them, so the report says nothing about what is there.
+    // Addresses the caller named that no probe was sent to.
     if !phase.unroutable.is_empty() {
         let addresses: Vec<String> = phase.unroutable.iter().map(|ip| esc(ip)).collect();
         fact(
@@ -1338,8 +1281,8 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
-    // Of those, the ones this machine's own routing table refuses, which is
-    // where the remedy is.
+    // Of those, the ones this machine's own routing table refuses, where the
+    // remedy is.
     if !phase.refused_by_route.is_empty() {
         let addresses: Vec<String> = phase.refused_by_route.iter().map(|ip| esc(ip)).collect();
         fact(
@@ -1353,9 +1296,8 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
-    // Addresses the scan started on and left before it had finished. Their
-    // ports are on the page carrying the scan's silence verdict, so without
-    // this line they read as quiet machines.
+    // Addresses the scan left unfinished. Their ports carry the silence
+    // verdict, so without this line they read as quiet machines.
     if !phase.timed_out.is_empty() {
         let addresses: Vec<String> = phase.timed_out.iter().map(|ip| esc(ip)).collect();
         fact(
@@ -1369,9 +1311,8 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
-    // Addresses that rationed the ICMP errors a closed UDP port is known by.
-    // Their open-or-no-reply ports are mostly closed ones the scan had no answer
-    // for, which the port list alone does not say.
+    // Addresses that rationed the ICMP errors that mark a closed UDP port, so
+    // their open-or-no-reply ports are mostly closed.
     if !phase.icmp_rate_limited.is_empty() {
         let addresses: Vec<String> = phase.icmp_rate_limited.iter().map(|ip| esc(ip)).collect();
         fact(
@@ -1385,10 +1326,9 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
-    // Addresses the phase never reached a verdict on. Absent from the hosts
-    // below like the silent ones, and without this line they read as silent.
+    // Addresses with no verdict, absent from the hosts like the silent ones.
     // Capped, since a sweep stopped halfway through a shuffled range leaves
-    // its gaps scattered, and a page of ranges hides the count that matters.
+    // scattered gaps, and the count is what matters.
     if !phase.undecided.is_empty() {
         const SHOWN: usize = 6;
         let mut ranges: Vec<String> = phase
@@ -1422,11 +1362,9 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
-    // Why the scan was stopped during this phase, and what of the plan it
-    // never asked and holds on no host. Those targets are on no host below,
-    // so without this line the ports listed read as all the phase set out to
-    // ask. A phase that was not stopped can leave some too, passed for an
-    // address its liveness pass never decided, and says so on its own.
+    // Why the scan was stopped, and how many planned targets it never asked;
+    // those are on no host below. A phase that was not stopped can leave some
+    // too, for an address its liveness pass never decided.
     if phase.stopped.is_none()
         && let Some(count) = phase.unreached.as_deref()
     {
@@ -1465,8 +1403,7 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
 
     // A phase recorded before it closed: its sitting was killed, or had not
     // ended when its journal was read. What only its close would say, a stop
-    // or a count never asked, is absent for that reason, and without this line
-    // the phase reads as one that ran to its end.
+    // or a count never asked, is missing.
     if phase.open {
         fact(
             out,
@@ -1479,8 +1416,8 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
-    // Why a port phase ran with no liveness pass. The phase list reads the same
-    // for all three, and the reason is what says how to read the hosts below.
+    // Why a port phase ran with no liveness pass, which says how to read the
+    // hosts.
     if let Some(skip) = phase.liveness_skipped {
         let why = match skip {
             "assume_up" => "every address probed as up, as asked",
@@ -1494,10 +1431,9 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
-    // Addresses a port phase asked on every port and heard nothing from, where
-    // it stood in for a liveness pass. Absent from the hosts below as a pass
-    // would have left them, and named here so the page still accounts for
-    // them. Capped for the reason the undecided list is.
+    // Addresses silent on every port where the port phase stood in for a
+    // liveness pass. Absent from the hosts, as a pass would have left them.
+    // Capped like the undecided list.
     if !phase.silent.is_empty() {
         const SHOWN: usize = 6;
         let mut ranges: Vec<String> = phase
@@ -1531,9 +1467,8 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
-    // Addresses a privileged phase reached the unprivileged way. Their results
-    // sit beside raw ones under a phase headed privileged, and this line is
-    // what tells the two apart.
+    // Addresses a privileged phase reached by connect, whose results sit
+    // beside raw ones.
     if !phase.reached_by_connect.is_empty() {
         let ranges: Vec<String> = phase
             .reached_by_connect
@@ -1554,9 +1489,7 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
         )?;
     }
 
-    // For a merged report: which document this phase came out of. Without it a
-    // page shows one scan's phases beside another's with nothing to tell them
-    // apart.
+    // For a merged report: which document this phase came from.
     if let Some(origin) = &phase.origin {
         let label = origin.label.map(esc).into_iter().collect::<Vec<_>>();
         fact(
@@ -1602,8 +1535,7 @@ fn write_phase(out: &mut dyn Write, phase: &PhaseDto<'_>) -> Result<(), ExportEr
 
 /// What a scan changed about the packets it sent, as one line.
 ///
-/// Every field is present only for a technique the scan used, so what this
-/// renders is the profile and nothing about the ones it did not touch.
+/// Each field is present only for a technique the scan used.
 fn evasion_detail(evasion: &crate::export::schema::EvasionDto) -> String {
     let mut parts: Vec<String> = Vec::new();
 
@@ -1638,10 +1570,8 @@ fn evasion_detail(evasion: &crate::export::schema::EvasionDto) -> String {
 
 /// Where the machine that ran this phase was plugged in.
 ///
-/// A finding of its own rather than a row among the settings. It says nothing
-/// about any host and everything about where the scan was standing when it
-/// looked, which the host list cannot answer. Empty on an unmanaged network, and
-/// never a claim that the machine is attached to nothing.
+/// Its own table: it describes where the scan stood, not any host. Empty on an
+/// unmanaged network, which does not mean the machine is attached to nothing.
 fn write_attachments(
     out: &mut dyn Write,
     attachments: &[crate::export::schema::AttachmentDto<'_>],
@@ -1709,13 +1639,12 @@ fn write_probe_stats(out: &mut dyn Write, stats: &ProbeStatsDto) -> Result<(), E
     )?;
 
     let mut sends = vec![format!("{} attempted", stats.sends_attempted)];
-    // Not "refused": the count holds sends to an address this host could not
-    // reach beside the ones the sender turned down, and neither left it.
+    // Not "refused": the count includes unreachable addresses as well as sends
+    // the sender turned down.
     if stats.sends_failed > 0 {
         sends.push(format!("{} never left this host", stats.sends_failed));
     }
-    // Whole probes a second, except below ten, where a whole number would read
-    // a trickle as nothing at all.
+    // One decimal below ten, so a trickle does not round to nothing.
     if let Some(rate) = stats.achieved_send_rate {
         sends.push(match rate {
             10.0.. => format!("{rate:.0}/s"),
@@ -1763,9 +1692,8 @@ fn write_probe_stats(out: &mut dyn Write, stats: &ProbeStatsDto) -> Result<(), E
         if capture.if_dropped > 0 {
             counts.push(format!("{} dropped by the interface", capture.if_dropped));
         }
-        // Last, and phrased as a link rather than a number, because it is the
-        // one entry here that says the counts beside it describe less of the
-        // network than they look like they do.
+        // Last, and in words: it says the counts beside it cover less of the
+        // network than they appear to.
         if capture.stopped_early > 0 {
             counts.push(match capture.stopped_early {
                 1 => "one capture stopped early and heard nothing after".to_string(),
@@ -1815,8 +1743,8 @@ fn write_probe_stats(out: &mut dyn Write, stats: &ProbeStatsDto) -> Result<(), E
 
 /// A row of labelled counts, drawn as bars against the largest of them.
 ///
-/// Against the largest rather than the total. One bucket usually holds nearly
-/// everything, and scaling to the total draws the rest as invisible lines.
+/// One bucket usually holds nearly everything, and scaling to the total would
+/// draw the rest as invisible lines.
 fn histogram(
     out: &mut dyn Write,
     title: &str,
@@ -1846,7 +1774,7 @@ fn histogram(
 }
 
 /// One bar of a histogram, scaled against the tallest in it. A `peak` of zero
-/// draws an empty bar rather than dividing by it.
+/// draws an empty bar.
 fn histogram_row(
     out: &mut dyn Write,
     label: &str,
@@ -1874,9 +1802,8 @@ fn histogram_row(
 
 /// The footer: which engine wrote the page, against which schema, and when.
 ///
-/// The engine attribution is a value on a merged report, taken from whatever
-/// wrote the document that was folded in, so it is escaped like any other string
-/// the page did not author.
+/// The findings attribution comes from whatever wrote an imported or merged
+/// document, so it is escaped.
 fn write_colophon(
     out: &mut dyn Write,
     report: &ScanReport,
@@ -1903,8 +1830,7 @@ fn write_colophon(
 
 /// One label/value row of a fact list. `value` is markup the caller escaped.
 ///
-/// A row with nothing in it is not written, which is the difference between this
-/// page and the document it renders.
+/// A row with nothing in it is not written.
 fn fact(out: &mut dyn Write, key: &str, value: &str) -> Result<(), ExportError> {
     if value.is_empty() {
         return Ok(());
@@ -1916,11 +1842,10 @@ fn fact(out: &mut dyn Write, key: &str, value: &str) -> Result<(), ExportError> 
 /// What made a report partial, a clause each, in the order a reader would
 /// look for them: the faults first, then the ground left unfinished.
 ///
-/// Every cause [`ScanReport::is_partial`] counts is named here, so the notice
-/// never claims a shortfall it cannot name, and nothing it does not count: a
-/// journal that fell behind or a resolver that failed narrows no coverage. A
-/// strategy that failed and one a limit cut short are named apart, since one
-/// sends a reader looking for a fault and the other for the limit.
+/// Names exactly the causes [`ScanReport::is_partial`] counts; a journal that
+/// fell behind or a resolver that failed narrows no coverage. A failed strategy
+/// and one a limit cut short are named apart, since one points at a fault and
+/// the other at the limit.
 fn shortfalls(report: &ScanReport) -> Vec<&'static str> {
     let mut causes = Vec::new();
     let narrowing = || {
@@ -1957,8 +1882,8 @@ fn shortfalls(report: &ScanReport) -> Vec<&'static str> {
 
 /// How many addresses `ranges` hold, read back off their rendered ends.
 ///
-/// A range whose ends do not read back as one family's addresses adds
-/// nothing, which undercounts rather than inventing addresses.
+/// A range whose ends do not parse as one family's addresses adds nothing, so
+/// the count can fall short but never overstate.
 fn addresses_in(ranges: &[RangeDto]) -> u128 {
     ranges
         .iter()
@@ -1978,9 +1903,6 @@ fn addresses_in(ranges: &[RangeDto]) -> u128 {
         .fold(0u128, u128::saturating_add)
 }
 
-/// The secondary half of a value: present, but not what the eye should land on.
-///
-/// Renders to nothing at all when there is nothing to say, so a caller can
 /// A build as the report shows it: the distributor, then the release and the
 /// package revision where they are known.
 fn build_text(build: &super::schema::BuildDto<'_>) -> String {
@@ -2001,7 +1923,10 @@ fn distributor_label(wire_name: &str) -> &str {
         .unwrap_or(wire_name)
 }
 
-/// append it unconditionally.
+/// The secondary half of a value, drawn dimmed.
+///
+/// Renders to nothing when every part is empty, so a caller can append it
+/// unconditionally.
 fn dim(parts: &[String]) -> String {
     let parts: Vec<&str> = parts
         .iter()
@@ -2017,10 +1942,7 @@ fn dim(parts: &[String]) -> String {
 
 /// Renders microseconds the way somebody reads them.
 ///
-/// The document keeps every duration in microseconds so a machine never has to
-/// guess a unit. A person reading `677669 µs` has to do arithmetic to learn the
-/// scan took two thirds of a second, so the page does it for them, to three
-/// significant figures.
+/// The JSON keeps microseconds; the page picks a unit and shows two decimals.
 fn duration(micros: u64) -> String {
     match micros {
         0..1_000 => format!("{micros} µs"),
@@ -2033,7 +1955,7 @@ fn duration(micros: u64) -> String {
     }
 }
 
-/// A share of a whole, as a percentage. Nothing of nothing is nothing.
+/// A share of a whole, as a percentage; 0 when the whole is 0.
 fn percent(part: usize, total: usize) -> f64 {
     if total == 0 {
         return 0.0;
@@ -2047,8 +1969,8 @@ fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
 }
 
 /// Picks a noun's form for a count too large for a `usize`: the address and probe
-/// totals, which are decimal strings because an IPv6 sweep's does not fit
-/// anything narrower.
+/// totals, which are decimal strings because an IPv6 sweep's can exceed any
+/// integer type.
 fn plural_str(count: &str, one: &'static str, many: &'static str) -> &'static str {
     if count == "1" { one } else { many }
 }
@@ -2096,10 +2018,8 @@ mod tests {
         found
     }
 
-    /// A send that never left counts a probe to an address this host could
-    /// not reach as well as one the sender refused, so the page says what both
-    /// have in common. Called refused by the sender, a scan of a name whose
-    /// other family has no route from here reads as a broken send path.
+    /// Failed sends include unreachable addresses as well as sender refusals,
+    /// so the page says only that they never left.
     #[test]
     fn sends_that_never_left_are_not_all_called_refused() {
         let mut stats = fixture::probe_stats();
@@ -2113,9 +2033,7 @@ mod tests {
         assert!(!block.contains("refused"), "{block}");
     }
 
-    /// The rate a scanner managed stands beside the probes it sent, so a page
-    /// read against the configured rate shows how far short the run fell
-    /// without a reader dividing the elapsed time out by hand.
+    /// The rate a scanner achieved stands beside the probes it sent.
     #[test]
     fn a_scanners_block_says_how_fast_it_sent() {
         let mut stats = fixture::probe_stats();
@@ -2129,8 +2047,7 @@ mod tests {
         assert!(block.contains("500 attempted · 2000/s"), "{block}");
     }
 
-    /// What a browser needs before it will render anything at all, and the
-    /// property that makes this format worth having.
+    /// A complete document that reaches nothing outside itself.
     #[test]
     fn the_page_is_one_self_contained_document() {
         let page = default_page();
@@ -2147,8 +2064,7 @@ mod tests {
         }
     }
 
-    /// A class the stylesheet does not define renders as nothing, and the file
-    /// that would have said so is not this one.
+    /// A class the stylesheet does not define renders as nothing.
     #[test]
     fn every_class_written_is_a_class_the_stylesheet_styles() {
         for class in classes(&default_page()) {
@@ -2159,8 +2075,7 @@ mod tests {
         }
     }
 
-    /// The tones are where a new enum variant could reach the page unstyled. The
-    /// compiler checks the match; nothing checks that the stylesheet kept up.
+    /// The compiler checks the tone match; this checks the stylesheet.
     #[test]
     fn every_state_has_a_tone_the_stylesheet_defines() {
         let statuses = [
@@ -2205,33 +2120,26 @@ mod tests {
         assert!(page.contains("OpenSSH"));
         assert!(page.contains("8.9p1"));
         assert!(page.contains("Raspberry Pi Trading Ltd"));
-        // The certificate, whose subject is the one field on a port that names
-        // a machine.
         assert!(page.contains("Local CA"));
-        // The instrumentation, without which a sweep that ran out of time reads
-        // exactly like one that finished.
+        // The instrumentation, which tells a sweep that ran out of time from
+        // one that finished.
         assert!(page.contains("deadline_expired"));
         assert!(page.contains("raw socket unavailable"));
     }
 
-    /// The facts that change what a state on this page means have to be on the
-    /// page.
-    ///
-    /// The page renders a subset of the document on purpose, and that subset was
-    /// drawn before several of these fields existed. An idle scan and an evasion
-    /// profile both change what every port state underneath them says, and
-    /// neither reached the page.
+    /// The facts that change what a state on this page means are on the page:
+    /// an idle scan and an evasion profile change every port state under them.
     #[test]
     fn what_changes_the_meaning_of_a_state_reaches_the_page() {
         let page = default_page();
 
         for expected in [
-            // The two notices, at the top where they are read first.
+            // The two notices at the top.
             "idle scan",
             "evasion",
             "inferred from a third party",
             "altered before they went out",
-            // And the per-phase detail, for a reader who has scrolled to one.
+            // The per-phase detail.
             "detection ",
             "where this ran from",
         ] {
@@ -2239,9 +2147,8 @@ mod tests {
         }
     }
 
-    /// The addresses a phase never decided reach the page with their count, or
-    /// a reader sees them only as hosts absent from it and takes them for
-    /// silent ones.
+    /// The addresses a phase never decided reach the page with their count, so
+    /// they do not read as silent.
     #[test]
     fn what_a_phase_never_decided_reaches_the_page() {
         let report = fixture::report();
@@ -2272,9 +2179,8 @@ mod tests {
         );
     }
 
-    /// A router whose address was withheld reads as excluded, and not as the
-    /// `*` of a router that stayed quiet: that one answered, and a page drawing
-    /// it as silence would say it had not.
+    /// A router whose address was withheld answered, so it reads as excluded
+    /// and not as the `*` of a quiet router.
     #[test]
     fn a_withheld_router_is_not_drawn_as_silence() {
         let page = default_page();
@@ -2287,8 +2193,7 @@ mod tests {
     }
 
     /// Evidence a middlebox sent names it, and evidence from a withheld one
-    /// says it came second-hand. Drawn bare, either would read as the host
-    /// answering for itself, which is the claim neither makes.
+    /// says it came second-hand, so neither reads as the host's own answer.
     #[test]
     fn second_hand_evidence_says_who_sent_it() {
         let page = default_page();
@@ -2303,10 +2208,8 @@ mod tests {
         );
     }
 
-    /// An enumeration that did not finish says so beside what it found.
-    ///
-    /// Without it, a version the endpoint stopped answering about reads as one
-    /// it refused, and a list of suites cut short reads as the whole of them.
+    /// An enumeration that did not finish says so beside what it found, so an
+    /// unanswered version does not read as refused or a cut list as complete.
     #[test]
     fn an_unfinished_enumeration_says_so_on_the_page() {
         let page = default_page();
@@ -2321,8 +2224,8 @@ mod tests {
         );
     }
 
-    /// A phase that did none of it says none of it, or the notices become a band
-    /// every report carries and nobody reads.
+    /// An ordinary phase carries none of the notices, so they stay worth
+    /// reading.
     #[test]
     fn an_ordinary_scan_carries_none_of_those_notices() {
         let mut plain = Vec::new();
@@ -2336,8 +2239,7 @@ mod tests {
         assert!(!page.contains("where this ran from"));
     }
 
-    /// A report that is narrower than the scan asked for has to say so where
-    /// somebody will see it, which means above the findings.
+    /// A report narrower than the scan asked for says so above the findings.
     #[test]
     fn a_narrowed_report_says_so_before_the_findings() {
         let page = default_page();
@@ -2359,8 +2261,7 @@ mod tests {
         }
     }
 
-    /// States keep the spelling the JSON gives them, so a reader who greps the
-    /// document for what the page showed them finds it.
+    /// States keep the JSON's spelling, so grepping the document finds them.
     #[test]
     fn states_are_spelled_the_way_the_document_spells_them() {
         let page = default_page();
@@ -2372,8 +2273,7 @@ mod tests {
         assert!(page.contains(">tcp_syn_ack<"));
     }
 
-    /// Redaction is chosen when the report is written, and the page has to
-    /// honour it everywhere the JSON does.
+    /// The page honours redaction everywhere the JSON does.
     #[test]
     fn redaction_reaches_the_page() {
         let page = page(&HtmlExporter::new(
@@ -2388,12 +2288,11 @@ mod tests {
         assert!(page.contains("2c:cf:67:XX:XX:XX"));
         // The vendor comes from the OUI, which masking preserves.
         assert!(page.contains("Raspberry Pi Trading Ltd"));
-        // And the reader is told this copy is masked.
+        // And the page says this copy is masked.
         assert!(page.contains(">redacted<"));
     }
 
-    /// A discovery sweep finds hosts and no ports. The host still has to appear,
-    /// saying there was nothing on it.
+    /// A host with no ports still appears, saying so.
     #[test]
     fn a_host_with_no_ports_still_appears() {
         let page = default_page();
@@ -2451,15 +2350,10 @@ mod tests {
         assert!(matches!(error, ExportError::Io(_)), "got {error:?}");
     }
 
-    /// Every attacker-controlled string in a report reaches the page escaped,
-    /// not only the hostname somebody thought to write a test for.
+    /// Every attacker-controlled string in a report reaches the page escaped.
     ///
-    /// The two above check that `esc` escapes. Neither would notice a new
-    /// `PortDto` field written straight into the markup, since neither renders a
-    /// page. This one puts one payload in every string the schema carries,
-    /// renders the whole document, and asserts the payload never survives intact.
-    ///
-    /// What it cannot catch is a field the fixture does not set, so a string
+    /// One payload in every string the schema carries, rendered as a whole
+    /// page, so a new field written straight into the markup fails. A string
     /// added to the schema has to reach
     /// [`fixture::hostile`](crate::export::fixture::hostile) too.
     #[test]
@@ -2483,9 +2377,8 @@ mod tests {
             !page.contains(fixture::HOSTILE),
             "the payload survived intact somewhere on the page"
         );
-        // The bidi override reorders everything after it and is invisible while
-        // doing so, which is the whole reason it is neutralized rather than
-        // merely escaped.
+        // The bidi override invisibly reorders everything after it, so it is
+        // neutralized, not just escaped.
         assert!(
             !page.contains('\u{202e}'),
             "a right-to-left override reached the page and will reorder it"

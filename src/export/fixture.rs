@@ -11,12 +11,9 @@
 //! Export tests need a report containing each shape the schema can produce: a
 //! fully described host and a bare one, a port with a certificate and one
 //! without, a strategy that failed, a scanner that filed counters, a script value
-//! JSON cannot represent. Driving a real scan produces none of that reliably, and
-//! building it inline would leave every test covering a slightly different
-//! document.
-//!
-//! It is built once, here, so anything a test asserts about the output traces to
-//! a value set below.
+//! JSON cannot represent. A real scan produces none of that reliably, so it is
+//! built once, here, and anything a test asserts about the output traces to a
+//! value set below.
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -66,8 +63,8 @@ fn ip(last: u8) -> IpAddr {
 fn router() -> Host {
     let mut host = Host::new(ip(1));
     host.set_hostname(Some("router.local".to_string()));
-    // What a directory on the gateway says of itself: a name for the machine,
-    // and for the domain and the forest it serves.
+    // What a directory on the gateway says of itself: the machine, its domain
+    // and its forest.
     for (kind, name) in [
         (NameKind::Host, "gw01.corp.example"),
         (NameKind::Domain, "corp.example"),
@@ -77,8 +74,8 @@ fn router() -> Host {
     }
     host.set_status(HostStatus::Up);
     host.add_reason(StatusReason::new(StatusProtocol::Arp, "reply from gateway"));
-    // Every sender a reason can name besides the host itself: a middlebox the
-    // report names, and one whose address the scan's exclusions withheld.
+    // The other senders a reason can name: a middlebox, and one whose address
+    // the scan's exclusions withheld.
     host.add_reason(
         StatusReason::new(
             StatusProtocol::IcmpUnreachable,
@@ -96,8 +93,7 @@ fn router() -> Host {
         // Both axes at once, the case a fixture is most likely to leave out.
         .with_device("Printer")
         .with_generation("5.15.0")
-        // Shaped like what the stack fingerprinter renders, so the document
-        // exercises a populated evidence line rather than a null.
+        // Shaped like what the stack fingerprinter renders.
         .with_evidence("syn-ack hops>=64 opts=M,S,T,N,W win=65160=45x1448 ws=7 mss=1460");
     os.add_cpe("cpe:/o:linux:linux_kernel:5.15.0");
     host.set_os(os);
@@ -108,8 +104,8 @@ fn router() -> Host {
 
     // Every shape a path can hold: a measured hop, a router that would not
     // identify itself, a hop inherited from another host's trace, and a router
-    // whose address the scan's exclusions withheld. Recorded out of order for
-    // the same reason the ports below are.
+    // whose address the scan's exclusions withheld. Out of order, as the ports
+    // below are.
     host.record_hop(Hop::withheld(4));
     host.record_hop(Hop::answered(
         3,
@@ -121,22 +117,18 @@ fn router() -> Host {
         Hop::answered(1, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 254)), None).as_inferred(),
     );
 
-    // Added out of ascending order, so the document's ordering guarantee is
-    // being tested rather than inherited from how the fixture was written.
+    // Out of ascending order, so the tests exercise the document's ordering.
     host.add_port(https_port());
     host.add_port(ssh_port());
     host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
 
-    // The characterise pass drew every filtering conclusion for this host, so
-    // the exported document carries them and the schema is held to each.
+    // Every filtering conclusion the characterise pass can draw.
     host.add_filtering(Filtering::InlineMiddlebox);
     host.add_filtering(Filtering::StatefulFilter);
     host.add_filtering(Filtering::PortTrustingAcl);
     host.add_filtering(Filtering::StatelessFilter);
 
-    // One of each verdict, so a document carrying this fixture exercises every
-    // state the schema accepts rather than whichever one a live scan happened to
-    // reach.
+    // One of each verdict the schema accepts.
     host.record_ip_protocol(1, IpProtocolState::Open);
     host.record_ip_protocol(47, IpProtocolState::Closed);
     host.record_ip_protocol(50, IpProtocolState::Blocked);
@@ -195,11 +187,9 @@ fn https_port() -> Port {
 
 /// What an enumeration found this endpoint accepts.
 ///
-/// The shape the document has to be able to say, rather than a plausible
-/// server: a withdrawn version beside a current one, a suite with nothing wrong
-/// with it beside one that is simply broken, a number the engine could not
-/// name, and walks that did not finish for each of the reasons one can end. A fixture that only held a well-configured server would leave every
-/// interesting field of the block untested.
+/// Shaped for the schema: a withdrawn version beside a current one, a sound
+/// suite beside a broken one, a number the engine could not name, and a walk
+/// left unfinished for each reason one can end.
 fn accepted() -> TlsSupport {
     let suite = |code: u16| CipherSuite::from_code(code).expect("a suite in the registry");
 
@@ -213,8 +203,7 @@ fn accepted() -> TlsSupport {
         .accepting(VersionSupport::new(
             TlsVersion::Tls12,
             vec![suite(0xC030), suite(0x009C)],
-            // A suite this build does not carry, which a reader still has to be
-            // told about.
+            // A suite this build does not carry.
             vec![0xFF01],
         ))
         .accepting(VersionSupport::new(
@@ -222,14 +211,13 @@ fn accepted() -> TlsSupport {
             vec![suite(0x1302)],
             Vec::new(),
         ))
-        // A version the endpoint stopped answering about before saying
-        // anything, which is neither accepted nor refused.
+        // A version the endpoint never answered about: neither accepted nor
+        // refused.
         .leaving_unfinished(UnfinishedVersion::new(
             TlsVersion::Tls11,
             Interruption::Unanswered,
         ))
-        // And one whose suites above are a floor, because the scan stopped
-        // asking part way through.
+        // One whose suites above are a floor: the scan stopped part way.
         .leaving_unfinished(UnfinishedVersion::new(
             TlsVersion::Tls12,
             Interruption::Stopped,
@@ -245,8 +233,7 @@ fn blocked_host() -> Host {
     host
 }
 
-/// A host with nothing on it, so the document is held to a fixed shape when
-/// there is nothing to put in it.
+/// A host with nothing on it, for the document's empty shape.
 fn bare_host() -> Host {
     let mut host = Host::new(ip(9));
     host.set_status(HostStatus::Down);
@@ -261,8 +248,7 @@ pub(crate) fn probe_stats() -> ProbeStats {
     found_at[BUCKET_BOUNDS_MS.len()] = 2;
 
     ProbeStats {
-        // A paced scanner, cut back twice and still short of its ceiling: what
-        // a consumer reads to tell this fixture's silence from a firewall.
+        // A paced scanner, cut back twice and still short of its ceiling.
         window: Some(WindowSummary {
             capacity: 48,
             peak: 256,
@@ -299,9 +285,8 @@ pub(crate) fn probe_stats() -> ProbeStats {
 /// A one-phase discovery report over three hosts, a failed strategy and one
 /// instrumented scanner.
 pub(crate) fn report() -> ScanReport {
-    // Built with a spent per-host budget so that asking about one host below
-    // files it, and the document carries the list a phase writes when it leaves
-    // a host early.
+    // A spent per-host budget, so asking about one host below files it as left
+    // early.
     let (_session, ctx) = ScanSession::builder()
         .host_timeout(Some(Duration::ZERO))
         .build();
@@ -309,15 +294,13 @@ pub(crate) fn report() -> ScanReport {
     let mut targets = IpSet::new();
     targets.insert_range("203.0.113.0/24".parse().expect("a valid range"));
 
-    // Half the range withheld by policy, so the exported scope carries an
-    // exclusion that overlapped rather than one that did nothing. Every host
+    // Half the range withheld by policy, so the exclusion overlaps. Every host
     // below sits in the half that was kept.
     let mut excluded = IpSet::new();
     excluded.insert_range("203.0.113.128/25".parse().expect("a valid range"));
 
-    // This phase evaded something, so the document carries an evasion record
-    // and every writer is held to what one looks like. The port-scan phase
-    // below keeps the defaults, giving the fixture one of each.
+    // This phase carries an evasion record; the port-scan phase below keeps the
+    // defaults, giving the fixture one of each.
     let config = ZondConfig {
         evasion: EvasionProfile::default()
             .with_source_port(53)
@@ -331,29 +314,23 @@ pub(crate) fn report() -> ScanReport {
                 "192.0.2.62".parse().expect("a valid decoy address"),
             ])
             .with_flags(flags::SYN | flags::FIN),
-        // For the schema rather than for plausibility: a phase carries the
-        // idle-scan record beside the evasion one.
+        // For the schema, not plausibility: the idle-scan record beside the
+        // evasion one.
         idle_scan: Some(IdleScan {
             zombie: "192.0.2.9".parse().expect("a valid zombie address"),
             zombie_port: Some(113),
         }),
-        // Both wall-clock bounds, so the settings block carries a value in each
-        // rather than a pair of nulls no writer is held to.
         host_timeout: Some(Duration::from_secs(300)),
         scan_timeout: Some(Duration::from_secs(3600)),
-        // The technique nobody would reach for first, so the document carries a
-        // value the writer had to look up rather than the one it would emit for
-        // a default it never read.
+        // Not the default, so a writer that ignores the setting is caught.
         sctp_technique: crate::model::technique::SctpScanTechnique::CookieEcho,
-        // Across two transports, so a writer that renders one lane and a reader
-        // that parses it are both caught short of the other.
+        // Across two transports, so a writer or reader handling only one fails.
         excluded_ports: "9100-9107,u:161".try_into().expect("a port specification"),
         ..Default::default()
     };
 
-    // For the schema rather than for plausibility, as the idle-scan record
-    // is: a phase carries the reason a liveness pass was skipped, so every
-    // writer and reader is held to one.
+    // For the schema, as the idle-scan record is: a reason the liveness pass
+    // was skipped.
     let recorder = PhaseRecorder::start(
         ScanKind::Discovery,
         Privilege::Raw,
@@ -363,8 +340,7 @@ pub(crate) fn report() -> ScanReport {
     .skipping_liveness(crate::report::LivenessSkip::PortsNoDearer);
 
     ctx.record_failure(ScannerKind::Local, "raw socket unavailable".to_string());
-    // And one a limit cut short, so the document carries the marker that
-    // tells the two apart and every writer and reader is held to it.
+    // And one a limit cut short, which the document marks differently.
     ctx.file_cut_short(
         ScannerKind::Connect,
         "1 port left unasked: source port 53 still closing".to_string(),
@@ -374,9 +350,8 @@ pub(crate) fn report() -> ScanReport {
     // Without one, every test of that field compares two empty lists.
     ctx.record_sweep(Zone::new(3, "en0"));
 
-    // A managed switch's announcement, so the document carries an attachment.
-    // Recorded through the context rather than assembled into the phase, so the
-    // path a real announcement takes is the path under test.
+    // A managed switch's announcement, recorded through the context so the
+    // path a real announcement takes is the one under test.
     ctx.record_attachment(
         Attachment::new(
             Zone::new(3, "en0"),
@@ -391,17 +366,14 @@ pub(crate) fn report() -> ScanReport {
     );
 
     // A host the phase gave up on, filed the way a strategy files one: by
-    // asking whether its budget is spent. `bare_host` is the one left early,
-    // which is why it carries so little.
+    // asking whether its budget is spent. `bare_host` is that host.
     assert!(
         ctx.host_expired(ip(9)),
         "the fixture's budget is spent before it is asked"
     );
 
-    // Loopback, which a raw sweep reaches by connect whatever its privilege, so
-    // the document carries the list a reader tells connect evidence from raw
-    // evidence by. A range as well as a single address, since a tunnel's own
-    // subnet arrives whole.
+    // Loopback, which a raw sweep reaches by connect whatever its privilege,
+    // and a range, since a tunnel's own subnet arrives whole.
     let mut connected = IpSet::new();
     connected.insert(IpAddr::V4(Ipv4Addr::LOCALHOST));
     connected.insert_range("198.51.100.0/30".parse().expect("a valid range"));
@@ -411,19 +383,18 @@ pub(crate) fn report() -> ScanReport {
         ctx.store.insert(host.scoped_ip(), host);
     }
 
-    // Correlation is its own step rather than something `finish` does on the
-    // way past, so a fixture wanting a vulnerability finding has to ask.
+    // `finish` does not correlate, so a fixture wanting a vulnerability finding
+    // has to ask.
     for mut entry in ctx.store.iter_mut() {
         crate::cve::correlate(entry.value_mut());
     }
 
-    // For the schema, as the idle-scan record is: a phase stopped with part
-    // of its walk still ahead carries the reason and the count, so every
-    // writer and reader is held to both.
+    // For the schema, as the idle-scan record is: a phase stopped with part of
+    // its walk ahead, with the reason and the count.
     ctx.record_unreached(1_024);
     ctx.handle.abort();
-    // And a pass over the findings the stop left, filed the way a pass files
-    // one: by asking whether the scan is stopping before it begins.
+    // And a pass the stop cut, filed the way a pass files it: by asking whether
+    // the scan is stopping before it begins.
     assert!(ctx.stopping_before(crate::report::Pass::Tls));
 
     recorder.finish(&ctx)
@@ -445,20 +416,18 @@ const COMPARED_PORTS: &str = "22,80,443,8080,8443";
 /// Two scans of one network, thirty-five days apart, differing in one of every
 /// way a comparison can report.
 ///
-/// Built for a schema rather than for plausibility: a host gone, a host arrived,
-/// a port opened, a port shut, a service moved a version, a certificate rotated,
-/// a certificate nobody touched crossing its expiry threshold, an operating
-/// system reidentified and a name resolved differently. A comparison of the two
-/// carries at least one change of nearly every kind, so a test can assert the
-/// whole document.
+/// Built for the schema: a host gone, a host arrived, a port opened, a port
+/// shut, a service moved a version, a certificate rotated, an untouched
+/// certificate crossing its expiry threshold, an operating system reidentified
+/// and a name resolved differently. A comparison of the two carries at least
+/// one change of nearly every kind.
 ///
-/// Both phases are port scans that state which ports they walked. A discovery
-/// sweep walks none, and against one of those every endpoint change reads as
-/// ground nobody covered, which exercises the coverage rules instead.
+/// Both phases are port scans that state which ports they walked. Against a
+/// discovery sweep, which walks none, every endpoint change would read as
+/// uncovered ground.
 ///
-/// Times are fixed rather than taken from the clock. A certificate crossing a
-/// threshold between two scans is only expressible if the two are a known
-/// distance apart.
+/// Times are fixed so the two scans are a known distance apart, which a
+/// certificate crossing a threshold between them needs.
 pub(crate) fn compared() -> (ScanReport, ScanReport) {
     (
         compared_phase(0, before_hosts()),
@@ -483,8 +452,6 @@ fn compared_phase(days: u64, hosts: Vec<Host>) -> ScanReport {
 
     let phase = ScanPhase::from_parts(PhaseParts {
         open: false,
-        // No attachment: where the measuring machine was plugged in has
-        // nothing to do with what changed between the two scans.
         attachments: Vec::new(),
         kind: ScanKind::PortScan,
         started_at: std::time::UNIX_EPOCH + BASELINE_AT + DAY * days as u32,
@@ -546,8 +513,8 @@ fn compared_router(later: bool) -> Host {
             .with_family("Unix-like")
             .with_generation(if later { "6.1.0" } else { "5.15.0" }),
     );
-    // Renamed between the two scans, as its SMB server tells it, so the
-    // comparison carries a name gained and one lost.
+    // Renamed between the scans, by its SMB server's account: a name gained
+    // and one lost.
     host.record_name(
         HostName::new(
             NameKind::NetbiosHost,
@@ -557,8 +524,7 @@ fn compared_router(later: bool) -> Host {
         .expect("a name"),
     );
 
-    // A finding the later scan draws and the baseline did not, so the comparison
-    // carries `finding_appeared`.
+    // Only in the later scan: `finding_appeared`.
     if later {
         host.add_finding(
             Finding::new(
@@ -573,8 +539,7 @@ fn compared_router(later: bool) -> Host {
         );
     }
 
-    // One claim both scans make, graded higher by the later one, so the document
-    // carries `finding_reassessed` as well.
+    // In both, graded higher by the later one: `finding_reassessed`.
     host.add_finding(
         Finding::new(
             DetectionId::new("tls-audit", Version::new(1, 0, 0), "seed")
@@ -654,9 +619,8 @@ fn compared_expiring() -> Host {
     host.set_status(HostStatus::Up);
     host.add_port(
         Port::new(8443, Protocol::Tcp, PortState::Open)
-            // Sixty days of life at the baseline and twenty-five at the later
-            // scan: outside a thirty-day threshold and then inside it, with
-            // nothing about the certificate having moved.
+            // Sixty days left at the baseline and twenty-five at the later
+            // scan: outside a thirty-day threshold, then inside it.
             .with_security(certificate(
                 "cccc7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
                 "Local CA",
@@ -697,12 +661,10 @@ fn after_hosts() -> Vec<Host> {
 /// and XML, a leading `=` for a spreadsheet, and a right-to-left override, which
 /// reverses the text after it so one address can be made to read as another.
 ///
-/// One string rather than one per field, so a test asserting it never survives
-/// intact does not have to know which field it came from and covers fields
-/// nobody has written yet.
+/// One string for every field, so a test asserting it never survives intact
+/// need not know which field it came from, and covers fields added later.
 pub(crate) const HOSTILE: &str = "=<script>alert(\"x\")</script>&'\u{202e}";
 
-/// A host on the hostile fixture's network.
 /// A finding whose every describable string is hostile, including a `url`
 /// reference, the one reference kind carrying attacker-controlled text.
 fn hostile_finding() -> Finding {
@@ -738,8 +700,7 @@ fn hostile_host() -> Host {
     host.set_status(HostStatus::Up);
     host.add_reason(StatusReason::new(StatusProtocol::Arp, HOSTILE));
     host.set_hardware(hostile_hardware());
-    // The one role anything assigns, so the corpus still exercises a non-empty
-    // `roles` array through every exporter.
+    // The one role anything assigns, for a non-empty `roles` array.
     host.add_network_role(NetworkRole::Tarpit);
 
     let mut os = OsFingerprint::new(HOSTILE, 90)
@@ -762,10 +723,9 @@ fn hostile_host() -> Host {
 /// address it was seen under.
 ///
 /// Every field is a service's to state, and a rule fills a `hw.cpe23` template
-/// from the banner's own captures, so none of them is safe to leave clean. All
-/// seven are set rather than the ones a name-based check notices: `vendor`,
+/// from the banner's own captures. All seven are set because `vendor`,
 /// `product`, `family` and `version` share their names with a service's fields,
-/// so the conformance check would read them as covered either way.
+/// so the name-based conformance check would read them as covered either way.
 fn hostile_hardware() -> HardwareInfo {
     let mut hardware = HardwareInfo::new(MacAddr::new(0xde, 0xad, 0xbe, 0xef, 0x00, 0x01));
     hardware.merge(
@@ -823,9 +783,8 @@ fn hostile_port() -> Port {
 
 /// A report whose every attacker-controlled string is [`HOSTILE`].
 ///
-/// The same shape as [`report`], so a writer that handles one handles the other.
-/// It answers the question the per-field tests cannot: not whether the escaper
-/// works, but whether every field goes through it.
+/// The same shape as [`report`]. The per-field tests check the escaper; this
+/// checks that every field goes through it.
 pub(crate) fn hostile() -> ScanReport {
     let (_session, ctx) = ScanSession::new();
 
@@ -840,11 +799,9 @@ pub(crate) fn hostile() -> ScanReport {
     );
 
     ctx.record_failure(ScannerKind::Local, HOSTILE.to_string());
-    // A neighbour's own account of itself, which is the most attacker-chosen
-    // data a report carries: LLDP and CDP are unauthenticated by design, so
-    // every string here was written by whoever is on the segment. It reaches
-    // the HTML page's own table and the nmap document, and without this line no
-    // escaping test would see one.
+    // A neighbour's account of itself: LLDP and CDP are unauthenticated, so
+    // every string here is written by whoever is on the segment. It reaches the
+    // HTML page's own table and the nmap document.
     ctx.record_attachment(
         crate::report::Attachment::new(
             crate::model::ip::scoped::Zone::new(1, HOSTILE),
@@ -900,9 +857,9 @@ fn named_finding(id: &str, title: &str, excerpt: &str) -> Finding {
     .with_remediation(format!("Turn it off on {NAMED_HOST}"))
 }
 
-/// A finding a vulnerability correlation drew from a platform identifier a
-/// rule filled from the reply, citing an advisory whose link a document
-/// another tool wrote carried the name in.
+/// A correlated finding on a platform identifier a rule filled from the reply,
+/// citing an advisory whose link, read from another tool's document, carries
+/// the name.
 fn named_correlation(title: &str, cpe: &str) -> Finding {
     named_finding("cve-correlation", title, &format!("identified as {cpe}"))
         .with_cpe(cpe)
@@ -978,8 +935,8 @@ fn named_host(names: bool, words: bool) -> Host {
         serial_number: Some(&format!("SN-{NAMED_HOST}-0001")),
     })
     .expect("a description naming something");
-    // Seen at an address too, so a format that writes the vendor beside the
-    // hardware address, and only there, writes it.
+    // Seen at an address too, for formats that write the vendor only beside
+    // the hardware address.
     hardware.add_mac(MacAddr::new(0x02, 0x00, 0x5e, 0x10, 0x20, 0x30));
     host.set_hardware(hardware);
 
@@ -1084,11 +1041,10 @@ pub(crate) fn named() -> (ScanReport, ScanReport) {
     )
 }
 
-/// The same pair the other way about: the earlier report already holds every
-/// word of the host's replies but none of its names, as a scan does whose
-/// banners named the machine before any service stated a name, and the later
-/// one holds both. The earlier record's text names the host, and only the
-/// later record knows that what it names is a name.
+/// The same pair the other way about: the earlier report holds every word of
+/// the host's replies but none of its names, as when banners named the machine
+/// before any service stated a name, and the later one holds both. Only the
+/// later record knows the earlier text contains a name.
 pub(crate) fn named_late() -> (ScanReport, ScanReport) {
     (
         compared_phase(0, vec![named_host(false, true)]),
@@ -1104,8 +1060,8 @@ pub(crate) const RENAMED_DOMAIN: &str = "FABRIKAM";
 
 /// The host of [`named_host`] and a later report on it after the machine was
 /// renamed and moved to another domain, holding the new names and nothing
-/// else. Folded together they keep the later names, the machine's current
-/// ones, and the earlier record's every word, which name it by the old.
+/// else. Folded together they keep the later names and every word of the
+/// earlier record, which name it by the old ones.
 pub(crate) fn renamed() -> (ScanReport, ScanReport) {
     let mut later = named_host(false, false);
     name_host(&mut later, RENAMED_HOST, RENAMED_DOMAIN);

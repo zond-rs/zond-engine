@@ -8,78 +8,50 @@
 
 //! # Nmap-compatible XML export
 //!
-//! The format every security pipeline already reads. DefectDojo, Metasploit,
-//! Faraday and Dradis all ingest nmap's XML and none of them ingest this
-//! engine's JSON, so this is the file that puts a zond scan into somebody's
-//! existing workflow without asking them to change it.
-//!
-//! That is the whole justification. Nothing here describes a scan better than
-//! [`super::json`] does; it is a narrower description in somebody else's
-//! vocabulary, and it earns its place by being understood downstream.
+//! DefectDojo, Metasploit, Faraday and Dradis all ingest nmap's XML, so this
+//! is the file that puts a scan into an existing pipeline. It is a narrower
+//! description than [`super::json`], in nmap's vocabulary.
 //!
 //! ## It says who wrote it
 //!
-//! `scanner="zond"`, never `scanner="nmap"`.
+//! The document carries `scanner="zond"`. A scan report is evidence that
+//! somebody downstream will act on or cite, and a document claiming to be
+//! nmap's output would be a fabricated record. `xmloutputversion` is nmap's,
+//! since it names the format.
 //!
-//! A scan report is evidence: it says a particular tool observed a particular
-//! thing at a particular time, and somebody downstream will act on it, cite it in
-//! an audit or attach it to a finding. A document claiming to be nmap's output
-//! when it is not is a fabricated record, and no amount of parser convenience is
-//! worth producing one.
+//! ## The one deviation from nmap's DTD
 //!
-//! `xmloutputversion` is still nmap's, since that names the format and this
-//! document really is in it.
-//!
-//! ## The one place this deviates from nmap's DTD
-//!
-//! Nmap's own DTD declares `scanner (nmap) #REQUIRED`, an enumeration with one
-//! member, so no honest producer of this format can be DTD-valid. Every other
-//! tool that emits it is in the same position.
-//!
-//! Measured against `nmap.dtd` from nmap 7.99, this document validates
-//! completely, every element and ordering and required attribute, with the
-//! scanner name changed to `nmap` and nothing else. That deviation is the whole
-//! of it.
-//!
-//! It costs nothing that matters. Consumers of this format parse it structurally
-//! with lenient parsers rather than validating against the DTD, and a document
-//! this one produces reads correctly through a standard XML parser, yielding the
-//! hosts, addresses and port states the scan recorded.
-//!
-//! Writing `nmap` here fails a test that exists for the purpose.
+//! Nmap's DTD declares `scanner (nmap) #REQUIRED`, an enumeration with one
+//! member, so no other producer of this format can be DTD-valid. Against
+//! `nmap.dtd` from nmap 7.99 this document validates completely, every element,
+//! ordering and required attribute, once the scanner name is changed to `nmap`.
+//! Consumers parse the format structurally with lenient parsers and do not
+//! validate against the DTD. A test fails if `nmap` is written here.
 //!
 //! ## What survives
 //!
-//! Nmap's vocabulary is not this engine's, and where the two disagree the
-//! document says less rather than saying something false. Port states map
-//! one to one but for nmap's `filtered`, which covers both blocked and no
-//! reply, told apart in the `reason`. Host status is flattened: nmap knows `up`,
-//! `down` and `unknown`, so a host this engine calls blocked is exported `up`,
-//! with the distinction carried in the `reason`.
+//! Where nmap's vocabulary and this engine's disagree, the document says less.
+//! Port states map one to one except nmap's `filtered`, which covers both
+//! blocked and no reply, told apart in the `reason`. Nmap's host status knows
+//! only `up`, `down` and `unknown`, so a host this engine calls blocked is
+//! exported `up`, with the distinction in the `reason`.
 //!
-//! Everything the format has no place for, the phases and the probe
-//! instrumentation and the TLS detail and the per-address timing, is absent.
-//! [`super::json`] is where the whole record lives.
+//! The phases, probe instrumentation, TLS detail and per-address timing have no
+//! place in the format and are absent. [`super::json`] holds the whole record.
 //!
 //! ## Characters XML cannot carry
 //!
-//! A scanner writes attacker-controlled text: hostnames, service banners,
-//! certificate subjects. Putting that in an XML attribute brings two problems,
-//! and only one of them is escaping.
+//! Hostnames, service banners and certificate subjects are attacker-controlled.
+//! `&`, `<`, `>`, `"` and `'` are escaped everywhere. So are tab, line feed and
+//! carriage return: XML allows them raw, but parsers normalise them to a space
+//! inside an attribute value, so nmap writes them as character references and
+//! so does this.
 //!
-//! The first is ordinary. `&`, `<`, `>`, `"` and `'` are escaped everywhere,
-//! unconditionally. So are tab, line feed and carriage return, which XML allows
-//! raw and every parser then normalises to a space inside an attribute value;
-//! nmap writes them as character references, and so does this, so a banner's
-//! lines survive the trip into somebody else's tool.
-//!
-//! The second has no escape. XML 1.0 forbids most C0 control characters from a
-//! document at all, and forbids a numeric character reference to one just as
-//! firmly, so `&#1;` is not a way out. A banner containing a `0x01` cannot be
-//! represented, and emitting it raw produces a file no parser downstream will
-//! open. Those are dropped, along with the bidirectional formatting characters,
-//! which reorder the text around them and would let a hostname make a report
-//! display one thing and mean another.
+//! XML 1.0 forbids most C0 control characters, and numeric character
+//! references to them too, so a banner containing `0x01` cannot be represented
+//! and raw output would be a file no parser opens. Those are dropped, along with
+//! the bidirectional formatting characters, which reorder the text around them
+//! and would let a hostname make a report display one thing and mean another.
 
 use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
@@ -103,8 +75,7 @@ use crate::system::privilege::Privilege;
 
 /// The nmap XML output version this document is written to.
 ///
-/// Nmap's own, because it names the format rather than the producer, and this
-/// document really is in it. Consumers key their parsing on this.
+/// Nmap's own, since it names the format. Consumers key their parsing on it.
 const XML_OUTPUT_VERSION: &str = "1.05";
 
 /// Writes a report as nmap-compatible XML.
@@ -154,16 +125,15 @@ impl Exporter for NmapXmlExporter {
             crate::format::NMAP_SCANNER,
             started,
             Attr(&time_string(report.started_at())),
-            // This build's, since the attribute beside it says
-            // `scanner="zond"`. Writing the report's own attribution here put a
-            // foreign scanner's version on zond's name.
+            // This build's version, to match `scanner="zond"`; an imported
+            // report's own attribution may name another scanner.
             Attr(crate::report::ENGINE_VERSION),
             XML_OUTPUT_VERSION,
         )?;
 
-        // One per transport per phase, as nmap writes them. This is what tells
-        // a consumer which ports were looked at, and so the difference between
-        // a port absent because it was closed and one nobody asked about.
+        // One per transport per phase, as nmap writes them. It tells a consumer
+        // which ports were looked at, so an absent port reads as closed only if
+        // it was asked.
         for phase in report.phases() {
             write_scan_info(out, phase)?;
         }
@@ -176,8 +146,7 @@ impl Exporter for NmapXmlExporter {
         }
 
         let counts = HostCounts::of(report);
-        // One reading used twice: two calls to the clock can straddle a second
-        // and leave `time` and `timestr` naming different instants.
+        // One reading, so `time` and `timestr` cannot straddle a second.
         let finished = SystemTime::now();
 
         writeln!(out, "<runstats>")?;
@@ -191,12 +160,10 @@ impl Exporter for NmapXmlExporter {
                 "{ENGINE_NAME} done; {} IP addresses ({} hosts up) scanned in {elapsed:.2} seconds",
                 counts.addresses, counts.up
             )),
-            // A strategy that failed is the one shortfall nmap's own runs
-            // call an error. A host its budget left early and a port left
-            // unasked are, in nmap's output, part of a run that succeeded,
-            // and a consumer of this format reads the attribute that way. A
-            // journal that could not be written is no strategy and cost the
-            // run nothing it covered; see `ScannerFailure::narrows_coverage`.
+            // Only a failed strategy is an error, as in nmap's runs. A host left
+            // early or a port left unasked is part of a successful run, and an
+            // unwritable journal costs no coverage; see
+            // `ScannerFailure::narrows_coverage`.
             if report.failures().any(ScannerFailure::narrows_coverage) {
                 "error"
             } else {
@@ -219,19 +186,16 @@ impl Exporter for NmapXmlExporter {
 
 /// The run's host counts as nmap states them in `<runstats>`.
 ///
-/// Nmap counts what it scanned, not what it listed: a sweep of a /24 with thirty
-/// hosts answering is 256 addresses, 30 up and 226 down, and the tools that
-/// read the document report coverage from these. A count of the recorded hosts
-/// alone says a sweep of 256 addresses scanned thirty, every one of them up.
+/// Nmap counts what it scanned: a sweep of a /24 with thirty hosts answering is
+/// 256 addresses, 30 up and 226 down, and the tools reading the document report
+/// coverage from these.
 ///
 /// The addresses scanned are every range a phase walked, after its exclusions,
-/// together with every address a recorded host holds, since a host found on a
-/// swept link or overheard on the segment was in no range anybody named. A host
-/// is up as its `<status>` says it is, and every scanned address no up host
-/// holds is down, which is how nmap, counting each address as a host, arrives
-/// at the same arithmetic. A host answering at two addresses is one host up, so
-/// `total` can fall short of the addresses scanned by the second address of
-/// each; the summary line names both numbers as what they are.
+/// plus every address a recorded host holds, since a host found on a swept link
+/// or overheard on the segment was in no named range. A host is up as its
+/// `<status>` says, and every scanned address no up host holds is down. A host
+/// answering at two addresses is one host up, so `total` can fall short of the
+/// addresses scanned; the summary line names both numbers.
 struct HostCounts {
     addresses: u128,
     up: u128,
@@ -273,25 +237,16 @@ impl HostCounts {
 
 /// Records an exclusion policy as an XML comment, when there was one.
 ///
-/// A comment because this format has nowhere else to put it. Nmap's own
-/// `--exclude` survives only inside the `args` attribute, which is a command line
-/// this engine was never handed, and inventing an element instead would cost the
-/// document its validity against `nmap.dtd`.
+/// The format has no element for it: nmap keeps its exclusions only in the
+/// `args` command line, and a new element would break validity against
+/// `nmap.dtd`. A comment is invisible to parsers and legible to a person, and
+/// without it a file reporting a scan of a range overstates its coverage.
 ///
-/// A comment costs neither. It is valid anywhere in XML content, invisible to
-/// every consumer that parses this file, and legible to the person who opens it.
-///
-/// Saying nothing is not an option: a file reporting a scan of a range while
-/// omitting that part of it was deliberately skipped overstates its own
-/// coverage.
-///
-/// Every phase carries the policy it ran under, and most carry the same one, so
-/// the note is their union, merged as an address set merges it: a range two
-/// phases share is named once and two that touch read as the one range they
-/// amount to. The union is built in one sort, which keeps the note's cost
-/// proportional to the policy however many phases repeat it; a blocklist runs to
-/// tens of thousands of ranges, and a note deduplicated by searching what it has
-/// already written grows with the square of that.
+/// The note is the union of every phase's policy, merged as an address set
+/// merges it: a shared range is named once and touching ranges read as one. The
+/// union is built in one sort, so the cost stays proportional to the policy
+/// however many phases repeat it; a blocklist can run to tens of thousands of
+/// ranges.
 fn write_exclusion_note(out: &mut dyn Write, report: &ScanReport) -> Result<(), ExportError> {
     let mut excluded = IpSet::new();
     for phase in report.phases() {
@@ -305,9 +260,8 @@ fn write_exclusion_note(out: &mut dyn Write, report: &ScanReport) -> Result<(), 
     }
     excluded.canonicalize();
 
-    // Rendered from addresses rather than anything a caller wrote, so no
-    // attacker-controlled text reaches this line and `--` cannot appear in it
-    // to close the comment early.
+    // Rendered from addresses only, so `--` cannot appear and close the comment
+    // early.
     write!(out, "<!-- zond: excluded by policy, not scanned: ")?;
     let v4 = excluded.v4().iter().copied().map(IpRange::V4);
     let v6 = excluded.v6().iter().copied().map(IpRange::V6);
@@ -324,9 +278,9 @@ fn write_exclusion_note(out: &mut dyn Write, report: &ScanReport) -> Result<(), 
 
 /// Writes one `<scaninfo>` per transport the phase walked ports on.
 ///
-/// Nothing is written for a phase whose port scope is not recorded, and nothing
-/// for a discovery sweep. An element claiming zero services would read as a scan
-/// that looked at no ports, which is a different statement from staying silent.
+/// Nothing is written for a phase whose port scope is not recorded, or for a
+/// discovery sweep: an element claiming zero services would read as a scan that
+/// looked at no ports.
 fn write_scan_info(out: &mut dyn Write, phase: &ScanPhase) -> Result<(), ExportError> {
     let Some(ports) = phase.targets().ports().ports() else {
         return Ok(());
@@ -365,29 +319,25 @@ fn write_scan_info(out: &mut dyn Write, phase: &ScanPhase) -> Result<(), ExportE
 
 /// The scan type in nmap's vocabulary.
 ///
-/// A UDP scan is `udp` and an SCTP one `sctpinit` whatever the TCP technique
-/// was, and an unprivileged phase is `connect` for the same reason nmap's is: no
-/// raw segment went out, so naming the technique would describe a probe that was
-/// never sent. So is a privileged phase that reached every address it covered
-/// by connect, as it reaches loopback and this host's own addresses; see
+/// A UDP scan is `udp` and an SCTP one `sctpinit` whatever the TCP technique.
+/// An unprivileged phase is `connect`, as nmap's is, since no raw segment went
+/// out. So is a privileged phase that reached every address it covered by
+/// connect, as it reaches loopback and this host's own addresses; see
 /// [`ScanPhase::reached_by_connect`].
 ///
-/// A phase that reached only some of its addresses that way names the
-/// technique it sent the rest. Nmap runs one TCP technique per scan and writes
-/// one `<scaninfo>` per transport, which is what its readers key on, so a
-/// second element for the same transport would be dropped or misread; the
-/// addresses probed by connect are in the report's own record of the phase.
+/// A phase that reached only some of its addresses by connect names the
+/// technique it sent the rest. Readers key on one `<scaninfo>` per transport,
+/// so a second one would be dropped or misread; the addresses probed by connect
+/// are in the report's own record of the phase.
 fn scan_type(phase: &ScanPhase, protocol: Protocol) -> &'static str {
     match protocol {
         Protocol::Udp => return "udp",
-        // Nmap's own name for an INIT scan, which is the only SCTP scan either
-        // engine performs.
+        // Nmap's name for an INIT scan, the only SCTP scan either performs.
         Protocol::Sctp => return "sctpinit",
         Protocol::Tcp => {}
     }
-    // Only where the phase is known to have reached its addresses so. A phase
-    // this engine did not measure keeps whatever technique its own document
-    // named.
+    // Only where the phase is known to have reached its addresses so; a phase
+    // this engine did not measure keeps the technique its own document named.
     if phase.privilege() == Some(Privilege::Connect) || reached_wholly_by_connect(phase) {
         return "connect";
     }
@@ -406,8 +356,7 @@ fn scan_type(phase: &ScanPhase, protocol: Protocol) -> &'static str {
 /// Whether every address `phase` covered is one it reached by connect though
 /// it held the privilege its raw strategies need.
 ///
-/// False for a phase that recorded no such address, which is also every phase
-/// whose scope names none: nothing is claimed of a phase that says nothing.
+/// False for a phase that recorded no such address or whose scope names none.
 fn reached_wholly_by_connect(phase: &ScanPhase) -> bool {
     let reached = phase.reached_by_connect();
     let covered = phase.targets().ranges();
@@ -447,20 +396,15 @@ fn write_host(
         r#"<status state="{}" reason="{}" reason_ttl="{}"/>"#,
         host_state(host.status()),
         Attr(status_reason(host)),
-        // Nmap puts the TTL of the packet that established the host's state
-        // here, and the attribute is required. This engine records none, so it
-        // writes zero, which is what nmap writes for the same absence.
+        // Required: the TTL of the packet that established the host's state.
+        // This engine records none, and nmap writes zero for the same absence.
         0,
     )?;
 
-    // Every address, so a dual-stack host is one record with two of them, as
-    // nmap describes the same thing.
-    //
-    // The address the host is keyed by leads. Nmap has no attribute naming that
-    // one, but a reader takes the first address it sees as the host's. In the
-    // set's own order a multi-homed host came back keyed by whichever address
-    // sorted lowest, so a scan exported and read again compared against its own
-    // source as one host gone and one arrived.
+    // Every address, so a dual-stack host is one record, as nmap writes it.
+    // The key address leads, since a reader takes the first as the host's;
+    // otherwise a re-imported multi-homed host would compare against its source
+    // as one host gone and one arrived.
     let primary = host.primary_ip();
     let addresses = std::iter::once(&primary).chain(host.ips().iter().filter(|ip| **ip != primary));
 
@@ -474,8 +418,8 @@ fn write_host(
     }
 
     if let Some(mac) = host.mac() {
-        // Named from the address's OUI, or by a rule from a reply, which can
-        // name the machine beside its maker.
+        // From the OUI, or by a rule from a reply, which can name the machine
+        // too, hence the masking.
         match host.vendor() {
             Some(vendor) => writeln!(
                 out,
@@ -517,9 +461,8 @@ fn write_host(
 
     if let Some(os) = host.os() {
         writeln!(out, "<os>")?;
-        // `line` is required by nmap's DTD and names the row in `nmap-os-db`
-        // a match came from. This engine has no such database, and 0 is not a
-        // line number.
+        // `line` is required and names the `nmap-os-db` row a match came from.
+        // This engine has no such database; 0 is not a line number.
         writeln!(
             out,
             r#"<osmatch name="{}" accuracy="{}" line="0">"#,
@@ -537,8 +480,7 @@ fn write_host(
         writeln!(out, r#"<distance value="{distance}"/>"#)?;
     }
 
-    // `<hostscript>` carries the host-level findings, after `<distance>` and
-    // before `<trace>` as nmap's DTD fixes the order.
+    // Host-level findings, between `<distance>` and `<trace>`.
     if host.findings().next().is_some() {
         writeln!(out, "<hostscript>")?;
         write_finding_scripts(out, host.findings(), &masking)?;
@@ -547,7 +489,7 @@ fn write_host(
 
     write_trace(out, host)?;
 
-    // Nmap reports these in microseconds, which is what the engine keeps.
+    // Microseconds, as nmap writes them.
     if let Some(rtt) = host.median_rtt() {
         writeln!(
             out,
@@ -565,15 +507,11 @@ fn write_host(
 /// one the scan resolved: each [`NameKind::Host`] once, in any case, and none
 /// the resolved name already is.
 ///
-/// `<hostname>` is a name for the address, and every tool reading this format
-/// takes it as the host's identity, which is what these are: the machine's
-/// own DNS name, stated by its directory or its authentication. A NetBIOS
-/// name, a domain and a forest are not, and one written there would be read
-/// as the machine's DNS name, so they are left to the formats with a field
-/// for them. nmap's DTD types a hostname `PTR` or `user` and nothing else;
-/// these are written `user`, the type for a name that did not come from a
-/// reverse lookup, and the importer reads a `user` name in this engine's own
-/// document as what it is rather than as the resolved hostname.
+/// Readers take `<hostname>` as the machine's DNS name, which these are, stated
+/// by its directory or its authentication. NetBIOS names, domains and forests
+/// would be misread there and are left to formats with a field for them. They
+/// are typed `user`, nmap's type for a name not from a reverse lookup, and the
+/// importer reads them back as stated names.
 fn stated_hostnames(host: &Host) -> Vec<&str> {
     let mut stated: Vec<&str> = Vec::new();
     for name in host.names().filter(|name| name.kind() == NameKind::Host) {
@@ -593,28 +531,21 @@ fn stated_hostnames(host: &Host) -> Vec<&str> {
 /// Writes the host's `<ports>`: the ports worth reading one by one, and a
 /// summary of the rest.
 ///
-/// A port nobody asked about is left out rather than written down. Nmap's
-/// `<ports>` is the record of what was probed, and its vocabulary has no word
-/// for a port no probe was sent to, so filing one under any of the six states it
-/// does have would put a verdict this scan never reached into a file another
-/// tool parses. See `PortState::Unasked`.
+/// A port nobody asked about is left out: nmap's vocabulary has no state for a
+/// port no probe was sent to, and any of its six would be a verdict this scan
+/// never reached. See `PortState::Unasked`.
 ///
 /// Of the rest, a state held by more than [`LISTED_PER_STATE`] ports is written
-/// as nmap writes it, one `<extraports>` giving the state and its count, with an
-/// `<extrareasons>` per reason and transport naming every port in it. That is
-/// the shape the tools reading this format expect, and what they do with a
-/// listed port is why it matters: an exploit search looks up every listed
-/// port's service name, an importer files every listed port as a service on
-/// the host, and a stylesheet renders a row for each. A full-range scan of one
-/// host listed whole is 65,535 of each, nearly all of them the port-number
-/// label of a closed port, and ten megabytes of document for what nmap says in
-/// one line. The ports are still named, so a reader that wants every verdict,
-/// this engine's own among them, has it.
+/// as nmap writes it: one `<extraports>` with the state and its count, and an
+/// `<extrareasons>` per reason and transport naming every port in it. Readers
+/// act on every listed port (an exploit search looks up its service name, an
+/// importer files it as a service, a stylesheet renders a row), and a
+/// full-range scan of one host listed whole is ten megabytes. The ports are
+/// still named, so a reader wanting every verdict has it.
 ///
-/// `open` is never summarised, for the reason nmap never summarises it: an
-/// open port is the finding. Nor is a port whose record holds more than a
-/// state and the packet behind it, an identified service or a finding, since
-/// the summary has nowhere to put either and would lose it.
+/// `open` is never summarised, as in nmap: an open port is the finding. Nor is
+/// a port with an identified service or a finding, which the summary has no
+/// place for.
 fn write_ports(
     out: &mut dyn Write,
     host: &Host,
@@ -628,10 +559,8 @@ fn write_ports(
         return Ok(());
     }
 
-    // The summarisable ports of each state, then kept only for the states
-    // with more of them than are listed.
-    // Keyed by the word written rather than by the state, so the two states
-    // nmap calls `filtered` share one summary, as nmap's own do.
+    // Keyed by the word written, so the two states nmap calls `filtered` share
+    // one summary, as nmap's own do.
     let mut summarised: BTreeMap<&str, Vec<&Port>> = BTreeMap::new();
     for port in probed.iter().copied().filter(|port| is_summarisable(port)) {
         if let Some(name) = port_state(port.state()) {
@@ -658,16 +587,14 @@ fn write_ports(
 /// How many ports of one state are listed one by one before the state is
 /// summarised instead.
 ///
-/// Nmap's own threshold at its default verbosity, so a document from this
-/// engine lists what an nmap run over the same network would list.
+/// Nmap's own threshold at its default verbosity.
 const LISTED_PER_STATE: usize = 25;
 
 /// Whether a port says nothing a summary cannot: it is not open, and its record
 /// holds its state, the packet behind it and at most a port-number label.
 ///
-/// The label is what nmap drops for a summarised port too; it is a lookup
-/// rather than a finding, and on a closed port it is what an exploit search
-/// mistakes for a service.
+/// Nmap drops the label for a summarised port too; it is a lookup, and on a
+/// closed port an exploit search mistakes it for a service.
 fn is_summarisable(port: &Port) -> bool {
     port.state() != PortState::Open
         && port.service().is_none_or(|service| service.is_inferred())
@@ -712,14 +639,12 @@ fn write_extra_ports(out: &mut dyn Write, name: &str, ports: &[&Port]) -> Result
 /// rest alone, comma-separated, in lists of at most [`MAX_PORT_LIST_BYTES`]
 /// each with the count of ports it names.
 ///
-/// A summary whose ports run in long stretches is a few bytes, but one whose
-/// ports alternate with another state's is not: a full range where a host
-/// rate-limits its resets scatters silent ports through closed ones, and
-/// thirty thousand isolated numbers are two hundred kilobytes in one attribute.
-/// A reader bounding what one element may hold, this engine's own among them,
-/// refuses a document with such an element rather than reading the rest of it.
-/// Nmap's DTD allows any number of `<extrareasons>` in an `<extraports>`, and a
-/// reader totalling them totals the same ports, so the list is split instead.
+/// Ports alternating with another state's make long lists: a host that
+/// rate-limits its resets scatters silent ports through closed ones, and thirty
+/// thousand isolated numbers are two hundred kilobytes in one attribute, which
+/// a reader bounding element size (this engine's own among them) refuses. Nmap's
+/// DTD allows any number of `<extrareasons>` per `<extraports>`, so the list is
+/// split.
 fn port_lists(numbers: &[u16]) -> Vec<(usize, String)> {
     let mut lists = vec![(0, String::new())];
     let mut index = 0;
@@ -756,24 +681,21 @@ fn port_lists(numbers: &[u16]) -> Vec<(usize, String)> {
 /// The longest port list one `<extrareasons>` carries, in bytes.
 ///
 /// Well inside what a reader bounding a value takes, this engine's own included,
-/// and long enough that a summary of ports in stretches is always one list.
+/// and long enough that ports in stretches always fit one list.
 const MAX_PORT_LIST_BYTES: usize = 8 * 1024;
 
 /// Writes the `<osclass>` beneath a match: the family, vendor, generation and
 /// device type, and the CPEs naming the system.
 ///
-/// This is where the tools reading nmap's format take an operating system from:
-/// an importer files a host under its `osfamily`, and a vulnerability lookup
-/// keys on the CPE, which nmap's DTD holds only here. A match written with its
-/// name alone gives both nothing to read.
+/// Importers file a host under its `osfamily`, and vulnerability lookups key on
+/// the CPE, which nmap's DTD holds only here.
 ///
 /// Written only once the family is known, which the DTD requires of every class,
-/// as it requires a vendor. A vendor this engine did not establish is written
-/// empty, which claims nothing, rather than leaving out the class and the CPEs
-/// with it.
+/// as it requires a vendor. An unknown vendor is written empty, so the class
+/// and its CPEs are still written.
 ///
-/// Every string in the class is read through `masking`, as the match's name
-/// is: a rule fills each from what it captured of the reply.
+/// Every string is read through `masking`, since a rule fills each from the
+/// reply.
 fn write_os_class(
     out: &mut dyn Write,
     os: &crate::model::host::OsFingerprint,
@@ -827,28 +749,15 @@ fn write_cpes(
 
 /// Writes the `<trace>` element, when a path was measured.
 ///
-/// This is the one finding the engine produces that nmap's format has a
-/// first-class place for, so a consumer that draws network topology from nmap XML
-/// draws this without being taught anything new.
-///
-/// A silent hop is written as a `<hop>` carrying only its `ttl`, which is what
-/// nmap does and what the DTD allows, since `ipaddr` is implied. A consumer
-/// counting hops has to see that a router is there and would not name itself.
+/// A silent hop is a `<hop>` with only its `ttl`, as nmap writes it (`ipaddr`
+/// is implied), so a consumer counting hops still sees the router.
 ///
 /// A [withheld](crate::model::host::Hop::is_withheld) hop is written the same
-/// way. Its router did name itself, but the scan's exclusions forbid the
-/// address, and a `ttl` alone is the only form the format has that keeps the
-/// distance and names nobody. Like `inferred` below, the distinction survives
-/// only in [`super::json`].
+/// way: a `ttl` alone keeps the distance and names nobody. A hop copied from
+/// another host's trace is written like a measured one, since nmap has no
+/// attribute for it. Both distinctions survive only in [`super::json`].
 ///
-/// `rtt` is milliseconds with two decimals, nmap's own rendering. A consumer
-/// reading this attribute expects nmap's units, and the engine's microseconds
-/// would read as a path a thousand times slower.
-///
-/// `inferred` has nowhere to go. Nmap has no attribute for it and inventing one
-/// would cost this document its DTD validity, so a hop copied from another host's
-/// trace is written like a measured one. Anybody who needs the distinction has
-/// [`super::json`].
+/// `rtt` is milliseconds with two decimals, nmap's own rendering.
 fn write_trace(out: &mut dyn Write, host: &Host) -> Result<(), ExportError> {
     let hops = host.path().hops();
     if hops.is_empty() {
@@ -872,8 +781,8 @@ fn write_trace(out: &mut dyn Write, host: &Host) -> Result<(), ExportError> {
 
 /// A finding flattened to one line of `<script output>` text: severity, title,
 /// references, the justifying excerpt, and any remediation. Every part is
-/// attacker-influenced and is written through [`Attr`] at the call site, never
-/// raw, and every part the host's reply filled is read through `masking`.
+/// attacker-influenced: the caller writes it through [`Attr`], and parts the
+/// host's reply filled are read through `masking`.
 fn finding_output(finding: &Finding, masking: &HostRedaction) -> String {
     let mut parts = vec![format!(
         "[{}] {}",
@@ -919,20 +828,15 @@ fn write_finding_scripts<'a>(
 /// Writes the host's IP protocol verdicts, in the shape nmap's own protocol scan
 /// writes them.
 ///
-/// Nmap reports `-sO` as `<port protocol="ip" portid="N">`, reusing the port
-/// element for a number that is not a port, and every tool that reads nmap XML
-/// reads it that way. This engine keeps the two apart in its own model, for the
-/// reason [`protocol`](crate::model::host::protocol) gives, and writes nmap's
-/// shape here because the format is nmap's and a document in a private dialect
-/// would be one nothing downstream understands.
+/// Nmap writes a protocol scan as `<port protocol="ip" portid="N">`, reusing the
+/// port element for a protocol number, and its readers expect that. The engine's
+/// own model keeps the two apart; see [`protocol`](crate::model::host::protocol).
 ///
-/// Its own `<ports>` element, following the transport one. Nmap emits a second
-/// block the same way when a scan asked both questions, and merging them would
-/// put 47/ip beside 47/tcp under one heading as though they were the same
-/// endpoint.
+/// In a second `<ports>` element after the transport one, as nmap writes it, so
+/// 47/ip is not read as the same endpoint as 47/tcp.
 ///
-/// A protocol nobody asked about is left out, for the reason
-/// [`port_state`] gives about an unasked port: the format has no word for it.
+/// A protocol nobody asked about is left out, as an unasked port is; see
+/// [`port_state`].
 fn write_ip_protocols(out: &mut dyn Write, host: &Host) -> Result<(), ExportError> {
     let mut asked = host
         .ip_protocols()
@@ -967,38 +871,32 @@ fn write_ip_protocols(out: &mut dyn Write, host: &Host) -> Result<(), ExportErro
 
 /// This engine's IP protocol verdicts in nmap's spelling.
 ///
-/// The four correspond exactly, because nmap's protocol scan reaches the same
-/// four conclusions from the same messages. [`Unasked`](IpProtocolState::Unasked)
-/// has no spelling for the reason [`PortState::Unasked`] has none, and the
-/// caller filters it out before reaching here.
+/// The four established states correspond exactly to nmap's.
+/// [`Unasked`](IpProtocolState::Unasked) has no spelling, as
+/// [`PortState::Unasked`] has none, and the caller filters it out.
 fn ip_protocol_state(state: IpProtocolState) -> &'static str {
     match state {
         IpProtocolState::Open => "open",
         IpProtocolState::Closed => "closed",
         IpProtocolState::Blocked => "filtered",
         IpProtocolState::OpenOrNoReply => "open|filtered",
-        // Filtered out by `write_ip_protocols`, which writes only what was
-        // established. Reported as the format's nearest word rather than left to
-        // a wildcard, so a state added later is a compile error here.
+        // Filtered out by `write_ip_protocols`. Spelled out with no wildcard
+        // arm, so a new state is a compile error here.
         IpProtocolState::Unasked => "open|filtered",
     }
 }
 
 /// What nmap would have written as the evidence for a protocol verdict.
 ///
-/// Three of the four name the message that produced them and are exactly true: a
-/// protocol unreachable is the only thing that closes a protocol here, an
-/// administrative prohibition the only thing that filters one, and silence the
-/// only thing that leaves it open or no reply.
+/// Three verdicts each come from exactly one message: a protocol unreachable
+/// closes a protocol, an administrative prohibition filters one, and silence
+/// leaves it open or no reply.
 ///
-/// `open` is the one that cannot be named. It is reached two ways, by an echo
-/// reply and by a port unreachable proving the stack took delivery, and this
-/// engine records the verdict without recording which; see
-/// [`protocols`](crate::scanner::strategy::protocols). Every token nmap defines
-/// names a specific packet, so writing one would name a packet that may not have
-/// been sent. `response` is not nmap's word and is the honest one: consumers key
-/// on `state`, and an unfamiliar reason costs a reader a moment where a false one
-/// costs them the truth.
+/// `open` is reached by an echo reply or by a port unreachable proving the
+/// stack took delivery, and the engine does not record which; see
+/// [`protocols`](crate::scanner::strategy::protocols). Every nmap token names a
+/// specific packet, so this writes `response`, which is not nmap's word.
+/// Consumers key on `state`.
 fn ip_protocol_reason(state: IpProtocolState) -> &'static str {
     match state {
         IpProtocolState::Closed => "proto-unreach",
@@ -1010,9 +908,8 @@ fn ip_protocol_reason(state: IpProtocolState) -> &'static str {
 
 /// Writes one `<port>` element.
 ///
-/// Writes nothing for a port this format cannot state, which is a port no probe
-/// was sent to; the caller filters those out, and this returns rather than
-/// writing an element with no `<state>` in it.
+/// Writes nothing for a port no probe was sent to, which the format cannot
+/// state; the caller filters those out.
 fn write_port(
     out: &mut dyn Write,
     port: &Port,
@@ -1053,9 +950,8 @@ fn write_port(
             write!(out, r#" tunnel="{tunnel}""#)?;
         }
         // `probed` is nmap's word for a service identified by talking to the
-        // port, `table` for one read out of a port-number list. Every classified
-        // port is seeded with a port-number label, so writing those as `probed`
-        // would claim a thousand closed ports had been interrogated.
+        // port, `table` for one read from a port-number list. Every classified
+        // port is seeded with a port-number label, which is `table`.
         write!(
             out,
             r#" method="{}" conf="{}""#,
@@ -1089,18 +985,12 @@ fn write_port(
 /// This engine's port states in nmap's spelling, and [`None`] for the one that
 /// has none.
 ///
-/// An exhaustive match, so a new state cannot be added without somebody deciding
-/// what this format calls it. Nmap has six words and this engine eight states.
-/// [`Blocked`](PortState::Blocked) and [`NoReply`](PortState::NoReply) are both
-/// nmap's `filtered`, which nmap reaches from a refusal and from silence alike
-/// and tells apart only in the reason beside it, where [`port_reason`] writes
-/// the difference. The rest correspond exactly.
-///
-/// [`PortState::Unasked`] is the one that does not, and it is not an oversight in
-/// nmap: a port nmap did not scan is a port nmap does not write, so the format
-/// says what it has to say about this by omission. Answering [`None`] is how that
-/// reaches the caller, which drops the element rather than picking the least
-/// wrong of the six.
+/// An exhaustive match, so a new state needs a decision here. Nmap has six words
+/// and this engine eight states. [`Blocked`](PortState::Blocked) and
+/// [`NoReply`](PortState::NoReply) are both nmap's `filtered`, told apart in the
+/// reason, which [`port_reason`] writes. The rest correspond exactly, except
+/// [`PortState::Unasked`]: nmap does not write a port it did not scan, so this
+/// answers [`None`] and the caller drops the element.
 fn port_state(state: PortState) -> Option<&'static str> {
     Some(match state {
         PortState::Open => "open",
@@ -1115,25 +1005,19 @@ fn port_state(state: PortState) -> Option<&'static str> {
 
 /// The packet that decided a port's state, in nmap's words.
 ///
-/// Nmap's `reason` names that packet, and this engine records it on the port's
-/// [`Discovery`](crate::model::port::discovery::Discovery), so the word is
-/// read from there: a UDP port that answered is `udp-response`, a connection
-/// the operating system refused `conn-refused`, an open port a window scan
-/// read off a reset `reset`. Nothing is inferred from the state where the
-/// record names the packet.
+/// Read from the packet recorded on the port's
+/// [`Discovery`](crate::model::port::discovery::Discovery) when there is one: a
+/// UDP port that answered is `udp-response`, a connection the operating system
+/// refused `conn-refused`, an open port a window scan read off a reset `reset`.
 ///
-/// A port with no record of its packet falls back to the one packet its state
-/// and transport admit, where there is exactly one: only a SYN/ACK opens a TCP
-/// port, only a datagram a UDP one and only an INIT-ACK an SCTP one, only a
-/// reset closes a TCP port or leaves it reachable, only a port unreachable
-/// closes a UDP one and only an ABORT an SCTP one. A blocked port falls back
-/// to `dest-unreach`, the word for a refusal whose code nobody recorded, since
-/// the state says a refusal arrived and `no-response` would say one did not.
-/// The states silence decides fall back to `no-response`, which a UDP scan
-/// reaching `OpenOrNoReply` records no packet for because none arrived.
+/// Otherwise it falls back to the one packet the state and transport admit:
+/// only a SYN/ACK opens a TCP port, a datagram a UDP one and an INIT-ACK an
+/// SCTP one; only a reset closes a TCP port or leaves it reachable, a port
+/// unreachable closes a UDP one and an ABORT an SCTP one. A blocked port falls
+/// back to `dest-unreach`, a refusal with no recorded code. The states silence
+/// decides fall back to `no-response`.
 ///
-/// A port no probe was sent to did not fail to respond, so it answers [`None`]
-/// here for the reason [`port_state`] does.
+/// [`None`] for a port no probe was sent to, as with [`port_state`].
 fn port_reason(port: &Port) -> Option<&str> {
     port_state(port.state())?;
 
@@ -1155,20 +1039,14 @@ fn port_reason(port: &Port) -> Option<&str> {
 
 /// A recorded response in nmap's reason vocabulary.
 ///
-/// Nmap's words are finer than this engine's record in one place, the ICMP
-/// unreachable, which nmap names by its code and this engine records without
-/// one. A port unreachable is the only unreachable that closes a UDP port, so a
-/// closed UDP port's is `port-unreach`; any other is `dest-unreach`, nmap's word
-/// for a destination unreachable it does not single out by code, rather than a
-/// code nobody read.
+/// Nmap names an ICMP unreachable by its code, which this engine does not
+/// record. Only a port unreachable closes a UDP port, so a closed UDP port's is
+/// `port-unreach`; any other is `dest-unreach`, nmap's generic word.
 ///
-/// A response this engine names and nmap does not is written in this engine's
-/// own name: an unfamiliar reason costs a reader a moment, where one naming a
-/// packet that never arrived costs them the truth.
+/// A response nmap has no word for is written in this engine's own name.
 fn response_reason<'a>(response: &'a ScanResponse, port: &Port) -> &'a str {
     match response {
-        // A SYN/ACK overheard on its way to another peer is still a SYN/ACK,
-        // which is the packet the word names.
+        // Overheard on its way to another peer, but still a SYN/ACK.
         ScanResponse::TcpSynAck | ScanResponse::OverheardSynAck => "syn-ack",
         ScanResponse::TcpRst => "reset",
         ScanResponse::ConnectionRefused => "conn-refused",
@@ -1187,9 +1065,8 @@ fn response_reason<'a>(response: &'a ScanResponse, port: &Port) -> &'a str {
     }
 }
 
-/// The TTL the reply that decided a port carried, which nmap writes beside the
-/// reason, or 0 where no reply was read from a header, which is what nmap
-/// writes for the same absence.
+/// The TTL of the reply that decided a port, or 0 when none was read, as nmap
+/// writes the same absence.
 fn reason_ttl(port: &Port) -> u8 {
     port.discovery()
         .and_then(|discovery| discovery.ttl())
@@ -1199,8 +1076,8 @@ fn reason_ttl(port: &Port) -> u8 {
 /// This engine's host statuses in nmap's spelling.
 ///
 /// Nmap has three where this engine has four. A blocked host is one a device
-/// refused probes to by policy, so something is there: nmap has no word for
-/// that, and it is unambiguously `up`. The distinction survives in the reason.
+/// refused probes to by policy, so something is there and it is written `up`;
+/// the reason carries the distinction.
 fn host_state(status: HostStatus) -> &'static str {
     match status {
         HostStatus::Up | HostStatus::Blocked => "up",
@@ -1211,21 +1088,18 @@ fn host_state(status: HostStatus) -> &'static str {
 
 /// The evidence behind a host's status, in nmap's words where nmap has one.
 ///
-/// Read from the evidence the host holds rather than from its status, since
-/// nmap's reason names the packet that decided the state: a host its neighbour
-/// table answered for is `arp-response`, one that answered a ping `echo-reply`.
-/// Of several, the most direct is named, in the order [`host_reason_rank`]
-/// gives, so a document reads the same whichever arrived first.
+/// Read from the evidence the host holds, since nmap's reason names the packet
+/// that decided the state: a host its neighbour table answered for is
+/// `arp-response`, one that answered a ping `echo-reply`. Of several, the most
+/// direct by [`host_reason_rank`] is named, so the output does not depend on
+/// arrival order.
 ///
-/// A host holding no evidence for its status says so without naming a packet:
-/// `response` for one that is up for a reason nothing recorded, which is not a
-/// word of nmap's and is the honest one, and `no-response` for one nothing
-/// answered for, which is what an unknown host is.
+/// A host with no evidence for its status gets `response` if up (not nmap's
+/// word) and `no-response` if unknown.
 fn status_reason(host: &Host) -> &str {
     let status = host.status();
     if status == HostStatus::Blocked {
-        // Nmap has no reason string for this because it has no such state. The
-        // word is this engine's and says what happened.
+        // Nmap has no such state, so the word is this engine's.
         return "probes-blocked";
     }
 
@@ -1251,12 +1125,11 @@ fn status_reason(host: &Host) -> &str {
 /// How directly a piece of evidence establishes `status`, lowest first, or
 /// [`None`] for evidence that does not establish it at all.
 ///
-/// A host keeps every reason it was given as its status rose, so one that is up
-/// may also hold the unreachable a router sent before it answered, and only
-/// evidence the host sent for itself says it is up. Among those, the neighbour
-/// table answering is the most direct and is what nmap names on a local
-/// segment, then the probes nmap's own discovery sends, in the order it sends
-/// them, then the rest.
+/// A host keeps every reason it was given, so one that is up may also hold an
+/// unreachable a router sent earlier; only evidence the host sent for itself
+/// says it is up. The neighbour table ranks first, as nmap names it on a local
+/// segment, then the probes nmap's discovery sends, in its order, then the
+/// rest.
 fn host_reason_rank(reason: &StatusReason, status: HostStatus) -> Option<u8> {
     let from_host = reason.source == EvidenceSource::Host;
     match status {
@@ -1271,8 +1144,7 @@ fn host_reason_rank(reason: &StatusReason, status: HostStatus) -> Option<u8> {
             StatusProtocol::Dhcp => 7,
             StatusProtocol::Custom(_) => 8,
         }),
-        // An unreachable is the only evidence that puts a host down, and
-        // whoever sent it is somebody in the path by definition.
+        // Only an unreachable puts a host down, and its sender is in the path.
         HostStatus::Down => (reason.protocol == StatusProtocol::IcmpUnreachable).then_some(0),
         HostStatus::Up | HostStatus::Blocked | HostStatus::Unknown => None,
     }
@@ -1280,13 +1152,11 @@ fn host_reason_rank(reason: &StatusReason, status: HostStatus) -> Option<u8> {
 
 /// One piece of host evidence in nmap's reason vocabulary.
 ///
-/// The TCP and SCTP protocols carry either of two packets, an acceptance or a
-/// reset, and record which only in prose, so their word names the transport
-/// rather than guessing the packet: `tcp-response` is nmap's word for a TCP
-/// reply it names no further, and `sctp-response` follows its shape. A DHCP server overheard on the segment has no
-/// word in nmap's vocabulary, which never listens, and is named for what it was.
-/// An ICMP unreachable is `dest-unreach` for the reason [`response_reason`]
-/// gives.
+/// TCP and SCTP evidence may be an acceptance or a reset, recorded only in
+/// prose, so the word names the transport: `tcp-response` is nmap's word for an
+/// unspecified TCP reply, and `sctp-response` follows its shape. A DHCP server
+/// overheard on the segment has no nmap word and is named for what it was. An
+/// ICMP unreachable is `dest-unreach`, as in [`response_reason`].
 fn host_reason(reason: &StatusReason) -> &str {
     match &reason.protocol {
         StatusProtocol::Arp => "arp-response",
@@ -1305,15 +1175,13 @@ fn host_reason(reason: &StatusReason) -> &str {
 /// A service label split into the protocol nmap names and the tunnel it names
 /// beside it.
 ///
-/// This engine labels a protocol read through TLS `ssl/http`, one string holding
-/// both facts. Nmap keeps them apart, `name="http" tunnel="ssl"`, and what reads
-/// its XML keys on the name: an exploit search, a screenshot tool, an importer
-/// filing web services. Written whole, the label is a protocol none of them has
-/// heard of, and an HTTPS server is missing from every list of web servers built
-/// from the document.
+/// This engine labels a protocol read through TLS `ssl/http`. Nmap writes
+/// `name="http" tunnel="ssl"`, and its readers (exploit searches, screenshot
+/// tools, importers) key on the name, so written whole an HTTPS server would
+/// drop out of every list of web servers.
 ///
-/// A bare `ssl` is a handshake with nothing identified inside it, which nmap
-/// also writes as that name alone.
+/// A bare `ssl`, a handshake with nothing identified inside, stays as is, as in
+/// nmap.
 fn service_name(label: &str) -> (&str, Option<&'static str>) {
     match Tunnel::split_label(label) {
         (Some(Tunnel::Tls), protocol) => (protocol, Some("ssl")),
@@ -1332,12 +1200,9 @@ fn transport(protocol: Protocol) -> &'static str {
 
 /// This engine's service confidence on nmap's 1-to-10 scale.
 ///
-/// Nmap's `conf` is an integer from 1 to 10 and this engine's is a percentage,
-/// so the mapping is arithmetic rather than a judgement. It never reaches 0,
-/// which is not a value nmap's scale has.
+/// The engine's percentage, scaled down and clamped to 1..=10.
 fn nmap_confidence(confidence: u8) -> u8 {
-    // Three is what nmap records for a port-number lookup, and zero is this
-    // engine's spelling of the same thing.
+    // Zero is this engine's port-number lookup, which nmap records as three.
     if confidence == 0 {
         return TABLE_CONFIDENCE;
     }
@@ -1354,8 +1219,7 @@ const TABLE_CONFIDENCE: u8 = 3;
 
 /// A time as nmap writes it: whole seconds since the epoch.
 ///
-/// A time before the epoch has no representation here and becomes 0, which
-/// cannot arise from a scan that has happened.
+/// A time before the epoch becomes 0.
 fn epoch_seconds(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH)
         .map(|since| since.as_secs())
@@ -1364,10 +1228,8 @@ fn epoch_seconds(time: SystemTime) -> u64 {
 
 /// The human-readable companion nmap writes beside every timestamp.
 ///
-/// Nmap writes a local-time C `ctime` string here. This writes RFC 3339 in UTC,
-/// the same instant, unambiguous about its zone and matching every other document
-/// this engine emits. Consumers parse the numeric field beside it; this one is
-/// for a person.
+/// RFC 3339 in UTC, as every other document this engine writes; nmap writes a
+/// local-time `ctime` string. Consumers parse the numeric field beside it.
 fn time_string(time: SystemTime) -> String {
     crate::format::time::rfc3339(time)
 }
@@ -1378,10 +1240,8 @@ fn time_string(time: SystemTime) -> String {
 
 /// Report text on its way into an XML attribute value.
 ///
-/// Escapes the five characters that have meaning and drops the ones XML 1.0
-/// cannot carry. There is no escape for a `0x01` in XML 1.0, a numeric reference
-/// to one being as illegal as the byte, so a service banner containing one has to
-/// lose it or the whole document becomes unparseable.
+/// Escapes the five markup characters and drops the ones XML 1.0 cannot carry,
+/// such as `0x01`, whose numeric reference is as illegal as the byte.
 struct Attr<'a>(&'a str);
 
 impl fmt::Display for Attr<'_> {
@@ -1393,9 +1253,8 @@ impl fmt::Display for Attr<'_> {
                 '>' => f.write_str("&gt;")?,
                 '"' => f.write_str("&quot;")?,
                 '\'' => f.write_str("&apos;")?,
-                // Legal, and lost unless referenced: a parser reading an
-                // attribute value turns each raw one into a space, so a
-                // two-line banner would read back as one line.
+                // Legal, but a parser turns each raw one in an attribute value
+                // into a space.
                 '\t' => f.write_str("&#x9;")?,
                 '\n' => f.write_str("&#xa;")?,
                 '\r' => f.write_str("&#xd;")?,
@@ -1409,15 +1268,13 @@ impl fmt::Display for Attr<'_> {
 
 /// Whether a character cannot appear in an XML 1.0 document, or should not.
 ///
-/// The first group is the specification's: the only C0 controls a document may
-/// contain are tab, line feed and carriage return, and no numeric reference
-/// makes the others legal. The surrogates and the two non-characters at the end
-/// of the basic plane are equally forbidden, though Rust's `char` already
-/// excludes the surrogates.
+/// The specification allows only tab, line feed and carriage return among the C0
+/// controls, and no numeric reference makes the others legal. The two
+/// non-characters at the end of the basic plane are forbidden too; Rust's `char`
+/// already excludes the surrogates.
 ///
-/// The second group is a judgement rather than a rule. The bidirectional
-/// formatting characters are legal XML and dropped anyway, since they reorder the
-/// text around them without being visible.
+/// The bidirectional formatting characters are legal XML, dropped because they
+/// invisibly reorder the text around them.
 fn is_forbidden(character: char) -> bool {
     let code = u32::from(character);
 
@@ -1516,13 +1373,10 @@ mod tests {
     }
 
     /// The exclusion note names the policy once, however many phases ran
-    /// under it, and a range one phase added beside it joins it.
+    /// under it, and a range one phase added joins it.
     ///
-    /// Every phase records the policy in force, so a discovery sweep followed
-    /// by a port scan carries it twice, and a note listing each phase's copy
-    /// would state it twice. A phase can also widen it, by the other addresses
-    /// of a machine the policy names, and the note is the union: an address
-    /// set, merged as the policy itself is merged.
+    /// A phase can widen the policy by the other addresses of a machine it
+    /// names, so the note is the union, merged as an address set.
     #[test]
     fn the_exclusion_note_is_the_union_of_every_phases_policy() {
         use crate::report::{ScanKind, TargetScope};
@@ -1561,9 +1415,7 @@ mod tests {
     /// is a connect scan, and one that reached only some of them so is not.**
     ///
     /// Loopback and this host's own addresses are beyond a raw probe, so a
-    /// privileged scan of them connects, and its closed ports carry the
-    /// refusal a connect draws. Named after the technique, the document
-    /// claims SYNs went to ports that were never sent one.
+    /// privileged scan of them connects and sends no SYNs.
     #[test]
     fn a_privileged_phase_that_reached_everything_by_connect_is_a_connect_scan() {
         use crate::report::{ScanKind, TargetScope};
@@ -1608,11 +1460,8 @@ mod tests {
     /// A port's reason names the packet its record says decided it, with the
     /// TTL that packet carried.
     ///
-    /// Nmap's reason is per port and says which packet arrived, and a consumer
-    /// reading it learns how the verdict was reached: a UDP port that answered
-    /// is not a TCP handshake, and a connection the operating system refused is
-    /// not a reset anybody saw. A reason chosen by state alone would tell
-    /// every open UDP port's reader that a SYN/ACK arrived.
+    /// A reason chosen by state alone would say a SYN/ACK opened every open
+    /// UDP port.
     #[test]
     fn a_ports_reason_names_the_packet_that_decided_it() {
         use crate::model::port::discovery::Discovery;
@@ -1636,8 +1485,7 @@ mod tests {
             .with_discovery(Discovery::new(ScanResponse::TcpRst).with_ttl(64));
         assert!(state_line(&window).contains(r#"reason="reset" reason_ttl="64""#));
 
-        // The only unreachable that closes a UDP port is a port unreachable,
-        // and one that filters a port is named without a code nobody read.
+        // Only a port unreachable closes a UDP port; any other is generic.
         let unreachable = |state| {
             Port::new(161, Protocol::Udp, state)
                 .with_discovery(Discovery::new(ScanResponse::IcmpUnreachable))
@@ -1646,8 +1494,8 @@ mod tests {
         assert!(state_line(&unreachable(PortState::NoReply)).contains(r#"reason="dest-unreach""#));
     }
 
-    /// A port with no record of its packet is given the one packet its state
-    /// and transport admit, and silence where silence is what decided it.
+    /// A port with no recorded packet is given the one its state and transport
+    /// admit, or silence where silence decided it.
     #[test]
     fn a_port_with_no_recorded_packet_names_the_one_its_state_admits() {
         let line = |number, protocol, state| state_line(&Port::new(number, protocol, state));
@@ -1664,10 +1512,8 @@ mod tests {
     /// A host's reason names the evidence it holds, the most direct first.
     ///
     /// A reason chosen by status alone would make every live host an
-    /// `echo-reply`, including one only its neighbour table answered for on a
-    /// segment that drops pings, and one a router reported unreachable
-    /// `no-response`, which a reader of this format takes for silence and so
-    /// reads back as unknown rather than down.
+    /// `echo-reply`, and one a router reported unreachable `no-response`,
+    /// which a reader takes for silence and reads back as unknown.
     #[test]
     fn a_hosts_reason_names_the_evidence_it_holds() {
         use std::net::{IpAddr, Ipv4Addr};
@@ -1688,8 +1534,7 @@ mod tests {
 
         let pinged = {
             let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)));
-            // A router's unreachable, then the host answering for itself: the
-            // unreachable says nothing about a host that is up.
+            // A router's unreachable, then the host answering for itself.
             host.record_evidence(
                 HostStatus::Down,
                 StatusReason::basic(StatusProtocol::IcmpUnreachable)
@@ -1771,8 +1616,7 @@ mod tests {
     /// A service read through TLS is written as nmap writes one, the protocol
     /// named and the tunnel beside it, and reads back as the label it was.
     ///
-    /// The tools that read this format find web servers by `name="http"`, so
-    /// an HTTPS port written `name="ssl/http"` is one none of them lists.
+    /// Readers find web servers by `name="http"`.
     #[cfg(feature = "import-nmap")]
     #[test]
     fn a_service_read_through_tls_is_named_with_its_tunnel_beside_it() {
@@ -1816,11 +1660,8 @@ mod tests {
     /// A full range of closed and silent ports is summarised as nmap
     /// summarises one, and every port in the summary reads back as it went out.
     ///
-    /// Each listed port is a service row to an importer and a lookup to an
-    /// exploit search, so a full-range scan listed whole puts 65,535 of both
-    /// into every tool that reads it, nearly all the port-number label of a
-    /// closed port. What stays listed is what a summary would lose: the open
-    /// port, and a closed one somebody identified a service on.
+    /// What stays listed is what a summary would lose: the open port, and a
+    /// closed one with an identified service.
     #[cfg(feature = "import-nmap")]
     #[test]
     fn the_dominant_closed_and_silent_states_are_summarised_and_read_back_whole() {
@@ -1836,8 +1677,7 @@ mod tests {
             let port = match number {
                 22 => Port::new(22, Protocol::Tcp, PortState::Open)
                     .with_service(Service::new("ssh", 100)),
-                // Closed, but somebody identified what answered, which the
-                // summary has nowhere to put.
+                // Closed, with an identified service the summary cannot hold.
                 80 => Port::new(80, Protocol::Tcp, PortState::Closed)
                     .with_service(Service::new("http", 90)),
                 number => Port::new(number, Protocol::Tcp, PortState::Closed)
@@ -1909,9 +1749,7 @@ mod tests {
 
     /// An SCTP port reads back as one, listed or summarised.
     ///
-    /// Nmap writes SCTP as `protocol="sctp"` and this engine scans it, and a
-    /// reader refusing the transport refuses every document an SCTP scan
-    /// exports, not just the port.
+    /// A reader refusing the transport would refuse the whole document.
     #[cfg(feature = "import-nmap")]
     #[test]
     fn an_sctp_port_survives_the_round_trip() {
@@ -1937,10 +1775,6 @@ mod tests {
 
     /// The run statistics count the addresses the scan covered, not the hosts
     /// it recorded.
-    ///
-    /// A sweep of a /24 with a handful answering covers 256 addresses, and a
-    /// count of the recorded hosts would tell a consumer reporting coverage
-    /// from `<runstats>` that it covered the handful, every one of them up.
     #[test]
     fn the_run_statistics_count_what_the_scan_covered() {
         use crate::report::{ScanKind, TargetScope};
@@ -1980,9 +1814,7 @@ mod tests {
 
     /// Line breaks in a value survive a standard XML parser.
     ///
-    /// XML allows a raw line feed in an attribute value and a parser reading it
-    /// turns it into a space, so written raw, a banner's second line reaches
-    /// every tool downstream joined to its first.
+    /// A parser turns a raw line feed in an attribute value into a space.
     #[cfg(feature = "import-nmap")]
     #[test]
     fn a_line_break_in_a_value_is_written_as_a_reference_and_reads_back() {
@@ -2016,10 +1848,6 @@ mod tests {
 
     /// An operating system is written with its class and CPEs, and a service
     /// with its CPEs, where nmap's readers look for them.
-    ///
-    /// An importer files a host under the class's family and a vulnerability
-    /// lookup keys on the CPE, and a match written with its name alone gives
-    /// both nothing.
     #[cfg(feature = "import-nmap")]
     #[test]
     fn an_os_class_and_the_cpes_are_written_and_read_back() {
@@ -2109,8 +1937,7 @@ mod tests {
     /// takes, and every port in them reads back.
     ///
     /// Every other port of a full range in one attribute is two hundred
-    /// kilobytes, past the bound on one element that this engine's own reader
-    /// refuses a whole document over.
+    /// kilobytes, past this engine's own reader's element bound.
     #[cfg(feature = "import-nmap")]
     #[test]
     fn a_scattered_summary_is_split_into_lists_a_bounded_reader_takes() {
@@ -2154,10 +1981,8 @@ mod tests {
     /// A run whose journal fell behind finished as a run that succeeded, and
     /// one whose strategy failed as one that did not.
     ///
-    /// nmap calls a run an error when its scanning failed. A journal that
-    /// could not be written probed nothing and dropped no answer, so a
-    /// consumer reading the attribute would be told the scan went wrong when
-    /// the disk did.
+    /// A journal probes nothing and drops no answer, so its failure costs no
+    /// coverage.
     #[test]
     fn a_journal_that_fell_behind_is_not_a_run_that_failed() {
         use crate::report::{ScanKind, ScannerKind, TargetScope};
@@ -2181,8 +2006,7 @@ mod tests {
         assert_eq!(exit(ScannerKind::Routed), "error");
     }
 
-    /// The point of the whole format. A consumer keys on the root element and
-    /// its output version, and gets a document in nmap's shape.
+    /// Consumers key on the root element and its output version.
     #[test]
     fn the_document_is_in_nmaps_shape() {
         let document = render();
@@ -2196,9 +2020,7 @@ mod tests {
         assert!(document.trim_end().ends_with("</nmaprun>"));
     }
 
-    /// The one line of this module that is not a technical decision. A report
-    /// that says it came from nmap when it did not is a fabricated record, and
-    /// no parser's convenience is worth producing one.
+    /// A report claiming to come from nmap would be a fabricated record.
     #[test]
     fn the_document_never_claims_to_be_nmap() {
         let document = render();
@@ -2213,13 +2035,10 @@ mod tests {
         );
     }
 
-    /// Every verdict a probe reaches has a name in this vocabulary, so a document
-    /// is never less specific about a port than the scan was.
+    /// Every verdict a probe reaches has a name in nmap's vocabulary.
     ///
-    /// Read off [`PortState::ALL`] rather than a list written out here, which is
-    /// what a state added later has to pass through: the six verdicts map, and
-    /// the one state that is not a verdict declines to, which the test below
-    /// holds it to.
+    /// Read off [`PortState::ALL`], so a state added later is checked too. The
+    /// one state that is not a verdict maps to nothing.
     #[test]
     fn every_port_state_a_probe_reaches_maps_to_a_state_nmap_defines() {
         const NMAP_STATES: [&str; 6] = [
@@ -2251,10 +2070,8 @@ mod tests {
     /// A protocol verdict survives the round trip through nmap's own shape for
     /// one, which is a `<port>` element with `protocol="ip"`.
     ///
-    /// Written in that shape because the format is nmap's and every tool that
-    /// reads it reads protocol scans that way. It has to come back as a protocol
-    /// rather than as a port, or this engine would read its own document as a
-    /// host with a port 47 nobody found.
+    /// It must come back as a protocol, or this engine would read its own
+    /// document as a host with a port 47 nobody found.
     #[test]
     fn a_protocol_verdict_is_written_as_nmap_writes_one_and_reads_back_as_one() {
         use crate::import::report::ReportReader;
@@ -2266,7 +2083,7 @@ mod tests {
         host.set_status(HostStatus::Up);
         host.record_ip_protocol(47, IpProtocolState::Open);
         host.record_ip_protocol(89, IpProtocolState::Closed);
-        // Named and never reached, so there is nothing for the format to say.
+        // Never asked, so not written.
         host.record_ip_protocol(103, IpProtocolState::Unasked);
 
         let document = export(&[host]);
@@ -2302,10 +2119,8 @@ mod tests {
 
     /// A port no probe was sent to is not written at all.
     ///
-    /// Nmap does not emit a `<port>` for a port it did not scan, so there is no
-    /// state to file one under and no honest way to invent one. Writing it as
-    /// `filtered`, the nearest of the six, would tell every tool that reads this
-    /// format that a firewall dropped a probe this scan never sent.
+    /// Writing it as `filtered`, the nearest of nmap's six, would say a
+    /// firewall dropped a probe this scan never sent.
     #[test]
     fn a_port_nobody_asked_about_is_left_out_of_the_document() {
         use std::net::{IpAddr, Ipv4Addr};
@@ -2327,8 +2142,7 @@ mod tests {
         );
     }
 
-    /// And a host whose every port went unasked writes no `<ports>` at all,
-    /// rather than an empty one.
+    /// A host whose every port went unasked writes no `<ports>` element.
     #[test]
     fn a_host_with_nothing_probed_writes_no_ports_element() {
         use std::net::{IpAddr, Ipv4Addr};
@@ -2342,12 +2156,9 @@ mod tests {
 
     /// A multi-homed host comes back keyed by the address it went out under.
     ///
-    /// Nmap has no attribute for which address is the host's, so a reader takes
-    /// the first one in the document, and a writer emitting them in the set's
-    /// own ascending order would re-key the host. One keyed by `203.0.113.10`
-    /// that also held `198.51.100.4` would come back keyed by `198.51.100.4`, so
-    /// a scan exported here and read again would compare against its own source
-    /// as one host removed and one added.
+    /// A reader takes the first address as the host's, so in ascending order
+    /// a host keyed by `203.0.113.10` that also held `198.51.100.4` would come
+    /// back re-keyed.
     #[cfg(feature = "import-nmap")]
     #[test]
     fn a_multi_homed_host_keeps_the_address_it_is_keyed_by() {
@@ -2385,9 +2196,8 @@ mod tests {
         assert!(host.ips().contains(&lower), "and kept the other one");
     }
 
-    /// Nmap has three host states where this engine has four, and a blocked
-    /// host is unambiguously up. Exporting it `down` would be a false negative
-    /// in somebody else's tracker.
+    /// Nmap has three host states where this engine has four; a blocked host
+    /// is up.
     #[test]
     fn a_blocked_host_is_exported_as_up_because_that_is_what_it_is() {
         assert_eq!(host_state(HostStatus::Blocked), "up");
@@ -2396,7 +2206,6 @@ mod tests {
         assert_eq!(host_state(HostStatus::Unknown), "unknown");
     }
 
-    /// The escaping half of putting attacker-controlled text in an attribute.
     #[test]
     fn the_five_meaningful_characters_are_escaped() {
         let escaped = Attr(r#"<a href="x">&'</a>"#).to_string();
@@ -2404,9 +2213,8 @@ mod tests {
         assert_eq!(escaped, "&lt;a href=&quot;x&quot;&gt;&amp;&apos;&lt;/a&gt;");
     }
 
-    /// The half that has no escape. A numeric reference to a forbidden control
-    /// character is as illegal as the character, so a banner carrying one has to
-    /// lose it - and a document that kept it would not open at all.
+    /// A numeric reference to a forbidden control character is as illegal as
+    /// the character, so it is dropped.
     #[test]
     fn characters_xml_cannot_carry_are_dropped_rather_than_referenced() {
         let banner = "OpenSSH\u{0}\u{1}\u{1f} 9.6\u{202e}drowssap";
@@ -2415,17 +2223,12 @@ mod tests {
         assert_eq!(escaped, "OpenSSH 9.6drowssap");
         assert!(!escaped.contains('&'), "no reference was invented for them");
 
-        // The three C0 characters XML does allow survive, because they are
-        // ordinary whitespace and a banner may legitimately contain them. They
-        // survive as references, since a parser turns each raw one inside an
-        // attribute value into a space.
+        // The three C0 characters XML allows survive, as references.
         assert_eq!(Attr("a\tb\nc\rd").to_string(), "a&#x9;b&#xa;c&#xd;d");
     }
 
-    /// Every attribute nmap's DTD marks `#REQUIRED` has to be present on every
-    /// element written, or a validating consumer rejects the document. `line`
-    /// on `osmatch` is the one easiest to miss without running nmap's own DTD
-    /// against the output.
+    /// Every attribute nmap's DTD marks `#REQUIRED` is present. `line` on
+    /// `osmatch` is the easiest to miss.
     #[test]
     fn required_attributes_the_dtd_demands_are_present() {
         let document = render();
@@ -2448,14 +2251,9 @@ mod tests {
             );
         }
 
-        // `osmatch` carries a line number into `nmap-os-db`. This engine has no
-        // such database and says so with 0, rather than omitting an attribute
-        // the DTD marks required.
         if document.contains("<osmatch ") {
             assert!(document.contains(r#" line="0">"#));
         }
-        // And an OS class names its vendor and family, both required, and its
-        // accuracy.
         for class in document
             .lines()
             .filter(|line| line.starts_with("<osclass "))
@@ -2466,9 +2264,7 @@ mod tests {
         }
     }
 
-    /// A discovery sweep finds hosts and no ports at all. The document still
-    /// has to be a document - an exporter that only works on port scans is half
-    /// an exporter.
+    /// A discovery sweep finds hosts and no ports, and still exports whole.
     #[test]
     fn a_report_with_no_ports_still_produces_a_whole_document() {
         let document = render();
@@ -2479,10 +2275,8 @@ mod tests {
         );
         assert!(document.contains("</nmaprun>"));
 
-        // A host with no ports gets no `<ports>` element rather than an empty
-        // one, which is what nmap does and what the DTD's content model allows.
-        // `skip(1)` drops everything before the first host, which is the
-        // document preamble and would otherwise match "has no ports" trivially.
+        // A host with no ports gets no `<ports>` element, as in nmap.
+        // `skip(1)` drops the preamble, which would match trivially.
         let portless = document
             .split("<host ")
             .skip(1)
@@ -2491,11 +2285,9 @@ mod tests {
         assert!(portless.contains("<status state="));
     }
 
-    /// The DNS name a host gave for itself is a name for it that the tools
-    /// reading this format should see, beside the one the scan resolved, and
-    /// masked as that one is. A NetBIOS name, a domain and a forest are not
-    /// names for the address, and a reader of `<hostnames>` would take any of
-    /// them for one.
+    /// The DNS name a host gave for itself is written beside the resolved one
+    /// and masked as it is. A NetBIOS name, a domain and a forest are not
+    /// written.
     #[test]
     fn a_dns_name_the_host_gave_is_written_as_a_hostname_and_nothing_else_is() {
         use crate::model::host::{HostName, NameKind, NameSource};
@@ -2537,9 +2329,8 @@ mod tests {
         );
     }
 
-    /// A document this engine wrote reads back with the hostname it had: the
-    /// name the scan resolved, and none where it resolved none, never the name
-    /// the host gave, which this format has no field to carry back as one.
+    /// A document this engine wrote reads back with the hostname the scan
+    /// resolved, or none, and never the name the host gave.
     #[cfg(feature = "import-nmap")]
     #[test]
     fn a_name_the_host_gave_does_not_come_back_as_its_hostname() {
@@ -2568,9 +2359,7 @@ mod tests {
         assert_eq!(hostnames, [None, Some("gw.example.net")]);
     }
 
-    /// Redaction is an export-time policy and this format is not exempt from
-    /// it. A report handed to a third party through an ingest pipeline is
-    /// exactly the case the policy exists for.
+    /// Redaction applies to this format too.
     #[test]
     fn redaction_applies_to_this_format_like_any_other() {
         let mut out = Vec::new();
@@ -2595,8 +2384,7 @@ mod tests {
         );
     }
 
-    /// A confidence percentage has to land on nmap's 1-to-10 scale without ever
-    /// reaching 0, which is not a value that scale has.
+    /// A confidence percentage lands on nmap's 1-to-10 scale, never 0.
     #[test]
     fn service_confidence_lands_on_nmaps_scale() {
         assert_eq!(nmap_confidence(100), 10);
@@ -2610,8 +2398,7 @@ mod tests {
         );
     }
 
-    /// A guess and an identification must not read alike, or every consumer of
-    /// this document is told a thousand closed ports were interrogated.
+    /// A port-number label is `table`, an identification `probed`.
     #[test]
     fn a_port_number_label_is_written_as_the_lookup_it_is() {
         use crate::model::port::{Port, PortState, Protocol, Service};
@@ -2639,15 +2426,9 @@ mod tests {
 
     /// Every attacker-controlled string reaches the document escaped.
     ///
-    /// The companion to the per-character test above, and the one that matters
-    /// for a format somebody else parses: an unescaped `<` from a scanned host's
-    /// banner does not merely look wrong, it ends the element it is inside and
-    /// hands the rest of the report to whoever wrote the banner. A consumer
-    /// ingesting this XML into DefectDojo or Metasploit parses whatever results.
-    ///
-    /// It covers fields nobody has added yet, which the per-character test
-    /// cannot: any new string written without the escaper fails this the moment
-    /// the fixture carries it.
+    /// An unescaped `<` from a banner ends the element it is in and hands the
+    /// rest of the document to whoever wrote the banner. Any new field written
+    /// without the escaper fails this once the fixture carries it.
     #[test]
     fn no_field_of_a_hostile_report_reaches_the_document_unescaped() {
         let mut out = Vec::new();
