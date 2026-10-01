@@ -10,53 +10,43 @@
 //!
 //! The bookkeeping behind sending a probe more than once.
 //!
-//! Every probing strategy in the engine faces the same problem: a probe that is
-//! never answered is indistinguishable from a probe that never arrived. Treating
-//! the first as evidence produces a confident, plausible, wrong answer - a
-//! firewall where there was a dropped packet. The only way to tell them apart is
-//! to ask again, which turns a one-shot send into a small state machine per
-//! probe: how many times has this been asked, when is it worth asking again, and
-//! when has enough been asked that silence finally means something.
+//! A probe that is never answered looks the same as one that never arrived, and
+//! reading the first as evidence reports a firewall where a packet was dropped. The
+//! only way to tell them apart is to ask again, which makes each probe a small state
+//! machine: how many times it has been asked, when to ask again, and when silence
+//! finally means something.
 //!
-//! [`ProbeLedger`] is that state machine, kept in one place so the SYN, UDP and
-//! link-layer paths cannot drift apart. It knows nothing about packets. It holds
-//! no bytes, builds nothing, and sends nothing; a scanner tells it what left the
-//! wire and asks it what to do next.
+//! [`ProbeLedger`] is that state machine, shared by the SYN, UDP and link-layer
+//! paths. It holds no packets: a scanner tells it what left the wire and asks it what
+//! to do next.
 //!
 //! # The three questions
 //!
-//! A scan loop asks exactly three things, and they map onto the API directly:
-//!
-//! - *Is this reply an answer to something I sent?* - [`ProbeLedger::resolve`]
-//! - *What should I resend, and what has run out of attempts?* -
+//! - *Is this reply an answer to something I sent?* [`ProbeLedger::resolve`]
+//! - *What should I resend, and what has run out of attempts?*
 //!   [`ProbeLedger::drain_due`]
-//! - *How long may I sleep?* - [`ProbeLedger::next_due`]
+//! - *How long may I sleep?* [`ProbeLedger::next_due`]
 //!
 //! # Why attempts are tracked individually
 //!
-//! A record keeps a token per attempt rather than only the most recent one, and
-//! that is the detail the whole design turns on. Consider a SYN scan: attempt
-//! one goes out carrying sequence number A, attempt two carries B, and then a
-//! `SYN+ACK` acknowledging A arrives. It is a genuine answer from an open port,
-//! but a scanner holding only B has no way to recognize it and reports the port
-//! silent. Retransmission would make the scan *less* accurate on exactly the
-//! lossy paths it exists for.
+//! A record keeps a token per attempt. In a SYN scan, attempt one carries sequence
+//! number A, attempt two carries B, and then a `SYN+ACK` acknowledging A arrives. A
+//! scanner holding only B would report that open port silent, so retransmission
+//! would make the scan less accurate on the lossy paths it exists for.
 //!
-//! Keeping every live token also buys something TCP itself cannot have. Karn's
-//! algorithm exists because an endpoint cannot tell which transmission an
-//! acknowledgement answers, so it must throw away round-trip samples from
-//! retransmitted segments. A scanner picks a fresh sequence number per attempt,
-//! so when the caller can name the attempt that answered, the sample is
-//! unambiguous and is kept. Where the wire carries nothing to distinguish
-//! attempts - a UDP probe from a fixed source port, an ARP request - the caller
-//! passes no token and [`ProbeLedger`] applies Karn's rule on its behalf.
+//! Keeping every live token also avoids Karn's problem. TCP must discard round-trip
+//! samples from retransmitted segments because it cannot tell which transmission an
+//! acknowledgement answers. A scanner picks a fresh sequence number per attempt, so
+//! when the caller can name the attempt that answered, the sample is kept. Where the
+//! wire carries nothing to distinguish attempts (a UDP probe from a fixed source
+//! port, an ARP request) the caller passes no token and [`ProbeLedger`] applies
+//! Karn's rule.
 //!
 //! # Cost
 //!
-//! Expiry is driven by a deadline-ordered queue rather than by rescanning the
-//! outstanding set, so a tick with nothing due costs one comparison and arming
-//! or retiring a probe costs `O(log n)`. Stale queue entries are discarded when
-//! they surface rather than searched for and removed.
+//! Expiry is driven by a deadline-ordered queue, so a tick with nothing due costs one
+//! comparison and arming or retiring a probe costs `O(log n)`. Stale queue entries
+//! are discarded when they surface.
 
 use super::timer::later;
 use crate::config::{RetryConfig, ScanEffort};
@@ -68,27 +58,24 @@ use std::time::{Duration, Instant};
 
 /// How many attempt tokens one probe retains.
 ///
-/// A reply older than the last few attempts is of no practical use: it would
-/// have to have outlived several round-trip timeouts, and the probe it answers
-/// has usually been retired by then anyway. Bounding this keeps a record a
-/// fixed size, so the outstanding set costs no allocation per probe.
+/// A reply older than the last few attempts would have outlived several
+/// round-trip timeouts, and its probe has usually been retired. The bound keeps a
+/// record a fixed size, with no allocation per probe.
 const MAX_TRACKED_ATTEMPTS: usize = 4;
 
 /// How the budget is cut for a host that has never said anything.
 ///
-/// Spending a full budget on every port of an address that answers nothing at
-/// all is the single largest source of wasted traffic in a wide scan: three
-/// attempts across 65 535 ports is nearly 200 000 packets to learn one fact.
+/// A full budget on every port of an address that answers nothing is the largest
+/// source of wasted traffic in a wide scan: three attempts across 65 535 ports is
+/// nearly 200 000 packets.
 ///
-/// The rule is conservative. *Any* reply counts as life - a `RST`,
-/// an ICMP error, an ARP reply - so an ordinary firewalled-but-alive host that
-/// refuses even one port never triggers it, and the budget is reduced rather
-/// than abandoned. What it can still cost is a port that is open, behind a path
-/// lossy enough to drop consecutive probes, on a host that answered nothing
-/// else; that is the trade, and it is why this is optional.
+/// *Any* reply counts as life (a `RST`, an ICMP error, an ARP reply), so a
+/// firewalled host that refuses even one port never triggers it, and the budget is
+/// reduced, not abandoned. It can still miss an open port behind a path lossy enough
+/// to drop consecutive probes, on a host that answered nothing else, which is why
+/// this is optional.
 ///
-/// `#[non_exhaustive]`: built through [`new`](Self::new). See
-/// [`WindowLimits`](super::congestion::WindowLimits) for the argument.
+/// `#[non_exhaustive]`: build it with [`new`](Self::new).
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SilentHostPolicy {
@@ -112,70 +99,57 @@ impl SilentHostPolicy {
 
 /// The fixed parameters a [`ProbeLedger`] runs on.
 ///
-/// Declared per scanner beside its deadline profile, since what counts as a
-/// reasonable wait differs by protocol far more than by network: a SYN is
-/// answered as fast as the path allows, while an ICMP error is rate-limited to
-/// roughly one per second by the host that would send it.
+/// Declared per scanner beside its deadline profile, since a reasonable wait
+/// depends on the protocol: a SYN is answered as fast as the path allows, while an
+/// ICMP error is rate-limited to roughly one per second by the host that sends it.
 ///
-/// `#[non_exhaustive]`: built through [`new`](Self::new) and the builders beside
-/// it. See [`WindowLimits`](super::congestion::WindowLimits) for the argument.
+/// `#[non_exhaustive]`: build it with [`new`](Self::new) and the builders beside it.
 #[must_use]
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {
     /// Total sends per probe, initial attempt included. One disables
-    /// retransmission, which is a supported configuration rather than a
-    /// degenerate one: an internet-scale sweep will want it.
+    /// retransmission, as an internet-scale sweep will want.
     pub max_attempts: u8,
     /// The timeout used before anything has been measured.
     ///
-    /// Distinct from [`min_rto`](Self::min_rto). With no samples
-    /// the network is unknown, not known to be fast, and starting at the floor
-    /// would triple the traffic of a scan whose first probes cross an ocean.
-    /// Only measurement is allowed to push the timeout down toward the floor.
+    /// Distinct from [`min_rto`](Self::min_rto): with no samples the network is
+    /// unknown, and starting at the floor would triple the traffic of a scan whose
+    /// first probes cross an ocean. Only measurement pushes the timeout toward the
+    /// floor.
     pub initial_rto: Duration,
     /// The shortest timeout measurement may justify.
     pub min_rto: Duration,
-    /// The longest timeout, applied to the backed-off value as well. Also the
-    /// ceiling on [`initial_rto`](Self::initial_rto), so a policy whose numbers
-    /// disagree resolves in favour of the bound rather than the guess.
+    /// The longest timeout, applied to the backed-off value as well. Also caps
+    /// [`initial_rto`](Self::initial_rto).
     pub max_rto: Duration,
-    /// Multiplier applied per attempt, so a path that is losing packets is
-    /// asked less often rather than more.
+    /// Multiplier applied per attempt, so a path that is losing packets is asked
+    /// less often.
     pub backoff: f64,
     /// Fractional spread applied to every deadline, as a proportion of it.
     ///
-    /// Load-bearing rather than decorative. Probes admitted together time out
-    /// together, and an unjittered retry turns that into a synchronized burst
-    /// at the moment the path is least able to absorb one.
+    /// Probes admitted together time out together, and unjittered retries would
+    /// leave as a synchronized burst when the path is least able to absorb one.
     ///
-    /// Upward only: a deadline is drawn from itself to itself lengthened by
-    /// this fraction, never shortened. What jitter is for is that deadlines
-    /// armed together differ, which a spread above the deadline does as well
-    /// as one around it. Spread below it, a deadline can land under the floor
-    /// or under what the host's round trips have shown an answer needs, and a
-    /// probe timed there gives up on answers still on their way: with one
-    /// attempt behind a 20 ms path, a 30% spread down from a 25 ms floor read
-    /// about one open port in five as silent.
+    /// Upward only: a deadline is drawn between itself and itself lengthened by
+    /// this fraction. Spread below, it could land under the floor or under the
+    /// host's measured round trip: with one attempt behind a 20 ms path, a 30%
+    /// spread down from a 25 ms floor read about one open port in five as silent.
     pub jitter: f64,
     /// How the budget is cut for hosts that never answer, if at all.
     pub silent_host: Option<SilentHostPolicy>,
     /// Whether one host's round trip is evidence about another's, which decides
     /// if a target with no measurement of its own inherits the scan's.
     ///
-    /// True for anything whose timing is dominated by the *path*: on a routed
-    /// scan every probe crosses the same links, so the first host to answer has
-    /// told the scan roughly what the rest will cost, and starting a fresh
-    /// target from first principles wastes the knowledge.
+    /// True where timing is dominated by the path: on a routed scan every probe
+    /// crosses the same links, so the first host to answer says roughly what the
+    /// rest will cost.
     ///
-    /// False where the timing is dominated by the *responder*. Neighbor
-    /// discovery on a segment is the case that forced this: a mains-powered
-    /// router answers a solicitation in five milliseconds and a phone asleep on
-    /// wifi takes four hundred, over the same link at the same moment. One
-    /// number does not describe both populations, and inheriting the fast one
-    /// retransmits to the slow one before it could possibly have answered -
-    /// which, for a probe whose attempts are indistinguishable on the wire,
-    /// destroys the measurement rather than merely wasting a packet.
+    /// False where timing is dominated by the responder. In neighbour discovery a
+    /// mains-powered router answers in five milliseconds and a phone asleep on
+    /// wifi in four hundred, over the same link. Inheriting the fast estimate
+    /// retransmits to the slow host before it could answer, and for a probe whose
+    /// attempts are indistinguishable on the wire that destroys the measurement.
     pub cross_host_estimate: bool,
 }
 
@@ -187,7 +161,7 @@ impl RetryPolicy {
     /// nothing at all.
     ///
     /// A target with no measurement of its own inherits the scan's. Where the
-    /// responder rather than the path decides the timing, chain
+    /// responder decides the timing, chain
     /// [`without_cross_host_estimate`](Self::without_cross_host_estimate).
     pub const fn new(
         max_attempts: u8,
@@ -212,9 +186,6 @@ impl RetryPolicy {
 
     /// This policy with each target timed on its own evidence only.
     ///
-    /// A builder rather than an eighth argument, so the protocols for which one
-    /// neighbour predicts the next - which is most of them - keep declaring
-    /// themselves in one call, and the exception says why it is one.
     /// See [`cross_host_estimate`](Self::cross_host_estimate).
     pub const fn without_cross_host_estimate(self) -> Self {
         Self {
@@ -225,9 +196,8 @@ impl RetryPolicy {
 
     /// Sends each probe exactly once.
     ///
-    /// Not a disabled feature but a working configuration: it is what an
-    /// address-space-scale sweep wants, where per-probe state cannot be
-    /// afforded and coverage is bought with a second pass instead.
+    /// What an address-space-scale sweep wants, where per-probe state cannot be
+    /// afforded and coverage comes from a second pass.
     #[cfg(test)]
     pub const fn none() -> Self {
         Self::new(
@@ -243,10 +213,8 @@ impl RetryPolicy {
 
     /// This policy as `config` asks for it.
     ///
-    /// The scanner's own numbers are the starting point and the protocol's
-    /// constraints survive: the effort level and the scale factor move what the
-    /// scan is *willing* to wait, never the floor below which waiting less is
-    /// simply wrong.
+    /// The scanner's own numbers are the starting point. The effort level and
+    /// scale factor move how long the scan is willing to wait, but not the floor.
     pub fn configured(self, config: RetryConfig) -> Self {
         let mut policy = match config.effort {
             ScanEffort::Single => Self {
@@ -281,14 +249,11 @@ impl RetryPolicy {
 
     /// This policy with its patience multiplied by `factor`.
     ///
-    /// [`min_rto`](Self::min_rto) is untouched on purpose. It is the shortest
-    /// wait that can still produce an answer, which is a property of the
-    /// protocol rather than of how much hurry the caller is in.
+    /// [`min_rto`](Self::min_rto) is untouched: it is the shortest wait that can
+    /// still produce an answer, a property of the protocol.
     ///
     /// `factor` is positive and finite, because
     /// [`TimeoutScale`](crate::config::TimeoutScale) refuses anything else.
-    /// Guarded here instead, a caller's zero or NaN would be discarded without
-    /// a word and then written into the report as though it had applied.
     fn scaled(self, factor: f64) -> Self {
         debug_assert!(
             factor.is_finite() && factor > 0.0,
@@ -298,9 +263,8 @@ impl RetryPolicy {
 
         Self {
             initial_rto: saturating_mul(self.initial_rto, factor),
-            // Scaling the ceiling below the floor would leave the policy
-            // describing an empty range. The floor wins, since it is the one of
-            // the two that the protocol imposes.
+            // The floor wins over a ceiling scaled below it, since the protocol
+            // imposes it.
             max_rto: saturating_mul(self.max_rto, factor).max(self.min_rto),
             ..self
         }
@@ -309,9 +273,8 @@ impl RetryPolicy {
     /// The longest a probe can occupy the ledger: every attempt's timeout at
     /// its most generous, with no measurement to shorten it.
     ///
-    /// This is what a scan's own deadline has to accommodate. A hard budget
-    /// shorter than this expires the scan between one attempt and the next, so
-    /// probes are written off as unanswered having never been fully asked.
+    /// A scan's hard budget must be at least this, or probes are written off
+    /// before they are fully asked.
     #[cfg(test)]
     pub fn worst_case_probe_lifetime(&self) -> Duration {
         let mut total = Duration::ZERO;
@@ -325,11 +288,9 @@ impl RetryPolicy {
     /// The longest any one attempt may wait for its answer: the ceiling, spread
     /// as far as the jitter reaches.
     ///
-    /// Longer than the first timeout of
-    /// `worst_case_probe_lifetime`, which
-    /// assumes nothing has been measured. Measurement moves a host's timeout
-    /// either way, and a host measured slow is timed at up to this on every
-    /// attempt, the first included.
+    /// Longer than the first timeout of `worst_case_probe_lifetime`, which assumes
+    /// nothing has been measured: a host measured slow is timed at up to this on
+    /// every attempt, the first included.
     pub(crate) fn longest_timeout(&self) -> Duration {
         let ceiling = self.max_rto.max(self.min_rto);
         saturating_mul(ceiling, 1.0 + self.jitter.clamp(0.0, 1.0))
@@ -346,9 +307,8 @@ impl RetryPolicy {
     /// keeping `gap` between two probes at one host: every attempt waits the
     /// longer of its timeout and the gap before the next can leave.
     ///
-    /// For a caller whose retries are held for the gap with their clocks
-    /// stopped (see [`ProbeLedger::defer`]), which is what makes the gap part
-    /// of a probe's schedule rather than a cut in it.
+    /// For a caller whose retries are held for the gap with their clocks stopped
+    /// (see [`ProbeLedger::defer`]).
     pub(crate) fn longest_spaced_probe_lifetime(&self, gap: Option<Duration>) -> Duration {
         self.longest_timeout()
             .max(gap.unwrap_or_default())
@@ -372,16 +332,13 @@ impl RetryPolicy {
 }
 
 /// One in how many of the probes put to a host it has to answer before its
-/// silence is read as loss rather than as its own; see
-/// [`ProbeLedger::host_is_answering`].
+/// silence is read as loss; see [`ProbeLedger::host_is_answering`].
 ///
-/// Ten. A tenth of the ports asked is the most a scan promises to find open
-/// without reading their silence as loss (see
-/// [`congestion`](super::congestion)), and it serves from the other side
-/// here: a host that answers no more than a tenth is a firewall letting that
-/// many ports through, which asking it more slowly would not change. A host
-/// being outrun answers most of what reaches it, three quarters of its
-/// probes in the case measured.
+/// A tenth of the ports asked is the most a scan promises to find open without
+/// reading their silence as loss (see [`congestion`](super::congestion)). A host
+/// answering no more than that is a firewall letting those ports through; a host
+/// being outrun answers most of what reaches it, three quarters in the case
+/// measured.
 const ANSWERING_ONE_IN: u32 = 10;
 
 /// The smallest headroom a measured timeout keeps over the smoothed round
@@ -391,30 +348,23 @@ const MIN_HEADROOM_DIVISOR: u32 = 4;
 /// A smoothed round-trip estimate and its variability, as RFC 6298 computes
 /// them for TCP.
 ///
-/// Chosen over the sample window that steers the scan deadline
-/// ([`RttWindow`](super::rtt_window::RttWindow)) because this one is kept *per
-/// host*, where the cost per entry decides whether per-host timing is
-/// affordable at all: two durations updated in place, rather than a queue of
-/// twenty.
+/// Kept per host, so it is two durations updated in place. The scan-wide deadline
+/// uses a sample window instead, [`RttWindow`](super::rtt_window::RttWindow).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RttEstimator {
     smoothed: Option<Duration>,
     variation: Duration,
-    /// Whether the estimate was handed in by [`seed`](Self::seed) rather than
-    /// measured, so the first measurement replaces it.
+    /// Whether the estimate came from [`seed`](Self::seed), so the first
+    /// measurement replaces it.
     seeded: bool,
 }
 
 impl RttEstimator {
     /// Folds in one round-trip measurement.
     ///
-    /// The first sample has nothing to smooth against, so it becomes the
-    /// estimate outright and seeds the variation at half of itself, which is
-    /// what keeps a single fast sample from producing a timeout too tight to
-    /// survive the second.
-    ///
-    /// A [seeded](Self::seed) estimate is discarded first, so the first
-    /// measurement starts the estimate as though nothing had been seeded.
+    /// The first sample becomes the estimate outright and sets the variation at
+    /// half of itself (RFC 6298), so one fast sample cannot produce a timeout too
+    /// tight for the second. A [seeded](Self::seed) estimate is discarded first.
     pub fn record(&mut self, sample: Duration) {
         if std::mem::take(&mut self.seeded) {
             self.smoothed = None;
@@ -436,24 +386,17 @@ impl RttEstimator {
 
     /// The timeout these samples justify, or `None` while there are none.
     ///
-    /// Four variations of headroom is the margin TCP allows itself, and the
-    /// reasoning carries over unchanged: it is wide enough that ordinary
-    /// variance does not trip it, and narrow enough that a genuinely lost packet
-    /// is noticed in the same order of magnitude as the round trip.
+    /// Four variations of headroom, the margin TCP allows itself.
     ///
-    /// The headroom is never less than a quarter of the smoothed round trip.
-    /// The variation measures how far samples stray, and on a path whose
-    /// replies mostly agree it decays towards nothing between the stragglers,
-    /// leaving a timeout that is the round trip itself, which every reply a
-    /// little slower than usual misses: with one reply in twenty ten percent
-    /// slow, a steady 100 ms path read a fifth to two fifths of those as
-    /// silent on one attempt. TCP answers the same decay with a floor of one clock tick
-    /// (RFC 6298's G), which says nothing here, where the clock is finer than
-    /// any path; what a steady path does stray by is a share of its own round
-    /// trip, as queues along it fill and drain, so the floor is a share too. A
-    /// quarter clears the ten percent a straggler was measured at with room,
-    /// and costs a scan only on paths slow enough to lift the timeout above
-    /// the policy's floor: below about 20 ms that floor is larger still.
+    /// The headroom is at least a quarter of the smoothed round trip. On a path
+    /// whose replies mostly agree the variation decays towards nothing, leaving a
+    /// timeout equal to the round trip that every slightly slow reply misses: with
+    /// one reply in twenty ten percent slow, a steady 100 ms path read a fifth to
+    /// two fifths of those as silent on one attempt. TCP's floor of one clock tick
+    /// (RFC 6298's G) is meaningless at this clock resolution; a steady path strays
+    /// by a share of its own round trip, so the floor is a share too. A quarter
+    /// clears the measured ten percent, and below about 20 ms the policy's own floor
+    /// is larger anyway.
     pub fn timeout(&self) -> Option<Duration> {
         self.smoothed.map(|smoothed| {
             let headroom = (self.variation * 4).max(smoothed / MIN_HEADROOM_DIVISOR);
@@ -461,8 +404,8 @@ impl RttEstimator {
         })
     }
 
-    /// Whether nothing has been recorded yet, which is when
-    /// [`timeout`](Self::timeout) has no answer to give.
+    /// Whether nothing has been recorded yet, in which case
+    /// [`timeout`](Self::timeout) returns `None`.
     pub fn is_empty(&self) -> bool {
         self.smoothed.is_none()
     }
@@ -471,16 +414,12 @@ impl RttEstimator {
     /// this estimate's own probes measured, and keeps it only until the first
     /// [`record`](Self::record), which replaces it.
     ///
-    /// Until then it times probes as one sample would. After that it is
-    /// dropped rather than smoothed against, because it is weaker evidence
-    /// than any measurement of the estimate's own and RFC 6298's weights would
-    /// let it outvote them: a first sample becomes the estimate and each later
-    /// one moves it an eighth, so a seed well above the path's round trip
-    /// still sets most of the timeout after the first reply that disagrees,
-    /// and a host that answers the scan once keeps it for the whole scan.
-    /// That is TCP's own practice with a remembered round trip: Linux's
-    /// per-destination metrics set a new connection's first timeout and leave
-    /// its smoothed estimate to the connection's first measurement.
+    /// Until then it times probes as one sample would. It is then dropped, not
+    /// smoothed against: under RFC 6298's weights each later sample moves the
+    /// estimate only an eighth, so a seed well above the path's round trip would
+    /// dominate the timeout of a host that answers once. Linux does the same with
+    /// its per-destination metrics, which set a new connection's first timeout and
+    /// leave the smoothed estimate to its first measurement.
     ///
     /// Does nothing to an estimate that holds anything already.
     pub(crate) fn seed(&mut self, rtt: Duration) {
@@ -497,8 +436,8 @@ struct Attempt<T> {
     token: T,
     sent_at: Instant,
     /// Whether this attempt was seen leaving on the wire, which a successful
-    /// `sendto` does not establish (macOS accepts writes it then drops). A flag
-    /// so the same frame seen twice counts once.
+    /// `sendto` does not establish (macOS accepts writes it then drops). A flag so
+    /// the same frame seen twice counts once.
     witnessed: bool,
 }
 
@@ -506,10 +445,6 @@ struct Attempt<T> {
 struct Record<T, P> {
     /// Caller data handed over at [`ProbeLedger::arm`] and given back when the
     /// probe retires. The ledger never reads it.
-    ///
-    /// Held here rather than in a map beside the ledger so its lifetime is the
-    /// record's: it cannot outlive the probe, and it cannot go missing while the
-    /// probe is live.
     payload: P,
     host: IpAddr,
     /// The live attempts, oldest first, capped at [`MAX_TRACKED_ATTEMPTS`].
@@ -522,19 +457,17 @@ struct Record<T, P> {
     witnessed: u8,
     /// How many sends actually reached the wire and were recorded here.
     ///
-    /// Separate from [`sends`](Self::sends), which is charged when
-    /// a retry is *scheduled* so that a probe nobody manages to send still
-    /// exhausts on time. Numbering the tracked attempts off that count would
-    /// misname them by however many were charged and never emitted, so the
-    /// numbering follows the wire instead.
+    /// Separate from [`sends`](Self::sends), which is charged when a retry is
+    /// scheduled so that a probe nobody manages to send still exhausts on time.
+    /// Attempt numbering follows this count.
     recorded: u8,
     /// The budget in force, resolved when the probe was first armed and again
     /// on every retry, so a host that comes to life mid-scan lifts the
     /// restriction on probes still outstanding against it.
     budget: u8,
-    /// Identifies this record's live queue entry. Any entry carrying a
-    /// different value has been superseded and is discarded on sight, which is
-    /// how a timer is cancelled without being found.
+    /// Identifies this record's live queue entry. An entry carrying a different
+    /// value has been superseded and is discarded on sight, which cancels a timer
+    /// without searching for it.
     generation: u32,
     /// Whether the retry this probe was last scheduled for is still waiting to
     /// be sent, with its clock stopped. See [`ProbeLedger::defer`].
@@ -560,10 +493,9 @@ impl<T: Copy, P> Record<T, P> {
     /// Stores the token one attempt was sent with, evicting the oldest when the
     /// array is full.
     ///
-    /// The attempt *count* is not touched here. It belongs to
-    /// [`ProbeLedger::drain_due`], which charges an attempt when it schedules a
-    /// retry rather than when the caller gets around to sending it, so a retry
-    /// that is never actually emitted still exhausts on schedule.
+    /// The attempt count is charged by [`ProbeLedger::drain_due`] when it
+    /// schedules a retry, so a retry that is never emitted still exhausts on
+    /// schedule.
     fn record_attempt(&mut self, token: T, sent_at: Instant) {
         self.recorded = self.recorded.saturating_add(1);
 
@@ -613,11 +545,9 @@ impl<T: Copy, P> Record<T, P> {
     /// The attempt carrying `token`: which send it was, counting the first as
     /// 1, and when it left.
     ///
-    /// Only the last few attempts are tracked, so the ordinal is counted back
-    /// from the newest rather than read off the slot. A probe retried more than
-    /// [`MAX_TRACKED_ATTEMPTS`] times has forgotten its earliest tokens
-    /// entirely, and a reply to one of those is unrecognizable rather than
-    /// misnumbered.
+    /// Only the last few attempts are tracked, so the ordinal is counted back from
+    /// the newest. A probe retried more than [`MAX_TRACKED_ATTEMPTS`] times has
+    /// forgotten its earliest tokens, and a reply to one of those is unrecognized.
     fn attempt_of(&self, token: &T) -> Option<(u8, Instant)>
     where
         T: PartialEq,
@@ -639,8 +569,7 @@ impl<T: Copy, P> Record<T, P> {
     }
 
     /// The only tracked attempt's send time, or `None` if there is more than
-    /// one. This is Karn's rule: with several attempts outstanding and nothing
-    /// in the reply to tell them apart, no sample can honestly be taken.
+    /// one (Karn's rule).
     fn unambiguous_sent_at(&self) -> Option<Instant> {
         if self.sends != 1 {
             return None;
@@ -698,27 +627,25 @@ impl<K> PartialOrd for Timer<K> {
 /// What a probe needs once its timer has fired.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Due<K, P = ()> {
-    /// Send this again. The probe stays outstanding, and the ledger has already
-    /// counted the attempt, so a caller that cannot send - no route, a refused
-    /// socket - may simply do nothing and let it exhaust on its own.
+    /// Send this again. The probe stays outstanding and the ledger has already
+    /// counted the attempt, so a caller that cannot send (no route, a refused
+    /// socket) may do nothing and let it exhaust.
     Retry {
         /// Which probe to send again.
         key: K,
         /// Which attempt this is, counting the first send as one.
         attempt: u8,
     },
-    /// The budget is spent and the probe is no longer outstanding. This is the
-    /// moment a verdict of "no-reply" is earned rather than assumed.
+    /// The budget is spent and the probe is no longer outstanding. Only now is a
+    /// "no-reply" verdict earned.
     Exhausted {
         /// The probe being retired.
         key: K,
         /// Whatever the caller armed this probe with.
         payload: P,
-        /// How many times it was sent, so a caller can tell the probe that was
-        /// asked once from the one that was asked three times. A pacing
-        /// controller needs the difference: the first of a probe's timeouts is
-        /// the one that says something about the path, and with a budget of one
-        /// attempt this event *is* that first timeout.
+        /// How many times it was sent. A pacing controller needs this: a probe's
+        /// first timeout is the one that says something about the path, and with a
+        /// budget of one attempt this event is that first timeout.
         attempts: u8,
         /// How many of those sends were seen leaving. Zero here while the run
         /// witnessed others is a probe never asked; always zero for a caller
@@ -740,32 +667,28 @@ pub struct Resolution<P = ()> {
     /// Which send the reply answered, the first being 1, or `None` where
     /// nothing in the reply named one.
     ///
-    /// This is what separates a probe that needed repeating from one that
-    /// merely needed waiting for. Both look identical in a count of hosts
-    /// found: a host credited after three attempts may have answered the third,
-    /// or answered the first from a path slow enough that two more went out
-    /// meanwhile. Only the token says which, and the difference decides whether
-    /// coverage is bought with more packets or with more patience.
+    /// Separates a probe that needed repeating from one that needed waiting for:
+    /// a host credited after three attempts may have answered the third, or the
+    /// first over a slow path. That decides whether coverage is bought with more
+    /// packets or with more patience.
     pub answered_attempt: Option<u8>,
 }
 
 /// The outstanding probes of one scanner, and the schedule on which they are
 /// resent and retired.
 ///
-/// `K` identifies a probe - `(IpAddr, u16)` for a port scan, `IpAddr` for host
+/// `K` identifies a probe: `(IpAddr, u16)` for a port scan, `IpAddr` for host
 /// discovery. `T` is the per-attempt token a reply can be matched against, such
 /// as a TCP sequence number; where the wire carries no such thing, use `()`.
 ///
-/// Time is supplied by the caller at every entry point rather than read from the
-/// clock internally, so a scan loop reads it once per iteration and the whole
-/// structure is testable without sleeping.
+/// The caller supplies the time at every entry point, so a scan loop reads the
+/// clock once per iteration and the structure is testable without sleeping.
 pub struct ProbeLedger<K, T, P = ()> {
     policy: RetryPolicy,
     records: HashMap<K, Record<T, P>>,
     timers: BinaryHeap<Timer<K>>,
     hosts: HashMap<IpAddr, HostState>,
-    /// Fallback timing for a host that has not answered yet, so a fresh target
-    /// on a known-slow network does not start from first principles.
+    /// Fallback timing for a host that has not answered yet.
     global: RttEstimator,
     next_generation: u32,
     jitter: Jitter,
@@ -782,8 +705,7 @@ where
         Self::seeded(policy, capacity, rand::random())
     }
 
-    /// [`new`](Self::new) with the jitter sequence pinned, so a test observes
-    /// one schedule rather than a family of them.
+    /// [`new`](Self::new) with the jitter sequence pinned, for tests.
     pub fn seeded(policy: RetryPolicy, capacity: usize, seed: u64) -> Self {
         Self {
             policy,
@@ -798,10 +720,9 @@ where
 
     /// Records that a probe for `key` just left the wire carrying `token`.
     ///
-    /// Called after the first send and after every retry alike; the ledger
-    /// counts the attempts itself. Arming supersedes any timer the probe
-    /// already had, so the timeout runs from when the packet actually left
-    /// rather than from when the retry was suggested.
+    /// Called after the first send and after every retry; the ledger counts the
+    /// attempts itself. Arming supersedes any timer the probe already had, so the
+    /// timeout runs from when the packet actually left.
     pub fn arm(&mut self, host: IpAddr, key: K, token: T, payload: P, now: Instant) {
         self.arm_inner(host, key, token, Some(payload), now);
     }
@@ -809,11 +730,8 @@ where
     /// Records a *retry* for a probe already outstanding, keeping the payload it
     /// was armed with.
     ///
-    /// Separate from [`arm`](Self::arm) because a retry is driven from
-    /// [`Due::Retry`], which names the probe and not what the caller knew about
-    /// it when it first went out. Re-supplying the payload there would mean
-    /// carrying it through the retry path for no reason, and inventing one would
-    /// silently replace it.
+    /// A retry is driven from [`Due::Retry`], which names the probe but carries no
+    /// payload.
     pub fn rearm(&mut self, host: IpAddr, key: K, token: T, now: Instant) {
         self.arm_inner(host, key, token, None, now);
     }
@@ -826,8 +744,8 @@ where
 
         let record = match self.records.get_mut(&key) {
             Some(record) => {
-                // A retry: the budget is re-read so a host that has since
-                // answered lifts any restriction on its outstanding probes.
+                // Re-read, so a host that has since answered lifts any
+                // restriction on its outstanding probes.
                 record.budget = budget;
                 record.generation = generation;
                 record.deferred = false;
@@ -837,10 +755,8 @@ where
                 record
             }
             None => {
-                // A `rearm` for a probe that is no longer outstanding: it was
-                // resolved or retired between the retry being scheduled and the
-                // send. There is nothing to arm and no payload to invent, so it
-                // is dropped, as a stale timer already is.
+                // A `rearm` for a probe resolved or retired between the retry
+                // being scheduled and the send: dropped, like a stale timer.
                 let Some(payload) = payload else {
                     return;
                 };
@@ -869,21 +785,19 @@ where
     /// caller cannot tell, in which case a round trip is reported only for a
     /// probe that was sent once and so has nothing to be ambiguous about.
     ///
-    /// `None` comes back for a duplicate, for a reply to a probe already
-    /// resolved or retired, and for a token matching no live attempt - all of
-    /// which are to be dropped. That is what makes resolution exactly-once: a
-    /// second reply finds nothing to resolve.
+    /// Returns `None` for a duplicate, a reply to a probe already resolved or
+    /// retired, and a token matching no live attempt; the caller drops all of
+    /// these. Resolution is exactly-once.
     pub fn resolve(&mut self, key: &K, token: Option<T>, now: Instant) -> Option<Resolution<P>> {
         let record = self.records.get(key)?;
         let payload = record.payload;
 
         let attributed = match token {
-            // A token naming no attempt we made is someone else's packet, so
-            // the probe is left outstanding rather than resolved by it.
+            // A token naming no attempt we made is someone else's packet; the
+            // probe stays outstanding.
             Some(token) => Some(record.attempt_of(&token)?),
-            // Karn's rule leaves the sample unusable with several sends
-            // outstanding, but a probe sent once has nothing to confuse its
-            // reply with: it answered the first attempt by elimination.
+            // A probe sent once can only have been answered by its first
+            // attempt.
             None => record.unambiguous_sent_at().map(|sent_at| (1, sent_at)),
         };
 
@@ -915,9 +829,9 @@ where
     /// Appends every probe whose timer has fired to `out`.
     ///
     /// A [`Due::Retry`] leaves the probe outstanding with its attempt already
-    /// counted; a [`Due::Exhausted`] has removed it. The buffer is supplied by
-    /// the caller so a scanner can send while the ledger is mutably borrowed,
-    /// and so a tick with nothing due allocates nothing.
+    /// counted; a [`Due::Exhausted`] has removed it. The caller supplies the
+    /// buffer, so it can send while the ledger is borrowed and a tick with nothing
+    /// due allocates nothing.
     pub fn drain_due(&mut self, now: Instant, out: &mut Vec<Due<K, P>>) {
         while let Some(timer) = self.timers.peek() {
             if timer.due > now {
@@ -932,8 +846,8 @@ where
                 continue; // Superseded by a later arm.
             }
 
-            // The first attempt's timeout, which every probe has once at
-            // most: what `host_is_answering` weighs against the answers.
+            // The first attempt's timeout, at most once per probe: what
+            // `host_is_answering` weighs against the answers.
             if record.sends == 1 {
                 let state = self.hosts.entry(record.host).or_default();
                 state.silences = state.silences.saturating_add(1);
@@ -954,9 +868,8 @@ where
                 continue;
             }
 
-            // The attempt is counted here rather than when the caller sends, so
-            // a probe whose retry is never actually emitted still exhausts on
-            // schedule instead of waiting outstanding forever.
+            // Counted here, so a probe whose retry is never emitted still
+            // exhausts on schedule.
             record.sends += 1;
             let attempt = record.sends;
             let host = record.host;
@@ -982,9 +895,8 @@ where
 
     /// When the next timer fires, or `None` while nothing is outstanding.
     ///
-    /// This is what a scan loop sleeps on. It may name a deadline belonging to a
-    /// superseded entry and so wake the loop early; the cost is one extra
-    /// iteration, which is cheaper than keeping the queue exactly pruned.
+    /// What a scan loop sleeps on. It may name a superseded entry's deadline and
+    /// wake the loop early, at the cost of one extra iteration.
     pub fn next_due(&self) -> Option<Instant> {
         self.timers.peek().map(|timer| timer.due)
     }
@@ -992,18 +904,15 @@ where
     /// Stops `key`'s clock while the retry [`drain_due`](Self::drain_due) just
     /// scheduled for it waits for the caller's admission.
     ///
-    /// For a caller that sends a retry when its own pacing allows rather than
-    /// the moment it comes due. The attempt is already charged; what stops is
-    /// the timer that would charge the next one, or retire the probe, while
-    /// this one has not left. Left running, a retry held longer than its own
-    /// timeout is overtaken by the next, and a probe held past the end of its
-    /// schedule retires as silent having been asked fewer times than its
-    /// budget, each spent attempt a packet nobody sent.
+    /// For a caller that sends a retry when its own pacing allows. The attempt is
+    /// already charged; what stops is the timer that would charge the next one or
+    /// retire the probe. Left running, a held retry could be overtaken by the next,
+    /// and the probe could retire as silent having been asked fewer times than its
+    /// budget.
     ///
-    /// The clock restarts from the send, since [`rearm`](Self::rearm) times
-    /// the attempt from when it left, or from [`resume`](Self::resume) for a
-    /// retry the caller ends up not sending. A caller that defers must do one
-    /// or the other, or the probe waits outstanding until the scan ends.
+    /// The clock restarts at [`rearm`](Self::rearm) when the retry is sent, or at
+    /// [`resume`](Self::resume) if it is not. A caller that defers must do one or
+    /// the other, or the probe stays outstanding until the scan ends.
     pub(crate) fn defer(&mut self, key: &K) {
         let generation = self.take_generation();
         if let Some(record) = self.records.get_mut(key) {
@@ -1015,7 +924,7 @@ where
     /// Restarts `key`'s clock from `now`, for a deferred retry that was not
     /// sent after all: refused by the sender, or aimed at an address that
     /// cannot be reached. The attempt stays charged, so the probe still runs
-    /// out of attempts on schedule rather than waiting outstanding forever.
+    /// out of attempts on schedule.
     ///
     /// Does nothing for a probe that is not deferred, which includes one whose
     /// retry was sent and re-armed.
@@ -1040,7 +949,7 @@ where
     }
 
     /// Removes every outstanding probe, yielding their keys, for a scan that is
-    /// stopping before they could be resolved on their own.
+    /// stopping early.
     pub fn drain_unresolved(&mut self) -> Vec<K> {
         self.timers.clear();
         let keys: Vec<K> = self.records.keys().copied().collect();
@@ -1057,8 +966,8 @@ where
         self.records.len()
     }
 
-    /// Whether no probe is outstanding. Once a scan has admitted its last
-    /// target, this is what tells its loop there is nothing left to wait for.
+    /// Whether no probe is outstanding. After the last admission, this tells the
+    /// loop there is nothing left to wait for.
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
     }
@@ -1084,17 +993,13 @@ where
     /// Whether `key` is outstanding and, where `token` is given, whether it
     /// names one of that probe's live attempts.
     ///
-    /// The non-destructive half of [`resolve`](Self::resolve), for a message
-    /// that reports on the *host* rather than on the port it happened to quote.
-    /// Such a message must not retire the probe — the port is still undecided
-    /// and keeps its remaining attempts — but it still has to be shown to be
-    /// about a probe this scan actually sent before anything is recorded on its
-    /// word. Without this nothing can show it: an ICMP host unreachable would
-    /// be believed on the strength of its quoted source port alone.
+    /// The non-destructive half of [`resolve`](Self::resolve), for a message that
+    /// reports on the host, such as an ICMP host unreachable. It must not retire the
+    /// probe, whose port is still undecided, but it must be shown to concern a
+    /// probe this scan sent.
     ///
-    /// `None` for the token means the quotation was too short to carry one,
-    /// which leaves the key as the whole of the evidence. That is weaker and the
-    /// caller is expected to know it; what it is not is nothing.
+    /// `None` for the token means the quotation was too short to carry one, which
+    /// leaves the key as weaker evidence.
     pub fn names_attempt(&self, key: &K, token: Option<&T>) -> bool {
         let Some(record) = self.records.get(key) else {
             return false;
@@ -1108,31 +1013,24 @@ where
     /// Whether anything has ever come back from `host`: a SYN+ACK, a reset, an
     /// ICMP error, any reply at all.
     ///
-    /// Whether the address is there at all: a host that answered anything is
-    /// one the scan reaches, whose silence is silence rather than an address
-    /// nothing reaches. How much of it answers, which is what decides whether
-    /// its silence is loss, is
+    /// Whether the scan reaches the address at all. Whether its silence is loss is
     /// [`host_is_answering`](Self::host_is_answering)'s question.
     ///
-    /// Not "has a round trip", which
-    /// `host_rtt` answers: a reply that could not be
-    /// attributed to an attempt still proves the host is talking, and a host
-    /// whose every reply arrived ambiguously would otherwise look silent.
+    /// A reply that could not be attributed to an attempt counts, though it gives
+    /// no round trip.
     pub fn host_has_answered(&self, host: &IpAddr) -> bool {
         self.hosts.get(host).is_some_and(|state| state.answers > 0)
     }
 
     /// Whether `host` has answered more than one in
-    /// [`ANSWERING_ONE_IN`] of the probes put to it: whether it is answering
-    /// what it is asked, which is the host whose silence a pacing controller
-    /// reads as loss.
+    /// [`ANSWERING_ONE_IN`] of the probes put to it. A pacing controller reads
+    /// silence from such a host as loss.
     ///
-    /// Not [`host_has_answered`](Self::host_has_answered). A firewall that
-    /// lets one port through is a host that has answered, and its silence is
-    /// still its firewall: read as loss, a Windows machine with one port open
-    /// in a thousand held a scan at its window's floor for all of them, and
-    /// cut the pace of every other host asked beside it. A probe answered
-    /// only on a retry counts on both sides, a silence and then an answer.
+    /// Stricter than [`host_has_answered`](Self::host_has_answered): a firewall
+    /// that lets one port through has answered, but its silence is still the
+    /// firewall. Read as loss, a Windows machine with one port open in a thousand
+    /// held a scan at its window's floor. A probe answered only on a retry counts
+    /// on both sides, a silence and then an answer.
     pub(crate) fn host_is_answering(&self, host: &IpAddr) -> bool {
         self.hosts.get(host).is_some_and(|state| {
             let (answers, silences) = (u64::from(state.answers), u64::from(state.silences));
@@ -1149,32 +1047,23 @@ where
     /// Seeds `host`'s round-trip estimate from a measurement this ledger did not
     /// take.
     ///
-    /// A port scan reaches a host that a liveness phase has already timed, and
-    /// starting from [`initial_rto`](RetryPolicy::initial_rto) throws that away:
-    /// the first wave of probes to a host answering in five milliseconds waits
-    /// two hundred before repeating, and every genuinely silent port pays that
-    /// wait three times over. Seeded, the same tail is settled in a fraction of
-    /// the time.
+    /// A port scan reaches hosts a liveness phase already timed. Starting from
+    /// [`initial_rto`](RetryPolicy::initial_rto) instead, probes to a host answering
+    /// in five milliseconds wait two hundred before repeating, and every silent
+    /// port pays that three times.
     ///
-    /// Seeding *down* is safe in a way it would not be without per-attempt
-    /// tokens. An estimate too tight retransmits early, and the reply to the
-    /// first attempt still names the first attempt when it arrives, so the
-    /// round trip is measured correctly and, for a caller reading the answered
-    /// attempt as a loss signal, an early retry is not mistaken for one. What it
-    /// costs is the extra packet, bounded by [`min_rto`](RetryPolicy::min_rto).
+    /// Seeding too low is safe with per-attempt tokens: an early retransmission
+    /// does not mislabel the reply to the first attempt, so the round trip is
+    /// measured correctly. It costs an extra packet, bounded by
+    /// [`min_rto`](RetryPolicy::min_rto).
     ///
-    /// A sample this ledger takes beats one it was handed, both ways round.
-    /// Seeding does nothing for a host already measured or seeded, and the
-    /// seed times the host's probes only until the ledger's first round trip
-    /// to it, which replaces it rather than being smoothed into it (see
-    /// [`RttEstimator::seed`]). The seed was measured by another probe at
-    /// another moment, and it can carry more than the path: a sweep's ARP
-    /// request is broadcast, and a neighbour that answered it in 98 ms
-    /// answered SYNs in 10. Smoothed together, the two timed every silent
-    /// port of that host at a third of a second, since a firewalled host
-    /// answers a port scan about once and so never outvotes its seed, and a
-    /// scan paced by its first timeouts ran several times slower. The
-    /// scan-wide fallback is seeded, and replaced, on the same terms.
+    /// Does nothing for a host already measured or seeded. The seed times the
+    /// host's probes only until the ledger's first round trip to it, which replaces
+    /// it (see [`RttEstimator::seed`]). A seed can carry more than the path: a
+    /// neighbour that answered a broadcast ARP request in 98 ms answered SYNs in
+    /// 10, and a firewalled host answers a port scan about once, so a smoothed seed
+    /// would time all its silent ports at a third of a second. The scan-wide
+    /// fallback is seeded and replaced on the same terms.
     pub fn seed_host_rtt(&mut self, host: IpAddr, rtt: Duration) {
         self.hosts.entry(host).or_default().estimator.seed(rtt);
         if self.policy.cross_host_estimate {
@@ -1186,16 +1075,13 @@ where
     /// scan measured of it, as [`seed_host_rtt`](Self::seed_host_rtt) does, from
     /// the median of the round trips a wait on its path is sized from.
     ///
-    /// Where those are only the answers to address resolutions, the seed is
-    /// taken only if it times the host's probes sooner than the unmeasured
-    /// starting timeout: a resolution can show a neighbour near, and cannot
-    /// show it far. Its lateness is the link delivering a request put to
-    /// every station and the neighbour waking for it (see
-    /// [`HostTelemetry::round_trips`]), which the probes after it do not wait
-    /// on. A neighbour that answered ARP in 196 ms answered SYNs in 8, and
-    /// timed from the ARP answer its silent ports waited 600 ms each until
-    /// the scan measured a round trip of its own: the scan took nearly twice
-    /// as long as it did unseeded.
+    /// Where those are only answers to address resolutions, the seed is taken only
+    /// if it is shorter than the unmeasured starting timeout: a resolution can show
+    /// a neighbour near but not far. Its lateness is the link delivering a
+    /// broadcast and the neighbour waking for it (see
+    /// [`HostTelemetry::round_trips`]), which later probes do not wait on. A
+    /// neighbour that answered ARP in 196 ms answered SYNs in 8; seeded from the
+    /// ARP answer, the scan took nearly twice as long as unseeded.
     pub(crate) fn seed_host(&mut self, host: IpAddr, telemetry: &HostTelemetry) {
         let Some(rtt) = telemetry.median_round_trip() else {
             return;
@@ -1236,15 +1122,9 @@ where
                     .flatten()
             });
 
-        // Held to the floor whichever it came from. The starting value is a
-        // guess about an unknown path and may be tuned down freely, but not
-        // below the point where an answer could not have arrived yet - a probe
-        // repeated sooner than the protocol can reply is a wasted packet, not a
-        // faster scan.
-        //
-        // The ceiling is taken as at least the floor so a policy whose bounds
-        // have been configured into disagreeing still describes a real range
-        // rather than an empty one.
+        // Held to the floor whichever it came from: a probe repeated sooner
+        // than the protocol can reply is a wasted packet. The ceiling is at
+        // least the floor, so crossed bounds still describe a real range.
         let ceiling = self.policy.max_rto.max(self.policy.min_rto);
         let base = match measured {
             Some(measured) => measured,
@@ -1265,9 +1145,8 @@ where
 /// `base` multiplied by `backoff` once per attempt beyond the first, and held
 /// to `ceiling`.
 ///
-/// Held in the multiplication rather than after it. An attempt budget can
-/// reach 255, and three to the 254th is no duration at all, so the product is
-/// taken where it can saturate and clamped before it becomes one.
+/// Clamped inside the multiplication: an attempt budget can reach 255, and three
+/// to the 254th overflows any duration.
 fn scale(base: Duration, backoff: f64, attempt: u8, ceiling: Duration) -> Duration {
     if attempt <= 1 || backoff <= 1.0 {
         return base.min(ceiling);
@@ -1278,12 +1157,9 @@ fn scale(base: Duration, backoff: f64, attempt: u8, ceiling: Duration) -> Durati
 /// `duration` scaled by `factor`, saturating at [`Duration::MAX`] where
 /// [`Duration::mul_f64`] would panic.
 ///
-/// Every factor a schedule is multiplied by is one a caller can make as large
-/// as they like: a backoff raised to the attempt number, a
-/// [`TimeoutScale`](crate::config::TimeoutScale). A product past what a
-/// duration holds is a wait longer than any scan, and saturating says so
-/// without taking the scan down. A factor that is not a number, or not above
-/// zero, gives zero.
+/// A caller can make any schedule factor as large as they like (a backoff raised
+/// to the attempt number, a [`TimeoutScale`](crate::config::TimeoutScale)). A
+/// factor that is NaN or not above zero gives zero.
 pub(crate) fn saturating_mul(duration: Duration, factor: f64) -> Duration {
     let seconds = duration.as_secs_f64() * factor;
     Duration::try_from_secs_f64(seconds).unwrap_or(if seconds > 0.0 {
@@ -1293,10 +1169,8 @@ pub(crate) fn saturating_mul(duration: Duration, factor: f64) -> Duration {
     })
 }
 
-/// The jitter source: SplitMix64, small enough to inline and with a fixed,
-/// documented output sequence, so a seeded ledger schedules identically
-/// forever. Borrowing a generator whose stream is not stable across releases
-/// would make a reproducible schedule quietly stop reproducing.
+/// The jitter source: SplitMix64, inlined for a fixed, documented output sequence,
+/// so a seeded ledger schedules identically across releases.
 struct Jitter(u64);
 
 impl Jitter {
@@ -1319,8 +1193,7 @@ impl Jitter {
 
     /// `base` scaled by a factor drawn uniformly from `[1, 1 + spread]`.
     ///
-    /// Never below `base`, which is already the shortest wait the schedule
-    /// allows; see [`RetryPolicy::jitter`].
+    /// Never below `base`; see [`RetryPolicy::jitter`].
     fn spread(&mut self, base: Duration, spread: f64) -> Duration {
         if spread <= 0.0 {
             return base;
@@ -1350,8 +1223,8 @@ mod tests {
     const HOST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200));
     const OTHER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 201));
 
-    /// Three attempts, no jitter and no backoff, so a schedule is exactly
-    /// predictable and a test can assert on instants rather than ranges.
+    /// Three attempts, no jitter and no backoff, so tests can assert on exact
+    /// instants.
     fn policy() -> RetryPolicy {
         RetryPolicy::new(
             3,
@@ -1365,8 +1238,7 @@ mod tests {
     }
 
     /// Arms one probe under `policy` and runs it to the end of its schedule,
-    /// sending every retry, which is every piece of arithmetic a schedule
-    /// does. Returns how many attempts it was given.
+    /// sending every retry. Returns how many attempts it was given.
     fn schedule_to_the_end(policy: RetryPolicy) -> u8 {
         let _ = (
             policy.worst_case_probe_lifetime(),
@@ -1389,10 +1261,8 @@ mod tests {
 
     /// Every attempt budget the configuration accepts schedules to its end.
     ///
-    /// The backoff multiplies once per attempt, and a budget of 255 raises a
-    /// backoff of three to the 254th: no duration holds that. Multiplied
-    /// before it was clamped, the product panicked while a scan was being
-    /// built, before its first probe, for any budget from 43 at a port scan's
+    /// A budget of 255 raises a backoff of three to the 254th, which no duration
+    /// holds. Unclamped, it panicked for any budget from 43 at a port scan's
     /// backoff and from 68 at a sweep's.
     #[test]
     fn every_attempt_budget_a_caller_can_ask_for_schedules_without_panicking() {
@@ -1409,8 +1279,8 @@ mod tests {
         }
     }
 
-    /// The largest timeout scale the configuration accepts schedules too, as
-    /// a wait longer than any scan rather than a panic.
+    /// The largest timeout scale the configuration accepts schedules too, without
+    /// panicking.
     #[test]
     fn the_largest_timeout_scale_schedules_without_panicking() {
         let policy = policy().configured(RetryConfig {
@@ -1432,10 +1302,8 @@ mod tests {
         ProbeLedger::seeded(policy, 8, 0x5EED)
     }
 
-    /// A port scan meets hosts a liveness phase already timed, and starting
-    /// from the unmeasured guess throws that away: the cost lands entirely on
-    /// the ports that turn out to be silent, each of which then waits the full
-    /// guess three times before silence is allowed to mean anything.
+    /// A seeded host is timed from the seed. Unseeded, every silent port waits
+    /// out the unmeasured guess three times.
     #[test]
     fn a_seeded_host_is_timed_from_the_measurement_rather_than_the_guess() {
         let mut ledger = ledger(policy());
@@ -1456,17 +1324,13 @@ mod tests {
         );
     }
 
-    /// A conversation with a service on a measured path allows for the path
-    /// exactly what a probe to a host whose replies came back after the same
-    /// round trips is given, one of them or many, steady or wandering, so the
-    /// passes that talk to a service wait on a slow path as the port scans
-    /// that found it did. A steady path narrows both alike, and a wandering
-    /// one keeps both wide.
+    /// A conversation with a service on a measured path allows the path what a
+    /// probe is given after the same round trips, one or many, steady or
+    /// wandering, so service passes wait on a slow path as the port scans did.
     ///
-    /// All but a lone round trip past a second, which a conversation holds to
-    /// the path-finding wait where a probe does not: a conversation waits on
-    /// the path several times in a row, and a first sample that carried more
-    /// than the path costs it on every one. See
+    /// The exception is a lone round trip past a second, which a conversation holds
+    /// to the path-finding wait: it waits on the path several times in a row, so a
+    /// first sample that carried more than the path costs it each time. See
     /// [`PathAllowance::of_round_trips`](crate::transport::dial::PathAllowance::of_round_trips).
     #[test]
     fn a_conversation_allows_for_a_path_what_a_probe_after_the_same_replies_is_given() {
@@ -1492,9 +1356,7 @@ mod tests {
         }
     }
 
-    /// A sample this ledger took itself beats one it was handed: the seed is a
-    /// starting point for a host nothing has asked yet, not a correction to what
-    /// the scan is currently observing.
+    /// A sample this ledger took itself beats a seed.
     #[test]
     fn seeding_does_not_overwrite_what_the_scan_has_measured() {
         let mut ledger = ledger(policy());
@@ -1511,14 +1373,10 @@ mod tests {
 
     /// **A seed times a host only until the host answers the scan itself.**
     ///
-    /// The seed comes from another probe, and a sweep's ARP request answered
-    /// in 98 ms by a neighbour that answers SYNs in 10 is one measured case.
-    /// Smoothed as a first sample, it keeps seven eighths of the estimate
-    /// through the host's one reply and times the next probe at 322 ms: a
-    /// firewalled host answers a port scan about once, so every silent port
-    /// it has waits that long, and the scan's pace with it. Replaced, the
-    /// host and the unmeasured hosts the scan-wide estimate times are both
-    /// timed from the 10 ms the scan measured, as though never seeded.
+    /// Measured case: a neighbour answered a sweep's ARP request in 98 ms and SYNs
+    /// in 10. Smoothed as a first sample, the seed would time the next probe at
+    /// 322 ms, and a firewalled host answers a port scan about once. Replaced, the
+    /// host and the scan-wide estimate are timed from the 10 ms measured.
     #[test]
     fn a_seed_gives_way_to_the_first_round_trip_the_scan_measures() {
         let t0 = Instant::now();
@@ -1542,12 +1400,9 @@ mod tests {
     /// unmeasured guess, and an answer across its IP stack seeds it either
     /// way.**
     ///
-    /// A neighbour that answered ARP in 196 ms answered SYNs in 8, and timed
-    /// from the ARP answer each of its silent ports waited three times that
-    /// before a retry until the scan measured the host itself: nearly twice
-    /// the time the same scan took with no seed at all. A fast resolution is
-    /// still worth taking, since the guess would wait out a wired neighbour's
-    /// every silent port at many times its round trip.
+    /// A neighbour that answered ARP in 196 ms answered SYNs in 8; seeded from the
+    /// ARP answer, the scan took nearly twice as long as unseeded. A fast
+    /// resolution is still worth taking over the unmeasured guess.
     #[test]
     fn a_resolution_seeds_a_host_only_sooner_than_the_unmeasured_guess() {
         use crate::model::host::StatusProtocol;
@@ -1593,12 +1448,10 @@ mod tests {
     }
 
     /// **A host answering one probe in ten or fewer is not answering what it
-    /// is asked**, and its silence is its own rather than probes it dropped.
+    /// is asked**, and its silence is not read as dropped probes.
     ///
-    /// A firewall letting one port through has answered, and read as a host
-    /// that answers, its thousand silent ports each read as loss and held the
-    /// scan at its window's floor. Its first timeouts are counted as the
-    /// ledger meets them, one per probe, so a retry's does not count twice.
+    /// First timeouts are counted once per probe, so a retry's does not count
+    /// twice.
     #[test]
     fn a_host_answering_one_probe_in_ten_or_fewer_is_not_answering() {
         let t0 = Instant::now();
@@ -1615,8 +1468,8 @@ mod tests {
         for port in 2..=10 {
             ledger.arm(HOST, (HOST, port), 1, (), t0);
         }
-        // Past every probe's first timeout, and then past its second, which
-        // is not another silence.
+        // Past every probe's first timeout, then its second, which is not
+        // another silence.
         ledger.drain_due(t0 + Duration::from_secs(1), &mut due);
         ledger.drain_due(t0 + Duration::from_secs(2), &mut due);
         assert!(
@@ -1639,16 +1492,10 @@ mod tests {
     /// A fast answer from one host must not shorten an unmeasured host's first
     /// timeout when the policy says the two are unrelated.
     ///
-    /// This is the defect that can hide an entire retry schedule: one fast
-    /// neighbour seeds the scan-wide estimate, the estimate is clamped up to
-    /// [`min_rto`](RetryPolicy::min_rto), and the floor rather than the declared
-    /// timeout becomes what the scan actually runs on.
-    ///
-    /// It matters most where the two populations differ by orders of magnitude,
-    /// as they do on a segment carrying both mains-powered and sleeping devices.
-    /// Retransmitting to the slow one before it could have replied does not just
-    /// waste a packet: where a protocol's attempts are indistinguishable on the
-    /// wire, it discards the measurement.
+    /// Otherwise one fast neighbour seeds the scan-wide estimate, which is clamped
+    /// up to [`min_rto`](RetryPolicy::min_rto), and the scan runs on the floor
+    /// instead of the declared timeout. On a segment with both mains-powered and
+    /// sleeping devices, that retransmits to the slow ones before they can reply.
     #[test]
     fn one_hosts_round_trip_does_not_time_another_when_the_policy_forbids_it() {
         let policy = RetryPolicy::new(
@@ -1668,8 +1515,7 @@ mod tests {
 
         let mut ledger = ledger(policy);
         ledger.arm(fast, (fast, 0), 1, (), start);
-        // The fast neighbour answers in six milliseconds, seeding whatever
-        // scan-wide estimate the ledger keeps.
+        // The fast neighbour answers in six milliseconds.
         let resolved = ledger
             .resolve(&(fast, 0), Some(1), start + Duration::from_millis(6))
             .expect("the fast host resolves");
@@ -1685,10 +1531,7 @@ mod tests {
         );
     }
 
-    /// The default is the opposite: where every probe
-    /// crosses the same path, the first host to answer has told the scan what
-    /// the rest will cost, and a fresh target should not start from first
-    /// principles.
+    /// By default an unmeasured host inherits the scan-wide estimate.
     #[test]
     fn one_hosts_round_trip_times_another_by_default() {
         let policy = RetryPolicy::new(
@@ -1718,8 +1561,7 @@ mod tests {
         );
     }
 
-    /// The keys due at `now`, for the tests that only care about which probes
-    /// came back and not about the buffer plumbing.
+    /// The keys due at `now`.
     fn due_at(
         ledger: &mut ProbeLedger<(IpAddr, u16), u32>,
         now: Instant,
@@ -1731,11 +1573,9 @@ mod tests {
 
     // ── Attributing a reply to an attempt ──────────────────────────────────
 
-    /// The distinction the whole attribution exists for. A host found after
-    /// three sends may have answered the third - retransmission earning its
-    /// traffic - or answered the first from a path slow enough that two more
-    /// went out while the reply was in flight. Only the token tells them apart,
-    /// and they call for opposite fixes.
+    /// A host found after three sends may have answered the third, or the first
+    /// over a path slow enough that two more went out meanwhile. Only the token
+    /// tells them apart.
     #[test]
     fn a_reply_names_the_attempt_it_answers_not_the_number_sent() {
         let t0 = Instant::now();
@@ -1762,11 +1602,9 @@ mod tests {
     /// A round trip is measured from the attempt that was answered, never from
     /// when the probe was first armed and never from when the scan began.
     ///
-    /// The three coincide only for a probe sent once, which is why the error is
-    /// easy to introduce and invisible afterwards: it would report a fast host
-    /// recovered by a late retry as a slow one, and feed that invented latency
-    /// to every estimator downstream - the adaptive deadline and the retry
-    /// schedule both.
+    /// The three coincide only for a probe sent once. Otherwise a fast host
+    /// recovered by a late retry would read as slow to the adaptive deadline and
+    /// the retry schedule.
     #[test]
     fn a_reply_to_the_latest_attempt_is_numbered_and_measured_by_it() {
         let t0 = Instant::now();
@@ -1789,9 +1627,8 @@ mod tests {
         );
     }
 
-    /// A probe sent once has nothing its reply could be confused with, so an
-    /// untokened reply answers the first attempt by elimination. With several
-    /// outstanding, Karn's rule applies and nothing may be claimed.
+    /// An untokened reply to a probe sent once answers the first attempt. With
+    /// several outstanding, Karn's rule applies and nothing is claimed.
     #[test]
     fn an_untokened_reply_is_attributed_only_when_one_send_has_happened() {
         let t0 = Instant::now();
@@ -1816,10 +1653,8 @@ mod tests {
         assert_eq!(retried.rtt, None);
     }
 
-    /// Only the last few attempts keep their tokens, and the ordinal is counted
-    /// back from the newest rather than read off the slot - so a probe that has
-    /// outlived its earliest tokens still numbers the surviving ones correctly
-    /// rather than restarting at one.
+    /// A probe that has outlived its earliest tokens still numbers the surviving
+    /// ones correctly.
     #[test]
     fn attempts_stay_correctly_numbered_after_the_oldest_tokens_are_evicted() {
         // Six sends against four retained tokens, so attempts 1 and 2 have been
@@ -1864,8 +1699,7 @@ mod tests {
             "numbering counts back from the newest, not from the first slot"
         );
 
-        // A token evicted along the way names no attempt, so the probe stays
-        // outstanding rather than being resolved by an unrecognizable reply.
+        // An evicted token names no attempt, so the probe stays outstanding.
         let (mut ledger, now) = sent_six(t0);
         assert!(
             ledger
@@ -1903,13 +1737,9 @@ mod tests {
         assert_eq!(ledger.len(), 1, "a retried probe is still outstanding");
     }
 
-    /// A retry waiting to be sent holds its probe's clock, so the probe is
-    /// neither retried again nor retired while the attempt it was charged has
-    /// not left, and times its next attempt from when this one does.
-    ///
-    /// Left running, a retry held longer than its own timeout is overtaken by
-    /// the next, and a probe held past the end of its schedule retires as
-    /// silent having been asked fewer times than its budget says.
+    /// A retry waiting to be sent holds its probe's clock, so the probe is neither
+    /// retried again nor retired until it leaves, and its next attempt is timed
+    /// from then.
     #[test]
     fn a_deferred_retry_stops_its_probes_clock_until_it_is_sent() {
         let t0 = Instant::now();
@@ -1940,9 +1770,9 @@ mod tests {
         );
     }
 
-    /// A deferred retry that never leaves restarts its probe's clock from
-    /// when that was known, so the attempt it was charged still counts and
-    /// the probe runs out on schedule rather than waiting forever.
+    /// A deferred retry that never leaves restarts its probe's clock at
+    /// `resume`, so the charged attempt still counts and the probe runs out on
+    /// schedule.
     #[test]
     fn a_deferred_retry_that_is_not_sent_still_runs_its_probe_out() {
         let t0 = Instant::now();
@@ -1966,8 +1796,7 @@ mod tests {
         ));
     }
 
-    /// The budget is a total, not a count of retries: three attempts means two
-    /// resends and then a verdict.
+    /// The budget is a total: three attempts means two resends and then a verdict.
     #[test]
     fn a_probe_exhausts_after_exactly_its_budget() {
         let t0 = Instant::now();
@@ -2008,12 +1837,9 @@ mod tests {
             vec![Due::Exhausted {
                 key: (HOST, 80),
                 payload: (),
-                // One, and the number matters to whoever reads it: with no
-                // retry, this event *is* the probe's first timeout.
+                // With no retry, this event is the probe's first timeout.
                 attempts: 1,
-                // Nothing witnessed this probe leaving, and nothing in this
-                // test watches: a ledger with no sightings at all reports
-                // zero here and no caller may read it as evidence.
+                // This test witnesses nothing.
                 witnessed: 0,
             }]
         );
@@ -2036,8 +1862,7 @@ mod tests {
         ledger.arm(HOST, (HOST, 80), 1, (), t0);
         let first = ledger.next_due().unwrap();
 
-        // Nothing is due yet at the first deadline minus a hair, and the retry
-        // that follows must wait twice as long as the attempt before it.
+        // The retry must wait twice as long as the attempt before it.
         let due = due_at(&mut ledger, first);
         assert!(matches!(due.as_slice(), [Due::Retry { .. }]));
         let second = ledger.next_due().unwrap();
@@ -2077,8 +1902,7 @@ mod tests {
         assert!(ledger.is_empty());
     }
 
-    /// The invariant a duplicate reply must not break: a probe resolves once,
-    /// however many answers arrive.
+    /// A probe resolves once, however many answers arrive.
     #[test]
     fn a_second_reply_resolves_nothing() {
         let t0 = Instant::now();
@@ -2099,10 +1923,9 @@ mod tests {
         assert_eq!(ledger.len(), 1, "someone else's packet resolves nothing");
     }
 
-    /// The failure this design exists to prevent. Attempt one goes out
-    /// carrying token 7, attempt two carries 8, and the answer to the *first*
-    /// arrives afterwards. A ledger holding only the newest token would discard
-    /// a genuine reply and report the target silent.
+    /// Attempt one carries token 7, attempt two carries 8, and the answer to the
+    /// first arrives afterwards. A ledger holding only the newest token would
+    /// report the target silent.
     #[test]
     fn a_late_reply_to_an_earlier_attempt_still_resolves_the_probe() {
         let t0 = Instant::now();
@@ -2125,8 +1948,8 @@ mod tests {
         assert_eq!(resolved.attempts, 2);
     }
 
-    /// Karn's rule. With no token to name the attempt and more than one in
-    /// flight, there is no honest sample to take - but the probe still resolves.
+    /// Karn's rule: with no token and more than one attempt in flight, no sample
+    /// is taken, but the probe still resolves.
     #[test]
     fn an_unattributable_reply_resolves_without_measuring() {
         let t0 = Instant::now();
@@ -2160,8 +1983,8 @@ mod tests {
         assert_eq!(resolved.rtt, Some(Duration::from_millis(9)));
     }
 
-    /// An answered probe must never be resent: the timer it was armed with is
-    /// still in the queue, and only generation matching keeps it from firing.
+    /// An answered probe is not resent: its timer is still queued, and generation
+    /// matching keeps it from firing.
     #[test]
     fn a_resolved_probe_is_never_due_again() {
         let t0 = Instant::now();
@@ -2172,8 +1995,8 @@ mod tests {
         assert!(due_at(&mut ledger, t0 + Duration::from_secs(10)).is_empty());
     }
 
-    /// Re-arming supersedes the previous timer rather than adding a second one,
-    /// so a probe cannot be retried twice for one attempt.
+    /// Re-arming supersedes the previous timer, so a probe cannot be retried twice
+    /// for one attempt.
     #[test]
     fn re_arming_supersedes_the_previous_timer() {
         let t0 = Instant::now();
@@ -2184,8 +2007,7 @@ mod tests {
         assert_eq!(due_at(&mut ledger, retry).len(), 1);
         ledger.arm(HOST, (HOST, 80), 2, (), retry);
 
-        // The superseded entry is still in the queue and its deadline has
-        // passed; it must produce nothing.
+        // The superseded entry's deadline has passed; it produces nothing.
         let due = due_at(&mut ledger, retry + Duration::from_millis(1));
         assert!(due.is_empty(), "stale timer fired: {due:?}");
     }
@@ -2205,8 +2027,7 @@ mod tests {
         );
     }
 
-    /// Once a host has answered, its own round trip drives the timeout rather
-    /// than the conservative starting value.
+    /// Once a host has answered, its own round trip drives the timeout.
     #[test]
     fn a_measured_host_gets_a_timeout_derived_from_its_own_round_trip() {
         let t0 = Instant::now();
@@ -2218,8 +2039,7 @@ mod tests {
         ledger.arm(HOST, (HOST, 81), 2, (), t0);
         let measured = ledger.next_due().unwrap().saturating_duration_since(t0);
 
-        // 4ms smoothed, 2ms variation, so 4 + 4*2 = 12ms, well under the
-        // 100ms this scan started out assuming.
+        // 4 ms smoothed, 2 ms variation: 4 + 4 * 2 = 12 ms, under the initial 100 ms.
         assert_eq!(measured, Duration::from_millis(12));
         assert_eq!(ledger.host_rtt(&HOST), Some(Duration::from_millis(4)));
     }
@@ -2227,11 +2047,9 @@ mod tests {
     /// On a steady path the timeout keeps headroom over the round trip for
     /// the reply that comes back a little slower than the rest.
     ///
-    /// The variation term measures how far samples stray, and on a path whose
-    /// replies mostly agree it decays towards nothing between the stragglers,
-    /// leaving a timeout that is the smoothed round trip itself. Every
-    /// straggler then lands after it, and with one attempt that is an open
-    /// port read silent. Here one reply in twenty is ten percent slow.
+    /// On such a path the variation decays towards nothing, and with one attempt
+    /// every straggler would be an open port read silent. Here one reply in twenty
+    /// is ten percent slow.
     #[test]
     fn a_steady_path_keeps_headroom_for_a_reply_a_little_slower_than_most() {
         let usual = Duration::from_millis(100);
@@ -2250,8 +2068,7 @@ mod tests {
         }
     }
 
-    /// One host's measurements must not decide another's timeout, which is the
-    /// whole reason the estimate is per host.
+    /// One host's measurements do not decide another's timeout.
     #[test]
     fn a_fast_host_does_not_shorten_a_different_hosts_timeout() {
         let t0 = Instant::now();
@@ -2342,9 +2159,8 @@ mod tests {
     /// seeded with `seed`, and the instant it was left at with nothing
     /// outstanding and no stale timer queued.
     ///
-    /// Forty identical samples leave the estimator's variation at nothing, so
-    /// its timeout is the round trip itself: the tightest schedule measurement
-    /// can produce.
+    /// Forty identical samples leave the variation at nothing: the tightest
+    /// schedule measurement can produce.
     fn measured_at(
         policy: RetryPolicy,
         seed: u64,
@@ -2363,14 +2179,9 @@ mod tests {
         (ledger, now)
     }
 
-    /// Jitter lengthens a timeout and never shortens it: no probe is timed
-    /// below the floor, or below what its host's round trips have shown an
-    /// answer needs.
-    ///
-    /// Both are the shortest wait at which silence means anything. A probe
-    /// timed below either gives up on answers that are on their way, and with
-    /// one attempt that is an open port read silent: behind a 20 ms path,
-    /// spread both ways from the 25 ms floor, 56 of 300 were.
+    /// Jitter only lengthens a timeout: no probe is timed below the floor, or
+    /// below its host's measured round trip. Behind a 20 ms path with one attempt,
+    /// a spread both ways from the 25 ms floor read 56 of 300 open ports silent.
     #[test]
     fn jitter_never_times_a_probe_below_the_floor_or_what_was_measured() {
         // The port scan's own numbers: a 25 ms floor and a 30% spread.
@@ -2385,9 +2196,9 @@ mod tests {
         );
 
         for (rtt, least) in [
-            // Measured below the floor, which is then what holds.
+            // Measured below the floor: the floor holds.
             (Duration::from_millis(20), Duration::from_millis(25)),
-            // Measured above it, where the measurement is what holds.
+            // Measured above it: the measurement holds.
             (Duration::from_millis(100), Duration::from_millis(100)),
         ] {
             for seed in 0..64u64 {
@@ -2409,8 +2220,7 @@ mod tests {
         }
     }
 
-    /// Probes armed together must not all come due at the same instant, which
-    /// is the entire purpose of jitter.
+    /// Probes armed together do not all come due at the same instant.
     #[test]
     fn jitter_decorrelates_probes_armed_together() {
         let t0 = Instant::now();
@@ -2489,8 +2299,8 @@ mod tests {
         );
     }
 
-    /// Any reply at all is evidence of life, including one that says the port
-    /// is closed. A firewalled-but-alive host must keep its full budget.
+    /// Any reply is evidence of life, including a closed port, so a firewalled
+    /// host keeps its full budget.
     #[test]
     fn one_answer_of_any_kind_preserves_the_full_budget() {
         let t0 = Instant::now();
@@ -2561,8 +2371,8 @@ mod tests {
         );
     }
 
-    /// More attempts than tokens retained must not lose the recent ones, and
-    /// must not panic.
+    /// More attempts than tokens retained keeps the recent ones without
+    /// panicking.
     #[test]
     fn a_budget_beyond_the_tracked_attempts_keeps_the_newest_tokens() {
         let t0 = Instant::now();
@@ -2617,8 +2427,7 @@ mod tests {
 
     // ── Configuration ──────────────────────────────────────────────────────
 
-    /// A profile shaped like the UDP scanner's, where the floor exists because
-    /// the protocol imposes it rather than because it seemed about right.
+    /// A profile shaped like the UDP scanner's, whose floor the protocol imposes.
     fn rate_limited_policy() -> RetryPolicy {
         RetryPolicy::new(
             2,
@@ -2680,9 +2489,8 @@ mod tests {
         );
     }
 
-    /// The rule that keeps a global knob from producing a locally nonsensical
-    /// schedule: hurrying the scan must not shorten the wait below what the
-    /// protocol needs to answer at all.
+    /// Hurrying the scan does not shorten the wait below what the protocol needs
+    /// to answer.
     #[test]
     fn hurrying_a_scan_never_lowers_the_protocol_floor() {
         let base = rate_limited_policy();
@@ -2707,8 +2515,8 @@ mod tests {
         }
     }
 
-    /// A scale small enough to push the ceiling under the floor must leave a
-    /// usable policy rather than an empty range, and must not panic.
+    /// A scale small enough to push the ceiling under the floor leaves a usable
+    /// policy, without panicking.
     #[test]
     fn scaling_never_leaves_the_ceiling_below_the_floor() {
         let configured = rate_limited_policy().configured(RetryConfig {
@@ -2720,8 +2528,7 @@ mod tests {
         assert!(configured.worst_case_probe_lifetime() > Duration::ZERO);
     }
 
-    /// And the floor genuinely binds: a starting timeout scaled below it is
-    /// still not used, so no probe is repeated sooner than it could be answered.
+    /// A starting timeout scaled below the floor is not used.
     #[test]
     fn a_scaled_down_start_is_still_held_above_the_floor() {
         let t0 = Instant::now();
@@ -2829,29 +2636,24 @@ mod tests {
         assert!(off.silent_host.is_none());
     }
 
-    /// Thorough means no shortcuts, and cutting the budget on a silent host is
-    /// the one shortcut this policy takes.
+    /// Thorough effort does not cut the budget on a silent host.
     #[test]
     fn a_thorough_scan_takes_no_shortcut_on_silent_hosts() {
         let configured = rate_limited_policy().configured(effort(ScanEffort::Thorough));
         assert!(configured.silent_host.is_none());
     }
 
-    /// A scale no schedule can be built from never reaches this policy, because
-    /// it cannot be written into a [`RetryConfig`] at all.
-    ///
-    /// Accepted there, it would be silently discarded here and then written
-    /// into the report as though it had applied. Guarding it at the point of use
-    /// fixes the schedule and leaves the record wrong, which is why the guard
-    /// sits at [`TimeoutScale`](crate::config::TimeoutScale) and this asserts
-    /// the refusal rather than the shrug.
+    /// A scale no schedule can be built from cannot be written into a
+    /// [`RetryConfig`]. The guard sits at
+    /// [`TimeoutScale`](crate::config::TimeoutScale) so the report records only
+    /// scales that applied.
     #[test]
     fn a_scale_no_schedule_can_be_built_from_never_reaches_a_policy() {
         for scale in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert_eq!(TimeoutScale::new(scale), None, "scale {scale}");
         }
 
-        // And one that can is applied rather than merely accepted.
+        // A valid one is applied.
         let base = policy();
         let configured = base.configured(RetryConfig {
             timeout_scale: TimeoutScale::new(2.0),
@@ -2910,8 +2712,8 @@ mod tests {
             }
         }
 
-        /// A probe resolved at any point in its life stays resolved: it is
-        /// never retried, never retired, and never resolves a second time.
+        /// A probe resolved at any point stays resolved: it is not retried,
+        /// retired, or resolved again.
         #[test]
         fn resolving_at_any_point_is_final(resolve_after in 0u64..60) {
             let policy = RetryPolicy::new(

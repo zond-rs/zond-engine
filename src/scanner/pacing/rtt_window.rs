@@ -8,34 +8,22 @@
 
 //! # A timeout taken from what the network just did
 //!
-//! A fixed timeout is wrong in both directions at once: short enough to give up
-//! on a slow host that would have answered, long enough to spend the scan
-//! waiting on hosts that never will. Neither value exists, because the right one
-//! is a property of the path and nobody knows the path in advance.
+//! The right timeout is a property of the path, which nobody knows in advance.
+//! [`RttWindow`] keeps a short history of recent round trips and derives a timeout
+//! from their mean and spread: a fast, steady path suggests a short one and an
+//! erratic path a long one.
 //!
-//! [`RttWindow`] takes it from measurement instead. A short history of recent
-//! round trips, and a timeout derived from their middle and their spread: a
-//! fast, steady path suggests a short one and an erratic path a long one,
-//! without anybody choosing either.
-//!
-//! ## Why a window and not a smoothed estimate
-//!
-//! [`RttEstimator`](super::retry::RttEstimator) is the smoothed one, and it is
-//! kept per host: two durations updated in place, which is what makes
-//! per-host timing affordable at all. This is kept once per scan and holds real
-//! samples, because what it steers is the scan's own deadline: how long the
-//! whole run waits before concluding that silence means the end. That question
-//! is about the population rather than about any host in it, and a queue of
-//! twenty answers it where a running average cannot.
+//! [`RttEstimator`](super::retry::RttEstimator) is the smoothed per-host estimate,
+//! two durations updated in place. This window is kept once per scan and steers the
+//! scan's own deadline, how long the whole run waits before silence means the end,
+//! which is a question about the population of hosts.
 
 use std::{collections::VecDeque, time::Duration};
 
 /// The last few round trips a scan measured, and the timeout they justify.
 ///
 /// Bounded and first-in-first-out: past its capacity the oldest sample goes, so
-/// what it describes is the network now rather than the average of everything
-/// since the scan started. A path that slows down halfway through is one the
-/// window follows.
+/// the window follows a path that slows down partway through.
 #[derive(Debug, Clone)]
 pub struct RttWindow {
     samples: VecDeque<Duration>,
@@ -45,9 +33,8 @@ pub struct RttWindow {
 impl RttWindow {
     /// An empty window holding at most `capacity` samples.
     ///
-    /// A capacity of zero records nothing and suggests the floor forever, which
-    /// is a working configuration for a caller that wants a fixed timeout out of
-    /// the same type rather than a special case.
+    /// A capacity of zero records nothing and always suggests the floor, which
+    /// gives a fixed timeout.
     pub fn new(capacity: usize) -> Self {
         Self {
             samples: VecDeque::with_capacity(capacity),
@@ -85,18 +72,13 @@ impl RttWindow {
         Some(sum / self.samples.len() as u32)
     }
 
-    /// The mean difference between one sample and the next: how much the path
-    /// moves between measurements rather than how far each sits from the
-    /// middle.
+    /// The mean difference between one sample and the next, or `None` with fewer
+    /// than two samples.
     ///
-    /// Not RFC 6298's `RTTVAR`, which is the smoothed deviation from the
-    /// estimate and is what
-    /// [`RttEstimator`](super::retry::RttEstimator) computes. This is the
-    /// cheaper statistic over a real window, and it answers a slightly different
-    /// question: successive differences catch a path that is oscillating, where
-    /// deviation from a mean catches one that is merely wide. For sizing a
-    /// scan's patience either would serve, and only one of them needs the
-    /// estimate kept.
+    /// This is not RFC 6298's `RTTVAR`, the smoothed deviation from the estimate
+    /// that [`RttEstimator`](super::retry::RttEstimator) computes. Successive
+    /// differences catch a path that oscillates; deviation from a mean catches one
+    /// that is merely wide.
     pub fn jitter(&self) -> Option<Duration> {
         if self.samples.len() < 2 {
             return None;
@@ -116,20 +98,14 @@ impl RttWindow {
     ///
     /// The suggestion is `mean + multiplier * jitter`, held within
     /// `[floor, ceiling]`. `multiplier` is how much margin recent variability
-    /// buys; around `4.0` is the same order TCP allows its own retransmission
-    /// timeout, though the statistic here is the mean successive difference
-    /// rather than RFC 6298's smoothed deviation. With nothing recorded yet
-    /// `floor` comes back, there being no measurement to justify waiting
-    /// longer.
+    /// buys; around `4.0` is the order TCP allows its retransmission timeout,
+    /// though [`jitter`](Self::jitter) is a different statistic from RFC 6298's.
+    /// With nothing recorded, returns `floor`.
     ///
-    /// A ceiling below the floor does not panic. The floor wins, on the
-    /// same reasoning [`ProbeLedger`](super::retry::ProbeLedger) applies to its
-    /// own bounds: it is the one of the two imposed rather than chosen, and a
-    /// pair that has been configured into disagreeing should still describe a
-    /// real range. `Duration::clamp` asserts instead, and this takes two
-    /// adjacent arguments of one type, so an assertion would let the mistake
-    /// reach a live scan and take the process with it on the first host that
-    /// answered.
+    /// A ceiling below the floor does not panic: the floor wins, as in
+    /// [`ProbeLedger`](super::retry::ProbeLedger), since it is the bound the
+    /// protocol imposes. `Duration::clamp` would assert, and the crossed arguments
+    /// would kill a live scan on the first host that answered.
     pub fn suggest_timeout(&self, multiplier: f64, floor: Duration, ceiling: Duration) -> Duration {
         let Some(mean) = self.mean() else {
             return floor;
@@ -191,7 +167,7 @@ mod tests {
         window.record(Duration::from_millis(200));
         window.record(Duration::from_millis(300));
 
-        // The 100ms sample should have been evicted; mean of [200, 300] = 250.
+        // 100 ms evicted; mean of [200, 300] = 250.
         assert_eq!(window.mean(), Some(Duration::from_millis(250)));
     }
 
@@ -216,11 +192,8 @@ mod tests {
         assert_eq!(window.suggest_timeout(4.0, floor, ceiling), floor);
     }
 
-    /// `floor` and `ceiling` are adjacent arguments of one type, so a caller
-    /// can cross them and the compiler cannot say. `Duration::clamp` asserts
-    /// `min <= max`, which would make that mistake a panic in the caller's
-    /// process, and one that waits for the first sample: a scan would open its
-    /// sockets, send its probes and die on the first host that answered.
+    /// `floor` and `ceiling` are adjacent arguments of one type, so a caller can
+    /// cross them. `Duration::clamp` would panic on the first host that answered.
     #[test]
     fn a_ceiling_below_the_floor_yields_the_floor_rather_than_panicking() {
         let mut window = RttWindow::new(5);
@@ -237,9 +210,8 @@ mod tests {
         );
     }
 
-    /// The empty window takes the early return and never reaches the clamp,
-    /// which is exactly why a panic in the clamp would stay invisible until a
-    /// scan was underway.
+    /// The empty window returns before the clamp, so this case is checked
+    /// separately.
     #[test]
     fn crossed_bounds_are_survivable_before_any_sample_too() {
         let window = RttWindow::new(5);

@@ -8,17 +8,12 @@
 
 //! # How long to keep going
 //!
-//! [`ScanTimer`] and [`RttWindow`] joined into the one policy a probing loop
-//! actually needs.
+//! [`ScanTimer`] and [`RttWindow`] joined into the policy a probing loop needs.
 //!
-//! Neither half answers the question on its own. The timer enforces fixed
-//! limits and knows nothing about the network; the window measures the network
-//! and decides nothing. What a loop asks on every iteration is *have we been
-//! quiet long enough to stop*, and that is the timer's question answered with
-//! the window's evidence: the silence tolerance comes out of the samples, so a
-//! scan on a fast segment gives up on silence in a fraction of the time one
-//! crossing an ocean does, and no scanner has to wire the two together to get
-//! it.
+//! The timer enforces fixed limits; the window measures the network. A loop asks on
+//! every iteration whether it has been quiet long enough to stop, and the silence
+//! tolerance comes out of the window's samples, so a scan on a fast segment gives up
+//! on silence in a fraction of the time one crossing an ocean does.
 
 use std::time::{Duration, Instant};
 
@@ -33,12 +28,10 @@ use super::timer::{ScanBudget, ScanTimer};
 /// adapt, `jitter_multiplier` controls how much safety margin recent
 /// jitter adds to it, and `rtt_window_capacity` sets how many recent
 /// samples inform that adaptation. See [`RttWindow::suggest_timeout`] for
-/// exactly how the latter three combine.
+/// how the latter three combine.
 ///
-/// `#[non_exhaustive]`: built through [`new`](Self::new) and the two builders
-/// beside it, never by naming every field. See
-/// [`WindowLimits`](super::congestion::WindowLimits) for the argument, which is
-/// the same one.
+/// `#[non_exhaustive]`: build it with [`new`](Self::new) and the two builders
+/// beside it, as with [`WindowLimits`](super::congestion::WindowLimits).
 #[must_use]
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
@@ -51,7 +44,7 @@ pub struct AdaptiveDeadlineConfig {
     /// suggest. Also the tolerance in force before anything has been measured.
     pub silence_floor: Duration,
     /// The longest silence the scan will wait through, so one slow responder
-    /// cannot hold it open on the strength of its own latency.
+    /// cannot hold it open.
     pub silence_ceiling: Duration,
     /// How many multiples of the recent jitter are added to the mean round trip
     /// to reach the tolerance. Around `4.0` is the margin TCP allows its own
@@ -83,17 +76,14 @@ impl AdaptiveDeadlineConfig {
 
     /// The same configuration, guaranteed to outlast a probe that is retried.
     ///
-    /// A scan whose probes are retransmitted has two limits that must not
-    /// disagree: how long a single probe may keep trying, and how long the scan
-    /// as a whole is allowed to run. If the second is shorter, probes are
-    /// written off as unanswered having never been fully asked, and the scan
-    /// reports a verdict it did not earn. Deriving the hard budget from the
-    /// retry schedule keeps that from happening when either is tuned.
+    /// If the scan's hard budget were shorter than one probe's retry schedule,
+    /// probes would be written off as unanswered before they were fully asked.
+    /// Deriving the budget from `probe_lifetime` keeps the two in step when either
+    /// is tuned.
     ///
-    /// Only the hard budget is widened. The minimum runtime governs when
-    /// *silence* may end a scan, and silence is not evidence while probes are
-    /// still outstanding, so it is the caller's loop that has to honour that
-    /// rather than the clock.
+    /// Only the hard budget is widened. The minimum runtime governs when silence
+    /// may end a scan, and ignoring silence while probes are outstanding is the
+    /// caller's loop's job.
     pub fn allowing_for(self, probe_lifetime: Duration) -> Self {
         Self {
             max_budget: self.max_budget.with_base_at_least(probe_lifetime),
@@ -104,25 +94,18 @@ impl AdaptiveDeadlineConfig {
     /// The same configuration, guaranteed to outlast the slowest pace the scan's
     /// own pacing may legitimately choose.
     ///
-    /// The companion to [`allowing_for`](Self::allowing_for), and it exists for
-    /// the same reason one step out. That one keeps the budget from expiring
-    /// between a probe's attempts; this one keeps it from expiring because the
-    /// scan slowed itself down on purpose.
+    /// The companion to [`allowing_for`](Self::allowing_for): that one keeps the
+    /// budget from expiring between a probe's attempts, this one keeps it from
+    /// expiring because the scan slowed itself down.
     ///
     /// A scan paced by a congestion window settles at whatever rate its targets
-    /// will bear, and the slowest it may settle at is its window floor over its
-    /// shortest round-trip budget: every question timing out, with only the
-    /// floor's worth of them outstanding. If the deadline assumed a faster pace
-    /// than that, the pacing working as designed is what ends the scan early,
-    /// and the ports it never reached are reported as though it had asked.
+    /// bear. The slowest is its window floor over its shortest round-trip budget:
+    /// every probe timing out, with only the floor's worth outstanding. A deadline
+    /// that assumed a faster pace would end the scan early.
     ///
-    /// `target_count` is what the ceiling is told, and it has to be told:
-    /// widening the per-target term alone leaves a fixed ceiling free to clamp
-    /// the result straight back down, which is exactly what it did. see
-    /// [`ScanBudget::covering`].
-    ///
-    /// Only the hard budget moves, on the same reasoning
-    /// [`allowing_for`](Self::allowing_for) gives.
+    /// `target_count` is passed to the ceiling, which would otherwise clamp the
+    /// widened budget back down; see [`ScanBudget::covering`]. Only the hard
+    /// budget moves, as with [`allowing_for`](Self::allowing_for).
     pub fn allowing_pace_of(self, per_probe: Duration, target_count: usize) -> Self {
         Self {
             max_budget: self
@@ -137,12 +120,10 @@ impl AdaptiveDeadlineConfig {
 /// When a scan should stop, given how quickly and how consistently its targets
 /// have been answering.
 ///
-/// Three calls make up its whole use. A scanner marks
-/// [`mark_activity`](Self::mark_activity) when it learns something new, records
-/// a round trip with [`record_rtt`](Self::record_rtt) whenever it can measure
-/// one, and asks [`has_expired`](Self::has_expired) each time round its receive
-/// loop. [`time_until_next_tick`](Self::time_until_next_tick) is what to sleep
-/// on in between, rather than polling.
+/// A scanner calls [`mark_activity`](Self::mark_activity) when it learns something
+/// new, [`record_rtt`](Self::record_rtt) whenever it can measure a round trip, and
+/// [`has_expired`](Self::has_expired) each time round its receive loop, sleeping
+/// for [`time_until_next_tick`](Self::time_until_next_tick) in between.
 pub struct AdaptiveDeadline {
     timer: ScanTimer,
     rtt_window: RttWindow,
@@ -151,9 +132,8 @@ pub struct AdaptiveDeadline {
     jitter_multiplier: f64,
 }
 
-/// How much of the time a pass holds probes back its deadline has been
-/// given, so holds that overlap, any number of hosts held at once, are given
-/// it once.
+/// How much of a pass's probe hold-time its deadline has already been given, so
+/// overlapping holds (several hosts held at once) are credited once.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct HeldAllowance {
     /// Until when the deadline has been given the time.
@@ -201,10 +181,8 @@ impl AdaptiveDeadline {
 
     /// Restarts the silence clock, for a loop that has just learned something.
     ///
-    /// Something *new*, rather than every packet: a second reply from a host
-    /// already found says nothing about whether the scan is still worth
-    /// running, and treating it as activity keeps a sweep open on the strength
-    /// of traffic it had already accounted for.
+    /// Only for something new: counting a second reply from a known host would
+    /// keep a sweep open on traffic it had already accounted for.
     pub fn mark_activity(&mut self) {
         self.timer.mark_activity();
     }
@@ -225,14 +203,12 @@ impl AdaptiveDeadline {
     /// Gives the hard deadline back the time the loop spent inside its own
     /// sender.
     ///
-    /// A send is ordinarily a few microseconds, and a frame sender that has to
-    /// resolve a neighbour before its first frame, where the scan could not
-    /// hold the probe while it asked, blocks the loop for the whole wait, up
-    /// to seconds for an address nothing answers. Neither is time spent
-    /// waiting on the network, which is what the deadline is sized for, and a
-    /// scan charged for it runs out with addresses it never reached, which
-    /// then read as unasked for no reason of their own. Still bounded: every
-    /// wait inside a sender is bounded, and a scan has finitely many targets.
+    /// A send is ordinarily a few microseconds, but a frame sender that must
+    /// resolve a neighbour before its first frame blocks the loop for the whole
+    /// wait, up to seconds for an address nothing answers. The deadline is sized
+    /// for waiting on the network; charged for this, a scan would run out with
+    /// addresses unasked. Still bounded: every wait inside a sender is bounded,
+    /// and a scan has finitely many targets.
     pub(crate) fn allow_for_sending(&mut self, spent: Duration) {
         self.timer.extend(spent);
     }
@@ -240,13 +216,12 @@ impl AdaptiveDeadline {
     /// Gives the hard deadline `held` more, for probes kept from being sent
     /// while their neighbour could not be asked or was being asked again.
     ///
-    /// Time the scan could not ask in, which the deadline, a bound on waiting
-    /// for answers, was not sized for: a kernel's hold-down on a neighbour is
-    /// twenty seconds on macOS, several times what a small scan is given, and
-    /// a second resolution of a neighbour that did not answer the first is
-    /// three more. A scan charged for either ends with the held host's ports
-    /// unasked. Still bounded, since a port scan waits out a host's
-    /// hold-downs, and asks for its neighbour again, a fixed number of times.
+    /// The deadline was not sized for time the scan could not ask in: a kernel's
+    /// hold-down on a neighbour is twenty seconds on macOS, several times what a
+    /// small scan is given, and a second resolution of a neighbour costs three
+    /// more. Charged for either, a scan ends with the held host's ports unasked.
+    /// Still bounded, since a port scan waits out hold-downs and re-resolves a
+    /// neighbour a fixed number of times.
     pub(crate) fn allow_for_holding(&mut self, held: Duration) {
         self.timer.extend(held);
     }
@@ -260,10 +235,9 @@ impl AdaptiveDeadline {
 
     /// Whether the absolute deadline has passed, regardless of silence.
     ///
-    /// A loop with work still outstanding may reasonably ignore
-    /// [`has_expired`](Self::has_expired), since silence means nothing while
-    /// probes are still waiting to be answered or retried. It may not ignore
-    /// this one: it is what guarantees the scan terminates at all.
+    /// A loop with probes still waiting to be answered or retried may ignore
+    /// [`has_expired`](Self::has_expired), but not this: it guarantees the scan
+    /// terminates.
     pub fn hard_deadline_passed(&self) -> bool {
         self.timer.hard_deadline_passed()
     }

@@ -6,61 +6,33 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # How many questions a scan may have outstanding
+//! # How many probes a scan may have outstanding
 //!
-//! A scan has to decide how hard to push, and the decision cannot be made in
-//! advance. The right answer for a Linux server on a switch is thousands of
-//! probes in flight; the right answer for the consumer router next to it is a
-//! few dozen, and asking that router at the server's pace does not merely
-//! annoy it: it manufactures findings. Probed faster than it will answer, a
-//! router reports six hundred ports `NoReply` with no more hesitation than it
-//! reports the three that really are, and every one of those verdicts is a
-//! claim about the router that is actually a claim about our send rate.
+//! The right number cannot be chosen in advance. A Linux server on a switch takes
+//! thousands of probes in flight; the consumer router next to it takes a few dozen,
+//! and probed faster than it answers, it reports hundreds of ports `NoReply` that are
+//! really a claim about our send rate.
 //!
-//! [`CongestionWindow`] makes the decision from evidence instead: it bounds how
-//! many probes a scan may have outstanding, grows that bound while answers keep
-//! arriving, and cuts it when the answers show the target is being outrun.
+//! [`CongestionWindow`] bounds how many probes a scan may have outstanding, grows
+//! that bound while answers keep arriving, and cuts it when the answers show the
+//! target is being outrun. Probes leave as earlier ones are answered, so the send
+//! rate settles at the rate the target resolves them, with no clock or
+//! configuration. The engine's rate ceiling is a backstop against a defect here.
 //!
-//! ## Why a window and not a rate
+//! ## The loss signal
 //!
-//! A configured rate is a guess, and it is wrong in both directions at once:
-//! too fast for the router, too slow for the server, and no rate is right for a
-//! scan that meets both. It is also unanchored: nothing about "four hundred
-//! probes a second" refers to anything the target does.
-//!
-//! A window refers to exactly that. Probes leave as earlier ones are answered,
-//! so the send rate settles at the rate the target is *resolving* them, whatever
-//! that rate happens to be. It needs no clock, it needs no configuration, and it
-//! is self-correcting: a target that slows down is asked more slowly without
-//! anybody deciding anything.
-//!
-//! The engine still has a rate ceiling, and it still means something, but it is
-//! a backstop against a defect in this file, not the thing that paces a scan.
-//!
-//! ## The loss signal, and why it is not the timeout
-//!
-//! TCP congestion control reduces on a timeout, because for TCP a lost segment
-//! means a full queue. A port scanner cannot borrow that rule, because for a
-//! scanner an unanswered probe usually means a firewall. Reducing on silence
-//! would slow a scan to a crawl against exactly the hosts that are silent by
-//! policy, and it would do it worst on the wide, heavily filtered ranges where
-//! finishing at all is the whole difficulty.
-//!
-//! So the rule is narrower, and it turns on *who* is silent:
+//! TCP reduces on a timeout because a lost segment means a full queue. For a scanner
+//! an unanswered probe usually means a firewall, and reducing on it would crawl
+//! through exactly the wide, filtered ranges that are hardest to finish. The rule
+//! turns on who is silent:
 //!
 //! > **Silence from a host that has never spoken is not congestion. Silence from
 //! > a host that is otherwise answering us is.**
 //!
-//! A machine that replies to seven hundred probes and drops two hundred is not
-//! running a two-hundred-port block list; it is failing to keep up. A machine
-//! that replies to nothing is behind a firewall, or is not there, and asking it
-//! more slowly discovers nothing at either, and neither is a machine that
-//! replies to a port or two in a thousand, which is a firewall letting those
-//! through. So a host is talking when it answers more than one probe in ten
-//! of those put to it: read as talking on the strength of one open port, a
-//! Windows machine behind its firewall held its scan at the window's floor.
-//! That one distinction separates the cases a timeout-driven controller
-//! confuses:
+//! A host counts as talking when it answers more than one probe in ten put to it. A
+//! host answering one port in a thousand is a firewall letting it through; read as
+//! talking on the strength of one open port, a Windows machine behind its firewall
+//! held its scan at the window's floor.
 //!
 //! | What is happening | What the controller sees | What it does |
 //! |---|---|---|
@@ -70,212 +42,124 @@
 //! | Host is being outrun | Timeouts, from a host that talks | Cuts the window |
 //! | Host is being outrun badly | Answers arriving only on retries | Cuts the window |
 //!
-//! The last two are the same fault seen at different times, and both are needed.
-//! A recovery is the stronger evidence, the port demonstrably wanted to answer,
-//! but it arrives late, and it arrives *not at all* when the retries are lost as
-//! well as the first attempt.
-//!
-//! ## What cutting only on recoveries costs, measured
-//!
-//! The obvious alternative cuts only on recoveries, on the reasoning that a
-//! timeout might be a firewall. Measured against a Raspberry Pi on a home
-//! network, a controller built that way never cut once, and three consecutive
-//! scans of the same host reported this:
-//!
-//! - eleven ports were open across the three runs; **each run found exactly
-//!   seven**, and only one port was found by all three;
-//! - roughly two hundred and forty ports came back `NoReply` each time, and the
-//!   set was reshuffled every run: port 53 silent once and open twice, port 22
-//!   open twice and silent once.
-//!
-//! Nothing on that host was filtered. Every one of those verdicts was the
-//! scanner's own send rate, reported as somebody's firewall, which is precisely
-//! the failure this module exists to prevent, arrived at by a different route.
-//!
-//! The arithmetic says why the recovery signal never fired. At a quarter of
-//! probes lost and three *independent* attempts, an open port is missed one time
-//! in seventy: eleven open ports should have come back as nearly eleven, not
-//! seven. Seven means the attempts were not independent: all three of them fell
-//! inside the same congested moment, so nothing was ever recovered on a retry and
-//! the controller was handed no evidence at all. A signal that only fires once
-//! the target has recovered is a signal that goes quiet exactly when the target
-//! is worst off.
+//! The last two are the same fault seen at different times, and both are needed. A
+//! recovery on a retry is stronger evidence but arrives late, or not at all when the
+//! retries are lost too. Measured against a Raspberry Pi on a home network, a
+//! controller that cut only on recoveries never cut: three scans of the same host
+//! each found seven of its eleven open ports and reported about 240 ports `NoReply`,
+//! a different set each run. All three attempts at a probe fell inside the same
+//! congested moment, so no retry was ever answered.
 //!
 //! ## When silence is itself the answer
 //!
-//! The rule above assumes a live stack answers every probe, so that silence
-//! from a host that talks is a probe it dropped. That holds for a SYN, which
-//! every port answers one way or the other, and not for a FIN, a NULL, an
-//! Xmas or a Maimon probe, or a COOKIE-ECHO: an open port is required to
-//! ignore those, so every open port on a host with closed ones is a timeout
-//! from a host that is answering, on every attempt. Read as loss, a scan of
-//! such a host cuts once per open port it finds and spends the run at its
-//! floor, slowed by its own findings against a host that dropped nothing.
+//! The rule assumes a live stack answers every probe. That holds for a SYN but not
+//! for a FIN, NULL, Xmas or Maimon probe, or a COOKIE-ECHO: an open port ignores
+//! those, so each open port is a timeout from a host that is answering. Read as loss,
+//! a scan of such a host would cut once per open port it finds.
 //!
-//! Waiting for a retry to be answered instead is the rule the section above
-//! measured failing, and it would fail the same way here: a closed port whose
-//! every attempt fell inside one congested moment comes back as silent as an
-//! open one. So one silence is not read either way, and what separates the
-//! two is how much of it there is. An open port is the exception on a host,
-//! a tenth of the ports asked on a service-dense one, while loss that retries
-//! could not be counted on to recover was measured at a quarter. A scan whose
-//! silence is a verdict weighs the one against the other: each silence from a
-//! host that is answering counts five, each answer to a first ask takes one
-//! back, and the window is cut once the balance stands twelve silences
-//! past even. Five to one is the ratio of how much likelier a silence
-//! and an answer are under a quarter lost than under a tenth open, so the
-//! balance sinks while one outcome in ten is silent, climbs at one in four,
-//! and holds still at one in six. A lone open port moves nothing; a host being
-//! outrun still narrows the window, answered retries or not.
+//! So one such silence is not read either way; what separates open ports from loss is
+//! how much silence there is. Open ports are about a tenth of those asked on a
+//! service-dense host, while loss retries could not recover was measured at a
+//! quarter. Each silence from an answering host adds five to a balance, each answer
+//! to a first ask takes one off, and the window is cut once the balance stands twelve
+//! silences past even. Five to one is the likelihood ratio between a quarter lost and
+//! a tenth open, so the balance sinks at one silence in ten, climbs at one in four
+//! and holds still at one in six.
 //!
-//! A share averaged over the recent outcomes cannot draw that line. A silence
-//! is heard a whole round-trip budget after it was asked and the answers
-//! asked beside it at once, so outcomes reach the window with the silence
-//! bunched: as many silences back to back as the window holds silent
-//! questions, a whole window's worth after the scan loop wakes late. An
-//! average over about a window's worth of outcomes reads each bunch as a
-//! share of loss, and at one in ten it swings past a threshold anywhere near
-//! it at the small windows its own cuts produce. The balance instead keeps
-//! the credit answers earn for as long as the silences asked beside them can
-//! still be on their way, five for each question in flight, so a bunch of
-//! silence spends credit set aside for it and only silence beyond what was
-//! asked reads as loss.
+//! A share averaged over recent outcomes would misread bunching. A silence is heard a
+//! whole round-trip budget after the answers asked beside it, so silences arrive back
+//! to back, a window's worth at once when the loop wakes late. The balance keeps the
+//! credit answers earned while the silences asked beside them can still be on their
+//! way, five per question in flight, so only silence beyond that reads as loss.
 //!
 //! ## What occupies the window
 //!
-//! A probe holds a slot **from its first send until its first outcome**, and its
-//! first outcome is either an answer or the expiry of its round-trip budget.
-//! After that it is in the retry schedule rather than in flight, and it holds
-//! nothing.
+//! A probe holds a slot **from its first send until its first outcome**: an answer or
+//! the expiry of its round-trip budget. After that it is in the retry schedule and
+//! holds nothing. Held until finally resolved, a firewalled port would occupy a slot
+//! for most of two seconds against a round trip of one millisecond, and a thousand
+//! silent ports through a window of thirty-two would cost a minute.
 //!
-//! That line is not a detail; getting it wrong is the difference between a
-//! working scanner and an unusable one. Hold the slot until the probe is
-//! finally resolved and a firewalled port occupies the window for its whole
-//! retry lifetime: most of two seconds, against a round trip of one
-//! millisecond. A thousand silent ports through a window of thirty-two is then
-//! a minute of waiting for silence the scan had already heard, and the target
-//! that is hardest to finish throttles the scan exactly as a congested one does.
-//! Which is the confusion this whole module exists not to make.
-//!
-//! Retries are not readmitted. They are real packets and they count toward the
-//! damping below, but a question already given up on once does not take a slot
-//! back from a question nobody has asked yet.
+//! Retries take no slot, but they are real packets and count toward the damping.
 //!
 //! ## Growth, reduction and damping
 //!
-//! Growth is TCP's, because TCP's is right here: exponential while the window is
-//! below [`WindowLimits::slow_start_threshold`], linear above it. Slow start is
-//! what gets a scan up to speed in a handful of round trips instead of a
-//! thousand; the threshold is what stops it overshooting a target's capacity by
-//! a factor of two before it notices.
+//! Growth is TCP's: exponential below [`WindowLimits::slow_start_threshold`], linear
+//! above it. A probe that timed out against a silent host grows the window like an
+//! answered one, since nothing that host does says anything about capacity; this is
+//! what lets a scan of firewalled or dead addresses open up and finish.
 //!
-//! A probe that timed out against a silent host grows the window exactly as an
-//! answered one does. That reads backwards until the rule above is taken
-//! seriously: nothing that host does is evidence about capacity, and asking it
-//! more slowly discovers nothing. Against an address that answers nothing at all,
-//! a firewalled host, a dead address in a range, this is what lets the scan
-//! open up and finish, instead of creeping through at whatever window it
-//! happened to start with.
+//! Every probe yields exactly one signal, and the caller picks it by answering one
+//! question: did this outcome say the target is failing to keep up?
 //!
-//! So every probe yields exactly one signal, and the caller decides which by
-//! answering one question about it: did anything about this outcome say the
-//! target is failing to keep up?
+//! Reduction halves, then **does not halve again until a window's worth of probes has
+//! been sent**. Otherwise a burst of fifty probes that all needed retries would be
+//! fifty halvings. TCP applies the same rule per round trip; this counts probes.
 //!
-//! Reduction halves, and then **refuses to halve again until the window's worth
-//! of probes has been released**. Without that, one overloaded moment collapses
-//! the window: a burst of fifty probes that all needed retries is fifty
-//! recoveries arriving together, and fifty halvings is the floor. One reduction
-//! per window of sends is the same rule TCP applies for the same reason, phrased
-//! in probes rather than in round trips because a scanner already counts probes
-//! and would have to invent the round trip.
+//! ## Capture drops
 //!
-//! ## What is not a signal
+//! A frame the kernel's capture buffer dropped is loss too, but it needs no wiring:
+//! the probe times out, is resent and answered, which is a recovery like any other.
+//! The drop counter is reported by [`ProbeAudit`](crate::scanner::audit::ProbeAudit),
+//! because it is a fact about the operator's machine.
 //!
-//! A frame the kernel's capture buffer dropped is loss too, and unlike a
-//! timeout it is unambiguous: the reply arrived and this process was too busy
-//! to take it. It is not wired in here, because it does not need to be: the
-//! probe whose reply was dropped times out, is sent again, and is answered, and
-//! that is a recovery like any other. Reading the counter as well would react
-//! one round trip sooner and cost a poll in the receive loop for a case the
-//! controller already handles. The counter is reported to the operator instead,
-//! by [`ProbeAudit`](crate::scanner::audit::ProbeAudit), because a receive path
-//! that cannot keep up is a fact about their machine rather than about the
-//! network, and no amount of pacing makes that the right thing not to say.
+//! ## Where it applies
 //!
-//! ## Where it applies, and where it does not
-//!
-//! TCP port scanning, where silence is exceptional and an answer is the norm.
-//! Not UDP: a UDP probe's ordinary outcome *is* silence, and the ledger
-//! cannot tell which attempt a reply answered because a UDP probe carries
-//! nothing for the reply to echo. Both halves of the signal are missing, so a
-//! UDP scan keeps a window that does not move, [`WindowLimits::fixed`], and
-//! stays paced by the fixed rate its ICMP rate limiter demands. A controller fed
-//! no evidence is not a conservative controller, it is a random one.
+//! TCP port scanning, where an answer is the norm. A UDP probe's ordinary outcome is
+//! silence, and a UDP reply carries nothing that names the attempt it answers, so a
+//! UDP scan keeps a window that does not move, [`WindowLimits::fixed`], and is paced
+//! by the rate its ICMP rate limiter demands.
 
 use crate::report::WindowSummary;
 
 /// How much a silence that may be an open port weighs against an answer to a
 /// first ask, in a scan whose silence is a verdict.
 ///
-/// Five: a silence is two and a half times likelier from a host losing a
-/// quarter of its probes, the share measured against a Raspberry Pi, than
-/// from one with a tenth of its ports open, an answer one and a fifth times
-/// likelier from the second, and five is the ratio of the logarithms of the
-/// two. The balance
-/// [`LOSS_EVIDENCE`] is compared against therefore holds still at one silence
-/// in six. A host with more than one port in six open among those asked is
-/// paced as a host losing probes, which costs the scan time and never a
-/// verdict.
+/// A silence is two and a half times likelier from a host losing a quarter of its
+/// probes (the share measured against a Raspberry Pi) than from one with a tenth of
+/// its ports open; an answer is one and a fifth times likelier from the second. Five
+/// is the ratio of the logarithms of the two, so the balance [`LOSS_EVIDENCE`] is
+/// compared against holds still at one silence in six. A host with more than one in
+/// six of the asked ports open is paced as a lossy host, which costs time but never
+/// a verdict.
 const SILENCE_WEIGHT: i64 = 5;
 
 /// How far the balance of silence against answers has to climb before a scan
 /// whose silence is a verdict reads it as loss.
 ///
-/// Twelve silences past the balance. From a host with a tenth of its ports
-/// open the balance reaches it by chance about once in a hundred thousand
-/// first outcomes, more than one host's ports; from a host losing a quarter
-/// of its probes it takes about a hundred.
+/// Twelve silences. A host with a tenth of its ports open reaches it by chance
+/// about once in a hundred thousand first outcomes, more than one host's ports; a
+/// host losing a quarter of its probes reaches it in about a hundred.
 const LOSS_EVIDENCE: i64 = 12 * SILENCE_WEIGHT;
 
 /// The bounds a [`CongestionWindow`] moves within, and where it starts.
 ///
-/// Declared per scanner beside its retry policy and deadline profile, since what
-/// counts as a reasonable number of outstanding questions is a property of the
-/// protocol and of what answers it.
+/// Declared per scanner beside its retry policy and deadline profile, since a
+/// reasonable number of outstanding probes depends on the protocol.
 ///
-/// `#[non_exhaustive]`, along with the three other pacing configurations, and
-/// for the reason they share: these are the knobs a controller gains a field of
-/// every time somebody measures something new, this module having recorded
-/// three such measurements already, and every one of them is read here rather
-/// than pattern-matched by a consumer. Closing the literal costs a caller
-/// [`new`](Self::new) instead of a struct expression, and it is what keeps
-/// [`new`](Self::new)'s bounds check from being walked around.
+/// `#[non_exhaustive]`, like the other pacing configurations, because these gain
+/// fields as new measurements come in. Build it with [`new`](Self::new).
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct WindowLimits {
     /// The window before anything has been learned.
     ///
-    /// Not one. A scan that begins with a single outstanding probe spends a
-    /// round trip per doubling to reach a useful size, and on a local segment
-    /// that is most of the scan. Every stack in service will answer a few dozen
-    /// simultaneous probes, so starting there costs nothing and saves several
-    /// round trips of ramp.
+    /// Every stack in service answers a few dozen simultaneous probes, so
+    /// starting there saves several round trips of ramp, which on a local
+    /// segment is most of the scan.
     pub initial: u32,
     /// The smallest window a reduction may reach. Below this a scan stops making
-    /// progress rather than merely being polite.
+    /// progress.
     pub floor: u32,
     /// The largest window growth may reach, whatever the evidence.
     ///
     /// It bounds correlation state as much as traffic: every outstanding probe
-    /// is a ledger entry and a timer, and a scan waiting on more answers than
-    /// this is not getting them sooner.
+    /// is a ledger entry and a timer.
     pub ceiling: u32,
     /// Where exponential growth gives way to linear.
     ///
-    /// Slow start doubles the window every round trip, which is how a scan
-    /// reaches useful speed quickly and also how it sails past a target's
-    /// capacity before the first recovery arrives to say so. The threshold is
-    /// the size past which the scan stops guessing upward and starts creeping.
+    /// Slow start doubles the window every round trip, which can overshoot a
+    /// target's capacity before the first recovery arrives.
     pub slow_start_threshold: u32,
 }
 
@@ -295,9 +179,8 @@ impl WindowLimits {
     /// A window that does not move, for a scan whose protocol offers no evidence
     /// to move it on.
     ///
-    /// Not a disabled feature: it is the correct configuration for UDP, where
-    /// silence is the ordinary outcome and no reply names the attempt it
-    /// answers. See the module documentation.
+    /// The configuration for UDP, where silence is the ordinary outcome and no
+    /// reply names the attempt it answers.
     pub const fn fixed(capacity: u32) -> Self {
         Self {
             initial: capacity,
@@ -317,19 +200,16 @@ impl WindowLimits {
 /// managing to answer.
 ///
 /// A scanner reads [`capacity`](Self::capacity) to decide whether to admit
-/// another target, and reports three things back: that a probe was sent, that
-/// one was answered, and that one was answered *only after being sent again*.
-/// The last is the loss signal and the reason this type can tell a slow host
-/// apart from a firewalled one; the module documentation has the argument.
+/// another target, and reports back sends, releases and outcomes. The loss
+/// signals are described in the module documentation.
 #[derive(Debug, Clone)]
 pub struct CongestionWindow {
     limits: WindowLimits,
-    /// Fractional, so linear growth can add a fraction of a probe per answer and
-    /// arrive at one probe per window rather than rounding to nothing.
+    /// Fractional, so linear growth can add a fraction of a probe per answer.
     window: f64,
     threshold: f64,
-    /// Questions currently awaiting an answer: sent, and neither answered nor
-    /// yet out of round-trip budget. What [`capacity`](Self::capacity) bounds.
+    /// Probes sent and neither answered nor out of round-trip budget. Bounded
+    /// by [`capacity`](Self::capacity).
     in_flight: u32,
     /// Probes released since the last reduction, against which
     /// [`epoch`](Self::epoch) is compared.
@@ -339,14 +219,13 @@ pub struct CongestionWindow {
     epoch: u32,
     peak: usize,
     reductions: u32,
-    /// The balance of silence that may be a verdict against answers, among
-    /// first outcomes from answering hosts: up [`SILENCE_WEIGHT`] for each
-    /// silence, down one for each answer, and never below the credit the
-    /// questions still in flight may spend. What
-    /// [`record_ambiguous_silence`](Self::record_ambiguous_silence) compares
+    /// Ambiguous silence weighed against answers, among first outcomes from
+    /// answering hosts: up [`SILENCE_WEIGHT`] per silence, down one per answer,
+    /// never below the credit the probes in flight may spend.
+    /// [`record_ambiguous_silence`](Self::record_ambiguous_silence) compares it
     /// against [`LOSS_EVIDENCE`].
     silence_evidence: i64,
-    /// Whether the scan has admitted its last question. See
+    /// Whether the scan has admitted its last probe. See
     /// [`stop_admitting`](Self::stop_admitting).
     admission_over: bool,
 }
@@ -354,14 +233,10 @@ pub struct CongestionWindow {
 impl CongestionWindow {
     /// A window at its starting size, with nothing learned yet.
     ///
-    /// Bounds that disagree do not panic. `floor` and `ceiling` are adjacent
-    /// arguments of one type, so a caller can cross them; the floor wins, for the reason
+    /// Crossed bounds do not panic: the floor wins, as in
     /// [`suggest_timeout`](super::rtt_window::RttWindow::suggest_timeout) and
-    /// [`ProbeLedger`](super::retry::ProbeLedger) give. A crossed pair then
-    /// describes a range with nothing in it, so the window is stationary and
-    /// reports itself as such through [`WindowSummary::adaptive`]. `u32::clamp`
-    /// asserts instead, and would take the scan down before that logic could
-    /// run.
+    /// [`ProbeLedger`](super::retry::ProbeLedger), and the window is stationary
+    /// and says so through [`WindowSummary::adaptive`].
     pub fn new(limits: WindowLimits) -> Self {
         let window = f64::from(
             limits
@@ -374,9 +249,7 @@ impl CongestionWindow {
             threshold: f64::from(limits.slow_start_threshold),
             in_flight: 0,
             since_reduction: 0,
-            // Zero, so the first recovery is acted on rather than damped. The
-            // damping exists to stop one bad moment being counted many times,
-            // not to ignore the first evidence a scan ever gets.
+            // Zero, so the first recovery is acted on.
             epoch: 0,
             peak: window as usize,
             reductions: 0,
@@ -387,9 +260,7 @@ impl CongestionWindow {
 
     /// The most questions that may be awaiting an answer right now.
     ///
-    /// Never zero: a window that admits nothing is a scan that cannot make
-    /// progress, and the floor is what a reduction is allowed to reach rather
-    /// than a value it may pass through.
+    /// At least one, so the scan always makes progress.
     pub fn capacity(&self) -> usize {
         (self.window as usize).max(1)
     }
@@ -414,31 +285,25 @@ impl CongestionWindow {
     /// Records a retry leaving the wire: it counts toward the damping and takes
     /// no slot.
     ///
-    /// It is real traffic, so the damping has to see it: the window's worth of
-    /// sends between reductions is a count of packets, not of targets. It takes
-    /// no slot because the slot was released when the question it repeats ran
-    /// out of round-trip budget; see the module documentation on what occupies
-    /// the window.
+    /// The damping counts packets, so it sees retries. The slot was released when
+    /// the probe it repeats ran out of round-trip budget.
     pub fn record_resend(&mut self) {
         self.since_reduction = self.since_reduction.saturating_add(1);
     }
 
     /// Releases the slot one question was holding.
     ///
-    /// Separate from the two signals below, and it has to be: a question can end
-    /// in a way that says the target is struggling (a timeout from a host that
-    /// is otherwise answering) or in a way that says nothing (silence from a
-    /// host that answers nothing), and both free the slot. Folding the release
-    /// into either signal would mean the other one leaked.
+    /// Separate from the signals below, because a probe that frees its slot may
+    /// say the target is struggling or say nothing.
     ///
-    /// Call it exactly once per question, on whichever event ends it first: an
-    /// answer, or the expiry of its round-trip budget. Never on a retry: the
-    /// slot went back when the question the retry repeats ran out of budget.
+    /// Call it exactly once per probe, on whichever ends it first: an answer, or
+    /// the expiry of its round-trip budget. Not on a retry, whose slot went back
+    /// at that expiry.
     pub fn release(&mut self) {
         self.in_flight = self.in_flight.saturating_sub(1);
     }
 
-    /// Records a question answered on its first ask: the target is keeping up.
+    /// Records a probe answered on its first ask: the target is keeping up.
     ///
     /// Grows the window, and weighs against silence in the balance
     /// [`record_ambiguous_silence`](Self::record_ambiguous_silence) reads.
@@ -450,8 +315,8 @@ impl CongestionWindow {
     /// Records silence from a host that is answering, in a scan where every
     /// port would have answered: a probe the target dropped.
     ///
-    /// Cuts the window, while the scan still has questions to admit, for the
-    /// reason [`stop_admitting`](Self::stop_admitting) gives.
+    /// Cuts the window while the scan still has probes to admit; see
+    /// [`stop_admitting`](Self::stop_admitting).
     pub(crate) fn record_loss(&mut self) {
         if !self.admission_over {
             self.record_congestion();
@@ -462,12 +327,9 @@ impl CongestionWindow {
     /// is also what an open port gives: an open port found, or a probe lost,
     /// and nothing about this one outcome says which.
     ///
-    /// Neither grows the window nor cuts it on its own. It cuts once the
-    /// balance of silence against answers passes [`LOSS_EVIDENCE`], which a
-    /// host's open ports do not reach and a host being outrun does. See the
-    /// module documentation.
-    ///
-    /// Read only while the scan still has questions to admit; see
+    /// Cuts once the balance of silence against answers passes
+    /// [`LOSS_EVIDENCE`], which a host's open ports do not reach and a host being
+    /// outrun does. Read only while the scan still has probes to admit; see
     /// [`stop_admitting`](Self::stop_admitting).
     pub(crate) fn record_ambiguous_silence(&mut self) {
         if !self.admission_over && self.observe_first_outcome(true) > LOSS_EVIDENCE {
@@ -475,18 +337,13 @@ impl CongestionWindow {
         }
     }
 
-    /// Records that the scan has admitted its last question, so the window
-    /// paces nothing from here and silence is no longer read as loss, one
-    /// timeout at a time or as a balance.
+    /// Records that the scan has admitted its last probe. From here silence is no
+    /// longer read as loss.
     ///
-    /// A cut from here would slow nothing, and the outcomes still owed are
-    /// whatever was left in flight, where silence is over-represented by
-    /// construction: an answered question gives its slot back after a round
-    /// trip and a silent one after its whole budget, so a window at work holds
-    /// mostly silent questions however few of the questions asked were
-    /// silent. Weighed as evidence, they could cut a window that paces
-    /// nothing, on a host that dropped nothing, and leave it reported at its
-    /// floor.
+    /// A cut would slow nothing, and the outcomes still owed over-represent
+    /// silence: an answered probe frees its slot after a round trip and a silent
+    /// one after its whole budget. Weighed as evidence, they could leave the window
+    /// reported at its floor on a host that dropped nothing.
     pub(crate) fn stop_admitting(&mut self) {
         self.admission_over = true;
     }
@@ -494,10 +351,9 @@ impl CongestionWindow {
     /// Folds one first outcome from an answering host into the balance of
     /// silence against answers, and returns the balance.
     ///
-    /// Held above [`credit_in_flight`](Self::credit_in_flight), so a run of
-    /// clean answers early in a long scan cannot bank enough to hide loss that
-    /// starts late in it: the credit kept is what the silences still on their
-    /// way may need, and nothing more.
+    /// Held above [`credit_in_flight`](Self::credit_in_flight), so clean answers
+    /// early in a long scan cannot bank enough credit to hide loss that starts
+    /// late.
     fn observe_first_outcome(&mut self, silent: bool) -> i64 {
         let step = if silent { SILENCE_WEIGHT } else { -1 };
         self.silence_evidence = (self.silence_evidence + step).max(self.credit_in_flight());
@@ -505,13 +361,10 @@ impl CongestionWindow {
     }
 
     /// The lowest the balance of silence may sink: the weight of one silence
-    /// for every question still in flight, negated.
+    /// for every probe still in flight, negated.
     ///
-    /// Each question in flight is one whose outcome is still to come, and
-    /// every one of them may yet be heard as silence. Their answering
-    /// neighbours were heard a round-trip budget earlier, so the credit those
-    /// earned has to be kept until the silences it balances arrive, and no
-    /// more than those silences can spend.
+    /// Every probe in flight may yet be heard as silence, a round-trip budget
+    /// after its answering neighbours, so their credit is kept until then.
     fn credit_in_flight(&self) -> i64 {
         -SILENCE_WEIGHT * i64::from(self.in_flight)
     }
@@ -520,8 +373,7 @@ impl CongestionWindow {
     /// answered on the first ask, or silence from a host that answers nothing
     /// anyway.
     ///
-    /// Grows the window. See the module documentation for why the second of
-    /// those grows it rather than shrinking it.
+    /// Grows the window.
     pub fn record_progress(&mut self) {
         if !self.limits.adaptive() {
             return;
@@ -540,11 +392,9 @@ impl CongestionWindow {
     /// answer: a question it dropped while answering others, or one it answered
     /// only after being asked again.
     ///
-    /// Halves the window, then refuses to halve again until that many probes
-    /// have been released. The balance of silence starts over with it, at the
-    /// credit the questions still in flight may spend: they were asked at the
-    /// pace just cut, and the silence among them is not evidence for the next
-    /// cut, which has to be earned at the pace this one set.
+    /// Halves the window, then does not halve again until that many probes have
+    /// been sent. The silence balance restarts at the in-flight credit, since the
+    /// probes in flight were asked at the pace just cut.
     pub fn record_congestion(&mut self) {
         if !self.limits.adaptive() || self.since_reduction < self.epoch {
             return;
@@ -558,8 +408,8 @@ impl CongestionWindow {
         self.silence_evidence = self.credit_in_flight();
     }
 
-    /// Releases every slot still held, for a scan that is stopping before its
-    /// outstanding questions could be settled on their own.
+    /// Releases every slot still held, for a scan stopping before its outstanding
+    /// probes settle.
     pub fn release_all(&mut self) {
         self.in_flight = 0;
     }
@@ -588,10 +438,8 @@ impl CongestionWindow {
 #[cfg(test)]
 mod tests {
 
-    /// `floor` and `ceiling` are adjacent `u32`s on the constructor, so a
-    /// caller can cross them. `u32::clamp` asserts, which would turn that into
-    /// a panic in the scanning process, two lines before the `adaptive` check
-    /// that already handles a range with nothing in it.
+    /// `floor` and `ceiling` are adjacent `u32`s, so a caller can cross them, and
+    /// `u32::clamp` would panic.
     #[test]
     fn crossed_bounds_freeze_the_window_rather_than_panicking() {
         let window = CongestionWindow::new(WindowLimits::new(10, 100, 50, 20));
@@ -603,8 +451,7 @@ mod tests {
         );
     }
 
-    /// Growth and reduction are both no-ops on such a window, so nothing
-    /// downstream has to know the bounds were crossed.
+    /// Growth and reduction are both no-ops on such a window.
     #[test]
     fn a_frozen_window_neither_grows_nor_cuts() {
         let mut window = CongestionWindow::new(WindowLimits::new(10, 100, 50, 20));
@@ -623,9 +470,7 @@ mod tests {
         WindowLimits::new(16, 4, 512, 64)
     }
 
-    /// Below the threshold the window doubles per round trip's worth of
-    /// answers, which is what gets a scan up to speed in a handful of round
-    /// trips rather than a thousand.
+    /// Below the threshold the window doubles per round trip's worth of answers.
     #[test]
     fn slow_start_doubles_the_window_every_round_trip() {
         let mut window = CongestionWindow::new(limits());
@@ -643,12 +488,8 @@ mod tests {
         assert_eq!(window.capacity(), 64);
     }
 
-    /// Past the threshold it creeps instead, so a scan that has found a target's
-    /// working pace does not immediately overshoot it again.
-    ///
-    /// Eight round trips' worth of answers buy eight more probes rather than
-    /// eight doublings: the same eight round trips of slow start would have
-    /// asked for sixteen thousand.
+    /// Past the threshold, eight round trips' worth of answers buy eight more
+    /// probes.
     #[test]
     fn past_the_threshold_the_window_grows_by_one_per_round_trip() {
         let mut window = CongestionWindow::new(WindowLimits::new(64, 4, 4096, 64));
@@ -666,10 +507,8 @@ mod tests {
         );
     }
 
-    /// The reason this type exists. A halving per recovery would collapse the
-    /// window on the first overloaded moment, because one burst that needed
-    /// retries produces a burst of recoveries, and the scan would then crawl
-    /// against a host that was merely busy for a millisecond.
+    /// One burst that needed retries produces a burst of recoveries; halving on
+    /// each would collapse the window against a host busy for a millisecond.
     #[test]
     fn one_overloaded_moment_cuts_the_window_once_and_not_fifty_times() {
         let mut window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 512));
@@ -683,8 +522,7 @@ mod tests {
         assert_eq!(window.summary().reductions, 1);
     }
 
-    /// The damping lifts once the window's worth of probes has gone out, so a
-    /// target that is still being outrun is still cut back.
+    /// The damping lifts once a window's worth of probes has gone out.
     #[test]
     fn a_second_window_of_probes_earns_a_second_reduction() {
         let mut window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 512));
@@ -700,9 +538,7 @@ mod tests {
         assert_eq!(window.summary().reductions, 2);
     }
 
-    /// A reduction stops at the floor. Past it a scan is not being polite, it is
-    /// failing to finish, and the verdicts it does not reach are indeterminate
-    /// rather than merely late.
+    /// A reduction stops at the floor.
     #[test]
     fn reduction_stops_at_the_floor() {
         let mut window = CongestionWindow::new(WindowLimits::new(64, 8, 512, 512));
@@ -717,9 +553,7 @@ mod tests {
         assert_eq!(window.capacity(), 8);
     }
 
-    /// Growth stops at the ceiling, which bounds correlation state as much as
-    /// traffic: a scan waiting on more answers than this is not getting them
-    /// sooner.
+    /// Growth stops at the ceiling.
     #[test]
     fn growth_stops_at_the_ceiling() {
         let mut window = CongestionWindow::new(WindowLimits::new(16, 4, 32, 1024));
@@ -732,14 +566,8 @@ mod tests {
         assert_eq!(window.summary().peak, 32);
     }
 
-    /// The rule the whole controller turns on: a question stops occupying the
-    /// window the moment it is settled, and running out of round-trip budget is
-    /// a settlement.
-    ///
-    /// Held instead until the probe was finally retired, a firewalled port would
-    /// occupy a slot for its whole retry lifetime, most of two seconds against
-    /// a round trip of one millisecond, and a thousand of them through a small
-    /// window is a minute of waiting for silence the scan had already heard.
+    /// A probe stops occupying the window at its first outcome, and running out of
+    /// round-trip budget is an outcome.
     #[test]
     fn silence_frees_the_slot_it_was_holding() {
         let mut window = CongestionWindow::new(WindowLimits::new(4, 2, 512, 512));
@@ -761,9 +589,7 @@ mod tests {
         );
     }
 
-    /// A retry is traffic and the damping has to count it, but it is a repeat of
-    /// a question already given up on, so it must not take a slot back from a
-    /// question nobody has asked yet.
+    /// A retry counts toward the damping but takes no slot.
     #[test]
     fn a_retry_costs_no_slot() {
         let mut window = CongestionWindow::new(WindowLimits::new(4, 2, 512, 512));
@@ -776,9 +602,8 @@ mod tests {
         assert_eq!(window.in_flight(), 0, "the slot went back at the timeout");
     }
 
-    /// An answer that arrived only on a repeat frees nothing, because the slot
-    /// went back when the first attempt timed out. Freeing it twice would let
-    /// the window admit more than it believes it has.
+    /// An answer that arrived only on a repeat frees nothing: the slot went back
+    /// when the first attempt timed out.
     #[test]
     fn a_recovery_does_not_free_a_second_slot() {
         let mut window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 512));
@@ -791,9 +616,7 @@ mod tests {
         assert_eq!(window.in_flight(), 0);
     }
 
-    /// A UDP scan has neither half of the signal, silence is its ordinary
-    /// outcome and its replies name no attempt, so its window is told to hold
-    /// still, and nothing it is fed may move it.
+    /// A fixed window, as UDP uses, ignores every signal.
     #[test]
     fn a_fixed_window_ignores_every_signal() {
         let mut window = CongestionWindow::new(WindowLimits::fixed(64));
@@ -809,9 +632,8 @@ mod tests {
         assert!(!window.summary().adaptive);
     }
 
-    /// A silence that may be an open port neither opens the window nor closes
-    /// it while it is the exception among a host's answers: a scan whose silence
-    /// is a verdict meets one on every host with services.
+    /// An ambiguous silence that is the exception among a host's answers moves
+    /// nothing.
     #[test]
     fn an_occasional_ambiguous_silence_among_answers_moves_nothing() {
         let mut window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 64));
@@ -827,14 +649,12 @@ mod tests {
         assert_eq!(window.summary().reductions, 0, "one in twenty is not loss");
     }
 
-    /// One silence in ten, the open ports of a service-dense host, is still
-    /// not loss, and nothing about how the silences fall among the answers
-    /// may make it so over a scan of a few thousand ports.
+    /// One silence in ten, the open ports of a service-dense host, is not loss
+    /// however the silences fall among the answers.
     #[test]
     fn a_tenth_of_first_outcomes_silent_is_not_loss() {
         let mut window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 64));
-        // A fixed scramble, so the silences fall unevenly, some back to back,
-        // and the test sees the same run every time.
+        // A fixed LCG, so the silences fall unevenly but deterministically.
         let mut state: u64 = 0x2545_f491_4f6c_dd1d;
 
         for _ in 0..(64 * 50) {
@@ -851,15 +671,11 @@ mod tests {
         assert_eq!(window.summary().reductions, 0, "one in ten is not loss");
     }
 
-    /// A silence is heard a whole budget after it was asked and the answers
-    /// asked beside it at once, so silences reach the window back to back, a
-    /// window's worth at a time when the loop wakes late. The credit kept for
-    /// the questions in flight is what stops such a bunch reading as loss.
+    /// Silences reach the window bunched, a budget after their answers. The
+    /// in-flight credit keeps such a bunch from reading as loss.
     ///
-    /// Here each round asks sixty-four questions, six of them silent, and the
-    /// silences of eight rounds are heard together: forty-eight silences with
-    /// no answer between them, which any share of recent outcomes would read
-    /// as a host dropping most of what it is asked.
+    /// Each round asks sixty-four probes, six of them silent, and the silences of
+    /// eight rounds are heard together: forty-eight with no answer between them.
     #[test]
     fn silence_heard_bunched_behind_its_answers_is_not_loss() {
         let mut window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 64));
@@ -883,9 +699,8 @@ mod tests {
         assert_eq!(window.summary().reductions, 0, "{:?}", window.summary());
     }
 
-    /// Silence at a share no set of open ports plausibly accounts for is loss,
-    /// bunched or not, and it cuts although no retry was ever answered to prove
-    /// it. One in four, heard in the same bunches as above.
+    /// Silence at one in four is loss, bunched or not, and cuts without any
+    /// answered retry.
     #[test]
     fn ambiguous_silence_at_a_share_of_loss_cuts_the_window() {
         let mut window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 64));
@@ -910,10 +725,8 @@ mod tests {
         assert!(window.capacity() < 64);
     }
 
-    /// Once the last question is admitted, what is left in flight is mostly
-    /// silence however little of what was asked was silent, since a silent
-    /// question holds its slot for a whole budget. Those arrive in a run with
-    /// no answers between them, and must not be weighed as loss.
+    /// After the last admission, the silence left in flight is not weighed as
+    /// loss.
     #[test]
     fn silence_left_in_flight_after_the_last_admission_is_not_weighed_as_loss() {
         let mut window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 64));
@@ -929,11 +742,7 @@ mod tests {
         assert_eq!(window.summary().reductions, 0);
     }
 
-    /// A dropped probe heard after the last question went out is weighed as
-    /// the balance above is not: a cut from there slows nothing, and the
-    /// probes still in flight are mostly the silent ones, so one silent
-    /// port asked late would leave the window reported at its floor and the
-    /// scan read as outrun.
+    /// A dropped probe heard after the last admission does not cut either.
     #[test]
     fn a_dropped_probe_heard_after_the_last_admission_does_not_cut() {
         let mut window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 64));
@@ -951,13 +760,9 @@ mod tests {
         );
     }
 
-    /// After a cut, the window has to be able to climb back: a target that was
-    /// briefly busy is not a target that must be asked slowly forever.
-    ///
-    /// It climbs back *linearly*, and that is the point of moving the threshold
-    /// down with the window rather than leaving it where it was. A scan that
-    /// re-entered slow start after every cut would double straight back into the
-    /// capacity it had just been told it exceeded.
+    /// After a cut the window climbs back linearly, because the threshold moved
+    /// down with it; slow start would double straight back past the capacity it
+    /// had just exceeded.
     #[test]
     fn a_window_that_was_cut_climbs_back_slowly_rather_than_doubling() {
         let mut window = CongestionWindow::new(WindowLimits::new(64, 4, 512, 512));
