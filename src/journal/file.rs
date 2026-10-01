@@ -13,7 +13,7 @@
 //!
 //! A journal holds the addresses an engagement was pointed at, so every file is `0600` from
 //! creation, and when the scan ran under `sudo` it is given to the user who invoked it.
-//! [`paths`](crate::journal::paths) puts the journal in that user's home; this makes it
+//! [`paths`] puts the journal in that user's home; this makes it
 //! readable to them there. Split apart, a cursor writer that set the mode but not the owner
 //! would leave `cursor.json` owned by root beside a manifest owned by the user, and an
 //! unprivileged listing would report every scan as untouched.
@@ -39,7 +39,7 @@
 //!
 //! Every name above the last is the invoking user's to place as well. Under `sudo` a
 //! journal's files and directories are reached from that user's home without following a
-//! link out of it; see [`ownership::Place`](crate::journal::ownership::Place), which also
+//! link out of it; see [`ownership::Place`], which also
 //! explains why a link that stays inside the home still works. Renames, links and removals
 //! go through the same walk: [`replace`](crate::journal::file::replace),
 //! [`link_new`](crate::journal::file::link_new), [`remove`](crate::journal::file::remove)
