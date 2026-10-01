@@ -8,23 +8,16 @@
 
 //! # The flow database
 //!
-//! The compiled Tier-1 corpus the engine embeds and reads at runtime. `build.rs`
-//! validates each flow in `assets/detect/`, hashes its bytes, and writes the
-//! source-and-hash pairs into the blob included here; this module decodes them
-//! once and hands back each flow with the provenance a finding stamps.
+//! `build.rs` validates each flow in `assets/detect/` and embeds its source and
+//! SHA-256; this module decodes them once.
 //!
-//! ## Source, not a parsed form
+//! ## Source, re-parsed
 //!
-//! What is embedded is each flow's validated source and the SHA-256 of its
-//! bytes, and the source is re-parsed here. Two reasons: the match rule is an
-//! `untagged` enum `bincode` cannot round-trip, so the parsed form would not
-//! survive the blob; and re-reading the exact bytes the build validated keeps the
-//! build and the runtime reading one text. A flow the build accepted parses here
-//! without fail, which is why the re-parse may `expect`.
+//! The source is embedded because the match rule is an `untagged` enum
+//! `bincode` cannot round-trip. The runtime re-parses exactly the bytes the
+//! build validated, so the re-parse may `expect`.
 
-// The scanner runs this corpus; a couple of accessors and the test-only
-// constructors the scan path does not reach would otherwise trip the unread-item
-// lint, so it is silenced module-wide.
+// Some accessors and constructors are used only by tests.
 #![allow(dead_code)]
 
 use std::sync::OnceLock;
@@ -53,8 +46,7 @@ impl CompiledFlow {
         &self.flow
     }
 
-    /// The SHA-256 of the flow's source bytes, stamped on every finding it
-    /// produces so a report can say which detection body fired.
+    /// The SHA-256 of the flow's source bytes, stamped on every finding.
     pub(crate) fn content_hash(&self) -> &str {
         &self.content_hash
     }
@@ -83,17 +75,16 @@ impl FlowDb {
         self.flows.iter()
     }
 
-    /// The embedded corpus, decoded fresh. The default [`Detections`](crate::detect::Detections)
-    /// holds one of these; [`global`](Self::global) caches another for the paths
-    /// that reach the corpus without a scan context (replay, the crate's tests).
+    /// The embedded corpus, decoded fresh. The default
+    /// [`Detections`](crate::detect::Detections) holds one; [`global`](Self::global)
+    /// caches another for replay and tests.
     pub(crate) fn from_embedded() -> FlowDb {
         FlowDb {
             flows: embedded_flows(),
         }
     }
 
-    /// A database over an explicit flow set, for a caller assembling a corpus of
-    /// their own or a test driving flows the shipped corpus does not carry.
+    /// A database over an explicit flow set.
     pub(crate) fn from_flows(flows: Vec<CompiledFlow>) -> Self {
         Self { flows }
     }
@@ -107,8 +98,7 @@ impl CompiledFlow {
     }
 }
 
-/// The shipped flow with this id, for tests. By id rather than file path, which
-/// breaks whenever the corpus is refiled into directories.
+/// The shipped flow with this id, for tests.
 #[cfg(test)]
 pub(crate) fn shipped_flow(id: &str) -> FlowDetection {
     embedded_flows()
@@ -152,32 +142,20 @@ mod tests {
 
     /// What each shipped flow may do, pinned as the exceptions to the default.
     ///
-    /// A detection's class decides what it may do to a target: `Exploit` and
-    /// `Dos` ship inert until an operator raises the ceiling to them, and
-    /// `ActiveMutating` writes to the target. Moving a detection across that
-    /// line either way is a security decision, not a detail.
-    ///
-    /// So the tripwire is the set of detections whose class is *not*
-    /// active-benign, the class ordinary detections ship in, checked against a
-    /// blessed list. Adding an ordinary
-    /// active-benign detection needs no edit here; one that ships anything else
-    /// fails this test until it is listed by name, which is the review that must
-    /// not be skipped. Enumerating the whole corpus bought nothing over this and
-    /// would not survive a thousand detections.
+    /// `Exploit` and `Dos` ship inert until an operator raises the ceiling, and
+    /// `ActiveMutating` writes to the target, so changing a detection's class is
+    /// a security decision. Every detection not `active-benign` must be listed
+    /// here by name.
     #[test]
     fn the_corpus_ships_the_classes_it_is_known_to_ship() {
         use crate::detect::manifest::Class;
 
-        // Every entry here was read before it was added, which is the whole
-        // point of the list. The ten writers each send a uniquely-named
-        // `zond-canary` and then remove it — `DEL`/`RMD`/`DELETE`/`deleterange`
-        // — leaving the target as they found it; `redis-config-writable`
-        // re-sets `maxmemory` to the value it just read, a no-op; `tftp-writable`
-        // cannot delete because the protocol has no such verb, which is itself a
-        // reason it is gated; `mqtt-anon-publish` sends one non-retained
-        // message. All ten genuinely write, so `ActiveMutating` is the honest
-        // class and the ceiling holds them out of a default scan. Sorted by id,
-        // because that is the order the assertion below builds its own list in.
+        // Each entry was reviewed. The writers send a uniquely-named
+        // `zond-canary` and remove it (`DEL`/`RMD`/`DELETE`/`deleterange`);
+        // `redis-config-writable` re-sets `maxmemory` to the value it read;
+        // `tftp-writable` cannot delete, since TFTP has no such verb;
+        // `mqtt-anon-publish` sends one non-retained message. All write, so they
+        // are `ActiveMutating`. Sorted by id, as the assertion builds its list.
         let blessed = [
             ("couchdb-writable", Class::ActiveMutating),
             ("elasticsearch-writable", Class::ActiveMutating),
@@ -217,9 +195,8 @@ mod tests {
         );
     }
 
-    /// A2S_INFO is a datagram query a Source server answers on its game port,
-    /// so the detection that sends it is gated there. Gated anywhere else it
-    /// asks over a transport nothing answers the query on and never fires.
+    /// A2S_INFO is a UDP query on a Source server's game port, so the detection
+    /// is gated there.
     #[test]
     fn the_source_query_detection_is_gated_on_the_port_its_server_answers() {
         let gate = shipped_flow("steam-source-query").detection.when;
@@ -248,8 +225,7 @@ mod tests {
             &mut Canned(b"# Server\r\nredis_version:7.2.4".to_vec()),
         );
         assert_eq!(findings.len(), 1);
-        // The finding carries the flow's real content hash, not the empty one the
-        // interpreter stamps when no loader supplied it.
+        // The flow's real content hash, not the interpreter's empty default.
         assert_eq!(findings[0].detection().content_hash(), redis.content_hash());
         assert_eq!(findings[0].detection().content_hash().len(), 64);
     }

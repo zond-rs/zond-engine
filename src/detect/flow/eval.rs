@@ -8,25 +8,16 @@
 
 //! # What a guard means
 //!
-//! [`super::expr`] parses a guard into a tree; this evaluates that tree against a
-//! running flow's variable [environment](Env) to the one boolean the interpreter
-//! acts on, run this step, or emit this finding, or not. It is the runtime half
-//! of the guard language, so unlike the grammar it may reach into the crate: an
-//! ordered comparison defers to [`crate::version`] so a flow guard and the CVE
-//! correlator rank a version string the same way.
+//! [`super::expr`] parses a guard; this evaluates it against a flow's variable
+//! [environment](Env). Ordered comparisons use [`crate::version`], so a flow
+//! guard and the CVE correlator rank versions the same way.
 //!
-//! ## Two ways a guard fails closed
+//! ## Guards fail closed
 //!
-//! A guard that cannot be answered answers no, never maybe:
-//!
-//! - A guard that does not parse is treated as unmet. In a validated corpus
-//!   this cannot happen: the build rejects an unparseable guard, but until then,
-//!   and for a hand-built flow in a test, an unreadable guard suppresses its step
-//!   or finding rather than firing it.
-//! - A comparison on an unbound variable is unmet. `version < '2'` when
-//!   `version` was never bound is false, not an error and not true, which is why
-//!   a conditional step guards `bound(version) and version < '2'`: the `and`
-//!   short-circuits and the comparison is never reached against nothing.
+//! - A guard that does not parse is unmet. The build rejects these, but a
+//!   hand-built flow may carry one.
+//! - A comparison on an unbound variable is unmet: `version < '2'` with no
+//!   `version` is false. Hence the idiom `bound(version) and version < '2'`.
 
 use std::cmp::Ordering;
 
@@ -37,10 +28,9 @@ use super::expr::{self, Expr, Operand, RelOp};
 
 /// Whether a `when` clause holds against `env`.
 ///
-/// `matched` carries the enclosing step's match result where one is in scope, a
-/// finding's guard may read `matched`, and receives `Some`; a step's own guard
-/// runs before the step matches anything and receives `None`, so a `matched` in
-/// it reads as false. An absent clause always holds.
+/// `matched` is the enclosing step's match result: `Some` for a finding's guard,
+/// `None` for a step's own guard (which runs before matching, so `matched` reads
+/// false). An absent clause always holds.
 pub(super) fn holds(when: Option<&str>, env: &Env, matched: Option<bool>) -> bool {
     match when {
         None => true,
@@ -90,19 +80,15 @@ fn resolve(operand: &Operand, env: &Env) -> Option<Value> {
     }
 }
 
-/// A resolved operand. A variable always resolves to [`Text`](Value::Text), the
-/// environment holds only strings, so the numeric path is reached exactly when
-/// both sides were written as integer literals, which is the rule the grammar
-/// promises.
+/// A resolved operand. Variables are always [`Text`](Value::Text), so numeric
+/// comparison happens only between two integer literals.
 enum Value {
     Number(i64),
     Text(String),
 }
 
 impl Value {
-    /// Equality: numeric between two integer literals, string-coerced otherwise,
-    /// total and always defined, so `count == 3` and `name == 'nginx'` both
-    /// mean what they read as.
+    /// Equality: numeric between two integer literals, string-coerced otherwise.
     fn equals(&self, other: &Value) -> bool {
         match (self, other) {
             (Value::Number(a), Value::Number(b)) => a == b,
@@ -111,8 +97,7 @@ impl Value {
     }
 
     /// Order: numeric between two integer literals, [dotted version](version_cmp)
-    /// otherwise, so `8.10.0 < 8.3.1` is false (10 outranks 3), the version
-    /// range check that is the whole reason the operator earns its place.
+    /// otherwise, so `8.10.0 < 8.3.1` is false.
     fn order(&self, other: &Value) -> Ordering {
         match (self, other) {
             (Value::Number(a), Value::Number(b)) => a.cmp(b),
@@ -150,8 +135,7 @@ mod tests {
         // A finding's guard: `matched` is the step's result.
         assert!(holds(Some("matched"), &Env::new(), Some(true)));
         assert!(!holds(Some("matched"), &Env::new(), Some(false)));
-        // A step's own guard runs before any match, so `matched` is out of scope
-        // and reads false rather than firing the step early.
+        // A step's own guard runs before any match, so `matched` reads false.
         assert!(!holds(Some("matched"), &Env::new(), None));
     }
 
@@ -169,10 +153,7 @@ mod tests {
         let affected = env(&[("version", "8.2.0")]);
         assert!(holds(Some("version < '8.3.1'"), &affected, None));
 
-        // The lexical trap the operator exists to avoid: 8.10.0 is newer than
-        // 8.3.1, so it is not in the affected `< 8.3.1` range, a lexical `<`
-        // would wrongly report it, understating nothing and over-reporting a
-        // patched server as vulnerable.
+        // 8.10.0 is newer than 8.3.1; a lexical `<` would call it older.
         let patched = env(&[("version", "8.10.0")]);
         assert!(!holds(Some("version < '8.3.1'"), &patched, None));
     }
@@ -190,10 +171,9 @@ mod tests {
 
     #[test]
     fn a_comparison_on_an_unbound_variable_fails_closed() {
-        // No `version` bound: the comparison is false, not an error and not true.
+        // No `version` bound: false.
         assert!(!holds(Some("version < '2'"), &Env::new(), None));
-        // Which is why the conditional-step idiom guards it, the `and`
-        // short-circuits before the comparison is reached against nothing.
+        // The `bound(...) and` idiom short-circuits.
         assert!(!holds(
             Some("bound(version) and version < '2'"),
             &Env::new(),

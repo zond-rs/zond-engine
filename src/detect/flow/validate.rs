@@ -8,36 +8,24 @@
 
 //! # Checking a flow before it ships
 //!
-//! The structural half of the flow validator. It walks a parsed
-//! [`FlowDetection`] and reports every way it is
-//! ill-formed, a guard that names a variable no earlier step binds, a `passive`
-//! detection that tries to send, a loop that never ends or never runs, a
-//! detection that can emit no finding at all. A flow that passes is a flow the
-//! interpreter can run without a surprise, which is the promise of a
-//! validated tier: the failure is at the build, with a pointer to the file, not
-//! at scan time against a live target.
+//! The structural half of the flow validator. It reports every way a parsed
+//! [`FlowDetection`] is ill-formed: a guard naming a variable no earlier step
+//! binds, a `passive` detection that sends, a loop that is empty or too long, a
+//! detection that can emit no finding. Failures surface at build time.
 //!
-//! ## Why it lives here and not only in `build.rs`
+//! ## Shared with `build.rs`
 //!
-//! Like the schema and the guard grammar, this module carries no dependency on
-//! the rest of the crate, only [`std`], its sibling [`schema`](super::schema),
-//! and its sibling [`expr`]. So `build.rs` loads it with `#[path]`
-//! and runs it over the flow corpus with the same code that would run over a flow
-//! loaded at runtime. Its `#[cfg(test)]` tests are free to reach into the crate
-//! (the build never compiles them), so they check the checker against the real
-//! matcher and real parsed flows.
+//! It depends only on [`std`], [`schema`](super::schema) and [`expr`], so
+//! `build.rs` loads it with `#[path]`. Its tests, which the build never
+//! compiles, use the real matcher and parsed flows.
 //!
-//! ## What it does not check
+//! ## Not checked here
 //!
-//! The engine-backed rules stay with the engine, in `build.rs`: that every
-//! `expect`/`bind` pattern compiles and its capture group exists, and that a
-//! declared byte budget covers the payloads the flow must send. Those need the
-//! fingerprint pattern compiler and the payload unescaper, which the build has on
-//! hand; this module is pure over the flow's structure.
+//! That every `expect`/`bind` pattern compiles with the named group, and that a
+//! declared byte budget covers the payloads: `build.rs` checks those with the
+//! pattern compiler and payload unescaper.
 
-// Every item here is consumed by `build.rs` (which `#[path]`-loads this file to
-// validate the flow corpus) and by the tests, not by the runtime library yet,
-// so the plain `--lib` build alone sees them as unused.
+// Used by `build.rs` and the tests; the `--lib` build alone sees some as unused.
 #![allow(dead_code)]
 
 use std::collections::BTreeSet;
@@ -47,9 +35,7 @@ use super::expr::{self, ParseError};
 use super::manifest::Class;
 use super::schema::{FindingSpec, FlowDetection, MAX_FLOW_STEPS, MAX_LOOP_ITEMS, Step};
 
-/// The reserved identity prefix the engine's own detections use; an authored
-/// flow may not claim it, so a third-party flow cannot forge a first-party
-/// finding.
+/// The identity prefix reserved for the engine's own detections.
 pub const RESERVED_ID_PREFIX: &str = "zond:";
 
 /// One way a flow is ill-formed. Each is a hard error: a flow that produces any
@@ -91,14 +77,11 @@ pub enum ValidationError {
     EmptyId,
     /// An empty `title`.
     EmptyTitle,
-    /// A `[detection.group]` with an empty `id` or an empty `summary`. Half a
-    /// group is no group: an id nothing can be printed for, or a phrase nothing
-    /// can be gathered by.
+    /// A `[detection.group]` with an empty `id` or an empty `summary`.
     HalfGroup,
     /// An `id` claiming the reserved `zond:` namespace.
     ReservedId(String),
-    /// A step names an `expect` but sends nothing, so no reply is drawn for it to
-    /// match against and the step can never match.
+    /// A step names an `expect` but sends nothing, so it can never match.
     ExpectWithoutSend(usize),
 }
 
@@ -176,10 +159,8 @@ impl fmt::Display for ValidationError {
 
 /// Checks `flow` and returns every way it is ill-formed, empty if it is sound.
 ///
-/// It reports all the problems it finds rather than the first, so one build
-/// surfaces every fix a flow needs. Duplicate ids across the corpus and the
-/// pattern/budget rules are the caller's to add: they need the whole corpus or
-/// the pattern engine, which this pure structural pass does not hold.
+/// Reports every problem, not just the first. Duplicate ids across the corpus
+/// and the pattern and budget rules are the caller's to check.
 pub fn check(flow: &FlowDetection) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
@@ -195,9 +176,7 @@ pub fn check(flow: &FlowDetection) -> Vec<ValidationError> {
     }
 
     for (index, step) in flow.step.iter().enumerate() {
-        // A step with an `expect` and no `send` draws no reply, so the gate is
-        // false on every port and the step is dead. The same kind of structurally
-        // dead step as an empty loop, refused for the same reason.
+        // An `expect` with no `send` is a dead step, like an empty loop.
         if !step.expect.is_empty() && step.send.is_none() {
             errors.push(ValidationError::ExpectWithoutSend(index));
         }
@@ -208,7 +187,7 @@ pub fn check(flow: &FlowDetection) -> Vec<ValidationError> {
     errors
 }
 
-/// H11, the identity is well-formed and does not forge a first-party finding.
+/// The identity is well-formed and does not claim the reserved prefix.
 fn check_identity(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
     let id = &flow.detection.id;
     if id.trim().is_empty() {
@@ -231,8 +210,7 @@ fn check_identity(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
     }
 }
 
-/// H8, a detection cannot do more than its class allows. The class is what the
-/// envelope will serve; the flow's structure may not exceed it.
+/// A detection's structure may not exceed what its class allows.
 fn check_capabilities(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
     let caps = &flow.detection.capabilities;
     let has_send = flow.step.iter().any(|step| step.send.is_some());
@@ -256,7 +234,7 @@ fn check_capabilities(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
     }
 }
 
-/// H7, the transport that will serve `speak` is one the engine speaks.
+/// The transport that will serve `speak` is one the engine speaks.
 fn check_protocol(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
     if let Some(protocol) = &flow.detection.when.protocol
         && protocol != "tcp"
@@ -266,16 +244,12 @@ fn check_protocol(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
     }
 }
 
-/// H1, H3, H9, H10, H12, H13, the forward-only variable walk. It threads the
-/// set of variables that reach each step and proves every guard and template
-/// names only what is in scope, that every loop is bounded, and that a guard is
-/// well-formed.
+/// The forward-only variable walk: every guard and template names only what is
+/// in scope, every loop is bounded, and every guard parses.
 fn check_references(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
-    // The scope opens with the seed variables the runtime fills from the port,
-    // `host` and `port`, so a first step may name them where no earlier step
-    // could have bound them. Only a non-`for_each` step's binds persist beyond
-    // this: a `for_each` step runs each item in a clone, so neither its loop
-    // variable nor its binds outlive it.
+    // The scope opens with the seed variables `host` and `port`. Only a
+    // non-`for_each` step's binds persist; a `for_each` step runs each item in a
+    // clone.
     let mut persisted: BTreeSet<String> = super::schema::SEED_VARS
         .iter()
         .map(|v| v.to_string())
@@ -284,8 +258,8 @@ fn check_references(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
     for (index, step) in flow.step.iter().enumerate() {
         let loop_var = check_loop(index, step, &persisted, errors);
 
-        // A step's guard and its send see the persisted variables plus this
-        // step's own loop variable, its binds have not run yet.
+        // The guard and send see persisted variables and this step's loop
+        // variable; its binds have not run yet.
         let mut gate_scope = persisted.clone();
         gate_scope.extend(loop_var.clone());
 
@@ -294,8 +268,7 @@ fn check_references(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
             check_template(index, send, "a send", &gate_scope, errors);
         }
 
-        // A finding sees all of the above plus this step's binds, which have run
-        // by the time it is reached.
+        // A finding also sees this step's binds.
         let mut finding_scope = gate_scope;
         finding_scope.extend(step.bind.keys().cloned());
         for finding in &step.finding {
@@ -308,8 +281,8 @@ fn check_references(flow: &FlowDetection, errors: &mut Vec<ValidationError>) {
     }
 }
 
-/// H1, H13, a `for_each` is bounded and does not shadow. Returns the loop
-/// variable it introduces, if any, for the scope of this step.
+/// A `for_each` is bounded and does not shadow. Returns the loop variable it
+/// introduces, if any.
 fn check_loop(
     index: usize,
     step: &Step,
@@ -329,7 +302,8 @@ fn check_loop(
     Some(for_each.var.clone())
 }
 
-/// H12, H3, and the `matched`-out-of-scope rule for a step's own guard.
+/// A step's own guard parses, names only what is in scope, and does not read
+/// `matched`.
 fn check_step_guard(
     index: usize,
     step: &Step,
@@ -352,7 +326,7 @@ fn check_step_guard(
     }
 }
 
-/// H12, H10, H3 over one finding's guard, templates, and excerpt source.
+/// One finding's guard, templates and excerpt source.
 fn check_finding(
     index: usize,
     step: &Step,
@@ -404,7 +378,7 @@ fn check_finding(
     }
 }
 
-/// H9, every `{var}` a template interpolates is in scope.
+/// Every `{var}` a template interpolates is in scope.
 fn check_template(
     index: usize,
     template: &str,
@@ -421,8 +395,7 @@ fn check_template(
 
 /// The variable names a template interpolates, read exactly as the interpreter
 /// reads them: `{ident}` names a variable, `{{` and `}}` are literal braces, and a
-/// lone `}` is literal. Kept in step with [`interpolate`](super::interp) so the
-/// build validates the names the runtime will actually read.
+/// lone `}` is literal. Must match [`interpolate`](super::interp).
 fn template_vars(template: &str) -> Vec<String> {
     let mut vars = Vec::new();
     let mut rest = template;
@@ -442,9 +415,8 @@ fn template_vars(template: &str) -> Vec<String> {
     vars
 }
 
-/// Whether `version` is a `major.minor.patch` triple of numbers, the shape the
-/// model's version is, checked here without reaching into the model so the file
-/// stays shareable with the build.
+/// Whether `version` is a `major.minor.patch` triple of numbers, checked without
+/// the model so `build.rs` can share this file.
 pub fn is_version_triple(version: &str) -> bool {
     let parts: Vec<&str> = version.split('.').collect();
     parts.len() == 3 && parts.iter().all(|part| part.parse::<u16>().is_ok())
@@ -491,8 +463,7 @@ mod tests {
         assert!(check(&sound()).is_empty(), "{:?}", check(&sound()));
     }
 
-    /// Every flow the crate ships re-validates after the round trip through the
-    /// embedding, catching one that parsed at build time but not at runtime.
+    /// Every shipped flow re-validates after embedding.
     #[test]
     fn every_shipped_flow_validates() {
         let shipped = crate::detect::flow::db::embedded_flows();
@@ -555,11 +526,7 @@ mod tests {
 
     #[test]
     fn the_seed_variables_are_in_scope_from_the_first_step() {
-        // A first step names `{host}` and `{port}` in its send and its finding,
-        // which no step binds. The runtime seeds them from the port under probe,
-        // so the validator counts them in scope rather than reporting a forward
-        // reference. This is the check that rejected the first `{host}` flow before
-        // the seed names were reserved.
+        // `{host}` and `{port}` are seeded, so a first step may name them.
         let flow = flow(
             r#"
             [detection]
@@ -642,8 +609,7 @@ mod tests {
 
     #[test]
     fn an_expect_without_a_send_is_dead_and_rejected() {
-        // sound()'s single step expects "Server:" off its send; drop the send and
-        // the expect can never draw a reply to match.
+        // Drop `sound()`'s send so its expect can never match.
         let mut flow = sound();
         flow.step[0].send = None;
         assert!(
@@ -753,7 +719,7 @@ mod tests {
     #[test]
     fn template_vars_reads_names_and_skips_escaped_braces() {
         assert_eq!(template_vars("{host}:{port}"), vec!["host", "port"]);
-        // A doubled brace is a literal brace, not a name, so a JSON body reads clean.
+        // A doubled brace is a literal brace.
         assert_eq!(template_vars(r#"{{"key":"{host}"}}"#), vec!["host"]);
         assert!(template_vars(r#"{{"key":"value"}}"#).is_empty());
         // A lone `}` is literal; only `{` opens a name.
