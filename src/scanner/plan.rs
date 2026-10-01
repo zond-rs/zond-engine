@@ -15,41 +15,25 @@
 //! orchestrating their own scan can build one, look at it, change it, and run
 //! the parts they want.
 //!
-//! ## Why planning is separated from running at all
-//!
-//! Deciding is where every interesting judgement in a scan lives. Which
-//! interface reaches a target, whether a `/64` can be walked, whether a
-//! link-local address without a zone can be probed at all, whether a sweep may
-//! take leads from the host's neighbour table, which protocols still need an
-//! unprivileged fallback: all of that is settled before a single socket is
-//! opened, and none of it needs a socket to settle.
-//!
-//! Fused into the code that spawns tasks, those judgements are unreachable: they
-//! cannot be inspected without running a scan, cannot be tested without a host
-//! that happens to have the right interfaces, and cannot be adjusted at all.
-//! Split out, a plan is a value. `zond --dry-run` is a plan printed instead of
-//! run. A caller who wants to sweep two of their five links drops three steps
-//! and runs the rest. A test asserts on what *would* happen against a
-//! hand-written interface table.
+//! Planning settles which interface reaches a target, whether a `/64` can be
+//! walked, whether a link-local address without a zone can be probed, whether a
+//! sweep may take leads from the host's neighbour table, and which protocols need an
+//! unprivileged fallback. As a value, a plan can be printed for a dry run, trimmed
+//! (sweep two of five links), or asserted on in a test against a hand-written
+//! interface table.
 //!
 //! ## What a plan costs to build
 //!
-//! No packets and no sockets. Building one does read the machine's own
-//! configuration, the interface list, the routing table, and for a sweep the
-//! IPv6 neighbour table, because which strategy reaches a target is a fact
-//! about this host and cannot be guessed. Those are ordinary reads of local
-//! state, they open nothing, and they are the same reads
+//! No packets and no sockets. Building one reads the interface list, the routing
+//! table and, for a sweep, the IPv6 neighbour table, the same reads
 //! [`crate::system::interface`] performs for any caller.
 //!
 //! ## What a plan does not promise
 //!
 //! That every step will run. A step becomes a strategy through
-//! [`DiscoveryStep::into_scanner`], and that is where sockets are opened and
-//! where the environment gets its say: a capture that cannot be opened, an
-//! interface that disappeared between planning and running. Those surface as a
-//! [`StrategyError`] per step, and the scan continues with the rest. A plan is
-//! what the engine means to do, not a guarantee about a machine it does not
-//! control.
+//! [`DiscoveryStep::into_scanner`], which opens sockets and can fail: a capture that
+//! cannot be opened, an interface that disappeared since planning. Those surface as
+//! a [`StrategyError`] per step, and the scan continues with the rest.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::IpAddr;
@@ -84,21 +68,15 @@ use crate::{counted, info, warn};
 
 /// Something the scan will not do, decided at planning time.
 ///
-/// A refusal is not a failure of the network and not an address that went
-/// unanswered: it was never probed, and the reason is knowable before anything
-/// is sent. It is carried out of the plan rather than dropped because the one
-/// thing a scanner may never do is stay quiet about ground it did not cover: a
-/// caller has to be able to tell "nothing is there" from "nobody looked", and
-/// only one of those is visible in a host count.
+/// The ground was never probed, for a reason knowable before anything is sent. It
+/// is reported so a caller can tell "nothing is there" from "nobody looked".
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct RefusedStep {
     /// The strategy that would have taken this work.
     pub scanner: ScannerKind,
-    /// What cannot be done, and what the caller could write instead, in one
-    /// short line: the ground, then the reason and any remedy in brief. The
-    /// reasoning behind each refusal is on the function that builds it, not in
-    /// the words a console prints.
+    /// One short line: the ground, then the reason and any remedy in brief. The
+    /// full reasoning is on the function that builds each refusal.
     pub reason: String,
 }
 
@@ -106,16 +84,11 @@ impl RefusedStep {
     /// The TCP half left undone because `technique` cannot be expressed without
     /// raw sockets.
     ///
-    /// A connect scan completes handshakes, so it answers roughly the question
-    /// a SYN scan asks. It cannot send a FIN, a flagless segment or a bare ACK,
-    /// so it cannot answer what any of those were asked, and substituting it
-    /// silently would hand back verdicts from a technique nobody chose.
+    /// A connect scan answers roughly what a SYN scan asks, but cannot send a FIN,
+    /// a flagless segment or a bare ACK, so it cannot stand in for those.
     ///
-    /// Written once because it is reached from two places, and they are not
-    /// redundant: [`PortScanPlan::build`] refuses ahead of time when there are
-    /// no raw sockets to be had, while the scan's own coverage check refuses
-    /// after the fact when a raw socket was expected and would not open. Same
-    /// cause, same words, two moments at which it becomes knowable.
+    /// Reached from [`PortScanPlan::build`] when there are no raw sockets, and from
+    /// the scan's coverage check when a raw socket was expected and would not open.
     pub fn technique_needs_raw_sockets(technique: TcpScanTechnique) -> Self {
         Self {
             scanner: ScannerKind::for_raw_tcp(technique),
@@ -125,11 +98,8 @@ impl RefusedStep {
 
     /// SCTP ports were named by a scan with no raw sockets to probe them with.
     ///
-    /// There is no unprivileged form of an INIT scan: the kernel offers no way
-    /// to send a chunk and read the answer without an SCTP stack and an
-    /// association, and an association is the one thing this scan avoids
-    /// completing. So the ports are refused rather than answered by something
-    /// that asked a different question.
+    /// There is no unprivileged INIT scan: the kernel offers no way to send a chunk
+    /// and read the answer without completing an association.
     pub fn sctp_needs_raw_sockets() -> Self {
         Self {
             scanner: ScannerKind::SctpPort,
@@ -140,9 +110,7 @@ impl RefusedStep {
     /// SCTP ports were named for a scan running as an idle scan, which probes
     /// through a third party and has no way to carry an INIT.
     ///
-    /// The refusal is the point rather than a limitation. An INIT sent directly
-    /// would leave this host's own address on the target, which is the one thing
-    /// an idle scan exists to avoid.
+    /// An INIT sent directly would leave this host's own address on the target.
     pub fn sctp_not_in_an_idle_scan() -> Self {
         Self {
             scanner: ScannerKind::SctpPort,
@@ -164,10 +132,8 @@ impl RefusedStep {
 
     /// The TCP half left undone on the targets a frames-only run cannot reach.
     ///
-    /// [`technique_needs_raw_sockets`](Self::technique_needs_raw_sockets) for
-    /// part of a scan: the process sends every other target the probe asked for,
-    /// and these, which only the kernel can carry, get no connect standing in
-    /// for a technique it does not express.
+    /// [`technique_needs_raw_sockets`](Self::technique_needs_raw_sockets) for part
+    /// of a scan: the targets only the kernel can carry.
     pub(crate) fn technique_beyond_frames(technique: TcpScanTechnique, targets: u128) -> Self {
         Self {
             scanner: ScannerKind::for_raw_tcp(technique),
@@ -193,9 +159,8 @@ impl RefusedStep {
     /// A pass that sends its own segments to a host, left undone on the hosts a
     /// frames-only run cannot reach.
     ///
-    /// Nothing stands in for these passes: each reads something only a packet it
-    /// built can ask, which is what a connect cannot send. `pass` names the pass
-    /// the way a reader would.
+    /// No connect can stand in, since each pass reads something only a packet it
+    /// built can ask. `pass` names the pass for a reader.
     pub(crate) fn pass_beyond_frames(scanner: ScannerKind, pass: &str, hosts: u128) -> Self {
         Self {
             scanner,
@@ -209,18 +174,12 @@ impl RefusedStep {
     /// A pass that would send the target its own packets, asked for under an
     /// idle scan.
     ///
-    /// An idle scan forges every probe from its zombie so the target never
-    /// hears from this host; a pass that opens a connection to the target or
-    /// sends it a probe from here is the one thing the technique exists to
-    /// avoid. So a pass the caller asked for that would do it is refused rather
-    /// than run in the open, on the same reasoning
-    /// [`idle_needs_privilege`](Self::idle_needs_privilege) refuses the scan
-    /// itself. `pass` names it the way a reader would, in as few words as name
-    /// it, and `scanner` is the strategy the report files the refusal under.
-    ///
-    /// The words say what was not run and under what, as
-    /// [`udp_not_in_an_idle_scan`](Self::udp_not_in_an_idle_scan)'s do, and
-    /// not why: every pass declined here is declined for the one reason above.
+    /// An idle scan forges every probe from its zombie so the target never hears
+    /// from this host, as with
+    /// [`idle_needs_privilege`](Self::idle_needs_privilege). `pass` names it
+    /// briefly for a reader, and `scanner` is the strategy the report files the
+    /// refusal under. The words say what was not run, as
+    /// [`udp_not_in_an_idle_scan`](Self::udp_not_in_an_idle_scan)'s do.
     pub(crate) fn pass_not_in_an_idle_scan(scanner: ScannerKind, pass: &str) -> Self {
         Self {
             scanner,
@@ -230,10 +189,9 @@ impl RefusedStep {
 
     /// An idle scan was asked for through a zombie the exclusions forbid.
     ///
-    /// The scan reads the zombie's counter by probing it again and again, so
-    /// running it would send an excluded address the most traffic of anything
-    /// in the scan. There is no fallback, for the reason
-    /// [`idle_needs_privilege`](Self::idle_needs_privilege) gives.
+    /// The scan probes the zombie repeatedly, so it would send an excluded address
+    /// the most traffic of anything in the scan. No fallback, as with
+    /// [`idle_needs_privilege`](Self::idle_needs_privilege).
     pub(crate) fn idle_zombie_excluded(zombie: IpAddr) -> Self {
         Self {
             scanner: ScannerKind::Idle,
@@ -243,11 +201,9 @@ impl RefusedStep {
 
     /// An idle scan was asked for without the privilege it needs.
     ///
-    /// The forged source address of an idle scan's probe can only ride a
-    /// self-built frame, which needs privilege. There is no
-    /// fallback: scanning the target under this host's own address is the one
-    /// thing an idle scan exists to avoid, so the whole of it is refused rather
-    /// than run in the open.
+    /// The forged source address can only ride a self-built frame, which needs
+    /// privilege. There is no fallback, since scanning under this host's own
+    /// address defeats an idle scan.
     pub fn idle_needs_privilege() -> Self {
         Self {
             scanner: ScannerKind::Idle,
@@ -258,7 +214,7 @@ impl RefusedStep {
     /// A routed IPv6 range with more addresses than any strategy can walk.
     ///
     /// See [`MAX_ENUMERABLE_ADDRESSES`](crate::system::interface::MAX_ENUMERABLE_ADDRESSES)
-    /// for why there is a ceiling at all.
+    /// for the ceiling.
     pub fn routed_range_not_enumerable(range: &Ipv6Range) -> Self {
         Self {
             scanner: ScannerKind::Routed,
@@ -272,10 +228,9 @@ impl RefusedStep {
     /// A TCP sweep left with no port to ask, every one it would ask being
     /// excluded.
     ///
-    /// Refused rather than run, since a sweep asking nothing reports every
-    /// address it holds as silent when nothing was put to them. Whatever the
-    /// sweep would have reached by TCP is left unasked, and a segment swept at
-    /// the link layer is not affected. `scanner` is the sweep refused.
+    /// A sweep asking nothing would report every address silent. What it would have
+    /// reached by TCP is left unasked; a link-layer sweep is unaffected. `scanner`
+    /// is the sweep refused.
     pub(crate) fn every_discovery_port_excluded(scanner: ScannerKind) -> Self {
         Self {
             scanner,
@@ -285,10 +240,9 @@ impl RefusedStep {
 
     /// A port target range with more addresses than a port scan can walk.
     ///
-    /// Whatever the privilege: the multicast that sweeps a segment's `/64` in
-    /// one packet asks who is there, not what each of them serves, so the
-    /// remedy is the addresses a sweep found. `scanner` is the port strategy
-    /// the phase runs under.
+    /// Whatever the privilege: the multicast that sweeps a segment's `/64` finds
+    /// hosts, not their ports, so the remedy is the addresses a sweep found.
+    /// `scanner` is the port strategy the phase runs under.
     pub(crate) fn port_range_not_enumerable(range: &Ipv6Range, scanner: ScannerKind) -> Self {
         Self {
             scanner,
@@ -301,12 +255,10 @@ impl RefusedStep {
 
     /// The same range, refused by an unprivileged scan.
     ///
-    /// Separate wording from [`routed_range_not_enumerable`](Self::routed_range_not_enumerable)
-    /// because the remedy is different and it is the more useful half of the
-    /// message: a range this size *is* reachable on the local segment with raw
-    /// sockets, through the all-nodes echo, which sweeps a `/64` in one packet
-    /// rather than walking it. A user told only "too large" would go and narrow
-    /// a prefix that root would have covered whole.
+    /// Worded apart from
+    /// [`routed_range_not_enumerable`](Self::routed_range_not_enumerable) because
+    /// the remedy differs: on the local segment, raw sockets reach a range this size
+    /// through the all-nodes echo, one packet per `/64`.
     pub fn unprivileged_range_not_enumerable(range: &Ipv6Range) -> Self {
         Self {
             scanner: ScannerKind::Connect,
@@ -319,12 +271,10 @@ impl RefusedStep {
 
     /// A port target that is link-local and names no interface.
     ///
-    /// `fe80::1` names a different machine on every segment, and every interface
-    /// holds an `fe80::/64`, so there is nothing to choose between them. Written
-    /// with an interface, as `fe80::1%en0`, it names one, and the scan sends
-    /// from that interface. The reason written out shows the target written
-    /// with an interface this host has: up, able to broadcast and holding a
-    /// link-local address, the one the default route leaves by first.
+    /// Every interface holds an `fe80::/64`, so `fe80::1` names a different machine
+    /// on each. Written as `fe80::1%en0`, it names one. The reason suggests the
+    /// target with an interface this host has: up, able to broadcast and holding a
+    /// link-local address, preferring the default route's.
     ///
     /// [`RoutedTargets::ambiguous`](crate::system::interface::RoutedTargets)
     /// refuses the same target on the discovery path.
@@ -338,9 +288,8 @@ impl RefusedStep {
 
     /// One link-local address given on two interfaces in a single scan.
     ///
-    /// Each is a different machine, and a port scan records its verdicts under
-    /// the address it probed, so the two sets of answers would land on one host
-    /// with nothing to say which segment either came from.
+    /// Each is a different machine, but a port scan records verdicts under the
+    /// address, so both sets of answers would land on one host.
     pub fn link_local_port_target_names_two_segments(range: &Ipv6Range) -> Self {
         let target = name(range);
         Self {
@@ -352,16 +301,13 @@ impl RefusedStep {
     /// An on-link IPv6 range too large to walk, in a scan that will not sweep
     /// the segment it is on.
     ///
-    /// The one range this engine can reach and declines to. A local segment is
-    /// covered by the all-nodes solicitation, which is a single packet whatever
-    /// the prefix length, so the remedy is a sweep rather than a smaller
-    /// prefix. A [`Scope::Sweep`] step already sends that packet and refuses
-    /// nothing.
+    /// A local segment is covered by the all-nodes solicitation, one packet
+    /// whatever the prefix length, so the remedy is a sweep. A [`Scope::Sweep`] step
+    /// sends that packet and refuses nothing.
     ///
-    /// Walking it instead would fail silently: the address count overflows the
-    /// deadline's target count, the sweep is budgeted as though it had no
-    /// targets at all, and it stops a couple of thousand solicitations into a
-    /// space of eighteen quintillion having reported the range covered.
+    /// Walking the range would fail silently: the address count overflows the
+    /// deadline's target count, and the sweep stops a couple of thousand
+    /// solicitations in having reported the range covered.
     pub fn local_range_needs_a_sweep(range: &Ipv6Range) -> Self {
         Self {
             scanner: ScannerKind::Local,
@@ -376,14 +322,9 @@ impl RefusedStep {
 /// Takes the IPv6 ranges out of `targets` that are too large to probe one
 /// address at a time, leaving the rest.
 ///
-/// The same test the routed path applies, applied where the local path needed
-/// it: [`is_enumerable`](interface::is_enumerable) asks it of a range rather
-/// than of a set, so a set holding a `/64` and three literal addresses keeps
-/// the three.
-///
-/// IPv4 is untouched, on the same reasoning that leaves it untouched
-/// everywhere else: every IPv4 range is finite in a way a person can reason
-/// about.
+/// The routed path's test, applied per range by
+/// [`is_enumerable`](interface::is_enumerable), so a set holding a `/64` and three
+/// literal addresses keeps the three. IPv4 is untouched.
 fn withhold_unwalkable(targets: &mut IpSet) -> Vec<Ipv6Range> {
     let unwalkable: Vec<Ipv6Range> = targets
         .v6()
@@ -414,9 +355,7 @@ fn withhold_unwalkable(targets: &mut IpSet) -> Vec<Ipv6Range> {
 impl From<RefusedStep> for crate::report::Refusal {
     /// The recorded form of a refusal a plan carries.
     ///
-    /// One direction only. A plan's refusal knows how it was decided, and a
-    /// recorded one is what a reader is handed afterwards; going back would mean
-    /// inventing the decision from the words.
+    /// One direction only: a recorded refusal keeps the words, not the decision.
     fn from(step: RefusedStep) -> Self {
         Self::new(step.scanner, step.reason)
     }
@@ -433,8 +372,8 @@ fn name(range: &Ipv6Range) -> String {
 
 /// The opening both refusals above share: which range, and how big it is.
 ///
-/// The size is quoted because it is the argument. "Too large" invites the reader
-/// to disagree; "18446744073709551616 addresses" does not.
+/// The size is quoted because it is the argument: "18446744073709551616
+/// addresses" says more than "too large".
 fn describe(range: &Ipv6Range) -> String {
     format!(
         "{}-{} is {} addresses",
@@ -453,9 +392,8 @@ fn describe(range: &Ipv6Range) -> String {
 #[non_exhaustive]
 pub enum DiscoveryStep {
     /// ARP and ICMPv6 across one interface's own segment, for targets that share
-    /// it. The cheapest and most informative of the three: it is the only one
-    /// that yields a MAC address, and the only one that can find a neighbour
-    /// nobody named.
+    /// it. The cheapest and most informative of the three: the only one that
+    /// yields a MAC address or finds a neighbour nobody named.
     Local {
         /// The interface to sweep from.
         interface: Box<Link>,
@@ -477,10 +415,8 @@ pub enum DiscoveryStep {
     /// Raw SCTP INIT to the same routed targets, for a scan whose ports name
     /// SCTP.
     ///
-    /// Runs beside [`Routed`](Self::Routed) rather than instead of it. A host
-    /// answers whichever transport reaches it, and one that answers only SCTP is
-    /// reported down by a SYN sweep and never has its ports probed at all, since
-    /// the port phase covers what discovery found.
+    /// Runs beside [`Routed`](Self::Routed). A host that answers only SCTP would be
+    /// reported down by a SYN sweep and never have its ports probed.
     RoutedSctp {
         /// The destinations, with their source addresses.
         targets: Vec<RoutedTarget>,
@@ -490,9 +426,8 @@ pub enum DiscoveryStep {
     /// Ordinary TCP connect attempts, for targets with no route and no segment:
     /// loopback, or anything the OS declined to resolve. Needs no privileges.
     ///
-    /// For a process whose raw strategies send frames and nothing else, also
-    /// whatever a frame cannot reach, which the scan moves here from the steps
-    /// that would have framed it.
+    /// For a process whose raw strategies send only frames, also whatever a frame
+    /// cannot reach.
     Connect {
         /// The addresses to try.
         targets: IpSet,
@@ -516,9 +451,8 @@ impl DiscoveryStep {
 
     /// How many addresses this step covers.
     ///
-    /// Zero is meaningful rather than empty: a [`Scope::Sweep`] step with no
-    /// addresses still sends the all-nodes solicitation its whole segment may
-    /// answer.
+    /// Zero is meaningful: a [`Scope::Sweep`] step with no addresses still sends
+    /// the all-nodes solicitation its whole segment may answer.
     pub fn target_count(&self) -> u128 {
         match self {
             Self::Local { targets, .. } | Self::Connect { targets, .. } => targets.len(),
@@ -530,11 +464,10 @@ impl DiscoveryStep {
 
     /// Opens whatever this step needs and hands back the strategy to run.
     ///
-    /// This is where the plan stops being free. A local step opens a
-    /// link-layer channel on its interface; a routed step opens a raw transport
-    /// and a capture. Either can fail on an environment the plan could not see,
-    /// and that is a [`StrategyError`] rather than a panic, so a caller can
-    /// record it and carry on with the steps that did build.
+    /// A local step opens a link-layer channel on its interface; a routed step
+    /// opens a raw transport and a capture. Either can fail with a
+    /// [`StrategyError`], and a caller can record it and carry on with the steps
+    /// that did build.
     ///
     /// `dns_tx` is where a strategy posts addresses worth a reverse lookup;
     /// pass `None` to do no hostname resolution.
@@ -576,15 +509,14 @@ impl DiscoveryStep {
 /// What a discovery sweep intends to do.
 ///
 /// Build one with [`build`](Self::build), read it, change it, run it. See the
-/// [module documentation](self) for why this is a value rather than a function
-/// call.
+/// [module documentation](self).
 #[derive(Debug, Clone)]
 pub struct DiscoveryPlan {
     steps: Vec<DiscoveryStep>,
     refusals: Vec<RefusedStep>,
     ours: IpSet,
     /// The neighbours this host's routing table refuses, left to the connect
-    /// step rather than asked by frame.
+    /// step.
     refused_by_route: IpSet,
     /// The neighbour-table candidates the exclusions kept from a sweep.
     withheld: IpSet,
@@ -595,18 +527,13 @@ impl DiscoveryPlan {
     ///
     /// `scope` decides whether the sweep may go beyond what it was given.
     /// [`Scope::Sweep`] earns a step for the link even when no address mapped to
-    /// it, its all-nodes echo is one packet the whole segment may answer, and
-    /// takes candidate addresses from the host's IPv6 neighbour table, which is
-    /// the only source the engine has for an IPv6 address nobody named.
-    /// [`Scope::Targeted`] does neither: probing addresses nobody asked about is
-    /// defensible for `lan` and surprising for a scan of one named address.
+    /// it (its all-nodes echo is one packet the whole segment may answer), and
+    /// takes candidate addresses from the host's IPv6 neighbour table, the only
+    /// source of IPv6 addresses nobody named. [`Scope::Targeted`] does neither.
     ///
-    /// `exclusions` is what a sweep's own discoveries are held to. The target
-    /// list has already been withheld against them by the time it arrives here,
-    /// in `withhold_targets`, before anything is opened. A sweep then adds
-    /// addresses the list never had, from the host's neighbour table, and those
-    /// were never subtracted from anything. `seed_from_neighbor_table` is where
-    /// they arrive.
+    /// `exclusions` applies to addresses a sweep adds from the neighbour table, in
+    /// `seed_from_neighbor_table`. The target list was already withheld against
+    /// them in `withhold_targets`.
     ///
     /// `forced` pins the source addresses off-link targets are probed from,
     /// empty for a scan that let the routing table choose.
@@ -624,10 +551,8 @@ impl DiscoveryPlan {
             unenumerable,
         } = interface::map_ips_to_interfaces_forced(targets, forced);
 
-        // A link-local target naming no interface. Refused rather than guessed
-        // at: every interface has an `fe80::/64`, so probing the first one that
-        // matches would scan an arbitrary segment and report the address absent
-        // when it is present on another.
+        // A link-local target naming no interface: every interface has an
+        // `fe80::/64`, so guessing would scan an arbitrary segment.
         for range in &ambiguous {
             refusals.push(RefusedStep {
                 scanner: ScannerKind::Local,
@@ -635,16 +560,12 @@ impl DiscoveryPlan {
             });
         }
 
-        // Ranges no strategy can take. A routed IPv6 prefix cannot be walked
-        // (see `MAX_ENUMERABLE_ADDRESSES`), and with no discovery strategy that
-        // searches a scope instead of a list, saying so is the whole of what
-        // the engine can honestly do with one.
+        // A routed IPv6 prefix cannot be walked (see `MAX_ENUMERABLE_ADDRESSES`).
         for range in &unenumerable {
             refusals.push(RefusedStep::routed_range_not_enumerable(range));
         }
 
-        // A sweep may probe addresses nobody named, so it may also take leads
-        // from the host itself. A targeted run may not.
+        // Only a sweep takes leads from the host itself.
         let mut withheld = IpSet::new();
         if matches!(scope, Scope::Sweep) {
             include_swept_link(&mut local);
@@ -652,16 +573,13 @@ impl DiscoveryPlan {
         }
 
         for (interface, mut targets) in local {
-            // An on-link range too large to walk is dropped here rather than
-            // handed on. `map_ips_to_interfaces` keeps such a range whole,
-            // because the strategy for a segment is the all-nodes solicitation
-            // and that is one packet whatever the prefix length - but the
-            // solicitation is a sweep's, and the walk below it is what a
-            // targeted run has. See `local_range_needs_a_sweep`.
+            // `map_ips_to_interfaces` keeps an on-link range too large to walk
+            // whole, for the sweep's all-nodes solicitation. A targeted run
+            // would walk it, so it is dropped here. See
+            // `local_range_needs_a_sweep`.
             for range in withhold_unwalkable(&mut targets) {
                 match scope {
-                    // Covered: the sweep sends the one packet the whole segment
-                    // answers, so nothing is lost by not walking the prefix.
+                    // Covered by the sweep's all-nodes packet.
                     Scope::Sweep => info!(
                         verbosity = 1,
                         "{} is swept by solicitation rather than walked",
@@ -673,12 +591,10 @@ impl DiscoveryPlan {
                 }
             }
 
-            // A neighbour this host's routing table refuses is not asked by
-            // frame, which would step around the table, and is left to the
-            // connect step, whose connect the kernel refuses as it refuses
-            // every other program's, and which files the address as one
-            // nothing reaches. The port scan refuses it the same way; see
-            // `SourceResolver::resolve`.
+            // A neighbour the routing table refuses is not framed, which would
+            // bypass the table. The connect step gets it, the kernel refuses
+            // the connect, and the address is filed as unreachable. The port
+            // scan does the same; see `SourceResolver::resolve`.
             let refused = interface::refused_neighbours(&interface, &targets);
             if !refused.is_empty() {
                 targets.subtract(&refused);
@@ -699,9 +615,8 @@ impl DiscoveryPlan {
             if targets.is_empty() && matches!(scope, Scope::Targeted) {
                 continue;
             }
-            // Said here, once, because this is where it is decided. The lookup
-            // that found the link answers whoever asks, and is asked more than
-            // once a run.
+            // Logged here, where it is decided; the lookup that found the link
+            // runs more than once a run.
             if matches!(scope, Scope::Sweep) {
                 info!(
                     verbosity = 1,
@@ -744,16 +659,13 @@ impl DiscoveryPlan {
     }
 
     /// The addresses from this host's IPv6 neighbour table that a plan
-    /// [built](Self::build) from the same arguments would take as candidates
-    /// for its sweep and the exclusions keep from it, read from the same
-    /// tables without planning anything or saying anything.
+    /// [built](Self::build) from the same arguments would take as sweep
+    /// candidates and the exclusions withhold, read without planning or logging.
     ///
-    /// A scan counts these among the addresses its policy withheld, beside
-    /// the targets it names, so a caller stating that count before the scan
-    /// runs has them to add. Empty for [`Scope::Targeted`], which takes no
-    /// candidates. A plan like this one is how a run holding raw sockets or
-    /// the link layer sweeps; a run without either takes no candidates and so
-    /// withholds none.
+    /// A scan counts these among the addresses its policy withheld, so a caller
+    /// stating that count before the scan has them to add. Empty for
+    /// [`Scope::Targeted`]. Only a run holding raw sockets or the link layer sweeps
+    /// this way; a run without either withholds none.
     pub fn withheld_neighbours(
         targets: IpSet,
         scope: Scope,
@@ -780,7 +692,7 @@ impl DiscoveryPlan {
     }
 
     /// The neighbours this host's routing table refuses, which the plan left
-    /// to the connect step rather than asking by frame; see
+    /// to the connect step; see
     /// [`refused_neighbours`](interface::refused_neighbours).
     pub(crate) fn refused_by_route(&self) -> &IpSet {
         &self.refused_by_route
@@ -795,16 +707,13 @@ impl DiscoveryPlan {
 
     /// Adds an SCTP sweep beside every routed step, asking `port`.
     ///
-    /// Apart from [`build`](Self::build) for the reason
-    /// [`PortScanPlan::cover_sctp`] is: what decides it is the
-    /// port specification, which belongs to the targets and not to the addresses
-    /// this plan was built from. A caller that never mentions SCTP sweeps with a
-    /// SYN alone and opens no second socket.
+    /// Separate from [`build`](Self::build), like [`PortScanPlan::cover_sctp`],
+    /// because the port specification decides it. A caller that never mentions
+    /// SCTP opens no second socket.
     ///
-    /// Only the routed steps gain one. A local segment is swept at the link
-    /// layer, where ARP and neighbour discovery answer whatever the host speaks
-    /// above them, and an unprivileged connect step has no raw socket to send an
-    /// INIT through.
+    /// Only the routed steps gain one. ARP and neighbour discovery answer whatever
+    /// the host speaks above them, and a connect step has no raw socket for an
+    /// INIT.
     pub fn also_over_sctp(&mut self, port: u16) {
         let sctp: Vec<DiscoveryStep> = self
             .steps
@@ -823,21 +732,15 @@ impl DiscoveryPlan {
     /// Asks every routed and connect target about `ports` in place of the
     /// common five.
     ///
-    /// Apart from [`build`](Self::build) for the reason
-    /// [`also_over_sctp`](Self::also_over_sctp) is: the ports a port scan is
-    /// about belong to its targets, not to the addresses this plan was built
-    /// from. A port scan's liveness pass passes [`SynPorts::for_scan`], so a
-    /// host that drops a SYN to anything it does not serve is still asked about
-    /// the ports the scan is about to ask it.
+    /// Separate from [`build`](Self::build), like
+    /// [`also_over_sctp`](Self::also_over_sctp). A port scan's liveness pass passes
+    /// [`SynPorts::for_scan`], so a host that drops SYNs to anything it does not
+    /// serve is still asked about the ports the scan will probe.
     ///
-    /// The routed and the connect steps change alike, so which of the two
-    /// reaches an address decides nothing about which ports it is asked on.
-    /// A segment is swept at the link layer, where a host answers ARP and
-    /// neighbour discovery whatever it filters above them, and is left as it
+    /// The routed and connect steps change alike. A link-layer sweep is left as it
     /// was.
     ///
-    /// An empty set takes the routed and connect steps out and refuses each,
-    /// which is what a sweep whose every port was excluded comes to; see
+    /// An empty set removes and refuses the routed and connect steps; see
     /// `RefusedStep::every_discovery_port_excluded`.
     pub fn asking_tcp(&mut self, ports: SynPorts) {
         if ports.is_empty() {
@@ -863,18 +766,15 @@ impl DiscoveryPlan {
     /// Takes `targets` out of every step that sends its own packets, and returns
     /// what was taken.
     ///
-    /// For a process whose raw strategies put frames on the wire and hold
-    /// nothing behind them. A frame reaches what has Ethernet in front of it;
-    /// `targets` is the rest, as
-    /// [`beyond_frames`](crate::system::interface::beyond_frames) worked it out
-    /// for the segment sweep. Left in a routed step, a target the kernel routes
-    /// through a tunnel is sent a frame out of the wrong interface, and loopback
-    /// no frame at all.
+    /// For a process whose raw strategies only send frames. A frame reaches what
+    /// has Ethernet in front of it; `targets` is the rest, as
+    /// [`beyond_frames`](crate::system::interface::beyond_frames) computed it. Left
+    /// in a routed step, a tunnelled target would get a frame out of the wrong
+    /// interface, and loopback none at all.
     ///
-    /// A step left with nothing to send is dropped, except a sweep's local step
-    /// on a link that carries frames: its most important probe is addressed to
-    /// nobody, and it still has a segment to send it on. The connect step is
-    /// left alone, since connect is not a frame.
+    /// A step left with nothing to send is dropped, except a sweep's local step on
+    /// a link that carries frames, whose most important probe is addressed to
+    /// nobody. The connect step is left alone.
     pub(crate) fn withhold(&mut self, targets: &IpSet) -> IpSet {
         let mut taken = IpSet::new();
         if targets.is_empty() {
@@ -886,8 +786,7 @@ impl DiscoveryPlan {
                 DiscoveryStep::Local { targets: held, .. } => {
                     let mut kept = held.clone();
                     kept.subtract(targets);
-                    // What the subtraction removed, which is the part of this
-                    // step's targets the set named.
+                    // What the subtraction removed.
                     let mut gone = held.clone();
                     gone.subtract(&kept);
                     for range in gone.v4() {
@@ -931,8 +830,7 @@ impl DiscoveryPlan {
     /// [`withhold`](Self::withhold)s `targets` and hands what was taken to the
     /// connect step, adding one where the plan has none. Returns what moved.
     ///
-    /// Connect is how an unprivileged sweep reaches a target, and so how a
-    /// frames-only one reaches what its frames cannot.
+    /// How a frames-only sweep reaches what its frames cannot.
     pub(crate) fn connect_instead(&mut self, targets: &IpSet) -> IpSet {
         let moved = self.withhold(targets);
         if moved.is_empty() {
@@ -953,8 +851,7 @@ impl DiscoveryPlan {
                 }
                 held.canonicalize();
             }
-            // Asking what the routed steps ask, since these are addresses a
-            // routed step would have swept had a frame reached them.
+            // The routed steps' ports, since a routed step would have swept these.
             None => {
                 let ports = self
                     .steps
@@ -983,18 +880,14 @@ impl DiscoveryPlan {
         &mut self.steps
     }
 
-    /// Ground this plan will not cover, and why.
     /// The targets that are this host's own addresses.
     ///
-    /// Up by construction and covered by no step, because no strategy can
-    /// establish one: the kernel routes traffic for an address this host holds
-    /// through loopback, so a probe never reaches the link and nothing on the
-    /// link answers for it. Were these handed to a strategy, scanning a machine
-    /// by its own LAN address would report it down while `ping` to the same
-    /// address succeeds.
+    /// Up by construction and covered by no step: the kernel routes traffic for
+    /// an address this host holds through loopback, so a probe never reaches the
+    /// link and nothing there answers for it.
     ///
-    /// A caller running the plan itself records these up rather than probing
-    /// them; [`orchestrator`](crate::scanner) does.
+    /// A caller running the plan itself records these as up without probing them,
+    /// as [`orchestrator`](crate::scanner) does.
     pub fn ours(&self) -> &IpSet {
         &self.ours
     }
@@ -1047,9 +940,9 @@ impl PortScanStep {
     /// Which strategy this step becomes.
     ///
     /// The raw TCP name depends on the technique, because
-    /// [`ScannerKind::SynPort`] means a half-open connection attempt was made
-    /// and the flag probes make none. [`ScannerKind::for_raw_tcp`] is where
-    /// that rule lives, so a step and the scanner it builds cannot disagree.
+    /// [`ScannerKind::SynPort`] means a half-open connection attempt was made and
+    /// the flag probes make none. [`ScannerKind::for_raw_tcp`] holds that rule, so
+    /// a step and the scanner it builds agree.
     pub fn kind(&self) -> ScannerKind {
         match self {
             Self::RawTcp { technique } => ScannerKind::for_raw_tcp(*technique),
@@ -1072,25 +965,21 @@ impl PortScanStep {
 
     /// Whether this step needs raw sockets.
     ///
-    /// Asked after a scan is assembled, to decide whether host enrichment is
-    /// worth running: ARP, ICMPv6 and raw TCP are what yield a MAC and a round
-    /// trip, and the connect fallbacks yield neither.
-    ///
-    /// A property of the step rather than of its [`kind`](Self::kind), because
-    /// the two answer different questions. Read off the name instead, this
-    /// would be wrong for every raw technique not called `syn_port`.
+    /// Decides whether host enrichment is worth running: ARP, ICMPv6 and raw TCP
+    /// yield a MAC and a round trip, the connect fallbacks neither. Not derivable
+    /// from [`kind`](Self::kind), which differs per raw technique.
     pub fn is_raw(&self) -> bool {
         matches!(self, Self::RawTcp { .. } | Self::RawUdp | Self::RawSctp)
     }
 
     /// Opens whatever this step needs and hands back the strategy to run.
     ///
-    /// `target_count` sizes the probe ledger; a raw scanner uses it to reserve
-    /// correlation state up front rather than growing it under load.
+    /// `target_count` sizes the probe ledger, so a raw scanner reserves
+    /// correlation state up front.
     ///
-    /// `zones` names the interface each of the scan's link-local targets was
-    /// given on, which is where both families of scanner get the scope id they
-    /// send under. It is empty for a scan that named none.
+    /// `zones` names the interface each link-local target was given on, which
+    /// supplies the scope id both families of scanner send under. Empty for a scan
+    /// that named none.
     pub fn into_scanner(
         self,
         ctx: ScanContext,
@@ -1160,20 +1049,16 @@ impl PortScanStep {
 pub struct PortScanPlan {
     steps: Vec<PortScanStep>,
     refusals: Vec<RefusedStep>,
-    /// The protocol each of `refusals` leaves unprobed, kept beside them
-    /// because a refusal is words and the scan has to act on it too: a target
-    /// of a refused protocol still reaches the router, and has to be counted
-    /// there as what the plan declined rather than as work a scanner lost.
+    /// The protocol each of `refusals` leaves unprobed. A target of a refused
+    /// protocol still reaches the router, which counts it as declined by the plan.
     refused: Vec<Protocol>,
     technique: TcpScanTechnique,
     /// Whether this is an idle scan, whether or not its idle step survived.
     ///
-    /// Kept apart from the steps because a refused idle scan has no idle step,
-    /// and is still an idle scan: what the targets name on another transport is
-    /// refused as one, rather than planned as the direct probe the caller chose
-    /// an idle scan to avoid sending. Read from the steps instead, a privileged
-    /// run through an excluded zombie would plan the target's SCTP ports as a
-    /// direct probe from this host's own address.
+    /// Kept apart from the steps because a refused idle scan has no idle step but
+    /// must still refuse other transports. Read from the steps, a privileged run
+    /// through an excluded zombie would plan SCTP ports as a direct probe from this
+    /// host's own address.
     idle: bool,
 }
 
@@ -1181,29 +1066,19 @@ impl PortScanPlan {
     /// Works out which strategies would probe the requested ports, opening
     /// nothing.
     ///
-    /// `privilege` is which sockets the scan would run with. It is a parameter
-    /// rather than something read here so a caller can plan for a privilege
-    /// level they do not currently hold: asking "what would a root scan do?"
-    /// is a reasonable question and needs no root to answer.
+    /// `privilege` is which sockets the scan would run with, so a caller can plan
+    /// for a privilege level they do not hold.
     ///
-    /// ## The fallback is decided per protocol, not per scan
+    /// ## The fallback is decided per protocol
     ///
-    /// A host can be able to build one raw scanner and not the other: the TCP
-    /// scanner needs a raw TCP socket, the UDP scanner a raw UDP one, and a
-    /// sandbox can permit one and refuse the other. A protocol left with no
-    /// strategy at all is not a degraded scan but a silent one: nothing would
-    /// route those targets anywhere, so they would never be probed and never be
-    /// reported.
+    /// A sandbox can permit a raw TCP socket and refuse a raw UDP one. A protocol
+    /// left with no strategy would never be probed or reported.
     ///
-    /// ## A connect fallback substitutes for a SYN scan and for nothing else
+    /// ## A connect fallback substitutes only for a SYN scan
     ///
-    /// It completes handshakes, so it answers roughly the question a SYN scan
-    /// asks. It cannot send a FIN, a flagless segment or a bare ACK, so it
-    /// cannot answer what any of those were asked. Where the caller chose one of
-    /// those and raw sockets are unavailable, the TCP half is refused and left
-    /// undone: worse for the caller, and honest, where a silent substitution
-    /// would hand back verdicts from a technique they did not choose with no
-    /// field in the report saying so.
+    /// It answers roughly what a SYN scan asks, but cannot send a FIN, a flagless
+    /// segment or a bare ACK. Where the caller chose one of those and raw sockets
+    /// are unavailable, the TCP half is refused.
     pub fn build(cfg: &ZondConfig, privilege: Privilege) -> Self {
         let mut plan = Self {
             steps: Vec::new(),
@@ -1213,16 +1088,13 @@ impl PortScanPlan {
             idle: cfg.idle_scan.is_some(),
         };
 
-        // An idle scan replaces the ordinary port scan wholesale. It is TCP-only
-        // by nature, a UDP port has no counter to be read through, and probing
-        // one directly would announce the scanner the technique exists to hide,
-        // so no step covers UDP. The refusal that says so waits for the targets
-        // to name a UDP port; see `cover_udp`.
+        // An idle scan replaces the ordinary port scan. It is TCP-only, so no
+        // step covers UDP; the refusal waits for the targets to name a UDP port
+        // (see `cover_udp`).
         if let Some(idle) = &cfg.idle_scan {
-            // Asked first: a policy refusal holds whatever the privilege, and
-            // telling somebody to find root for a scan that would be refused
-            // anyway sends them the wrong way. The zombie is named in settings
-            // rather than in the target list, so nothing else withholds it.
+            // Checked before privilege, which would be the wrong remedy. The
+            // zombie is named in settings, not the target list, so nothing else
+            // withholds it.
             if cfg.exclusions.excludes(&idle.zombie) {
                 plan.refuse(
                     Protocol::Tcp,
@@ -1246,10 +1118,7 @@ impl PortScanPlan {
         }
 
         // The TCP step alone. UDP is added by [`cover_udp`] when the targets
-        // name a UDP port, the way SCTP is by [`cover_sctp`]: a step built here
-        // whatever the targets name would open a UDP scanner on every TCP-only
-        // scan, which probes nothing and reports an empty audit for a transport
-        // nobody asked about.
+        // name a UDP port, as SCTP is by [`cover_sctp`].
         if raw {
             plan.steps.push(PortScanStep::RawTcp {
                 technique: cfg.tcp_technique,
@@ -1267,8 +1136,8 @@ impl PortScanPlan {
     }
 
     /// Whether this host can raw-scan: it holds the privilege and has an address
-    /// to probe from. The decision [`build`](Self::build) makes for the TCP
-    /// step, read again where the UDP step is added so the two agree.
+    /// to probe from. Shared by the TCP step in [`build`](Self::build) and the UDP
+    /// step, so the two agree.
     fn raw_scanning(privilege: Privilege) -> bool {
         privilege.is_raw() && interface::SourceResolver::from_system().has_sources()
     }
@@ -1282,9 +1151,8 @@ impl PortScanPlan {
 
     /// The TCP technique this plan was built for.
     ///
-    /// Kept because it outlives the steps: if a raw step fails to open, whether
-    /// a connect scanner may stand in for it depends on which question the
-    /// technique asks, and by then the step is gone.
+    /// Outlives the steps: if a raw step fails to open, whether a connect scanner
+    /// may stand in depends on the technique.
     pub fn technique(&self) -> TcpScanTechnique {
         self.technique
     }
@@ -1312,12 +1180,10 @@ impl PortScanPlan {
     /// Adds the step that probes SCTP, or the refusal that says why it could
     /// not be added.
     ///
-    /// Apart from [`build`](Self::build) because what decides it is not in the
-    /// configuration. SCTP ports are named in a target's port specification,
-    /// which the plan is built before reading, and no default port list holds
-    /// one: a scan that never mentions SCTP opens no socket for it, where a step
-    /// added unconditionally would cost every privileged run a raw socket and a
-    /// capture for a transport nobody asked about.
+    /// Separate from [`build`](Self::build) because SCTP ports are named in a
+    /// target's port specification, which the plan is built before reading, and no
+    /// default port list holds one. A scan that never mentions SCTP opens no raw
+    /// socket or capture for it.
     ///
     /// Called with the same `privilege` the plan was built for.
     pub fn cover_sctp(&mut self, privilege: Privilege) {
@@ -1326,8 +1192,7 @@ impl PortScanPlan {
             return;
         }
 
-        // The same two conditions raw scanning is planned under in `build`:
-        // the privilege, and an address to send from.
+        // The same two conditions as raw scanning in `build`.
         if privilege.is_raw() && interface::SourceResolver::from_system().has_sources() {
             self.steps.push(PortScanStep::RawSctp);
         } else {
@@ -1338,15 +1203,11 @@ impl PortScanPlan {
     /// Adds the step that probes UDP, or the refusal that says why it could not
     /// be added.
     ///
-    /// Apart from [`build`](Self::build) for the reason [`cover_sctp`](Self::cover_sctp)
-    /// is: whether a UDP port was named is in the targets, which the plan is
-    /// built before reading. A step added there whatever the targets name would
-    /// open a UDP scanner on every TCP-only scan, to probe nothing and report an
-    /// empty audit; and an idle scan of TCP ports alone would carry a UDP
-    /// refusal about ground nobody asked for. Called only when the targets name
-    /// a UDP port, it adds the connect or raw step the run's privilege calls
-    /// for, or, under an idle scan whose counter carries no datagram, the
-    /// refusal that says the port goes unprobed.
+    /// Separate from [`build`](Self::build), like [`cover_sctp`](Self::cover_sctp),
+    /// so a TCP-only scan opens no UDP scanner and an idle scan of TCP ports
+    /// carries no UDP refusal. Called only when the targets name a UDP port, it
+    /// adds the connect or raw step the run's privilege calls for, or under an idle
+    /// scan the refusal.
     ///
     /// Called with the same `privilege` the plan was built for, so the UDP step
     /// is raw exactly where the TCP step is.
@@ -1366,20 +1227,17 @@ impl PortScanPlan {
     /// Whether one of [`refusals`](Self::refusals) leaves `protocol`
     /// unprobed.
     ///
-    /// Not the same question as [`covers`](Self::covers) answered in the
-    /// negative. A protocol no step covers and no refusal names is one the
-    /// plan left out without saying so, and the scan reports its targets as
-    /// lost; one a refusal names has already been reported, and its targets
-    /// are what that refusal is about.
+    /// Differs from a negated [`covers`](Self::covers): a protocol no step covers
+    /// and no refusal names was left out silently, and the scan reports its
+    /// targets as lost; one a refusal names has already been reported.
     pub(crate) fn refuses(&self, protocol: Protocol) -> bool {
         self.refused.contains(&protocol)
     }
 
     /// Whether any step covers `protocol`.
     ///
-    /// Read after a caller has edited [`steps_mut`](Self::steps_mut): a plan
-    /// with nothing for a protocol probes none of its ports and reports none of
-    /// them, which is silence rather than a finding.
+    /// Check after editing [`steps_mut`](Self::steps_mut): a plan with nothing for a
+    /// protocol probes and reports none of its ports.
     pub fn covers(&self, protocol: Protocol) -> bool {
         self.steps.iter().any(|step| step.protocol() == protocol)
     }
@@ -1388,17 +1246,13 @@ impl PortScanPlan {
 /// Makes sure the link a sweep is about is among the links to be scanned, even
 /// when no address mapped to it.
 ///
-/// Mapping targets to interfaces can only ever produce interfaces some target
-/// named, and the whole point of a sweep is the probe that names nobody. A link
-/// addressed only in IPv6 resolves to no target list at all, a `/64` cannot be
-/// enumerated and there is no IPv4 range to walk, so it maps to nothing, no
-/// step is built for it, and the all-nodes echo that would have found its entire
-/// segment is never sent. The scan reports an empty network and looks like it
-/// worked.
+/// Mapping targets to interfaces only produces interfaces some target named. A
+/// link addressed only in IPv6 maps to nothing (a `/64` cannot be enumerated and
+/// there is no IPv4 range), so without this its all-nodes echo is never sent and the
+/// scan reports an empty network.
 ///
-/// Matching by name rather than by value: `map_ips_to_interfaces` and this both
-/// read the platform's interface list, but a `NetworkInterface` compares on
-/// every field, and being wrong here means scanning one link twice.
+/// Matched by name: a `NetworkInterface` compares on every field, and a mismatch
+/// here would scan one link twice.
 fn include_swept_link(local: &mut HashMap<Link, IpSet>) {
     let Some(link) = interface::lan_link() else {
         return;
@@ -1414,27 +1268,21 @@ fn include_swept_link(local: &mut HashMap<Link, IpSet>) {
 /// Adds the addresses in this host's IPv6 neighbour table to the targets of
 /// whichever interface each belongs to.
 ///
-/// This is the only source the engine has for an IPv6 address nobody named. A
-/// neighbor solicitation is the mandatory probe, and it can only be aimed at an
-/// address someone already holds; the all-nodes echo produces addresses but is
-/// optional to answer and draws only link-local ones, since it goes out from a
-/// link-local source. The operating system's own table has been accumulating
-/// both for as long as the machine has been running, at no cost in packets: on
-/// the segment this was written against it holds fifteen global and unique-local
-/// addresses the engine could not otherwise learn at all.
+/// The only source of IPv6 addresses nobody named. A neighbor solicitation can
+/// only be aimed at a known address, and the all-nodes echo is optional to answer
+/// and draws only link-local addresses. The OS table accumulates global and
+/// unique-local ones at no cost in packets: on one test segment it held fifteen the
+/// engine could not otherwise learn.
 ///
-/// Three exclusions, each for its own reason:
+/// Three exclusions:
 ///
 /// - **Other interfaces' entries.** A neighbour on `en1` is not reachable
-///   through `en0`, and the entry says which it belongs to.
-/// - **This host's own addresses.** The table lists them too, and a scan that
-///   reported the machine running it as a discovered neighbour would be wrong in
-///   a way nobody would think to check.
+///   through `en0`.
+/// - **This host's own addresses**, which the table also lists.
 /// - **Loopback and the unspecified address**, which name nothing on a segment.
 ///
-/// Nothing seeded here is treated as a discovered host. Every entry is an
-/// address that answered *once*, from a table that goes stale, so each becomes a
-/// probe like any other and earns its place in the report by answering now.
+/// Entries come from a table that goes stale, so each becomes a probe like any
+/// other and appears in the report only if it answers now.
 ///
 /// Returns the candidates `exclusions` kept from the sweep, which the phase
 /// counts among the addresses its policy withheld.
@@ -1461,8 +1309,7 @@ fn machines_named(
     exclusions.hardware_in(v4.iter().chain(v6_table).map(|entry| (entry.ip, entry.mac)))
 }
 
-/// [`seed_from_neighbor_table`] against an explicit table, so the exclusions can
-/// be tested without a host that happens to have the right neighbours.
+/// [`seed_from_neighbor_table`] against an explicit table, for tests.
 ///
 /// `machines` are the hardware addresses of the machines the exclusions name,
 /// and an entry answering from one is held to the policy as its excluded
@@ -1477,21 +1324,10 @@ fn seed_from_neighbor_table_with(
     for (intf, targets) in local.iter_mut() {
         let mut seeded = 0usize;
         for candidate in candidates_on(intf, table, exclusions, machines) {
-            // **The policy, not one of this function's own three filters.**
-            //
-            // `withhold_targets` subtracts excluded addresses from the list
-            // before anything is opened, and that is the whole of the send-side
-            // guarantee — but it can only subtract what the list had. These
-            // addresses were never in it: they come from the host's own
-            // neighbour table, which is exactly the case `Exclusions` names when
-            // it says an exclusion that holds for the list and not for what the
-            // sweep discovers is worse than no exclusion at all.
-            //
-            // Without this a swept segment would send a unicast solicitation to
-            // an address somebody had been told would not be probed.
-            // `write_host` would then drop the finding, so the *report* would
-            // stay clean and the packet would still go out — which is the half
-            // of the promise that cannot be checked from the report afterwards.
+            // The exclusion policy. `withhold_targets` only subtracted from the
+            // target list, and these addresses come from the neighbour table.
+            // Without this a sweep would solicit an excluded address; `write_host`
+            // would drop the finding, but the packet would already be sent.
             if candidate.withheld {
                 info!(
                     verbosity = 2,
@@ -1551,10 +1387,8 @@ fn candidates_on(
             let IpAddr::V6(v6) = address else {
                 return None;
             };
-            // The zone matters for exactly the addresses that cannot be probed
-            // without one, and is dropped for the rest for the reason
-            // `ScopedIp` drops it: the same global address through two
-            // interfaces is one address, not two.
+            // Zoned only where it cannot be probed without one; as in `ScopedIp`,
+            // a global address through two interfaces is one address.
             let zone = v6.is_unicast_link_local().then_some(intf.index());
             let range = IpRange::V6(Ipv6Range::scoped(v6, v6, zone).ok()?);
             Some(Candidate {
@@ -1595,10 +1429,8 @@ fn candidates_for(link: &Link, table: &[neighbor_cache::Neighbor]) -> Vec<IpAddr
 /// The remedy for a link-local target that names no interface: the target
 /// written with an interface this host has, from its own table.
 ///
-/// An example rather than an instruction, because the one thing a reader
-/// cannot tell from "name the interface" is how, and a name they do not have,
-/// such as another platform's first Ethernet port, sends them to find out.
-/// Where the host has no link to suggest, the instruction alone.
+/// An example shows how to name the interface, using a name the reader has. Where
+/// the host has no link to suggest, the instruction alone.
 fn name_an_interface(range: &Ipv6Range) -> String {
     match link_local_example(&crate::system::interface::interfaces_or_none()) {
         Some(link) => format!(
@@ -1612,9 +1444,8 @@ fn name_an_interface(range: &Ipv6Range) -> String {
 
 /// The link a link-local target is most likely meant on: one that is up, can
 /// broadcast and holds a link-local address of its own, which is a segment
-/// `fe80::/64` means something on. The one the default route leaves by is
-/// preferred, being where this host meets the network it is on; otherwise the
-/// first, in the order the system lists them.
+/// `fe80::/64` means something on. The default route's is preferred, otherwise
+/// the first in system order.
 fn link_local_example(links: &[Link]) -> Option<&Link> {
     let segment = |link: &&Link| {
         link.is_up()
@@ -1637,9 +1468,7 @@ mod tests {
 
     /// **The link-local hint names an interface this host has**, one that is
     /// up, broadcasts and holds a link-local address, the default route's
-    /// first, and suggests none where the host has no such link. A name taken
-    /// from another platform, `en0` on a Linux host, is one the reader does
-    /// not have.
+    /// first, and suggests none where the host has no such link.
     #[test]
     fn the_link_local_hint_names_an_interface_this_host_has() {
         use crate::system::interface::{Addressing, LinkAddress};
@@ -1698,7 +1527,7 @@ mod tests {
         }
     }
 
-    /// A link a frame can be put on, as against `interface_with`'s bare one.
+    /// A link a frame can be put on, unlike `interface_with`'s bare one.
     fn framed(index: u32, name: &str, own: Vec<IpAddr>) -> Link {
         interface_with(index, name, own)
             .with_mac(crate::model::mac::MacAddr::new(0x02, 0, 0, 0, 0, 0x10))
@@ -1712,10 +1541,8 @@ mod tests {
         set
     }
 
-    /// What a frames-only sweep cannot reach leaves the steps that would have
-    /// framed it and joins the connect step, which is how an unprivileged
-    /// sweep reaches it. A local step left empty goes with it; one still
-    /// holding a neighbour a frame reaches stays.
+    /// What a frames-only sweep cannot reach moves to the connect step. A local
+    /// step left empty is dropped; one still holding a framable neighbour stays.
     #[test]
     fn what_a_frame_cannot_reach_moves_to_the_connect_step() {
         let mut plan = DiscoveryPlan {
@@ -1776,9 +1603,8 @@ mod tests {
         }
     }
 
-    /// A sweep's own link keeps its step with nothing left to address, since
-    /// its most important probe is addressed to nobody. A link that carries no
-    /// frames has no such probe to send, and goes.
+    /// A sweep's own link keeps its step with nothing left to address. A link
+    /// that carries no frames is dropped.
     #[test]
     fn a_sweeps_step_stays_on_a_framed_link_and_goes_on_a_tunnel() {
         let mut plan = DiscoveryPlan {
@@ -1814,8 +1640,7 @@ mod tests {
         }
     }
 
-    /// Withholding is about frames, and a connect step sends none: what it
-    /// already holds stays, and nothing new arrives in it.
+    /// Withholding leaves the connect step as it was.
     #[test]
     fn withholding_leaves_the_connect_step_as_it_was() {
         let mut plan = DiscoveryPlan {
@@ -1866,11 +1691,8 @@ mod tests {
         ));
     }
 
-    /// The addresses a plan reaches by connect are asked the ports its routed
-    /// addresses are. Asked fewer, a host behind a filter that serves only a
-    /// port the scan names is found when a frame reaches it and missed when
-    /// only a connect does, loopback and tunnels on every run and everything
-    /// on an unprivileged one.
+    /// Connect addresses are asked the same ports as routed ones, so a filtered
+    /// host serving only a port the scan names is found either way.
     #[test]
     fn the_connect_step_asks_the_ports_the_routed_steps_are_given() {
         let mut plan = DiscoveryPlan {
@@ -1907,11 +1729,7 @@ mod tests {
     }
 
     /// A plan whose every TCP port is excluded refuses its routed and connect
-    /// steps rather than running them asking nothing.
-    ///
-    /// A sweep asking no port files every address it holds as silent, which
-    /// reads as hosts that are not there when nothing was put to them. The
-    /// refusal is what says why those addresses went unasked.
+    /// steps, which would otherwise file every address as silent.
     #[test]
     fn a_plan_left_no_tcp_port_refuses_its_tcp_steps() {
         let mut plan = DiscoveryPlan {
@@ -1942,9 +1760,7 @@ mod tests {
         assert_eq!(refused, [ScannerKind::Routed, ScannerKind::Connect]);
     }
 
-    /// And a connect step made after the ports were chosen, for what a frame
-    /// cannot reach, asks them too: the order a caller edits a plan in decides
-    /// nothing about which ports an address is asked on.
+    /// A connect step made after the ports were chosen asks them too.
     #[test]
     fn a_connect_step_made_for_what_frames_miss_asks_the_routed_ports() {
         let mut plan = DiscoveryPlan {
@@ -1981,10 +1797,7 @@ mod tests {
         );
     }
 
-    /// An SCTP sweep runs beside each routed step and nowhere else: a segment
-    /// is swept at the link layer, where ARP and neighbour discovery answer
-    /// whatever the host speaks above them, and a connect step has no raw
-    /// socket to send an INIT through.
+    /// An SCTP sweep runs beside each routed step and nowhere else.
     #[test]
     fn an_sctp_sweep_is_added_to_the_routed_steps_alone() {
         let mut plan = DiscoveryPlan {
@@ -2024,9 +1837,8 @@ mod tests {
         ));
     }
 
-    /// SCTP has no unprivileged form at all, so a scan that named SCTP ports
-    /// without raw sockets is told those ports went unprobed rather than being
-    /// handed a strategy that asked a different question.
+    /// SCTP has no unprivileged form, so without raw sockets its ports are
+    /// refused.
     #[test]
     fn sctp_without_raw_sockets_is_refused_rather_than_substituted() {
         let mut plan = PortScanPlan::build(&ZondConfig::default(), Privilege::Connect);
@@ -2041,10 +1853,8 @@ mod tests {
         );
     }
 
-    /// An idle scan reads a third party's counter and has no way to carry an
-    /// INIT. Sending one directly would leave this host's address on the target,
-    /// which is the one thing the technique exists to avoid, so the ports are
-    /// refused with that as the reason.
+    /// An idle scan cannot carry an INIT, and sending one directly would expose
+    /// this host, so SCTP ports are refused.
     #[test]
     fn an_idle_scan_refuses_sctp_rather_than_probing_it_directly() {
         let cfg = ZondConfig {
@@ -2067,14 +1877,9 @@ mod tests {
         );
     }
 
-    /// A zombie the operator excluded is not scanned through. The idle scan
-    /// reads its counter by sending it SYN+ACKs again and again, so naming it
-    /// in a scan's settings would otherwise probe an address somebody was told
-    /// would be left alone, and nothing in the target list could withhold it.
-    ///
-    /// Refused rather than replaced: probing the target directly instead would
-    /// put this host's own address on it, which an idle scan exists to avoid,
-    /// so no TCP port is planned at all.
+    /// A zombie the operator excluded is not scanned through, since the idle scan
+    /// sends it SYN+ACKs repeatedly. No direct probe replaces it, so no TCP port is
+    /// planned.
     #[test]
     fn an_idle_scan_through_an_excluded_zombie_is_refused() {
         let zombie = v6("192.0.2.9");
@@ -2111,13 +1916,9 @@ mod tests {
         );
     }
 
-    /// An idle scan the plan refused is still an idle scan, and what it names
-    /// on other transports is refused as one. Neither SCTP nor UDP can be read
-    /// through a zombie's counter, and a privileged plan that forgot the scan
-    /// was an idle one once its idle step was gone would probe the target's
-    /// SCTP ports from this host's own address: the one thing the caller chose
-    /// an idle scan to avoid, done to the target the moment the zombie is
-    /// excluded.
+    /// A refused idle scan still refuses other transports. Otherwise a privileged
+    /// plan would probe the target's SCTP ports from this host's own address once
+    /// the zombie was excluded.
     #[test]
     fn a_refused_idle_scan_probes_no_other_transport_directly() {
         let zombie = v6("192.0.2.9");
@@ -2154,8 +1955,7 @@ mod tests {
         }
     }
 
-    /// An ordinary scan plans no UDP step until the targets are found to name a
-    /// UDP port, so a TCP-only scan opens no UDP scanner to probe nothing.
+    /// An ordinary scan plans no UDP step until the targets name a UDP port.
     #[test]
     fn a_udp_step_is_planned_only_when_the_targets_name_udp() {
         for privilege in [Privilege::Raw, Privilege::Connect] {
@@ -2177,12 +1977,9 @@ mod tests {
         crate::model::parse::ip::to_set(&[cidr], None, None).expect("a range")
     }
 
-    /// A `/64` on the local segment is eighteen quintillion addresses, and the
-    /// walk is what a targeted run does with a local range. It is withheld
-    /// before a scanner is built from it, because the alternative was measured
-    /// and is worse than useless: the count overflows `usize`, the sweep is
-    /// budgeted as though it had no targets, and it stops two thousand
-    /// solicitations in having reported the prefix covered.
+    /// A local `/64` is withheld from a targeted run. Walked, its count overflows
+    /// `usize` and the sweep stops two thousand solicitations in, having reported
+    /// the prefix covered.
     #[test]
     fn a_local_prefix_too_large_to_walk_is_withheld_from_the_targets() {
         let mut targets = v6_set("2001:db8:1:1::/64");
@@ -2194,8 +1991,8 @@ mod tests {
         assert!(targets.is_empty(), "and nothing is left to walk");
     }
 
-    /// Asked of a range and not of a set, so a prefix beside three literal
-    /// addresses costs the prefix and not the three.
+    /// Tested per range, so a prefix beside three literal addresses keeps the
+    /// three.
     #[test]
     fn withholding_a_prefix_keeps_the_addresses_named_beside_it() {
         let mut targets = crate::model::parse::ip::to_set(
@@ -2211,8 +2008,7 @@ mod tests {
         assert_eq!(targets.len(), 2, "the literal and the IPv4 address survive");
     }
 
-    /// A range small enough to walk is left exactly as it was, so the ordinary
-    /// case pays nothing.
+    /// A range small enough to walk is left as it was.
     #[test]
     fn a_walkable_prefix_is_untouched() {
         let mut targets = v6_set("2001:db8::/120");
@@ -2222,10 +2018,8 @@ mod tests {
         assert_eq!(targets.len(), before);
     }
 
-    /// The three entries that must never become targets, each wrong in its own
-    /// way: another interface's neighbour is not reachable through this one,
-    /// this host would be reported as a discovered neighbour of itself, and
-    /// loopback names nothing on a segment.
+    /// Another interface's neighbour, this host's own address and loopback never
+    /// become targets.
     #[test]
     fn seeding_skips_other_interfaces_our_own_addresses_and_loopback() {
         let own = v6("2001:db8::50");
@@ -2243,10 +2037,8 @@ mod tests {
         assert_eq!(seeded, vec![v6("2001:db8::aa"), v6("fe80::bb")]);
     }
 
-    /// A link-local candidate carries the interface it came from, because it
-    /// cannot be probed without one. A global address does not, for the reason
-    /// `ScopedIp` drops it: the same address through two interfaces is one
-    /// address.
+    /// A link-local candidate carries its interface; a global one does not, as in
+    /// `ScopedIp`.
     #[test]
     fn a_seeded_link_local_keeps_its_interface_and_a_global_does_not() {
         let intf = interface_with(7, "en0", Vec::new());
@@ -2267,9 +2059,7 @@ mod tests {
         );
     }
 
-    /// An unprivileged plan still covers both protocols. A protocol with no step
-    /// is not a degraded scan but a silent one: nothing routes those targets, so
-    /// they are never probed and never reported.
+    /// An unprivileged plan still covers both protocols.
     #[test]
     fn an_unprivileged_plan_covers_both_protocols() {
         let mut plan = PortScanPlan::build(&ZondConfig::default(), Privilege::Connect);
@@ -2280,10 +2070,8 @@ mod tests {
         assert!(plan.refusals().is_empty());
     }
 
-    /// A connect scan substitutes for a SYN scan and for nothing else. Asked for
-    /// a technique it cannot express, an unprivileged plan has to leave the TCP
-    /// half out and say why - a silent substitution would promise verdicts from
-    /// a technique nobody chose, with no field in the report saying so.
+    /// A connect scan substitutes only for a SYN scan. For another technique, an
+    /// unprivileged plan leaves the TCP half out and says why.
     #[test]
     fn a_technique_the_fallback_cannot_express_is_refused_at_planning_time() {
         let cfg = ZondConfig {
@@ -2312,14 +2100,9 @@ mod tests {
         );
     }
 
-    /// A step and the scanner it becomes have to answer to the same name, or a
-    /// failure lands in the report under one strategy and the same scanner's
-    /// later failures under another.
-    ///
-    /// [`ScannerKind::SynPort`] is the one that matters. It is documented to
-    /// mean a half-open connection attempt was made, and a plan that called
-    /// every raw TCP step by that name would attribute a FIN scan's socket
-    /// failure to `syn_port` when no SYN was ever sent.
+    /// A step and the scanner it becomes share a name, so failures are filed
+    /// under one strategy. In particular a FIN scan is not called
+    /// [`ScannerKind::SynPort`], which means a half-open connection was attempted.
     #[test]
     fn a_step_reports_under_the_same_name_as_the_scanner_it_builds() {
         use crate::scanner::session::ScanSession;
@@ -2360,9 +2143,7 @@ mod tests {
         }
     }
 
-    /// Host enrichment runs beside a raw scan because the raw paths are what
-    /// yield a MAC and an RTT. Which technique the raw TCP scanner carries has
-    /// no bearing on that, so every one of them has to count as raw.
+    /// Every raw TCP technique counts as raw for host enrichment.
     #[test]
     fn every_raw_step_is_recognisable_as_one() {
         for &technique in TcpScanTechnique::ALL {
@@ -2373,9 +2154,7 @@ mod tests {
         assert!(!PortScanStep::ConnectUdp.is_raw());
     }
 
-    /// The technique outlives the steps, because whether a connect scanner may
-    /// stand in for a raw one that failed to open is a question asked after the
-    /// step is gone.
+    /// The technique outlives the steps.
     #[test]
     fn a_plan_remembers_the_technique_it_was_built_for() {
         let cfg = ZondConfig {
@@ -2388,8 +2167,8 @@ mod tests {
         );
     }
 
-    /// A plan is a value a caller may edit, and editing it changes what would
-    /// run. The guard against editing it into silence is `covers`.
+    /// Editing a plan changes what would run; `covers` reports a protocol edited
+    /// out.
     #[test]
     fn dropping_a_step_is_visible_in_what_the_plan_covers() {
         let mut plan = PortScanPlan::build(&ZondConfig::default(), Privilege::Connect);
@@ -2401,13 +2180,11 @@ mod tests {
     }
 
     /// **A sweep takes no candidate from the machine an exclusion names.** An
-    /// excluded IPv4 address and the IPv6 addresses the same machine holds
-    /// share nothing but the hardware address the neighbour tables list them
-    /// under, and a sweep that took those from the table solicited the
-    /// machine the operator excluded, at an address the policy never named.
+    /// excluded IPv4 address and the same machine's IPv6 addresses share only the
+    /// hardware address the neighbour tables list them under.
     ///
-    /// What the sweep kept back is handed on, since the phase counts it among
-    /// what its policy withheld.
+    /// What the sweep kept back is returned, since the phase counts it as
+    /// withheld.
     #[test]
     fn a_swept_plan_takes_no_candidate_from_an_excluded_machine() {
         let machine = MacAddr::new(0x02, 0, 0, 0, 0, 0x30);
@@ -2452,16 +2229,9 @@ mod tests {
 
     /// **A sweep does not take an excluded neighbour as a candidate.**
     ///
-    /// The target list is withheld against the exclusions before a plan is
-    /// built, and that is the whole of the send-side guarantee — but a sweep
-    /// adds addresses the list never had, from the host's own neighbour table,
-    /// and those were never subtracted from anything. `Exclusions` names exactly
-    /// this case: an exclusion that holds for the list and not for what the
-    /// sweep discovers is worse than no exclusion at all.
-    ///
-    /// The recording gate at `write_host` would drop the finding, so the report
-    /// stays clean either way. What it cannot undo is the packet, and that is
-    /// the half of the promise a reader cannot check afterwards.
+    /// A sweep adds addresses from the host's neighbour table, which were never in
+    /// the withheld target list. `write_host` would drop the finding, but not the
+    /// packet already sent.
     #[test]
     fn a_swept_plan_does_not_take_an_excluded_neighbour_as_a_candidate() {
         let intf = interface_with(7, "en0", Vec::new());

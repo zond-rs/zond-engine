@@ -10,50 +10,40 @@
 //!
 //! Turns a set of target addresses into scan results.
 //!
-//! A scan runs in two independent phases, each with its own entry point.
-//! [`discover`] finds which hosts in a target range are alive, and [`scan`]
-//! takes a set of targets, usually ones [`discover`] already confirmed, and
-//! reports which of their ports are open. Keeping the two apart lets a caller
-//! run a cheap sweep first and spend the expensive port-scanning work only on
-//! hosts known to exist.
+//! A scan runs in two phases, each with its own entry point. [`discover`] finds
+//! which hosts in a target range are alive, and [`scan`] reports which ports are
+//! open on a set of targets, usually ones [`discover`] confirmed. A caller can run a
+//! cheap sweep first and spend port scanning only on hosts known to exist.
 //!
-//! # Three altitudes, and how to choose
+//! # Three levels of control
 //!
-//! This module works at three levels of detail. They are the same code: each
-//! level is written in terms of the one below it, so moving down means taking
-//! over more of the decisions, never reimplementing anything.
+//! Each level is written in terms of the one below it, so moving down means taking
+//! over more of the decisions with the same code.
 //!
-//! Call [`discover`] or [`scan`]. Targets and a [`ZondConfig`] in, a live
-//! [`ScanSession`] and a [`ScanReport`] out. Privilege, interfaces, fallbacks,
-//! retries and hostname resolution are all decided by the engine. This is the right
-//! altitude for anything wrapping the engine, and where most callers should
-//! stay. [`scan_with_journal`] is the same scan writing down how far it got, so
-//! that a run cut short can be continued, and [`discover_with_journal`] is the
-//! same for a sweep. Either can be read back afterwards as the report it
-//! produced, with [`store::report`](crate::journal::store::report).
+//! Call [`discover`] or [`scan`]. Targets and a [`ZondConfig`] go in, a live
+//! [`ScanSession`] and a [`ScanReport`] come out. The engine decides privilege,
+//! interfaces, fallbacks, retries and hostname resolution. Most callers should stay
+//! here. [`scan_with_journal`] and [`discover_with_journal`] also record how far the
+//! run got, so one cut short can be continued, and the journal can be read back as
+//! the report it produced with [`store::report`](crate::journal::store::report).
 //!
-//! Build a [`plan`], edit it, run it. A
-//! [`DiscoveryPlan`](plan::DiscoveryPlan) is the set of strategies a scan
-//! intends to run, worked out from the targets and this host's configuration,
-//! with nothing opened and nothing sent. Printing it instead of running it is a
-//! dry run, and the steps for three links out of five can be dropped and the
-//! rest run.
-//! Its [refusals](plan::RefusedStep) say what a scan will not cover before it
-//! starts.
+//! Build a [`plan`], edit it, run it. A [`DiscoveryPlan`](plan::DiscoveryPlan) is
+//! the set of strategies a scan intends to run, worked out from the targets and this
+//! host's configuration, with nothing opened and nothing sent. Printing it is a dry
+//! run, and steps can be dropped before running the rest. Its
+//! [refusals](plan::RefusedStep) say what a scan will not cover before it starts.
 //!
-//! Build one strategy and drive it yourself. Everything in [`strategy`] is
-//! ordinary public API: open a [`ScanSession`], construct a
+//! Build one strategy and drive it yourself. Everything in [`strategy`] is public
+//! API: open a [`ScanSession`], construct a
 //! [`LocalScanner`](strategy::local::LocalScanner) aimed at one segment or a
-//! [`TcpPortScanner`](strategy::ports::TcpPortScanner) over a transport opened
-//! by the caller, run it, and read the store. None of it needs a cargo feature.
+//! [`TcpPortScanner`](strategy::ports::TcpPortScanner) over a transport the caller
+//! opened, run it, and read the store. None of it needs a cargo feature.
 //!
-//! A scan driven this way produces the same record as one the engine ran.
 //! [`recorder::PhaseRecorder`] takes the scope and settings before the strategies
-//! start and closes into a [`ScanReport`] when they finish, so a
-//! self-orchestrated scan reaches the exporters on the same terms [`discover`]
-//! and [`scan`] do. Until then, what a strategy has filed is readable through
-//! [`ScanContext::failures_snapshot`](session::ScanContext::failures_snapshot)
-//! and
+//! start and closes into a [`ScanReport`] when they finish, so a scan driven this way
+//! reaches the exporters like one from [`discover`] or [`scan`]. Until then, what a
+//! strategy has filed is readable through
+//! [`ScanContext::failures_snapshot`](session::ScanContext::failures_snapshot) and
 //! [`probe_stats_snapshot`](session::ScanContext::probe_stats_snapshot).
 //!
 //! ```no_run
@@ -93,25 +83,21 @@
 //!
 //! # How a scan is assembled
 //!
-//! Both phases adapt to whether the process holds root privileges. When it
-//! does, [`discover`] groups targets by the interface that reaches them and
-//! gives each group a suitable strategy:
-//! [`LocalScanner`](strategy::local::LocalScanner) with ARP and ICMPv6 for hosts
-//! on the same physical segment, and
+//! Both phases adapt to whether the process holds root privileges. When it does,
+//! [`discover`] groups targets by the interface that reaches them and gives each
+//! group a strategy: [`LocalScanner`](strategy::local::LocalScanner) with ARP and
+//! ICMPv6 for hosts on the same segment, and
 //! [`RoutedScanner`](strategy::routed::RoutedScanner) with TCP SYN for anything
-//! behind a gateway. [`scan`] follows the same pattern for ports, where a
-//! privileged caller gets [`TcpPortScanner`](strategy::ports::TcpPortScanner)
-//! and each port is classified from a single raw exchange rather than a
-//! completed handshake. Targets that map to no usable interface, and every
-//! target when unprivileged, fall back to plain TCP connect attempts.
+//! behind a gateway. [`scan`] does the same for ports: a privileged caller gets
+//! [`TcpPortScanner`](strategy::ports::TcpPortScanner), which classifies each port
+//! from a single raw exchange. Targets that map to no usable interface, and every
+//! target when unprivileged, fall back to TCP connect.
 //!
-//! All of those implement [`HostScanner`](strategy::HostScanner) or
-//! [`PortScanner`](strategy::PortScanner), which is what lets unrelated
-//! strategies be driven through one loop. Discovered hosts land in a shared,
-//! thread-safe store as they are found, and each update fires an event, so a
-//! caller can watch a scan in progress instead of waiting for it to finish. When
-//! DNS resolution is enabled, the [`rdns`] module looks up hostnames in the
-//! background without blocking discovery.
+//! All of these implement [`HostScanner`](strategy::HostScanner) or
+//! [`PortScanner`](strategy::PortScanner), so one loop drives them. Discovered hosts
+//! land in a shared store as they are found and each update fires an event, so a
+//! caller can watch a scan in progress. When DNS resolution is enabled, [`rdns`]
+//! looks up hostnames in the background without blocking discovery.
 
 use std::pin::Pin;
 
@@ -146,9 +132,8 @@ pub mod handle;
 pub mod recorder;
 pub mod session;
 
-// The strategies, and the traits that make them interchangeable. Public
-// unconditionally: driving one scanner yourself is a supported way to use the
-// engine, not a test hatch.
+// The strategies and the traits that make them interchangeable. Driving one
+// scanner yourself is supported, so these are public without a feature.
 pub mod plan;
 pub mod strategy;
 
@@ -165,22 +150,18 @@ pub mod dispatcher;
 pub mod rdns;
 pub mod service;
 
-// The machinery the strategies are built from, and nothing a caller holds:
-// `pacing` decides when a probe is sent again and when silence is an answer,
-// `audit` counts what a raw scanner saw of its own run, `pool` bounds a
-// fan-out of connect probes, and `payload` is what a UDP probe carries. Each
-// is reached through the strategy that owns it, whose constructor takes the
-// settings that tune it, so none of it is a commitment to anyone outside.
+// What the strategies are built from: `pacing` decides when a probe is sent
+// again and when silence is an answer, `audit` counts what a raw scanner saw of
+// its own run, `pool` bounds a fan-out of connect probes, and `payload` is what a
+// UDP probe carries. Each is tuned through its strategy's constructor.
 pub(crate) mod audit;
 pub(crate) mod pacing;
 pub(crate) mod payload;
 pub(crate) mod pool;
 
-// How the entry points below assemble a scan. Private, because it is one
-// implementation of this engine's policy: a caller who wants a different one
-// builds a `plan` and runs the steps they want. `vantage` is the part of that
-// policy that sends nothing: what this machine's own interfaces and routes say
-// about the hosts the scan found.
+// How the entry points below assemble a scan. A caller who wants a different
+// policy builds a `plan` and runs the steps they want. `vantage` reads what this
+// machine's own interfaces and routes say about the hosts the scan found.
 mod orchestrator;
 mod vantage;
 
@@ -191,16 +172,13 @@ pub enum ScanError {
     /// The scan task did not run to completion.
     ///
     /// Reached on a panic inside the engine or on the runtime shutting down
-    /// under it. Not on a stop:
-    /// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort) winds the
-    /// scan down and still yields its report.
-    ///
-    /// The two are told apart, and a panic carries what it said, because this
-    /// happened in the caller's process and "terminated abnormally" leaves them
-    /// nothing to report upstream.
+    /// under it. A stop through
+    /// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort) still
+    /// yields a report. A panic carries its message so the caller has something
+    /// to report upstream.
     #[error("the scan task {}: {detail}", if *.panicked { "panicked" } else { "was cancelled" })]
     TaskFailed {
-        /// Whether the task panicked, as against being cancelled by the runtime.
+        /// Whether the task panicked; false if the runtime cancelled it.
         panicked: bool,
         /// What the panic said, or why the task was cancelled.
         detail: String,
@@ -222,8 +200,8 @@ pub enum ScanError {
     /// under.
     ///
     /// A sitting under a different technique, retry policy or set of passes
-    /// answers a different question, and its answers would stand in one report
-    /// beside the earlier sittings' as though they answered the same one. See
+    /// answers a different question, and its results would be mixed into one
+    /// report with the earlier sittings'. See
     /// [`JobOptions`](crate::journal::manifest::JobOptions) for which options
     /// are held, and [`JobOptions::apply_to`](crate::journal::manifest::JobOptions::apply_to)
     /// for continuing a job under the ones it recorded.
@@ -233,10 +211,10 @@ pub enum ScanError {
 
     /// The evasion profile is not one a scan could put on the wire.
     ///
-    /// Checked before a probe leaves rather than on each one, because every
-    /// probe refusing is a scan that sends nothing and reports a network with
-    /// nothing on it. See [`EvasionProfile::validate`](crate::EvasionProfile::validate)
-    /// for what that check covers and what it does not.
+    /// Checked once before anything is sent, since a profile every probe refuses
+    /// would report an empty network. See
+    /// [`EvasionProfile::validate`](crate::EvasionProfile::validate) for what the
+    /// check covers.
     #[error("{0}")]
     Evasion(#[from] crate::evasion::EvasionError),
 
@@ -245,12 +223,10 @@ pub enum ScanError {
     /// counting what it holds open when the scan starts where that can be
     /// counted.
     ///
-    /// Checked before anything is sent. Run anyway, the scan's connections
-    /// and the process's other files, a journal among them, would take their
-    /// descriptors from the same table too small for both, and whichever came
-    /// second would fail somewhere in the middle of the run. The engine reads
-    /// the limit and never raises it; a caller raises its own soft limit,
-    /// within the hard one, before it starts a scan.
+    /// Checked before anything is sent, since the scan's connections and the
+    /// process's other files, a journal among them, would otherwise run out of
+    /// descriptors partway through. The engine never raises the limit; a caller
+    /// raises its own soft limit, within the hard one, before starting a scan.
     #[error("file descriptor limit {limit} is below the {needed} a scan needs")]
     TooFewDescriptors {
         /// The soft limit the process has.
@@ -264,8 +240,7 @@ pub enum ScanError {
 /// refuse, so a scan that never started leaves no record of itself.
 ///
 /// Every check a journalled entry point makes before it starts belongs in
-/// `checks`, which is what keeps a refusal added later from leaving a record
-/// behind. See [`Journal::withdraw`](crate::journal::Journal::withdraw) for
+/// `checks`, so no refusal leaves a record behind. See [`Journal::withdraw`](crate::journal::Journal::withdraw) for
 /// which records go.
 #[cfg(feature = "journal-format")]
 fn accepted(
@@ -285,9 +260,8 @@ fn accepted(
 /// [`JobOptions`](crate::journal::manifest::JobOptions) for which options
 /// those are.
 ///
-/// A journal that recorded none is continued under `cfg` as it stands: its
-/// first sitting ran on an engine that did not record them, and nothing says
-/// what they were.
+/// A journal that recorded none is continued under `cfg` as it stands, since
+/// nothing says what its options were.
 #[cfg(feature = "journal-format")]
 fn under_the_recorded_options(
     journal: &crate::journal::Journal,
@@ -303,13 +277,10 @@ fn under_the_recorded_options(
 /// the journal recorded no options to hold the sitting to.
 ///
 /// The technique is part of the plan's fingerprint, so a journal that resumed
-/// at all was counted under the one its manifest names, whatever `cfg` asks.
-/// A job recorded with its options is held to that by
-/// [`under_the_recorded_options`], which refuses another. One recorded before
-/// options were has only the manifest to say what it asked, and a sitting run
-/// under `cfg`'s technique would file segments of another kind as the same
-/// job's answers. So it runs under the manifest's, and says so where that
-/// differs from what it was given.
+/// was counted under the one its manifest names. A job with recorded options is
+/// held to it by [`under_the_recorded_options`]. One without has only the
+/// manifest, so the sitting runs under the manifest's technique, with a note
+/// when that differs from `cfg`, to keep its segments of the same kind.
 #[cfg(feature = "journal-format")]
 fn under_the_recorded_technique(journal: &crate::journal::Journal, cfg: &ZondConfig) -> ZondConfig {
     let recorded = journal.manifest().technique();
@@ -330,9 +301,8 @@ fn under_the_recorded_technique(journal: &crate::journal::Journal, cfg: &ZondCon
 /// Writes down the options a journal's first sitting runs under, so every
 /// later sitting can be held to them.
 ///
-/// A journal that cannot take them still scans. The sitting loses nothing it
-/// found; a later one is continued under what its caller passes, as a journal
-/// from before options were recorded is, and this says so.
+/// A journal that cannot take them still scans, with a warning. A later sitting
+/// is then continued under whatever options its caller passes.
 #[cfg(feature = "journal-format")]
 fn recording_options(
     mut journal: crate::journal::Journal,
@@ -351,9 +321,8 @@ fn recording_options(
 /// [`capture_links_toward`](crate::transport::probe::capture_links_toward)
 /// and [`enough_descriptors`].
 ///
-/// One set for both, handed on to the context the scan's captures read, so
-/// what the up-front check counts is what the scan opens: a check counting
-/// every link lets through no scan a smaller need would refuse, and refuses
+/// The same set is handed to the context the scan's captures read, so the
+/// up-front check counts what the scan opens. Counting every link would refuse
 /// scans that need a device or two on a machine with dozens of links.
 fn capture_plan(addresses: &IpSet, cfg: &ZondConfig) -> Result<Vec<Zone>, ScanError> {
     let mut addresses = addresses.clone();
@@ -367,9 +336,9 @@ fn capture_plan(addresses: &IpSet, cfg: &ZondConfig) -> Result<Vec<Zone>, ScanEr
 /// capturing on `links`: one a link where it may choose its own packets, and
 /// none where it probes by connect.
 ///
-/// A raw process whose every target is loopback probes it by connect and
-/// opens nothing, and is counted its link all the same: the need is read
-/// before the phases decide, and one device more costs such a scan nothing.
+/// A raw process whose every target is loopback probes by connect and opens
+/// nothing, but is still counted its link: the need is read before the phases
+/// decide, and one extra device costs nothing.
 fn captures_needed(privilege: Privilege, links: &[Zone]) -> usize {
     match privilege.is_raw() {
         true => links.len(),
@@ -396,24 +365,18 @@ fn plan_addresses(target_map: &TargetMap) -> IpSet {
 ///
 /// `this_run` is the plan this sitting numbers: what it was handed, less what
 /// its exclusion policy withholds. A position is an index into that
-/// enumeration, so a plan other than the recorded one reads every settled
-/// position as a different target and skips ground nothing asked about. The
-/// caller's plan is what is tested rather than the journal's, since the
-/// journal's is the one thing that cannot disagree with itself. A caller
-/// continuing from the recorded plan passes that, and the test is then of the
-/// policy alone: one that withholds nothing further leaves the same plan, and
-/// so the same fingerprint.
+/// enumeration, so a different plan would read every settled position as a
+/// different target and skip ground nothing asked about. A caller continuing
+/// from the recorded plan passes that, and the test is then of the policy
+/// alone: one that withholds nothing further leaves the same fingerprint.
 ///
 /// A policy that withholds *less* than the first sitting's passes when applied
-/// to the recorded plan, and is meant to: that plan is what is being
-/// continued, and widening the scope is a new scan rather than a continuation
-/// of this one.
+/// to the recorded plan. That plan is what is being continued; widening the
+/// scope is a new scan.
 ///
-/// The privilege is what this process can send rather than what the journal
-/// was opened with, because it decides which question the probes answer; see
-/// [`PlanFingerprint::of`](crate::journal::manifest::PlanFingerprint::of). A
-/// journal opened or resumed claiming another would file this sitting's
-/// answers as the other kind.
+/// The privilege checked is what this process can send, because it decides
+/// which question the probes answer; see
+/// [`PlanFingerprint::of`](crate::journal::manifest::PlanFingerprint::of).
 #[cfg(feature = "journal-format")]
 fn counted_as_recorded(
     journal: &crate::journal::Journal,
@@ -425,9 +388,9 @@ fn counted_as_recorded(
 
 /// What a `JoinError` was, in a form a consumer can act on.
 ///
-/// `tokio` hands back the panic payload as `Box<dyn Any>`, which is where a
-/// message goes to be lost. The two shapes a `panic!` produces are read out and
-/// anything else is named as such rather than dropped.
+/// `tokio` hands back the panic payload as `Box<dyn Any>`. The two shapes a
+/// `panic!` produces are read out, and any other payload is reported as one
+/// without a message.
 fn panic_or_cancellation(error: tokio::task::JoinError) -> ScanError {
     if !error.is_panic() {
         return ScanError::TaskFailed {
@@ -460,41 +423,35 @@ fn panic_or_cancellation(error: tokio::task::JoinError) -> ScanError {
 ///
 /// A scan given
 /// [`ZondConfig::scan_timeout`](crate::config::ZondConfig::scan_timeout) stops
-/// itself the same way when its budget runs out, which is what lets this be
-/// awaited by something nobody is watching.
+/// itself the same way when its budget runs out.
 ///
 /// # Dropping it stops the scan
 ///
-/// This is the scan's owner, and the one way to its report. Dropped before the
+/// This is the scan's owner and the only way to its report. Dropped before the
 /// scan has finished, or while being awaited, it stops the scan as
-/// [`abort`](crate::scanner::handle::ScanHandle::abort) would: nothing could
-/// read what the scan went on to find, and a scan nobody can collect would
-/// keep its sockets, its captures and its probes going until it ended on its
-/// own, which for a listener watching until it is stopped is never. It is a
-/// stop and not a cancellation: the scan winds down through the same checks,
-/// so a journal it writes gets its last checkpoint once the scan has wound
-/// down, and keeps its lock until then rather than handing the job to a
-/// resume while this one is still probing. That last write needs the runtime
-/// the scan runs on, and a task dropped after that runtime has shut down
-/// leaves the journal where its last timed checkpoint did.
+/// [`abort`](crate::scanner::handle::ScanHandle::abort) would; otherwise a
+/// listener scan would keep its sockets, captures and probes going forever. The
+/// scan winds down through the usual checks, so a journal it writes gets its last
+/// checkpoint and keeps its lock until then, and no resume can take the job while
+/// this one is still probing. That last write needs the scan's runtime: a task
+/// dropped after the runtime has shut down leaves the journal at its last timed
+/// checkpoint.
 ///
-/// The [`ScanSession`] is a view of the scan and stops nothing when dropped: a
-/// caller that wants only the report may let it go and await this.
+/// Dropping the [`ScanSession`] stops nothing, so a caller that wants only the
+/// report may let it go and await this.
 pub struct ScanTask {
     /// The scan, until it is joined or dropped.
     handle: Option<JoinHandle<ScanReport>>,
     /// The scan's stop, which dropping this pulls.
     stop: handle::ScanHandle,
-    /// The journal this scan writes to, closed once the scan ends.
-    ///
-    /// A journal has to write its last checkpoint and release its lock when the
-    /// scan is over, and this is the type that knows when that is.
+    /// The journal this scan writes to, given its last checkpoint and released
+    /// once the scan ends.
     #[cfg(feature = "journal-format")]
     journal: Option<checkpoint::Checkpointing>,
     /// What earlier sittings of this job did, restored from the journal.
     ///
     /// Folded in front of this run's own phases when the task is joined, so the
-    /// report describes the job rather than the last sitting of it.
+    /// report describes the whole job.
     #[cfg(feature = "journal-format")]
     earlier: Vec<ScanPhase>,
 }
@@ -529,24 +486,23 @@ impl ScanTask {
 
     /// Waits for the scan to finish and returns its report.
     ///
-    /// An error here means the scan never ran to completion at all. A strategy
-    /// that failed part way through is not one: it is recorded in the report's
+    /// An error here means the scan never ran to completion. A strategy that
+    /// failed part way through is recorded in the report's
     /// [`failures`](ScanReport::failures) and announced on the [`ScanSession`]
-    /// event stream, because whatever the surviving strategies found is still
-    /// worth having.
+    /// event stream, and the report keeps what the other strategies found.
     ///
     /// Dropped while it waits, the scan is stopped; see
     /// [the type](ScanTask#dropping-it-stops-the-scan).
     pub async fn join(mut self) -> Result<ScanReport, ScanError> {
-        // Awaited in place rather than taken, so a join dropped part way is a
-        // task dropped with its scan still running.
+        // Awaited in place, so a join dropped part way still drops the task
+        // with its handle and stops the scan.
         let running = self.handle.as_mut().expect("a task is joined at most once");
         let report = running.await.map_err(panic_or_cancellation);
         self.handle = None;
 
-        // After the scan, so the last checkpoint sees everything it settled, and
-        // the phases recorded are this sitting's own. A scan that failed gets a
-        // checkpoint too: how far it got is what a resume needs.
+        // After the scan, so the last checkpoint sees everything it settled and
+        // records only this sitting's phases. A failed scan gets one too, since
+        // a resume needs to know how far it got.
         #[cfg(feature = "journal-format")]
         if let Some(journal) = self.journal.take() {
             let phases = report.as_ref().map(ScanReport::phases).unwrap_or_default();
@@ -575,9 +531,9 @@ impl Drop for ScanTask {
         };
         self.stop.abort();
 
-        // The journal is closed once the scan has wound down, from a task of
-        // its own, since a drop cannot wait. Without a runtime to run it on
-        // there is no scan left to wait for either.
+        // A drop cannot wait, so the journal is closed from a task of its own
+        // once the scan has wound down. Without a runtime there is no scan left
+        // to wait for.
         #[cfg(feature = "journal-format")]
         if let Some(journal) = self.journal.take()
             && let Ok(runtime) = tokio::runtime::Handle::try_current()
@@ -606,30 +562,27 @@ impl IntoFuture for ScanTask {
 
 /// Finds which hosts, among a set of target addresses, are alive.
 ///
-/// This is the first phase of a scan. It establishes presence, not open ports.
+/// The first phase of a scan: it finds hosts, without probing their ports.
 ///
 /// With root privileges, targets are grouped by the interface that reaches them
-/// and each group gets the strategy suited to it:
+/// and each group gets its own strategy:
 /// [`LocalScanner`](strategy::local::LocalScanner) uses ARP and ICMP for hosts
-/// on the same physical segment, and
-/// [`RoutedScanner`](strategy::routed::RoutedScanner) uses TCP SYN for anything
-/// behind a gateway. Without root, and for any target that maps to no interface
-/// such as a loopback address, probes fall back to plain TCP connect attempts
-/// against a handful of common ports.
+/// on the same segment, and [`RoutedScanner`](strategy::routed::RoutedScanner)
+/// uses TCP SYN for anything behind a gateway. Without root, and for any target
+/// that maps to no interface such as a loopback address, probes fall back to
+/// TCP connect against a handful of common ports.
 ///
 /// Hosts are written to the returned [`ScanSession`]'s store as they are found,
-/// and each write fires a [`ScanEvent`](crate::scanner::session::ScanEvent), so
-/// a caller can follow a scan in progress instead of waiting for the end. Unless
-/// `cfg.no_dns` is set, hostnames are resolved in the background without slowing
-/// discovery: by sniffing DNS and mDNS when privileged, and by reverse lookup
-/// otherwise. With it set, hosts are named from the hosts file alone.
+/// and each write fires a [`ScanEvent`](crate::scanner::session::ScanEvent).
+/// Unless `cfg.no_dns` is set, hostnames are resolved in the background: by
+/// sniffing DNS and mDNS when privileged, and by reverse lookup otherwise. With
+/// it set, hosts are named from the hosts file alone.
 ///
-/// The returned [`ScanTask`] resolves once every strategy has finished, along
-/// with the resolver if one was started, and yields the [`ScanReport`]. To stop
-/// a scan early, call
-/// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort) on the
-/// session's handle; every phase checks that signal regularly, not only between
-/// targets, and the same check is what ends a sweep that outlived
+/// The returned [`ScanTask`] resolves once every strategy and the resolver, if
+/// started, have finished, and yields the [`ScanReport`]. To stop a scan early,
+/// call [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort) on the
+/// session's handle. Every phase checks that signal regularly, also within a
+/// target, and the same check ends a sweep that outlived
 /// [`ZondConfig::scan_timeout`](crate::config::ZondConfig::scan_timeout).
 pub async fn discover(
     targets: IpSet,
@@ -638,9 +591,9 @@ pub async fn discover(
     cfg.evasion.validate()?;
     let capture_links = capture_plan(&targets, cfg)?;
 
-    // Numbered in what the exclusions leave, as a journal numbers a sweep,
-    // and counted: the settlements are what the progress figures read, so a
-    // sweep numbering nothing reports none of its work however far it gets.
+    // Numbered over what the exclusions leave, as a journal numbers a sweep.
+    // Progress figures read the settlements, so an unnumbered sweep would
+    // report no work at all.
     let mut numbered = targets.clone();
     cfg.exclusions.withhold(&mut numbered);
     numbered.canonicalize();
@@ -666,42 +619,36 @@ pub async fn discover(
 }
 
 /// [`discover`], writing down how far it got, so that a sweep cut short can be
-/// continued rather than restarted.
+/// continued.
 ///
-/// Journalling is the caller's choice, never this crate's, on the same
-/// terms as [`scan_with_journal`]: hand this a journal and the sweep is
-/// recorded, call [`discover`] and nothing touches a disk.
+/// As with [`scan_with_journal`], journalling is the caller's choice: hand this
+/// a journal and the sweep is recorded; [`discover`] writes nothing to disk.
 ///
 /// # The numbering comes from the journal
 ///
-/// A journal already holds the plan it is counted in, with the exclusion policy
+/// A journal holds the plan it is counted in, with the exclusion policy
 /// applied: [`Plan`](crate::journal::manifest::Plan) applies it, and
 /// [`Journal::resume`](crate::journal::Journal::resume) checks it has not moved.
-/// The addresses an address settles against are read back from there, so
-/// nothing this function is passed can disagree with what the first sitting
-/// counted.
+/// Positions are read back from there, so nothing passed here can disagree with
+/// what the first sitting counted.
 ///
-/// `targets` is what the *first* sitting sweeps, and it is the set as the caller
-/// named it rather than as the plan narrowed it. The engine subtracts the
-/// exclusions itself and records what that cost, which is the one number a
-/// caller cannot recover afterwards; handing it a set already narrowed would
-/// leave every report claiming the policy withheld nothing. A later sitting
-/// ignores it and sweeps what the earlier ones did not settle, whose scope is
-/// genuinely smaller and says so.
+/// `targets` is what the *first* sitting sweeps, as the caller named it, before
+/// exclusions. The engine subtracts the exclusions itself and records how many
+/// they withheld, which a caller cannot recover afterwards; a set already
+/// narrowed would make every report say the policy withheld nothing. A later
+/// sitting ignores `targets` and sweeps what earlier ones did not settle.
 ///
 /// # What a sweep settles
 ///
-/// An address, rather than an address-and-port pair. It is settled when it
-/// answers, or when the probes aimed at it have been sent as many times as the
-/// policy allows and none of them answered. An address whose probes never left,
-/// one still mid-schedule when the sweep stopped, and one there was no route to
-/// carry no position and are asked again. see
-/// [`settle`](crate::journal::settle) for why that distinction is the whole of
-/// the feature.
+/// An address. It is settled when it answers, or when its probes have been sent
+/// as many times as the policy allows with no answer. An address whose probes
+/// never left, one still mid-schedule when the sweep stopped, and one with no
+/// route carry no position and are asked again; see
+/// [`settle`](crate::journal::settle) for why.
 ///
 /// The findings and the phase are recorded alongside the progress, so a resumed
 /// sweep starts from what earlier sittings found and its report describes the
-/// whole job: one phase per sitting, each keeping its own timings, settings and
+/// whole job: one phase per sitting, each with its own timings, settings and
 /// statistics.
 #[cfg(feature = "journal-format")]
 pub async fn discover_with_journal(
@@ -726,8 +673,7 @@ pub async fn discover_with_journal(
         } else {
             addresses
         };
-        // Over the whole of what the job sweeps, which holds whatever part
-        // of it this sitting has left.
+        // A later sitting plans over the whole job, which holds what it has left.
         capture_links = capture_plan(swept, cfg)?;
         let this_run = crate::journal::manifest::Plan::discovery(
             swept,
@@ -744,14 +690,12 @@ pub async fn discover_with_journal(
         return Err(ScanError::WrongPhase);
     };
 
-    // Numbered over the whole plan, whichever part of it this sitting sweeps.
-    // Numbering the remainder afresh would give position 0 to whatever happens
-    // to still be there, and the two sittings would count different things.
+    // Numbered over the whole plan, whichever part this sitting sweeps, so
+    // every sitting gives an address the same position.
     let positions = addresses.positions();
     let resume_point = journal.resume_point().clone();
-    // The order the first sitting was going to sweep in. A later one continuing
-    // in a fresh order would change the shape of the run halfway through, which
-    // is a signature of its own.
+    // The first sitting's sweep order. A fresh order halfway through would
+    // change the shape of the run, which is a signature of its own.
     let order_seed = journal.manifest().order_seed;
 
     let sweep = if resume_point == Checkpoint::default() {
@@ -799,11 +743,10 @@ pub async fn discover_with_journal(
 /// How many addresses a sweep plans to ask about, or `None` where they cannot
 /// all be numbered.
 ///
-/// The numbering is the same one a journal settles positions against, so a
-/// fraction built from this counts what
+/// The numbering is the one a journal settles positions against, so a fraction
+/// built from this counts what
 /// [`Progress::settled`](crate::scanner::session::Progress::settled) counts. A
-/// range too wide to number leaves the plan uncountable, and a scan of one
-/// never finishes anyway.
+/// range too wide to number could never be scanned to the end anyway.
 fn planned_addresses(positions: &Positions) -> Option<u64> {
     positions.unnumbered().is_empty().then(|| positions.total())
 }
@@ -830,20 +773,19 @@ fn discovery_stages(cfg: &ZondConfig) -> Vec<Stage> {
 
 /// The stages a port scan under `cfg` expects to run, in the order it runs them.
 ///
-/// A superset, and deliberately so. Whether service detection, the detection
-/// corpus and the TLS pass find anything to do depends on which ports turn out
-/// to be open, which is not knowable here, so each is listed whenever the
-/// settings permit it at all and stepped over if it comes to nothing.
+/// A superset. Whether service detection, the detection corpus and the TLS pass
+/// find anything to do depends on which ports turn out to be open, so each is
+/// listed whenever the settings permit it and stepped over if it comes to
+/// nothing.
 ///
-/// [`Stage::Finishing`] is left out. It sends nothing and is over as soon as it
-/// begins, so a run that reached it has done all the work there was to measure.
+/// [`Stage::Finishing`] is left out: it sends nothing and is over as soon as it
+/// begins.
 ///
-/// Read through [`running_under`], so the stages an idle scan lists are the
-/// ones it will run: a stage kept here that the scan then declines would leave
-/// a progress bar waiting for work that never comes.
+/// Read through [`running_under`], so an idle scan lists only the stages it will
+/// run and no progress bar waits for a stage the scan declines.
 ///
-/// `runs_liveness` is [`liveness_earns_its_place`]'s verdict, passed in rather
-/// than recomputed so the plan it may build is built once for the scan.
+/// `runs_liveness` is [`liveness_earns_its_place`]'s verdict, passed in so the
+/// plan it may build is built once per scan.
 fn scan_stages(cfg: &ZondConfig, runs_liveness: bool) -> Vec<Stage> {
     let cfg = &running_under(cfg);
     let mut stages = Vec::new();
@@ -883,60 +825,48 @@ fn scan_stages(cfg: &ZondConfig, runs_liveness: bool) -> Vec<Stage> {
 /// Whether a port scan under `cfg` asks its targets whether they are there
 /// before it probes their ports.
 ///
-/// Not where the caller declined it with [`ZondConfig::assume_up`], and not
-/// under an [idle scan](ZondConfig::idle_scan). An idle scan forges every probe
-/// from its zombie so that the target never hears from this host, and a
-/// liveness pass is this host asking the target directly. Refused rather than
-/// run from the zombie, because a liveness probe needs its answer, and the
-/// answer to a forged probe goes to the zombie.
+/// False where the caller declined it with [`ZondConfig::assume_up`], and under
+/// an [idle scan](ZondConfig::idle_scan), which forges every probe from its
+/// zombie so the target never hears from this host. A liveness probe cannot be
+/// forged from the zombie either, since it needs its answer and the answer
+/// would go to the zombie.
 fn asks_liveness(cfg: &ZondConfig) -> bool {
     !cfg.assume_up && cfg.idle_scan.is_none()
 }
 
 /// Whether a port scan's liveness pass earns the probes it costs, so that the
-/// port phase runs behind it rather than over every target.
+/// port phase runs behind it.
 ///
-/// The pass exists to spare a port scan the cost of probing every port of an
-/// address nothing lives at: a dead address costs the pass a handful of probes
-/// where it would cost the port scan one per port. That only saves anything
-/// when the port scan is the dearer of the two. The pass asks each address a
-/// fixed set — the common five and up to a few of the scan's own ports, one
-/// SCTP probe where the scan names SCTP; see
-/// [`SynPorts`] — so a scan naming no more ports
-/// per address than that would spend as much establishing liveness as it would
-/// spend just probing them. There the pass is dropped and the port probes stand
-/// in for it: an answer on any port, open or closed, is the host answering, the
-/// same evidence a liveness probe reads, and an address that answers nothing is
-/// left [`Unknown`](crate::model::host::HostStatus::Unknown) with its targets
-/// settled by the port scan, exactly as [`ZondConfig::assume_up`] leaves them —
-/// never down on evidence never gathered, never undecided as if unasked.
+/// A dead address costs the pass a handful of probes and the port scan one per
+/// port, so the pass only saves anything when the port scan is the dearer of the
+/// two. The pass asks each address a fixed set (the common five, up to a few of
+/// the scan's own ports, and one SCTP probe where the scan names SCTP; see
+/// [`SynPorts`]), so a scan naming no more ports per address than that drops the
+/// pass and lets the port probes stand in for it. An answer on any port, open or
+/// closed, is the host answering, and an address that answers nothing is left
+/// [`Unknown`](crate::model::host::HostStatus::Unknown) with its targets settled
+/// by the port scan, as [`ZondConfig::assume_up`] leaves them.
 ///
-/// Three things keep the pass even for a small scan, because for them the port
-/// probes cannot stand in for it or it still pays:
+/// Three things keep the pass even for a small scan:
 ///
-/// - **A TCP technique other than a SYN.** Only a SYN draws an answer from
-///   every port a live host has, a SYN+ACK where it listens and a reset where
-///   it does not. A FIN, a flagless or a Christmas-tree probe draws nothing
-///   from an open port, so a host with only open ports would read as silent,
-///   and those techniques have no connect form, so where no raw socket or
-///   frame reaches a target they send it nothing at all.
-/// - **A scan that names a UDP port.** A UDP probe to a dead address waits out
-///   an ICMP unreachable a target rate-limits, or a full timeout, where the
-///   pass settles the address with cheap TCP or link-layer probes first. So a
-///   UDP scan, however few ports it names, keeps its liveness pass.
-/// - **A target on this host's own segment.** There the pass reaches it by ARP
-///   or neighbour discovery, one packet, answered by a live stack whatever it
-///   filters above the link, which finds a host that a direct port scan of a
-///   few silent ports would miss and costs less than one such probe. Whether
-///   any target is on-link is read from the discovery plan, which classifies
-///   the targets against this host's interfaces and sends nothing.
+/// - **A TCP technique other than SYN.** Only a SYN draws an answer from every
+///   port of a live host: a SYN+ACK where it listens, a reset where it does not.
+///   FIN, null and Christmas-tree probes draw nothing from an open port, so a
+///   host with only open ports would read as silent, and those techniques have
+///   no connect form to fall back on where no raw socket or frame reaches.
+/// - **A scan that names a UDP port.** A UDP probe to a dead address waits out a
+///   rate-limited ICMP unreachable or a full timeout, while the pass settles the
+///   address with cheap TCP or link-layer probes.
+/// - **A target on this host's own segment.** The pass reaches it with one ARP
+///   or neighbour-discovery packet, which a live stack answers whatever it
+///   filters above the link, so it finds hosts a port scan of a few silent ports
+///   would miss. Whether any target is on-link is read from the discovery plan,
+///   which sends nothing.
 ///
 /// `false` for an [idle scan](ZondConfig::idle_scan) and for
-/// [`assume_up`](ZondConfig::assume_up), which decline the pass for their own
-/// reasons; see [`asks_liveness`]. `false` too where the
-/// [excluded ports](ZondConfig::excluded_ports) leave the pass no port to ask:
-/// it would leave every address it reaches by TCP unasked and so unscanned,
-/// where the port probes standing in reach them all.
+/// [`assume_up`](ZondConfig::assume_up); see [`asks_liveness`]. `false` too where
+/// the [excluded ports](ZondConfig::excluded_ports) leave the pass no port to
+/// ask, since it would then leave every address it reaches by TCP unscanned.
 fn liveness_earns_its_place(cfg: &ZondConfig, map: &TargetMap) -> bool {
     use crate::model::port::Protocol;
 
@@ -948,25 +878,19 @@ fn liveness_earns_its_place(cfg: &ZondConfig, map: &TargetMap) -> bool {
         .excluding(&cfg.excluded_ports)
         .len()
         + usize::from(orchestrator::sctp_discovery_port(map).is_some());
-    // Nothing left to ask; see above.
     if asked == 0 {
         return false;
     }
 
-    // Only a SYN's replies prove a host from every port; see above.
     if !cfg.tcp_technique.has_connect_fallback() {
         return true;
     }
 
-    // A UDP probe is dear against a dead address, so the cheap liveness pass in
-    // front of it pays whatever the port count.
     if map.names(Protocol::Udp) {
         return true;
     }
 
-    // The dearest address to probe decides it: the pass pays as soon as one
-    // unit asks more ports than the pass would, since that is where a dead
-    // address would cost the port scan more than the pass.
+    // The pass pays as soon as one unit asks more ports than the pass would.
     let per_address = map
         .units
         .iter()
@@ -984,8 +908,8 @@ fn liveness_earns_its_place(cfg: &ZondConfig, map: &TargetMap) -> bool {
 /// runs one; `runs_liveness` is [`liveness_earns_its_place`]'s verdict.
 ///
 /// An idle scan first, since it forbids the pass whatever else was set; then
-/// the caller's own [`assume_up`](ZondConfig::assume_up); and otherwise the
-/// engine's decision that the port probes cost no more than asking first.
+/// the caller's [`assume_up`](ZondConfig::assume_up); otherwise the port probes
+/// cost no more than asking first.
 fn liveness_skip(cfg: &ZondConfig, runs_liveness: bool) -> Option<LivenessSkip> {
     if runs_liveness {
         None
@@ -1000,25 +924,20 @@ fn liveness_skip(cfg: &ZondConfig, runs_liveness: bool) -> Option<LivenessSkip> 
 
 /// The most addresses a scan is checked for on-link targets across.
 ///
-/// A local segment a host reaches at the link layer is small: a `/23` is
-/// already a large one, and this leaves generous room past that. Building the
-/// discovery plan classifies every address, so a scan of a wide routed range,
-/// which cannot be on-link, is not made to pay that walk only to learn it has
-/// no link-layer targets and skip the liveness pass anyway.
+/// A `/23` is already a large segment, and this leaves generous room past that.
+/// Building the discovery plan classifies every address, so a wide routed range
+/// skips that walk.
 const ON_LINK_CHECK_CEILING: u128 = 1 << 13;
 
 /// Whether the discovery plan for `map` reaches any target at the link layer,
 /// where liveness is one exact ARP or neighbour-discovery packet.
 ///
-/// Builds the plan and reads it; the plan classifies the targets against this
-/// host's interfaces and sends nothing. Empty of local steps for an
-/// unprivileged run, which has no link-layer strategy to reach a segment with,
-/// and for one whose targets are all behind a gateway or on loopback.
+/// Builds the plan, which sends nothing, and reads it. False for an
+/// unprivileged run, which has no link-layer strategy, and for one whose
+/// targets are all behind a gateway or on loopback.
 ///
 /// A range wider than a segment could be is taken as routed without building
-/// the plan, since only a segment-sized set can be on-link and the classifying
-/// walk is what this call exists to avoid spending on a scan that skips the
-/// pass regardless. See [`ON_LINK_CHECK_CEILING`].
+/// the plan; see [`ON_LINK_CHECK_CEILING`].
 fn reaches_a_local_segment(cfg: &ZondConfig, map: &TargetMap) -> bool {
     match map.gross_ips() {
         Ok(count) if count <= ON_LINK_CHECK_CEILING => {}
@@ -1045,22 +964,16 @@ fn reaches_a_local_segment(cfg: &ZondConfig, map: &TargetMap) -> bool {
 /// The configuration a scan actually runs under, given that an idle scan sends
 /// the target nothing from this host.
 ///
-/// An idle scan forges every probe from its zombie, so the passes that run
-/// after the port phase are the problem the port phase solved: each of service
-/// detection, the detection corpus, active operating-system probing, the route
-/// trace, filter characterisation, IP-protocol probing and TLS enumeration
-/// opens a connection to the target or sends it a probe from this host, which
-/// is the one thing the technique exists to avoid. So under an idle scan every
-/// one of them is turned down to the level that sends the target nothing:
-/// service detection off, the detection ceiling and the operating-system level
-/// held at what reads only gathered evidence, and the rest cleared.
+/// Service detection, the detection corpus, active OS probing, the route trace,
+/// filter characterisation, IP-protocol probing and TLS enumeration all contact
+/// the target from this host, which an idle scan exists to avoid. Under an idle
+/// scan each is turned down to the level that sends the target nothing: service
+/// detection off, the detection ceiling and OS level held to gathered evidence,
+/// and the rest cleared. The target then sees only the forged probes.
 ///
-/// The result is that an idle scan puts nothing on the wire to the target but
-/// the forged probes, whatever else the caller set. What the caller asked for
-/// and cannot have here is not lost quietly: [`record_idle_refusals`] files a
-/// refusal for each pass this mutes that was more than a default left on, so
-/// the report says the pass was declined and why. Returned unchanged for a scan
-/// that is not an idle one.
+/// [`record_idle_refusals`] files a refusal for each muted pass the caller
+/// asked for, so the report says why it was declined. Returned unchanged for a
+/// scan that is not an idle one.
 fn running_under(cfg: &ZondConfig) -> ZondConfig {
     if cfg.idle_scan.is_none() {
         return cfg.clone();
@@ -1085,14 +998,12 @@ fn running_under(cfg: &ZondConfig) -> ZondConfig {
 /// Records, once, why each after-port pass an idle scan turns off was turned
 /// off, reading `cfg` as the caller set it.
 ///
-/// A pass the caller asked for and that would contact the target directly is
-/// refused through the plan's refusal mechanism, so a reader sees it declined
-/// rather than silently absent; see
+/// Each pass the caller asked for that would contact the target directly is
+/// filed as a refusal; see
 /// [`RefusedStep::pass_not_in_an_idle_scan`](plan::RefusedStep::pass_not_in_an_idle_scan).
-/// Service detection is the exception: it is on by default and connecting is
-/// its whole purpose, and nothing here can tell a caller who set its level from
-/// one who took the default, so it is turned off with a line at verbosity one
-/// rather than a refusal that might misfire on a default nobody chose.
+/// Service detection is on by default, and a level the caller set cannot be
+/// told from the default, so it gets a line at verbosity one in place of a
+/// refusal.
 fn record_idle_refusals(cfg: &ZondConfig, ctx: &ScanContext) {
     use crate::model::finding::DetectionClass;
     use crate::report::ScannerKind;
@@ -1143,7 +1054,7 @@ fn record_idle_refusals(cfg: &ZondConfig, ctx: &ScanContext) {
 /// they cannot all be numbered.
 ///
 /// [`TargetIndex`] stops numbering at the first unit it cannot count whole, so
-/// its total is the plan's only where it says the numbering is complete.
+/// its total is used only when it reports the numbering complete.
 fn planned_targets(map: &TargetMap) -> Option<u64> {
     let index = TargetIndex::of(map);
     index.is_complete().then(|| index.total())
@@ -1151,18 +1062,16 @@ fn planned_targets(map: &TargetMap) -> Option<u64> {
 
 /// Runs a discovery sweep against an existing context.
 ///
-/// The body of [`discover`], taking a context rather than making one so that a
-/// caller journalling the sweep can seed it and keep a handle on it. Nothing
-/// here knows what a journal is.
+/// The body of [`discover`]. It takes a context so that a caller journalling
+/// the sweep can seed it and keep a handle on it.
 fn spawn_discovery(
     mut targets: IpSet,
     capture_links: Vec<Zone>,
     cfg: &ZondConfig,
     ctx: ScanContext,
 ) -> JoinHandle<ScanReport> {
-    // A sitting an earlier one left no address to ask sends nothing, unless it
-    // sweeps a segment, which it may with no address of its own; see
-    // `sitting_probes`.
+    // A sitting with no address left sends nothing, unless it sweeps a
+    // segment; see `sitting_probes`.
     let sends = !targets.is_empty() || cfg.segment_sweep;
     let caps = ScanCapabilities::resolve(
         cfg,
@@ -1172,8 +1081,8 @@ fn spawn_discovery(
     );
 
     // Narrows `targets` as it records them, so nothing below can probe an
-    // excluded address. Addresses a sweep finds for itself never pass through
-    // here, and are gated on the context instead.
+    // excluded address. Addresses a sweep finds for itself are gated on the
+    // context.
     let scope = address_scope(&mut targets, &ctx);
     let recorder =
         PhaseRecorder::start(ScanKind::Discovery, caps.privilege, scope, cfg).opening_in(&ctx);
@@ -1193,21 +1102,16 @@ fn spawn_discovery(
         // reply to it can arrive.
         ctx.capture_on(capture_links);
         ctx.enter_stage(Stage::Discovery, None);
-        // No SCTP sweep and no ports of its own: `discover` is asked about
-        // addresses and never about ports, so nothing has said which port
-        // would be worth asking beyond the ones every host is asked.
+        // A sweep has no ports of its own, so only the common ones and no SCTP.
         run_discovery(targets, reach, caps, &cfg, &ctx, SynPorts::common(), None).await;
-        // Only the echo probe. The series probe reads a port whose state is
-        // already known, and a sweep establishes none.
+        // Only the echo probe: the series probe needs a port of known state.
         orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning(), caps).await;
-        // A sweep knows no ports, so every trace here is made of echoes. A port
-        // scan traces better, having somewhere to aim.
+        // With no known ports, every trace here is made of echoes.
         orchestrator::run_traceroute(&ctx, &cfg, caps).await;
         orchestrator::run_characterise(&ctx, &cfg, caps).await;
         orchestrator::run_ip_protocols(&ctx, &cfg).await;
         ctx.enter_stage(Stage::Finishing, None);
-        // Last, and after every strategy that could add an address: what this
-        // machine's own interfaces and routes say about what was found.
+        // After every strategy that could add an address.
         vantage::attribute(&ctx);
         orchestrator::correlate(&ctx, cfg.service_detection).await;
         recorder.finish_last(ctx)
@@ -1226,10 +1130,9 @@ fn machine_policy(ctx: &ScanContext) -> crate::model::exclusion::Exclusions {
 /// exclusions let it ask, and records what that cost as the phase's scope.
 ///
 /// Held to [`machine_policy`], so an address the neighbour tables tie to an
-/// excluded machine is sent nothing and listed among the excluded. One the
-/// plan numbers is settled as withheld where it stands: a sweep that dropped
-/// it unsettled would owe it to every later sitting, which would drop it
-/// again.
+/// excluded machine is sent nothing and listed among the excluded. One the plan
+/// numbers is settled as withheld, or every later sitting would owe it and drop
+/// it again.
 fn address_scope(targets: &mut IpSet, ctx: &ScanContext) -> TargetScope {
     let tied = ctx.withheld_by_hardware();
     for address in &tied {
@@ -1243,29 +1146,27 @@ fn address_scope(targets: &mut IpSet, ctx: &ScanContext) -> TargetScope {
 /// Runs one discovery pass over `targets` to completion, against an existing
 /// context.
 ///
-/// Shared by [`discover`] and by the liveness phase of [`scan`], so that both
-/// establish presence the same way rather than each keeping the same promise
-/// separately.
+/// Shared by [`discover`] and by the liveness phase of [`scan`], so both
+/// establish presence the same way.
 ///
 /// `reach` is the difference between the two: a sweep may go beyond the
 /// addresses it was given, and a port scan's liveness check never does.
 ///
 /// `syn_ports` is what every address a TCP probe reaches is asked about, by a
-/// routed SYN sweep and a connect sweep alike: the common five for a sweep,
-/// and those with some of the scan's own ports for a port scan's liveness
-/// pass. See [`SynPorts`] for why a host behind a filter needs the second.
-/// Held here to [`ZondConfig::excluded_ports`], so neither caller can send a
-/// liveness probe to a port the scan may not probe.
+/// routed SYN sweep and a connect sweep alike: the common five for a sweep, and
+/// those plus some of the scan's own ports for a port scan's liveness pass. See
+/// [`SynPorts`] for why a host behind a filter needs the second. Held here to
+/// [`ZondConfig::excluded_ports`], so no liveness probe goes to a port the scan
+/// may not probe.
 ///
 /// `sctp_port` adds an INIT sweep beside the SYN one, for a port scan whose
-/// ports name SCTP. `None` for a run that never mentioned it, which is every
-/// other one: an SCTP sweep costs a second raw socket and a second capture, and
-/// asks a question nobody put.
+/// ports name SCTP. `None` otherwise, since an SCTP sweep costs a second raw
+/// socket and a second capture.
 ///
 /// A raw sweep still reaches some targets by connect: loopback and anything
-/// nothing routes to, whatever the privilege, and when frames are all it has,
-/// whatever a frame cannot reach. The phase records which, since its privilege
-/// reads as raw and the evidence at those addresses is not.
+/// nothing routes to, and with frames only, whatever a frame cannot reach. The
+/// phase records which, since its privilege reads as raw and the evidence at
+/// those addresses is not.
 async fn run_discovery(
     targets: IpSet,
     reach: Scope,
@@ -1314,10 +1215,8 @@ async fn run_discovery(
 
 /// Every TCP port any unit of `map` names, as one set.
 ///
-/// One set for the whole liveness pass rather than one per unit, because one
-/// sweep asks every address the same ports: a unit's own ports are among
-/// those ranked for all of them, which is the same shape the SCTP sweep's
-/// port is chosen in.
+/// One set for the whole liveness pass, because one sweep asks every address
+/// the same ports. The SCTP sweep's port is chosen the same way.
 fn tcp_ports_of(map: &TargetMap) -> PortSet {
     map.units
         .iter()
@@ -1326,14 +1225,11 @@ fn tcp_ports_of(map: &TargetMap) -> PortSet {
 
 /// What a listening phase reads, and for how long.
 ///
-/// A listener is aimed at a **link**, not at addresses, which is the whole of
-/// what makes it a different phase. It cannot narrow what it hears, so the only
-/// control there is sits at the other end: what may be recorded.
+/// A listener is aimed at a **link**, and cannot narrow what it hears, so the
+/// scope controls what may be recorded.
 ///
-/// Nothing here reaches into the host on its own. A caller who wants every
-/// link says which links those are; see [`system::interface`](crate::system::interface)
-/// for how to find them. That is the same rule that keeps the engine from
-/// opening a journal nobody asked for.
+/// A caller who wants every link names them; see
+/// [`system::interface`](crate::system::interface) for how to find them.
 #[must_use]
 #[derive(Debug, Clone)]
 pub struct ListenScope {
@@ -1344,24 +1240,21 @@ pub struct ListenScope {
 
 /// When a listening phase stops.
 ///
-/// A scan ends when it has asked everything it meant to ask. A listener has
-/// asked nothing and can never be finished, so somebody else decides, which is
-/// why this is a required part of the scope rather than a setting with a
-/// default.
+/// A listener asks nothing and so is never finished on its own; this decides
+/// when it ends.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Until {
     /// It runs until the caller stops it through
     /// [`ScanHandle::abort`](crate::scanner::handle::ScanHandle::abort).
     ///
-    /// The honest default for a sensor, and the shape an embedded consumer
-    /// wants: a listener is a service rather than a job.
+    /// The default, suited to a sensor that runs as a service.
     #[default]
     Stopped,
     /// It runs for this long and then closes.
     ///
-    /// For a caller who wants a bounded sample, an inventory of what a segment
-    /// says over ten minutes, without having to hold the handle and time it.
+    /// For a bounded sample, such as an inventory of what a segment says over
+    /// ten minutes.
     Elapsed(std::time::Duration),
 }
 
@@ -1369,13 +1262,10 @@ impl ListenScope {
     /// Listens on `links` until stopped, recording the machines attached to
     /// them.
     ///
-    /// The default narrowing is deliberate and is the difference between an
-    /// inventory and a transcript. A link carrying traffic to anywhere else
-    /// carries evidence about everywhere else: on a mirror port, every server a
-    /// laptop opens a connection to is a real host, really up, with a really
-    /// open port, and on a busy uplink that is most of what an unnarrowed
-    /// report would contain. [`recording_everything`](Self::recording_everything)
-    /// is how a caller asks for it anyway.
+    /// A link carries evidence about every remote host its traffic reaches: on a
+    /// mirror port, every server a laptop connects to is a real host with an
+    /// open port, and on a busy uplink that would be most of the report.
+    /// [`recording_everything`](Self::recording_everything) records those too.
     pub fn on(links: Vec<crate::model::ip::scoped::Zone>) -> Self {
         Self {
             links,
@@ -1386,10 +1276,8 @@ impl ListenScope {
 
     /// Records every machine heard, wherever it lives.
     ///
-    /// For the question a listener answers that a scan cannot: which machines
-    /// elsewhere this network depends on, and what they answer. It is the wider
-    /// reading of the same traffic rather than more of it: nothing extra is
-    /// captured, and what changes is only what is allowed to reach the report.
+    /// Shows which machines elsewhere this network depends on, and what they
+    /// answer. Nothing extra is captured; only what reaches the report changes.
     pub fn recording_everything(mut self) -> Self {
         self.recording = strategy::passive::Recording::Everything;
         self
@@ -1397,16 +1285,14 @@ impl ListenScope {
 
     /// Records findings only about `addresses`.
     ///
-    /// Everything on the link is still *heard*, a listener cannot decline to
-    /// receive, and anything outside this is dropped before it reaches the
-    /// store. Which is where a passive phase's scope has to live: there is no
-    /// asking to narrow.
+    /// Everything on the link is still heard; anything outside `addresses` is
+    /// dropped before it reaches the store.
     pub fn recording_only(mut self, addresses: IpSet) -> Self {
         self.recording = strategy::passive::Recording::Only(addresses);
         self
     }
 
-    /// Stops after `span` rather than waiting to be told.
+    /// Stops after `span`.
     pub fn for_at_most(mut self, span: std::time::Duration) -> Self {
         self.until = Until::Elapsed(span);
         self
@@ -1425,36 +1311,31 @@ impl ListenScope {
 
 /// Reads what a link already carries, and concludes from it. Sends nothing.
 ///
-/// The third phase, beside [`discover`] and [`scan`], and the only one that puts
-/// no packet on the wire. It is for the networks the other two may not touch,
-/// industrial and clinical segments where probing is forbidden, production under
-/// change control, any engagement without an authorised scan window, and for
-/// the findings no probe can obtain: which switch port this machine is on, which
-/// VLANs a link carries, what a device says about itself while asking for an
-/// address.
+/// The third phase, beside [`discover`] and [`scan`]. It is for networks that
+/// may not be probed (industrial and clinical segments, production under change
+/// control, engagements without an authorised scan window) and for findings no
+/// probe can obtain: which switch port this machine is on, which VLANs a link
+/// carries, what a device says about itself while asking for an address.
 ///
 /// # What it may conclude
 ///
-/// Only ever a positive claim. Having sent nothing it cannot time anything
-/// out, so an address it never heard from may be absent, silent, behind a switch
-/// that never forwarded this way, or on a VLAN this link does not carry, and
-/// nothing separates those. It records a host as up and never as down, adds a
-/// role and never removes one, and its phase covers **no address at all**, so a
-/// [`diff`](crate::diff) cannot read a host that stayed quiet as one that went
-/// away.
+/// Only positive claims. With nothing sent, nothing can time out, so an address
+/// it never heard from may be absent, silent, behind a switch that never
+/// forwarded this way, or on a VLAN this link does not carry. It records hosts
+/// as up and never as down, adds roles and never removes them, and its phase
+/// covers **no address at all**, so a [`diff`](crate::diff) cannot read a host
+/// that stayed quiet as one that went away.
 ///
 /// # What it will not see
 ///
 /// On a switched network an unmirrored listener sees broadcast and multicast in
-/// full and very little unicast: the switch forwards a conversation between two
-/// other hosts out the one port that leads to it. That is enough for an asset
-/// and topology inventory, ARP, DHCP, mDNS, router advertisements, LLDP and CDP
-/// are all broadcast or multicast, and it is *not* enough for the endpoints and
-/// flows, which need a mirror port, a tap, or a position traffic transits.
+/// full and very little unicast, since the switch forwards a conversation only
+/// out the ports that lead to its hosts. ARP, DHCP, mDNS, router advertisements,
+/// LLDP and CDP are enough for an asset and topology inventory; endpoints and
+/// flows need a mirror port, a tap, or a position traffic transits.
 ///
-/// The report says how much was lost rather than leaving it to be guessed: a
-/// wide filter on a busy link drops frames, and for this phase the drop count is
-/// the closest thing there is to the address count the other two report.
+/// A wide filter on a busy link drops frames, and the report gives the drop
+/// count.
 ///
 /// # Stopping
 ///
@@ -1463,9 +1344,9 @@ impl ListenScope {
 /// the session's handle. The returned [`ScanTask`] resolves when it stops, with
 /// the [`ScanReport`] describing what was heard.
 ///
-/// [`ZondConfig::scan_timeout`](crate::config::ZondConfig::scan_timeout) bounds
-/// a watch as it bounds a scan, and applies alongside whichever [`Until`] the
-/// scope named: the watch ends at whichever comes first.
+/// [`ZondConfig::scan_timeout`](crate::config::ZondConfig::scan_timeout) also
+/// applies; the watch ends at whichever of it and the scope's [`Until`] comes
+/// first.
 pub async fn listen(
     scope: ListenScope,
     cfg: &ZondConfig,
@@ -1487,44 +1368,29 @@ pub async fn listen(
 /// [`listen`], writing down what it hears, so that a watch cut short keeps what
 /// it found.
 ///
-/// Journalling is the caller's choice, never this crate's, on the same terms
-/// as [`scan_with_journal`]: hand this a journal and the watch is recorded, call
-/// [`listen`] and nothing touches a disk.
+/// As with [`scan_with_journal`], journalling is the caller's choice: hand this
+/// a journal and the watch is recorded; [`listen`] writes nothing to disk.
 ///
 /// # Resuming a watch appends a sitting
 ///
-/// This is the whole of how it differs from the other two, and it follows from
-/// what a listener is. A sweep and a port scan enumerate: the journal's cursor,
-/// watermark and total are arithmetic over that enumeration, and continuing one
-/// means *skipping what is settled*. A listener enumerates nothing: it was
-/// pointed at a link, the link carries what it carries, and there is no set of
-/// things that could be finished.
+/// A sweep and a port scan enumerate their targets, and continuing one skips
+/// what is settled. A listener enumerates nothing, so there is no cursor and
+/// nothing to skip. Resuming restores the findings of every earlier sitting
+/// before this one starts, and the report describes the whole watch: a listener
+/// left running for a week across three restarts produces one record of the
+/// week.
 ///
-/// So there is no cursor and nothing to skip. What resuming buys is the other
-/// half of what a journal buys the other two: the findings of every earlier
-/// sitting are restored before this one starts, and the report describes the
-/// whole watch rather than its last few minutes. A listener left running for a
-/// week across three restarts produces one record of the week.
-///
-/// [`Plan::listen`](crate::journal::manifest::Plan::listen) has the rest of the
-/// argument, including why the links alone identify the job.
+/// [`Plan::listen`](crate::journal::manifest::Plan::listen) explains why the
+/// links alone identify the job.
 ///
 /// # A watch records no options
 ///
-/// A scan's journal records the options its first sitting ran under and holds
-/// every later one to them, because a sitting asking another way would file
-/// answers to another question as the same job's; see
-/// [`JobOptions`](crate::journal::manifest::JobOptions). A watch asks nothing.
-/// It sends no probe, so no technique, retry policy, evasion profile or
-/// probing pass reaches the wire from it, and what it hears is what the link
-/// carried whatever it was configured with. What its configuration does
-/// decide, whether heard traffic is read for an operating system and how far
-/// a service it names is correlated, is how the answers are read rather than
-/// what was asked: in a scan those settings send probes of their own, and in
-/// a watch they send none. Each sitting's phase records the settings it ran
-/// under, so a report shows which sitting read its traffic which way. Held to
-/// a scan's options, a resumed watch would be refused over settings it never
-/// reads.
+/// A scan's journal holds every sitting to the options its first ran under;
+/// see [`JobOptions`](crate::journal::manifest::JobOptions). A watch sends no
+/// probe, so no technique, retry policy, evasion profile or probing pass
+/// affects what it hears. Its settings (OS reading of heard traffic, service
+/// correlation) only decide how the traffic is read, and each sitting's phase
+/// records them, so a resumed watch is not held to earlier options.
 #[cfg(feature = "journal-format")]
 pub async fn listen_with_journal(
     scope: ListenScope,
@@ -1568,23 +1434,17 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
     let cfg = cfg.clone();
 
     tokio::spawn(async move {
-        // **Opened before the phase is opened, because opening it is the
-        // question the phase's privilege field asks.** Whether a capture came
-        // up, and if not whether privilege is what refused it, is not the same
-        // as running as root: `pcap` reads a link for a user in the
-        // `access_bpf` group on macOS and for a binary with `cap_net_raw` on
-        // Linux, both being how anybody who is not root captures anything. See
-        // `listening_privilege`.
-        //
-        // There is no fallback to record either way. Reading a link is the whole
-        // capability here, where a scan can degrade to connect attempts.
+        // The capture opens before the phase does, because whether it opened
+        // decides the phase's privilege field. That is not the same as running
+        // as root: `pcap` reads a link for a user in the `access_bpf` group on
+        // macOS and for a binary with `cap_net_raw` on Linux. See
+        // `listening_privilege`. A listener has no connect fallback.
         ctx.enter_stage(Stage::Listening, None);
 
         let opened =
             strategy::passive::PassiveListener::open(&scope.links, scope.recording, ctx.clone());
 
-        // After the open, so the phase's clock covers the listening rather than
-        // the setting up, and with the open's own answer in hand.
+        // After the open, so the phase's clock covers only the listening.
         let recorder = PhaseRecorder::start(
             ScanKind::Listen,
             listening_privilege(opened.as_ref().err()),
@@ -1597,9 +1457,8 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
             Ok(listener) => {
                 let mut listener = listener.detecting_os(cfg.os_detection);
                 if let Until::Elapsed(span) = scope.until {
-                    // The watch ends on its own terms rather than by raising the
-                    // abort signal. That signal means a *caller* asked, and a
-                    // front end reads it to decide whether a run was cut short.
+                    // Not through the abort signal, which means a caller asked
+                    // and tells a front end the run was cut short.
                     listener = listener.stopping_after(span);
                 }
 
@@ -1610,8 +1469,6 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
             Err(error) => ctx.record_failure(ScannerKind::Passive, error.to_string()),
         }
 
-        // What this machine's own interfaces say about what was heard. The same
-        // pass a scan ends with, and it sends nothing either.
         vantage::attribute(&ctx);
         orchestrator::correlate(&ctx, cfg.service_detection).await;
         recorder.finish_last(ctx)
@@ -1621,16 +1478,12 @@ fn spawn_listen(scope: ListenScope, cfg: &ZondConfig, ctx: ScanContext) -> JoinH
 /// The privilege a listener held, read off what its capture was told, with
 /// `refusal` being why no link could be captured on.
 ///
-/// A listener that opened a capture held what it needed. One refused for want
-/// of privilege did not. Any other refusal, a link that would not compile the
-/// filter, one that is down or carries framing nothing here parses, or a
-/// reader thread that would not start, comes after the platform's permission
-/// check, which `libpcap` makes before it binds a link: the process held the
-/// privilege and the link refused for its own reasons. Recorded as
-/// unprivileged, that run would tell its reader to find a privilege it had.
-/// Where no link was tried at all, nothing asked the question, and the
-/// process's own answer, measured as every scan phase measures it, is the
-/// only one there is.
+/// A listener that opened a capture held what it needed; one refused for want
+/// of privilege did not. Any other refusal (a link that would not compile the
+/// filter, is down or carries framing nothing here parses, or a reader thread
+/// that would not start) comes after the permission check `libpcap` makes
+/// before binding a link, so the process held the privilege. Where no link was
+/// tried at all, the process's own privilege is recorded, as for a scan phase.
 fn listening_privilege(refusal: Option<&strategy::StrategyError>) -> Privilege {
     use crate::transport::capture::CaptureError;
 
@@ -1647,56 +1500,51 @@ fn listening_privilege(refusal: Option<&strategy::StrategyError>) -> Privilege {
     }
 }
 
-/// Takes out of `target_map` every target [`scan`] withholds rather than
-/// probes: a link-local range that names no interface, an address two
-/// link-local ranges name on two different ones, and an IPv6 range too wide
-/// to walk one address at a time.
+/// Takes out of `target_map` every target [`scan`] withholds: a link-local
+/// range that names no interface, an address two link-local ranges name on two
+/// different interfaces, and an IPv6 range too wide to walk one address at a
+/// time.
 ///
 /// A scan takes these out before it numbers its plan and names each in its
-/// report as refused, so what is left is what it asks. A caller measuring
-/// what a scan will cost before starting it does this to a copy, as it does
-/// [`TargetMap::withhold_ports`] with the ports it excludes.
+/// report as refused. To measure what a scan will cost before starting it, apply
+/// this to a copy, as with [`TargetMap::withhold_ports`].
 pub fn withhold_unprobeable(target_map: &mut TargetMap) {
     target_map.take_unprobeable(&[], interface::is_enumerable);
 }
 
 /// Probes a known set of targets for open ports.
 ///
-/// Two phases, and the first keeps the second from being wasted. Every address
-/// is probed for liveness exactly as [`discover`] would probe it, and only the
-/// addresses that answer are port-scanned. An address with nothing at it costs a
-/// handful of probes rather than one per port.
+/// Every address is first probed for liveness as [`discover`] would probe it,
+/// and only the addresses that answer are port-scanned, so an address with
+/// nothing at it costs a handful of probes. The pass is skipped where the port
+/// probes would cost no more.
 ///
-/// The liveness phase probes only the addresses it was given. It is a
-/// [`Scope::Targeted`] pass, never a segment sweep, so scanning one host does
-/// not wake its neighbours. `cfg.segment_sweep` is not consulted here.
+/// The liveness phase probes only the addresses it was given
+/// ([`Scope::Targeted`]), so scanning one host does not wake its neighbours.
+/// `cfg.segment_sweep` is ignored here.
 ///
-/// [`ZondConfig::assume_up`] skips the phase and scans every target on trust,
-/// which is what a host behind a firewall that answers no knock needs. An
-/// [idle scan](ZondConfig::idle_scan) skips it too, since the phase would send
-/// the target the packets from this host the technique exists to withhold. An
-/// idle scan also declines every later pass that would contact the target
-/// directly, service detection through TLS enumeration, so the target hears
-/// nothing from this host but the forged probes; the report says which passes
-/// were declined and why.
+/// [`ZondConfig::assume_up`] skips the phase and scans every target, which a
+/// host behind a firewall that answers nothing needs. An
+/// [idle scan](ZondConfig::idle_scan) skips it too, along with every later pass
+/// that would contact the target directly (service detection through TLS
+/// enumeration), so the target hears nothing from this host but the forged
+/// probes. The report says which passes were declined and why.
 ///
 /// The [`ScanReport`] carries a phase for each: the liveness pass as
-/// [`ScanKind::Discovery`] and the ports as [`ScanKind::PortScan`], so a reader
-/// can tell how much of the run went on establishing that anything was there.
+/// [`ScanKind::Discovery`] and the ports as [`ScanKind::PortScan`].
 ///
 /// With root privileges, every probe is a raw TCP SYN sent from the source
 /// address this host would route the target through, and
 /// [`TcpPortScanner`](strategy::ports::TcpPortScanner) reads the port's state
-/// from a single reply rather than a completed handshake. Without root, or with
-/// no address to probe from, probes fall back to one TCP connect attempt per
-/// target.
+/// from a single reply. Without root, or with no address to probe from, probes
+/// fall back to one TCP connect attempt per target.
 ///
 /// `detections` is the corpus the detection phase runs. Pass
 /// [`Detections::embedded`](crate::detect::Detections::embedded) for the ones this
 /// build ships, or a [`Detections::builder`](crate::detect::Detections::builder)
-/// result to add your own. What each detection may do to the target is still the
-/// [envelope](ZondConfig::detection)'s to decide; this is only which detections
-/// exist. A [`Detections`] is cheap to clone, so one corpus serves many scans.
+/// result to add your own. The [envelope](ZondConfig::detection) still decides
+/// what each detection may do to the target. A [`Detections`] is cheap to clone,
+/// so one corpus serves many scans.
 pub async fn scan(
     target_map: TargetMap,
     cfg: &ZondConfig,
@@ -1739,35 +1587,32 @@ pub async fn scan(
 
 /// [`scan`], recording its progress so that an interrupted run can be continued.
 ///
-/// Journalling is the caller's choice, never this crate's. The engine does
-/// not touch a filesystem it was not pointed at; see
-/// `import::settings`, which draws that boundary and explains it. A front end that wants every scan resumable opens a journal for
-/// every scan, and that policy belongs to the front end.
+/// Journalling is the caller's choice: the engine touches no filesystem it was
+/// not pointed at (see `import::settings`). A front end that wants every scan
+/// resumable opens a journal for every scan.
 ///
-/// A journal from [`Journal::resume`](crate::journal::Journal::resume) already
-/// knows what an earlier run settled, and this scan skips it. The dispatcher
-/// still walks the whole plan and keeps each target's original position,
-/// emitting only what is left; renumbering the remainder would leave the two
-/// runs counting different things.
+/// A journal from [`Journal::resume`](crate::journal::Journal::resume) knows
+/// what an earlier run settled, and this scan skips it. The dispatcher still
+/// walks the whole plan and keeps each target's original position, emitting
+/// only what is left, so both runs count the same targets.
 ///
 /// So `target_map`, less what `cfg`'s exclusions withhold, has to be the plan
 /// the journal was counted in, and this process has to hold the privilege it
-/// was counted under. A scan handed anything else is refused as
-/// [`ScanError::PlanChanged`] before it sends anything. The recorded plan,
+/// was counted under. Anything else is refused as [`ScanError::PlanChanged`]
+/// before anything is sent. The recorded plan,
 /// [`JournalManifest::recorded`](crate::journal::manifest::JournalManifest::recorded),
-/// always is.
+/// always matches.
 ///
 /// Progress is checkpointed on a timer, and once more when the returned
-/// [`ScanTask`] is joined, which is also when the journal's lock is released.
+/// [`ScanTask`] is joined, which also releases the journal's lock.
 /// [`Checkpoint::write_atomically`](crate::journal::cursor::Checkpoint::write_atomically)
 /// documents what that survives.
 ///
 /// Findings and phases are recorded alongside the progress, so a resumed scan
 /// starts from what earlier runs found and its report describes the whole job:
-/// one phase per sitting, each keeping its own timings, settings and statistics,
-/// rather than the last sitting presented as the whole of it.
+/// one phase per sitting, each with its own timings, settings and statistics.
 ///
-/// `detections` is the corpus to run, exactly as [`scan`] takes it.
+/// `detections` is the corpus to run, as for [`scan`].
 #[cfg(feature = "journal-format")]
 pub async fn scan_with_journal(
     target_map: TargetMap,
@@ -1778,8 +1623,8 @@ pub async fn scan_with_journal(
     let mut capture_links = Vec::new();
     let journal = accepted(journal, |journal| {
         cfg.evasion.validate()?;
-        // Over the plan as the sitting will number it, which the excluded
-        // ports and the withholding below leave alike in every sitting.
+        // Over the plan as the sitting will number it, the same in every
+        // sitting.
         let mut probed = target_map.clone();
         probed.withhold_ports(&cfg.excluded_ports);
         orchestrator::withhold_unprobeable_targets(&mut probed);
@@ -1795,10 +1640,8 @@ pub async fn scan_with_journal(
     })?;
     let cfg = &under_the_recorded_technique(&journal, cfg);
     let journal = recording_options(journal, cfg);
-    // After the plan is held to the journal's, which records it as the caller
-    // named it, and before anything numbers it. Numbered without the ports the
-    // job excluded, so every sitting numbers what is left alike; the ones this
-    // sitting adds are passed over where they stand. See `JobOptions`.
+    // Numbered without the ports the job excluded, so every sitting numbers
+    // alike; ports this sitting adds are passed over in place. See `JobOptions`.
     let numbered_without = journal.options().map_or_else(
         || cfg.excluded_ports.clone(),
         crate::journal::manifest::JobOptions::excluded_ports,
@@ -1832,22 +1675,19 @@ pub async fn scan_with_journal(
         .detections(detections)
         .planning(Stage::Ports, planned_targets(&target_map))
         .staging(scan_stages(cfg, runs_liveness))
-        // See `discover_with_journal`: the order is the job's rather than this
-        // sitting's, so it comes back off the manifest.
+        // The job's order, from the manifest; see `discover_with_journal`.
         .ordering(journal.manifest().order_seed)
         .build();
 
     // Before the scan starts, so a caller watching the session sees the earlier
-    // sittings' hosts immediately and the report describes the whole job.
+    // sittings' hosts immediately.
     ctx.restore_hosts(journal.restored());
 
     let earlier = journal.earlier_phases().to_vec();
     let resume_point = journal.resume_point().clone();
 
-    // The ticker takes a narrow handle rather than the context: a checkpoint
-    // task holding the event sender would keep the stream open after the scan
-    // ended, and a caller watching it to know when to stop would wait for a scan
-    // that was already over. See `ScanContext::progress`.
+    // A narrow handle: a checkpoint task holding the event sender would keep
+    // the stream open after the scan ended. See `ScanContext::progress`.
     let ticker = checkpoint::spawn_checkpoints(journal, ctx.progress());
     let handle = spawn_scan(
         target_map,
@@ -1870,10 +1710,8 @@ pub async fn scan_with_journal(
 /// sitting left nothing to ask.
 ///
 /// `numbered` is `target_map` less what the exclusions withhold, which is what
-/// `settled` counts. A sitting with no target left asks no address whether it
-/// is up and probes no port, so a line naming the probes it would send, or
-/// the privilege it would send them with, describes a scan that is not
-/// happening.
+/// `settled` counts. A sitting with no target left sends nothing, so it names
+/// no probes and no privilege.
 fn sitting_probes(
     cfg: &ZondConfig,
     target_map: &TargetMap,
@@ -1886,11 +1724,11 @@ fn sitting_probes(
 
 /// Runs both phases of a port scan against an existing context.
 ///
-/// The body of [`scan`], taking a context rather than making one so that a
-/// caller journalling the scan can seed it from an earlier run and keep a handle
-/// on it. Nothing here knows what a journal is.
-/// `settled` is what an earlier sitting already covered, and is empty for a scan
-/// that is not continuing one. `withheld` is what
+/// The body of [`scan`]. It takes a context so that a caller journalling the
+/// scan can seed it from an earlier run and keep a handle on it.
+///
+/// `settled` is what an earlier sitting already covered, empty for a fresh
+/// scan. `withheld` is what
 /// [`orchestrator::withhold_unprobeable_targets`] took out of `target_map`,
 /// refused in the port phase's record. `capture_links` is where its captures
 /// listen, as [`capture_plan`] counted them.
@@ -1904,8 +1742,7 @@ fn spawn_scan(
     settled: Checkpoint,
     runs_liveness: bool,
 ) -> JoinHandle<ScanReport> {
-    // The plan the port phase walks, numbered in what the exclusions leave of
-    // it, and known before anything is announced.
+    // The plan the port phase walks, less what the exclusions withhold.
     let mut numbered = target_map.clone();
     cfg.exclusions.withhold_targets(&mut numbered);
     let caps = ScanCapabilities::resolve(
@@ -1914,9 +1751,8 @@ fn spawn_scan(
         &orchestrator::unsettled_ips(&numbered, &settled),
         interface::FrameSender::Probe,
     );
-    // What the caller set, kept so the passes an idle scan turns off can be
-    // named as declined rather than dropped, and the config the scan actually
-    // runs under, which an idle scan holds to what sends the target nothing.
+    // What the caller set is kept so the passes an idle scan turns off can be
+    // named as declined.
     let requested = cfg.clone();
     let cfg = running_under(&requested);
     let held_back = crate::system::descriptors::hold_back();
@@ -1926,9 +1762,7 @@ fn spawn_scan(
         let _held_back = held_back;
         crate::fingerprint::start_loading_corpus();
         // Numbered before either phase runs, so an address either one files
-        // as unreachable settles every target at it. The phases' scopes are
-        // taken over what was asked, so they can say what the policy
-        // withheld.
+        // as unreachable settles every target at it.
         ctx.number_targets(TargetIndex::of(&numbered));
         // Before any phase opens a capture, so each listens only where a
         // reply to this plan can arrive.
@@ -1936,11 +1770,10 @@ fn spawn_scan(
 
         // Phase one: which of these addresses has anything at it.
         //
-        // The answer narrows what is *probed*, never what is counted: the plan
-        // stays whole, and the targets of a host it asked and heard nothing
-        // from are settled at their own positions by the dispatcher. See
-        // `Outcome::Skipped`, and `Outcome::Undecided` for a host it never
-        // reached a verdict on.
+        // The answer narrows what is probed, not what is counted: the
+        // dispatcher settles the targets of a silent host at their own
+        // positions. See `Outcome::Skipped`, and `Outcome::Undecided` for a
+        // host with no verdict.
         let skipped = liveness_skip(&cfg, runs_liveness);
         let (liveness, live) = if let Some(why) = skipped {
             match why {
@@ -1950,18 +1783,15 @@ fn spawn_scan(
                 LivenessSkip::PortsNoDearer => {
                     crate::info!(verbosity = 1, "liveness pass skipped (port scan no dearer)");
                 }
-                // The caller asked for it, and a line saying so tells them
-                // nothing they did not choose.
+                // The caller chose it; no line needed.
                 _ => {}
             }
             (None, None)
         } else {
             // Over the addresses this sitting still has a target at, so a
-            // resumed one asks nothing of a host an earlier sitting finished,
-            // and its phase describes what it covered rather than the plan.
-            // Read in the numbering the positions count, which is what the
-            // policy leaves, and taken from the plan as it was asked, so the
-            // scope still counts what the policy withheld.
+            // resumed one skips hosts an earlier sitting finished. Taken from
+            // the plan as asked, so the scope still counts what the policy
+            // withheld.
             let unnumbered = Checkpoint::default();
             let mut finished = orchestrator::unsettled_ips(&numbered, &unnumbered);
             finished.subtract(&orchestrator::unsettled_ips(&numbered, &settled));
@@ -1971,13 +1801,11 @@ fn spawn_scan(
             let recorder = PhaseRecorder::start(ScanKind::Discovery, caps.privilege, scope, &cfg)
                 .opening_in(&ctx);
 
-            // Targeted, never a sweep: a port scan was asked about addresses,
-            // not about the network around them. It asks about some of the
-            // scan's own TCP ports beside the common five, since a host that
-            // drops a SYN to anything it does not serve answers on nothing
-            // else, and over SCTP as well where the scan's ports named an SCTP
-            // one, since a host that answers only SCTP would otherwise be
-            // called down and its ports never probed.
+            // Targeted: a port scan asks only about its own addresses. Some of
+            // the scan's own TCP ports join the common five, since a host that
+            // drops SYNs to anything it does not serve answers on nothing else,
+            // and SCTP is asked where the scan names an SCTP port, so an
+            // SCTP-only host is not called down.
             ctx.enter_stage(Stage::Discovery, None);
             let syn_ports = SynPorts::for_scan(&tcp_ports_of(&target_map));
             let sctp = orchestrator::sctp_discovery_port(&target_map);
@@ -1988,25 +1816,20 @@ fn spawn_scan(
             (Some(report), liveness)
         };
 
-        // Phase two: the ports. The exclusion policy is applied again rather
-        // than trusted from above, because the phase above does not always
-        // run.
+        // Phase two: the ports. The exclusion policy is applied again, since
+        // phase one does not always run.
         //
-        // The scope is what this phase *covered*, so it is taken over the live
-        // subset: a reader compares it against phase one's to see how much of
-        // what they asked about went unprobed. The dispatcher below is handed
-        // the whole plan, because that is what its positions are counted in.
-        // Two questions, and they were one number until a resume needed them
-        // apart.
+        // The scope is what this phase covered, taken over the live subset, so
+        // a reader can compare it with phase one's. The dispatcher is handed
+        // the whole plan, because its positions are counted in that.
         let mut covered = match &live {
             Some(live) => probed_subset(&target_map, &live.live),
             None => target_map.clone(),
         };
-        // Held to the machines the policy names as well as to its addresses,
-        // so the scope does not count what the walk will not ask. The plan is
-        // subtracted by address alone, since it is numbered in what it keeps
-        // and which addresses a machine answers at can differ between
-        // sittings; the walk withholds the rest by position.
+        // Held to the machines the policy names as well as its addresses, so
+        // the scope does not count what the walk will not ask. The plan itself
+        // is narrowed by address alone, since a machine's addresses can differ
+        // between sittings; the walk withholds the rest by position.
         let scope = TargetScope::from_target_map(&mut covered, &machine_policy(&ctx));
         let mut recorder = PhaseRecorder::start(ScanKind::PortScan, caps.privilege, scope, &cfg);
         if let Some(why) = skipped {
@@ -2015,9 +1838,7 @@ fn spawn_scan(
         let recorder = recorder.opening_in(&ctx);
 
         ctx.enter_stage(Stage::Ports, None);
-        // Filed against the port phase, since that is the phase an idle scan
-        // has: it runs no liveness pass, so this is where a reader looks for
-        // what the scan declined to send the target from this host.
+        // Filed against the port phase, the only phase an idle scan has.
         record_idle_refusals(&requested, &ctx);
         let port_scanner = match caps.privilege.is_raw() {
             true => ScannerKind::SynPort,
@@ -2037,23 +1858,20 @@ fn spawn_scan(
         )
         .await;
 
-        // Straight after the ports, because what it needs is the list of ports a
-        // handshake completed against and the service pass is what produces it.
+        // Needs the ports a handshake completed against, which the service pass
+        // produces.
         orchestrator::run_tls_enumeration(&ctx, &cfg).await;
 
-        // Ordered by what each pass leaves the next. The series probe takes
-        // every host with a TCP answer, so the echo probe is left with the
-        // machines that answered nothing at all.
+        // The series probe takes every host with a TCP answer, leaving the echo
+        // probe the machines that answered nothing.
         orchestrator::run_active_os_series(&ctx, cfg.os_detection, cfg.probe_tuning(), caps).await;
         orchestrator::run_active_os_snmp(&ctx, cfg.os_detection, &cfg.excluded_ports).await;
-        // After the two that read a stack, because it asks only hosts that have
-        // a name and answers a question neither of those can: macOS and iOS
-        // share a kernel and are indistinguishable to a probe, while a
-        // device-info record names the model outright.
+        // Asks only named hosts. macOS and iOS share a kernel and look alike
+        // to a stack probe; a device-info record names the model.
         orchestrator::run_active_os_mdns(&ctx, cfg.os_detection, !cfg.no_dns, &cfg.excluded_ports)
             .await;
         orchestrator::run_active_os_probe(&ctx, cfg.os_detection, cfg.probe_tuning(), caps).await;
-        // Last: the ports are what decide a trace's shape.
+        // After the ports, which decide a trace's shape.
         orchestrator::run_traceroute(&ctx, &cfg, caps).await;
         orchestrator::run_characterise(&ctx, &cfg, caps).await;
         orchestrator::run_ip_protocols(&ctx, &cfg).await;
@@ -2089,12 +1907,8 @@ mod tests {
     use super::*;
     use crate::testing::loopback::accept_from_this_process;
 
-    /// A sitting an earlier one left nothing to ask names no probes, and one
-    /// with a target left names them.
-    ///
-    /// A resume of a finished job sends nothing. Told it probes with ARP,
-    /// ICMPv6 and SYN, or that it lacks the privilege to, a reader takes it
-    /// for a scan that is about to put packets on the network.
+    /// A sitting with nothing left to ask names no probes, and one with a
+    /// target left names them.
     #[test]
     fn a_sitting_with_nothing_left_to_ask_names_no_probes() {
         let mut map = TargetMap::new();
@@ -2122,12 +1936,9 @@ mod tests {
         root
     }
 
-    /// **A named address the neighbour tables tie to an excluded machine is
-    /// withheld from a sweep's targets, counted and listed as the excluded
-    /// address is, and settled.** An exclusion means the machine answering at
-    /// the address written, and a target named at another of its addresses
-    /// otherwise reached the wire. Unsettled, it would be owed to every later
-    /// sitting, which would withhold it again.
+    /// A named address the neighbour tables tie to an excluded machine is
+    /// withheld from a sweep's targets, counted and listed like the excluded
+    /// address, and settled so no later sitting owes it.
     #[test]
     fn a_named_address_of_an_excluded_machine_leaves_the_sweeps_scope() {
         use crate::journal::settle::Outcome;
@@ -2175,13 +1986,11 @@ mod tests {
         }
     }
 
-    /// **A scan refused before it starts leaves no record of itself.**
+    /// A scan refused before it starts leaves no record of itself.
     ///
-    /// A journal handed to a scan that then refuses would otherwise stay
-    /// behind as a job nobody ran, listed as resumable with nothing done, and
-    /// counted against however many records a front end keeps, so each refusal
-    /// pushes out a record of a scan that happened. The caller cannot tidy it
-    /// either: the journal was moved into the call.
+    /// Otherwise the journal would stay behind as a resumable job with nothing
+    /// done, and the caller cannot tidy it, since the journal was moved into
+    /// the call.
     #[cfg(feature = "journal-format")]
     #[tokio::test]
     async fn a_journalled_scan_refused_up_front_leaves_no_record() {
@@ -2227,14 +2036,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// **A raw scan's up-front need counts a capture device for every link it
-    /// will capture on, and a scan by connect counts none.**
-    ///
-    /// Left out of the need, a table with room for the reserve alone lets the
-    /// scan start and refuses its captures one link at a time, and what those
-    /// links carry is never heard. Counted for every link of the machine
-    /// instead, a scan of loopback on a machine with dozens of links is
-    /// refused a limit it has plenty of room under.
+    /// A raw scan's up-front need counts a capture device for every link it
+    /// will capture on, and a scan by connect counts none.
     #[test]
     fn a_raw_scan_needs_a_capture_device_for_each_link_it_captures_on() {
         use crate::model::ip::scoped::Zone;
@@ -2262,10 +2065,7 @@ mod tests {
     }
 
     /// A port scan of a range too wide to walk refuses it in its port phase
-    /// and ends. Left in the plan, the liveness pass refuses it and leaves its
-    /// targets undecided, and the walk then settles them one at a time for
-    /// longer than the process lives: the task never resolves and a stop
-    /// cannot end it promptly.
+    /// and ends, without trying to settle its targets one at a time.
     #[tokio::test]
     async fn a_port_scan_of_a_range_too_wide_to_walk_refuses_it_and_ends() {
         use crate::model::target::TargetSet;
@@ -2283,8 +2083,7 @@ mod tests {
         let (_session, task) = scan(map, &cfg, Detections::embedded())
             .await
             .expect("the scan starts");
-        // Generous: the scan has nothing to send and ends at once, and the
-        // failure this guards against never ends at all.
+        // Generous: the scan should end at once, and the failure never ends.
         let report = tokio::time::timeout(std::time::Duration::from_secs(120), task)
             .await
             .expect("the scan ended")
@@ -2300,13 +2099,11 @@ mod tests {
         assert_eq!(refused.len(), 1, "{:?}", report.phases());
     }
 
-    /// **A job naming a link-local target with no interface ahead of others
-    /// numbers its plan once, and a finished sitting leaves nothing owed.**
+    /// A job naming a link-local target with no interface ahead of others
+    /// numbers its plan once, and a finished sitting leaves nothing owed.
     ///
-    /// The target is refused rather than probed, and taken out of the plan the
-    /// positions count. Numbered with it and walked without it, every target
-    /// after it has two positions: the walk settles one, the job owes the
-    /// other, and a resume walks a plan the first sitting never finished.
+    /// The refused target must be out of the plan the positions count, or
+    /// every target after it would have two positions.
     #[cfg(feature = "journal-format")]
     #[tokio::test]
     async fn a_withheld_link_local_target_leaves_one_numbering_across_sittings() {
@@ -2374,9 +2171,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A sweep counts what it settles, so its progress reads its work. Left
-    /// uncounted, a plain sweep reported nothing settled and no fraction for
-    /// the whole of its run, however far it got.
+    /// A sweep counts what it settles, so its progress reflects its work.
     #[tokio::test]
     async fn a_sweep_counts_the_addresses_it_settles() {
         let cfg = ZondConfig {
@@ -2393,11 +2188,8 @@ mod tests {
         assert_eq!(progress.settled(), 1, "the one address answered");
     }
 
-    /// **Dropping the task stops the scan.** Nothing can read the report of a
-    /// scan whose task is gone, and one left running keeps its sockets and
-    /// its probes going until it ends on its own, which for a listener is
-    /// never. The scan winds down rather than vanishing, so the session's
-    /// stream still ends, the way it ends for any scan that is over.
+    /// Dropping the task stops the scan, and the session's stream still ends
+    /// as it does for any finished scan.
     #[tokio::test]
     async fn dropping_the_task_stops_the_scan() {
         use crate::model::target::TargetSet;
@@ -2438,9 +2230,8 @@ mod tests {
     }
 
     /// A scan stopped before it reached its ports starts none of the passes
-    /// that follow them. Each announces its stage before it sends anything,
-    /// so a stage announced after the stop is a pass that went on to open its
-    /// sockets and send its first burst to a caller who asked for an end.
+    /// that follow them. Each pass announces its stage before it sends
+    /// anything, so the stage events show which ones started.
     #[tokio::test]
     async fn a_scan_stopped_before_its_ports_starts_no_later_pass() {
         use crate::model::target::TargetSet;
@@ -2526,14 +2317,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// **A job recorded before its options were resumes under the technique
-    /// its manifest names, not the one this sitting was handed.**
-    ///
-    /// The technique is part of what the job asks: a sitting under another
-    /// files segments of another kind as the same job's answers, and nothing
-    /// else refuses one that recorded no options to be held to. So a settings
-    /// file edited between sittings would change what an older job asks,
-    /// silently.
+    /// A job with no recorded options resumes under the technique its manifest
+    /// names, whatever this sitting was handed.
     #[cfg(feature = "journal-format")]
     #[tokio::test]
     async fn a_job_recorded_without_options_resumes_under_its_manifests_technique() {
@@ -2580,7 +2365,7 @@ mod tests {
     }
 
     /// A watch's journal records no options, so a watch resumed under other
-    /// settings is continued rather than refused over options it never reads.
+    /// settings continues.
     #[cfg(feature = "journal-format")]
     #[tokio::test]
     async fn a_watch_records_no_options_to_hold_a_later_sitting_to() {
@@ -2590,7 +2375,7 @@ mod tests {
 
         let root = journal_root("watch-options");
         // A link no machine has, so the watch ends as soon as its capture is
-        // refused, having sent nothing and heard nothing.
+        // refused.
         let links = vec![Zone::new(u32::MAX, "zond-no-such-link")];
         let plan = Plan::listen(links.clone());
         let scope =
@@ -2623,12 +2408,10 @@ mod tests {
     }
 
     /// A sweep's journal handed to a port scan is refused as the other phase,
-    /// and so is withdrawn with the rest of the up-front refusals.
+    /// and withdrawn with the rest of the up-front refusals.
     ///
-    /// Taken, the port scan would settle address-and-port positions against a
-    /// plan counted in addresses, and a resume would skip targets nothing
-    /// asked about. The exclusion check alone cannot see it: it rebuilds the
-    /// recorded plan in its own shape and finds it unchanged.
+    /// The exclusion check alone cannot catch this: it rebuilds the recorded
+    /// plan in its own shape and finds it unchanged.
     #[cfg(feature = "journal-format")]
     #[tokio::test]
     async fn a_sweeps_journal_is_refused_to_a_port_scan() {
@@ -2662,9 +2445,9 @@ mod tests {
     /// that withholds part of it, asks the liveness pass about exactly the
     /// addresses the job has a target left at.
     ///
-    /// Positions count what the policy leaves, so read against the plan
-    /// before the policy they name other addresses: here the pass would ask
-    /// again about an address the first sitting settled.
+    /// Positions count what the policy leaves; read against the plan before
+    /// the policy, the pass would ask again about an address the first sitting
+    /// settled.
     #[cfg(feature = "journal-format")]
     #[tokio::test]
     async fn a_resumed_liveness_pass_counts_what_the_policy_leaves() {
@@ -2682,8 +2465,8 @@ mod tests {
         ));
         let cfg = ZondConfig {
             no_dns: true,
-            // What is asserted is the pass's scope, which is fixed before it
-            // sends anything; the addresses past 127.0.0.1 answer nothing.
+            // The asserted scope is fixed before anything is sent, and the
+            // addresses past 127.0.0.1 answer nothing.
             scan_timeout: Some(std::time::Duration::from_secs(1)),
             exclusions: Exclusions::new("127.0.0.1".parse().expect("an address")),
             ..ZondConfig::default()
@@ -2692,8 +2475,8 @@ mod tests {
 
         let root = journal_root("liveness-numbering");
         let mut journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
-        // Every target at the first two addresses the policy leaves, 127.0.0.2
-        // and .3, which counted before the policy are those at .1 and .2.
+        // Every target at 127.0.0.2 and .3, the first two addresses the policy
+        // leaves (.1 and .2 if counted before the policy).
         let settlements = Settlements::default();
         for position in 0..200 {
             settlements.record(Outcome::Answered { position });
@@ -2726,11 +2509,9 @@ mod tests {
 
     /// A sitting killed after a checkpoint leaves its hosts owed every pass.
     ///
-    /// Its checkpoints write down its phases as they stand, and a phase still
-    /// open reads as one nothing stopped, so a resume sees the killed sitting
-    /// beside the finished ones. Only a sitting's own close, which a killed one
-    /// never reaches, says it ran to its end; read off what stands on disk,
-    /// its hosts would be taken for finished and never identified.
+    /// Its checkpoints write its phases as they stand, so a resume reads the
+    /// killed sitting's phase back. Only a sitting's own close says it ran to
+    /// its end, so its hosts must not be taken for finished.
     #[cfg(feature = "journal-format")]
     #[tokio::test]
     async fn a_sitting_killed_after_a_checkpoint_leaves_its_hosts_owed() {
@@ -2845,15 +2626,10 @@ mod tests {
         }
     }
 
-    /// A resumed sitting runs the passes that follow the probes, here the
-    /// detections, over a host an earlier sitting ran to its end with only
-    /// where it has something left to ask there, and over a host no sitting
-    /// finished whatever it has left.
-    ///
-    /// Resuming a job that was already done would otherwise put every one of
-    /// its identification questions to the network again, and a job resumed
-    /// part way would ask them again of every host it had finished with, and
-    /// write each of those hosts down whole again for having been asked.
+    /// A resumed sitting runs the passes after the probes (here the
+    /// detections) over a host an earlier sitting finished only where it has
+    /// something left to ask there, and over a host no sitting finished in
+    /// full. A finished host is neither asked again nor rewritten.
     #[cfg(feature = "journal-format")]
     #[tokio::test]
     async fn a_resumed_job_asks_a_host_a_sitting_finished_nothing_it_already_asked() {
@@ -2937,13 +2713,9 @@ mod tests {
     /// A resumed sitting reports each round trip its job recorded once, as
     /// reading the job back does.
     ///
-    /// A port scan closes its liveness phase against its store and goes on
-    /// with that store, so the two phases' reports hold one host twice, the
-    /// later copy with every round trip the earlier held. Folded as two
-    /// accounts, each round trip the job brought back from its journal
-    /// counted twice and the window kept the newest half of them: the resumed
-    /// report's fastest reply rose to its slowest few, where the job read
-    /// back still held them all.
+    /// The two phases' reports hold one host twice, the later copy with every
+    /// round trip the earlier held, so folding them as two accounts would count
+    /// each restored round trip twice.
     #[cfg(feature = "journal-format")]
     #[tokio::test]
     async fn a_resumed_sitting_reports_each_recorded_round_trip_once() {
@@ -3018,12 +2790,10 @@ mod tests {
     /// before its detections ran, is given the findings a sitting that ran to
     /// its end draws there.
     ///
-    /// A passive detection reads what identifying the port drew, and a sitting
-    /// keeps that in memory alone. The port's record comes back from the
-    /// journal and settles its target, so the resume asks the port nothing
-    /// in its probes; without the port being identified again, every
-    /// detection that reads a service's own words has nothing to read, and
-    /// the resumed report is short of findings with nothing to say so.
+    /// A passive detection reads what identifying the port drew, which a
+    /// sitting keeps only in memory. The resume probes nothing there, since
+    /// the target is settled, so the port must be identified again or those
+    /// detections have nothing to read.
     #[cfg(feature = "journal-format")]
     #[tokio::test]
     async fn a_resume_draws_the_detections_a_killed_sitting_owed_a_port_it_settled() {
@@ -3063,10 +2833,8 @@ mod tests {
             addr
         };
         let addr = web_server().await;
-        // Another the killed sitting had not reached yet, which leaves the
-        // resume a target at the address: a sitting with one there asks it as
-        // a sitting mid-job does, where one with nothing left may take another
-        // strategy that identifies every port again anyway.
+        // Another the killed sitting had not reached, so the resume has a
+        // target left at the address and runs as a sitting mid-job does.
         let unreached = web_server().await.port();
         let mut map = TargetMap::new();
         map.add_unit(TargetSet::new(
@@ -3102,9 +2870,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
         assert!(whole > 0, "the server draws no finding to lose");
 
-        // The sitting killed between identifying the port and detecting on it:
-        // the port settled and on record with its service, and nothing
-        // finished.
+        // A sitting killed between identifying the port and detecting on it.
         let root = journal_root("owed-detections-killed");
         let mut journal = Journal::create(&root, &plan, Privilege::current(), "").expect("creates");
         let mut host = Host::new(addr.ip());
@@ -3137,11 +2903,9 @@ mod tests {
     /// port nothing, neither its probe nor a pass over what an earlier sitting
     /// found open there, and still skips what the job had settled.
     ///
-    /// An exclusion only narrows a scan, and it is how a device that cannot
-    /// take a probe is kept from one: refused, the one way to spare the port
-    /// is to give up the job. Taken into the numbering, it would move every
-    /// target after the port to another position, and the sitting would ask
-    /// again what an earlier one settled and skip what it had not.
+    /// An exclusion only narrows a scan, and is how a fragile device is spared
+    /// a probe, so it must not cost the job. Taken into the numbering, it would
+    /// shift every later target's position.
     #[cfg(feature = "journal-format")]
     #[tokio::test]
     async fn a_resume_excluding_another_port_sends_it_nothing_and_keeps_the_numbering() {
@@ -3180,8 +2944,7 @@ mod tests {
         journal
             .record_options(JobOptions::of(&recorded))
             .expect("records the options");
-        // The port to be excluded found open already, and so on record for
-        // every pass after the probes to reach.
+        // The port to be excluded is already on record as open.
         let mut host = Host::new("127.0.0.1".parse().expect("an address"));
         host.set_status(HostStatus::Up);
         host.add_port(Port::new(
@@ -3240,10 +3003,7 @@ mod tests {
     /// everything else, and its record says so.
     ///
     /// The ports a job excludes are never numbered, so no sitting asks or
-    /// settles them. Counted in the job's total, they are a remainder nothing
-    /// ever reaches: the job lists as resumable with work left for good, is
-    /// kept as unfinished by a retention sweep, and a resume announces probes
-    /// to ports it will not send.
+    /// settles them, and they must not count in the job's total.
     #[cfg(feature = "journal-format")]
     #[tokio::test]
     async fn a_job_excluding_a_port_is_complete_once_it_has_asked_the_rest() {
@@ -3298,11 +3058,10 @@ mod tests {
     /// A resumed sweep with nothing left to ask runs none of the passes that
     /// follow it over a host a sitting that ran to its end finished with.
     ///
-    /// The sweep sends nothing, having nothing left, but its route trace, its
-    /// operating-system and filter probes and the passes that write a
-    /// conclusion back take the hosts the store holds, and a resume restores
-    /// every host the job found: without the finished record each of them is
-    /// traced and probed again, and written down whole again for it.
+    /// The route trace, OS and filter probes and the passes that write a
+    /// conclusion back take the hosts the store holds, which a resume restores
+    /// in full; the finished record keeps them from being probed and written
+    /// again.
     #[cfg(feature = "journal-format")]
     #[tokio::test]
     async fn a_resumed_sweep_with_nothing_left_passes_nothing_over_what_it_finished() {
@@ -3338,8 +3097,8 @@ mod tests {
         let after = written();
         std::fs::remove_dir_all(&root).ok();
 
-        // Where this process may not trace, a sitting that owed the pass a
-        // host files the refusal; one that may, traces it.
+        // A sitting that owed a host the trace either traces it or, where it
+        // may not, files a refusal.
         let traced = resumed
             .phases()
             .last()
@@ -3355,11 +3114,9 @@ mod tests {
     /// another privilege than this process sends with, is refused before it
     /// sends anything.
     ///
-    /// A position is an index into the plan the journal was counted in. Taken
-    /// over another plan, every position an earlier sitting settled would name
-    /// a different target here, and the scan would skip ground nothing asked
-    /// about and report it covered. Taken under another privilege, it would
-    /// file one kind of answer as the other.
+    /// Over another plan, every settled position would name a different
+    /// target; under another privilege, answers would be filed as the other
+    /// kind.
     #[cfg(feature = "journal-format")]
     #[tokio::test]
     async fn a_port_scan_handed_a_journal_of_another_plan_is_refused() {
@@ -3401,8 +3158,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A resume refused the same way keeps the record: an earlier sitting ran
-    /// against it, and what that sitting settled is the job's.
+    /// A resume refused up front keeps the record of the earlier sitting.
     #[cfg(feature = "journal-format")]
     #[tokio::test]
     async fn a_refused_resume_keeps_the_record_of_the_sitting_before_it() {
@@ -3436,11 +3192,9 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A listener's privilege says what its capture was told. Only a refusal
-    /// for want of privilege records one missing: a link that would not take
-    /// the filter, or carried framing nothing here reads, was opened by a
-    /// process the platform had already let capture, and recording it as
-    /// unprivileged sends a reader after a privilege they hold.
+    /// A listener is recorded unprivileged only when privilege refused its
+    /// capture. A link that refused the filter or carried unreadable framing
+    /// was opened after the platform's permission check.
     #[test]
     fn a_listener_is_recorded_unprivileged_only_where_privilege_refused_it() {
         use crate::scanner::strategy::StrategyError;
@@ -3474,10 +3228,7 @@ mod tests {
         );
     }
 
-    /// A panic inside the engine happened in the caller's process, so what it
-    /// said is the one thing they can act on. Both shapes `panic!` produces are
-    /// read, because which one a call site produces is not a choice anybody
-    /// makes deliberately.
+    /// A panic's message survives, in both shapes `panic!` produces.
     #[tokio::test]
     async fn a_panicking_scan_reports_what_the_panic_said() {
         for spawned in [
@@ -3494,8 +3245,7 @@ mod tests {
         }
     }
 
-    /// And a task the runtime took away is told apart from one that broke, so a
-    /// consumer does not go looking for a bug in a shutdown.
+    /// A task the runtime cancelled is told apart from one that panicked.
     #[tokio::test]
     async fn a_cancelled_scan_is_not_reported_as_a_panic() {
         let spawned = tokio::spawn(std::future::pending::<()>());
@@ -3511,12 +3261,9 @@ mod tests {
 
     /// Each pass an idle scan declines is said once, in a line that fits.
     ///
-    /// A refusal reaches the report, and a front end prints the report's
-    /// refusals beside its count at every verbosity. Logged as well when it is
-    /// filed, each one read twice at `-v`, in two glyphs and two places. And
-    /// each is one line on a console: `not covered: ` and the reason come to
-    /// about sixty characters, where a pass named `active operating-system
-    /// probing` and a clause on why it contacts the target came to ninety.
+    /// A front end prints the report's refusals at every verbosity, so they
+    /// are not logged on filing too, and `not covered: ` plus the reason fits
+    /// in 64 characters.
     #[test]
     fn an_idle_scans_declined_passes_are_filed_once_each_in_a_short_line() {
         use crate::config::{DetectionEnvelope, OsDetection};

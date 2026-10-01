@@ -8,18 +8,14 @@
 
 //! # Bounded probe concurrency
 //!
-//! One reusable driver for the pattern every fan-out scan shares: spawn a probe
-//! task per target, cap how many run at once, and fold each result as it
-//! finishes. The connect port scan, the connect discovery sweep, and the
-//! service-detection pass all need exactly this. Each would otherwise repeat the
-//! same fiddly [`JoinSet`] bookkeeping inline: make room before admitting a probe,
-//! drain the stragglers at the end, and drop a panicked task rather than let it
-//! abort the sweep.
+//! The driver every fan-out scan shares (the connect port scan, the connect
+//! discovery sweep, service detection): spawn a probe task per target, cap how
+//! many run at once, and fold each result as it finishes.
 //!
-//! [`ProbePool`] owns that bookkeeping in one place. A caller keeps its own source
-//! loop, since the sources differ (an async [`mpsc`](tokio::sync::mpsc) receiver
-//! for the dispatched scans, a plain iterator for service detection) even though
-//! the concurrency management does not, and hands each unit of work to
+//! [`ProbePool`] owns the [`JoinSet`] bookkeeping: making room before admitting a
+//! probe, draining the stragglers at the end, and dropping a panicked task. A
+//! caller keeps its own source loop (an async [`mpsc`](tokio::sync::mpsc)
+//! receiver, or a plain iterator) and hands each unit of work to
 //! [`ProbePool::admit`].
 
 use tokio::task::JoinSet;
@@ -33,30 +29,25 @@ use crate::scanner::session::ScanContext;
 /// A bounded pool of in-flight probe tasks.
 ///
 /// Holds at most `limit` tasks in a [`JoinSet`]. [`admit`](ProbePool::admit)
-/// spawns one, first reaping finished tasks so the cap is never exceeded, and
-/// blocks only when the pool is already full. [`drain`](ProbePool::drain) awaits
-/// whatever remains once the caller's source runs dry. Every finished task's
-/// output is passed to the `fold` closure the pool was built with. A task that
-/// panicked is dropped, which matches a scan's best-effort contract: one lost
-/// probe must not sink the whole sweep.
+/// spawns one, first reaping finished tasks so the cap holds, and blocks only
+/// when the pool is full. [`drain`](ProbePool::drain) awaits whatever remains once
+/// the caller's source runs dry. Every finished task's output is passed to the
+/// `fold` closure. A task that panicked is dropped, so one lost probe does not
+/// sink the sweep.
 ///
-/// The pool also owns the run's [`ProbeAudit`], and hands it to `fold` alongside
-/// each result. It has to be here rather than beside the pool at the call site:
-/// `fold` runs inside the pool and the caller's own loop runs outside it, so two
-/// separate borrows of one audit would not compile, and the alternative is
-/// interior mutability in three call sites to work around a structure that could
-/// simply hold it. A caller that has no use for it ignores the argument.
+/// The pool also owns the run's [`ProbeAudit`] and hands it to `fold` with each
+/// result, because `fold` runs inside the pool and the caller's loop outside it,
+/// and two borrows of one audit would not compile. A caller with no use for it
+/// ignores the argument.
 pub struct ProbePool<R, F: FnMut(R, &mut ProbeAudit)> {
     set: JoinSet<R>,
     limit: usize,
     fold: F,
     audit: ProbeAudit,
-    /// Where a probe that panicked is reported, and how many did.
-    ///
-    /// A panicked task takes its target's verdict with it, so the scan covers
-    /// less than it was asked to. That is the same kind of narrowing every
-    /// other one in the engine records, and it has to reach the same place: a
-    /// log line is the one channel a library consumer never sees.
+    /// Where a panicked probe is reported. A panicked task takes its target's
+    /// verdict with it, so the scan covers less than asked, and that is recorded
+    /// in the report like any other narrowing; a log line would never reach a
+    /// library consumer.
     ctx: ScanContext,
     /// Which strategy a panic is attributed to.
     kind: ScannerKind,
@@ -74,13 +65,10 @@ where
     /// `kind` names the strategy this pool is probing for, so a panic can be
     /// attributed to it in the report.
     ///
-    /// A limit of zero is a caller error rather than an instruction to run
-    /// nothing, and is read as one probe, on the same terms `rate_within` reads a
-    /// configured rate of zero. Honouring it is not an option: the admission
-    /// loop below would spin on an empty set, and because it never awaits
-    /// anything it never returns to the runtime: on a current-thread runtime
-    /// the scan hangs with no diagnostic, and a `timeout` wrapped around it
-    /// cannot fire.
+    /// A limit of zero is read as one, as `rate_within` reads a rate of zero.
+    /// Taken literally, the admission loop would spin on an empty set without
+    /// ever yielding, hanging a current-thread runtime where no `timeout` can
+    /// fire.
     pub fn new(limit: usize, ctx: ScanContext, kind: ScannerKind, fold: F) -> Self {
         Self {
             set: JoinSet::new(),
@@ -110,12 +98,10 @@ where
     /// Awaits every probe still in flight, folding each result, then reports
     /// any that panicked.
     ///
-    /// Call once the source is exhausted, so no finished work is dropped. The
-    /// panic count is filed here rather than as each one happens: a defect that
-    /// takes down one probe usually takes down every probe like it, and a
-    /// report carrying that same entry a thousand times says nothing the first
-    /// one did not. A pool drained again, after more probes were admitted to
-    /// it, reports only the panics since.
+    /// Call once the source is exhausted, so no finished work is dropped. Panics
+    /// are reported as one count, since a defect that takes down one probe
+    /// usually takes down every probe like it. A pool drained again reports only
+    /// the panics since the last drain.
     pub async fn drain(&mut self) {
         while !self.set.is_empty() {
             self.reap().await;
@@ -137,12 +123,10 @@ where
     /// Awaits the next finished probe and folds its output. Does nothing if the
     /// pool is empty.
     ///
-    /// A probe task that panicked surfaces here as a
-    /// [`JoinError`](tokio::task::JoinError). The pool never aborts its tasks,
-    /// so this only ever means a genuine panic in probe code, which is a bug.
-    /// It is counted and the sweep continues rather than propagating the error,
-    /// so one defective probe cannot sink the whole scan; [`drain`](Self::drain)
-    /// reports the total, which is what keeps it from vanishing unseen.
+    /// A panicked probe surfaces here as a [`JoinError`](tokio::task::JoinError);
+    /// the pool never aborts its tasks, so that always means a bug in probe code.
+    /// It is counted and the sweep continues; [`drain`](Self::drain) reports the
+    /// total.
     async fn reap(&mut self) {
         match self.set.join_next().await {
             Some(Ok(output)) => (self.fold)(output, &mut self.audit),
@@ -169,11 +153,8 @@ mod tests {
     use super::*;
     use crate::scanner::session::ScanSession;
 
-    /// A limit of zero taken as given would spin the admission loop on an empty
-    /// set forever, and because the loop awaits nothing it would never return
-    /// to the runtime: on a current-thread runtime the scan would hang with no
-    /// diagnostic, and a `timeout` around it could not fire. This test runs on
-    /// exactly such a runtime, so it cannot complete at all if that happens.
+    /// Runs on a current-thread runtime, so it hangs if a zero limit ever spins
+    /// the admission loop.
     #[tokio::test]
     async fn a_zero_limit_admits_one_probe_rather_than_spinning() {
         let (_session, ctx) = ScanSession::new();
@@ -187,7 +168,7 @@ mod tests {
         assert_eq!(done, 2, "both probes ran and both were folded");
     }
 
-    /// And the cap it was given is still the cap, for every other value.
+    /// Any nonzero limit is the cap.
     #[tokio::test]
     async fn the_pool_never_exceeds_its_limit() {
         let (_session, ctx) = ScanSession::new();

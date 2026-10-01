@@ -14,11 +14,11 @@
 //!
 //! ## How the submodules are arranged
 //!
-//! By the phase a strategy serves, which is the same axis
+//! By the phase a strategy serves, the same axis
 //! [`ScanKind`](crate::report::ScanKind) and
-//! [`PhaseRecorder`](crate::scanner::recorder::PhaseRecorder) are written in.
-//! Transport and privilege vary *inside* a category rather than naming one,
-//! because varying over them is what these two traits are for.
+//! [`PhaseRecorder`](crate::scanner::recorder::PhaseRecorder) use. Transport and
+//! privilege vary inside a category, because abstracting over them is what the two
+//! traits are for.
 //!
 //! | module | what it is |
 //! |---|---|
@@ -28,43 +28,30 @@
 //! | [`topology`] | what is between here and a host |
 //! | [`passive`] | what a link already carries, having sent nothing |
 //! | [`composite`] | routes each target to a strategy that covers its protocol |
-//! | `raw`, `frames`, `icmp_error`, `sweep` | not strategies, and internal: what they are built from, what they read, and what they all keep track of |
+//! | `raw`, `frames`, `icmp_error`, `sweep` | internal: what strategies are built from, what they read, and what they all keep track of |
 //!
-//! Arranged by the target's network position instead, the two axes cross:
-//! `routed` would mean "reached through a gateway" for one strategy and "opens a
-//! raw socket" for the ten others that would sit underneath it, including every
-//! port scanner, both operating-system probes and the trace. What each of them
-//! *is* decides where it sits.
+//! ## Findings go to the context
 //!
-//! ## Findings go to the context, not to the return value
+//! Neither trait returns what it found. A strategy writes hosts and ports into the
+//! [`ScanContext`] it was built with, and its run method reports only whether the
+//! attempt got to the end. That makes an ARP sweep, a raw SYN scan and a TCP connect
+//! interchangeable to a caller (build one, run it, read the store), and lets several
+//! strategies write into one live view while they run.
 //!
-//! Neither trait returns what it found. A strategy writes hosts and ports into
-//! the [`ScanContext`] it was built with, and its run method reports only
-//! whether the attempt itself got to the end. That is what makes an ARP sweep,
-//! a raw SYN scan and a plain TCP connect interchangeable to a caller: build
-//! one, run it, read the store, and it is what lets several unrelated
-//! strategies write into a single live view while they are still running, which
-//! a return value cannot do.
-//!
-//! It also draws the line between the two ways a scan goes wrong. A target that
-//! did not answer is a *finding*, and it lands in the store. A strategy that
-//! could not open its socket is a *failure*, and it comes back as
-//! [`StrategyError`]. Only the second is an `Err`, because only the second means
+//! A target that did not answer is a finding and lands in the store. A strategy that
+//! could not open its socket is a failure and comes back as [`StrategyError`]: then
 //! the absence of hosts proves nothing.
 //!
-//! ## The two traits are the same shape
+//! ## Shape of the traits
 //!
-//! Both carry a [`kind`](HostScanner::kind), both take `&mut self`, both return
-//! `Result<(), StrategyError>`. Where they differ they differ for a reason:
-//! a [`PortScanner`] is fed its targets on a channel and declares which
-//! protocols it covers, because several of them run at once and something has
-//! to route each target to one that can take it; a [`HostScanner`] owns its
-//! targets from construction, because a sweep is aimed at a segment rather than
-//! dispatched a target at a time.
+//! Both carry a [`kind`](HostScanner::kind), take `&mut self` and return
+//! `Result<(), StrategyError>`. A [`PortScanner`] is fed its targets on a channel and
+//! declares which protocols it covers, because several run at once and each target
+//! must be routed to one that can take it. A [`HostScanner`] owns its targets from
+//! construction, because a sweep is aimed at a whole segment.
 //!
-//! Neither consumes `self`. A strategy runs once in practice, but taking
-//! `self: Box<Self>` to say so would force every caller to box a scanner it
-//! already owns, and the orchestrator is not the only caller.
+//! Neither consumes `self`: taking `self: Box<Self>` would force every caller to box
+//! a scanner it already owns.
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;
@@ -77,19 +64,16 @@ use crate::scanner::session::ScanContext;
 
 /// Why one scanning strategy could not start, or could not finish.
 ///
-/// This is not how a scan fails. A scan runs several strategies and carries
-/// on with whatever survives, so one of these is recorded in the report's
-/// [`failures`](crate::report::ScanReport::failures) and announced on
-/// the event stream rather than returned from
-/// [`discover`](crate::scanner::discover) or [`scan`](crate::scanner::scan). It
-/// reaches a caller directly when they build and run a strategy themselves.
+/// A scan runs several strategies and carries on with whatever survives, so
+/// [`discover`](crate::scanner::discover) and [`scan`](crate::scanner::scan) record
+/// one of these in the report's [`failures`](crate::report::ScanReport::failures)
+/// and announce it on the event stream. It reaches a caller directly only when they
+/// build and run a strategy themselves.
 ///
-/// The variants are the layers a strategy is assembled from, because that is
-/// what determines whether anything can be done about it. A [`Transport`],
-/// [`Channel`] or [`Capture`] failure is most often missing privileges, which
-/// the same unprivileged fallback answers for a scan, though not always, and
-/// the capture error underneath says which; an [`Interface`] failure is about
-/// one interface and the scan of every other one is unaffected.
+/// The variants are the layers a strategy is assembled from. A [`Transport`],
+/// [`Channel`] or [`Capture`] failure is most often missing privileges, which a
+/// scan's unprivileged fallback covers; the underlying error says which. An
+/// [`Interface`] failure concerns one interface and leaves the others unaffected.
 ///
 /// [`Transport`]: StrategyError::Transport
 /// [`Channel`]: StrategyError::Channel
@@ -108,8 +92,7 @@ pub enum StrategyError {
 
     /// Nothing could be captured on the links a listener was given.
     ///
-    /// The capture's own error, whole, because a listener has nothing else to
-    /// fail at and that error already names each link and what refused it.
+    /// The capture's own error, which names each link and what refused it.
     #[error(transparent)]
     Capture(#[from] crate::transport::capture::CaptureError),
 
@@ -125,10 +108,9 @@ pub enum StrategyError {
     /// The transport a port scan was handed was opened for another kind of
     /// probe, so its capture would admit none of the scan's answers.
     ///
-    /// Refused rather than run, because a scan that hears nothing files every
-    /// port as the silence it reads, which looks exactly like a network that
-    /// drops everything. Every port it was handed is recorded as one nobody
-    /// asked about.
+    /// Refused because a scan that hears nothing files every port as silent,
+    /// which looks exactly like a network that drops everything. Every port it was
+    /// handed is recorded as unasked.
     #[error(
         "{} transport cannot hear {} port scan's answers",
         .kind.spoken(),
@@ -141,17 +123,14 @@ pub enum StrategyError {
         protocol: crate::model::port::Protocol,
     },
 
-    /// The strategy's probes could not be built. A bug or an impossible target
-    /// rather than an environment problem, since a probe is built from values
-    /// this engine chose.
+    /// The strategy's probes could not be built. A bug or an impossible target,
+    /// since a probe is built from values this engine chose.
     #[error("the probes for this strategy could not be built: {0}")]
     Probe(String),
 
     /// A strategy panicked.
     ///
-    /// Always a bug in the engine, never a fact about the network, and reported
-    /// rather than swallowed: the task it killed would otherwise take the
-    /// evidence with it, and the scan would look merely empty.
+    /// Always an engine bug. Reported so the scan does not look merely empty.
     #[error("the {scanner:?} scanner panicked: {detail}")]
     Panicked {
         /// Which strategy went down.
@@ -175,10 +154,9 @@ const fn spoken_protocol(protocol: crate::model::port::Protocol) -> &'static str
 /// A strategy that finds which hosts, among the targets it was built with, are
 /// reachable.
 ///
-/// The discovery half of the pair. Implementations differ entirely in how they
-/// ask, ARP and ICMPv6 on a local segment, raw TCP SYN through a gateway, an
-/// ordinary connect attempt where neither is possible, and not at all in what a
-/// caller does with them.
+/// The discovery half of the pair. Implementations differ in how they ask: ARP and
+/// ICMPv6 on a local segment, raw TCP SYN through a gateway, or an ordinary connect
+/// where neither is possible.
 #[async_trait]
 pub trait HostScanner: Send {
     /// Identifies the strategy, so a failure can be attributed to it in the
@@ -196,11 +174,10 @@ pub trait HostScanner: Send {
 
 /// A strategy that classifies the ports of targets handed to it one at a time.
 ///
-/// The port-scan half of the pair. Where a [`HostScanner`] is aimed at a segment
-/// it owns, this consumes the shuffled [`PlannedTarget`] stream a
-/// [`Dispatcher`](crate::scanner::dispatcher::Dispatcher) produces, so that
-/// several strategies can share one stream of work and none of them has to know
-/// how the targets were ordered.
+/// The port-scan half of the pair. It consumes the shuffled [`PlannedTarget`]
+/// stream a [`Dispatcher`](crate::scanner::dispatcher::Dispatcher) produces, so
+/// several strategies can share one stream of work without knowing how it was
+/// ordered.
 #[async_trait]
 pub trait PortScanner: Send {
     /// Identifies the strategy, so a failure can be attributed to it in the
@@ -212,8 +189,8 @@ pub trait PortScanner: Send {
     /// Read when a scan is assembled, to decide which protocols still need an
     /// unprivileged fallback, and again by
     /// [`CompositePortScanner`](crate::scanner::strategy::composite::CompositePortScanner)
-    /// to route each target, so a strategy that under-reports its coverage is
-    /// simply never given that work, rather than given it and failing.
+    /// to route each target. A strategy that under-reports its coverage is never
+    /// given that work.
     fn supported_protocols(&self) -> Vec<Protocol>;
 
     /// Probes every target arriving on `targets` and records each port's state
@@ -227,26 +204,20 @@ pub trait PortScanner: Send {
     /// Second-pass service identification, run once after a successful
     /// [`scan`](PortScanner::scan) that was not aborted.
     ///
-    /// A raw strategy classifies port state from a single exchange and never
-    /// holds a connection to fingerprint through, so it opens one here for each
-    /// open port. A connect strategy fingerprints inline while it still holds
-    /// the live stream, and takes the default no-op. Putting this on the trait
-    /// keeps "does this strategy need a second pass?" in the type rather than in
-    /// a branch at every call site.
+    /// A raw strategy holds no connection to fingerprint through, so it opens one
+    /// here for each open port. A connect strategy fingerprints inline while it
+    /// holds the live stream, and takes the default no-op.
     async fn detect_services(&mut self, _ctx: &ScanContext) {}
 }
 
 /// Records `target`, which no scanner asked about, as a port nobody asked
 /// about: on its host as [`PortState::Unasked`], and owed to a resume.
 ///
-/// The one account of a port left unprobed that holds whoever leaves it: a
-/// scanner stopped with it still queued, a scanner that refused its whole
-/// plan, and a router with no scanner left to hand it to. Left off the host
-/// instead, a truncated port list reads the same as a complete one, a host the
-/// scan never reached is missing from the report altogether, and a port list
-/// whose shape depends on how a run ended reads, compared with another scan's,
-/// as the network moving. The outcome carries no position, so a resume asks
-/// the question this sitting did not.
+/// Used by whoever leaves a port unprobed: a scanner stopped with it still queued,
+/// a scanner that refused its whole plan, and a router with no scanner left to hand
+/// it to. Without it a truncated port list reads like a complete one, an unreached
+/// host is missing from the report, and a diff against another scan shows the
+/// network moving. The outcome carries no position, so a resume asks the question.
 pub(crate) fn record_unasked(ctx: &ScanContext, target: &PlannedTarget) {
     let port =
         crate::fingerprint::baseline_port(target.port(), target.protocol(), PortState::Unasked);
@@ -258,29 +229,20 @@ pub(crate) fn record_unasked(ctx: &ScanContext, target: &PlannedTarget) {
 
 pub mod composite;
 pub mod connect;
-// The reader two scanners share for what an ICMP error says: a UDP port scan
-// reads a port's verdict out of one, and a trace reads a router's identity out
-// of one. Neither owns it, and it is a parser rather than a strategy.
+// ICMP error parsing shared by the UDP port scan (a port's verdict) and the trace
+// (a router's identity).
 pub(crate) mod icmp_error;
-// The readers two strategies share: a local sweep interprets the replies its
-// probes draw with them, and a listener interprets frames nobody asked for with
-// the same ones. A frame that proves a host is there proves it either way.
-//
-// Named for what it reads rather than for the phase that reads it: `discovery`
-// collided with `scanner::discover` and `ScanKind::Discovery`, neither of which
-// this is.
+// Frame readers shared by the local sweep, for replies to its probes, and the
+// passive listener, for unsolicited frames.
 pub(crate) mod frames;
 pub mod local;
-// What a machine is, asked of hosts a scan has already found. Neither of these
-// discovers anything: they revisit what the store holds and read a stack off
-// what answers.
+// What a machine is, asked of hosts already in the store.
 pub mod identify;
 pub mod passive;
 // Which ports are open, and the machinery all four raw port scanners share.
 pub mod ports;
-// Which IP protocols a host takes delivery of, one layer below the ports. Runs
-// after them, and only against hosts that answered, for the reason `topology`
-// gives about its own two passes.
+// Which IP protocols a host accepts. Runs after the port scan, only against hosts
+// that answered.
 pub mod protocols;
 // What every raw strategy is built from: how a probe reaches the wire, and the
 // timings a probe over a routed path is held to.
@@ -288,7 +250,6 @@ pub(crate) mod raw;
 pub mod routed;
 // What the three probing sweeps keep track of in common.
 pub(crate) mod sweep;
-// What is between here and a host, rather than what is at it. Both passes here
-// run after the ports are known, because what reaches a host is what decides
-// how to ask about the path to it.
+// What is between here and a host. Runs after the port scan, because the ports
+// that reach a host decide how to probe the path to it.
 pub mod topology;

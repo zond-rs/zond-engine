@@ -9,53 +9,42 @@
 //! # Target Dispatch
 //!
 //! Turns a [`TargetMap`] into a stream of individual [`PlannedTarget`]s for the
-//! scanning strategies to consume, in an order that is not the plan's.
+//! scanning strategies, in a scrambled order.
 //!
-//! ## Which order, and why it is not a shuffle
+//! ## Order
 //!
-//! A scan given a seed walks a [`Permutation`] of the plan's whole index space:
-//! the nth target it asks about is somewhere else entirely in the plan, and
-//! consecutive questions land in unrelated parts of the network. The plan is
-//! addressed by position through [`TargetIndex`] rather than expanded, so this
-//! costs a few words whatever the range.
+//! A scan given a seed walks a [`Permutation`] of the plan's whole index space,
+//! so consecutive questions land in unrelated parts of the network. The plan is
+//! addressed by position through [`TargetIndex`], so this costs a few words
+//! whatever the range.
 //!
-//! Without one it falls back to a batch-local shuffle: fill a fixed-size batch
-//! in plan order, shuffle that, and stream it out before moving on.
-//! Neighbouring addresses end up spread apart in time and the memory cost stays
-//! bounded, but only within the batch. At batch granularity a `/16` is still
-//! walked in address order, which is the most recognisable thing a scanner
-//! emits, so the fallback is for the plans a permutation cannot address rather
-//! than a setting anybody should want.
+//! Without a seed it falls back to a batch-local shuffle: fill a fixed-size batch
+//! in plan order, shuffle it, and stream it out. That bounds memory but spreads
+//! addresses only within a batch, so a `/16` is still walked in recognisable
+//! address order at batch granularity. It exists for plans a permutation cannot
+//! address.
 //!
-//! The batch stays either way, because it has a second job: it is the unit the
-//! channel is sized against, and a rearranged stream is filled and drained
-//! through the same buffer. Only the fallback shuffles it. A walk is already
-//! spread, and one reshuffled a batch at a time would be an order no seed
-//! names, whose answers arrive up to a batch out of the order the journal
-//! counts along and wait in its [`cursor`](crate::journal::cursor) until the
-//! walk catches up.
+//! The batch also sizes the channel, so it stays either way, but only the
+//! fallback shuffles it. Reshuffling a walk would produce answers out of the
+//! order the journal [`cursor`](crate::journal::cursor) counts along, and they
+//! would wait there until the walk caught up.
 //!
-//! The sweeps that hold their targets themselves rather than draw them off a
-//! stream, the ARP and neighbour sweep of a segment and the SYN sweep through a
-//! gateway, arrange them in the same walk with `WalkOrder`, so a seed names
-//! one order for a scan whichever phase is on the wire.
+//! Sweeps that hold their own targets (the ARP and neighbour sweep of a segment,
+//! the SYN sweep through a gateway) arrange them in the same walk with
+//! `WalkOrder`, so a seed names one order for every phase of a scan.
 //!
-//! ## The numbering is not the order
+//! ## Numbering
 //!
-//! Targets are numbered by their position in [`TargetMap::iter`] whichever way
-//! they are emitted. That is what a journal records, what a cursor advances over
-//! and what a resumed sitting skips by, so it has to be a property of the job
-//! rather than of the sitting: renumbering a permuted stream would give position
-//! zero to whatever came out first, and two sittings would count different
-//! things. See [`cursor`](crate::journal::cursor).
+//! Targets are numbered by their position in [`TargetMap::iter`], whatever order
+//! they are emitted in. A journal records that number, a cursor advances over it
+//! and a resumed sitting skips by it, so it must be the same in every sitting.
+//! See [`cursor`](crate::journal::cursor).
 //!
-//! ## The batch size
+//! ## Batch size
 //!
-//! Both entry points here take one, and both hold it to at least one probe. A
-//! batch of zero is a caller error rather than an instruction to send nothing:
-//! it reaches `mpsc::channel`, which asserts on an empty buffer, so honouring
-//! the number would end the scan in a panic rather than in an empty result. The
-//! same reading `rate_within` gives a configured rate of zero.
+//! Both entry points hold the batch size to at least one. A batch of zero would
+//! reach `mpsc::channel`, which panics on an empty buffer; `rate_within` reads a
+//! rate of zero the same way.
 
 use std::net::IpAddr;
 
@@ -71,29 +60,21 @@ use tokio::sync::mpsc;
 
 /// Streams an address set out in the order a scan asks about it.
 ///
-/// The sweep counterpart of [`Dispatcher`], and it yields bare addresses rather
-/// than [`PlannedTarget`]s because a sweep is counted in addresses and numbers
-/// them elsewhere: a [`HostScanner`](crate::scanner::strategy::HostScanner) owns
-/// its targets, so its positions come from its context rather than off this
-/// stream. See
+/// The sweep counterpart of [`Dispatcher`]. It yields bare addresses because a
+/// [`HostScanner`](crate::scanner::strategy::HostScanner) numbers its targets
+/// through its context; see
 /// [`ScanContext::settle_address`](crate::scanner::session::ScanContext::settle_address).
 ///
-/// `seed` is the same bargain the dispatcher makes and gets the same two orders;
-/// see the module documentation. A sweep is where the difference shows most,
-/// since it is the phase that walks a whole range and the one an evaluator
-/// watches on the wire.
+/// `seed` selects between the same two orders as the dispatcher; see the module
+/// documentation.
 ///
-/// The numbering here is [`Positions`] over the set it was handed, and it is only
-/// ever the order: a resumed sweep is handed what it has left, so these positions
-/// count a subset and are not the ones a journal records. What an address settles
-/// against is the numbering on the context, which covers the whole plan. See
-/// [`ScanContext::settle_address`](crate::scanner::session::ScanContext::settle_address).
+/// The [`Positions`] over the given set only determine the order. A resumed sweep
+/// is handed a subset, so these are not the positions a journal records.
 ///
-/// Ranges too wide to number are asked about last and in order, because there is
-/// no position to rearrange them by. They are the ranges
-/// [`Positions::unnumbered`] names, and a sweep of one does not finish anyway.
+/// Ranges too wide to number ([`Positions::unnumbered`]) are asked about last, in
+/// order.
 ///
-/// `batch_size` is held to at least one probe; see the module documentation.
+/// `batch_size` is held to at least one; see the module documentation.
 pub fn dispatch_addresses(
     ips: IpSet,
     batch_size: usize,
@@ -103,18 +84,16 @@ pub fn dispatch_addresses(
     dispatch_addresses_of(ips, batch_size, seed, None, scan_handle)
 }
 
-/// [`dispatch_addresses`], walking the order of the plan `plan` numbers rather
-/// than one of `ips` alone, for a sweep counted in addresses.
+/// [`dispatch_addresses`], walking the order of the whole plan `plan` numbers,
+/// for a sweep counted in addresses.
 ///
-/// A resumed sweep is handed what it has left, and a permutation of that is a
-/// different order from the one the first sitting walked. The settlements count
-/// along the plan's walk, and answers arriving in some other order would wait in
-/// their set, which is the growth the walk exists to prevent; see
-/// [`cursor`](crate::journal::cursor). So the plan's walk is taken and what this
-/// sitting was not handed is stepped over.
+/// A resumed sweep is handed what it has left, and permuting only that would
+/// give a different order from the first sitting's, leaving answers waiting in
+/// the [`cursor`](crate::journal::cursor). So the plan's walk is taken and the
+/// addresses not handed to this sitting are stepped over.
 ///
-/// An empty numbering is a sweep counted in something else, a port scan's
-/// liveness pass, and walks `ips` as [`dispatch_addresses`] does.
+/// An empty numbering (a port scan's liveness pass) walks `ips` as
+/// [`dispatch_addresses`] does.
 pub(crate) fn dispatch_addresses_of(
     ips: IpSet,
     batch_size: usize,
@@ -130,10 +109,7 @@ pub(crate) fn dispatch_addresses_of(
     tokio::spawn(async move {
         let mut batch = Vec::with_capacity(batch_size);
 
-        // Built before the stream that borrows it, and once: numbering a set is
-        // a table of its ranges rather than of its addresses, but it is still
-        // work, and doing it per batch would do it again for every eight
-        // thousand addresses.
+        // Built once, before the stream that borrows it.
         let numbered = seed.map(|seed| {
             let numbered = plan
                 .clone()
@@ -142,17 +118,13 @@ pub(crate) fn dispatch_addresses_of(
             (numbered, order)
         });
 
-        // `None` for an address the walk passes over, rather than a filter
-        // that passes over it unseen: a resumed sweep of a wide plan can pass
-        // over millions in a row, and the loop below is where they are
-        // counted towards a yield. See `Passing`.
+        // `None` for an address the walk passes over, so the loop below can
+        // count it towards a yield: a resumed sweep of a wide plan can pass over
+        // millions in a row. See `Passing`.
         let addresses: Box<dyn Iterator<Item = Option<IpAddr>> + Send + '_> = match &numbered {
-            // What the numbering could not reach follows the numbered ones, as
-            // it does in the set's own walk, so an address is emitted exactly
-            // once either way. Numbering `ips` itself, that is its ranges too
-            // wide to number. Numbering the plan, it is every address this
-            // sitting was handed that no position names, those ranges among
-            // them.
+            // Addresses the numbering cannot reach follow the numbered ones, so
+            // each is emitted exactly once: for `ips`, its ranges too wide to
+            // number; for the plan, every handed address no position names.
             Some((numbered, order)) => {
                 let walked = order
                     .iter()
@@ -183,8 +155,8 @@ pub(crate) fn dispatch_addresses_of(
         for ip in addresses {
             passing.passed().await;
             let Some(ip) = ip else {
-                // Read on what the walk passes over as well as on a send, or a
-                // stopped resume walks the rest of the plan before noticing.
+                // Checked here too, or a stopped resume walks the rest of the
+                // plan before noticing.
                 if scan_handle.should_stop() {
                     return;
                 }
@@ -205,16 +177,14 @@ pub(crate) fn dispatch_addresses_of(
     rx
 }
 
-/// Where a seeded scan's walk reaches each address of a set, for a sweep that
-/// holds its first attempts itself rather than drawing them off
-/// [`dispatch_addresses_of`]: the addresses arranged by it leave in the order
-/// that stream gives them.
+/// A seeded scan's walk order, for a sweep that holds its own first attempts:
+/// addresses arranged by it leave in the order [`dispatch_addresses_of`] would
+/// give them.
 ///
-/// Read off each address rather than found by walking, so arranging a sweep
-/// costs its own size whatever the plan's: an address's position in the plan
-/// the context numbers, and that position's place in the seed's permutation of
-/// the plan. A context numbering nothing, a sweep counted in something else,
-/// has the set itself numbered, as the stream does.
+/// Each address's place is computed directly (its position in the plan, then
+/// that position's index in the permutation), so arranging a sweep costs its own
+/// size, not the plan's. A context numbering nothing has the set itself
+/// numbered, as the stream does.
 #[derive(Clone)]
 pub(crate) struct WalkOrder {
     numbered: std::sync::Arc<Positions>,
@@ -224,14 +194,10 @@ pub(crate) struct WalkOrder {
 /// How many of the walk's positions a sweep may be drawn along per address it
 /// owes, before it is cheaper to collect its addresses and sort them.
 ///
-/// Drawn along the walk, a sweep holds nothing but its place in it, where
-/// collected it holds an entry and a sort key per address: twenty bytes each,
-/// a third of a gigabyte for an on-link `/8`, and sorted before the first
-/// probe leaves. The walk passes over the positions the sweep does not hold,
-/// so drawing costs a lookup per position the plan holds for every one the
-/// sweep does; sixteen keeps that a handful of lookups per probe. A sweep
-/// sparser than that is a small part of a larger plan, and collecting it costs
-/// its own size rather than the plan's.
+/// Drawing holds only a place in the walk; collecting holds twenty bytes per
+/// address (a third of a gigabyte for an on-link `/8`) and sorts before the
+/// first probe. Drawing costs one lookup per plan position, so sixteen keeps it
+/// to a handful per probe; a sparser sweep is cheaper to collect.
 const DRAWN_DENSITY: u128 = 16;
 
 impl WalkOrder {
@@ -248,8 +214,8 @@ impl WalkOrder {
         Some(Self { numbered, order })
     }
 
-    /// Whether a sweep owing `count` addresses is drawn along this walk rather
-    /// than collected and sorted; see [`DRAWN_DENSITY`].
+    /// Whether a sweep owing `count` addresses is drawn along this walk, or
+    /// collected and sorted; see [`DRAWN_DENSITY`].
     pub(crate) fn draws(&self, count: u128) -> bool {
         count.saturating_mul(DRAWN_DENSITY) >= u128::from(self.numbered.total())
     }
@@ -280,18 +246,14 @@ impl WalkOrder {
     }
 }
 
-/// Sends `batch`, shuffled first where `shuffle` says the stream is the
-/// batch-local fallback rather than a walk, reporting whether the receiver is
-/// still there and the scan still wanted.
+/// Sends `batch`, shuffled first for the batch-local fallback, and returns
+/// whether the receiver is still there and the scan still running.
 ///
-/// Generic over what the batch carries because both streams here draw the same
-/// bargain and differ only in what they yield: a sweep is counted in addresses
-/// and a port scan in numbered targets. One function serves both the full batch
-/// and the flush, because spelling it out twice inline would be two places for
-/// the stop check to be got wrong.
+/// Serves both streams (addresses and numbered targets), for full batches and
+/// the final flush.
 ///
-/// `sent` counts what reached the channel, which is how a port scan's walk
-/// knows what a stop left of the batch it was sending.
+/// `sent` counts what reached the channel, so a port scan's walk knows what a
+/// stop left of the batch.
 async fn drain<T>(
     batch: &mut Vec<T>,
     tx: &mpsc::Sender<T>,
@@ -317,14 +279,11 @@ async fn drain<T>(
 /// How many targets a walk passes before it hands its worker back to the
 /// runtime.
 ///
-/// A walk awaits only on a send, and most of what it passes it never sends:
-/// what an earlier sitting settled, what the exclusions withhold and what the
-/// liveness pass found nothing at. A sparse `/16` behind a thousand ports is
-/// sixty-five million targets of that, which would hold a worker for tens of
-/// seconds, and on a single-threaded runtime hold everything else too,
-/// including whatever would ask the scan to stop. Every this many it yields,
-/// which costs a wake-up per thousand targets and bounds how long anything
-/// else waits for its turn to a thousand steps of arithmetic.
+/// A walk awaits only on a send, and most targets it passes are never sent
+/// (settled earlier, excluded, or at a silent host). A sparse `/16` behind a
+/// thousand ports is sixty-five million such targets, enough to hold a worker
+/// for tens of seconds and stall a single-threaded runtime, including whatever
+/// would stop the scan.
 const PASSES_PER_YIELD: u32 = 1024;
 
 /// A walk's count of the targets it has passed since it last yielded.
@@ -336,14 +295,10 @@ struct Passing {
 impl Passing {
     /// Counts one target, yielding every [`PASSES_PER_YIELD`].
     ///
-    /// The stop is not read here. A walk reads it on every target it passes
-    /// over, since an atomic is cheaper than the settlement a passed target is
-    /// recorded with, and a walk that noticed a stop a thousand targets late
-    /// would settle them after the caller asked it not to; and on a send,
-    /// after the target is handed over. A target the walk would emit is never
-    /// withheld for a stop: the consumer learns of the stop from the target it
-    /// takes after it, and a stream ended with nothing in it would read to the
-    /// consumer as a plan it asked in full.
+    /// The stop is read by the walk itself: on every target it passes over, so
+    /// it does not settle targets after a stop, and after each send. A target
+    /// the walk would emit is never withheld for a stop, since an empty stream
+    /// would read to the consumer as a plan asked in full.
     async fn passed(&mut self) {
         self.since += 1;
         if self.since >= PASSES_PER_YIELD {
@@ -355,13 +310,9 @@ impl Passing {
 
 /// How many targets a [`Dispatcher`] holds in flight unless told otherwise.
 ///
-/// Small enough that the buffer behind it is a few hundred kilobytes rather than
-/// a function of the range, and wide enough to keep the send path fed.
-///
-/// Without a seed it is the spread as well, since a batch is then what gets
-/// shuffled, and at this size neighbouring addresses of a `/24` land far apart.
-/// With one, a [`Permutation`] spreads the whole plan however this is set, so
-/// what this decides is the memory bound.
+/// Keeps the buffer to a few hundred kilobytes whatever the range, and wide
+/// enough to keep the send path fed. Without a seed it is also the shuffle
+/// window, wide enough to spread a `/24`.
 pub const DEFAULT_BATCH: usize = 8192;
 
 /// Streams the targets of a [`TargetMap`] out in shuffled batches, each
@@ -372,16 +323,12 @@ pub struct Dispatcher {
     batch_size: usize,
     /// What an earlier sitting already settled, for a resumed scan.
     ///
-    /// Skipped *after* numbering, never before: a resumed sitting scans a
-    /// subset, and renumbering it would give position 0 to whatever happens to
-    /// be left. The two sittings would then be counting different things.
+    /// Skipped after numbering, so positions mean the same in every sitting.
     settled: Checkpoint,
     /// What the liveness pass found, when one ran.
     ///
-    /// Filtered here rather than by narrowing the plan, for the same reason
-    /// `settled` is. Which hosts answer is a property of the network on the day,
-    /// so a plan narrowed to them is a different plan every sitting, and a
-    /// position counted in one of those means a different target in the next.
+    /// Filtered here and not by narrowing the plan, for the same reason as
+    /// `settled`: which hosts answer changes between sittings.
     screen: Option<Screen>,
 }
 
@@ -392,8 +339,8 @@ struct Screen {
     /// The addresses it asked as many times as its policy allows and heard
     /// nothing from, whose targets are settled without a probe.
     ///
-    /// Not every address outside `live`. The rest are the ones the pass never
-    /// reached a verdict on, and those are left for the next sitting.
+    /// Addresses in neither set got no verdict and are left for the next
+    /// sitting.
     silent: IpSet,
 }
 
@@ -411,8 +358,7 @@ impl Dispatcher {
     /// Skips what `settled` accounts for, for a scan continuing an earlier one.
     ///
     /// The checkpoint must have been written against this exact plan; see
-    /// [`JournalManifest::covers`](crate::journal::manifest::JournalManifest::covers),
-    /// which is what refuses one that was not.
+    /// [`JournalManifest::covers`](crate::journal::manifest::JournalManifest::covers).
     pub fn resuming(mut self, settled: Checkpoint) -> Self {
         self.settled = settled;
         self
@@ -423,30 +369,17 @@ impl Dispatcher {
     /// [`Skipped`](crate::journal::settle::Outcome::Skipped) and recording the
     /// rest as [`Undecided`](crate::journal::settle::Outcome::Undecided).
     ///
-    /// For the port phase of a scan that established which hosts are there
-    /// first. A target whose host was asked and answered nothing is not one the
-    /// scan failed to ask about: the scan asked whether the host was there,
-    /// heard nothing, and declined to spend a probe on each of its ports. That
-    /// decision is evidence, and a resume that had to re-derive it would ask the
-    /// network a question it already answered.
-    ///
-    /// A host in neither set has no such evidence behind it. The pass stopped
-    /// before it reached a verdict, or never could, and settling its ports would
-    /// have a resume skip a host nobody asked about. So `silent` is what
-    /// settles, and an address merely absent from `live` does not.
-    ///
-    /// Without this the plan would have to be narrowed to the live hosts before
-    /// numbering, which would make a position mean something different in every
-    /// sitting.
+    /// For the port phase after a liveness pass. A silent host's ports are
+    /// settled, since the pass asked and heard nothing, so a resume does not ask
+    /// again. A host in neither set got no verdict, and its ports are left for a
+    /// resume.
     pub fn screened(mut self, live: IpSet, silent: IpSet) -> Self {
         self.screen = Some(Screen { live, silent });
         self
     }
 
-    /// Overrides the batch size. A larger batch shuffles addresses over a wider
-    /// window, at the cost of holding more of them in memory at once.
-    ///
-    /// Held to at least one probe; see the module documentation.
+    /// Overrides the batch size. A larger batch shuffles over a wider window and
+    /// holds more in memory. Held to at least one; see the module documentation.
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size;
         self
@@ -461,17 +394,14 @@ impl Dispatcher {
     /// through `ctx`; see the module documentation for what each of the two is.
     ///
     /// The channel holds up to twice the batch size, so the producer can prepare
-    /// the next batch while the current one is still being consumed without letting
-    /// the buffer grow without bound. The task stops early if the receiver is
-    /// dropped or the scan signals a stop, and counts on `ctx` how many of the
-    /// plan's targets it left neither emitted nor settled, for the phase to
-    /// record as [`unreached`](crate::report::ScanPhase::unreached).
+    /// the next batch while the current one is consumed. The task stops early if
+    /// the receiver is dropped or the scan stops, and counts on `ctx` the targets
+    /// it neither emitted nor settled, recorded as
+    /// [`unreached`](crate::report::ScanPhase::unreached).
     ///
-    /// The task settles the targets it does not emit as it walks past them, so
-    /// a caller that checkpoints the scan should drain the receiver to its end
-    /// before the last checkpoint: a receiver dropped early leaves the task
-    /// winding down on its own, and what it settles then may land after the
-    /// checkpoint was written.
+    /// The task settles targets it skips as it walks, so a caller that
+    /// checkpoints should drain the receiver before the last checkpoint;
+    /// otherwise late settlements may miss it.
     pub fn run(self, ctx: &ScanContext) -> mpsc::Receiver<PlannedTarget> {
         self.spawn(ctx).0
     }
@@ -486,19 +416,15 @@ impl Dispatcher {
         let (tx, rx) = mpsc::channel(batch_size.saturating_mul(2));
         let scan_handle = ctx.handle.clone();
         let order = self.order(ctx.order_seed);
-        // The settlements count along the walk this stream takes, whether or
-        // not the session was told the plan it would be taken over. Before the
-        // first target leaves, so every settlement is counted along it.
+        // Settlements count along this walk; set before the first target
+        // leaves.
         if let Some((_, order)) = &order {
             ctx.settlements().walk_along(*order);
         }
         let ctx = ctx.clone();
-        // What the walk owes an account of: every target of the plan an
-        // earlier sitting did not settle. Where it stops early, what it gave
-        // no account of is that less what it emitted and what it settled or
-        // left undecided for the screen, which is a subtraction rather than a
-        // walk of the rest. A plan too large to count has no such total, and
-        // its phase says only that it stopped.
+        // Every target an earlier sitting did not settle. On an early stop, the
+        // unreached count is this minus what was accounted for. A plan too large
+        // to count has no total.
         let owed = match &order {
             Some((_, order)) => Some(order.len()),
             None => self
@@ -518,14 +444,10 @@ impl Dispatcher {
                 }
             };
 
-            // Numbered by position in the plan whichever way they arrive, so
-            // nothing downstream has to re-derive one and no sitting counts
-            // differently from another.
+            // Numbered by plan position whatever the order.
             let stream: Box<dyn Iterator<Item = PlannedTarget> + Send> = match &order {
-                // From where an earlier sitting's walk got to, where it walked
-                // this same order: everything before that is settled, and
-                // stepping over it one position at a time is the one cost of a
-                // resume that grows with how far the first sitting got.
+                // Resume from where an earlier sitting's walk of this order got
+                // to; everything before it is settled.
                 Some((index, order)) => Box::new(
                     order
                         .iter_from(self.walked_along(order))
@@ -546,11 +468,9 @@ impl Dispatcher {
             let mut passing = Passing::default();
             for planned in stream {
                 passing.passed().await;
-                // Read on every target the walk passes over as well as on a
-                // send, because a scan whose liveness pass was stopped, or a
-                // resumed one, has few targets to emit and would otherwise
-                // walk the rest of the plan before noticing. What it leaves is
-                // unsettled, and is asked again.
+                // Checked on passed-over targets too: a resumed or screened walk
+                // emits few targets and would otherwise walk the rest of the
+                // plan before noticing. What it leaves is unsettled.
                 let passes_over = self.settled.is_settled(planned.position)
                     || !ctx.may_ask(&planned.target)
                     || self
@@ -561,21 +481,15 @@ impl Dispatcher {
                     return stopped_short(accounted);
                 }
 
-                // Skipped rather than emitted, and skipped in both orders: what
-                // an earlier sitting settled is a fact about the job, so it is
-                // filtered after the numbering and never before.
+                // Settled by an earlier sitting; filtered after numbering.
                 if self.settled.is_settled(planned.position) {
                     continue;
                 }
 
-                // The machine behind a named address, which the plan's
-                // subtraction by address cannot see: the neighbour tables, or
-                // a reply earlier in the scan, tied this one to a machine the
-                // exclusions name. Or a port this sitting excludes beyond what
-                // the job's plan is numbered without. Settled, since the
-                // policy is the job's and a resume is owed nothing here, and
-                // before the screen, which never heard it and would leave it
-                // for the next sitting.
+                // Excluded beyond the plan's subtraction by address: tied to an
+                // excluded machine (by the neighbour tables or an earlier reply),
+                // or a port this sitting excludes. Settled, so a resume owes it
+                // nothing, and before the screen, which never heard it.
                 if !ctx.may_ask(&planned.target) {
                     ctx.record_outcome(Outcome::Withheld {
                         position: planned.position,
@@ -584,16 +498,14 @@ impl Dispatcher {
                     continue;
                 }
 
-                // Settled where it stands rather than emitted: the position is
-                // known here and nowhere downstream, and a target dropped
-                // without one would stall the watermark on it for the rest of
+                // Settled here, since the position is known only here; a target
+                // dropped without it would stall the watermark for the rest of
                 // the job.
                 if let Some(screen) = &self.screen
                     && !screen.live.contains(&planned.target.ip)
                 {
                     accounted += 1;
-                    // Settled already where the pass filed its address as one
-                    // no route leads to, which settles every port of it.
+                    // Already settled if the pass filed the address unroutable.
                     if ctx.settlements().is_settled(planned.position) {
                         continue;
                     }
@@ -602,10 +514,8 @@ impl Dispatcher {
                             position: planned.position,
                         });
                     } else {
-                        // Neither emitted nor settled, and on no host: never
-                        // reached, as far as the phase's account goes, and
-                        // counted so its probed and unasked ports still add up
-                        // to what it was handed.
+                        // Neither emitted nor settled: counted unreached so the
+                        // phase's tally adds up to the plan.
                         ctx.record_outcome(Outcome::Undecided);
                         ctx.record_unreached(1);
                     }
@@ -656,10 +566,9 @@ impl Dispatcher {
     /// The plan addressed by position, and the order to walk those positions in,
     /// for a scan that was given a seed and a plan that can be addressed.
     ///
-    /// [`None`] where either is missing, which is the batch-shuffled walk. A plan
-    /// [`TargetIndex`] cannot address whole is one whose addresses outrun the
-    /// numbering, and walking a permutation of the part that fits would ask about
-    /// a prefix of the job and report having asked about all of it.
+    /// [`None`] where either is missing, which means the batch-shuffled walk. A
+    /// plan [`TargetIndex`] cannot address whole also gets `None`, since a
+    /// permutation of the part that fits would silently skip the rest.
     fn order(&self, seed: Option<u64>) -> Option<(TargetIndex, Permutation)> {
         let seed = seed?;
         let index = TargetIndex::of(&self.target_map);
@@ -691,9 +600,8 @@ mod tests {
     use crate::scanner::session::ScanSession;
     use std::net::IpAddr;
 
-    /// A batch of zero would reach `mpsc::channel`, which asserts on an empty
-    /// buffer, so the mistake would end the scan in a panic rather than in an
-    /// empty result. Both entry points take the size from the caller.
+    /// A batch of zero would reach `mpsc::channel`, which panics on an empty
+    /// buffer.
     #[tokio::test]
     async fn a_zero_batch_is_read_as_one_probe_rather_than_panicking() {
         let (_session, ctx) = ScanSession::new();
@@ -704,7 +612,7 @@ mod tests {
         assert!(rx.recv().await.is_none(), "an empty plan yields nothing");
     }
 
-    /// The sweep stream takes its size the same way and holds it the same way.
+    /// The sweep stream holds a zero batch to one too.
     #[tokio::test]
     async fn the_address_stream_holds_a_zero_batch_to_one_too() {
         let handle = ScanHandle::new();
@@ -721,11 +629,9 @@ mod tests {
     /// An unseeded dispatcher shuffles within each batch, and emits every
     /// target of the plan once.
     ///
-    /// The shuffle is random, so whether it moved anything is a question of
-    /// probability, and the plan is sized so the answer cannot come out wrong
-    /// by chance: 1,000 targets in batches of 100 are all left in plan order
-    /// with probability (1/100!)^10, where ten targets in batches of four were
-    /// left in order about once in 1,150 runs and failed the suite for it.
+    /// The plan is sized so the random shuffle cannot leave everything in order
+    /// by chance: 1,000 targets in batches of 100 stay in plan order with
+    /// probability (1/100!)^10.
     #[tokio::test]
     async fn dispatcher_emits_all_targets_shuffled() {
         let mut target_map = TargetMap::new();
@@ -747,8 +653,7 @@ mod tests {
             positions.windows(2).any(|pair| pair[0] > pair[1]),
             "every target came out in plan order"
         );
-        // Shuffled within a batch and never across one: each run of 100 is
-        // exactly the batch the plan put there.
+        // Shuffled within a batch only: each run of 100 is the plan's batch.
         for (batch, chunk) in positions.chunks(100).enumerate() {
             let mut sorted = chunk.to_vec();
             sorted.sort_unstable();
@@ -759,13 +664,9 @@ mod tests {
 
     /// The dispatcher emits exactly the plan's own enumeration, as a set.
     ///
-    /// The journal numbers targets by [`TargetMap::iter`] and a resume skips
-    /// positions in that numbering, so a dispatcher that emitted a different
-    /// collection, an extra target, a missed unit, a different pairing, would
-    /// make every position mean something else. That does not fail loudly. It
-    /// resumes a scan that skips the wrong targets and reports success, so it is
-    /// asserted here rather than left to the two walks being the same by
-    /// inspection.
+    /// The journal numbers targets by [`TargetMap::iter`] and a resume skips by
+    /// that numbering, so any difference here would silently make a resume skip
+    /// the wrong targets.
     #[tokio::test]
     async fn the_dispatcher_emits_exactly_the_plans_enumeration() {
         let mut target_map = TargetMap::new();
@@ -790,9 +691,7 @@ mod tests {
             received.push(target);
         }
 
-        // Sorted, because the dispatcher shuffles what it emits and not what it
-        // numbers: the order targets are *asked* in is deliberately scrambled,
-        // the order they are *numbered* in is not.
+        // Sorted, because the emission order is scrambled.
         let key = |t: &Target| (t.ip.to_string(), t.port, t.protocol);
         let mut received_sorted: Vec<Target> =
             received.iter().map(|planned| planned.target).collect();
@@ -829,14 +728,8 @@ mod tests {
         assert!((15..100).contains(&count));
     }
 
-    /// The property the liveness filter exists to keep.
-    ///
-    /// Which hosts answer is a fact about the network on the day, so a plan
-    /// narrowed to them is a different plan every sitting. Numbering has to
-    /// survive that: an address must hold the same position whether its
-    /// neighbour answered or not, or a checkpoint written in one sitting names
-    /// different targets in the next and the resume skips something nothing
-    /// probed.
+    /// An address holds the same position whichever hosts answered, or a
+    /// checkpoint from one sitting would name different targets in the next.
     #[tokio::test]
     async fn liveness_never_moves_a_position() {
         let plan = || {
@@ -871,12 +764,9 @@ mod tests {
         assert_eq!(two.len(), 3);
     }
 
-    /// **A named target the neighbour tables tie to an excluded machine is
-    /// never asked.** The plan subtracts excluded addresses, and an exclusion
-    /// means the machine answering at one, so a target named at another of
-    /// that machine's addresses reached the wire and only its answer was
-    /// dropped. It is settled rather than left, so a resume owes it nothing,
-    /// and before the screen, which never heard it.
+    /// A target the neighbour tables tie to an excluded machine is never asked,
+    /// though the plan only subtracts the excluded address. It is settled, and
+    /// before the screen, which never heard it.
     #[tokio::test]
     async fn a_target_at_another_address_of_an_excluded_machine_is_not_emitted() {
         use crate::model::exclusion::Exclusions;
@@ -914,8 +804,7 @@ mod tests {
 
         // Asked on trust, as a scan whose liveness pass did not run asks.
         assert_eq!(asked(Dispatcher::new(plan())).await, [permitted]);
-        // And behind a liveness pass, which withheld it too and so never
-        // heard it.
+        // And behind a liveness pass, which withheld it too.
         let live: IpSet = "192.0.2.41".parse().expect("a range");
         let screened = Dispatcher::new(plan()).screened(live, IpSet::new());
         assert_eq!(asked(screened).await, [permitted]);
@@ -925,12 +814,9 @@ mod tests {
         assert_eq!(settlements.count(Outcome::Undecided), 0);
     }
 
-    /// **A target the liveness pass left undecided is counted as never
-    /// reached.** It was neither emitted nor settled, and the port phase holds
-    /// no host for it, so without the count the scan's tally of probed and
-    /// unasked ports came up short of the plan by every port of it. A target
-    /// the pass settled as it filed the address, one no route leads to, is
-    /// neither.
+    /// A target the liveness pass left undecided is counted as never reached,
+    /// so the tally adds up to the plan. An unroutable address's targets are
+    /// already settled and not counted.
     #[tokio::test]
     async fn a_target_the_liveness_pass_left_undecided_is_counted_unreached() {
         let mut map = TargetMap::new();
@@ -959,10 +845,8 @@ mod tests {
         assert_eq!(ctx.settlements().count(Outcome::Undecided), 2);
     }
 
-    /// A target whose host answered nothing is settled where it stands. Dropped
-    /// without a position it would stall the watermark on itself for the rest of
-    /// the job, and a scan of a range where most addresses are empty would stop
-    /// being resumable past the out-of-order window.
+    /// A target whose host answered nothing is settled; dropped, it would stall
+    /// the watermark for the rest of the job.
     #[tokio::test]
     async fn a_target_whose_host_is_down_settles_rather_than_vanishing() {
         let mut map = TargetMap::new();
@@ -997,11 +881,8 @@ mod tests {
         );
     }
 
-    /// **Only silence the liveness pass heard settles a target.** A host
-    /// missing from the live set that the pass never reached a verdict on, one
-    /// it stopped before asking, had no strategy for or was refused, is left
-    /// for the next sitting. Settled as down, a resume would skip a host
-    /// nobody asked about and report it silent.
+    /// Only silence the liveness pass heard settles a target. A host it reached
+    /// no verdict on is left for the next sitting.
     #[tokio::test]
     async fn a_host_the_liveness_pass_reached_no_verdict_on_is_left_unsettled() {
         let mut map = TargetMap::new();
@@ -1011,8 +892,7 @@ mod tests {
         ));
 
         let (_session, ctx) = context();
-        // .1 answered, .2 was asked and stayed silent, .3 and .4 were never
-        // asked.
+        // .1 answered, .2 stayed silent, .3 and .4 were never asked.
         let mut rx = Dispatcher::new(map)
             .screened(
                 "192.0.2.1".parse::<IpSet>().expect("an address"),
@@ -1050,10 +930,7 @@ mod tests {
         );
     }
 
-    /// A stop arriving during the liveness pass leaves the port phase few hosts
-    /// to emit, so the walk has to notice it between skipped targets as well as
-    /// on a send, or it walks the rest of a wide plan after the caller asked it
-    /// to stop.
+    /// A stopped walk notices between skipped targets, not only on a send.
     #[tokio::test]
     async fn a_stopped_scan_stops_walking_targets_it_would_skip() {
         let (session, ctx) = context();
@@ -1071,20 +948,17 @@ mod tests {
         );
     }
 
-    /// **A walk passing over targets hands its worker back.** A walk that
-    /// sends nothing awaits nothing, and on a runtime of one thread, which is
-    /// what a test and many a caller runs, nothing else runs until it is done:
-    /// not the events, and not whatever would ask the scan to stop. So the
-    /// stop here comes from a task that can only run once the walk yields,
-    /// and a walk that never did settles the whole plan first.
+    /// A walk passing over targets yields its worker. The stop comes from a task
+    /// that can only run on this single-threaded runtime once the walk yields;
+    /// a walk that never yielded would settle the whole plan first.
     #[tokio::test]
     async fn a_walk_passing_over_targets_lets_a_stop_in() {
         let (session, ctx) = context();
         let handle = session.handle().clone();
         let settled = ctx.clone();
 
-        // A million targets, every address of them found silent, so the walk
-        // settles each where it stands and sends none.
+        // A million targets at silent addresses: the walk settles each and
+        // sends none.
         let silent: IpSet = "192.0.2.0/24".parse().expect("a prefix");
         let mut map = TargetMap::new();
         map.add_unit(TargetSet::new(
@@ -1095,8 +969,7 @@ mod tests {
             .screened(IpSet::new(), silent)
             .spawn(&ctx);
 
-        // Asks for the stop once the walk has begun, whichever of the two the
-        // runtime happens to start first.
+        // Asks for the stop once the walk has begun.
         let stopper = tokio::spawn(async move {
             while settled
                 .settlements()
@@ -1118,10 +991,8 @@ mod tests {
         );
     }
 
-    /// **Every settlement the walk makes is in once its task is awaited.** A
-    /// scanner that stops early drops the receiver while the walk may still be
-    /// settling the targets of hosts found down, and a scan that ended without
-    /// waiting for it would write its last checkpoint without them.
+    /// Every settlement the walk makes is in once its task is awaited, even
+    /// after the receiver was dropped early.
     #[tokio::test]
     async fn every_settlement_the_walk_makes_is_in_once_it_is_awaited() {
         let (_session, ctx) = context();
@@ -1168,8 +1039,7 @@ mod tests {
         asked
     }
 
-    /// A rearrangement asks about every target and asks about none of them
-    /// twice, which is the difference between an order and a sample.
+    /// A seeded scan asks about every target exactly once.
     #[tokio::test]
     async fn a_seeded_scan_asks_about_every_target_exactly_once() {
         let mut map = TargetMap::new();
@@ -1198,13 +1068,8 @@ mod tests {
         );
     }
 
-    /// The property the journal rests on, and the one a rearrangement is most
-    /// likely to break: a target's position is where the plan holds it, never
-    /// where the scan got round to asking about it.
-    ///
-    /// Renumbering by emission order would leave every checkpoint naming a
-    /// different target in the next sitting, and a resume would skip ground
-    /// nothing probed while reporting the job done.
+    /// A target's position is its place in the plan, not in the emission order;
+    /// the journal depends on it.
     #[tokio::test]
     async fn a_seeded_scan_numbers_by_the_plan_and_not_by_the_order() {
         let mut map = TargetMap::new();
@@ -1236,12 +1101,8 @@ mod tests {
         }
     }
 
-    /// A batch-local shuffle spreads neighbours within one batch, eight thousand
-    /// targets by default, and walks everything above that in plan order, so the
-    /// first batch of a range wider than a batch is always drawn from its lowest
-    /// addresses and a sensor watching the range sees a monotonic sweep.
-    ///
-    /// The first batch out of a rearranged plan is drawn from all of it.
+    /// The first batch out of a seeded scan is drawn from the whole plan, not
+    /// from its lowest addresses as a batch-local shuffle's would be.
     #[tokio::test]
     async fn a_seeded_scan_does_not_walk_the_plan_a_batch_at_a_time() {
         const BATCH: usize = 64;
@@ -1262,14 +1123,8 @@ mod tests {
         );
     }
 
-    /// A seeded scan asks in exactly the order its seed names, batch or no
-    /// batch, and a cursor counting along that order holds nothing while it
-    /// settles.
-    ///
-    /// The cursor's set holds whatever settles ahead of its walk watermark, so
-    /// a batch reshuffled on its way out would keep up to a batch of positions
-    /// there, in memory and in every checkpoint, and a seed would name a
-    /// different order in every run.
+    /// A seeded scan asks in exactly the seed's order, whatever the batch, so a
+    /// cursor counting along it never holds a position above its watermark.
     #[tokio::test]
     async fn a_seeded_scan_asks_in_the_seeds_order_and_its_cursor_stays_empty() {
         use crate::journal::cursor::Cursor;
@@ -1291,13 +1146,9 @@ mod tests {
         }
     }
 
-    /// A session built without a plan still counts its settlements along the
-    /// walk its dispatcher takes.
-    ///
-    /// Such a session draws a seed like any other, so its dispatcher walks a
-    /// rearrangement of the plan; counted in plan order alone, nearly every
-    /// answer would wait above the watermark, half the plan by the halfway
-    /// mark, held in memory and copied into every checkpoint.
+    /// A session built without a plan still counts its settlements along its
+    /// dispatcher's walk; counted in plan order, nearly every answer would wait
+    /// above the watermark.
     #[tokio::test]
     async fn a_session_told_no_plan_counts_along_the_walk_its_dispatcher_takes() {
         use crate::journal::settle::Outcome;
@@ -1321,9 +1172,7 @@ mod tests {
         assert_eq!(most_waiting, 0, "answers waited above the watermark");
     }
 
-    /// A resumed sitting asks about what is left and nothing else, in whatever
-    /// order the seed gives. The settled filter reads a position, so it does not
-    /// care which order they arrive in, and this is what says so.
+    /// A resumed seeded sitting asks about exactly what is left.
     #[tokio::test]
     async fn a_resumed_seeded_scan_asks_only_what_is_left() {
         use crate::journal::cursor::Checkpoint;
@@ -1346,10 +1195,8 @@ mod tests {
         assert_eq!(positions, expected);
     }
 
-    /// A sitting resumed from a checkpoint counted along its own walk picks
-    /// the walk up where the earlier one left it, and still asks exactly what
-    /// is left: nothing the walk passed, nothing the list names, everything
-    /// else.
+    /// A sitting resumed from a checkpoint counted along its own walk picks the
+    /// walk up where the earlier one left it, and asks exactly what is left.
     #[tokio::test]
     async fn a_resumed_walk_asks_exactly_what_the_earlier_one_left() {
         use crate::journal::cursor::Cursor;
@@ -1404,15 +1251,8 @@ mod tests {
         (received, ctx.take_unreached())
     }
 
-    /// **A walk the scan stopped counts what it never reached.**
-    ///
-    /// Every target the plan holds is emitted, settled or counted here: the
-    /// report's account of a stopped port phase is the targets it probed, the
-    /// ports on their hosts as unasked, and this count. Without it the rest of
-    /// the plan is on no host and in no count, and a scan of every port of a
-    /// host stopped a second in reads thousands of targets short of what it
-    /// was asked, with nothing saying where they went. In both of the orders a
-    /// plan is walked in.
+    /// A stopped walk counts what it never reached, so every target is emitted,
+    /// settled or counted. In both orders.
     #[tokio::test]
     async fn a_stopped_walk_counts_the_targets_it_never_reached() {
         for seed in [Some(0x5EED), None] {
@@ -1426,10 +1266,9 @@ mod tests {
         }
     }
 
-    /// A resumed and screened walk owes an account only of what an earlier
-    /// sitting left: what it emitted, what it settled for the screen, and the
-    /// rest counted as never reached, which holds what it left undecided for
-    /// the screen as well as what the stop cut off.
+    /// A resumed, screened, stopped walk accounts for exactly what the earlier
+    /// sitting left: emitted, settled for the screen, or unreached (undecided
+    /// targets included).
     #[tokio::test]
     async fn a_stopped_resumed_walk_counts_only_what_it_owed() {
         use crate::journal::cursor::Cursor;
@@ -1442,8 +1281,7 @@ mod tests {
         let settled = earlier.checkpoint();
 
         let (session, ctx) = ordered(0x1234);
-        // Half the plan's addresses live, a quarter found silent and the rest
-        // undecided, so the walk settles both ways as it passes.
+        // Half the addresses live, a quarter silent, the rest undecided.
         let live: IpSet = "192.0.0.0/21".parse().expect("a prefix");
         let silent: IpSet = "192.0.8.0/22".parse().expect("a prefix");
         let dispatcher = Dispatcher::new(wide(20))
@@ -1459,13 +1297,8 @@ mod tests {
         assert_eq!(received + skipped + unreached, 4_096 - 1_500);
     }
 
-    /// A sweep counted in a plan's addresses walks the plan's order over
-    /// whatever part of it this sitting was handed, so a resumed sweep asks
-    /// its remainder in the order the first sitting was asking the whole.
-    ///
-    /// That is what lets its answers be counted along the walk: a permutation
-    /// of the remainder alone is another order, whose answers would wait in
-    /// the settlements' set rather than moving a watermark.
+    /// A sweep of part of a plan walks the plan's order, so a resumed sweep asks
+    /// its remainder in the first sitting's order.
     #[tokio::test]
     async fn a_sweep_of_part_of_a_plan_walks_the_plans_order() {
         let plan: IpSet = "192.0.2.0/24".parse().expect("a prefix");
@@ -1495,9 +1328,8 @@ mod tests {
         assert_eq!(swept, expected);
     }
 
-    /// A plan whose addresses outrun the numbering cannot be addressed by
-    /// position, so it is walked in plan order rather than part of it being
-    /// rearranged and the rest quietly dropped.
+    /// A plan whose addresses outrun the numbering is walked whole, in plan
+    /// order.
     #[tokio::test]
     async fn a_plan_too_wide_to_address_is_still_walked_whole() {
         let mut map = TargetMap::new();
@@ -1513,9 +1345,8 @@ mod tests {
         let (_session, ctx) = ordered(0x5EED);
         let mut rx = Dispatcher::new(map).with_batch_size(4).run(&ctx);
 
-        // The wide unit does not finish, so this reads the first batch and
-        // stops. What it checks is that the four targets of the narrow unit are
-        // all there, which the permuted path would have emitted alone.
+        // The wide unit never finishes, so read the first batch: the narrow
+        // unit's four targets.
         let mut asked = Vec::new();
         for _ in 0..4 {
             asked.push(rx.recv().await.expect("the narrow unit is emitted"));
@@ -1527,9 +1358,7 @@ mod tests {
         assert_eq!(positions, vec![0, 1, 2, 3]);
     }
 
-    /// The sweep gets the same two orders and the same guarantee about what it
-    /// covers. It is also where the difference shows most, since a sweep walks a
-    /// whole range and is the phase somebody watches on the wire.
+    /// A seeded sweep covers the whole set once, in a scrambled order.
     #[tokio::test]
     async fn a_seeded_sweep_covers_the_whole_set_without_walking_it() {
         const BATCH: usize = 32;
@@ -1547,9 +1376,8 @@ mod tests {
 
         assert_eq!(swept.len(), expected.len());
 
-        // The batch-shuffled walk draws its first batch from the first `BATCH`
-        // addresses of the range and no others, so this is what tells the two
-        // apart rather than merely showing the order is not ascending.
+        // A batch-local shuffle draws its first batch only from the first
+        // `BATCH` addresses.
         let beyond = swept[..BATCH]
             .iter()
             .filter(|ip| match ip {
@@ -1568,8 +1396,7 @@ mod tests {
         assert_eq!(sorted, expected, "an address was swept twice or not at all");
     }
 
-    /// Every target the dispatcher emitted, by address, with the position it
-    /// carried. `live` narrows what is emitted and must never renumber it.
+    /// Every target the dispatcher emitted, by address, with its position.
     async fn numbered(
         map: TargetMap,
         live: Option<IpSet>,

@@ -8,77 +8,53 @@
 
 //! # UDP Probe Payloads
 //!
-//! What to put *inside* a UDP probe so that the service on the other side has
-//! a reason to answer it.
+//! What to put inside a UDP probe so the service on the other side has a reason
+//! to answer.
 //!
-//! ## Why an empty datagram is not enough
-//!
-//! A TCP scanner gets an answer for free: the handshake is part of the
-//! transport, so a SYN is answered by a stack that knows nothing about the
-//! service above it. UDP has no such layer. An open port answers only if the
-//! *application* recognizes what arrived, and an application handed zero bytes
-//! almost always discards them without a word.
-//!
-//! So a payload-free UDP scan can only ever observe the ICMP half - closed
-//! ports - while every genuinely open port falls to the deadline and reports
-//! [`OpenOrNoReply`](crate::model::port::PortState::OpenOrNoReply). That
-//! is a correct verdict for what was asked, and a nearly useless one. Sending
-//! something a service will recognize is what turns "no evidence" into
-//! evidence.
+//! An open UDP port answers only if the application recognizes what arrived, and
+//! most discard an empty datagram silently. A payload-free scan sees only the
+//! ICMP errors from closed ports; every open one times out as
+//! [`OpenOrNoReply`](crate::model::port::PortState::OpenOrNoReply).
 //!
 //! ## Where the payloads live
 //!
 //! In the fingerprint corpus, `assets/fingerprinting/**/*.toml`, as
-//! `protocol = "udp"` entries beside each service's match rules - not in a
-//! table of their own.
+//! `protocol = "udp"` entries beside each service's match rules. A scan payload
+//! and a fingerprint probe are the same packet for these services, so adding a
+//! protocol is one file, `build.rs` validates the payloads with the rest of the
+//! corpus, and the reply a probe draws sits next to the rules that could
+//! identify it.
 //!
-//! They are the same artifact. A scan payload has to elicit *any* reply; a
-//! fingerprint probe has to elicit a *distinguishing* one; and for these
-//! services that is one packet, authored once. Keeping them together means
-//! adding support for a protocol is one file rather than two, the corpus's
-//! build-time validation covers them (`build.rs` rejects a malformed payload
-//! outright), and - the part that matters next - the reply a probe draws is
-//! already sitting next to the rules that could identify it. A `version.bind`
-//! response carries the BIND version string; today the scan counts it as
-//! evidence the port is open and discards it.
+//! Scanners ask this module what to send, so the payload-per-port policy has one
+//! home and the scanners carry no protocol knowledge.
 //!
-//! This module is the seam. Scanners ask it what to send, and it answers from
-//! the corpus, so the "which payload for this port" policy has one home and the
-//! scanners keep no protocol knowledge of their own.
+//! ## What an answer proves
 //!
-//! ## And what an answer proves
-//!
-//! [`declared_role`] is the same seam read in the other direction. A reply is
-//! already counted as evidence the port is open; for a handful of ports it is
-//! also proof of what the host *is*, and that proof is in the reply's own
-//! protocol rather than in the port number it came from. Both scanners that
-//! send UDP probes, the raw one and the unprivileged fallback, ask here, so a
-//! scan concludes the same roles whichever transport it had available.
+//! [`declared_role`] and [`declared_names`] read the reply. For a few ports the
+//! reply's own protocol proves what the host is. The raw UDP scanner and the
+//! unprivileged fallback both ask here, so a scan concludes the same roles on
+//! either transport.
 
 use crate::fingerprint::SignatureDb;
 use crate::model::host::{HostName, NameKind, NameSource, NetworkRole};
 use crate::protocols::{dns, netbios};
 
-/// Where a name server answers. The rest of the vocabulary a role is read from
-/// lives beside each protocol's own parser.
+/// The DNS port.
 const DNS: u16 = 53;
 
-/// Where the NetBIOS name service answers, and where a Windows machine lists
-/// every name it has registered.
+/// The NetBIOS name service port, where a Windows machine lists every name it
+/// has registered.
 const NETBIOS_NS: u16 = 137;
 
 /// The payload to send when probing `port`.
 ///
-/// Returns an empty slice for a port no service registers a UDP probe for. The
-/// scan still works there - a closed port answers with an ICMP error either
-/// way - but an open one has nothing to react to and can only ever be reported
+/// Returns an empty slice for a port with no registered UDP probe. A closed port
+/// there still answers with an ICMP error, but an open one can only be reported
 /// `OpenOrNoReply`.
 ///
-/// Keyed on the destination port alone, because it is the only thing known
-/// about a target before anything answers, which is the whole difficulty of UDP
-/// scanning. Where a port registers several probes the first is used: sending
-/// all of them would multiply the traffic for a question already answered by
-/// any single reply.
+/// Keyed on the destination port alone, the only thing known before anything
+/// answers. Where a port registers several probes the first is used, since any
+/// single reply answers the question.
 pub fn for_port(port: u16) -> &'static [u8] {
     SignatureDb::global()
         .udp_probe_payloads(port)
@@ -89,22 +65,16 @@ pub fn for_port(port: u16) -> &'static [u8] {
 /// What a reply to the probe for `port` proves the host *does*, if its own
 /// protocol says so.
 ///
-/// The port is which question to ask, never the answer. UDP/53 open means
-/// something is bound there; a DNS response means a name server answered. The
-/// first is a port verdict and already recorded as one, and promoting it to a
-/// role would put an infrastructure marking on every host with a socket open.
+/// The port only picks which parser reads the reply. An open UDP/53 is a port
+/// verdict; only a DNS response makes the host a name server.
 ///
-/// One arm per role, and the arms that are missing are missing on purpose.
 /// [`NtpServer`](NetworkRole::NtpServer) and [`SnmpAgent`](NetworkRole::SnmpAgent)
-/// have probes in the corpus already, 123 and 161 are both sent, so each is
-/// one validated reply away from being concluded here, and neither is concluded
-/// until that reply is actually read.
+/// have no arm yet: their probes are sent, but their replies are not parsed for
+/// a role.
 pub fn declared_role(port: u16, reply: &[u8]) -> Option<NetworkRole> {
     match port {
         DNS => dns::is_response(reply).then_some(NetworkRole::DnsServer),
-        // The name table names the machine's part in a domain. See
-        // [`netbios::NameTable::domain_controller`] for which suffixes say so
-        // and why the others do not.
+        // See `netbios::NameTable::domain_controller` for which suffixes count.
         NETBIOS_NS => netbios::node_status(reply)
             .is_some_and(|table| table.domain_controller())
             .then_some(NetworkRole::DomainController),
@@ -115,16 +85,12 @@ pub fn declared_role(port: u16, reply: &[u8]) -> Option<NetworkRole> {
 /// The names a reply to the probe for `port` gives for the host, where its
 /// protocol states any.
 ///
-/// The counterpart to [`declared_role`], read from the same reply by the same
-/// scanners, so a scan records the same names whichever transport it had
-/// available. A name table is the one reply that states any: the name the
-/// machine registered for its workstation service, and the domain or
-/// workgroup it joined. See [`netbios::NameTable::workstation`] for why the
-/// group bit tells the two apart.
+/// The counterpart to [`declared_role`]. Only a NetBIOS name table states names:
+/// the machine's workstation name and the domain or workgroup it joined (see
+/// [`netbios::NameTable::workstation`] for how the group bit separates them).
 ///
-/// Returned rather than folded into the port's text because they are the
-/// host's names, which a report masks where it is asked to, and the port's
-/// text is not masked anywhere.
+/// Returned separately from the port's text because host names are masked in a
+/// report on request and port text is not.
 pub(crate) fn declared_names(port: u16, reply: &[u8]) -> Vec<HostName> {
     match port {
         NETBIOS_NS => netbios::node_status(reply)
@@ -155,20 +121,16 @@ pub(crate) fn declared_names(port: u16, reply: &[u8]) -> Vec<HostName> {
 mod tests {
     use super::*;
 
-    /// Where a time server answers, and where its own account of itself comes
-    /// back only to a second kind of question.
+    /// NTP, which describes itself only in answer to a second kind of probe.
     const NTP: u16 = 123;
 
-    /// Where an L2TP concentrator answers, and where asking the same thing
-    /// twice gets an acknowledgement the second time.
+    /// L2TP, where a repeated request draws only an acknowledgement.
     const L2TP: u16 = 1701;
 
     /// The ports the shipped corpus is expected to carry a UDP probe for.
     ///
-    /// Asserting the list rather than reading it back from the corpus is the
-    /// point: these are the ports the scanner can report `Open` on, so losing
-    /// one to an editing accident is a silent regression in coverage, not a
-    /// test that quietly adjusts to it.
+    /// Listed by hand so that a probe lost from the corpus fails this test; these
+    /// are the ports a UDP scan can report `Open` on.
     const EXPECTED: &[u16] = &[53, 123, 137, 161, 1900, 5353];
 
     #[test]
@@ -181,24 +143,16 @@ mod tests {
         }
     }
 
-    /// The engine's own question with the QR bit set: what a name server sends
-    /// back, built from the probe so the test cannot drift from what is asked.
+    /// The engine's own query with the QR bit set, as a name server returns it.
     fn dns_response() -> Vec<u8> {
         let mut message = for_port(DNS).to_vec();
         message[2] |= 0b1000_0000;
         message
     }
 
-    /// A role is read from the reply, and the port only decides which question
-    /// to ask of it.
-    ///
-    /// Two of the three cases here are the ones that would put the marking on a
-    /// host that never earned it. **Our own probe echoed back** is a query, not
-    /// an answer, and a reflector or a proxy that returns it must not be read as
-    /// a name server. **A DNS message on 5353** is mDNS, which nearly every
-    /// laptop and printer on a segment speaks: sharing DNS's framing does not
-    /// make a responder a nameserver, and reading it as one would put the role
-    /// on half a network.
+    /// The role comes from the reply. Our own query echoed back by a reflector is
+    /// not an answer, and a DNS message on 5353 is mDNS, which nearly every laptop
+    /// and printer speaks.
     #[test]
     fn a_role_is_read_from_the_reply_and_not_from_the_port() {
         assert_eq!(
@@ -221,9 +175,8 @@ mod tests {
         );
     }
 
-    /// A node-status answer listing the domain controllers group, in the layout
-    /// a responder writes it. Built here rather than imported so this test is
-    /// about what `declared_role` concludes and not about the parser's fixtures.
+    /// A node-status answer listing the domain controllers group, built here so
+    /// the test does not depend on the parser's fixtures.
     fn node_status_from_a_controller() -> Vec<u8> {
         let mut out = vec![0x80, 0xf0, 0x84, 0x00];
         out.extend_from_slice(&0u16.to_be_bytes()); // QDCOUNT
@@ -244,14 +197,8 @@ mod tests {
         out
     }
 
-    /// The same standard the DNS arm is held to, one protocol over: the name
-    /// table is the evidence, and an open 137 is not.
-    ///
-    /// The third case is the one that matters most. A workstation answers this
-    /// probe as readily as a controller does, with a table that is the
-    /// same shape and says something else entirely, so a role read from the
-    /// reply arriving rather than from what it holds would mark every Windows
-    /// machine on a segment as running the domain.
+    /// The name table is the evidence, not an open 137. A workstation answers
+    /// with a table of the same shape, and must not be marked a controller.
     #[test]
     fn a_name_table_names_a_controller_and_a_workstation_is_not_one() {
         assert_eq!(
@@ -278,10 +225,9 @@ mod tests {
         assert_eq!(declared_role(NETBIOS_NS, &[]), None);
     }
 
-    /// A name table names the machine by its workstation name and the
-    /// workgroup by the group registered under the same suffix; the server
-    /// service's copy of the machine's name, and a group under another
-    /// suffix, name nothing more. Anything but a name table names nothing.
+    /// The machine is named by its workstation name and the workgroup by the
+    /// group under the same suffix; other entries add nothing. Anything but a
+    /// name table names nothing.
     #[test]
     fn a_name_table_names_the_machine_and_the_workgroup_it_joined() {
         use crate::protocols::netbios::tests::response;
@@ -317,17 +263,10 @@ mod tests {
         assert!(declared_names(53, &table).is_empty(), "keyed on the port");
     }
 
-    /// NTP registers two probes, and which is first matters.
-    ///
-    /// A port scan sends one datagram and stops, so the first probe has to be
-    /// the one a daemon is most likely to answer: an ordinary client request,
-    /// which every server replies to. The control message is the second, and
-    /// the service pass is what asks it, because many daemons carry `noquery`
-    /// and would leave the port looking silent if it were asked first.
-    ///
-    /// This is the pairing a scan of a real ntpd showed was wrong. The service
-    /// pass took `first` and stopped, so the control message never went out and
-    /// the rules that had just been given a decoder still read nothing.
+    /// NTP registers two probes, and the order matters. A port scan sends only
+    /// the first, so it is the client request every server answers. The control
+    /// message comes second for the service pass, since many daemons carry
+    /// `noquery` and ignore it.
     #[test]
     fn ntp_registers_a_client_request_first_and_a_control_message_behind_it() {
         const MODE: u8 = 0b0000_0111;
@@ -356,11 +295,9 @@ mod tests {
 
     /// L2TP registers two requests that differ only in the tunnel they name.
     ///
-    /// The protocol remembers. A concentrator answers a repeat of a tunnel
-    /// request with a zero-length acknowledgement rather than with its own name,
-    /// and a scan sends this port a probe twice: once to establish it is open,
-    /// once to identify it. The second request exists so the identification pass
-    /// has one the concentrator has not seen.
+    /// A concentrator answers a repeated tunnel request with a zero-length
+    /// acknowledgement. A scan probes the port twice (open, then identify), so
+    /// the identification pass needs a request the concentrator has not seen.
     #[test]
     fn l2tp_registers_two_requests_naming_different_tunnels() {
         let payloads = SignatureDb::global().udp_probe_payloads(L2TP);
@@ -379,8 +316,8 @@ mod tests {
         assert!(for_port(9_999).is_empty());
     }
 
-    /// Probes go to one port at a time, so a payload big enough to fragment
-    /// costs more than the single reply it can return.
+    /// A payload big enough to fragment costs more than the one reply it can
+    /// return.
     #[test]
     fn payloads_fit_in_one_datagram() {
         for &port in EXPECTED {
@@ -391,9 +328,8 @@ mod tests {
         }
     }
 
-    /// The escapes authored in TOML have to survive the build as raw bytes. A
-    /// payload that arrived at the wire still spelled `\x30` would be discarded
-    /// by every target, and the scan would read it back as silence.
+    /// Escapes authored in TOML must reach the wire as raw bytes; a literal
+    /// `\x30` would be ignored by every target and read back as silence.
     #[test]
     fn payloads_are_decoded_to_wire_bytes() {
         let snmp = for_port(161);
@@ -410,9 +346,7 @@ mod tests {
         );
     }
 
-    /// mDNS is a separate service definition that reuses the DNS question, so
-    /// the two ports must resolve to the same bytes. If they ever diverge it
-    /// should be a deliberate edit, not a copy that drifted.
+    /// mDNS is a separate service definition that reuses the DNS question.
     #[test]
     fn mdns_reuses_the_dns_question() {
         assert_eq!(for_port(5353), for_port(53));

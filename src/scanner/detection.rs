@@ -8,53 +8,38 @@
 
 //! # Detection phase
 //!
-//! Named apart from [`crate::detect`], which is the corpus itself. One is what
-//! a detection *is*, the other is when it runs, and one name for both would
-//! leave a reader unable to tell which of the two is meant.
+//! When the corpus in [`crate::detect`] runs during a scan.
 //!
-//! Runs the authored detection corpus, the Tier-1 [flows](crate::detect::flow)
-//! and the Tier-2 [compute modules](crate::detect::compute), against the open
-//! ports a scan has found and identified, recording a [`Finding`] wherever one
-//! fires. It is the active counterpart to the [CVE correlator](crate::cve): the
-//! correlator reads the service versions the scan gathered and joins them against
-//! known vulnerabilities without touching the target, while this runs the corpus
-//! over each port: a flow opening a fresh connection to decide, a module reading
-//! the response the scan already drew or speaking its own.
+//! Runs the Tier-1 [flows](crate::detect::flow) and Tier-2
+//! [compute modules](crate::detect::compute) against the open ports a scan has
+//! found and identified, recording a [`Finding`] wherever one fires. The
+//! [CVE correlator](crate::cve) joins gathered versions against known
+//! vulnerabilities without touching the target; this module asks each port.
 //!
-//! ## Compute modules over the same port
+//! ## Compute modules
 //!
 //! Both tiers run on the blocking pool for each interested port. A compute module
-//! is served through [`LiveCapabilities`], the same socket-backed budget a flow's
-//! probe enforces, when it *speaks*, and reads the port's gathered responses when
-//! it is *passive*. Those responses are what the pass that named the service
-//! drew and [kept](crate::scanner::session) for this phase: the [service
-//! phase](crate::scanner::service) after a raw scan, the [connect
-//! scanner](crate::scanner::strategy::connect) inline while it still held the
-//! stream. Either way a passive module adds no traffic of its own: it reads
-//! what the scan already had.
+//! that speaks is served through [`LiveCapabilities`], budgeted like a flow's
+//! probe. A passive one reads the responses the pass that named the service
+//! [kept](crate::scanner::session) for this phase (the
+//! [service phase](crate::scanner::service) after a raw scan, the
+//! [connect scanner](crate::scanner::strategy::connect) inline), so it adds no
+//! traffic.
 //!
 //! ## The socket a flow speaks through
 //!
-//! The flow interpreter is synchronous and interleaves I/O with its own logic (a
-//! conditional step sends only after an earlier one matched), so it does not fit
-//! the reactor's collect-then-analyse shape. It runs instead on the blocking pool
-//! ([`spawn_blocking`](tokio::task::spawn_blocking)), where a blocking
-//! [`SocketProbe`] serves its `speak`. The connection is to the scanned address,
-//! as [service detection](crate::scanner::service) makes it, in the clear or
-//! wrapped in TLS when the port answered inside a tunnel: the probe is bound to
-//! the one port it was built for, so a flow can reach nothing else.
+//! The flow interpreter is synchronous and interleaves I/O with its logic (a
+//! conditional step sends only after an earlier one matched), so it runs on the
+//! blocking pool ([`spawn_blocking`](tokio::task::spawn_blocking)) with a
+//! blocking [`SocketProbe`]. The probe connects to the scanned address, in TLS
+//! when the port answered inside a tunnel, and is bound to that one port.
 //!
-//! ## What this module adds to the probe
+//! The probe is public in [`detect::flow`](crate::detect::flow), for running one
+//! detection against one port without a scan. A scan adds the socket count:
+//! `Pooled` holds one of the phase's permits for the flow's whole run.
 //!
-//! The probe belongs to [`detect::flow`](crate::detect::flow) and is public, so a
-//! caller can run one detection against one port without a scan. What a scan
-//! needs on top is the socket count: `Pooled` wraps the probe with one of the
-//! phase's permits, held for the flow's whole run.
-//!
-//! The budget is the probe's own. A flow's declared `max_bytes`, `max_millis`
-//! and `max_connections` become the [`Budget`] it is built with, and one that
-//! declares none falls back to this runtime's default ceilings rather than to
-//! no ceiling.
+//! A flow's declared `max_bytes`, `max_millis` and `max_connections` become its
+//! [`Budget`]; one that declares none gets this runtime's default ceilings.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -86,41 +71,30 @@ use crate::report::{Pass, ScannerKind};
 use crate::scanner::pool::ProbePool;
 use crate::scanner::session::{ScanContext, Stage, Tapes};
 
-/// One port's detections as they travel off the blocking pool: the host key, the
-/// port and protocol, the findings drawn, and the detections that did not finish
-/// with why, so the pool can file each.
+/// One port's result off the blocking pool: host key, port, protocol, findings,
+/// and the detections that did not finish.
 type PortResult = (ScopedIp, u16, Protocol, Vec<Finding>, Vec<Unfinished>);
 
 /// A detection that did not finish on a port, sorted by whether anything broke.
 ///
-/// Both reach the report the same way, as work the phase did not complete, since
-/// either leaves the port's question open and a report read for coverage has to
-/// count both. What differs is the entry's mark and what the console calls them.
-/// A budget that ran out is the detection's own declared ceiling holding against
-/// a target that cost more than it allowed, and a socket refused is the
-/// process's file limit: nothing failed, and calling it a failed scanner sends a
-/// reader looking for a fault that is not there.
+/// All reach the report as work the phase did not complete. They differ in the
+/// entry's mark and the console line: a spent budget or a refused socket is not
+/// a failure, and is not reported as one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Unfinished {
-    /// The detection's own budget, its time, bytes, connections or fuel, was
-    /// spent before it had its answer. Carries the detection's id and which
-    /// budget, as a phrase.
+    /// The detection's own budget (time, bytes, connections or fuel) ran out.
+    /// Carries the detection's id and which budget, as a phrase.
     ///
-    /// Heard on the console only from the first verbosity up: a budget is the
-    /// detection's own declared bound, not something the reader can change, and
-    /// the run's closing count of detections that did not finish already says
-    /// coverage fell short.
+    /// On the console only from verbosity 1: the reader cannot change the
+    /// budget, and the closing count already says coverage fell short.
     CutShort { id: String, why: String },
     /// The process's file limit left the detection without a socket before it
     /// had its answer. Carries the detection's id and how far it got, as a
     /// phrase.
     ///
-    /// Apart from [`CutShort`](Self::CutShort) because its remedy is the
-    /// caller's, raising the limit, and so it is said at every verbosity.
-    /// Apart from [`PortGivenUp`](Self::PortGivenUp) because the port was
-    /// never asked: a full table holds an exchange as long as a dead port
-    /// does, and naming the port would send the reader to the target for
-    /// what the limit did.
+    /// Reported at every verbosity, because the caller can raise the limit. Kept
+    /// apart from [`PortGivenUp`](Self::PortGivenUp) because the port was never
+    /// asked, and blaming it would send the reader to the target.
     Starved { id: String, why: String },
     /// The detection broke, or the runtime refused it something it asked for.
     Failed { id: String, why: String },
@@ -128,32 +102,26 @@ enum Unfinished {
     /// had its answer. Carries the detection's id and how far it got, as a
     /// phrase.
     ///
-    /// Apart from [`CutShort`](Self::CutShort) because it is the port's doing
-    /// rather than the detection's, and so says the same thing about every
-    /// detection gated onto the port: a web port given up on leaves dozens.
+    /// The port's doing, so it applies to every detection gated onto the port; a
+    /// web port given up on leaves dozens.
     PortGivenUp { id: String, why: String },
     /// The scan stopped, or the host ran out of the time the scan gave it,
     /// while one of the detection's exchanges waited for its turn under the
     /// scan's pacing.
     ///
-    /// Filed as neither a shortfall of the detection nor one of the port,
-    /// since the scan's own record already says what happened, once for the
-    /// whole pass or the whole host: the pass a stop left, which this names
-    /// if nothing else has, or the host
-    /// [`host_expired`](ScanContext::host_expired) filed as left early.
+    /// Filed as neither the detection's nor the port's shortfall: the scan's own
+    /// record already names the stopped pass (this names it if nothing else has)
+    /// or the host [`host_expired`](ScanContext::host_expired) filed as left
+    /// early.
     Withheld,
 }
 
 impl Unfinished {
     /// Files one port's unfinished detections against it.
     ///
-    /// Each is its own report entry, since a report read for coverage counts
-    /// the questions left open. The console hears a port given up on once,
-    /// however many detections it left, and a port's detections the file limit
-    /// starved once: what a reader acts on is the port or the limit, and a
-    /// line per detection buries the rest of the run under dozens saying the
-    /// same thing. Each detection's own line is kept for the verbosity that
-    /// shows a line per exchange.
+    /// Each is its own report entry. On the console, a port given up on and a
+    /// port starved by the file limit get one line each, however many
+    /// detections they left; per-detection lines appear at verbosity 2.
     fn file_all(unfinished: &[Unfinished], ctx: &ScanContext, endpoint: &str) {
         let (mut given_up, mut starved): (u128, u128) = (0, 0);
         for detection in unfinished {
@@ -212,42 +180,36 @@ impl Unfinished {
 /// Runs the corpus against every open port a detection is interested in,
 /// recording the findings it produces.
 ///
-/// Gated on a service pass having run: a detection's `when` selects a port by its
-/// service, so with nothing identified there is nothing to select, and the probes
-/// are the same kind of active connection service detection already made.
-/// `envelope` decides which detection classes the operator permits.
+/// Runs only when service detection is on, since a detection's `when` selects a
+/// port by its service. `envelope` decides which detection classes the operator
+/// permits.
 pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: DetectionEnvelope) {
     if detection == ServiceDetection::Off {
         return;
     }
 
-    // An envelope granting nothing is a scan that wants its ports and services
-    // and no claims about them. Returned on here rather than left to the gates,
-    // which would reach the same answer after walking every host's ports and
-    // every detection in the corpus to establish that none of them may run.
+    // An envelope granting nothing: return before walking every port and
+    // detection only to find none may run.
     if envelope.ceiling().is_none() {
         return;
     }
 
-    // Host-level detections correlate a host's ports into a Host finding. They read
-    // only what the service phase already found, so they run independently of the
-    // per-port pass below.
+    // Host-level detections read only what the service phase found, so they run
+    // independently of the per-port pass below.
     detect_hosts(ctx);
 
     let targets = interested_ports(ctx, envelope);
     if targets.is_empty() {
         return;
     }
-    // A stopped scan runs nothing further, and the report names the pass it
-    // left with ports in front of it.
+    // A stopped scan runs nothing further; the report names the pass.
     if ctx.stopping_before(Pass::Detections) {
         return;
     }
 
     ctx.enter_stage(Stage::Detections, Some(targets.len() as u64));
 
-    // One budget for the phase, shared by every port in the pool and every flow
-    // inside each. See [`Gate`].
+    // One socket budget for the whole phase. See `Gate`.
     let gate = Arc::new(Gate::new(CONNECT_CONCURRENCY));
 
     let mut pool = ProbePool::new(
@@ -258,9 +220,8 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
             ctx.stage_advanced();
 
             if let Some((key, number, protocol, findings, unfinished)) = result {
-                // A detection a budget cut short or that broke did not clear the
-                // port; record that it did not finish so the report tells it
-                // apart from one that found nothing.
+                // Record unfinished detections so the report tells them apart
+                // from ones that found nothing.
                 let endpoint = key.endpoint(number).to_string();
                 Unfinished::file_all(&unfinished, ctx, &endpoint);
                 record(ctx, key, number, protocol, findings);
@@ -268,10 +229,9 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         },
     );
 
-    // One contention per host, shared by every port of it the pool runs, so a
-    // flow waiting behind another of the host's ports on a shared single-worker
-    // process is seen for that rather than written off as a dead port. See
-    // [`HostContention`].
+    // One contention per host, shared by its ports, so a flow waiting behind
+    // another port on a single-worker server is not written off as a dead port.
+    // See `HostContention`.
     let mut contention: std::collections::HashMap<ScopedIp, Arc<HostContention>> =
         std::collections::HashMap::new();
 
@@ -279,9 +239,7 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
         if ctx.stopping_before(Pass::Detections) {
             break;
         }
-        // Nothing further is asked of a host that has spent its budget. A
-        // detection is the most expensive thing this engine does to one port,
-        // and a host already left early is the last place to spend it.
+        // Nothing further is asked of a host that has spent its budget.
         if ctx.host_expired(target.address.addr()) {
             continue;
         }
@@ -307,40 +265,33 @@ pub async fn detect(ctx: &ScanContext, detection: ServiceDetection, envelope: De
     pool.drain().await;
 }
 
-/// One port a detection would run over, lifted out of the store so the
-/// exchanges that follow do not hold its lock. It carries the responses the service
-/// phase gathered for a passive module to read.
+/// One port a detection would run over, copied out of the store so the exchanges
+/// do not hold its lock, with the responses the service phase gathered.
 struct PortTarget {
     address: ScopedIp,
-    /// The name a target reached the address by, which the port is asked for
-    /// by; see [`ScanContext::target_name`].
+    /// The name the target reached the address by, used when asking the port;
+    /// see [`ScanContext::target_name`].
     name: Option<Arc<str>>,
     number: u16,
     protocol: Protocol,
     service: Option<String>,
     responses: Vec<String>,
-    /// Whether the scan only listens on this port, so that no detection that
-    /// speaks may run over it; see [`ScanContext::listens_only`].
+    /// Whether the scan only listens on this port, so no speaking detection may
+    /// run; see [`ScanContext::listens_only`].
     listen_only: bool,
-    /// Whether only a detection whose own first exchange is a probe may run
-    /// here, because the port's state was never confirmed open; see
-    /// [`interested_ports`].
+    /// Whether only a speaking detection may run, because the port was never
+    /// confirmed open; see [`interested_ports`].
     speak_only: bool,
 }
 
 /// Whether a port in this state carries a detection, and if so whether only a
 /// speaking one may run against it.
 ///
-/// A port confirmed open runs every detection gated onto it, passive readings
-/// of the gathered responses included. A UDP port left `OpenOrNoReply` runs only
-/// a detection that speaks: over UDP that state is the ordinary lot of a
-/// service answering nothing but the request it recognises, so a detection
-/// whose own first datagram is that request establishes what is there where the
-/// service probe drew silence, while one that reads what the scan gathered has
-/// nothing to read, a UDP port reaching the service pass only once open. Any
-/// other state, and an `OpenOrNoReply` TCP port, carries no detection: a TCP port
-/// that only might be open is settled by the connection a detection would make
-/// rather than run against speculatively.
+/// A port confirmed open runs every detection gated onto it. A UDP port left
+/// `OpenOrNoReply` runs only speaking detections: a UDP service often answers
+/// only the request it recognises, which a detection's own first datagram may
+/// be, and there are no gathered responses to read. Any other state, including
+/// an `OpenOrNoReply` TCP port, carries no detection.
 fn detection_reach(state: PortState, protocol: Protocol) -> Option<bool> {
     match (state, protocol) {
         (PortState::Open, _) => Some(false),
@@ -352,10 +303,9 @@ fn detection_reach(state: PortState, protocol: Protocol) -> Option<bool> {
 /// Every port some detection would run over, snapshotted so the store is not
 /// borrowed across the exchanges that follow.
 ///
-/// Pre-filtered by each tier's `interested` so a port no detection gates onto
-/// costs nothing here rather than a blocking task that does nothing. The responses
-/// are *taken* from the context, so they are freed as the snapshot is built rather
-/// than held to the end of the scan.
+/// Pre-filtered by each tier's `interested`, so an uninteresting port costs no
+/// blocking task. The responses are taken from the context, so they are freed
+/// as the snapshot is built.
 fn interested_ports(ctx: &ScanContext, envelope: DetectionEnvelope) -> Vec<PortTarget> {
     let mut targets = Vec::new();
     for host in ctx.store.iter() {
@@ -365,10 +315,8 @@ fn interested_ports(ctx: &ScanContext, envelope: DetectionEnvelope) -> Vec<PortT
         let address = host.value().scoped_ip();
         for port in host.value().ports() {
             let protocol = port.protocol();
-            // No detection runs against an SCTP port. The scan holds no client
-            // stack to speak over one, so an active detection is refused at the
-            // seam, and an SCTP scan gathers no responses a passive one could read.
-            // Skipping it here spares a blocking task both seams would only refuse.
+            // No detection runs on SCTP: there is no client stack to speak over
+            // it and an SCTP scan gathers no responses to read.
             if protocol == Protocol::Sctp {
                 continue;
             }
@@ -435,15 +383,13 @@ async fn detect_one(
         speak_only,
     } = target;
     let addr = address.to_socket_addr(number)?;
-    // The port's service label is the only record that it answered inside a
-    // tunnel; both seams read it here so a detection speaks TLS to an `ssl/*`
-    // service and plaintext to the rest. The address the flow reached seeds
-    // `{host}` for a probe that has to name the endpoint it is talking to.
+    // The service label is the only record of a tunnel: a detection speaks TLS
+    // to an `ssl/*` service. The address seeds `{host}` in a flow's probes.
     let tunnel = service.as_deref().and_then(Tunnel::from_service_label);
     let host = addr.ip().to_string();
 
-    // Both tiers are synchronous and hold a blocking socket, so they run off the
-    // reactor. `spawn_blocking` fails only if the runtime is shutting down.
+    // Both tiers hold a blocking socket. `spawn_blocking` fails only if the
+    // runtime is shutting down.
     let produced = tokio::task::spawn_blocking(move || {
         let flows = detections.flows();
         let modules = detections.modules();
@@ -456,21 +402,17 @@ async fn detect_one(
             protocol,
             &contention,
             |caps| {
-                // A detection that declares `speak` exists to send, and a port
-                // the scan only listens on is sent nothing. Declined before a
-                // socket is opened, so the flow simply does not apply here.
+                // A port the scan only listens on is sent nothing.
                 if listen_only && caps.speak.is_some() {
                     return None;
                 }
-                // A port whose state was never confirmed open runs only a
-                // detection whose own first exchange is its probe; a flow that
-                // does not speak reads nothing the scan gathered there. See
+                // A port never confirmed open runs only speaking flows. See
                 // `interested_ports`.
                 if speak_only && caps.speak.is_none() {
                     return None;
                 }
                 // The permit first: building the probe starts the flow's clock,
-                // and the wait for a socket must not come out of its budget.
+                // and the wait for a socket must not count against its budget.
                 let permit = gate.acquire();
                 let probe = SocketProbe::new(addr, protocol, tunnel, &flow_budget(caps))
                     .via(egress.clone());
@@ -484,10 +426,8 @@ async fn detect_one(
             },
         );
 
-        // A passive module reads the gathered responses; an active one speaks
-        // through a capability bound to this port, budgeted like a flow's probe.
-        // The responses are kept for the run record so a replay feeds the same
-        // input a passive detection read.
+        // The responses are kept for the run record, so a replay feeds a passive
+        // detection the same input.
         let record_responses = responses.clone();
         let response_bytes: Vec<Vec<u8>> = responses.into_iter().map(String::into_bytes).collect();
         let response_slices: Vec<&[u8]> = response_bytes.iter().map(Vec::as_slice).collect();
@@ -508,23 +448,15 @@ async fn detect_one(
             &port_context,
             &response_slices,
             |grant| {
-                // The same rule as a flow's: a module served `speak` is not run
-                // on a port the scan only listens on. One that is not served it
-                // reads the responses the scan already drew, which is safe
-                // anywhere.
+                // As for flows: no speaking module on a listen-only port.
                 if listen_only && grant.speak {
                     return None;
                 }
-                // And the converse on a port never confirmed open: only a
-                // module whose own first exchange is its probe runs there, a
-                // passive one having no gathered response to read. See
-                // `interested_ports`.
+                // And only speaking modules on a port never confirmed open.
                 if speak_only && !grant.speak {
                     return None;
                 }
-                // Acquire the permit before building `LiveCapabilities`, which
-                // starts the flow's clock: the wait for a socket must not come
-                // out of the flow's own time budget.
+                // The permit first: `LiveCapabilities::new` starts the clock.
                 let permit = gate.acquire();
                 let caps = LiveCapabilities::new(addr, protocol, tunnel, &grant.budget)
                     .via(egress.clone());
@@ -550,8 +482,7 @@ async fn detect_one(
         );
         findings.extend(computed.findings);
 
-        // Both tiers' unfinished runs, phrased for the report: a compute run that
-        // trapped or faulted, and a flow a budget cut short.
+        // Both tiers' unfinished runs, phrased for the report.
         let mut unfinished: Vec<Unfinished> =
             computed.inconclusive.iter().map(describe_outcome).collect();
         unfinished.extend(shortfalls.iter().map(describe_shortfall));
@@ -566,13 +497,9 @@ async fn detect_one(
         .then_some((address, number, protocol, findings, unfinished))
 }
 
-/// Why a compute run did not finish, phrased for the report. A reader needs
-/// which bound or fault ended the run, not the Rust spelling of the outcome
-/// enum.
-///
-/// A module's run is code rather than a list of requests, so unlike a flow's
-/// there is no count of what it set out to ask to weigh the shortfall against;
-/// the budget and its size are what there is to say.
+/// Why a compute run did not finish, phrased for the report: which bound or
+/// fault ended it. A module's run is code, so unlike a flow's there is no count
+/// of planned requests to report against, only the budget and its size.
 fn describe_outcome(run: &InconclusiveRun) -> Unfinished {
     let id = run.detection.id().to_string();
     let budget = &run.budget;
@@ -613,14 +540,9 @@ fn describe_outcome(run: &InconclusiveRun) -> Unfinished {
     }
 }
 
-/// A flow left short of its questions, phrased for the report: what stopped
-/// it, a budget and its size or the port going unresponsive, and how many of
-/// the flow's requests had been answered by then.
-///
-/// A flow the process had no socket for is cut short by the process's file
-/// limit, as every other connection refused a socket is: nothing about the
-/// port or the detection held and nothing broke, and the entry names the
-/// limit, whose remedy is the caller's.
+/// A flow left short of its questions, phrased for the report: what stopped it
+/// (a budget and its size, or the port going unresponsive) and how many of its
+/// requests had been answered. A flow with no socket names the file limit.
 fn describe_shortfall(shortfall: &Shortfall) -> Unfinished {
     let answered = format!("({}/{} answered)", shortfall.answered, shortfall.requests);
     let stopped = match shortfall.stopped {
@@ -654,10 +576,9 @@ fn starved(shortfall: &Shortfall) -> Unfinished {
     }
 }
 
-/// Why a detection the file limit starved was cut short, the same words for
-/// either tier: no socket, how far a flow had got where there is a count of
-/// its requests to weigh it against, and the limit, which is what the reader
-/// raises.
+/// Why a detection the file limit starved was cut short, in the same words for
+/// either tier: no socket, how far a flow got (where it has a request count),
+/// and the limit.
 fn no_socket(answered: Option<(u32, u32)>) -> String {
     let parts: Vec<String> = answered
         .map(|(answered, requests)| format!("{answered}/{requests} answered"))
@@ -685,17 +606,16 @@ fn record(
     });
 }
 
-/// Runs the host-level detections over every host the scan found, drawing a Host
-/// finding wherever a host's open ports and identified services fit a detection's
-/// gate. It reads what the earlier phases recorded and sends nothing.
+/// Runs the host-level detections over every host the scan found, drawing a host
+/// finding wherever its open ports and services fit a detection's gate. Sends
+/// nothing.
 fn detect_hosts(ctx: &ScanContext) {
     let host_db = ctx.detections.hosts();
     if host_db.detections().is_empty() {
         return;
     }
 
-    // Snapshot each host's open ports and service names first, so the store is not
-    // borrowed while the findings are written back.
+    // Snapshot first, so the store is not borrowed while findings are written.
     let mut per_host: Vec<(ScopedIp, BTreeSet<u16>, Vec<String>)> = Vec::new();
     for host in ctx.store.iter() {
         if !ctx.owes_passes(host.value()) {
@@ -718,9 +638,8 @@ fn detect_hosts(ctx: &ScanContext) {
 
     for (key, open_ports, service_names) in per_host {
         let services: BTreeSet<&str> = service_names.iter().map(String::as_str).collect();
-        // Read off the address the host was reached at, which is what grades a
-        // correlation that stated a severity per rung: RPC and SMB open together
-        // is a Windows desktop on a LAN and an incident on a public address.
+        // Exposure grades severity: RPC and SMB open together is a Windows
+        // desktop on a LAN and an incident on a public address.
         let exposure = Exposure::of(key.addr());
         let findings =
             host_stage::detect_host(host_db.detections(), &open_ports, &services, exposure);
@@ -737,49 +656,35 @@ fn detect_hosts(ctx: &ScanContext) {
 
 /// The socket budget the whole detection phase spends through.
 ///
-/// A port's flows run several at a time, and every port in the pool does the
-/// same, so the two multiply: without a shared count a busy scan would open
-/// [`CONNECT_CONCURRENCY`] ports times
+/// Ports run several flows at a time and the pool runs many ports, so without a
+/// shared count a busy scan would open [`CONNECT_CONCURRENCY`] times
 /// [`DETECTION_FLOW_CONCURRENCY`](crate::config::limits::DETECTION_FLOW_CONCURRENCY)
-/// flows at once, hundreds of sockets against a ceiling written for fifty. This
-/// holds that ceiling for the phase as a whole, so the concurrency is spent
-/// where the work is: a host with four web ports gets most of the budget on
-/// those four, and a scan with fifty ports in flight holds no more sockets than
-/// one flow per port would.
+/// sockets at once. This holds [`CONNECT_CONCURRENCY`] for the whole phase, so a
+/// host with four web ports gets most of the budget on those four.
 ///
-/// A permit is taken when a flow's probe is built and given back when the probe
-/// is dropped, which is the flow's whole run. The wait happens before
-/// [`SocketProbe::new`] starts the flow's clock rather than inside an exchange,
-/// so queueing never counts against a detection's own time budget.
+/// A permit is held from when a flow's probe is built until it is dropped. The
+/// wait happens before [`SocketProbe::new`] starts the flow's clock, so queueing
+/// never counts against a detection's time budget.
 ///
-/// Each permit also carries a share of the process's descriptor budget, the
-/// one every connection a scan opens draws from, since a flow's exchanges open
-/// their sockets one after another, each holding its one socket and no other
-/// descriptor, and one share covers them; see
-/// [`descriptors`](crate::system::descriptors). It is taken after the phase's
-/// own permit and never the other way round, and nothing waiting on the
-/// process's budget waits on this gate, so neither wait can close a cycle.
-///
-/// The share is the flow's rather than each exchange's. Taken per exchange,
-/// the queue for it would fall between a flow's questions, inside its clock,
-/// and a busy scan would read as a slow port: the flow would run out of time
-/// on its own budget and count dead waits against a port that answered every
-/// question it was asked. Held for the flow, the wait is before the clock,
-/// and a table the rest of the process fills past its reserve is the only
-/// wait left inside it, which the flow reports as the process's shortfall.
+/// Each permit also carries one share of the process's descriptor budget (see
+/// [`descriptors`](crate::system::descriptors)), which covers the flow's
+/// exchanges because they open their sockets one after another. The share is
+/// taken after the phase permit, and nothing waiting on the process budget
+/// waits on this gate, so the two waits cannot deadlock. Holding the share per
+/// flow keeps the wait outside the flow's clock; per exchange, a busy scan
+/// would make an answering port look slow.
 struct Gate {
     /// Permits still to be handed out.
     free: std::sync::Mutex<usize>,
     /// Woken as each is given back.
     returned: std::sync::Condvar,
-    /// The runtime the process's descriptor budget is waited on through, from
-    /// the threads a flow runs on, which carry none of their own.
+    /// The runtime to wait on the descriptor budget through, since the blocking
+    /// threads a flow runs on have none of their own.
     runtime: tokio::runtime::Handle,
 }
 
 impl Gate {
-    /// A gate holding `permits` sockets. Built on the runtime, which it keeps
-    /// a handle to.
+    /// A gate holding `permits` sockets. Must be built on the runtime.
     fn new(permits: usize) -> Self {
         Self {
             free: std::sync::Mutex::new(permits),
@@ -828,11 +733,8 @@ impl Drop for Permit {
 /// A compute module's live capabilities, holding one of the phase's sockets for
 /// as long as the module runs.
 ///
-/// A passive module takes a permit it never spends, which costs nothing worth
-/// avoiding: the compute tier runs one module at a time per port, so a passive
-/// one holds its permit for the length of a pure computation. What it buys is one
-/// count covering both tiers, so [`Gate`] is the whole answer to how many sockets
-/// this phase has open.
+/// A passive module also takes a permit, held only for a short computation, so
+/// one [`Gate`] count covers both tiers.
 struct Permitted {
     inner: LiveCapabilities,
     _permit: Permit,
@@ -855,9 +757,8 @@ impl Capabilities for Permitted {
 /// A [`SocketProbe`] holding one of the phase's sockets for as long as the flow
 /// it serves is running.
 ///
-/// The probe itself is [`detect::flow`](crate::detect::flow)'s and knows nothing
-/// about a scan's socket budget. This is the wrapper that adds it, so the count
-/// covers both tiers: [`Permitted`] does the same for a compute module.
+/// Adds the scan's socket budget to [`detect::flow`](crate::detect::flow)'s
+/// probe, as [`Permitted`] does for a compute module.
 struct Pooled {
     inner: SocketProbe,
     _permit: Permit,
@@ -888,9 +789,8 @@ impl Probe for Pooled {
 /// The budget a flow's probe is held to, filled from what the detection declared
 /// and from this runtime's ceilings for what it left open.
 ///
-/// A flow spends bytes, wall clock and connections; the two ceilings a [`Budget`]
-/// carries for a compute module's execution go unread. See
-/// [`SocketProbe::new`].
+/// A flow spends bytes, wall clock and connections; a [`Budget`]'s compute-only
+/// ceilings go unread. See [`SocketProbe::new`].
 fn flow_budget(caps: &CapabilitySpec) -> Budget {
     Budget::new(
         0,
@@ -977,9 +877,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_detection_run_is_captured_as_a_tape() {
-        // The same run, checked from the other side: the scan captures a tape of
-        // what the detection read, with its subject and the responses it saw, so
-        // the checkpoint task can journal it for an offline replay.
+        // The scan captures a tape of the run, with its subject and responses,
+        // for the journal to keep for offline replay.
         let (session, ctx) = ScanSession::new();
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
 
@@ -1017,10 +916,8 @@ mod tests {
         );
     }
 
-    /// A tape is kept for a journal to write down, and a scan with no
-    /// journal has nothing that would take one. Kept anyway, every run would
-    /// hold a copy of its port's responses until the scan ended, a dozen for
-    /// any HTTP port.
+    /// Tapes are only for a journal. Without one, keeping them would hold every
+    /// run's responses until the scan ended.
     #[tokio::test]
     async fn a_scan_nobody_journals_keeps_no_tapes() {
         let (session, ctx) = ScanSession::new();
@@ -1053,8 +950,7 @@ mod tests {
 
     #[tokio::test]
     async fn detect_draws_a_host_finding_for_a_domain_controller() {
-        // Kerberos, LDAP and SMB open together: the shipped host detection concludes
-        // a domain controller, a finding no single port makes.
+        // Kerberos, LDAP and SMB open together make a domain controller.
         let (session, ctx) = ScanSession::new();
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
 
@@ -1081,8 +977,7 @@ mod tests {
 
     #[tokio::test]
     async fn detect_runs_a_flow_against_a_live_port_and_records_its_finding() {
-        // A loopback "redis" that answers the flow's INFO probe with a version
-        // banner, standing in for the real service the flow is written against.
+        // A loopback "redis" answering the flow's INFO probe with a version banner.
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -1095,8 +990,7 @@ mod tests {
             }
         });
 
-        // Seed the store as the earlier phases would: the port is open and
-        // identified as redis, so the flow's `when` service gate fits.
+        // The port open and identified as redis, so the flow's `when` fits.
         let (session, ctx) = ScanSession::new();
         let ip = addr.ip();
         let mut host = Host::new(ip);
@@ -1106,8 +1000,7 @@ mod tests {
         );
         session.hosts().insert(ip, host);
 
-        // The ceiling is named rather than defaulted: this test is about a
-        // flow reaching a live socket, and the default grants no flow one.
+        // The default envelope grants no flow a live socket.
         detect(
             &ctx,
             ServiceDetection::default(),
@@ -1131,12 +1024,9 @@ mod tests {
         assert_eq!(findings[0].detection().content_hash().len(), 64);
     }
 
-    /// A server holding its sites by name answers only a client naming one: a
-    /// handshake naming nothing is refused, and a request for another site
-    /// reads the default one. So a detection on a port whose address a target
-    /// reached by name asks for that name, in the handshake and in the request,
-    /// whatever stand-in its request was written with; otherwise it reports on
-    /// a site nobody pointed it at, or on nothing.
+    /// A detection on a port whose address the target reached by name sends that
+    /// name in the TLS handshake and the request, since a name-based server
+    /// refuses or serves the default site otherwise.
     #[tokio::test]
     async fn a_detection_asks_a_named_port_for_the_site_the_target_named() {
         let addr = crate::testing::loopback::https_site("box.example", |request| {
@@ -1182,20 +1072,13 @@ mod tests {
         );
     }
 
-    /// A UDP detection whose own first datagram is its probe runs against a
-    /// port left `OpenOrNoReply`, the state a UDP service that answers only the
-    /// request it knows is left in by a scan whose generic probe it ignored.
-    ///
-    /// The finding it draws is one nothing else could: the port never reached
-    /// the service pass, which takes only confirmed-open ports, so a detection
-    /// reading gathered responses has none, and the establishing question is
-    /// the detection's own. Skipping every port not confirmed open left this
-    /// detection unrun on exactly the ports it exists for.
+    /// A speaking UDP detection runs on a port left `OpenOrNoReply`, where a
+    /// service answering only the request it knows ignored the scan's probe.
+    /// The port never reached the service pass, so only the detection's own
+    /// probe can establish what is there.
     #[tokio::test]
     async fn a_speaking_udp_detection_runs_on_an_open_or_no_reply_port() {
-        // A responder that answers only its own probe word, as an agent answers
-        // a request it accepts and ignores one it does not: silence to the
-        // scan's generic probe is what left the port `OpenOrNoReply`.
+        // A responder that answers only its own probe word.
         let agent = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let addr = agent.local_addr().unwrap();
         tokio::spawn(async move {
@@ -1241,8 +1124,7 @@ mod tests {
         let (session, ctx) = ScanSession::builder().detections(detections).build();
         let ip = addr.ip();
         let mut host = Host::new(ip);
-        // OpenOrNoReply, not Open: the UDP port scan heard nothing back, which
-        // over UDP settles neither open nor dropped.
+        // The UDP port scan heard nothing back.
         host.add_port(Port::new(
             addr.port(),
             Protocol::Udp,
@@ -1273,10 +1155,8 @@ mod tests {
         );
     }
 
-    /// A detection level that opens no connection opens none, even to an open
-    /// port identified as a service detections are written for. Counted on
-    /// the port rather than read off how long the pass took, which says
-    /// nothing about a connection that was made and answered at once.
+    /// Detection turned off opens no connection, even to an open port identified
+    /// as a service detections are written for. Counted at the port.
     #[tokio::test]
     async fn detection_off_connects_to_nothing() {
         let (session, ctx) = ScanSession::new();
@@ -1289,8 +1169,8 @@ mod tests {
             );
         });
 
-        // A ceiling that grants the redis flow its socket, so the level is all
-        // that keeps it off the port.
+        // The envelope grants the redis flow its socket, so only the level
+        // keeps it off the port.
         detect(
             &ctx,
             ServiceDetection::Off,
@@ -1351,11 +1231,8 @@ mod tests {
             .clone()
     }
 
-    /// A flow its time budget stopped is filed with the work the phase did
-    /// not complete, where a report read for coverage looks, in words naming
-    /// the detection, the budget and how far it got. On the console it is a
-    /// warning in those same words, not an error saying the scanner failed:
-    /// nothing broke, the detection's own ceiling held.
+    /// A flow its time budget stopped is filed as cut short, naming the
+    /// detection, the budget and how far it got, and warned in the same words.
     #[test]
     fn a_detection_cut_short_is_reported_as_unanswered_rather_than_as_a_failed_scanner() {
         let (session, ctx) = ScanSession::new();
@@ -1384,11 +1261,8 @@ mod tests {
         drop(session);
     }
 
-    /// A flow the process had no socket for is filed naming the descriptor
-    /// limit, so a scan that lost a detection this way is never read as one
-    /// whose ports were cleared. Filed and warned as cut short, as every other
-    /// connection refused a socket is: nothing broke, and a reader told a
-    /// scanner failed looks for a fault rather than at the limit.
+    /// A flow with no socket is filed and warned as cut short, naming the
+    /// descriptor limit.
     #[test]
     fn a_detection_refused_a_socket_is_reported_as_cut_short_naming_the_limit() {
         let (session, ctx) = ScanSession::new();
@@ -1416,17 +1290,14 @@ mod tests {
         drop(session);
     }
 
-    /// A module the file limit left without a socket is filed as the limit's
-    /// shortfall, cut short and naming the limit, never as a detection that
-    /// failed. Nothing refused the module and nothing broke, and a reader told
-    /// a detection failed looks for a fault in it rather than at the limit.
+    /// A module the file limit left without a socket is filed as cut short,
+    /// naming the limit, and not as a failed detection.
     #[test]
     fn a_module_refused_a_socket_is_filed_as_the_file_limit_and_not_as_a_failure() {
         use crate::detect::compute::{ComputeRuntime, Grant, ModuleBody, RhaiRuntime};
         use crate::model::finding::{DetectionClass, DetectionId, Version};
 
-        /// Has no socket for any exchange, as a full descriptor table leaves
-        /// every `speak`.
+        /// Has no socket for any exchange, like a full descriptor table.
         struct NoSocket;
         impl Capabilities for NoSocket {
             fn speak(&mut self, _bytes: &[u8]) -> Result<Vec<u8>, CapError> {
@@ -1504,14 +1375,9 @@ mod tests {
         drop(session);
     }
 
-    /// A port's detections the file limit starved are one line on the console
-    /// naming the limit, however many there were, and never a line calling the
-    /// port unresponsive. The report keeps an entry for each.
-    ///
-    /// A full table leaves every detection gated onto a web port without a
-    /// socket, dozens at once, and the reader acts once, on the limit; the
-    /// port was never asked, so a line naming it sends the reader to the
-    /// target for what the limit did.
+    /// A port's starved detections are one console line naming the limit,
+    /// however many there were, and the port is not called unresponsive. The
+    /// report keeps an entry for each.
     #[test]
     fn a_ports_starved_detections_are_one_console_line_naming_the_file_limit() {
         let (session, ctx) = ScanSession::new();
@@ -1554,17 +1420,9 @@ mod tests {
         drop(session);
     }
 
-    /// A port given up on is one line on the console however many detections
-    /// it left unfinished, while the report keeps an entry for each.
-    ///
-    /// A web port attracts dozens of detections, and a line apiece buried the
-    /// rest of the run under dozens saying one thing, which the reader acts on
-    /// once: the port stopped answering. The report is read for coverage, and
-    /// there each question left open still counts. A detection its own budget
-    /// stopped is not the port's doing and keeps its own line, from the first
-    /// verbosity up: the budget is the detection's declared bound, nothing the
-    /// reader can change, and the run's closing count already says coverage
-    /// fell short.
+    /// A port given up on is one console line however many detections it left
+    /// unfinished, while the report keeps an entry for each. A detection its own
+    /// budget stopped keeps its own line at verbosity 1.
     #[test]
     fn a_port_given_up_on_is_one_console_line_and_an_entry_per_detection() {
         let (session, ctx) = ScanSession::new();
@@ -1651,9 +1509,7 @@ mod tests {
         drop(session);
     }
 
-    /// Each budget a compute module can run out of is named with its size, so
-    /// a reader can tell a module the target starved of time from one that
-    /// asked for more bytes than it declared.
+    /// Each budget a compute module can run out of is named with its size.
     #[test]
     fn a_compute_module_cut_short_names_the_budget_it_ran_out_of() {
         use crate::model::finding::{DetectionId, Version};
@@ -1679,12 +1535,8 @@ mod tests {
         assert_eq!(why(cut(BudgetTrap::Connections)), "2-connection budget");
     }
 
-    /// The budget the probe is built with, which is the part of the probe's
-    /// limits this module decides: a declared ceiling is taken and one left
-    /// open falls back to this runtime's default rather than to no ceiling.
-    ///
-    /// What the probe then does with it is tested where the probe lives, in
-    /// `detect::flow::socket`.
+    /// A declared ceiling is taken and one left open gets the runtime default.
+    /// The probe's enforcement is tested in `detect::flow::socket`.
     #[test]
     fn a_flow_budget_takes_what_was_declared_and_defaults_the_rest() {
         let declared = flow_budget(&caps(Some(20), Some(500), Some(1)));

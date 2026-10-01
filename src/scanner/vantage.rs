@@ -8,44 +8,30 @@
 
 //! # What the scan can conclude without asking again
 //!
-//! Three of a host's roles need no probe of their own: two are already written
-//! down on the machine the scan runs from, and the third is already in the
-//! record, put there by something that was measuring a different thing.
+//! Three of a host's roles need no probe of their own: two come from this
+//! machine's configuration, and the third from paths the scan already traced.
 //!
-//! - **[`Origin`]**: the address belongs to one of this machine's own
-//!   interfaces. A sweep of the scanning machine's own segment contains it, and
-//!   the
-//!   record it produces is unlike every other one in it.
-//! - **[`Router`], from the routing table**: the address is a default gateway
-//!   of an interface the scan runs on. Something is only a gateway because it
-//!   forwards, and on an IPv4-only segment this is the only proof of that the
-//!   engine can obtain by asking: ARP has no equivalent of the neighbour
-//!   advertisement's R flag, and no equivalent of a router advertisement.
-//! - **[`Router`], from a measured path**: the address answered from inside
-//!   somebody else's route. A hop is recorded because a probe aimed past it
-//!   expired there, which means it decremented a hop limit on a packet
-//!   addressed to another machine. That is not evidence *about* routing; it is
-//!   routing, observed.
+//! - **[`Origin`]**: the address belongs to one of this machine's interfaces.
+//! - **[`Router`], from the routing table**: the address is a default gateway of
+//!   an interface the scan runs on. On an IPv4-only segment this is the only
+//!   proof of forwarding available, since ARP has nothing like the neighbour
+//!   advertisement's R flag or a router advertisement.
+//! - **[`Router`], from a measured path**: a probe aimed past the address expired
+//!   there, so it decremented the hop limit of a packet addressed to another
+//!   machine.
 //!
-//! ## Read once, applied once
+//! ## Timing
 //!
-//! This runs as a pass over the finished store rather than as a check inside
-//! each strategy. A host's addresses arrive from several strategies over the
-//! life of a scan, and asking the question at the end is the only point where
-//! all of them are on the record: a check at creation time would miss the
-//! second address of a dual-stack host, which is exactly the address a gateway
-//! is most likely to be found under. The path source needs the same ordering
-//! for a stronger reason: a trace runs late, so a check anywhere earlier would
-//! read paths that had not been measured yet.
+//! This runs as one pass over the finished store. A host's addresses arrive from
+//! several strategies over a scan, and only at the end are all of them recorded;
+//! the second address of a dual-stack host is often the one a gateway is found
+//! under. Traces also run late, so their paths exist only then.
 //!
-//! ## Link-local addresses carry the interface they were read on
+//! ## Link-local addresses
 //!
-//! `fe80::1` is a different router on every segment, so a gateway address in
-//! that range is only this host's gateway when the host was seen through the
-//! same interface the route was read from. Without that check, a scan across
-//! two links would mark a neighbour on the second as the router of the first.
-//! An address that names one machine everywhere needs no such qualification and
-//! carries none.
+//! `fe80::1` is a different router on every segment, so a link-local gateway only
+//! matches a host seen through the interface the route was read from. Otherwise a
+//! scan across two links would mark a neighbour on one as the router of the other.
 //!
 //! [`Origin`]: NetworkRole::Origin
 //! [`Router`]: NetworkRole::Router
@@ -60,10 +46,8 @@ use crate::system::interface::host_table;
 
 /// One interface's addressing, reduced to what a role can be read from.
 ///
-/// The seam that keeps this module testable. Everything below works on these,
-/// and [`Vantage::from_system`] is the only place that knows they come from
-/// `netdev`, so the rules can be exercised against a segment that does not
-/// exist, on a machine with whatever interfaces it happens to have.
+/// Only [`Vantage::from_system`] knows these come from `netdev`, so tests can
+/// build segments that do not exist.
 #[derive(Debug, Clone)]
 struct Interface {
     /// The index a scoped address names, matching [`Zone::index`].
@@ -91,9 +75,8 @@ impl Located {
 
     /// Whether `ip`, seen through `zone`, is this address.
     ///
-    /// A zoned address seen through no interface at all does *not* match: the
-    /// scan cannot say which segment such a record came from, and guessing
-    /// would put the router marking on a stranger.
+    /// A zoned address seen through no interface does not match, since the scan
+    /// cannot say which segment the record came from.
     fn matches(&self, ip: IpAddr, zone: Option<u32>) -> bool {
         self.ip == ip && (self.zone.is_none() || self.zone == zone)
     }
@@ -101,11 +84,8 @@ impl Located {
 
 /// What this machine's own configuration says about the network it is scanning.
 ///
-/// Both lists are short, an interface holds a handful of addresses and a
-/// routing table a handful of default routes, so they are walked rather than
-/// hashed. A set would be the faster structure for the lookup and the wrong one
-/// for the comparison: matching a link-local address means comparing its zone
-/// too, which is not part of its identity as an address.
+/// Both lists are short and walked linearly; matching a link-local address
+/// compares its zone too, which a set keyed on the address would miss.
 pub(super) struct Vantage {
     own: Vec<Located>,
     gateways: Vec<Located>,
@@ -158,8 +138,7 @@ impl Vantage {
         Self { own, gateways }
     }
 
-    /// Whether this machine's configuration says anything about any host at
-    /// all, so a scan on a machine with no addresses skips the pass.
+    /// Whether there is nothing to match, so the pass can be skipped.
     fn is_empty(&self) -> bool {
         self.own.is_empty() && self.gateways.is_empty()
     }
@@ -167,11 +146,8 @@ impl Vantage {
     /// Records against `host` whatever this machine's configuration
     /// establishes, returning whether anything was added.
     ///
-    /// Asked of every address the host is known by rather than of the one it
-    /// leads with: a router answering at both an IPv4 address and a link-local
-    /// one is a single record, and which of the two names it is decided by
-    /// [`Host::consider_primary_ip`] on grounds that have nothing to do with
-    /// which of them the routing table holds.
+    /// Checks every address the host is known by, since its primary address is
+    /// chosen by [`Host::consider_primary_ip`] on unrelated grounds.
     fn attribute(&self, host: &mut Host) -> bool {
         let zone = host.zone().and_then(Zone::index);
 
@@ -192,9 +168,7 @@ impl Vantage {
 /// Marks every host in `ctx` that this machine's configuration, or the scan's
 /// own measurements, have something to say about.
 ///
-/// Runs at the end of a scan, once every strategy has contributed the addresses
-/// it found and any trace has run. Sends nothing, so there is no setting to
-/// turn it off and no reason to want one.
+/// Runs at the end of a scan, after every strategy and any trace. Sends nothing.
 pub(super) fn attribute(ctx: &ScanContext) {
     let vantage = Vantage::from_system();
     let forwarders = forwarders(ctx);
@@ -202,12 +176,11 @@ pub(super) fn attribute(ctx: &ScanContext) {
         return;
     }
 
-    // A snapshot of the keys, because `write_host` takes the store's own lock
-    // and holding an iterator across it deadlocks on whichever shard the
-    // iterator is on.
+    // A snapshot of the keys: holding a store iterator across `write_host`
+    // deadlocks on the iterator's shard.
     for ip in ctx.host_addresses() {
-        // A host an earlier sitting finished was attributed then, and is
-        // written again only where a path traced since names it a router.
+        // A host finished in an earlier sitting was attributed then; rewrite it
+        // only if a path traced since names it a router.
         let rereads = ctx
             .read_host(&ip, |host| {
                 ctx.owes_passes(host) || host.ips().iter().any(|ip| forwarders.contains(ip))
@@ -230,23 +203,16 @@ pub(super) fn attribute(ctx: &ScanContext) {
 
 /// Every address the scan watched forward a packet.
 ///
-/// Read out of the paths already in the store rather than probed for: a
-/// traceroute is run to answer "how do I reach this host", and the same replies
-/// say "these machines route", which nothing else reads. Empty unless a trace
-/// ran, which is off by default, so this costs one walk of the store on a scan
-/// that measured no paths at all.
+/// Read from the paths already in the store. Empty unless a trace ran (off by
+/// default), in which case it costs one walk of the store.
 ///
-/// A hop is only a router to somebody else. A completed trace records its
-/// own target as the last hop, at the distance it was reached, so a path's
-/// hops are read against the host whose path it is, and its own addresses are
-/// left out. Without that, every traced host would be reported as a router, and
-/// the reader could not tell the routers from the destinations.
+/// A completed trace records its own target as the last hop, so each path's own
+/// host addresses are left out; otherwise every traced host would be a router.
 fn forwarders(ctx: &ScanContext) -> HashSet<IpAddr> {
     let mut forwarders = HashSet::new();
 
     for address in ctx.host_addresses() {
-        // Read under the store's own guard, one host at a time, so a scan of
-        // thousands never clones the store to ask a question about it.
+        // One host at a time under the store's guard, to avoid cloning the store.
         ctx.read_host(&address, |host| {
             for hop in host.path().hops() {
                 if let Some(hop) = hop.address().filter(|hop| !host.ips().contains(hop)) {
@@ -279,8 +245,7 @@ mod tests {
         text.parse().expect("a literal address")
     }
 
-    /// One interface with an address of ours and a router beyond it, which is
-    /// every ordinary machine.
+    /// One interface with an address of ours and a router beyond it.
     fn lan() -> Interface {
         Interface {
             index: LAN,
@@ -293,8 +258,7 @@ mod tests {
         Host::new(ip(address))
     }
 
-    /// The whole of what this pass claims: our own address is the scan's
-    /// origin, and the address we route through forwards.
+    /// Our own address is the origin and our gateway is a router.
     #[test]
     fn this_machine_and_its_gateway_are_named_from_the_routing_table() {
         let vantage = Vantage::from_interfaces([lan()]);
@@ -313,9 +277,8 @@ mod tests {
         assert!(neighbour.network_roles().is_empty());
     }
 
-    /// A host is a record, not an address. A router found over IPv6 and again
-    /// over IPv4 is one host whose primary address is chosen on other grounds,
-    /// so the question has to be put to every address it answers at.
+    /// A dual-stack router is matched by any of its addresses, whichever is
+    /// primary.
     #[test]
     fn a_gateway_is_recognised_by_any_of_the_addresses_it_answers_at() {
         let vantage = Vantage::from_interfaces([lan()]);
@@ -327,10 +290,8 @@ mod tests {
         assert!(dual_stack.network_roles().contains(&NetworkRole::Router));
     }
 
-    /// `fe80::1` is a different router on every segment. A scan that reached
-    /// two links would otherwise mark a neighbour on the second as the router
-    /// of the first, and a record with no interface on it cannot say which
-    /// link it came from at all, so it is left alone rather than guessed at.
+    /// `fe80::1` is a different router on every segment. A record with no
+    /// interface cannot say which link it came from, so it is left alone.
     #[test]
     fn a_link_local_gateway_is_only_the_router_of_the_link_it_was_read_on() {
         let vantage = Vantage::from_interfaces([lan()]);
@@ -350,8 +311,7 @@ mod tests {
         assert!(unscoped.network_roles().is_empty());
     }
 
-    /// A scan run from the router itself is both, and neither claim displaces
-    /// the other.
+    /// A scan run from the router itself records both roles.
     #[test]
     fn a_scan_run_from_the_router_reports_the_address_as_both() {
         let vantage = Vantage::from_interfaces([Interface {
@@ -366,15 +326,10 @@ mod tests {
         assert!(host.network_roles().contains(&NetworkRole::Router));
     }
 
-    /// A hop is a router to whoever was behind it, and never to itself.
-    ///
-    /// Both halves are load-bearing. A completed trace records its own target
-    /// as the last hop, at the distance it was reached, so reading hops
-    /// without regard to whose path they are in reports every traced host as a
-    /// router, and a reader can no longer tell the routers from the
-    /// destinations. The addresses are documentation ranges (RFC 5737), which
-    /// no interface on the machine running this test can hold, so the routing
-    /// table has nothing to say about either of them.
+    /// A hop is a router to whoever was behind it, never to itself; a completed
+    /// trace records its target as the last hop. The addresses are RFC 5737
+    /// documentation ranges, so the test machine's routing table cannot match
+    /// them.
     #[tokio::test]
     async fn a_hop_in_somebody_elses_path_is_a_router_and_a_trace_target_is_not() {
         use crate::model::host::Hop;
@@ -387,13 +342,11 @@ mod tests {
 
         ctx.write_host(target, |host| {
             host.record_hop(Hop::answered(1, router, None));
-            // The trace reached the target, which is recorded as its own last
-            // hop.
+            // The trace reached the target, recorded as its own last hop.
             host.record_hop(Hop::answered(2, target, None));
             true
         });
-        // The router is in the scanned range too, which is what gives it a
-        // record for the role to land on.
+        // The router is in the scanned range too, so it has a record.
         ctx.write_host(router, |_| true);
 
         attribute(&ctx);

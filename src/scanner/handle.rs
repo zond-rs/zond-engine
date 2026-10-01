@@ -8,23 +8,13 @@
 
 //! # Stopping a scan
 //!
-//! One flag, one deadline, and the reading of both. A scan spawns strategies
-//! that outlive the call that started them, so something has to reach across
-//! into all of them at once, and that something has to be cheap enough to read
-//! on every pass of every probing loop.
+//! A scan spawns strategies that outlive the call that started them.
+//! [`ScanHandle`] is one flag and one deadline shared by all of them, cheap
+//! enough to read on every pass of every probing loop.
 //!
-//! [`ScanHandle`] is that reach. Everything else about stopping a scan follows
-//! from what it is not: it does not cancel tasks, it does not discard findings,
-//! and it cannot be undone. The type's own documentation has the argument for
-//! each.
-//!
-//! ## Two ways a scan stops early, and why they are one type
-//!
-//! A caller can ask for it, and a caller-set wall-clock budget can run out. Both
-//! wind the same strategies down through the same check, so both live here, and
-//! [`StopCause`] is what keeps them apart afterwards. A report that called an
-//! expired budget an abort would say somebody stopped a scan that stopped
-//! itself, which is a claim about a person that nothing observed.
+//! A scan stops early when the caller asks or when its wall-clock budget runs
+//! out. Both wind the strategies down through the same check, and [`StopCause`]
+//! tells them apart in the report.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,9 +27,8 @@ use crate::scanner::pacing::timer::later;
 
 /// Why a scan is winding down.
 ///
-/// Answered by [`ScanHandle::stopped`], and read by the probing loops to name
-/// their own stop. Not a verdict about the findings: a scan stopped either way
-/// keeps what it had already learned.
+/// Answered by [`ScanHandle::stopped`] and read by the probing loops to name
+/// their own stop. A scan stopped either way keeps what it had already learned.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopCause {
@@ -52,21 +41,15 @@ pub enum StopCause {
 
 /// The means to stop a running scan, and the budget that stops it unasked.
 ///
-/// One flag and one deadline, shared by every strategy a scan spawned. Each of
-/// them reads this on every pass of its own loop rather than only between
-/// targets, so a scan of a large range stops promptly instead of after the
-/// address it is on.
+/// Every strategy a scan spawned reads this on every pass of its loop, so a scan
+/// of a large range stops promptly.
 ///
-/// Stopping is not cancelling. The scan winds down and still produces its
-/// [`ScanReport`](crate::report::ScanReport), describing however far it
-/// got: the hosts already found are findings, and discarding them because the
-/// caller ran out of patience would throw away the work the scan had done. The
-/// report's [`StopReason`] says which of the two stops happened, so nobody
-/// mistakes a shortened scan for a complete one.
+/// Stopping does not cancel. The scan winds down and still produces its
+/// [`ScanReport`](crate::report::ScanReport), with the hosts found so far, and
+/// the report's [`StopReason`] marks it as shortened.
 ///
-/// Cloneable and shareable: the copy on a [`ScanSession`](crate::scanner::session::ScanSession)
-/// and the copies held by the strategies are the same flag and the same
-/// deadline.
+/// Clones share the same flag and deadline, including the copy on a
+/// [`ScanSession`](crate::scanner::session::ScanSession).
 #[derive(Debug, Clone)]
 pub struct ScanHandle {
     stop: Arc<Stop>,
@@ -79,12 +62,8 @@ struct Stop {
     /// Wakes whatever is waiting in [`ScanHandle::stopping`] when the scan is
     /// aborted. The deadline needs no waking: a waiter sleeps until it.
     woken: Notify,
-    /// When this scan's own budget runs out, for one that was given a budget.
-    ///
-    /// An [`Instant`] rather than a [`Duration`] and a start, so a reader does
-    /// no arithmetic and nothing has to agree about when the scan began.
-    /// Monotonic, so a clock stepped mid-scan cannot end one early or leave one
-    /// running.
+    /// When this scan's budget runs out, for one that was given a budget.
+    /// Monotonic, so a clock stepped mid-scan cannot end it early or late.
     deadline: Option<Instant>,
 }
 
@@ -103,8 +82,8 @@ impl ScanHandle {
     /// A handle for a scan that stops on its own after `budget`, and `None` for
     /// one that does not.
     ///
-    /// The clock starts here, which is where the scan is assembled, so the
-    /// budget covers the whole call rather than the probing part of it.
+    /// The clock starts here, where the scan is assembled, so the budget covers
+    /// the whole call and not only the probing.
     pub fn bounded(budget: Option<Duration>) -> Self {
         let deadline = budget.map(|budget| later(Instant::now(), budget));
         Self {
@@ -122,9 +101,7 @@ impl ScanHandle {
     /// [`ScanTask`](crate::scanner::ScanTask) to know when they have all
     /// finished and to collect the report.
     ///
-    /// Idempotent, and there is no way to undo it. A scan that
-    /// resumed after being stopped would have a gap in the middle that nothing
-    /// in the report could describe.
+    /// Idempotent and permanent.
     pub fn abort(&self) {
         self.stop.aborted.store(true, Ordering::SeqCst);
         self.stop.woken.notify_waiters();
@@ -133,16 +110,14 @@ impl ScanHandle {
     /// Resolves once the scan is asked to stop or outlives its budget, and at
     /// once for one that already has.
     ///
-    /// For work the probing loops cannot interrupt between passes, because it
-    /// is one long wait on a peer: identifying a service can wait out a
-    /// greeting, a handshake and several probes on a port that accepts and
-    /// says nothing, which is the better part of half a minute. Raced against
-    /// this, such a wait ends when the scan does. See
+    /// For one long wait on a peer that the probing loops cannot interrupt, such
+    /// as identifying a service on a port that accepts and says nothing (up to
+    /// half a minute). Raced against this, the wait ends when the scan does. See
     /// [`or_stopped`](Self::or_stopped).
     pub(crate) async fn stopping(&self) {
         loop {
-            // Registered before the flag is read, so an abort landing between
-            // the two still wakes this one.
+            // Registered before the flag is read, so an abort in between still
+            // wakes this one.
             let woken = self.stop.woken.notified();
             tokio::pin!(woken);
             woken.as_mut().enable();
@@ -162,8 +137,8 @@ impl ScanHandle {
     /// Runs `work` to its end unless the scan stops first, and `None` where it
     /// did.
     ///
-    /// Work already finished when the stop arrives is kept: the race favours
-    /// the work, so an answer and a stop landing together keep the answer.
+    /// The race favours the work, so an answer and a stop landing together keep
+    /// the answer.
     pub(crate) async fn or_stopped<T>(&self, work: impl Future<Output = T>) -> Option<T> {
         tokio::select! {
             biased;
@@ -174,18 +149,16 @@ impl ScanHandle {
 
     /// Whether the scan has been asked to stop, or has outlived its budget.
     ///
-    /// Every probing loop in the engine calls this each time round. A scan with
-    /// no budget reads one atomic and nothing else.
+    /// Called by every probing loop each time round. Without a budget it reads one
+    /// atomic.
     pub fn should_stop(&self) -> bool {
         self.stopped().is_some()
     }
 
     /// Why the scan is stopping, or `None` while it is still running.
     ///
-    /// The budget is read first. A scan whose budget expired was going to stop
-    /// whatever the caller did next, so an abort arriving after the fact does
-    /// not rename what happened; the other order would report a scheduled scan
-    /// as one somebody interrupted.
+    /// The budget is read first, so an abort arriving after it expired does not
+    /// turn a timed-out scan into an aborted one.
     pub fn stopped(&self) -> Option<StopCause> {
         if self
             .stop
@@ -202,22 +175,15 @@ impl ScanHandle {
 
     /// When this scan's budget runs out, or `None` for a scan without one.
     ///
-    /// The clock starts inside the call that assembles the scan, so a caller
-    /// holding the budget it asked for still cannot say when the scan will
-    /// stop. This is that answer, for a front end showing how long is left.
+    /// The clock starts inside the call that assembles the scan, so a front end
+    /// showing the time left needs this and not the budget it asked for.
     pub fn deadline(&self) -> Option<Instant> {
         self.stop.deadline
     }
 }
 
 impl From<StopCause> for StopReason {
-    /// What the shared stop signal means to a scanner writing down why it
-    /// stopped.
-    ///
-    /// Here rather than beside [`StopReason`] because a report knows nothing
-    /// about a running scan, and here rather than at each probing loop because
-    /// the several that read the signal must not disagree about what an expired
-    /// budget is called.
+    /// The one mapping every probing loop uses to record why it stopped.
     fn from(cause: StopCause) -> Self {
         match cause {
             StopCause::Aborted => StopReason::Aborted,
@@ -239,7 +205,7 @@ impl From<StopCause> for StopReason {
 mod tests {
     use super::*;
 
-    /// The behaviour every scan had before there was a budget, unchanged.
+    /// Without a budget only an abort stops the scan.
     #[test]
     fn a_handle_with_no_budget_stops_only_when_asked() {
         let handle = ScanHandle::new();
@@ -248,7 +214,7 @@ mod tests {
         assert_eq!(handle.stopped(), Some(StopCause::Aborted));
     }
 
-    /// What the budget is for: a scan that stops with nobody watching it.
+    /// An expired budget stops the scan with nobody asking.
     #[test]
     fn an_expired_budget_stops_a_scan_nobody_touched() {
         let handle = ScanHandle::bounded(Some(Duration::ZERO));
@@ -266,9 +232,7 @@ mod tests {
         assert_eq!(clone.deadline(), handle.deadline());
     }
 
-    /// The longest budget a caller can write is a scan that runs until it is
-    /// stopped, not a panic: `Duration::MAX` is past what a clock can count
-    /// to from now.
+    /// `Duration::MAX` is past what the clock can count to, and must not panic.
     #[test]
     fn the_longest_budget_is_one_that_never_runs_out() {
         let handle = ScanHandle::bounded(Some(Duration::MAX));
@@ -276,9 +240,7 @@ mod tests {
         assert!(handle.deadline().is_some());
     }
 
-    /// A wait raced against the stop ends when the scan is aborted, whoever
-    /// is waiting. This is what lets an in-flight identification end with the
-    /// scan rather than after its own ceiling.
+    /// An in-flight identification ends with the scan, not after its own ceiling.
     #[tokio::test]
     async fn a_wait_raced_against_the_stop_ends_when_the_scan_is_aborted() {
         let handle = ScanHandle::new();
@@ -302,8 +264,8 @@ mod tests {
         assert!(handle.should_stop());
     }
 
-    /// Work that finishes is kept, and a scan already stopped keeps work that
-    /// was ready anyway: the race favours the answer.
+    /// Work that finishes is kept, even on a stopped scan: the race favours the
+    /// answer.
     #[tokio::test]
     async fn work_that_finishes_is_kept() {
         let handle = ScanHandle::new();
@@ -313,8 +275,7 @@ mod tests {
         assert_eq!(handle.or_stopped(std::future::pending::<u8>()).await, None);
     }
 
-    /// An abort that arrives after the budget expired does not rename what
-    /// happened. The scan had already stopped.
+    /// An abort after the budget expired leaves the cause as `TimedOut`.
     #[test]
     fn a_late_abort_does_not_rename_an_expired_budget() {
         let handle = ScanHandle::bounded(Some(Duration::ZERO));

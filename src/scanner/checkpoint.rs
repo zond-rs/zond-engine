@@ -8,39 +8,26 @@
 
 //! # Writing a running scan down as it runs
 //!
-//! The timer that carries what a scan has found into its
-//! [`Journal`](crate::journal::store::Journal), and the
-//! handle that stops it.
+//! The timer that writes what a scan has found into its
+//! [`Journal`](crate::journal::store::Journal), and the handle that stops it.
 //!
-//! ## Why this is the scanner's and not the journal's
-//!
-//! It reads a [`ScanProgress`](crate::scanner::session::ScanProgress) and writes
-//! a [`Journal`](crate::journal::store::Journal), and only one of those
-//! is something the journal knows about. Living beside the journal meant a
-//! public signature there naming a scanner type, which inverts the order
-//! `src/lib.rs` sets out and put the two modules in a cycle: `scanner` needs a
-//! journal to write, and `journal` needed a scan to read. Here the dependency
-//! runs one way, which is what it always was in substance.
-//!
-//! The journal keeps everything about *how* a scan is written down. What is here
-//! is when, and in what order.
+//! It lives in the scanner because it reads a
+//! [`ScanProgress`](crate::scanner::session::ScanProgress), which the journal
+//! must not depend on. The journal decides how a scan is written down; this
+//! module decides when, and in what order.
 //!
 //! ## The cursor is read before the findings are taken
 //!
-//! A checkpoint writes two things a running scan goes on changing while it
-//! reads them: the hosts whose findings changed, and the cursor saying which
-//! targets are settled. A resume skips what the cursor names and restores what
-//! the findings file holds, so a position the cursor names whose finding the
-//! file lacks is a target the resumed scan neither asks nor reports.
+//! A checkpoint writes the hosts whose findings changed and the cursor saying
+//! which targets are settled, both of which the scan keeps changing. A resume
+//! skips what the cursor names and restores what the findings file holds, so a
+//! settled position whose finding is missing from the file is lost.
 //!
-//! Every strategy records a finding in the store before it settles the
-//! target that produced it; see
-//! [`ScanContext::record_outcome`](crate::scanner::session::ScanContext::record_outcome).
-//! So a checkpoint reads the cursor first and takes the changed hosts after:
-//! whatever the cursor it read names as settled was stored before it was read,
-//! and so before the hosts were taken. A target settled between the two
-//! readings has its finding written and its position left out, and costs one
-//! probe on a resume rather than a finding.
+//! Every strategy stores a finding before settling its target (see
+//! [`ScanContext::record_outcome`](crate::scanner::session::ScanContext::record_outcome)),
+//! so reading the cursor first and taking the changed hosts after guarantees
+//! every settled target's finding is included. A target settled between the two
+//! reads is written without its position and costs one repeated probe on resume.
 
 use crate::journal::Journal;
 use crate::journal::cursor::Checkpoint;
@@ -52,29 +39,22 @@ use crate::scanner::session::{ScanProgress, SoFar};
 
 /// How often a running scan writes down how far it got.
 ///
-/// The cost of a crash is one interval of replayed work, and the cost of the
-/// interval is one rename of a small file, so this is chosen for the first,
-/// not the second. Three seconds of a six-hour scan is not a tradeoff worth
-/// exposing.
+/// A crash replays at most one interval of work, and each checkpoint costs one
+/// rename of a small file, so the interval is short and not configurable.
 pub const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// A running scan's journal, checkpointed on a timer by a task of its own.
 ///
-/// The journal is owned by that task rather than shared with the scan: a
-/// checkpoint is the only thing that writes it, so there is nothing to
-/// synchronise and no lock for a scan to hold while it does I/O.
+/// The task owns the journal, so the scan holds no lock while it does I/O.
 ///
-/// The task only keeps time. Each write is handed to the runtime's blocking
-/// pool, since a checkpoint is file I/O and the serialising of every host that
-/// changed, which for a host scanned on every port is tens of thousands of
-/// records: run on a worker, it held that worker for the length of the write,
-/// and the reply handling queued behind it stalled with every checkpoint.
+/// The task only keeps time. Each write runs on the blocking pool: a checkpoint
+/// serialises every changed host, which for a host scanned on every port is tens
+/// of thousands of records, and would stall reply handling on a worker.
 #[derive(Debug)]
 pub struct Checkpointing {
     done: tokio::sync::oneshot::Sender<Vec<ScanPhase>>,
     task: tokio::task::JoinHandle<()>,
-    /// How many checkpoints the writer has written, for a test to wait on
-    /// one rather than on the timer that is due to start it; see
+    /// How many checkpoints the writer has written; see
     /// [`checkpointed`](Self::checkpointed).
     #[cfg(test)]
     written: tokio::sync::watch::Receiver<usize>,
@@ -86,15 +66,14 @@ impl Checkpointing {
     /// Call once the scan has finished and every strategy has reported, so the
     /// final cursor covers the whole sitting.
     pub async fn finish(self, phases: &[ScanPhase]) {
-        // The stop signal carries what the sitting did, because those are one
-        // fact: the scan is over, and this is what it turned out to be. A send
-        // failure means the writer has already stopped.
+        // The stop signal carries the sitting's phases. A send failure means the
+        // writer has already stopped.
         let _ = self.done.send(phases.to_vec());
         let _ = self.task.await;
     }
 
-    /// Ends the writer where it stands, without its last write: what a
-    /// process killed outright leaves on disk.
+    /// Ends the writer without its last write, as a process killed outright
+    /// would.
     #[cfg(test)]
     pub(crate) async fn kill(self) {
         self.task.abort();
@@ -104,14 +83,10 @@ impl Checkpointing {
     /// Waits until the writer has written a checkpoint this has not already
     /// waited for, and has the journal back from the thread that wrote it.
     ///
-    /// For a test that needs a checkpoint on disk before it goes on. A sleep
-    /// past [`CHECKPOINT_EVERY`] is a guess at when the write ends: the timer
-    /// starts only once the task is first polled, and the write runs on the
-    /// blocking pool for as long as the machine makes it take, so a loaded
-    /// machine outlasts any margin, and a kill that lands mid-write leaves the
-    /// journal locked by a write still running. Past this, a kill leaves
-    /// exactly what that checkpoint wrote, the next being a whole interval
-    /// away.
+    /// For a test that needs a checkpoint on disk. Sleeping past
+    /// [`CHECKPOINT_EVERY`] is unreliable on a loaded machine, and a kill that
+    /// lands mid-write leaves the journal locked. After this returns, a kill
+    /// leaves exactly what that checkpoint wrote.
     #[cfg(test)]
     pub(crate) async fn checkpointed(&mut self) {
         self.written
@@ -137,8 +112,8 @@ pub fn spawn_checkpoints(journal: Journal, ctx: ScanProgress) -> Checkpointing {
                         writer.checkpoint(&ctx);
                         writer
                     });
-                    // A checkpoint that panicked took the journal down with it,
-                    // releasing its lock, and there is nothing left to write.
+                    // A panicked checkpoint dropped the journal and its lock;
+                    // there is nothing left to write.
                     let Ok(returned) = written.await else {
                         return;
                     };
@@ -146,8 +121,8 @@ pub fn spawn_checkpoints(journal: Journal, ctx: ScanProgress) -> Checkpointing {
                     #[cfg(test)]
                     counted.send_modify(|count| *count += 1);
                 }
-                // A dropped signal is a task nobody joined: there are no phases
-                // to record, and what has been settled so far still is.
+                // A dropped signal means nobody joined the task: no phases to
+                // record, but what is settled stays settled.
                 finished = &mut stop => break finished.unwrap_or_default(),
             }
         };
@@ -170,14 +145,9 @@ pub fn spawn_checkpoints(journal: Journal, ctx: ScanProgress) -> Checkpointing {
 /// failed.
 struct Writer {
     journal: Journal,
-    /// Whether the last checkpoint failed, so a failure is told when
-    /// checkpointing stops working rather than at every checkpoint after.
-    ///
-    /// Whatever stops one checkpoint, a full disk or a descriptor table with
-    /// no room, stops the next one too, and one is due every few seconds: told
-    /// each time, a scan's console fills with one fact. Cleared by a
-    /// checkpoint that is written, so a failure that returns after that is
-    /// told again, being news again.
+    /// Whether the last checkpoint failed, so a run of failures (a full disk,
+    /// say) is reported once. Cleared by a successful checkpoint, so a later
+    /// failure is reported again.
     failing: bool,
     /// What the open phase has concluded, as named beside the last cursor
     /// written; see [`Cut::so_far`].
@@ -195,9 +165,8 @@ impl Writer {
 
     /// Writes down what has changed and how far the scan got.
     ///
-    /// A checkpoint that cannot be written is not worth ending a scan over:
-    /// the previous one still stands, and the scan is still producing results.
-    /// Reported through the same channel every other narrowing uses.
+    /// A failed checkpoint does not end the scan, since the previous one still
+    /// stands. It is recorded as a scan failure.
     fn checkpoint(&mut self, ctx: &ScanProgress) {
         let cut = Cut::take(ctx);
         self.write(ctx, cut);
@@ -208,10 +177,9 @@ impl Writer {
     fn write(&mut self, ctx: &ScanProgress, cut: Cut) {
         let journal = &mut self.journal;
         let outcome = if journal.should_compact() {
-            // Taken after the cursor was read, as `cut.changed` was, so it
-            // covers everything that cursor settled and nothing is lost by not
-            // appending `cut.changed`. A compaction that fails leaves the file
-            // as it was, which appending to still brings up to date.
+            // Taken after the cursor was read, so it covers everything the
+            // cursor settled. A failed compaction leaves the file intact, and
+            // appending still brings it up to date.
             journal
                 .compact(&ctx.findings_snapshot())
                 .or_else(|_| journal.record_hosts(&cut.changed))
@@ -220,19 +188,16 @@ impl Writer {
         }
         .and_then(|()| journal.write_cursor(&cut.cursor));
 
-        // What this checkpoint took is written by the next one that can write,
-        // or a later cursor would settle the targets behind it with nothing on
-        // file to show for them.
+        // Hand the findings back for the next checkpoint, or a later cursor
+        // would settle their targets with nothing on file.
         if outcome.is_err() {
             ctx.hand_back(&cut.changed);
         }
 
-        // Silent addresses are named beside the cursor that settles them, and
-        // so only once that cursor is written: named while their targets are
-        // not settled on disk, a resume would ask them again and find what
-        // the record already said it had not heard. Every other record
-        // awaiting its verdict is named undecided, whichever cursor stands, so
-        // none on disk is a host in the job's report.
+        // Silent addresses are named only once the cursor settling them is
+        // written, or a resume would ask them again. Every other record awaiting
+        // a verdict is named undecided, so none on disk counts as a host in the
+        // job's report.
         let mut awaiting = cut.so_far.awaiting;
         if outcome.is_ok() {
             self.so_far = SoFar {
@@ -266,11 +231,10 @@ impl Writer {
             Ok(()) => self.failing = false,
         }
 
-        // Tapes are additive: they settle nothing, so a failed write does not
-        // disturb the checkpoint and is not folded above. Nor does the
-        // sitting's standing record, which the next checkpoint rewrites whole.
-        // Tapes are handed back as findings are, since nothing captures them
-        // again.
+        // Tapes and the standing record settle nothing, so their failures are
+        // not folded into the outcome above. Tapes are handed back on failure,
+        // since nothing captures them again; the standing record is rewritten
+        // whole next time.
         let tapes = ctx.take_tapes();
         if self.journal.record_detections(&tapes).is_err() {
             ctx.hand_back_tapes(tapes);
@@ -282,11 +246,9 @@ impl Writer {
 
     /// Writes the sitting's last checkpoint and closes the journal.
     ///
-    /// A job whose phases heard nothing from an address has its findings
-    /// written whole, less every record at one. A checkpoint wrote the
-    /// scanners' records of such an address down before the phase decided it
-    /// was silent, and the phase forgot them only in memory; appended to, the
-    /// file would keep what the job's report drops. See `Unheard`.
+    /// Where the job's phases heard nothing from some addresses, the findings
+    /// are rewritten whole without them: an earlier checkpoint may have written
+    /// their records before the phase decided they were silent. See `Unheard`.
     fn close(mut self, ctx: &ScanProgress, phases: &[ScanPhase]) {
         let journal = &mut self.journal;
         let unheard = Unheard::of(journal.earlier_phases().iter().chain(phases));
@@ -305,27 +267,25 @@ impl Writer {
     }
 }
 
-/// What one checkpoint writes down: how far the scan got, and the findings
-/// that changed on the way there.
+/// What one checkpoint writes: the cursor, and the findings that changed.
 struct Cut {
     cursor: Checkpoint,
     changed: Vec<Host>,
-    /// What the open phase has concluded of the records nothing answered at,
+    /// What the open phase has concluded of records nothing answered at, with
     /// its silent addresses each settled in `cursor`. See
     /// [`ScanProgress::verdicts_so_far`].
     so_far: SoFar,
 }
 
 impl Cut {
-    /// Reads the cursor, then takes the hosts that changed, in that order.
-    /// See the module documentation for why the order is the whole point.
+    /// Reads the cursor, then takes the hosts that changed. The order matters;
+    /// see the module documentation.
     fn take(ctx: &ScanProgress) -> Self {
         Self::taking(ctx, || {})
     }
 
     /// [`take`](Self::take), running `between` after the cursor is read and
-    /// before the hosts are taken: the moment a test has to reach to show a
-    /// target settling there costs no finding.
+    /// before the hosts are taken, for tests.
     fn taking(ctx: &ScanProgress, between: impl FnOnce()) -> Self {
         let cursor = ctx.settlements().checkpoint();
         between();
@@ -339,15 +299,12 @@ impl Cut {
     }
 }
 
-/// The hosts a sitting that ran as `phases` did finished every pass over, as
-/// [`Journal::record_finished`] names them: none for one that was stopped,
-/// which may not have reached its passes, and otherwise every host it held but
-/// those a host's own budget ran out on, which a pass passed over.
+/// The hosts this sitting finished every pass over, for
+/// [`Journal::record_finished`]: none if it was stopped, otherwise every host
+/// except those whose own budget ran out.
 ///
-/// `phases` are this sitting's own, as it closes, and never what the journal
-/// holds of it: what a checkpoint writes of the phase still open says only
-/// that it had not closed, not which passes it had finished. Only a sitting
-/// that reaches its close can say it did.
+/// `phases` must be the sitting's phases as it closes. What a checkpoint wrote
+/// of an open phase cannot say which passes finished.
 fn finished_hosts(ctx: &ScanProgress, phases: &[ScanPhase]) -> Vec<String> {
     let ran_to_its_end = !phases.is_empty()
         && phases
@@ -370,10 +327,8 @@ fn finished_hosts(ctx: &ScanProgress, phases: &[ScanPhase]) -> Vec<String> {
 
 /// Why a journal could not be written, in the words a console line ends on.
 ///
-/// An operating system's refusal is told as the refusal alone, in lower case
-/// and without its error number: the line already says it is the journal's, so
-/// the journal error's own prefix and the number add length and nothing to act
-/// on.
+/// An I/O error is reduced to its message, lower-cased and without the OS error
+/// number, since the line already names the journal.
 fn reason(error: &JournalError) -> String {
     let JournalError::Io(io) = error else {
         return error.to_string();
@@ -438,16 +393,8 @@ mod tests {
     }
 
     /// A target that settles while a checkpoint is being cut is either written
-    /// with its finding or left for a resume to ask again, never skipped
-    /// without it.
-    ///
-    /// A checkpoint reads two things a running scan goes on changing: the
-    /// hosts that changed and the cursor. Read hosts-first, a port found and
-    /// settled between the two readings is named settled by the cursor while
-    /// its finding waits for the next checkpoint, and a scan killed before that
-    /// one resumes past a port it never reports. The kill is the writer dropped
-    /// without its closing write, which is what a process killed outright
-    /// leaves.
+    /// with its finding or left for a resume to ask again. Dropping the writer
+    /// without its closing write stands in for a killed process.
     #[test]
     fn a_target_settled_while_a_checkpoint_is_cut_is_not_skipped_without_its_finding() {
         use crate::journal::settle::Outcome;
@@ -462,8 +409,7 @@ mod tests {
         let ip: std::net::IpAddr = "192.0.2.1".parse().expect("an address");
 
         let mut writer = Writer::new(journal);
-        // A strategy finds the port open and settles it, in the order every
-        // strategy keeps, at the one moment a checkpoint is exposed to.
+        // A strategy stores and settles the port between the two reads.
         let cut = Cut::taking(&progress, || {
             ctx.update_host(ip, |host| {
                 host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
@@ -484,15 +430,8 @@ mod tests {
     }
 
     /// Findings a checkpoint could not write are written by the next one that
-    /// can.
-    ///
-    /// A checkpoint takes the hosts that changed before it writes them. Lost
-    /// with a failed write, they would be on record nowhere, and the next
-    /// checkpoint that succeeds writes a cursor settling the targets that
-    /// found them: a scan killed after that resumes past them and never
-    /// reports them. The findings file is moved aside for one checkpoint,
-    /// which fails that write the way a full disk or a revoked permission
-    /// does.
+    /// can, or a later cursor would settle their targets with no record. Moving
+    /// the findings file aside fails one write.
     #[test]
     fn findings_a_failed_checkpoint_took_are_written_by_the_next_one() {
         use crate::journal::settle::Outcome;
@@ -530,13 +469,9 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A pass over a host that changed nothing costs the journal no record.
-    ///
-    /// Every write-back pass, correlation, posture, the passive OS reading,
-    /// edits hosts through the store and marks each one changed whether or
-    /// not the edit moved anything. Written regardless, each such pass over a
-    /// host is a record of it in the findings file, and a wide scan's file
-    /// grows with passes that learned nothing.
+    /// A pass over a host that changed nothing writes no record. Write-back
+    /// passes (correlation, posture, passive OS) touch every host, and a wide
+    /// scan's file would grow with each.
     #[test]
     fn a_pass_that_changed_nothing_writes_no_record() {
         use crate::model::port::{Port, PortState, Protocol};
@@ -569,14 +504,9 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// What a checkpoint takes of a wide host is the ports that changed, and
-    /// what it writes of them reads back as the whole host.
-    ///
-    /// A host scanned on every port holds tens of thousands of them, and each
-    /// pass that follows the port scan touches a few: taken whole, each
-    /// checkpoint copied every port under the lock the scan writes that host
-    /// through and serialised each one to learn which had changed, half a
-    /// second a checkpoint on a debug build for one service identified.
+    /// A checkpoint takes only a wide host's changed ports, and they read back as
+    /// the whole host. Copying every port under the host's lock costs about half
+    /// a second per checkpoint on a debug build.
     #[test]
     fn a_checkpoint_takes_the_ports_that_changed_and_not_the_whole_host() {
         use crate::model::port::{Port, PortState, Protocol};
@@ -603,8 +533,7 @@ mod tests {
         let mut writer = Writer::new(journal);
         writer.checkpoint(&progress);
 
-        // One port answers later, as a re-probe or an identification would
-        // move it.
+        // One port changes later, as a re-probe or identification would.
         ctx.update_host(ip, |host| {
             host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
         });
@@ -634,14 +563,9 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Detection tapes a checkpoint could not write are written by the next
-    /// one that can.
-    ///
-    /// A checkpoint takes the tapes captured since the last one before it
-    /// writes them, and nothing captures them again: lost with a failed write,
-    /// the runs they record can never be replayed. A directory standing at the
-    /// tapes' file name fails that write for one checkpoint, the way a full
-    /// disk or a revoked permission does.
+    /// Detection tapes a checkpoint could not write are written by the next one
+    /// that can, since nothing captures them again. A directory at the tapes'
+    /// file name fails one write.
     #[test]
     fn tapes_a_failed_checkpoint_took_are_written_by_the_next_one() {
         use crate::detect::compute::{CapTape, CapTapeRecord, DetectionRunRecord};
@@ -686,18 +610,12 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A checkpoint whose write blocks holds none of the runtime's workers
-    /// while it waits.
+    /// A checkpoint whose write blocks holds none of the runtime's workers.
     ///
-    /// A checkpoint is file I/O and the serialising of every host that changed,
-    /// and a host scanned on every port is tens of thousands of records. Run
-    /// on a worker, it held that worker for as long as the write took, and
-    /// on a runtime with one worker nothing else ran: replies queued unread
-    /// and timers fired late with every checkpoint. The findings file is a
-    /// named pipe here, whose opening for writing blocks until something reads
-    /// it, which makes the write take as long as the test decides. The runtime
-    /// is the one worker `tokio::test` gives, so a timer running across the
-    /// checkpoint is late by as long as the write if the write holds it.
+    /// The findings file is a named pipe, whose opening for writing blocks until
+    /// something reads it, so the test decides how long the write takes. On the
+    /// single worker `tokio::test` gives, a timer across the checkpoint would be
+    /// late by that long if the write held the worker.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_checkpoint_that_blocks_does_not_hold_the_runtime() {
@@ -705,8 +623,8 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         use std::time::{Duration, Instant};
 
-        /// How long a stuck writer is left before the pipe is read anyway, so
-        /// a regression fails the assertion below rather than hanging.
+        /// How long a stuck writer is left before the pipe is read anyway, so a
+        /// regression fails the assertion below and does not hang.
         const RELEASED_AFTER: Duration = Duration::from_secs(20);
 
         let root = scratch("blocking");
@@ -715,8 +633,7 @@ mod tests {
         let findings = journal.directory().join("hosts.jsonl");
         std::fs::remove_file(&findings).expect("removes the findings file");
         let name = std::ffi::CString::new(findings.as_os_str().as_bytes()).expect("a path");
-        // SAFETY: `name` is a live, NUL-terminated path, which is all `mkfifo`
-        // reads.
+        // SAFETY: `name` is a live, NUL-terminated path.
         assert_eq!(
             unsafe { libc::mkfifo(name.as_ptr(), 0o600) },
             0,
@@ -779,13 +696,9 @@ mod tests {
         .opening_in(ctx)
     }
 
-    /// A sitting killed outright leaves a record of its phase: what it was
-    /// asked to cover and under what, how long it ran, and what failed.
-    ///
-    /// A sitting's phases are written when it stops, and a killed one never
-    /// stops. Without this the job's report, read back or resumed, described
-    /// only the sittings that ended, and a failure that may be why the first
-    /// one was killed went with it.
+    /// A sitting killed outright leaves a record of its phase: its scope, how
+    /// long it ran, and what failed. A killed sitting never reaches the point
+    /// where phases are normally written.
     #[test]
     fn a_killed_sitting_leaves_a_record_of_its_phase() {
         let root = scratch("killed-phase");
@@ -811,14 +724,9 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A sitting killed outright leaves its open phase marked as one that
-    /// never closed, and the job's report partial until a later sitting
-    /// closes a phase of its kind.
-    ///
-    /// Read back, a phase that never closed claims nothing its close would
-    /// have established, no stop, no unreached target, no pass cut short, and
-    /// without a mark of its own it reads as a phase that ran to its end, and
-    /// the job's report of it as a scan that covered its ground.
+    /// A killed sitting leaves its phase marked open and the job's report
+    /// partial until a later sitting closes a phase of its kind. Unmarked, the
+    /// phase would read as one that ran to its end.
     #[test]
     fn a_killed_sitting_marks_its_open_phase_and_the_report_partial() {
         let root = scratch("killed-open");
@@ -842,8 +750,7 @@ mod tests {
             "a job whose only sitting was killed reads as complete"
         );
 
-        // A later sitting that closes a phase of the same kind is what the
-        // killed one left, done.
+        // A later sitting closes a phase of the same kind.
         let (mut resumed, _) = Journal::resume(&directory, &plan, Privilege::Raw).expect("resumes");
         let (_session, ctx) = crate::scanner::session::ScanSession::new();
         let closed = open_a_port_phase(&ctx).finish(&ctx);
@@ -860,11 +767,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A sitting that ends has its phases recorded once, and nothing of them
-    /// left standing.
-    ///
-    /// Its standing record and its ending both describe the same phases, and
-    /// a report holding both would describe the sitting twice.
+    /// A sitting that ends has its phases recorded once, and its standing record
+    /// removed.
     #[test]
     fn a_sitting_that_ends_is_recorded_once() {
         let root = scratch("ended-phase");
@@ -894,13 +798,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A journal that cannot be written is told once, in one short line, however
-    /// many checkpoints fail after it.
-    ///
-    /// A checkpoint is due every few seconds, and what stops one, a full disk
-    /// or a descriptor table with no room, stops the next one too. Told every
-    /// time, a scan's console fills with the same failure, and a long line
-    /// repeated is the one a reader stops reading.
+    /// A journal that cannot be written is reported once, in one short line,
+    /// however many checkpoints fail after it.
     #[test]
     fn a_journal_that_cannot_be_written_is_told_once_and_short() {
         let root = scratch("told-once");

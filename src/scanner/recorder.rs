@@ -8,14 +8,10 @@
 
 //! # Turning a running scan into the record it leaves behind
 //!
-//! [`crate::report`] holds the vocabulary a finished scan is described in.
-//! This is the one piece that needs a scan to still be running: it opens when a
-//! phase starts, holds what was asked for, and reads the findings out of a live
+//! [`crate::report`] holds the vocabulary a finished scan is described in. This
+//! module is the part that needs a running scan: it opens when a phase starts,
+//! holds what was asked for, and reads the findings out of a live
 //! [`ScanContext`] when the phase ends.
-//!
-//! It lives with the scanner rather than with the report because it is the only
-//! part of the record that touches the machinery. Everything else in
-//! [`crate::report`] can be built, read and written with no scan in sight.
 
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
@@ -35,22 +31,19 @@ use crate::system::privilege::Privilege;
 /// Carries a phase's metadata from the moment a scan starts to the moment it
 /// ends, and closes the record when it does.
 ///
-/// The scope and settings of a scan are only knowable before it starts, because
-/// the target set moves into the strategies that consume it, while the duration
-/// and the failures are only knowable after it ends. This holds the first half
-/// until the second is available, so both land in one [`ScanPhase`] rather than
-/// leaving a half-built report somewhere for the closing code to find.
+/// Scope and settings are only knowable before the scan starts (the target set
+/// moves into the strategies), duration and failures only after it ends. This
+/// holds the first until the second is available, so both land in one
+/// [`ScanPhase`].
 ///
 /// # Building a report from a caller's own orchestration
 ///
 /// [`discover`](crate::scanner::discover) and [`scan`](crate::scanner::scan) use
-/// this internally, and it is public so that a caller running strategies
-/// themselves can produce the same [`ScanReport`] the engine does. Without it
-/// a self-orchestrated scan could read its own findings but never write the
-/// record of them, and so could never reach an
-/// [`Exporter`](crate::export::Exporter).
+/// this internally. A caller running strategies itself uses it to produce the
+/// same [`ScanReport`], which an [`Exporter`](crate::export::Exporter) can then
+/// write.
 ///
-/// Take it before the scan, hand it the context afterwards:
+/// Start it before the scan, hand it the context afterwards:
 ///
 /// ```no_run
 /// use zond_engine::ZondConfig;
@@ -63,14 +56,12 @@ use crate::system::privilege::Privilege;
 /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let cfg = ZondConfig::default();
 ///
-/// // The policy has to reach the context as well as the targets. The
-/// // subtraction below covers the addresses named in the target list, and a
-/// // segment sweep does not confine itself to those; see `Exclusions`.
+/// // The exclusions go to the context as well as the targets, since a segment
+/// // sweep reaches beyond the target list; see `Exclusions`.
 /// let (session, ctx) = ScanSession::builder().excluding(cfg.exclusions.clone()).build();
 ///
-/// // Recorded before the targets move into a strategy, since what a scan was
-/// // asked to cover is only knowable here. `targets` comes back narrowed by
-/// // whatever the policy forbids, and the scope records what that cost.
+/// // Record the scope before the targets move into a strategy. `targets` comes
+/// // back narrowed by the exclusions, and the scope records what was removed.
 /// let mut targets = to_set(&["192.0.2.0/24"], None, None)?;
 /// let scope = TargetScope::from_ip_set(&mut targets, &cfg.exclusions);
 /// let recorder = PhaseRecorder::start(ScanKind::Discovery, Privilege::Connect, scope, &cfg);
@@ -90,9 +81,8 @@ pub struct PhaseRecorder {
 /// What a phase is from the moment it opens: what it was asked to cover, under
 /// what, with which sockets, and when it began.
 ///
-/// Apart from [`PhaseRecorder`] so a journal can hold a copy while the phase
-/// runs. A sitting killed outright never closes its phase, and this is what
-/// its journal can still say of it; see [`Opened::standing`].
+/// Separate from [`PhaseRecorder`] so a journal can hold a copy while the phase
+/// runs, for a sitting killed before it closes; see [`Opened::standing`].
 #[derive(Debug, Clone)]
 pub(crate) struct Opened {
     kind: ScanKind,
@@ -108,25 +98,18 @@ impl Opened {
     /// The phase as it stands: what it opened with, how long it has run, and
     /// `failures`, the failures filed since it opened.
     ///
-    /// What only its close can establish is left empty: the addresses it
-    /// left early, what it never reached, and its strategies' statistics. A record of a phase that never closed claims
-    /// none of those rather than guessing at them, and none of them settles
-    /// anything a resume would skip. Nor does it say it was stopped, since
-    /// nothing stopped it that it could name. It says it is open instead,
-    /// which a sitting that ends replaces with the phase it closed; see
-    /// [`ScanPhase::is_open`].
+    /// What only the close can establish is left empty: addresses left early,
+    /// targets never reached, strategy statistics, and any stop. The phase is
+    /// marked open instead, and a sitting that ends replaces it with the closed
+    /// phase; see [`ScanPhase::is_open`].
     ///
-    /// What a port phase standing in for a liveness pass has concluded of
-    /// the records nothing answered at is the exception, as `so_far` has it;
-    /// see
-    /// [`ScanProgress::verdicts_so_far`](crate::scanner::session::ScanProgress::verdicts_so_far).
-    /// The addresses it has already heard nothing from on every target it
-    /// owes them are named silent, with the probes they were sent, as its
-    /// close would name them whatever else it asked: their targets are
-    /// settled, and a resume skips them, so a record that left them out would
-    /// leave them accounted for nowhere in the job. The addresses of the other
-    /// records are named undecided, as a close that came now would name them,
-    /// so the job's report makes no host of what the phase has not decided.
+    /// The exception is what a port phase standing in for a liveness pass has
+    /// concluded so far (`so_far`; see
+    /// [`ScanProgress::verdicts_so_far`](crate::scanner::session::ScanProgress::verdicts_so_far)).
+    /// Addresses silent on every target they owe are named silent with their
+    /// probe count, because their targets are settled and a resume skips them.
+    /// Other awaiting records are named undecided, so the job's report makes no
+    /// host of them.
     #[cfg(feature = "journal-format")]
     pub(crate) fn standing(
         &self,
@@ -166,13 +149,10 @@ impl PhaseRecorder {
     /// Opens a phase record, taking the clock readings that bound it.
     ///
     /// Call this before the scan starts. `targets` is the scope the phase was
-    /// asked to cover, which has to be read while the target set is still in
-    /// hand; `privilege` is which sockets the strategies about to run hold.
+    /// asked to cover; `privilege` is which sockets the strategies hold.
     ///
-    /// Both clocks are read because they answer different questions: the wall
-    /// clock says when the scan happened, the monotonic one says how long it
-    /// took. Deriving the second from the first would let an NTP correction
-    /// during a long sweep report a duration that never elapsed.
+    /// The wall clock records when the scan happened and the monotonic clock how
+    /// long it took, so a clock correction mid-sweep cannot distort the duration.
     pub fn start(
         kind: ScanKind,
         privilege: Privilege,
@@ -192,9 +172,8 @@ impl PhaseRecorder {
         }
     }
 
-    /// Tells `ctx` this phase is open, so a journal checkpointing the scan
-    /// can write down what the phase is before it closes. See
-    /// [`Opened::standing`].
+    /// Tells `ctx` this phase is open, so a checkpointing journal can record it
+    /// before it closes. See [`Opened::standing`].
     ///
     /// Called once the phase is fully described, after
     /// [`skipping_liveness`](Self::skipping_liveness) where that applies.
@@ -206,9 +185,8 @@ impl PhaseRecorder {
     /// Records that this port phase runs with no liveness pass in front of it,
     /// and why.
     ///
-    /// For a caller orchestrating a port scan who skipped the pass, so the
-    /// record says so rather than leaving a reader to infer it from the missing
-    /// discovery phase. See [`ScanPhase::liveness_skipped`].
+    /// For a caller orchestrating a port scan without the pass, so the record
+    /// says so explicitly. See [`ScanPhase::liveness_skipped`].
     #[must_use]
     pub fn skipping_liveness(mut self, why: LivenessSkip) -> Self {
         self.opened.liveness_skipped = Some(why);
@@ -220,10 +198,9 @@ impl PhaseRecorder {
     /// Call this once, after every strategy has stopped writing, or the
     /// snapshot describes a scan that was still running.
     ///
-    /// The failures and probe statistics filed against `ctx` are *taken* rather
-    /// than copied, so a context reused for a second phase starts empty and
-    /// cannot hand the same failure to two reports. Anything that needs to read
-    /// them without closing a phase has
+    /// The failures and probe statistics filed against `ctx` are taken, so a
+    /// context reused for a second phase starts empty. To read them without
+    /// closing a phase, use
     /// [`ScanContext::failures_snapshot`](crate::scanner::session::ScanContext::failures_snapshot)
     /// and its probe-statistics counterpart.
     ///
@@ -237,12 +214,10 @@ impl PhaseRecorder {
     /// [`finish`](Self::finish) for the last phase of a scan, which is handed
     /// the context to keep.
     ///
-    /// The hosts are moved into the report rather than copied when nothing
-    /// else can read the store any longer: no [`ScanSession`] a caller kept,
-    /// no journal still to write, no other part of the scan. A full-range scan
-    /// is hundreds of megabytes of hosts, and a copy is a second of them held
-    /// at once for nobody. Whoever does still hold the store is answered as
-    /// before, from a copy.
+    /// The hosts are moved into the report when nothing else holds the store (no
+    /// [`ScanSession`], no journal, no other part of the scan), since a
+    /// full-range scan holds hundreds of megabytes of hosts. Otherwise they are
+    /// copied.
     ///
     /// [`ScanSession`]: crate::scanner::session::ScanSession
     pub(crate) fn finish_last(self, ctx: ScanContext) -> ScanReport {
@@ -258,12 +233,12 @@ impl PhaseRecorder {
     /// established about presence, for the port phase that follows it to act
     /// on. `None` for any other kind of phase.
     ///
-    /// One reading serves both, so the port phase settles as found down exactly
-    /// the addresses the report does not name as undecided.
+    /// One reading serves both, so the port phase treats as found exactly the
+    /// addresses the report does not name as undecided.
     pub(super) fn close(self, ctx: &ScanContext) -> (ScanReport, Option<Liveness>) {
         let (phase, liveness) = self.close_phase(ctx);
-        // Copied rather than taken: the store is shared with the `ScanSession`
-        // the caller kept, which goes on answering after this returns.
+        // Copied: the caller's `ScanSession` shares the store and keeps reading
+        // it.
         let hosts = ctx.store.iter().map(|entry| entry.value().clone());
         (ScanReport::new(phase, hosts), liveness)
     }
@@ -271,39 +246,31 @@ impl PhaseRecorder {
     /// The phase this recorder describes, closed against what `ctx` holds,
     /// and what a discovery phase established about presence.
     fn close_phase(self, ctx: &ScanContext) -> (ScanPhase, Option<Liveness>) {
-        // Which links the strategies reached is only knowable now: the scope was
-        // fixed before the first probe went out, and a sweep of a segment covers
+        // Which links were swept is only known now; a segment sweep covers
         // ground no target set named.
         let mut targets = self.opened.targets;
         targets.record_sweeps(ctx.take_swept_links());
         targets.record_withheld(ctx.withheld_by_hardware(), ctx.take_withheld_neighbours());
 
         let unroutable = ctx.take_unroutable();
-        // Only what the phase filed: a note on why an address went unasked
-        // names nothing the phase did not leave unasked.
+        // Only addresses the phase actually filed as unroutable.
         let refused_by_route: Vec<std::net::IpAddr> = ctx
             .take_refused_by_route()
             .into_iter()
             .filter(|address| unroutable.binary_search(address).is_ok())
             .collect();
-        // Taken whatever the kind, so a context reused for another phase starts
-        // with no silence it did not hear.
+        // The `take_*` calls below drain the context whatever the phase kind,
+        // so a context reused for another phase starts empty.
         let heard_nothing = ctx.take_silent();
-        // A port phase names what it filed only where its probes stood in for
-        // a liveness pass the engine dropped: there an address they drew
-        // nothing from is what the pass would have found silent. See
-        // `ScanPhase::silent`.
+        // A port phase names silent addresses only where it stood in for a
+        // dropped liveness pass. See `ScanPhase::silent`.
         let silent = match (self.opened.kind, self.opened.liveness_skipped) {
             (ScanKind::PortScan, Some(LivenessSkip::PortsNoDearer)) => ranges_of(&heard_nothing),
             _ => Vec::new(),
         };
-        // Taken whatever the kind, for the same reason. What a port phase
-        // standing in for a liveness pass heard nothing from and did not
-        // finish asking is what the pass leaves undecided; see
-        // `ScanContext::forget_undecided`.
+        // See `ScanContext::forget_undecided`.
         let unfinished = ctx.take_undecided();
-        // Taken whatever the kind, for the same reason, and kept where the
-        // two lists above are: the ports asked at the addresses they name.
+        // The ports asked at the addresses in the two lists above.
         let unheard_probes = ctx.take_unheard_probes();
         let liveness =
             (self.opened.kind == ScanKind::Discovery).then(|| Liveness::found(ctx, heard_nothing));
@@ -313,9 +280,8 @@ impl PhaseRecorder {
             _ => Vec::new(),
         };
 
-        // Taken whatever the privilege, so a context reused for another phase
-        // starts empty, and kept only for a raw phase: one at `Connect`
-        // reached everything this way, and its privilege says so.
+        // Kept only for a raw phase; a `Connect` phase reached everything this
+        // way, and its privilege says so.
         let reached_by_connect = match self.opened.privilege {
             Privilege::Raw => ctx.take_reached_by_connect(&unroutable),
             Privilege::Connect => {
@@ -327,8 +293,6 @@ impl PhaseRecorder {
         let phase = ScanPhase::from_parts(PhaseParts {
             kind: self.opened.kind,
             started_at: self.opened.started_at,
-            // Monotonic rather than the difference between two wall-clock
-            // readings, which a clock correction mid-sweep would distort.
             elapsed: self.opened.started.elapsed(),
             privilege: Some(self.opened.privilege),
             targets,
@@ -343,17 +307,12 @@ impl PhaseRecorder {
             undecided,
             liveness_skipped: self.opened.liveness_skipped,
             silent,
-            // A watch runs until it is stopped, so that is its end rather than
-            // anything that cut it short.
+            // A watch runs until stopped, so a stop is its normal end.
             stopped: match self.opened.kind {
                 ScanKind::Listen => None,
                 _ => ctx.handle.stopped().map(StopReason::from),
             },
-            // Taken whatever the kind, so a context reused for another phase
-            // starts from nothing.
             passes_cut: ctx.take_passes_cut(),
-            // Taken whatever the kind, so a context reused for another phase
-            // starts from nothing.
             unreached: u128::from(ctx.take_unreached()),
             unheard_probes: match (self.opened.kind, self.opened.liveness_skipped) {
                 (ScanKind::PortScan, Some(LivenessSkip::PortsNoDearer)) => {
@@ -398,19 +357,14 @@ mod tests {
     use crate::report::{BUCKET_BOUNDS_MS, ProbeStats, Refusal, ScannerKind, StopReason};
     use crate::scanner::session::ScanSession;
 
-    /// A scope over two addresses, since `TargetScope` is built from a target
-    /// set rather than defaulted.
+    /// A scope over two addresses.
     fn scope() -> TargetScope {
         let mut targets = IpSet::from_str("203.0.113.1-203.0.113.2").expect("a valid range");
         TargetScope::from_ip_set(&mut targets, &Exclusions::none())
     }
 
-    /// A refusal and a failure are both the scan saying what it did not cover,
-    /// and only one of them says something went wrong. They reached the report
-    /// as one list, so a scan that declined an unenumerable prefix and a scan
-    /// whose raw socket died were indistinguishable to a caller of `discover`
-    /// or `scan`, which is the distinction `plan.rs` opens by saying a scanner
-    /// may never lose.
+    /// A refusal and a failure both say what the scan did not cover, but only a
+    /// failure says something went wrong, so they are reported separately.
     #[test]
     fn a_refusal_reaches_the_report_as_a_refusal_and_not_as_a_failure() {
         let cfg = ZondConfig::default();
@@ -436,8 +390,8 @@ mod tests {
         assert_eq!(phase.failures()[0].scanner(), ScannerKind::Local);
     }
 
-    /// Taken rather than copied, on the same terms the failures are: a context
-    /// reused for a second phase must not hand the same refusal to two reports.
+    /// A context reused for a second phase does not hand the same refusal to two
+    /// reports.
     #[test]
     fn a_phase_takes_its_refusals_rather_than_copying_them() {
         let cfg = ZondConfig::default();
@@ -453,14 +407,9 @@ mod tests {
         assert!(second.phases()[0].refusals().is_empty());
     }
 
-    /// **The last phase moves the hosts into the report when nothing else
-    /// holds the store, and copies them when something does, which then goes
-    /// on answering.**
-    ///
-    /// Told apart by where a host's name lives: moved, the report's host is
-    /// the store's, down to the allocation holding its name; copied, it has
-    /// one of its own. A copy made for nobody is a second full set of a scan's
-    /// hosts held at the moment the report is built.
+    /// The last phase moves the hosts into the report when nothing else holds
+    /// the store, and copies them when a session still reads it. The address of
+    /// the host name's allocation tells a move from a copy.
     #[test]
     fn the_last_phase_moves_the_hosts_unless_a_session_still_reads_them() {
         let cfg = ZondConfig::default();
@@ -494,9 +443,8 @@ mod tests {
         );
     }
 
-    /// Filed once per distinct reason. A plan that declines the same range on
-    /// two links has one thing to tell the caller, and saying it twice is how a
-    /// report teaches a reader to skim past it.
+    /// Filed once per distinct reason, such as the same range declined on two
+    /// links.
     #[test]
     fn the_same_refusal_filed_twice_is_recorded_once() {
         let (_session, ctx) = ScanSession::new();
@@ -515,14 +463,8 @@ mod tests {
         IpAddr::V4(Ipv4Addr::new(203, 0, 113, last))
     }
 
-    /// An address with no route reaches the record without making the scan
-    /// partial.
-    ///
-    /// The whole point of keeping it apart from a failure. A dual-stack name on
-    /// an IPv4-only network resolves to an address nobody here can reach, and
-    /// reporting that as a scan which covered less than it was asked to made
-    /// every such scan look broken, while the one detail a caller can act on,
-    /// *which* address went uncovered, was not in the report at all.
+    /// An address with no route is recorded without making the scan partial. A
+    /// dual-stack name on an IPv4-only network resolves to such an address.
     #[test]
     fn an_unroutable_address_is_recorded_without_making_the_scan_partial() {
         let cfg = ZondConfig::default();
@@ -532,15 +474,14 @@ mod tests {
         let scope = TargetScope::from_ip_set(&mut targets, &Exclusions::none());
         let recorder = PhaseRecorder::start(ScanKind::Discovery, Privilege::Connect, scope, &cfg);
 
-        // Both addresses in scope asked and found silent, so the one thing
-        // that could make this phase partial is the address with no route.
+        // Both addresses in scope settled, so only the unroutable one could
+        // make this phase partial.
         for address in [ip(1), ip(2)] {
             ctx.settle_address(address, crate::journal::settle::Settled::Exhausted);
         }
         let unreachable: IpAddr = "2001:db8::1".parse().expect("literal");
         ctx.record_unroutable(unreachable);
-        // Twice, as two probes to one address would: it is one fact about one
-        // address however many times it was met.
+        // Twice, as two probes to one address would; recorded once.
         ctx.record_unroutable(unreachable);
 
         let report = recorder.finish(&ctx);
@@ -553,11 +494,9 @@ mod tests {
         assert_eq!(report.failures().count(), 0);
     }
 
-    /// An address this host's routing table refuses is named as refused by a
-    /// route beside the unreachable it is among, so a reader is told the
-    /// remedy is on this machine; and an address noted refused that the phase
-    /// never filed is not named, since the note is a reason and names nothing
-    /// the phase did not leave unasked.
+    /// An unroutable address this machine's routing table refuses is also named
+    /// as refused by a route, since the remedy is local. A refusal noted for an
+    /// address the phase did not file as unroutable is not named.
     #[test]
     fn an_address_a_route_refuses_is_named_among_the_unreachable() {
         let cfg = ZondConfig::default();
@@ -580,10 +519,8 @@ mod tests {
         assert!(!report.is_partial());
     }
 
-    /// An address the connect step was handed and could not reach, a route
-    /// on this machine refusing it, is named unreachable and not also reached
-    /// by connect: it holds no connect evidence, and a reader would otherwise
-    /// be told it was both asked and never asked.
+    /// An address the connect step could not reach because a local route
+    /// refused it is named unreachable and not also reached by connect.
     #[test]
     fn an_address_a_connect_step_could_not_reach_is_not_named_reached_by_it() {
         let cfg = ZondConfig::default();
@@ -619,13 +556,8 @@ mod tests {
         );
     }
 
-    /// A caller running strategies themselves has to be able to produce the
-    /// report the engine produces, or the whole third altitude stops at the
-    /// live store: findings readable, nothing exportable.
-    ///
-    /// This walks that path with no strategies in it, since what is being
-    /// pinned is that every piece is reachable and the halves meet, not what a
-    /// scanner would have written.
+    /// A caller running strategies itself can produce the engine's report. No
+    /// strategies run; the test checks that the pieces are reachable and meet.
     #[test]
     fn a_self_orchestrated_scan_can_close_its_own_phase() {
         let cfg = ZondConfig::default();
@@ -646,8 +578,7 @@ mod tests {
         assert_eq!(report.failures().count(), 1);
     }
 
-    /// The counters a scanner files mid-scan have to reach the phase that
-    /// finishes afterwards, and reach exactly the one that was running.
+    /// Counters filed mid-scan reach the phase that was running, and only it.
     #[test]
     fn probe_stats_filed_during_a_scan_land_in_its_phase() {
         let (_session, ctx) = crate::scanner::session::ScanSession::new();
@@ -689,13 +620,12 @@ mod tests {
         assert_eq!(stats[0].answered_on()[1], 2);
         assert_eq!(report.probe_stats().count(), 1);
 
-        // Draining is what stops a second phase inheriting the first's counters.
+        // Drained, so a second phase does not inherit them.
         assert!(ctx.take_probe_stats().is_empty());
     }
 
-    /// A raw phase that reached some addresses by connect says which, merged,
-    /// and a connect phase says nothing more than its privilege already does.
-    /// Both drain the log, so a context reused for another phase starts empty.
+    /// A raw phase that reached some addresses by connect lists them, merged; a
+    /// connect phase lists none. Both drain the log.
     #[test]
     fn what_a_raw_phase_reached_by_connect_is_recorded_and_a_connect_phase_ignores_it() {
         let cfg = ZondConfig::default();
@@ -742,11 +672,9 @@ mod tests {
         );
     }
 
-    /// **A discovery phase names every address it reached no verdict on, and
-    /// only those.** An address that answered and one asked to exhaustion both
-    /// have a verdict, and one with no route is named apart; the fourth was
-    /// never settled either way, which is what a stop, a failed strategy or a
-    /// refusal leaves. Without the list a reader counts it among the silent.
+    /// A discovery phase names every address it reached no verdict on, and only
+    /// those. Answered and exhausted addresses have a verdict, an unroutable one
+    /// is named elsewhere, and the fourth was never settled.
     #[test]
     fn a_discovery_phase_names_the_addresses_it_reached_no_verdict_on() {
         use crate::journal::settle::Settled;
@@ -770,10 +698,9 @@ mod tests {
         assert_eq!(undecided, ["203.0.113.4-203.0.113.4"]);
     }
 
-    /// A port phase standing in for a dropped liveness pass names the
-    /// addresses filed silent during it, and the report lists no host there. A
-    /// phase whose caller asked for every address as a host names none: it
-    /// files no silence, and silence filed anyway is not its to name.
+    /// A port phase standing in for a dropped liveness pass names the addresses
+    /// filed silent, and the report lists no host there. A phase that assumes
+    /// every address up names none.
     #[test]
     fn a_port_phase_standing_in_for_liveness_names_what_was_filed_silent() {
         use crate::model::ip::scoped::ScopedIp;
@@ -809,10 +736,9 @@ mod tests {
     }
 
     /// A port phase standing in for a dropped liveness pass names as undecided
-    /// the addresses filed so during it, heard nothing from and not asked in
-    /// full, and the report lists no host there, as the pass it stood in for
-    /// would have listed none. A phase that did not stand in for one names
-    /// none, and the filing is not carried into the next phase.
+    /// the addresses filed so (heard nothing, not asked in full), and the report
+    /// lists no host there. Any other phase names none, and the filing does not
+    /// carry into the next phase.
     #[test]
     fn a_port_phase_standing_in_for_liveness_names_what_it_left_undecided() {
         use crate::model::ip::scoped::ScopedIp;
@@ -850,13 +776,10 @@ mod tests {
         assert!(next.finish(&ctx).phases()[0].undecided().is_empty());
     }
 
-    /// **A port phase standing in for a liveness pass counts the ports it
-    /// asked at the addresses it lists no host at.** Their records are
-    /// dropped, so those ports are on no host, and a phase given differing
-    /// ports for different addresses cannot say from its scope what any one
-    /// of them was asked: without the count, a scan's tally of what it probed
-    /// comes up short by every probe it spent on silence. Every port of a
-    /// silent address counts, and only the ports reached of an undecided one.
+    /// A port phase standing in for a liveness pass counts the ports it asked at
+    /// the addresses it lists no host at, since their records are dropped. Every
+    /// port of a silent address counts, and only the asked ports of an undecided
+    /// one.
     #[test]
     fn a_port_phase_standing_in_for_liveness_counts_what_it_asked_where_it_heard_nothing() {
         use crate::model::ip::scoped::ScopedIp;
@@ -905,11 +828,8 @@ mod tests {
         );
     }
 
-    /// **The ports an undecided address was left unasked are counted with the
-    /// targets the phase never reached.** Its record is dropped, so they are
-    /// on no host as unasked, and a scan stopped part way through a range
-    /// said how many ports it probed and nothing of the rest: `150 probed` of
-    /// three thousand, and no count to add up to the plan.
+    /// The ports an undecided address was left unasked are counted with the
+    /// targets the phase never reached, since its record is dropped.
     #[test]
     fn a_port_phase_counts_the_ports_it_left_unasked_where_it_heard_nothing() {
         use crate::model::ip::scoped::ScopedIp;
@@ -937,9 +857,9 @@ mod tests {
         );
     }
 
-    /// Silence is a discovery phase's evidence and nobody else's. A port phase
-    /// that did not stand in for one names no address undecided, and silence a
-    /// context heard in one phase is not carried into the next one's verdicts.
+    /// Only a discovery phase (or a port phase standing in for one) names
+    /// undecided addresses, and silence heard in one phase does not carry into
+    /// the next.
     #[test]
     fn only_a_discovery_phase_names_undecided_addresses_and_silence_does_not_carry() {
         use crate::journal::settle::Settled;
