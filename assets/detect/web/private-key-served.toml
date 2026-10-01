@@ -4,7 +4,7 @@
 
 [detection]
 id      = "private-key-served"
-version = "1.0.0"
+version = "1.1.0"
 title   = "Private key served in an HTTP response"
 
 [detection.when]

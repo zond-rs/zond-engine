@@ -599,6 +599,78 @@ mod tests {
         );
     }
 
+    /// What the shipped detection `id` finds in `response`, run as a scan runs it.
+    fn shipped(id: &str, response: &[u8]) -> Option<crate::model::finding::Finding> {
+        let db = ComputeDb::global();
+        super::super::stage::detect_port(
+            db.runtime(),
+            db.detections(),
+            &DetectionEnvelope::default(),
+            Some("http"),
+            &http_ctx(),
+            &[response],
+            |_grant| Some(Box::new(NoCaps)),
+            |_, _| {},
+        )
+        .findings
+        .into_iter()
+        .find(|f| f.detection().id() == id)
+    }
+
+    /// `body` served as a 200.
+    fn served(content_type: &str, body: &str) -> Vec<u8> {
+        format!("HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n\r\n{body}").into_bytes()
+    }
+
+    /// A PEM block under `label`, its body base64 in 64-character lines. The
+    /// body is filler, not a key; the header is assembled here so the source
+    /// holds no PEM line of its own.
+    fn pem(label: &str, line_break: &str) -> String {
+        let label = format!("{label} {}", "KEY");
+        let line = "MIIEowIBAAKCAQEAzondzondzondzondzondzondzondzondzondzondzondzond";
+        let body = [line; 6].join(line_break);
+        format!(
+            "-----BEGIN {label}-----{line_break}{body}{line_break}QUIDAQAB{line_break}-----END {label}-----"
+        )
+    }
+
+    /// **A served key is a whole PEM block.** jsencrypt carries the BEGIN and
+    /// END lines as strings it builds an export from, so a page bundling it
+    /// holds both with script between them and no key.
+    #[test]
+    fn private_key_served_fires_on_a_pem_block_and_not_on_a_library_that_writes_one() {
+        // jsencrypt's export, with its label assembled as `pem` assembles one.
+        let jsencrypt = r#"<script>
+JSEncryptRSAKey.prototype.getPrivateKey = function () {
+    var key = "-----BEGIN RSA PRIVATE {key}-----\n";
+    key += wordwrap(this.getPrivateBaseKeyB64()) + "\n";
+    key += "-----END RSA PRIVATE {key}-----";
+    return key;
+};
+</script>"#
+            .replace("{key}", "KEY");
+        assert!(
+            shipped("private-key-served", &served("text/html", &jsencrypt)).is_none(),
+            "private-key-served read a crypto library's strings as a key"
+        );
+
+        for label in ["RSA PRIVATE", "PRIVATE", "OPENSSH PRIVATE"] {
+            let finding = shipped(
+                "private-key-served",
+                &served("text/plain", &pem(label, "\n")),
+            )
+            .unwrap_or_else(|| panic!("a served {label} KEY block was missed"));
+            assert_eq!(finding.severity(), Severity::Critical);
+        }
+        // Inside a script or JSON string, its lines broken by a written `\n`.
+        let in_json = format!("{{\"tls_key\":\"{}\"}}", pem("EC PRIVATE", "\\n"));
+        assert!(shipped("private-key-served", &served("application/json", &in_json)).is_some());
+
+        // A BEGIN and an END that do not name the same key.
+        let mismatched = pem("RSA PRIVATE", "\n").replace("END RSA", "END EC");
+        assert!(shipped("private-key-served", &served("text/plain", &mismatched)).is_none());
+    }
+
     #[test]
     fn a_journalled_run_of_a_shipped_detection_replays() {
         use crate::detect::compute::{CapTape, CapTapeRecord, DetectionRunRecord};
