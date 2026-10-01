@@ -8,17 +8,12 @@
 
 //! # Loose detection files, as a caller holds them
 //!
-//! A [bundle](super::bundle) arrives with a manifest naming every detection and
-//! the tier that runs it. A directory of files a caller wrote arrives with
-//! neither, so this module supplies the two things the manifest would have said:
-//! which tier a document belongs to, and where a `[compute]` body lives.
+//! Loose files have no manifest, so this reads each document's tier and finds
+//! where a `[compute]` body lives.
 //!
-//! Both answers come from the document itself. Reading a tier out of a stranger's
-//! bytes is the thing [`Tier`] exists to prevent, and it stays prevented: nothing
-//! here is reachable from [`Bundle::verified`](super::bundle::Bundle::verified),
-//! and the door this serves,
-//! [`sources`](super::corpus::DetectionsBuilder::sources), is the one a caller
-//! walks through with bytes they chose.
+//! Reading a tier from the document is only done for a caller's own files
+//! ([`sources`](super::corpus::DetectionsBuilder::sources)); nothing here is
+//! reachable from [`Bundle::verified`](super::bundle::Bundle::verified).
 
 use std::collections::BTreeMap;
 
@@ -53,12 +48,11 @@ pub(crate) struct Prepared {
 ///
 /// A name ending [`DOCUMENT_EXTENSION`] is a detection and everything else is a
 /// body a `[compute]` section may reference. Each document comes back
-/// self-contained, so what this returns is what both a corpus and a bundle carry.
+/// self-contained.
 ///
-/// The one implementation behind
-/// [`DetectionsBuilder::sources`](super::corpus::DetectionsBuilder::sources) and
-/// [`Bundle::publishable`](super::bundle::Bundle::publishable), which is what
-/// makes a detection hash the same whether it is loaded or published.
+/// Shared by [`DetectionsBuilder::sources`](super::corpus::DetectionsBuilder::sources)
+/// and [`Bundle::publishable`](super::bundle::Bundle::publishable), so a
+/// detection hashes the same either way.
 pub(crate) fn prepare(
     sources: &BTreeMap<String, String>,
 ) -> Result<Vec<Prepared>, PreparationError> {
@@ -131,8 +125,7 @@ pub(crate) enum PreparationCause {
 ///
 /// The tables a document carries decide it: `[compute]` for a module, `[[step]]`
 /// for a flow, `[detection.host]` for a host correlation. A document carrying
-/// more than one of them is refused rather than resolved by precedence, since
-/// which tier a detection runs at decides what it is handed.
+/// more than one is refused.
 pub(crate) fn tier_of(source: &str) -> Result<Tier, String> {
     let document: toml::Table =
         toml::from_str(source).map_err(|error| format!("it did not parse as TOML: {error}"))?;
@@ -172,11 +165,9 @@ pub(crate) fn tier_of(source: &str) -> Result<Tier, String> {
 /// A compute detection with its body resolved to the inline form, and the source
 /// of that body.
 ///
-/// The document a caller wrote may keep its code in a sibling file, which is the
-/// form the shipped corpus uses and the only form a binary body could take. The
-/// runtime reads inline source alone, so the reference is resolved here exactly
-/// as the build resolves it for `assets/detect/`: the body is spliced into
-/// `compute.source`, the reference removed, and the document re-serialized.
+/// The runtime reads inline source only, so a sibling-file body is spliced into
+/// `compute.source` and the document re-serialized, as the build does for
+/// `assets/detect/`.
 #[derive(Debug)]
 pub(crate) struct ResolvedCompute {
     /// The document, normalised to carry its code inline.
@@ -284,9 +275,7 @@ mod tests {
         assert_eq!(tier_of(source), Ok(Tier::Host));
     }
 
-    /// Two tiers in one document is refused rather than resolved by precedence.
-    /// Which tier runs a detection decides what it is handed, so a document that
-    /// asks for both has to be corrected by whoever wrote it.
+    /// Two tiers in one document is refused.
     #[test]
     fn a_document_naming_two_tiers_is_refused() {
         let source = format!(
@@ -303,9 +292,8 @@ mod tests {
         assert!(error.contains("names no tier"), "{error}");
     }
 
-    /// An out-of-line body arrives inline, and the hash covers the code rather
-    /// than the document that referenced it, which is what the build records for
-    /// the same detection in `assets/detect/`.
+    /// An out-of-line body arrives inline, and the hash covers the code, as the
+    /// build records it.
     #[test]
     fn an_out_of_line_body_is_inlined() {
         let source = format!("{MANIFEST}\n[compute]\nlanguage = \"rhai\"\nbody = \"x.rhai\"\n");
@@ -332,9 +320,7 @@ mod tests {
         assert_eq!(resolved.document, source);
     }
 
-    /// A body nothing supplied is an error naming it. The alternative is a
-    /// detection that compiles to nothing and reports nothing, which reads in a
-    /// report exactly like one that ran and found the host clean.
+    /// A missing body is an error naming it.
     #[test]
     fn a_missing_body_names_what_was_missing() {
         let source = format!("{MANIFEST}\n[compute]\nlanguage = \"rhai\"\nbody = \"gone.rhai\"\n");

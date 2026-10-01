@@ -217,7 +217,6 @@ impl Class {
 impl Class {
     /// The name a document spells this class with, which is also the name an
     /// [envelope](crate::config::envelope::DetectionEnvelope) is set to.
-    ///
     pub const fn label(self) -> &'static str {
         match self {
             Class::Derived => "derived",

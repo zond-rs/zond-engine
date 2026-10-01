@@ -8,36 +8,24 @@
 
 //! # The words every authored detection uses for a finding
 //!
-//! How bad a finding is and what it cites, as an author writes them. Both tiers
-//! declare a finding, and they declare its severity and its references the same
-//! way, so this is one vocabulary they share rather than each restating. The
-//! [manifest](super::manifest) is the same idea for the `[detection]` table.
+//! How bad a finding is and what it cites, as an author writes them, shared by
+//! both tiers. The [manifest](super::manifest) is the same for the
+//! `[detection]` table.
 //!
-//! ## A severity is written against an audience
+//! ## A severity names an audience
 //!
-//! [`SeveritySpec`] is the one field here with two spellings, because "how bad is
-//! this" has no answer that does not name who can reach the subject. A detection
-//! whose weakness means the same thing to everybody writes one severity; one
-//! whose weakness *is* the configuration on a network that was set up for it
-//! writes a severity per
-//! [`Exposure`](crate::model::ip::Exposure) rung. See that type for why the
-//! question is asked of the address.
+//! [`SeveritySpec`] has two spellings: one severity for a weakness that means the
+//! same to everybody, or one per [`Exposure`](crate::model::ip::Exposure) rung
+//! for one that is only a weakness when a stranger can reach it.
 //!
-//! What a finding says is not here. A flow's summary and detail are `{var}`
-//! templates resolved against what earlier steps bound; a host detection's are
-//! literal text. They are different grammars behind the same field names, so
-//! each tier keeps its own `FindingSpec`, and what is shared is only the
-//! vocabulary those fields are written in.
+//! Summary and detail are not here: a flow's are `{var}` templates and a host
+//! detection's literal text, so each tier keeps its own `FindingSpec`.
 //!
-//! Nothing here names the model. That is what lets `build.rs` load this file to
-//! validate a corpus before the library exists; the lowering into
+//! Nothing here names the model, so `build.rs` can load this file; lowering into
 //! [`model::finding`](crate::model::finding) happens in `detect::convert`.
 
-// `build.rs` compiles this file too, to validate the detection corpus, and its
-// checks read the vocabulary without resolving a severity against an exposure,
-// which only the runtime does. Within the library every item is live; the
-// unread-item lint fires only in the build-script crate, so it is silenced here
-// rather than item by item, as `manifest` silences it for the same reason.
+// `build.rs` compiles this file too and does not use every item; the lint fires
+// only there.
 #![allow(dead_code)]
 
 use serde::Deserialize;
@@ -73,37 +61,16 @@ pub enum Severity {
 /// severity = { internet = "high", internal = "info" }   # depends who can
 /// ```
 ///
-/// ## Why both spellings
+/// Most weaknesses mean one thing anywhere: unauthenticated Redis is `high`
+/// whoever can reach it ([`Flat`](Self::Flat)). Some are weaknesses only when a
+/// stranger can see them: a recursive resolver on a public address, or SMB, RPC
+/// and NetBIOS open together, which is every Windows desktop on a LAN. Those
+/// state a rating per rung ([`PerExposure`](Self::PerExposure)).
 ///
-/// Most weaknesses mean one thing wherever they are. Unauthenticated Redis hands
-/// over the database to anyone who can open the socket, and a network whose own
-/// machines can do that is how ransomware moves sideways, so it is `high` and
-/// that is the end of it. Those detections write a bare severity and this reads
-/// as [`Flat`](Self::Flat).
+/// The detection decides, since rescaling by exposure engine-wide would
+/// downgrade findings such as an unauthenticated database on a file server.
 ///
-/// A second, smaller group describes something that is a weakness *because* a
-/// stranger can see it, and is the intended arrangement otherwise. A resolver
-/// that recurses for an external name is an open resolver on a public address and
-/// the service it was configured to provide on the network it serves. A host with
-/// SMB, RPC and NetBIOS all open is alarming on the internet and is what every
-/// Windows desktop looks like on a LAN. Rating those against the widest audience
-/// makes a scanner that cries wolf on every household network; rating them
-/// against the narrowest one misses the real thing. They state both, and this
-/// reads as [`PerExposure`](Self::PerExposure).
-///
-/// ## Why the detection decides and not the engine
-///
-/// Rescaling every severity by exposure engine-side would be one line and would
-/// be wrong, in the direction that matters: it would quietly downgrade the
-/// unauthenticated database on the file server, which is precisely the finding
-/// somebody scanning their own network needs to see. Only the author of a
-/// detection knows whether their weakness is one an insider already has. So the
-/// engine asks and the detection answers, in its own file, where the reasoning
-/// can be written beside it and the corpus can be read to see which detections
-/// made the claim.
-///
-/// Untagged, so the bare form is not a special case of the table but the ordinary
-/// way to write a severity, which is what nearly every detection does.
+/// Untagged, so the bare form is the ordinary spelling.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
@@ -116,37 +83,21 @@ pub enum SeveritySpec {
 
 /// A severity stated per [`Exposure`](crate::model::ip::Exposure) rung.
 ///
-/// `internet` is required and the others fall back along it, narrower to wider:
-/// `local` to `internal`, and `internal` to `internet`. Two things follow from
-/// that shape.
+/// `internet` is required; `local` falls back to `internal`, and `internal` to
+/// `internet`. So the widest audience is always stated, and
+/// `{ internet = "high", internal = "info" }` is complete.
 ///
-/// The required field is the widest audience, so a table can only ever be read as
-/// a *reduction* from the rating a detection would have carried with no table at
-/// all. An author cannot leave the one rung that matters most unstated.
+/// `deny_unknown_fields`, so a typo such as `internel` fails the build.
 ///
-/// And the fallback means a detection says only as much as it has decided.
-/// `{ internet = "high", internal = "info" }` is a complete statement for a
-/// weakness whose reading on loopback is the same as on a LAN, which is most of
-/// them; writing `local = "info"` beside it would add a third claim the author
-/// has no separate reason for.
-///
-/// `deny_unknown_fields`, so `internel` is a build failure rather than a rung
-/// silently falling back. The two names differ by two letters, which is the cost
-/// of a pairing this natural, and the build is where that cost is paid.
-///
-/// `non_exhaustive`, and here that is not the usual precaution but a certainty:
-/// this struct has one field per [`Exposure`](crate::model::ip::Exposure) rung, and
-/// that enum is itself open so a rung can be split later without a major version.
-/// Sealing this is what keeps that promise, since the day a rung is added is the day
-/// a field arrives here. Deserialized rather than built by hand, as
-/// [`DetectionManifest`](super::manifest::DetectionManifest) is: a detection is
-/// written as TOML, so nothing is lost by a caller being unable to write the literal.
+/// `non_exhaustive`: there is one field per
+/// [`Exposure`](crate::model::ip::Exposure) rung, and that enum may grow.
+/// Deserialized from TOML, as
+/// [`DetectionManifest`](super::manifest::DetectionManifest) is.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SeverityByExposure {
-    /// The rating where the internet routes to the address. Required: it is what
-    /// a severity written without asking the question already means.
+    /// The rating where the internet routes to the address. Required.
     pub internet: Severity,
     /// The rating where only this network can reach the subject. Falls back to
     /// [`internet`](Self::internet).
@@ -179,9 +130,8 @@ impl SeverityByExposure {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Reference {
-    /// A CVE identifier: `{ cve = "CVE-2021-43798" }`. Only the `CVE-YYYY-N`
-    /// shape survives the lowering; a malformed one is dropped rather than
-    /// carried into the finding, and the build warns about it.
+    /// A CVE identifier: `{ cve = "CVE-2021-43798" }`. A malformed one is dropped
+    /// from the finding, and the build warns about it.
     Cve(String),
     /// The bare CWE number, `{ cwe = 306 }`. MITRE's canonical link is built
     /// from it.

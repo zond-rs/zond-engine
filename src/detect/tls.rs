@@ -8,38 +8,24 @@
 
 //! # Speaking a detection through TLS
 //!
-//! A detection reaches its port through one of two blocking seams: a flow's
-//! [`SocketProbe`](crate::scanner::detection) or a compute module's
-//! [`LiveCapabilities`](super::compute::LiveCapabilities). Both open a plain
-//! `TcpStream` and exchange bytes over it. This module is the one thing they were
-//! missing: when the port answered inside TLS, the same exchange has to run
-//! through a completed handshake, or a probe written for an HTTPS service reaches
-//! a port that only ever replies in ciphertext and reads back noise.
+//! A flow's [`SocketProbe`](crate::scanner::detection) and a compute module's
+//! [`LiveCapabilities`](super::compute::LiveCapabilities) open a plain
+//! `TcpStream`. When the port answered inside TLS, the exchange runs through a
+//! handshake from here.
 //!
-//! ## Why a synchronous client of its own
+//! ## A synchronous client
 //!
-//! [`fingerprint::tls`](crate::fingerprint) already completes a handshake to read
-//! a certificate, but it is `async`, built on `tokio-rustls`, and the detection
-//! probes run on the blocking pool with `std::net::TcpStream`. Driving an async
-//! connector from there would mean handing a blocking socket to a reactor that is
-//! not running. So this is a small blocking rustls client instead, sharing that
-//! module's two decisions and nothing else: the pure-Rust ring provider (no
-//! cmake/NASM at build time), and a verifier that
-//! [accepts any certificate](AcceptAnyServerCert), because a scanner wants to
-//! reach the service the way any client on the network would, and the ports it
-//! probes routinely serve expired, self-signed, or wrong-host certificates a
-//! validating client would hang up on before a byte of the protocol inside.
+//! [`fingerprint::tls`](crate::fingerprint) is async (`tokio-rustls`), and the
+//! detection probes run on the blocking pool with `std::net::TcpStream`. This is
+//! a small blocking rustls client sharing that module's ring provider and its
+//! verifier that [accepts any certificate](AcceptAnyServerCert), since scanned
+//! ports routinely serve expired, self-signed or wrong-host certificates.
 //!
 //! ## The name on the wire
 //!
-//! The handshake carries the name a target reached the address by, where it
-//! named one, as identification's handshake does: a server holding its sites
-//! by name completes a handshake only for a client naming one it holds, and
-//! serves the site it was named. Where the target was an address, the server
-//! name is that address, which puts no server name on the wire at all, since
-//! an address is not allowed there. A server that refuses a nameless handshake
-//! reads, from here, as a port that stopped answering, which the probe treats
-//! as any other silent port. See
+//! The handshake carries the target's name where it had one, as identification
+//! does; an address puts no server name on the wire. A server refusing a
+//! nameless handshake reads as a silent port. See
 //! [`Authority::server_name`](crate::fingerprint::authority::Authority::server_name).
 
 use std::io::{Read, Write};
@@ -52,16 +38,11 @@ use rustls::{ClientConfig, ClientConnection, DigitallySignedStruct, SignatureSch
 
 use crate::fingerprint::Tunnel;
 
-/// A byte stream a detection's exchange runs over, whichever transport carries
-/// it. A plain [`TcpStream`] and a TLS [`StreamOwned`] both satisfy it, so the
-/// read-and-write loop in each probe is written once against `dyn ReadWrite`
-/// rather than duplicated per transport.
+/// A byte stream a detection's exchange runs over: a plain [`TcpStream`] or a
+/// TLS [`StreamOwned`].
 pub(crate) trait ReadWrite: Read + Write {
-    /// The socket underneath, for what is set on the socket rather than said
-    /// through the stream: a read timeout holds under a TLS session as it does
-    /// in the clear. Reached through the stream rather than through a second
-    /// handle on the socket, which would be a second descriptor for one
-    /// connection.
+    /// The socket underneath, for socket options such as a read timeout, without
+    /// a second descriptor.
     fn socket(&self) -> &TcpStream;
 }
 
@@ -80,14 +61,11 @@ impl ReadWrite for StreamOwned<ClientConnection, TcpStream> {
 /// Wraps a connected socket in the transport a tunnel names, ready for the same
 /// exchange either way.
 ///
-/// A `None` tunnel hands the socket straight back: the plain-TCP path is the
-/// common one and costs nothing here. A [`Tunnel::Tls`] completes a client
-/// handshake naming `server_name` and returns the live tunnel to probe through; the
-/// handshake itself runs lazily on the first read or write, so it is bounded by
-/// the read timeout the caller already set on `tcp` rather than by a clock of its
-/// own. [`None`] only if the connection cannot be turned into a TLS client at
-/// all, which a failure to complete the handshake is not; that surfaces as the
-/// first exchange going unanswered, exactly like a silent port.
+/// A `None` tunnel hands the socket straight back. A [`Tunnel::Tls`] sets up a
+/// client naming `server_name`; the handshake runs lazily on the first read or
+/// write, bounded by the read timeout already set on `tcp`. Returns [`None`] only
+/// if the TLS client cannot be created; a failed handshake looks like a silent
+/// port.
 pub(crate) fn wrap(
     tcp: TcpStream,
     server_name: ServerName<'static>,
@@ -102,9 +80,7 @@ pub(crate) fn wrap(
     }
 }
 
-/// The process-wide client config, built once and shared. The config is immutable
-/// and internally reference-counted, so every handshake clones an [`Arc`] rather
-/// than rebuilding it.
+/// The process-wide client config, built once and shared.
 fn config() -> &'static Arc<ClientConfig> {
     static CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
     CONFIG.get_or_init(|| {
@@ -121,11 +97,8 @@ fn config() -> &'static Arc<ClientConfig> {
 
 /// A certificate verifier that accepts everything.
 ///
-/// Sound only because a detection completes the handshake to speak the protocol
-/// inside, not to establish a trusted channel: the point of the probe is to reach
-/// whatever answers on the port, and a scanner that refused a bad certificate
-/// would decline to look at the misconfigured endpoints it exists to find. Never
-/// reuse this for a client that sends anything it would mind an impostor reading.
+/// Sound only because a detection needs to reach whatever answers, not a trusted
+/// channel. Never reuse it for a client that sends anything sensitive.
 #[derive(Debug)]
 struct AcceptAnyServerCert;
 
@@ -160,8 +133,7 @@ impl ServerCertVerifier for AcceptAnyServerCert {
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        // Advertise the common schemes so a server picks one this verifier will
-        // "accept". Mirrors the certificate path's list.
+        // The common schemes, as in the certificate path.
         vec![
             SignatureScheme::RSA_PKCS1_SHA256,
             SignatureScheme::RSA_PKCS1_SHA384,
@@ -182,9 +154,7 @@ mod tests {
     use super::*;
     use crate::testing::loopback::from_this_process;
 
-    /// A `None` tunnel is the identity: the plain socket comes back usable, so the
-    /// common path pays nothing for the branch. Exercised over a loopback pair
-    /// rather than a mock, since the value under test is a real `TcpStream`.
+    /// A `None` tunnel returns the plain socket, usable.
     #[test]
     fn no_tunnel_returns_the_plain_socket() {
         use std::net::TcpListener;
@@ -203,9 +173,7 @@ mod tests {
         assert_eq!(&buf, b"ping", "the bytes crossed the un-tunnelled stream");
     }
 
-    /// The shared config builds and is reused: the ring provider supports the
-    /// default versions (the `expect` in `config`), and two calls hand back the
-    /// same `Arc`.
+    /// The shared config builds, and two calls return the same `Arc`.
     #[test]
     fn the_client_config_is_built_once_and_shared() {
         let first = config();
