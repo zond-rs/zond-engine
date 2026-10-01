@@ -8,39 +8,28 @@
 
 //! # Turning a response into the text the corpus is written against
 //!
-//! A signature matches a field, not a reply. Every rule declares the
-//! `context` it reads, `ssh.banner`, `snmp.sys_description`,
-//! `http.server_header`, and anchors its pattern on that field's text alone.
-//! Something has to produce that field from what actually arrived, and this is
-//! where that happens.
+//! A signature matches a field. Every rule declares the `context` it reads
+//! (`ssh.banner`, `snmp.sys_description`, `http.server_header`) and anchors its
+//! pattern on that field's text alone. This module produces those fields from
+//! what arrived.
 //!
-//! ## The mistake this module exists to stop repeating
-//!
-//! It has been made twice, silently, and cost a working corpus both times.
+//! ## Why fields
 //!
 //! RFC 4253 §4.2 gives an SSH identification line as
-//! `SSH-protoversion-softwareversion SP comments`, and the corpus anchors on
-//! the software identifier: `^OpenSSH_(9\.2p1) (Debian-\d\d?\+deb12u\d+)$`. Fed
-//! the whole line, that `^` can never match, so **every release-naming SSH rule
-//! was unreachable**, and a host announcing `SSH-2.0-OpenSSH_9.2p1
-//! Debian-2+deb12u10` was reported as `Linux` while the corpus held a rule
-//! mapping that exact string to Debian 12.
+//! `SSH-protoversion-softwareversion SP comments`, and the corpus anchors on the
+//! software identifier: `^OpenSSH_(9\.2p1) (Debian-\d\d?\+deb12u\d+)$`. Fed the
+//! whole line, that `^` never matches. SNMP is the same: the rules match the
+//! decoded `sysDescr` text, not the BER datagram.
 //!
-//! SNMP is the same shape one protocol over: `sysDescr` is a BER-encoded octet
-//! string inside a `GetResponse`, and the rules match the decoded text. A
-//! datagram handed to them matches nothing.
+//! The failure is silent: the scan names only a family, and a test that feeds
+//! the matcher a field directly still passes. Test through these functions.
 //!
-//! Both failures look identical from outside, a scan that names a family and
-//! stops, and neither shows up as a broken test, because a test that feeds the
-//! matcher a field directly passes while the engine feeds it a whole response.
+//! ## Keyed on the port
 //!
-//! ## Keyed on the port, because that is what is known
-//!
-//! [`from_datagram`] selects a decoder by destination port, exactly as
-//! [`payload`](crate::scanner::payload) selects a probe by one. It is the only
-//! thing known about a UDP target before anything answers, which is the whole
-//! difficulty of UDP scanning, and pairing the two on the same key keeps the
-//! probe and the reading of its answer from drifting apart.
+//! [`from_datagram`] selects a decoder by destination port, as
+//! [`payload`](crate::scanner::payload) selects a probe, since the port is all
+//! that is known about a UDP target before it answers. The shared key keeps
+//! probe and decoder in step.
 
 use std::borrow::Cow;
 
@@ -54,23 +43,15 @@ use crate::model::port::Protocol;
 /// means the byte 0x82, as it does in the corpora the rules were written for,
 /// and a page that names itself in UTF-8 still reads as the words it wrote.
 ///
-/// Both halves are needed. A binary protocol is identified by its bytes, and
-/// the answers that carry one high byte in a fixed place are exactly the ones
-/// a byte pattern is for: a NetBIOS session reply is one byte of type, a telnet
-/// negotiation opens on 0xFF, an Active Directory message states its length in
-/// four bytes behind 0x84. A decoder that replaces what is not UTF-8 turns
-/// every one of those into the same replacement character, and each rule
-/// written for them matches nothing. A decoder that read everything as Latin-1
-/// would keep them and garble every UTF-8 title and version string instead.
+/// Binary protocols are matched on single high bytes (a NetBIOS session type, a
+/// telnet 0xFF, an Active Directory 0x84 length prefix), which lossy UTF-8
+/// decoding would turn into replacement characters. Pure Latin-1 would garble
+/// UTF-8 titles and versions.
 ///
-/// What this cannot do is tell a binary reply whose high bytes happen to form
-/// a UTF-8 sequence from text. Such a pair reads as one character where a byte
-/// pattern expects two. The rules here are written so they never meet that
-/// case: a high byte with a byte below 0x80 on either side of it belongs to no
-/// sequence, since a sequence needs a lead byte from 0xC2 up before a
-/// continuation and a continuation from 0x80 up after a lead, and the bytes
-/// 0xC0, 0xC1 and 0xF5 to 0xFF belong to none anywhere. A type or length field
-/// in a binary header is a high byte between low ones.
+/// High bytes that happen to form a UTF-8 sequence read as one character where
+/// a byte pattern expects two. Rules avoid this: a high byte between bytes below
+/// 0x80 belongs to no sequence, nor do 0xC0, 0xC1 and 0xF5 to 0xFF, and a type
+/// or length field in a binary header is a high byte between low ones.
 pub(crate) fn reply_text(bytes: &[u8]) -> String {
     let mut text = String::with_capacity(bytes.len());
     for chunk in bytes.utf8_chunks() {
@@ -83,15 +64,10 @@ pub(crate) fn reply_text(bytes: &[u8]) -> String {
 /// The bytes [`reply_text`] read `text` from, for a reader that decodes a
 /// reply as structure after it has become text.
 ///
-/// Exact wherever the text says how it was read. A character from U+0100 up
-/// can only have been a UTF-8 sequence, and one below U+0080 only its own
-/// byte. What is ambiguous is U+0080 to U+00FF, which is either a byte that
-/// belonged to no sequence or a two-byte sequence led by 0xC2 or 0xC3, and it
-/// is read back as the single byte. That is right for every high byte a binary
-/// header carries, for the reason [`reply_text`] gives, and wrong only for text
-/// inside the reply that spells a Latin-1 letter in UTF-8. A decoder handed
-/// such a reply finds a length one short of what it states and stops there,
-/// which is the answer it gives any reply it cannot read.
+/// U+0080 to U+00FF is ambiguous (a lone byte, or a UTF-8 sequence led by 0xC2
+/// or 0xC3) and is read back as the single byte. That is right for binary
+/// header bytes and wrong only for a Latin-1 letter spelled in UTF-8, where a
+/// decoder then finds a length one short and stops.
 pub(crate) fn reply_bytes(text: &str) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(text.len());
     for character in text.chars() {
@@ -109,12 +85,9 @@ pub(crate) fn reply_bytes(text: &str) -> Vec<u8> {
 /// The texts one banner should be matched against, most complete first.
 ///
 /// Usually just the banner. A structured one also yields the fields the corpus
-/// anchors on, and both are offered rather than the field replacing the line: a
-/// rule may legitimately be written against either, and which is more specific
-/// is a question for the matcher's own ranking rather than for this.
+/// anchors on; both are offered and the matcher ranks the results.
 ///
-/// Borrowed wherever a field is a slice of the banner. The one exception is an
-/// HTML title, whose whitespace is normalised before it can be matched.
+/// Borrowed, except an HTML title, whose whitespace is normalised.
 pub(crate) fn texts(banner: &str) -> Vec<Cow<'_, str>> {
     let mut texts = vec![Cow::Borrowed(banner)];
     texts.extend(super::ssh::software_version(banner).map(Cow::Borrowed));
@@ -132,17 +105,13 @@ pub(crate) fn texts(banner: &str) -> Vec<Cow<'_, str>> {
 /// share, with its reply code taken off: `(vsFTPd 3.0.5)` out of
 /// `220 (vsFTPd 3.0.5)`.
 ///
-/// The corpus's rules for these greetings are written against that text, the
-/// words the daemon chose, and anchored at both ends, so the greeting as it
-/// arrives, code and line ending included, reaches none of them. Each line of
-/// a greeting that runs over several is offered on its own, since a daemon
-/// names itself on whichever line it likes: Pure-FTPd on its first, FileZilla
-/// Server on the one before its last.
+/// The corpus's rules for these greetings are anchored on that text at both
+/// ends. Each line of a multi-line greeting is offered on its own: Pure-FTPd
+/// names itself on its first, FileZilla Server on the one before its last.
 ///
-/// The greeting is the reply the banner opens with: every line carrying its
-/// code, to the one where a space follows the code, which closes it. What a
-/// later probe drew after it is another reply, and is left out. Empty for a
-/// banner that does not open on three digits and a space or a hyphen.
+/// The greeting runs to the line where a space follows the code; later replies
+/// are left out. Empty for a banner that does not open on three digits and a
+/// space or a hyphen.
 fn greeting_lines(banner: &str) -> Vec<&str> {
     let opens = banner.as_bytes().get(..4).is_some_and(|head| {
         head[..3].iter().all(u8::is_ascii_digit) && matches!(head[3], b' ' | b'-')
@@ -173,23 +142,14 @@ fn greeting_lines(banner: &str) -> Vec<&str> {
 
 /// The texts a UDP reply carries, where this engine knows how to read one.
 ///
-/// Empty for a port whose replies it cannot decode, which is most of them: a
-/// datagram nothing can read is still proof the port is open, and that is what
-/// the scan already took from it.
+/// Empty for a port whose replies it cannot decode, which is most of them.
 ///
-/// More than one where a reply answers more than one question. An SNMP agent is
-/// asked for its description and its object identifier in a single datagram, and
-/// the corpus has rules against each alone and against the two joined, so all
-/// three are offered and the matcher ranks them. They are separate texts rather
-/// than one, because 570 of the 579 description rules anchor at the start and a
-/// joined string would reach none of them.
-///
-/// Owned because decoding is not always a borrow: a value lifted out of a binary
-/// encoding has no text in the datagram to point at.
+/// More than one where a reply answers more than one question. An SNMP agent
+/// returns its description and object identifier together, and the corpus has
+/// rules against each and against the two joined, so all three are offered;
+/// 570 of the 579 description rules anchor at the start.
 pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
     match port {
-        // On a Unix host `sysDescr` is the output of `uname -a`, which names the
-        // exact kernel, and `sysObjectID` is the vendor's own name for the box.
         // See [`snmp`](super::snmp).
         161 => {
             let description = super::snmp::sys_descr(datagram);
@@ -205,14 +165,12 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
             }
             texts
         }
-        // The `version.bind` probe the corpus registers for this port draws a
-        // TXT answer holding the nameserver's own account of its build.
+        // The `version.bind` TXT answer.
         53 => crate::protocols::dns::first_text_answer(datagram)
             .into_iter()
             .collect(),
-        // A device-info answer carries one `key=value` per character-string, and
-        // a rule reads one of them: `model=Mac16,10` and `osxvers=25` are two
-        // separate claims about the same machine.
+        // One `key=value` per character-string (`model=Mac16,10`, `osxvers=25`),
+        // each read by its own rule.
         5353 => crate::protocols::mdns::text_records(datagram).unwrap_or_default(),
         // An M-SEARCH answer is HTTP-shaped, and the UPnP Device Architecture
         // fixes what its `SERVER` value holds: the operating system, the UPnP
@@ -221,18 +179,12 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
         //   SERVER: Linux/3.14.0 UPnP/1.0 MiniUPnPd/1.9
         //           └─ OS ────┘  └─ UPnP ┘ └─ product ┘
         //
-        // The value alone rather than the response it came in. Handing back the
-        // whole thing would make it a banner beginning `HTTP/`, which is what
-        // [`HttpHeadersAnalyzer`](super::http) gates on, and a UPnP responder
-        // would be reported as a web server on 1900. The header is the half that
-        // identifies anything.
+        // The value only: a banner beginning `HTTP/` would be read by
+        // [`HttpHeadersAnalyzer`](super::http) as a web server on 1900.
         //
-        // `ST` is not offered with it. The probe asks `ssdp:all` and a device
-        // answers it with one datagram per service it exposes; this exchange
-        // reads one, so the `ST` in hand is whichever the device happened to
-        // send first, and that is `upnp:rootdevice` on nearly everything.
-        // Reading a device type out of it would be reading the order the
-        // datagrams left in.
+        // `ST` is not offered: a device answers `ssdp:all` with one datagram per
+        // service, this reads only the first, and that is `upnp:rootdevice` on
+        // nearly everything.
         1900 => match std::str::from_utf8(datagram) {
             Ok(text) => super::http::server_value(text)
                 .map(ToOwned::to_owned)
@@ -240,22 +192,20 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
                 .collect(),
             Err(_) => Vec::new(),
         },
-        // A KRB-ERROR is proof of a KDC. The realm it names is not text for
-        // the corpus but one of the host's names; see `names_from_datagram`.
+        // A KRB-ERROR proves a KDC. Its realm is a host name; see
+        // `names_from_datagram`.
         88 => super::framed::kerberos_error(datagram)
             .into_iter()
             .collect(),
-        // What a concentrator calls itself. What it calls the machine is one
-        // of the host's names; see `names_from_datagram`.
+        // The concentrator's own name; the machine's name goes to
+        // `names_from_datagram`.
         1701 => super::framed::l2tp_control(datagram).into_iter().collect(),
-        // The corpus registers two probes here. The client request proves the
-        // port is open and carries nothing to read; the mode 6 control message
-        // draws the variables the daemon describes itself with.
+        // The mode 6 control message's variables; the client request's reply
+        // only proves the port open.
         123 => super::framed::ntp_control_variables(datagram)
             .into_iter()
             .collect(),
-        // The gateway's own vendor ids, which is what separates one IPsec
-        // implementation from another.
+        // Vendor ids, which distinguish IPsec implementations.
         500 | 4500 => super::framed::ike_response(datagram).into_iter().collect(),
         // What a STUN server calls itself, where it says.
         3478 => super::framed::stun_binding(datagram).into_iter().collect(),
@@ -263,8 +213,8 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
         111 => super::framed::rpc_program_dump(datagram)
             .into_iter()
             .collect(),
-        // The probe asks for a version nothing implements, so the mismatch that
-        // comes back names the versions the server does support.
+        // The probe asks for a version nothing implements; the mismatch names
+        // the supported range.
         2049 => super::framed::rpc_version_range(datagram)
             .into_iter()
             .collect(),
@@ -273,47 +223,39 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
         623 => super::framed::ipmi_auth_capabilities(datagram)
             .into_iter()
             .collect(),
-        // A display manager that answers this accepts remote X logins from the
-        // network, whatever the software behind it turns out to be.
+        // A display manager that answers accepts remote X logins.
         177 => super::framed::xdmcp_willing(datagram).into_iter().collect(),
-        // Either the information a game server publishes, or the challenge it
-        // now asks for instead. Both say what is listening.
+        // The server's published information, or the challenge it asks for.
         27015 => super::framed::source_engine(datagram).into_iter().collect(),
-        // A master answers with a page of other hosts' servers, which says what
-        // it is and nothing about itself.
+        // A master answers with a page of other hosts' servers.
         27010..=27014 => super::framed::steam_master_list(datagram)
             .map(ToOwned::to_owned)
             .into_iter()
             .collect(),
-        // The status line a Bedrock server builds from its own configuration,
-        // once the reply's magic has confirmed it is RakNet at all.
+        // A Bedrock server's status line, after the RakNet magic is checked.
         19132 => super::framed::raknet_pong(datagram)
             .map(ToOwned::to_owned)
             .into_iter()
             .collect(),
-        // A device with no version string anywhere still lists the resources it
-        // exposes, which is what says what it is for.
+        // The resources the device exposes.
         5683 => super::framed::coap_payload(datagram)
             .map(ToOwned::to_owned)
             .into_iter()
             .collect(),
-        // The Browser's whole answer is a list of the instances on the host,
-        // each with its build number and the TCP port it listens on.
+        // The instances on the host, each with its build and TCP port.
         1434 => super::framed::sql_server_browser(datagram)
             .map(ToOwned::to_owned)
             .into_iter()
             .collect(),
-        // Behind the frame is the same `VERSION` line the TCP probe draws, so
-        // the rule written for that banner reads this one too.
+        // The same `VERSION` line the TCP probe draws, behind a frame.
         11211 => super::framed::memcached_udp(datagram)
             .map(ToOwned::to_owned)
             .into_iter()
             .collect(),
-        // A ProbeMatches names what kind of thing answered, and the prefixes are
-        // stripped on the way out because no two responders agree on them.
+        // Types from a ProbeMatches, with namespace prefixes stripped since
+        // responders disagree on them.
         3702 => super::framed::wsd_types(datagram).into_iter().collect(),
-        // A SIP endpoint answers OPTIONS over UDP far more often than over TCP,
-        // and names itself in the same two headers either way.
+        // SIP OPTIONS over UDP; see `sip`.
         5060 | 5061 => match std::str::from_utf8(datagram) {
             Ok(text) => super::sip::corpus_fields(text)
                 .into_iter()
@@ -327,48 +269,39 @@ pub(crate) fn from_datagram(port: u16, datagram: &[u8]) -> Vec<String> {
 
 /// The texts a TCP reply carries, where this engine knows how to read one.
 ///
-/// The counterpart to [`from_datagram`], keyed the same way and for the same
-/// reason. Almost every TCP service answers in text a banner grab can hand
-/// straight to the matcher, so this is empty for nearly all of them and the
-/// [`reply_text`] beside it does the work.
+/// The counterpart to [`from_datagram`], keyed the same way. Empty for most TCP
+/// services, whose text [`reply_text`] already covers. It handles RPC, Kerberos
+/// and DNS framing over TCP, TDS's binary version, and RTSP, which the HTTP
+/// reader declines.
 ///
-/// It exists for the ones that do not. An RPC, Kerberos or DNS reply over TCP
-/// hides the message a datagram would carry behind framing of its own, a TDS
-/// pre-login states its version in binary, and an RTSP response is declined
-/// by the HTTP reader, so each wants reading as what it is.
-///
-/// Offered *beside* the whole reply rather than instead of it, so nothing that
-/// already matched stops matching.
+/// Offered beside the whole reply.
 pub(crate) fn from_stream(port: u16, bytes: &[u8]) -> Vec<String> {
     match port {
-        // An RTSP status line is not an HTTP one, so the HTTP reader declines
-        // the response and the `Server` value would go unread.
+        // The HTTP reader declines an RTSP status line.
         554 | 8554 => super::framed::rtsp_server(bytes).into_iter().collect(),
-        // The dump a datagram would carry, behind the record marks TCP adds.
+        // Behind TCP record marks.
         111 => super::framed::rpc_record(bytes)
             .and_then(|record| super::framed::rpc_program_dump(&record))
             .into_iter()
             .collect(),
-        // The mismatch a datagram would carry, behind the same marks.
+        // Behind TCP record marks.
         2049 => super::framed::rpc_record(bytes)
             .and_then(|record| super::framed::rpc_version_range(&record))
             .into_iter()
             .collect(),
-        // The KRB-ERROR a datagram would carry, behind the four-byte length
-        // RFC 4120 §7.2.2 puts in front of a message over TCP.
+        // Behind the four-byte length of RFC 4120 §7.2.2.
         88 => bytes
             .get(4..)
             .and_then(super::framed::kerberos_error)
             .into_iter()
             .collect(),
-        // The answer a datagram would carry, behind the two-byte length RFC
-        // 1035 §4.2.2 puts in front of a message over TCP.
+        // Behind the two-byte length of RFC 1035 §4.2.2.
         53 => bytes
             .get(2..)
             .and_then(crate::protocols::dns::first_text_answer)
             .into_iter()
             .collect(),
-        // What the server says its build is, before any login.
+        // The server's build, before any login.
         1433 => super::framed::tds_version(bytes).into_iter().collect(),
         _ => Vec::new(),
     }
@@ -377,11 +310,9 @@ pub(crate) fn from_stream(port: u16, bytes: &[u8]) -> Vec<String> {
 /// The names a UDP reply from `port` gives for the machine that sent it, read
 /// from the reply's structure.
 ///
-/// Apart from [`from_datagram`] because what it returns is not matched. A rule
-/// that captures part of a text writes the capture into a service's
-/// description, and a description reaches every report unmasked, so a name
-/// that travelled as text would leak from a report redacted to hide it. A
-/// [`HostName`] is masked wherever a hostname is.
+/// Kept apart from [`from_datagram`]: a rule's capture would land in a service
+/// description, which reports do not mask, whereas a [`HostName`] is masked
+/// wherever a hostname is.
 pub(crate) fn names_from_datagram(port: u16, datagram: &[u8]) -> Vec<HostName> {
     match port {
         88 => super::framed::kerberos_realm(datagram)
@@ -399,8 +330,7 @@ pub(crate) fn names_from_datagram(port: u16, datagram: &[u8]) -> Vec<HostName> {
 /// [`from_datagram`].
 pub(crate) fn names_from_stream(port: u16, bytes: &[u8]) -> Vec<HostName> {
     match port {
-        // Behind the four-byte length RFC 4120 §7.2.2 puts in front of a
-        // message over TCP.
+        // Behind the four-byte length of RFC 4120 §7.2.2.
         88 => bytes
             .get(4..)
             .and_then(super::framed::kerberos_realm)
@@ -412,15 +342,13 @@ pub(crate) fn names_from_stream(port: u16, bytes: &[u8]) -> Vec<HostName> {
 
 /// Whether this engine can read a reply from `port` over `protocol` at all.
 ///
-/// What decides whether a UDP port is worth a second datagram: there is no
-/// point dialling one whose answer nothing here could turn into text. A TCP
-/// port always qualifies, every one of them can be read for a banner.
+/// Decides whether a UDP port is worth a second datagram. Every TCP port
+/// qualifies.
 pub(crate) fn reads(port: u16, protocol: Protocol) -> bool {
     match protocol {
         Protocol::Tcp => true,
         Protocol::Udp => DECODED_UDP_PORTS.contains(&port),
-        // An INIT scan learns that a port answers and nothing about what is
-        // behind it, and there is no client here to ask it a second time.
+        // No SCTP client here.
         Protocol::Sctp => false,
     }
 }
@@ -428,12 +356,10 @@ pub(crate) fn reads(port: u16, protocol: Protocol) -> bool {
 /// What kind of text a reply from `port` over `protocol` is, for weighing what a
 /// rule matched against it says about the *host*.
 ///
-/// Almost everything a scan reads is a banner: a string a daemon carries from
-/// its own build, which is why [`ceiling`](super::os::ceiling) holds it below a
-/// stack reading. SNMP is the exception this exists for, `sysDescr` is the
-/// machine's management agent describing the machine, and it is keyed on the
-/// same port [`from_datagram`] decodes, so the decoder and the weight put on
-/// what it decodes cannot drift apart.
+/// Almost everything is a banner, a string a daemon carries from its own build,
+/// which [`ceiling`](super::os::ceiling) holds below a stack reading. SNMP's
+/// `sysDescr` is the management agent describing the machine. Keyed on the same
+/// port as [`from_datagram`].
 pub(crate) fn attested_by(port: u16, protocol: Protocol) -> crate::model::host::OsSource {
     match (protocol, port) {
         (Protocol::Udp, 161) => crate::model::host::OsSource::SnmpAgent,
@@ -444,9 +370,7 @@ pub(crate) fn attested_by(port: u16, protocol: Protocol) -> crate::model::host::
 
 /// The UDP ports [`from_datagram`] has a decoder for.
 ///
-/// Stated rather than derived, because a decoder cannot be asked whether it
-/// would succeed without a datagram to try it on, and this question is asked
-/// before one has been drawn.
+/// Listed explicitly, since it is asked before any datagram exists.
 const DECODED_UDP_PORTS: &[u16] = &[
     53, 88, 111, 123, 161, 177, 500, 623, 1434, 1701, 1900, 2049, 3478, 3702, 4500, 5060, 5061,
     5353, 5683, 11211, 19132, 27010, 27011, 27012, 27013, 27014, 27015,
@@ -465,8 +389,7 @@ const DECODED_UDP_PORTS: &[u16] = &[
 mod tests {
     use super::*;
 
-    /// The whole line and the field, both offered, because a rule may be
-    /// written against either and only the matcher can say which fits better.
+    /// The whole line and the field are both offered.
     #[test]
     fn a_structured_banner_offers_its_field_as_well_as_itself() {
         let texts = texts("SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u10");
@@ -479,17 +402,14 @@ mod tests {
         );
     }
 
-    /// An unstructured one offers itself and nothing else, rather than a second
-    /// text that would only cost the matcher a pass.
+    /// An unstructured banner offers only itself.
     #[test]
     fn an_ordinary_banner_offers_only_itself() {
         assert_eq!(texts("+OK POP3 ready"), ["+OK POP3 ready"]);
     }
 
-    /// A greeting in the reply format FTP and SMTP share offers the text of
-    /// each of its lines without the code, which is what the corpus's rules
-    /// for those greetings are written against, and stops where the greeting
-    /// does: a later probe's answer is another reply.
+    /// An FTP/SMTP greeting offers each line's text without the code, and stops
+    /// where the greeting does.
     #[test]
     fn a_greeting_offers_each_of_its_lines_without_the_code() {
         let greeting = "220-FileZilla Server 1.8.0\r\n\
@@ -506,27 +426,21 @@ mod tests {
         assert_eq!(texts("2201 is a number")[1..], [] as [&str; 0]);
     }
 
-    /// A byte that is not part of any UTF-8 sequence reaches the matcher as
-    /// the code point of its own value, which is what a pattern's `\x82`
-    /// names.
+    /// A byte outside any UTF-8 sequence becomes the code point of its value.
     #[test]
     fn a_byte_outside_utf8_reads_as_its_own_code_point() {
         assert_eq!(reply_text(b"\x82\x00\x00\x00"), "\u{82}\0\0\0");
         assert_eq!(reply_text(b"\xff\xfd\x18"), "\u{ff}\u{fd}\u{18}");
     }
 
-    /// Text that is UTF-8 reads as the words it wrote, beside a byte that is
-    /// not, so a page titled in UTF-8 is not garbled for the sake of a binary
-    /// protocol.
+    /// UTF-8 text survives beside a byte that is not UTF-8.
     #[test]
     fn utf8_text_reads_as_written_beside_a_byte_that_is_not() {
         assert_eq!(reply_text("Überblick".as_bytes()), "Überblick");
         assert_eq!(reply_text(b"caf\xe9 \xc3\xa9t\xc3\xa9"), "café été");
     }
 
-    /// A port with no decoder yields nothing rather than the datagram as text.
-    /// A reply nothing can read is still proof the port is open, which is what
-    /// the scan already took from it.
+    /// A port with no decoder yields nothing.
     #[test]
     fn a_datagram_from_an_unreadable_port_yields_nothing() {
         assert!(from_datagram(9_999, b"anything at all").is_empty());
@@ -536,26 +450,17 @@ mod tests {
     /// Every port the corpus sends a UDP probe to has a decoder for the answer,
     /// or is named here as one that does not.
     ///
-    /// The two lists are authored in different places for different reasons.
-    /// `assets/fingerprinting` says what to send, [`DECODED_UDP_PORTS`] says what
-    /// can be read back, and nothing but this connects them: a UDP probe
-    /// authored for a port with no decoder draws a reply the fingerprinter
-    /// throws away, and the only symptom is a service that is never identified.
-    ///
-    /// The sibling test on the service side
-    /// (`every_port_with_a_signature_is_a_port_the_default_scan_reaches`) holds
-    /// the same kind of join and is what this is modelled on.
+    /// `assets/fingerprinting` says what to send and [`DECODED_UDP_PORTS`] what
+    /// can be read back; a probe with no decoder is otherwise silently wasted.
+    /// Modelled on `every_port_with_a_signature_is_a_port_the_default_scan_reaches`.
     #[test]
     fn a_udp_probe_either_has_a_decoder_or_is_listed_as_having_none() {
         use crate::fingerprint::SignatureDb;
 
-        /// Ports the corpus probes over UDP for *liveness* rather than for
-        /// identification. A UDP probe is what establishes the port is open at
-        /// all, since UDP offers no handshake to infer it from, so a probe here
-        /// earns its place without a decoder. Each entry is a decoder somebody
-        /// could write.
-        // 162 is the trap receiver. snmp.toml claims both numbers, so the probe
-        // reaches it, and a receiver does not answer a get.
+        /// Ports the corpus probes over UDP for liveness only. Each is a decoder
+        /// somebody could write.
+        // 162 is the trap receiver: snmp.toml claims it, and a receiver does not
+        // answer a get.
         const PROBED_BUT_NOT_DECODED: &[u16] = &[137, 162];
 
         let db = SignatureDb::global();
@@ -587,7 +492,7 @@ mod tests {
         }
     }
 
-    /// And a port that has one is worth the second datagram it costs.
+    /// A port with a decoder is worth a second datagram.
     #[test]
     fn a_port_with_a_decoder_is_worth_dialling() {
         assert!(reads(161, Protocol::Udp));
@@ -612,9 +517,7 @@ mod http_fields {
     use crate::fingerprint::SignatureDb;
     use crate::model::port::Protocol;
 
-    /// The whole point of offering a field separately: a corpus rule anchors on
-    /// one header value at both ends, so it can never match the response that
-    /// carried it.
+    /// What the corpus names from the response's fields.
     fn identify(response: &str) -> Option<String> {
         SignatureDb::global()
             .identify(80, Protocol::Tcp, response)
@@ -652,8 +555,7 @@ mod http_fields {
         );
     }
 
-    /// A title runs across lines in real markup, and the corpus rules are
-    /// written against one normalised line.
+    /// A title spanning lines is normalised to one.
     #[test]
     fn a_title_broken_across_lines_still_matches_a_rule_written_on_one() {
         let response = "HTTP/1.1 403 Forbidden\r\n\r\n\
@@ -664,7 +566,7 @@ mod http_fields {
         );
     }
 
-    /// Every other banner pays one prefix comparison and nothing else.
+    /// A non-HTTP banner yields no fields.
     #[test]
     fn a_banner_that_is_not_http_yields_no_fields() {
         assert!(super::texts("+OK POP3 ready").len() == 1);
@@ -706,8 +608,7 @@ mod version_bind {
         assert_eq!(decoded, vec!["9.9.5-11ubuntu1.1-Ubuntu".to_string()]);
     }
 
-    /// The probe already went out over both transports and the answer was
-    /// discarded. This is the rule it now reaches.
+    /// The `version.bind` answer reaches its rule.
     #[test]
     fn a_bind_build_string_names_the_product_and_its_version() {
         let texts = super::from_datagram(53, &response("9.9.5-11ubuntu1.1-Ubuntu"));
@@ -738,8 +639,7 @@ mod sys_object_id {
     use crate::fingerprint::SignatureDb;
     use crate::model::port::Protocol;
 
-    /// A GetResponse carrying both bindings the probe now asks for, in the order
-    /// an agent would answer them.
+    /// A GetResponse carrying both bindings the probe asks for.
     fn response(object_id: &[u8], description: &str) -> Vec<u8> {
         fn tlv(tag: u8, value: &[u8]) -> Vec<u8> {
             let mut out = vec![tag, value.len() as u8];
@@ -769,8 +669,7 @@ mod sys_object_id {
         tlv(0x30, &message)
     }
 
-    /// `1.3.6.1.4.1.8072.3.2.1`. The 8072 arc is two base-128 bytes, which is
-    /// the case a naive renderer gets wrong.
+    /// `1.3.6.1.4.1.8072.3.2.1`. The 8072 arc is two base-128 bytes.
     const NET_SNMP: &[u8] = &[0x2b, 0x06, 0x01, 0x04, 0x01, 0xbf, 0x08, 0x03, 0x02, 0x01];
 
     #[test]
@@ -782,9 +681,7 @@ mod sys_object_id {
         );
     }
 
-    /// Three texts, because the corpus has rules against each shape. The
-    /// description stays a text of its own: 570 of the 579 rules written against
-    /// it anchor at the start, so a joined string reaches none of them.
+    /// Three texts, one per shape the corpus has rules for.
     #[test]
     fn the_description_is_offered_whole_beside_the_joined_form() {
         let texts = super::from_datagram(161, &response(NET_SNMP, "Linux zond 6.1.0"));
@@ -798,8 +695,7 @@ mod sys_object_id {
         );
     }
 
-    /// The reason the identifier is offered as a text of its own: sixteen of the
-    /// forty-two rules written against it match the bare OID and nothing else.
+    /// Sixteen of the forty-two OID rules match the bare OID.
     #[test]
     fn a_bare_object_identifier_names_the_agent_behind_it() {
         let texts = super::from_datagram(161, &response(NET_SNMP, "an agent that says little"));
@@ -811,8 +707,7 @@ mod sys_object_id {
         assert_eq!(evidence.product.as_deref(), Some("SNMP Agent"));
     }
 
-    /// An agent answering only the first question is the ordinary case for one
-    /// that does not implement the second.
+    /// An agent answering only the description.
     #[test]
     fn a_reply_without_the_second_binding_still_yields_the_description() {
         let mut only_descr = super::from_datagram(161, &response(NET_SNMP, "Linux zond"));
@@ -845,8 +740,8 @@ mod device_info {
         );
     }
 
-    /// The model this Mac reports postdates every one the imported corpus
-    /// enumerates, which is what the generative rules are for.
+    /// A model newer than any the imported corpus enumerates is still named, by
+    /// the generative rules.
     #[test]
     fn a_model_newer_than_the_enumerated_ones_still_names_apple() {
         let evidence = SignatureDb::global()
@@ -858,8 +753,8 @@ mod device_info {
         assert_eq!(os.family.as_deref(), Some("macOS"));
     }
 
-    /// And the Darwin release, captured rather than looked up, so it does not
-    /// stop at the 22 the imported rules stop at.
+    /// The Darwin release is captured, so it is not capped at the imported
+    /// rules' 22.
     #[test]
     fn a_darwin_release_past_the_enumerated_ones_is_still_read() {
         let evidence = SignatureDb::global()
@@ -908,8 +803,7 @@ mod sip_headers {
         );
     }
 
-    /// And over TCP, where the response arrives as a banner. The whole reply is
-    /// still offered beside the field, as it is for every other banner.
+    /// Over TCP the whole reply is offered beside the field.
     #[test]
     fn a_banner_offers_the_header_beside_itself() {
         let texts = super::texts(GATEWAY);
@@ -919,8 +813,7 @@ mod sip_headers {
         );
     }
 
-    /// The whole point: a rule is anchored on the header value, so it can never
-    /// match the response that carried it.
+    /// A rule anchored on the header value matches the field, not the response.
     #[test]
     fn the_header_names_the_gateway_behind_it() {
         let evidence = SignatureDb::global()
@@ -935,7 +828,7 @@ mod sip_headers {
         assert!(super::reads(5061, Protocol::Udp));
     }
 
-    /// A datagram that is not SIP decodes to nothing rather than to noise.
+    /// A datagram that is not SIP decodes to nothing.
     #[test]
     fn a_datagram_that_is_not_sip_yields_nothing() {
         assert!(super::from_datagram(5060, b"\x00\x01\x02 not sip").is_empty());
@@ -948,9 +841,8 @@ mod ldap_root_dse {
     use crate::fingerprint::SignatureDb;
     use crate::model::port::Protocol;
 
-    /// The opening of a real root DSE search result, captured from OpenLDAP
-    /// 2.6 on 2026-09-06. The corpus matches these bytes as text rather than a
-    /// parse of them, which is why nothing here decodes BER.
+    /// The opening of a real root DSE search result, captured from OpenLDAP 2.6
+    /// on 2026-09-06. The corpus matches these bytes as text.
     const ROOT_DSE: &[u8] = &[
         0x30, 0x82, 0x03, 0x5a, 0x02, 0x01, 0x02, 0x64, 0x82, 0x03, 0x53, 0x04, 0x00, 0x30, 0x82,
         0x03, 0x4d, 0x30, 0x25, 0x04, 0x0b, 0x6f, 0x62, 0x6a, 0x65, 0x63, 0x74, 0x43, 0x6c, 0x61,
@@ -958,9 +850,7 @@ mod ldap_root_dse {
         0x4c, 0x44, 0x41, 0x50, 0x72, 0x6f, 0x6f, 0x74, 0x44, 0x53, 0x45, 0x30,
     ];
 
-    /// The whole point of the search: an anonymous bind establishes only that
-    /// something speaks LDAP, while the entry at the empty DN names the
-    /// directory.
+    /// The entry at the empty DN names the directory.
     #[test]
     fn a_root_dse_result_names_the_directory() {
         let text = super::reply_text(ROOT_DSE);
@@ -972,9 +862,8 @@ mod ldap_root_dse {
         assert_eq!(evidence.vendor.as_deref(), Some("OpenLDAP"));
     }
 
-    /// The response carries bytes that are not UTF-8, and the rules are written
-    /// against them: each reaches the matcher as the code point of its own
-    /// value, and the text between them as it was written.
+    /// Non-UTF-8 bytes reach the matcher as their own code points, and the text
+    /// between them unchanged.
     #[test]
     fn bytes_that_are_not_utf8_reach_the_rules_as_themselves() {
         let text = super::reply_text(ROOT_DSE);
@@ -1007,9 +896,7 @@ mod ssdp_server {
         );
     }
 
-    /// The header and not the message. A banner beginning `HTTP/` is what the
-    /// HTTP analyzer gates on, so handing the reply back whole would have a UPnP
-    /// responder reported as a web server running on 1900.
+    /// The header, not the message, so the HTTP analyzer does not read it.
     #[test]
     fn the_reply_itself_is_not_offered_as_a_banner() {
         assert!(
@@ -1029,8 +916,7 @@ mod ssdp_server {
         assert_eq!(evidence.version.as_deref(), Some("1.9"));
     }
 
-    /// A device that names no product still resolves to UPnP rather than to
-    /// nothing, which is the baseline rule's whole job.
+    /// A device that names no product still resolves to UPnP.
     #[test]
     fn a_stack_the_corpus_cannot_name_is_still_upnp() {
         let evidence = SignatureDb::global()
@@ -1044,8 +930,7 @@ mod ssdp_server {
         assert!(super::reads(1900, Protocol::Udp));
     }
 
-    /// A reply carrying no such header, and one that is not a message at all,
-    /// both decode to nothing rather than to noise.
+    /// No header, or no message, decodes to nothing.
     #[test]
     fn a_datagram_with_nothing_to_read_yields_nothing() {
         assert!(super::from_datagram(1900, b"\x00\x01\x02 not ssdp").is_empty());
@@ -1091,8 +976,7 @@ mod framed_replies {
         );
     }
 
-    /// The reason this port is worth asking at all: a named instance says which
-    /// TCP port it listens on, which a port scan would otherwise have to find.
+    /// A named instance says which TCP port it listens on.
     #[test]
     fn the_instance_list_carries_the_port_the_engine_listens_on() {
         let body = b"ServerName;WIN-DB01;InstanceName;SQLEXPRESS;IsClustered;No;\
@@ -1105,8 +989,7 @@ mod framed_replies {
         assert!(texts[0].contains("tcp;49812"), "got {texts:?}");
     }
 
-    /// The UDP probe draws the same line the TCP one does, and the rule written
-    /// for that banner reads it unchanged.
+    /// The UDP reply is read by the rule for the TCP banner.
     #[test]
     fn memcached_over_udp_reuses_the_rule_written_for_tcp() {
         let reply = b"\x00\x01\x00\x00\x00\x01\x00\x00VERSION 1.6.21\r\n";
@@ -1139,10 +1022,9 @@ mod framed_replies {
         );
     }
 
-    /// Each of these fields is also matched against text belonging to no port,
-    /// through `identify_field`, so a rule loose enough to fire there would put
-    /// a WS-Discovery device behind a certificate subject. This is what caught
-    /// that when these rules were first written.
+    /// These fields are also matched port-independently through
+    /// `identify_field`, so a rule must not be loose enough to fire on, say, a
+    /// certificate subject.
     #[test]
     fn the_new_rules_do_not_fire_on_text_that_is_not_theirs() {
         let db = SignatureDb::global();
@@ -1186,8 +1068,7 @@ mod framed_replies {
         }
     }
 
-    /// A display manager willing to manage a session for a stranger, which is
-    /// the finding whatever the software behind it is.
+    /// A display manager willing to manage a session for a stranger.
     #[test]
     fn an_xdmcp_manager_is_named_from_what_it_says_about_itself() {
         let mut reply = vec![0x00, 0x01, 0x00, 0x05, 0x00, 0x00];
@@ -1220,8 +1101,7 @@ mod framed_replies {
         );
     }
 
-    /// A server that asked for a challenge instead of answering is still named,
-    /// because nothing else sends that reply.
+    /// A server that asks for a challenge is still named.
     #[test]
     fn a_source_challenge_still_names_the_service() {
         let reply = [0xFF, 0xFF, 0xFF, 0xFF, b'A', 0x11, 0x22, 0x33, 0x44];
@@ -1271,9 +1151,7 @@ mod framed_replies {
         );
     }
 
-    /// A Steam master is asked its server list over UDP, the only transport it
-    /// answers on, and is named from the list it returns. A query sent over TCP
-    /// draws nothing from a master and costs a connection per port.
+    /// A Steam master is named from the server list it returns over UDP.
     #[test]
     fn a_steam_master_is_asked_over_udp_and_named_from_its_list() {
         let query = b"1\xff0.0.0.0:0\x00\x00";
@@ -1299,10 +1177,8 @@ mod framed_replies {
     /// The exact bytes the `zond-refresh.sh` fixtures answer with, captured off
     /// the wire.
     ///
-    /// The tests above build a reply from the same understanding of the format
-    /// that wrote the reader, so they agree with it by construction. These came
-    /// from a separate implementation, which is the one place a fixture and a
-    /// parser can be caught disagreeing before a VM run does it.
+    /// From a separate implementation, so fixture and parser can disagree here
+    /// before a VM run.
     #[test]
     fn the_fixtures_answer_with_bytes_these_readers_accept() {
         fn hex(text: &str) -> Vec<u8> {
@@ -1345,9 +1221,7 @@ mod framed_replies {
         out
     }
 
-    /// The portmapper is worth asking because it says where things are, not
-    /// only what they are: `mountd` on 20048 is a port nothing would have
-    /// guessed.
+    /// The portmapper says where things are: `mountd` on 20048.
     #[test]
     fn a_portmapper_names_the_services_and_where_they_are() {
         let mut body = Vec::new();
@@ -1368,9 +1242,8 @@ mod framed_replies {
             texts,
             vec!["portmapper 2 udp 111, nfs 3 tcp 2049, mountd 3 udp 20048"]
         );
-        // No version: the dump lists one record per version per transport, so a
-        // capture here would name whichever the server wrote first. The probe
-        // on 2049 answers that with the range.
+        // No version: the dump has one record per version per transport. The
+        // probe on 2049 gives the range.
         assert_eq!(identify(111, &texts[0]), Some(("NFS".to_string(), None)));
     }
 
@@ -1378,9 +1251,7 @@ mod framed_replies {
     /// `nfs-kernel-server` on Debian 12.
     ///
     /// Every mountd version comes before the first nfs one, and `nfs_acl` is
-    /// registered beside `nfs` on the same port. The first version of the NFS
-    /// rule read `nfs ... mountd` in sequence and matched neither this nor any
-    /// other real server, which nothing but a scan of one would have shown.
+    /// registered beside `nfs` on the same port.
     #[test]
     fn the_order_a_real_portmapper_lists_in_is_not_the_order_a_rule_may_assume() {
         const REAL: &str = "portmapper 4 tcp 111, portmapper 3 tcp 111, portmapper 2 tcp 111, \
@@ -1397,8 +1268,7 @@ mod framed_replies {
         );
     }
 
-    /// And `nfs_acl` alone does not stand in for `nfs`, which the space after
-    /// the program name is what enforces.
+    /// `nfs_acl` alone does not match `nfs`; the space after the name enforces it.
     #[test]
     fn a_host_registering_only_part_of_the_pair_is_not_a_file_server() {
         for dump in [
@@ -1444,13 +1314,8 @@ mod framed_replies {
         );
     }
 
-    /// The point of the mode 6 probe: an imported rule that could not fire
-    /// before now reads a real daemon's answer.
-    ///
-    /// Seventy-five rules were written against `ntp.readvar` and none of them
-    /// had ever matched anything, because the only probe this port carried was
-    /// an ordinary client request and its reply is timestamps. Nothing about
-    /// them was wrong; the engine was asking the wrong question.
+    /// The mode 6 probe's answer reaches the seventy-five imported `ntp.readvar`
+    /// rules.
     #[test]
     fn the_ntp_rules_that_never_fired_now_read_a_daemon_that_answers() {
         const VARS: &str = "version=\"ntpd 4.2.8p15@1.3728-o Wed May 12 08:30:00 UTC 2021 (1)\", \
@@ -1466,16 +1331,13 @@ mod framed_replies {
         assert_eq!(texts.len(), 1, "got {texts:?}");
         assert!(texts[0].starts_with("version=\"ntpd"), "got {texts:?}");
 
-        // The version is what the imported rule captures, build suffix included:
-        // its pattern takes everything up to the first space. That is Recog's
-        // reading and not this engine's, and the point here is that the rule now
-        // gets a string to read at all.
+        // The imported rule captures up to the first space, build suffix
+        // included.
         let found = identify(123, &texts[0]).expect("the corpus names it");
         assert_eq!(found.1.as_deref(), Some("4.2.8p15@1.3728-o"));
     }
 
-    /// The client probe's own reply is still not read, which is why the control
-    /// probe had to be added rather than the rules rewritten.
+    /// The client probe's reply (timestamps) is not read.
     #[test]
     fn the_client_reply_this_port_used_to_draw_still_says_nothing() {
         let mut timestamps = vec![0x24, 0x03, 0x06, 0xec];
@@ -1534,12 +1396,7 @@ mod framed_replies {
     }
 
     /// The bytes the `zond-refresh.sh` fixtures put on the wire, captured from
-    /// them rather than rebuilt here.
-    ///
-    /// The tests above construct a reply from the same reading of each format
-    /// that wrote the reader, so they agree with it by construction. These came
-    /// from the other implementation, which is where a fixture and a parser are
-    /// caught disagreeing before a VM run does it.
+    /// that separate implementation.
     #[test]
     fn the_phase_three_fixtures_answer_with_bytes_these_readers_accept() {
         fn hex(text: &str) -> Vec<u8> {
@@ -1549,9 +1406,8 @@ mod framed_replies {
                 .collect()
         }
 
-        // ntpsec 1.2.2 on the VM, answering the corpus probe. It sorts its reply
-        // alphabetically, which is the ordering the imported rules do not expect
-        // and `ntpsec_version` exists to cover.
+        // ntpsec 1.2.2 sorts its reply alphabetically, which the imported rules
+        // do not expect; `ntpsec_version` covers it.
         const NTPSEC: &str = r#"processor="aarch64", system="Linux/6.1.0-50-cloud-arm64", version="ntpd ntpsec-1.2.2""#;
         let mut reply = vec![0x16, 0x82];
         reply.extend_from_slice(&1u16.to_be_bytes());
@@ -1590,10 +1446,8 @@ mod framed_replies {
     /// What MIT krb5 1.20 on Debian 12 actually answered the corpus probe with,
     /// captured off the wire.
     ///
-    /// The realm is absent from the reading on purpose. This reply carries
-    /// `ZOND-SCAN` in both realm fields, which is the realm the probe invented
-    /// coming back: a KDC repeats what it was asked about. Reporting it would
-    /// print this engine's own guess as though it were a discovered domain.
+    /// The reply carries `ZOND-SCAN`, the realm the probe sent, so no realm is
+    /// reported.
     #[test]
     fn a_kdc_is_named_and_its_echo_of_our_realm_is_not_reported() {
         fn hex(text: &str) -> Vec<u8> {
@@ -1620,11 +1474,8 @@ mod framed_replies {
         );
     }
 
-    /// A realm the probe did not supply is read as the domain the KDC serves,
-    /// which is the case the whole probe is for: on a domain controller it
-    /// names the Active Directory domain. It is a name of the host's and not
-    /// text for the corpus, since a rule's capture would carry it into the
-    /// service's description, which a redacted report does not mask.
+    /// A realm the probe did not supply is the KDC's domain (on a domain
+    /// controller, the Active Directory domain), recorded as a host name.
     #[test]
     fn a_realm_this_engine_did_not_ask_about_is_a_name_and_never_text() {
         use crate::model::host::{HostName, NameKind, NameSource};
@@ -1663,8 +1514,7 @@ mod framed_replies {
     }
 
     /// What xl2tpd 1.3.16 on Debian 12 actually answered, captured off the wire.
-    /// The host name in it is the VM's own, and it is one of the host's names
-    /// rather than part of the text a rule reads.
+    /// Its host name is recorded as a host name, not matched.
     #[test]
     fn a_concentrator_names_itself_and_the_machine() {
         use crate::model::host::{HostName, NameKind, NameSource};
@@ -1693,8 +1543,8 @@ mod framed_replies {
     /// analyzer asks for, captured off the wire: a negotiate response and a
     /// session setup, back to back.
     ///
-    /// Eighty-five imported rules were written against these two fields, and a
-    /// negotiate response carries neither.
+    /// Eighty-five imported rules read these two fields; a negotiate response
+    /// carries neither.
     #[test]
     fn a_session_setup_yields_the_fields_eighty_five_rules_were_written_against() {
         fn hex(text: &str) -> Vec<u8> {
@@ -1711,8 +1561,7 @@ mod framed_replies {
             vec!["Windows 6.1", "Samba 4.17.12-Debian"],
             "each field on its own, since the rules anchor at both ends of one"
         );
-        // The workgroup is the host's name, and never text a rule could
-        // capture into a service's description.
+        // The workgroup is a host name.
         let names = crate::fingerprint::framed::smb_session_names(&hex(SAMBA));
         assert_eq!(
             names
@@ -1726,10 +1575,8 @@ mod framed_replies {
             )]
         );
 
-        // The imported rule reads the release and stops at the packager's
-        // suffix: its capture is `(\d\.\d+.\d+\w*)`, and `\w` does not cross
-        // the hyphen. That is Recog's reading, and the point here is that the
-        // rule has a field to read at all.
+        // The imported capture `(\d\.\d+.\d+\w*)` stops at the packager's
+        // hyphen.
         assert_eq!(
             SignatureDb::global()
                 .identify(445, Protocol::Tcp, &texts[1])
@@ -1737,7 +1584,7 @@ mod framed_replies {
             Some("4.17.12".to_string())
         );
 
-        // And the operating-system field reaches its own rule, anchored whole.
+        // The operating-system field reaches its own rule.
         assert!(
             SignatureDb::global()
                 .identify(445, Protocol::Tcp, &texts[0])
@@ -1748,9 +1595,7 @@ mod framed_replies {
 
     /// An RTSP `Server` value reaches the rules written for it.
     ///
-    /// The status line is what makes this a reader of its own: `RTSP/1.0` is not
-    /// `HTTP/1.1`, so the HTTP reader declines the response and the header would
-    /// go unread whatever the rules said.
+    /// The HTTP reader declines `RTSP/1.0`, so RTSP has its own reader.
     #[test]
     fn an_rtsp_options_reply_yields_the_server_that_sent_it() {
         const REPLY: &[u8] = b"RTSP/1.0 200 OK\r\n\
@@ -1780,8 +1625,7 @@ mod framed_replies {
         assert!(super::from_stream(554, b"").is_empty());
     }
 
-    /// A negotiate response on its own carries none of it, which is why the
-    /// probe had to grow a second message rather than the rules a new pattern.
+    /// A negotiate response alone carries neither field.
     #[test]
     fn a_negotiate_response_alone_yields_nothing() {
         let mut negotiate = vec![0x00, 0x00, 0x00, 0x23];
