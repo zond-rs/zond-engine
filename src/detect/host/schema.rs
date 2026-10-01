@@ -8,16 +8,10 @@
 
 //! # A host-level detection, as it is authored
 //!
-//! The data a host detection is written as: an identity, a gate over the aggregate
-//! a host presents, and the findings to draw when the gate fits. Like the flow
-//! schema, these types deserialize free of the model so `build.rs` can validate the
-//! corpus with the same types the runtime reads; the lowering to the model's own
-//! vocabulary is the tier's `convert` step.
+//! An identity, a gate over what a host presents, and the findings to draw when
+//! it fits. Free of the model, so `build.rs` validates with the same types.
 
-// `build.rs` compiles this file to validate the host corpus, and its checks read
-// only a subset of these fields and never the runtime `matches`. Within the library
-// every item is used; the unread-item lint fires only in the build-script crate, so
-// it is silenced here rather than item by item.
+// `build.rs` compiles this file too and does not use every item.
 #![allow(dead_code)]
 
 use super::authoring::{Reference, SeveritySpec};
@@ -34,7 +28,7 @@ pub struct HostDetection {
     /// The identity and gate: what the detection is, and which hosts it fits.
     pub detection: HostManifest,
     /// The findings to draw for a host the gate fits. The build refuses an empty
-    /// list, since a detection that draws nothing concludes nothing.
+    /// list.
     #[serde(default)]
     pub finding: Vec<FindingSpec>,
 }
@@ -51,9 +45,7 @@ pub struct HostManifest {
     pub version: String,
     /// A one-line human name for the detection, the label a report prints for it.
     pub title: String,
-    /// `[detection.group]`: which group of detections this one covers a weakness
-    /// with, where it shares one. Spelled as the other tiers spell it, so a
-    /// group can hold detections of more than one tier.
+    /// `[detection.group]`, as in the other tiers; a group may span tiers.
     #[serde(default)]
     pub group: Option<GroupSpec>,
     /// The gate: the ports and services a host must present together to fit.
@@ -62,8 +54,7 @@ pub struct HostManifest {
 
 /// `[detection.host]`: the aggregate a host must present for the detection to fire.
 ///
-/// Every field is a set every member of which must hold, so listing more narrows
-/// the match rather than widening it. An empty gate fits every host.
+/// Every listed member must hold. An empty gate fits every host.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostGate {
@@ -78,8 +69,7 @@ pub struct HostGate {
 impl HostGate {
     /// Whether a host presenting these open ports and identified services fits.
     /// Every listed port must be open and every listed service present. An empty
-    /// gate fits any host, which the build rejects so a detection cannot fire
-    /// everywhere by saying nothing.
+    /// gate fits any host; the build rejects one.
     pub(crate) fn matches(&self, open_ports: &BTreeSet<u16>, services: &BTreeSet<&str>) -> bool {
         self.ports_open.iter().all(|port| open_ports.contains(port))
             && self
@@ -96,11 +86,9 @@ pub struct FindingSpec {
     /// How bad it is if true: one rating, or one per
     /// [`Exposure`](crate::model::ip::Exposure) rung. See [`SeveritySpec`].
     ///
-    /// The tier where the second form earns its keep most often. A host
-    /// correlation describes a *shape*, and a shape means different things
-    /// depending on who is looking at it: RPC, NetBIOS and SMB open together is
-    /// the first thing lateral movement reaches for, and it is also what every
-    /// Windows desktop on every office network looks like.
+    /// The per-rung form suits host shapes: RPC, NetBIOS and SMB open together is
+    /// a lateral-movement target on the internet and every Windows desktop on a
+    /// LAN.
     pub severity: SeveritySpec,
     /// The one-line conclusion, which becomes the finding's title unless
     /// [`title`](Self::title) overrides it.

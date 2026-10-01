@@ -8,19 +8,11 @@
 
 //! # The host-detection database
 //!
-//! The compiled host corpus the engine embeds and reads at runtime. `build.rs`
-//! validates each host detection in `assets/detect/`, hashes its bytes, and writes
-//! the source-and-hash pairs into the blob included here; this module decodes them
-//! once and hands back each detection with the provenance a finding stamps.
-//!
-//! Like the flow corpus, what is embedded is each detection's validated source and
-//! the SHA-256 of its bytes, re-parsed here. Re-reading the exact bytes the build
-//! checked keeps the build and the runtime reading one text, so a detection the
-//! build accepted parses here without fail.
+//! `build.rs` validates each host detection in `assets/detect/` and embeds its
+//! source and SHA-256; this module decodes and re-parses them once. The runtime
+//! reads the exact bytes the build checked.
 
-// The scan reaches this corpus through a `Detections`, so the `global` cache and
-// its static are a convenience only the crate's own tests still use; the
-// unread-item lint is silenced module-wide rather than gating them on `cfg(test)`.
+// `global` is used only by the crate's tests; the scan goes through `Detections`.
 #![allow(dead_code)]
 
 use std::sync::OnceLock;
@@ -82,9 +74,8 @@ pub(crate) fn embedded_hosts() -> Vec<LoadedHostDetection> {
         .collect()
 }
 
-/// Compiles one caller-supplied host detection, reporting why it is ill-formed
-/// rather than accepting one that could never fire. Mirrors the build's own host
-/// checks, which are not otherwise reachable at runtime.
+/// Compiles one caller-supplied host detection, refusing an ill-formed one as
+/// the build's host checks do.
 pub(crate) fn compile_host_source(
     toml: &str,
     content_hash: &str,

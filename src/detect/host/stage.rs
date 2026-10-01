@@ -8,16 +8,11 @@
 
 //! # Drawing host-level findings
 //!
-//! The host detection stage, the counterpart to the port-level [flow] and
-//! [compute] stages. It runs once per host over what the port scan left behind, the
-//! numbers of its open ports and the services named on them, and draws a
-//! [`Finding`] for each detection whose gate fits. It sends nothing: a host
-//! correlation reads only facts the scan already holds.
+//! The counterpart to the port-level [flow] and [compute] stages. It runs once
+//! per host over its open ports and identified services, and draws a
+//! [`Finding`] for each detection whose gate fits. It sends nothing.
 //!
-//! The host's [`Exposure`] is one of those facts, and this tier is the one that
-//! reads it most. A correlation names a shape rather than a flaw, and a shape is
-//! read differently depending on who can see it, so a detection here often states
-//! a severity per rung; see
+//! Host detections often state a severity per [`Exposure`] rung; see
 //! [`SeveritySpec`](crate::detect::authoring::SeveritySpec).
 //!
 //! [flow]: crate::detect::flow::stage
@@ -50,9 +45,7 @@ impl LoadedHostDetection {
         }
     }
 
-    /// The detection's author-chosen id. The scan path reads the id through the
-    /// finding's provenance instead; this is for a corpus listing and for tests
-    /// looking a shipped detection up by name.
+    /// The detection's author-chosen id, for corpus listings and tests.
     pub(crate) fn id(&self) -> &str {
         &self.detection.detection.id
     }
@@ -85,15 +78,10 @@ impl LoadedHostDetection {
 
 /// Runs the host detections over one host, returning the findings whose gate fit.
 ///
-/// `open_ports` and `services` are what the host presents after the port scan: the
-/// numbers of its open ports and the names of the services identified on them. A
-/// detection whose gate fits draws each of its findings; one whose gate does not is
-/// skipped, having concluded nothing.
+/// `open_ports` and `services` are the host's open port numbers and identified
+/// service names after the port scan.
 ///
-/// `exposure` grades the findings that stated a severity per rung. It gates
-/// nothing: a correlation that fits is a correlation that fits wherever the host
-/// sits, and suppressing it would leave a reader unable to tell a shape that was
-/// looked for and absent from one that was never reported.
+/// `exposure` grades per-rung severities but never suppresses a finding.
 pub(crate) fn detect_host(
     detections: &[LoadedHostDetection],
     open_ports: &BTreeSet<u16>,
@@ -120,11 +108,9 @@ pub(crate) fn detect_host(
     findings
 }
 
-/// Builds one model [`Finding`] from a spec. Provenance and class are the
-/// detection's: a host correlation reads only what the scan already gathered, so
-/// it declares [`Derived`](super::super::manifest::Class::Derived) and runs at
-/// [`DetectionClass::Passive`], which is what a finding records — the
-/// intrusiveness it ran at, rather than where its conclusion came from.
+/// Builds one model [`Finding`] from a spec. A host correlation declares
+/// [`Derived`](super::super::manifest::Class::Derived) and is recorded as
+/// [`DetectionClass::Passive`], the intrusiveness it ran at.
 fn build_finding(
     spec: &FindingSpec,
     id: &DetectionId,
@@ -164,9 +150,7 @@ fn build_finding(
     if let Some(remediation) = spec.remediation.as_deref().filter(|r| !r.trim().is_empty()) {
         finding = finding.with_remediation(remediation.to_owned());
     }
-    // From the manifest, for the reason the flow tier takes it from there: which
-    // detections cover a weakness together is not a thing one finding of one of
-    // them can say.
+    // The group comes from the manifest, as in the flow tier.
     if let Some(group) = manifest.group.as_ref().and_then(GroupSpec::to_model) {
         finding = finding.with_group(group);
     }
@@ -242,10 +226,7 @@ mod tests {
         );
     }
 
-    /// A shape stated per rung is graded by the exposure of the address the host
-    /// was reached at, which is this tier's whole reason for reading one: the
-    /// same three open ports are an incident on a public address and a desktop on
-    /// a LAN.
+    /// A per-rung severity is graded by the host's exposure.
     #[test]
     fn a_severity_stated_per_rung_is_graded_by_the_hosts_exposure() {
         let per_rung = SeveritySpec::PerExposure(SeverityByExposure {
@@ -271,9 +252,7 @@ mod tests {
         assert_eq!(graded(Exposure::Local), ModelSeverity::Info);
     }
 
-    /// The exposure grades a finding and never gates one. A correlation that fits
-    /// is reported wherever the host sits, so a reader can tell a shape that was
-    /// looked for and found from one that was never reported.
+    /// The exposure grades a finding and never suppresses it.
     #[test]
     fn a_correlation_that_fits_is_drawn_at_every_exposure() {
         let open: BTreeSet<u16> = [88, 389, 445].into_iter().collect();
