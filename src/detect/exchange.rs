@@ -28,7 +28,7 @@
 //! do) would make each exchange wait out the detection's budget.
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
 use super::patterns::KeptPattern;
@@ -180,10 +180,8 @@ pub(crate) fn tcp(
     let tcp = egress
         .connect_within(slot, peer.socket(), left.min(CONNECT_PROBE_TIMEOUT), left)
         .map_err(|error| ExchangeError::of(&error))?;
-    tcp.set_read_timeout(Some(remaining(deadline).ok_or(ExchangeError::TimedOut)?))
-        .map_err(|error| ExchangeError::of(&error))?;
-    let mut stream =
-        super::tls::wrap(tcp, peer.server_name(), tunnel).ok_or(ExchangeError::Reset)?;
+    let mut stream = super::tls::wrap(Bounded::new(tcp, deadline), peer.server_name(), tunnel)
+        .ok_or(ExchangeError::Reset)?;
     let sent = Instant::now();
     stream
         .write_all(bytes)
@@ -213,12 +211,9 @@ pub(crate) fn tcp(
                     break;
                 };
                 // With `until`, wait to the deadline; otherwise the idle gap.
-                let wait = match until {
-                    Some(_) => left,
-                    None => (*gap.get_or_insert_with(|| idle_gap(sent.elapsed(), left))).min(left),
-                };
-                if stream.socket().set_read_timeout(Some(wait)).is_err() {
-                    break;
+                if until.is_none() {
+                    stream.socket().quiet =
+                        Some(*gap.get_or_insert_with(|| idle_gap(sent.elapsed(), left)));
                 }
             }
             // A timeout or error ends the read; the reply is not complete.
@@ -230,6 +225,54 @@ pub(crate) fn tcp(
         bytes: reply,
         complete: whole,
     })
+}
+
+/// A connected socket whose every read and write is held to an exchange's
+/// deadline.
+///
+/// Each call waits only for the time left, so a peer trickling bytes cannot
+/// stretch a TLS record or handshake, read over many socket reads, past it.
+pub(crate) struct Bounded {
+    tcp: TcpStream,
+    deadline: Instant,
+    /// The longest one read waits for a byte once the port has begun to answer;
+    /// see [`idle_gap`]. [`None`] waits to the deadline.
+    quiet: Option<Duration>,
+}
+
+impl Bounded {
+    pub(crate) fn new(tcp: TcpStream, deadline: Instant) -> Self {
+        Self {
+            tcp,
+            deadline,
+            quiet: None,
+        }
+    }
+
+    /// The time left, or a timeout once the deadline has passed.
+    fn left(&self) -> std::io::Result<Duration> {
+        remaining(self.deadline).ok_or_else(|| ErrorKind::TimedOut.into())
+    }
+}
+
+impl Read for Bounded {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.left()?;
+        let wait = self.quiet.map_or(left, |quiet| quiet.min(left));
+        self.tcp.set_read_timeout(Some(wait))?;
+        self.tcp.read(buf)
+    }
+}
+
+impl Write for Bounded {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.tcp.set_write_timeout(Some(self.left()?))?;
+        self.tcp.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.tcp.flush()
+    }
 }
 
 /// How long a port that has begun to answer may go quiet before its reply is
@@ -391,6 +434,52 @@ mod tests {
             "the exchange needed more than its one socket"
         );
         drop(held);
+        let _ = server.join();
+    }
+
+    /// A peer trickling a TLS record a byte at a time, each inside any one
+    /// read's wait, cannot hold the handshake past the exchange's deadline.
+    #[test]
+    fn a_trickled_tls_record_ends_at_the_exchange_s_deadline() {
+        use std::io::Write;
+        use std::time::Instant;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
+        let addr = listener.local_addr().expect("its address");
+        // A handshake record header promising 16 KB, then a byte every 50 ms
+        // for at most 2 s, ending early once the client has gone.
+        let server = std::thread::spawn(move || {
+            let Some(mut stream) = crate::testing::loopback::from_this_process(&listener).next()
+            else {
+                return;
+            };
+            let record = [0x16, 0x03, 0x03, 0x40, 0x00].into_iter().chain([0u8; 40]);
+            for byte in record {
+                if stream.write_all(&[byte]).is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+
+        const DEADLINE: Duration = Duration::from_millis(300);
+        let started = Instant::now();
+        let _ = super::tcp(
+            &super::Authority::new(addr),
+            &crate::transport::dial::Egress::KERNEL,
+            crate::transport::dial::Slot::unpaced(),
+            Some(crate::fingerprint::Tunnel::Tls),
+            b"GET / HTTP/1.1\r\n\r\n",
+            started + DEADLINE,
+            4096,
+            None,
+        );
+        let took = started.elapsed();
+
+        assert!(
+            took < DEADLINE + Duration::from_millis(250),
+            "the exchange outlived its {DEADLINE:?} deadline: {took:?}"
+        );
         let _ = server.join();
     }
 

@@ -29,32 +29,31 @@
 //! [`Authority::server_name`](crate::fingerprint::authority::Authority::server_name).
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::sync::{Arc, OnceLock};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, ClientConnection, DigitallySignedStruct, SignatureScheme, StreamOwned};
 
+use super::exchange::Bounded;
 use crate::fingerprint::Tunnel;
 
-/// A byte stream a detection's exchange runs over: a plain [`TcpStream`] or a
-/// TLS [`StreamOwned`].
+/// A byte stream a detection's exchange runs over: a plain [`Bounded`] socket
+/// or a TLS [`StreamOwned`] over one.
 pub(crate) trait ReadWrite: Read + Write {
-    /// The socket underneath, for socket options such as a read timeout, without
-    /// a second descriptor.
-    fn socket(&self) -> &TcpStream;
+    /// The socket underneath, for how long its reads may wait.
+    fn socket(&mut self) -> &mut Bounded;
 }
 
-impl ReadWrite for TcpStream {
-    fn socket(&self) -> &TcpStream {
+impl ReadWrite for Bounded {
+    fn socket(&mut self) -> &mut Bounded {
         self
     }
 }
 
-impl ReadWrite for StreamOwned<ClientConnection, TcpStream> {
-    fn socket(&self) -> &TcpStream {
-        self.get_ref()
+impl ReadWrite for StreamOwned<ClientConnection, Bounded> {
+    fn socket(&mut self) -> &mut Bounded {
+        self.get_mut()
     }
 }
 
@@ -63,11 +62,10 @@ impl ReadWrite for StreamOwned<ClientConnection, TcpStream> {
 ///
 /// A `None` tunnel hands the socket straight back. A [`Tunnel::Tls`] sets up a
 /// client naming `server_name`; the handshake runs lazily on the first read or
-/// write, bounded by the read timeout already set on `tcp`. Returns [`None`] only
-/// if the TLS client cannot be created; a failed handshake looks like a silent
-/// port.
+/// write, within the socket's deadline. Returns [`None`] only if the TLS client
+/// cannot be created; a failed handshake looks like a silent port.
 pub(crate) fn wrap(
-    tcp: TcpStream,
+    tcp: Bounded,
     server_name: ServerName<'static>,
     tunnel: Option<Tunnel>,
 ) -> Option<Box<dyn ReadWrite>> {
@@ -157,12 +155,16 @@ mod tests {
     /// A `None` tunnel returns the plain socket, usable.
     #[test]
     fn no_tunnel_returns_the_plain_socket() {
-        use std::net::TcpListener;
+        use std::net::{TcpListener, TcpStream};
+        use std::time::{Duration, Instant};
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let accepted = std::thread::spawn(move || from_this_process(&listener).next());
 
-        let tcp = TcpStream::connect(addr).unwrap();
+        let tcp = Bounded::new(
+            TcpStream::connect(addr).unwrap(),
+            Instant::now() + Duration::from_secs(5),
+        );
         let mut wrapped = wrap(tcp, ServerName::IpAddress(addr.ip().into()), None)
             .expect("a plain socket wraps to itself");
         let mut server = accepted.join().unwrap().expect("an accept");
