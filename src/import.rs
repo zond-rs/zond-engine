@@ -13,42 +13,26 @@
 //!
 //! ## The mirror of export
 //!
-//! [`crate::export`] answered most of these questions already, and where the
-//! shapes correspond they correspond exactly: one trait per format, formats
-//! resolved from a path, hand-written types at the boundary rather than derived
-//! onto the engine's working types, and streaming rather than a document held
-//! whole in memory. A consumer who has learned one of these modules has learned
-//! the other, and between them they are this crate's whole contact with the
-//! outside world's file formats.
+//! The shapes match [`crate::export`]: one trait per format, formats resolved
+//! from a path, hand-written types at the boundary, and streaming input.
 //!
 //! ## Targets in, and findings in
 //!
-//! Two directions, kept apart. The readers at this level answer what should be
-//! scanned next, and are narrow on purpose: a report read here becomes a target
-//! list and everything else in the document is skipped. `report` answers what a
-//! scan found and builds the whole [`ScanReport`](crate::report::ScanReport),
-//! which is what lets [`diff`](crate::diff) compare a scan another tool performed
-//! against one this engine ran.
+//! The readers at this level answer what should be scanned next: a report read
+//! here becomes a target list and everything else in it is skipped. `report`
+//! answers what a scan found and builds the whole
+//! [`ScanReport`](crate::report::ScanReport), so [`diff`](crate::diff) can
+//! compare a scan another tool performed against one this engine ran.
 //!
-//! There is a third thing here that is neither, and it is worth naming rather
-//! than leaving a reader to place it. [`kev`] reads a *dataset*: CISA's Known
-//! Exploited Vulnerabilities feed, which says nothing about what to scan and
-//! nothing about what a scan found, and instead supplies the corpus
-//! [`cve`](crate::cve) correlates a finished report against. It sits here for
-//! the reason everything else does, that it parses a document somebody else
-//! wrote, and it converts into the catalogue grammar rather than into a target
-//! list or a report.
+//! [`kev`] reads a dataset: CISA's Known Exploited Vulnerabilities feed, which
+//! supplies the corpus [`cve`](crate::cve) correlates a finished report
+//! against. It converts into the catalogue grammar.
 //!
-//! ## A source is not a format
+//! ## Readers, not files
 //!
-//! Reading from a pipe is not a format; it is a place bytes come from. So this
-//! module never touches standard input, never opens a file and never names a
-//! path it opens. Everything here reads what the caller hands it.
-//!
-//! A CLI hands it a file or a locked stdin, a web front end hands it a cursor
-//! over an uploaded body, a TUI hands it what the user pasted, an embedder
-//! hands it a reader over a blob. All four get identical parsing and identical
-//! errors, because there is one implementation and it cannot tell them apart.
+//! This module opens no files and never touches standard input; everything here
+//! reads what the caller hands it, whether a file, a locked stdin, an uploaded
+//! body or pasted text, with identical parsing and errors.
 //!
 //! ```
 //! use std::io::Cursor;
@@ -65,30 +49,21 @@
 //! assert_eq!(imported.map.units.len(), 2, "one unit per port specification");
 //! ```
 //!
-//! ## Input nobody vouches for
+//! ## Untrusted input
 //!
-//! Every other parser in this engine reads either its own assets or packets it
-//! solicited. This one reads a file somebody else wrote: a target list from a
-//! client, a report off a shared drive, a settings file synced from a team
-//! repository. Three consequences run through the whole module.
+//! Everything read here was written by somebody else: a client's target list, a
+//! report off a shared drive, a settings file synced from a team repository.
 //!
-//! Bounds are part of the API. [`ImportLimits`] is a field of
-//! [`ImportOptions`] rather than a constant, and exceeding one is an error naming
-//! what exceeded it rather than a truncation. A target set quietly missing its
-//! tail is a scan that does not cover what it was asked to, with nothing in the
-//! report saying so.
+//! Bounds are part of the API. [`ImportLimits`] is a field of [`ImportOptions`],
+//! and exceeding one is an error naming what exceeded it. Truncating would
+//! silently scan less than was asked for.
 //!
-//! A refused target is reported, never dropped. Refusing the whole import
-//! over one bad line ([`OnRefusal::Abort`], the default) and carrying on past it
-//! ([`OnRefusal::Collect`]) are both defensible, and which is right depends on
-//! whether a person is watching. What is not defensible is continuing silently,
-//! so collecting hands the refusals back in [`Imported::refusals`] where the
-//! caller has to look at them to ignore them.
+//! A refused target is always reported. The import either stops at it
+//! ([`OnRefusal::Abort`], the default) or carries on and hands the refusals back
+//! in [`Imported::refusals`] ([`OnRefusal::Collect`]).
 //!
 //! Nothing an imported document says may name something that gets opened or
-//! run. No include directive, no path that gets resolved, no command. A
-//! document changes numbers and chooses between named alternatives, and that is
-//! the entire vocabulary.
+//! run: no include directive, no path, no command.
 
 pub mod list;
 
@@ -113,8 +88,8 @@ pub mod nvd;
 #[cfg(feature = "import-distro")]
 pub mod ubuntu;
 
-// The hardened XML pull parser both nmap readers share. Not public: it is this
-// module's own machinery, confined to what an nmap document needs.
+// The hardened XML pull parser both nmap readers share, limited to what an nmap
+// document needs.
 #[cfg(feature = "import-nmap")]
 pub(crate) mod xml;
 
@@ -127,10 +102,8 @@ mod bounded;
 #[cfg(feature = "import-request")]
 pub mod request;
 
-// Reading a document for what a scan found, rather than for what to scan next.
-// Each reader inside carries the feature of the format it reads and the module
-// carries their union, so a build that can read no report format is not left
-// with a `ReportFormat` that has no variants.
+// Reading a document for what a scan found. The module's feature is the union
+// of its readers', so `ReportFormat` always has a variant.
 #[cfg(any(feature = "import-json", feature = "import-nmap"))]
 pub mod report;
 
@@ -161,9 +134,8 @@ pub use request::{RequestError, Resolved, ScanRequest};
 
 /// Where in the input a token came from.
 ///
-/// Non-exhaustive because formats locate things differently: a line number is the
-/// whole of it for a list, and a spreadsheet cell or an element index is not. An
-/// error that says where is worth more than one that only says what.
+/// Non-exhaustive because formats locate things differently: a line number
+/// suffices for a list, but not for a spreadsheet cell or an element index.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ImportOrigin {
@@ -194,53 +166,46 @@ impl fmt::Display for ImportOrigin {
 
 /// What the engine will read before it decides the input is not a target list.
 ///
-/// These are refusals, not tuning. Every default is far past anything an honest
-/// file reaches, and a caller who has vetted its input can lift them with
-/// [`ImportLimits::none`].
+/// Every default is far past anything an honest file reaches. A caller who has
+/// vetted its input can lift them with [`ImportLimits::none`].
 #[must_use]
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ImportLimits {
     /// The longest line, in bytes, excluding its terminator.
     ///
-    /// A target expression is a few dozen bytes. 64 KiB is unreachable by
-    /// anything written on purpose, and small enough that a file containing no
-    /// newline at all cannot be read into memory one line at a time.
+    /// A target expression is a few dozen bytes. The default of 64 KiB is far
+    /// past that, and small enough that a file with no newline is not read
+    /// into memory as one line.
     pub max_line_bytes: usize,
 
     /// The most target expressions one import may contain.
     ///
-    /// Sixteen million expressions is a file no person wrote and no tool should
-    /// emit - a range says the same thing in one line.
+    /// Defaults to sixteen million; a range says the same in one line.
     pub max_tokens: u64,
 
     /// The most addresses one import may name.
     ///
-    /// Defaults to 2^32, the whole of IPv4 and the largest scan that can be
-    /// completed. The only way to exceed it is IPv6 range notation, where `::/0`
-    /// costs one line to write and names a space no scan will ever finish. A
-    /// caller who means an IPv6 sweep raises this
-    /// deliberately, which is the point.
+    /// Defaults to 2^32, the whole of IPv4. Only IPv6 range notation can
+    /// exceed it, where `::/0` is one line naming a space no scan will finish,
+    /// so a caller who means an IPv6 sweep has to raise this.
     ///
-    /// Counted before overlapping expressions are merged, so a file that names
-    /// the same block twice counts it twice. That keeps the check a running
-    /// addition rather than a re-merge of the whole set per line, and it errs
-    /// towards refusing - which for a limit is the safe direction.
+    /// Counted before overlapping expressions are merged, so a block named
+    /// twice counts twice. That keeps the check a running sum, and errs
+    /// towards refusing.
     pub max_addresses: u128,
 
     /// The most bytes one document may be read from, in every format.
     ///
-    /// A target reader streams, holding one record at a time, so this bounds
-    /// how long an import can run rather than what it holds. The counts above
-    /// do not: blank lines, comments and every element or field a reader skips
-    /// cost reading and are counted by none of them.
+    /// A target reader streams one record at a time, so this bounds how long
+    /// an import runs. The counts above miss blank lines, comments and
+    /// skipped elements, which still cost reading.
     ///
     /// The default is 16 GiB, sized to read back what this engine writes. One
     /// host scanned across the whole TCP range is 6.5 MB of nmap XML, 14 MB of
-    /// JSON lines and 26 MB of the indented JSON the exporter writes by
-    /// default, so the default admits 2,048 such hosts in the first, a /21
-    /// scanned in full, 1,024 in the second and 512 in the third, each with a
-    /// margin for the services and findings on their open ports.
+    /// JSON lines and 26 MB of the exporter's default indented JSON, so the
+    /// default admits 2,048 such hosts (a /21) in the first, 1,024 in the
+    /// second and 512 in the third, with a margin for services and findings.
     pub max_document_bytes: u64,
 }
 
@@ -266,10 +231,8 @@ impl ImportLimits {
 
     /// Sets the longest accepted line.
     ///
-    /// A setter rather than a field to assign. This type is `non_exhaustive`, so
-    /// a crate outside this one cannot write `ImportLimits { .. }` with a struct
-    /// update, and adjusting one bound should not require constructing all
-    /// of them.
+    /// The type is `non_exhaustive`, so other crates cannot use struct update
+    /// syntax; the setters adjust one bound at a time.
     pub fn with_max_line_bytes(mut self, bytes: usize) -> Self {
         self.max_line_bytes = bytes;
         self
@@ -283,9 +246,8 @@ impl ImportLimits {
 
     /// Sets the most addresses one import may name.
     ///
-    /// The bound most worth adjusting: raise it for a deliberate IPv6 sweep,
-    /// lower it where even the whole of IPv4 is more than the caller means to
-    /// allow.
+    /// Raise it for an intended IPv6 sweep, or lower it where even the whole of
+    /// IPv4 is too much.
     pub fn with_max_addresses(mut self, addresses: u128) -> Self {
         self.max_addresses = addresses;
         self
@@ -299,12 +261,11 @@ impl ImportLimits {
 
     /// Limits that refuse nothing, for input the caller has already vetted.
     ///
-    /// Every one of them is lifted, `max_line_bytes` included. A line is read
-    /// as it arrives rather than into room reserved for the limit, so what it
-    /// costs is the line's own length, and the XML readers hold one element's
-    /// markup to the same bound, which a vetted nmap document can pass: nmap
-    /// writes the ports it scanned into a single attribute, and a sparse sweep
-    /// of the full range makes that several hundred kilobytes.
+    /// `max_line_bytes` is lifted too. A line costs only its own length, since
+    /// nothing is reserved for the limit. The XML readers apply the same bound
+    /// to one element's markup, which a vetted nmap document can exceed: nmap
+    /// writes the scanned ports into one attribute, several hundred kilobytes
+    /// for a sparse sweep of the full range.
     pub fn none() -> Self {
         Self {
             max_line_bytes: usize::MAX,
@@ -321,18 +282,14 @@ impl ImportLimits {
 pub enum OnRefusal {
     /// Stop at the first refused expression and report it.
     ///
-    /// The default, because it is the answer that cannot be ignored. A caller
-    /// who has not thought about the question gets told about the typo rather
-    /// than a scan that silently covers less than it was given.
+    /// The default, so a caller who has not chosen hears about the typo.
     #[default]
     Abort,
 
     /// Record the refusal and carry on.
     ///
-    /// For the five-thousand-line list with one bad line in it, where scanning
-    /// the other four thousand nine hundred and ninety-nine is obviously what
-    /// was wanted. The refusals come back in [`Imported::refusals`], so the
-    /// caller has to have them in hand to disregard them.
+    /// For a long list with one bad line, where scanning the rest is what was
+    /// wanted. The refusals come back in [`Imported::refusals`].
     Collect,
 }
 
@@ -356,8 +313,8 @@ impl fmt::Display for RejectedTarget {
 
 /// Policy that applies to an import regardless of the format it arrives in.
 ///
-/// Non-exhaustive and constructed through [`ImportOptions::new`], so a future
-/// option is an additive change rather than a break for everyone who built one.
+/// Non-exhaustive and constructed through [`ImportOptions::new`], so new
+/// options can be added without breaking callers.
 #[must_use]
 #[non_exhaustive]
 #[derive(Debug, Clone)]
@@ -411,33 +368,29 @@ pub struct Imported {
     /// The targets, one unit per distinct port specification.
     pub map: TargetMap,
     /// Expressions that were refused, present only under
-    /// [`OnRefusal::Collect`]. [`OnRefusal::Abort`] returns the first one as an
-    /// error instead, so this is empty whenever the import succeeded under it.
+    /// [`OnRefusal::Collect`]. Under [`OnRefusal::Abort`] the first one is an
+    /// error, so this is empty whenever the import succeeded.
     pub refusals: Vec<RejectedTarget>,
     /// How many expressions were read, refused ones included.
     pub tokens: u64,
     /// How many addresses the targets cover, counted after overlapping
     /// expressions are merged, and once per unit an address appears in.
     ///
-    /// So a host that was named on two different port specifications counts
-    /// twice, because it is two pieces of work. For the number of probes the
-    /// scan will send, ask [`TargetMap::gross_targets`].
+    /// A host named on two different port specifications counts twice. For
+    /// the number of probes the scan will send, ask
+    /// [`TargetMap::gross_targets`].
     ///
-    /// Not the number [`ImportLimits::max_addresses`] is checked against: the
-    /// limit errs high to stay cheap, and this one is exact because
-    /// a caller reports it to a person.
+    /// Exact, unlike the cheaper over-count [`ImportLimits::max_addresses`] is
+    /// checked against.
     pub addresses: u128,
 }
 
 impl Imported {
     /// Takes the addresses, discarding the ports.
     ///
-    /// [`crate::scanner::scan`] takes the [`map`](Self::map) as it stands.
+    /// [`crate::scanner::scan`] takes the [`map`](Self::map) as it stands;
     /// [`crate::scanner::discover`] takes an
-    /// [`IpSet`](crate::model::ip::set::IpSet), since asking whether a host is
-    /// there at all has no use for ports. This is the other half of the same
-    /// journey, and it lives here rather than in every front end
-    /// writing the same fold.
+    /// [`IpSet`](crate::model::ip::set::IpSet), which this produces.
     ///
     /// Addresses from every unit are merged into one set and canonicalized, so
     /// a file naming the same host under two port specifications sweeps it
@@ -496,9 +449,8 @@ pub enum ImportError {
     /// a report, past
     /// [`ReportOptions::max_document_bytes`](crate::import::report::ReportOptions::max_document_bytes).
     ///
-    /// A report reader holds the parsed document in memory, so there this is
-    /// the ceiling on that allocation; a target reader streams, and there it is
-    /// the ceiling on the work.
+    /// For a report reader, which holds the parsed document, this caps memory;
+    /// for a streaming target reader it caps the work.
     #[error("the document is longer than the {limit} byte limit")]
     DocumentTooLarge {
         /// The limit it passed.
@@ -507,9 +459,8 @@ pub enum ImportError {
 
     /// A report named more hosts than [`ImportLimits::max_addresses`] allows.
     ///
-    /// The target side counts the addresses a scan would probe; here the same
-    /// bound counts the hosts a document claims were found, which is the
-    /// quantity a reader has to allocate for.
+    /// Here the bound counts the hosts a document claims were found, which is
+    /// what a reader allocates for.
     #[error("the report names more than {limit} hosts")]
     TooManyHosts {
         /// The limit it passed.
@@ -536,9 +487,8 @@ pub enum ImportError {
 
     /// A target expression was refused under [`OnRefusal::Abort`].
     ///
-    /// The expression is not repeated in the message. Every [`TargetParseError`]
-    /// that has one already names it, and three layers
-    /// each quoting the same token reads as a stutter rather than as detail.
+    /// The message does not repeat the expression; the [`TargetParseError`]
+    /// already names it.
     #[error("{origin}: {source}")]
     Target {
         /// Where the expression was.
@@ -552,9 +502,8 @@ pub enum ImportError {
 
     /// The document was not in the format it was read as.
     ///
-    /// Separate from [`Target`](Self::Target) because the two call for opposite
-    /// responses: a malformed expression is one line to fix, and a malformed
-    /// document means the format was wrong about what it was reading.
+    /// Separate from [`Target`](Self::Target): a malformed expression is one
+    /// line to fix, and a malformed document usually means the wrong format.
     #[error("{origin}: not valid {format}: {message}")]
     Malformed {
         /// The format it was read as.
@@ -568,27 +517,25 @@ pub enum ImportError {
 
 /// Where an importer puts the target expressions it finds.
 ///
-/// Separate from the importer because the two decisions are separate: a format
-/// knows where the expressions are in a byte stream, and a sink knows what to do
-/// with one. Split, a caller can count targets without building them, feed them
-/// somewhere other than a [`TargetMap`], or apply a policy this
-/// crate has not thought of, against every format at once.
+/// A format knows where the expressions are in a byte stream; a sink decides
+/// what to do with them. A custom sink can count targets without building them,
+/// feed them somewhere other than a [`TargetMap`], or apply its own policy,
+/// across every format.
 pub trait TargetSink {
     /// Takes one target expression, as written, and where it was found.
     ///
-    /// Returning an error stops the import. A sink that would rather collect than
-    /// stop returns `Ok` and keeps its own record, which is what
-    /// [`TargetCollector`] does under [`OnRefusal::Collect`].
+    /// Returning an error stops the import. A sink that collects returns `Ok`
+    /// and keeps its own record, as [`TargetCollector`] does under
+    /// [`OnRefusal::Collect`].
     fn accept(&mut self, token: &str, origin: ImportOrigin) -> Result<(), ImportError>;
 }
 
 /// `bytes` with a byte-order mark taken off the front, for a reader looking at
 /// input it has not consumed.
 ///
-/// The peeking half of [`skip_bom`]. The mark has to be invisible both when a
-/// format is being guessed at and when one is being read; applied at only one of
-/// them, it let [`ImportFormat::sniff`] name a reader that then refused the same
-/// bytes.
+/// The peeking half of [`skip_bom`]. The mark must be ignored both when
+/// [`ImportFormat::sniff`] guesses a format and when that format reads, or the
+/// two disagree.
 pub(crate) fn without_bom(bytes: &[u8]) -> &[u8] {
     bytes
         .strip_prefix(&crate::format::UTF8_BOM)
@@ -597,15 +544,11 @@ pub(crate) fn without_bom(bytes: &[u8]) -> &[u8] {
 
 /// Consumes a byte-order mark at the very start of `input`, if there is one.
 ///
-/// Called once, before anything else reads. A mark anywhere later is data, and a
-/// reader that stripped one there would accept a document that is not what it
-/// says it is.
+/// Called once, before anything else reads; a mark anywhere later is data.
 ///
-/// The line-oriented and record-oriented readers do this for themselves, because
-/// each already holds the bytes in a buffer of its own by the time the question
-/// arises. This is for the readers that hand the stream straight to a parser
-/// that will refuse the mark: `serde_json` reports it as a value it did not
-/// expect at column 1, which names the wrong problem to whoever wrote the file.
+/// The line- and record-oriented readers strip it from their own buffers. This
+/// is for readers that hand the stream straight to a parser that would refuse
+/// the mark, as `serde_json` does with a misleading error at column 1.
 #[cfg(any(feature = "import-json", feature = "import-nmap"))]
 pub(crate) fn skip_bom(input: &mut dyn BufRead) -> Result<(), ImportError> {
     if input.fill_buf()?.starts_with(&crate::format::UTF8_BOM) {
@@ -616,16 +559,13 @@ pub(crate) fn skip_bom(input: &mut dyn BufRead) -> Result<(), ImportError> {
 
 /// Writes the target expression naming `address` on `ports` into `token`.
 ///
-/// The one place the bracketing rule is written down. Every format that arrives
-/// holding an address and its ports as separate fields has to hand the grammar
-/// one expression, and each of them once assembled it, with a paragraph each
-/// explaining the same thing.
+/// Shared by every format that holds an address and its ports as separate
+/// fields.
 ///
-/// The address is bracketed whenever ports follow it. An IPv6 address must be, to
-/// carry ports at all. An IPv4 one need not be and is anyway: `192.0.2.1:u:53`
-/// is a token with two colons in it, which the grammar reads as an IPv6
-/// address. Bracketing unconditionally means no reader has to work out which
-/// family it is holding.
+/// The address is bracketed whenever ports follow it. IPv6 requires it, and
+/// IPv4 needs it too once a protocol prefix is involved: `192.0.2.1:u:53` has
+/// two colons and the grammar reads it as IPv6. Bracketing always means no
+/// reader has to check the family.
 ///
 /// An empty `ports` names no ports, so the expression is the bare address and
 /// the scan uses [`ImportOptions::default_ports`].
@@ -650,9 +590,8 @@ pub(crate) fn expression(token: &mut String, address: &str, ports: &str) {
 
 /// One input format.
 ///
-/// An importer is a reading of a byte stream into target expressions, and every
-/// other decision belongs to the value implementing this trait, chosen
-/// when it is constructed.
+/// Reads a byte stream into target expressions. Any other choices are made
+/// when the implementing value is constructed.
 pub trait Importer {
     /// Reads every target expression in `input` into `sink`.
     ///
@@ -664,9 +603,8 @@ pub trait Importer {
 
 /// The [`TargetSink`] that builds a [`TargetMap`].
 ///
-/// Enforces the bounds that only a sink can see: how many expressions have
-/// arrived, and how many addresses they have named between them. The format
-/// enforces the ones only it can see, which is the length of a line.
+/// Enforces the bounds only a sink can see: how many expressions have arrived
+/// and how many addresses they name. The format enforces line length.
 #[derive(Debug)]
 pub struct TargetCollector<'a> {
     builder: TargetMapBuilder,
@@ -675,9 +613,8 @@ pub struct TargetCollector<'a> {
     tokens: u64,
     /// Addresses named so far, before overlapping expressions are merged.
     ///
-    /// A running sum rather than a re-measurement of the accumulated set, which
-    /// would merge every group again on every line. It over-counts a file that
-    /// names the same block twice; see [`ImportLimits::max_addresses`].
+    /// A running sum, so the set is not re-merged on every line. It
+    /// over-counts a block named twice; see [`ImportLimits::max_addresses`].
     gross_addresses: u128,
 }
 
@@ -714,9 +651,8 @@ impl TargetSink for TargetCollector<'_> {
             });
         }
 
-        // Measured against the builder's own count either side of the push, so
-        // what is counted is what was added rather than what the
-        // expression looked like it would add.
+        // The builder's count either side of the push gives what was actually
+        // added.
         let before = self.builder.gross_address_count();
         match self.builder.push(token, &self.options.context) {
             Ok(()) => {}
@@ -762,7 +698,7 @@ impl TargetSink for TargetCollector<'_> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ImportFormat {
     /// One target expression per line or per run of whitespace, `#` starting a
-    /// comment. What `-iL` reads everywhere else, and what a person types.
+    /// comment.
     List,
 
     /// A table with a column of addresses: a report this engine wrote, or a
@@ -787,22 +723,16 @@ pub enum ImportFormat {
 impl ImportFormat {
     /// Resolves a file extension, case-insensitively and without a leading dot.
     ///
-    /// Returns `None` for an extension no compiled-in format claims. A caller
-    /// with an unrecognised extension has not been told what the file is, and
-    /// guessing here is how a spreadsheet gets read as a list of hostnames. The
-    /// guessing lives in [`sniff`](Self::sniff), where it is
-    /// asked for by name, rather than in the fallback of this one.
+    /// Returns `None` for an extension no compiled-in format claims. Guessing is
+    /// left to [`sniff`](Self::sniff), which a caller asks for explicitly.
     pub fn from_extension(extension: &str) -> Option<Self> {
         match extension.to_ascii_lowercase().as_str() {
-            // `lst` is the other spelling in circulation. `list` is what a
-            // person writes when they are not thinking about extensions.
             "txt" | "list" | "lst" => Some(ImportFormat::List),
             #[cfg(feature = "import-csv")]
             "csv" => Some(ImportFormat::Csv),
             #[cfg(feature = "import-json")]
             "json" => Some(ImportFormat::Json),
-            // `ndjson` is the other name the same format goes by, matching what
-            // the exporter accepts in the other direction.
+            // `ndjson` matches what the exporter accepts.
             #[cfg(feature = "import-json")]
             "jsonl" | "ndjson" => Some(ImportFormat::JsonLines),
             #[cfg(feature = "import-nmap")]
@@ -813,49 +743,40 @@ impl ImportFormat {
 
     /// Guesses the format from the start of the input, without consuming it.
     ///
-    /// For input that arrived with no name: a pipe, a socket, a paste. The bytes
-    /// are read through [`BufRead::fill_buf`], which fills the reader's buffer
-    /// and hands back a view of it, so nothing is taken and the importer that
-    /// runs next still sees the whole document.
+    /// For input with no name: a pipe, a socket, a paste. The bytes are peeked
+    /// through [`BufRead::fill_buf`], so the importer that runs next sees the
+    /// whole document.
     ///
-    /// ## The rule is timid on purpose
+    /// ## The rule is conservative
     ///
-    /// It separates a structured format from a list and nothing more, and
-    /// anything ambiguous is a list. A document opening with `{` is JSON, one
-    /// opening with `<` is XML, and one whose first row is a header this crate's
-    /// CSV writer emits is that CSV. Everything else is a list, including a
-    /// spreadsheet nobody here has seen before, which will then be refused
-    /// loudly on its first row rather than read as the wrong thing.
+    /// It separates a structured format from a list, and anything ambiguous is
+    /// a list. A document opening with `{` is JSON, one opening with `<` is XML,
+    /// and one whose first row is this crate's CSV header is CSV. Everything
+    /// else is a list, so an unfamiliar spreadsheet is refused on its first row.
     ///
-    /// Two guesses are not made. A leading `[` is not taken as a JSON array,
-    /// since `[2001:db8::1]:443` is an ordinary first line of a target list and
-    /// this crate's own JSON is an object. A comma is never evidence of CSV,
-    /// since `192.0.2.1,192.0.2.2` is a
-    /// list line that means something quite different read as a table.
+    /// A leading `[` is not taken as a JSON array, since `[2001:db8::1]:443` is
+    /// an ordinary first line of a target list and this crate's JSON is an
+    /// object. A comma is not taken as evidence of CSV, since
+    /// `192.0.2.1,192.0.2.2` is a valid list line.
     ///
-    /// A caller who knows what it has should name the format and skip all of
-    /// this.
+    /// A caller who knows the format should name it.
     pub fn sniff(input: &mut dyn BufRead) -> Result<Self, ImportError> {
-        /// What a record-per-line report calls its header record. Compact JSON
-        /// has no spaces in it, so this is exactly how the exporter writes it.
+        /// What a record-per-line report calls its header record, exactly as
+        /// the exporter's compact JSON writes it.
         #[cfg(feature = "import-json")]
         const REPORT_TAG: &[u8] = br#""type":"report""#;
 
         let buffered = input.fill_buf()?;
-        // Excel's mark, which says nothing about the format behind it.
+        // A byte-order mark says nothing about the format.
         let prefix = without_bom(buffered).trim_ascii_start();
 
-        // Bound before the arms: a build with no structured format compiled in
-        // has no arm to read it and an unused binding would warn. Such a build
-        // resolves everything to a
-        // list, which is the right answer when no other format exists.
+        // A build with no structured format has no arm reading `prefix`, and
+        // the binding would warn.
         let _ = &prefix;
 
         #[cfg(feature = "import-csv")]
         {
-            // Recognising this crate's own header is not a heuristic about
-            // what CSV looks like; it is recognising output this crate wrote. No
-            // other table is claimed.
+            // Only this crate's own header is recognised.
             let header = crate::format::csv::COLUMNS.join(",");
             let overlap = prefix.len().min(header.len());
             if overlap >= 16 && prefix[..overlap] == header.as_bytes()[..overlap] {
@@ -870,10 +791,9 @@ impl ImportFormat {
 
         #[cfg(feature = "import-json")]
         if prefix.first() == Some(&b'{') {
-            // Both JSON formats open with a brace, and the record-per-line one
-            // names itself in its first record. Looking for that tag rather than
-            // a line break keeps a compact single-line document from
-            // being read as a stream of records.
+            // Both JSON formats open with a brace; the record-per-line one names
+            // itself in its first record. Checking the tag, not for a line
+            // break, keeps a single-line document from reading as records.
             let head = &prefix[..prefix.len().min(256)];
             let tagged = head
                 .windows(REPORT_TAG.len())
@@ -891,11 +811,8 @@ impl ImportFormat {
     /// Resolves a format from a path if there is one, and from the input's own
     /// first bytes if there is not.
     ///
-    /// The order matters: a name is something the caller was told, and the bytes
-    /// are something this crate worked out. An extension that names no format
-    /// falls through to sniffing rather than failing, since `targets.dat` is a
-    /// name that says nothing rather than a name that is
-    /// wrong.
+    /// The name wins over the bytes. An extension that names no format, such as
+    /// `targets.dat`, falls through to sniffing.
     pub fn resolve(path: Option<&Path>, input: &mut dyn BufRead) -> Result<Self, ImportError> {
         match path.and_then(Self::from_path) {
             Some(format) => Ok(format),
@@ -905,9 +822,8 @@ impl ImportFormat {
 
     /// Resolves a path by its extension.
     ///
-    /// A path with no extension has no format rather than a default one, for
-    /// the reason [`crate::export::ExportFormat::from_path`] gives in the other
-    /// direction.
+    /// A path with no extension has no format, for the reason
+    /// [`crate::export::ExportFormat::from_path`] gives.
     pub fn from_path(path: &Path) -> Option<Self> {
         path.extension()
             .and_then(|extension| extension.to_str())
@@ -931,8 +847,7 @@ impl ImportFormat {
 
     /// Every format this build can read.
     ///
-    /// Front ends use this to describe their own capabilities. A help text
-    /// listing formats the binary was not built with is worse than none.
+    /// For front ends describing their own capabilities.
     pub fn all() -> &'static [ImportFormat] {
         &[
             ImportFormat::List,
@@ -964,9 +879,8 @@ impl ImportFormat {
 
     /// Reads `input` in this format and builds the targets it names.
     ///
-    /// The convenience over driving [`Importer`] and [`TargetCollector`]
-    /// separately is small and the consistency is not: every front end that
-    /// turns a file into targets should do it the same way.
+    /// Drives [`Importer`] and [`TargetCollector`] together, so every front end
+    /// turns a file into targets the same way.
     pub fn read(
         self,
         input: &mut dyn BufRead,
@@ -997,11 +911,9 @@ impl fmt::Display for ImportFormat {
 
 /// Reads targets from `input`, in the format named by `path`'s extension.
 ///
-/// Returns `None` if the extension names no format this build supports, leaving
-/// the caller to decide what to tell the user. The targets are read from `input`,
-/// not from `path`; opening the source stays with the caller, so this works for
-/// an upload named `targets.txt` that was never a
-/// file.
+/// Returns `None` if the extension names no format this build supports. The
+/// targets are read from `input`; `path` only names the format, so this works
+/// for an upload named `targets.txt` that was never a file.
 pub fn read_from(
     path: &Path,
     input: &mut dyn BufRead,
@@ -1033,8 +945,7 @@ mod tests {
         ImportFormat::List.read(&mut Cursor::new(input), options)
     }
 
-    /// A format resolved from a path has to reach the same importer a caller
-    /// would have built by hand, or the two ways of importing diverge.
+    /// Every format resolves from its own extension.
     #[test]
     fn every_advertised_format_resolves_from_its_own_extension() {
         for format in ImportFormat::all() {
@@ -1045,7 +956,6 @@ mod tests {
             );
         }
 
-        // An unrecognised extension must not quietly acquire a format.
         assert_eq!(ImportFormat::from_path(Path::new("/tmp/targets")), None);
         assert_eq!(ImportFormat::from_extension("pdf"), None);
     }
@@ -1066,8 +976,7 @@ mod tests {
         );
     }
 
-    /// The default. One typo must not be absorbed silently, and the error has
-    /// to say which line to go and look at.
+    /// The default policy stops at a typo and names its line.
     #[test]
     fn a_refused_expression_aborts_and_names_its_line() {
         let err = read(
@@ -1085,8 +994,7 @@ mod tests {
         }
     }
 
-    /// Collecting hands the refusals back rather than swallowing them. That is
-    /// the difference between this policy and a silent skip.
+    /// Collecting hands the refusals back.
     #[test]
     fn collecting_keeps_the_good_targets_and_reports_the_bad_ones() {
         let opts = options("80").with_refusal_policy(OnRefusal::Collect);
@@ -1104,16 +1012,14 @@ mod tests {
         assert_eq!(imported.tokens, 4, "refused expressions are still counted");
     }
 
-    /// The limit that the whole budget exists for: one short line naming a space
-    /// no scan can finish. It has to be refused before anything is probed.
+    /// One short line naming a space no scan can finish is refused.
     #[test]
     fn a_range_past_the_address_limit_is_refused() {
         let err = read("::/0\n", &options("80")).expect_err("the whole of IPv6 is not a scan");
 
         assert!(matches!(err, ImportError::TooManyAddresses { .. }));
 
-        // The default ceiling is the whole of IPv4, which must itself be
-        // expressible - a limit that refuses the largest real scan is wrong.
+        // The default ceiling admits the whole of IPv4.
         let imported = read("0.0.0.0/0\n", &options("80")).expect("the whole of IPv4 is a scan");
         assert_eq!(imported.addresses, 1u128 << 32);
     }
@@ -1123,7 +1029,7 @@ mod tests {
         let permissive = options("80").with_limits(ImportLimits::none());
         assert!(read("::/0\n", &permissive).is_ok());
 
-        // Lifted means every limit, the line's among them.
+        // The line limit is lifted too.
         let long = format!("# {}\n198.51.100.1\n", "x".repeat(128 * 1024));
         assert!(matches!(
             read(&long, &options("80")),
@@ -1150,8 +1056,8 @@ mod tests {
         ));
     }
 
-    /// A count reported to a person has to be the number of hosts that will be
-    /// probed, which is not the running total the limit is checked against.
+    /// The reported count is the number of hosts that will be probed, not the
+    /// running total the limit is checked against.
     #[test]
     fn the_reported_address_count_merges_overlapping_targets() {
         let imported = read("198.51.100.0/24\n198.51.100.5\n", &options("80")).expect("imports");
@@ -1160,11 +1066,8 @@ mod tests {
         assert_eq!(imported.tokens, 2);
     }
 
-    /// The plain case this module exists for, end to end: a file of addresses
-    /// somebody typed, in both directions the engine can be entered.
-    ///
-    /// `scan` takes the map as it stands and `discover` takes an `IpSet`, so a
-    /// list that only works for one of them only half works.
+    /// A typed list of addresses feeds both `scan` (the map) and `discover`
+    /// (an `IpSet`).
     #[test]
     fn a_hand_written_list_of_addresses_feeds_both_entry_points() {
         let list = "\
@@ -1197,9 +1100,8 @@ mod tests {
         }
     }
 
-    /// A host named under two different port specifications is two pieces of
-    /// work to scan and one host to sweep, so the discovery view has to merge
-    /// what the scan view keeps apart.
+    /// A host named under two port specifications is two units to scan and
+    /// one host to sweep.
     #[test]
     fn converting_to_addresses_merges_what_the_units_kept_apart() {
         let imported = read(
@@ -1217,8 +1119,8 @@ mod tests {
         );
     }
 
-    /// The contract that makes sniffing usable on a pipe at all: it looks
-    /// without taking, so whatever runs next reads the whole document.
+    /// Sniffing consumes nothing, so whatever runs next reads the whole
+    /// document.
     #[test]
     fn sniffing_leaves_the_input_where_it_found_it() {
         let file = "198.51.100.1\n198.51.100.2\n198.51.100.3\n";
@@ -1231,8 +1133,7 @@ mod tests {
         assert_eq!(imported.addresses, 3, "sniffing consumed part of the input");
     }
 
-    /// The two guesses that are not made, each of which would misread an
-    /// ordinary target list.
+    /// Inputs that could be mistaken for a structured format read as a list.
     #[test]
     fn an_ambiguous_document_is_read_as_a_list() {
         for file in [
@@ -1240,8 +1141,7 @@ mod tests {
             "[2001:db8::1]:443\n",
             // Comma-separated addresses, which are not a table.
             "192.0.2.1,192.0.2.2\n",
-            // A table this crate did not write, which is refused loudly by the
-            // list grammar rather than guessed at here.
+            // A table this crate did not write; the list grammar refuses it.
             "Server,Location\nweb01,rack 4\n",
             "",
             "# just a comment\n",
@@ -1254,9 +1154,8 @@ mod tests {
         }
     }
 
-    /// Sniffing a table claims this crate's own output and nothing else, so the
-    /// signature is the header the exporter writes rather than a copy that can
-    /// drift.
+    /// Sniffing recognises the CSV the exporter writes, tested against the
+    /// exporter's real output.
     #[cfg(all(feature = "import-csv", feature = "export-csv"))]
     #[test]
     fn a_report_this_engine_wrote_is_recognised_and_read_back() {
@@ -1288,9 +1187,8 @@ mod tests {
         );
     }
 
-    /// Both report formats open with a brace, so the record-per-line one is told
-    /// apart by the tag it names itself with. Looking for a line break instead
-    /// would fail on a compact single-line document.
+    /// Both report formats open with a brace; the record-per-line one is told
+    /// apart by its tag, which also works for a compact single-line document.
     #[cfg(all(
         feature = "import-json",
         feature = "export-json",
@@ -1326,15 +1224,9 @@ mod tests {
         }
     }
 
-    /// A file a Windows editor saved reads as the format it is, in every format
-    /// there is.
-    ///
-    /// Sniffing and reading once disagreed about the same bytes. `sniff`
-    /// stripped the mark and named `Json`, and the reader it named refused the
-    /// document at column 1, since only the readers holding a line in a buffer of
-    /// their own were stripping one. `Out-File` on Windows PowerShell writes the
-    /// mark by default, so `zond ... | Out-File scan.json` produced a report this
-    /// crate could not read back.
+    /// A document with a byte-order mark sniffs and reads as its format, in
+    /// every format. Windows PowerShell's `Out-File` writes the mark by
+    /// default.
     #[test]
     fn a_byte_order_mark_costs_no_format_its_document() {
         for (format, document) in documents() {
@@ -1366,9 +1258,8 @@ mod tests {
     fn documents() -> Vec<(ImportFormat, String)> {
         let mut all = vec![(ImportFormat::List, "198.51.100.1\n".to_string())];
 
-        // The header in full, because recognising a table means recognising
-        // this crate's own; the row can stop after the address, since a
-        // column a record does not reach is a column it does not set.
+        // The full header, so sniffing recognises it; the row can stop after
+        // the address.
         #[cfg(feature = "import-csv")]
         all.push((
             ImportFormat::Csv,
@@ -1402,9 +1293,8 @@ mod tests {
     /// **Every format is read under the document ceiling, and a document
     /// exactly at it is read whole.**
     ///
-    /// The counts on expressions and addresses see none of what a reader
-    /// skips, so without this a file of comments or ignored elements could
-    /// keep an import reading for as long as it had bytes.
+    /// The counts on expressions and addresses see nothing a reader skips, so
+    /// only this ceiling bounds a file of comments or ignored elements.
     #[test]
     fn every_format_refuses_a_document_past_its_byte_ceiling() {
         for (format, document) in documents() {
@@ -1427,11 +1317,8 @@ mod tests {
         }
     }
 
-    /// The default ceiling is sized in hosts this engine wrote after scanning
-    /// the whole TCP range, and these are the counts its documentation
-    /// promises, held against what the writers produce. A writer that grows,
-    /// or a ceiling that shrinks, fails here rather than in front of somebody
-    /// scanning again what a large scan found.
+    /// The default ceiling admits the full-range host counts its documentation
+    /// promises, measured against what the writers produce.
     #[cfg(all(
         feature = "import-nmap",
         feature = "export-json",
@@ -1447,8 +1334,7 @@ mod tests {
         use crate::model::port::{Discovery, Port, PortState, Protocol, ScanResponse};
         use crate::report::ScanReport;
 
-        // Every port closed and carrying the fullest account a raw probe
-        // writes, the largest record per port a scan that found nothing leaves.
+        // Every port closed with the fullest record a raw probe writes.
         let mut host = Host::new("192.0.2.1".parse().expect("an address"));
         for number in 1..=u16::MAX {
             host.add_port(
@@ -1488,16 +1374,15 @@ mod tests {
             );
         }
 
-        // And the ceiling is what bounds such a document: one host of it
-        // reads back as every port it lists.
+        // One such host reads back.
         let imported = ImportFormat::NmapXml
             .read(&mut Cursor::new(xml), &options("80"))
             .expect("this engine's own export reads as targets");
         assert_eq!(imported.addresses, 1);
     }
 
-    /// A name the caller was told beats bytes this crate worked out, and a name
-    /// that says nothing falls through to the bytes rather than failing.
+    /// A known extension decides the format, and an unknown one falls through
+    /// to sniffing.
     #[test]
     fn a_path_decides_the_format_and_a_silent_one_defers_to_the_input() {
         let mut input = Cursor::new("198.51.100.1\n");

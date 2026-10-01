@@ -9,10 +9,8 @@
 //! # Where a settings file lives
 //!
 //! Pure computation. Every function here reads environment variables, and under
-//! `sudo` the password database, and returns a path; none of them opens
-//! anything, checks whether anything exists, or creates anything. A caller can
-//! ask where its settings would be without the asking having a side effect, and
-//! the engine never touches a filesystem it was not pointed at.
+//! `sudo` the password database, and returns a path. Nothing is opened, checked
+//! for existence or created.
 //!
 //! ## The locations
 //!
@@ -21,67 +19,59 @@
 //! | Unix | `$XDG_CONFIG_HOME/zond/engine.toml`, else `~/.config/zond/engine.toml` | `/etc/zond/engine.toml` |
 //! | Windows | `%APPDATA%\zond\engine.toml` | `%PROGRAMDATA%\zond\engine.toml` |
 //!
-//! `zond/` rather than `zond-engine/` because the engine is not the only thing
-//! that will want a file there: a front end belongs beside it as `cli.toml` or
-//! whatever it calls itself, in one directory a user can find and back up.
+//! The directory is `zond/` so a front end can keep its own file (`cli.toml`,
+//! say) beside the engine's.
 //!
-//! macOS follows the Unix path rather than `~/Library/Application Support`. The
-//! people who write these files reach for `~/.config`, and a scanner's
-//! configuration sitting where every other command-line tool's sits is worth more
-//! than matching a convention aimed at bundled applications.
+//! macOS uses the Unix path, where command-line tools keep their configuration,
+//! and not `~/Library/Application Support`.
 //!
 //! ## Under `sudo`, the settings are the invoking user's
 //!
-//! `~` is the home of the user a run is on behalf of. Most scans need root and
-//! so run under `sudo`, which on Linux points `HOME` at root's home, and a
-//! missing settings file is not an error: every exclusion and profile the user
-//! wrote would vanish without a word. So an elevated process whose environment
-//! names the user who invoked it reads that user's file, found the way
-//! `journal::paths` finds that user's journals, from `SUDO_UID` and the
-//! password database, and for the same reasons. The two would otherwise
-//! disagree about whose run it is.
+//! `~` is the home of the user a run is on behalf of. Most scans run under
+//! `sudo`, which on Linux points `HOME` at root's home, and since a missing
+//! settings file is not an error, every exclusion and profile the user wrote
+//! would silently vanish. So an elevated process reads the invoking user's
+//! file, found from `SUDO_UID` and the password database the same way
+//! `journal::paths` finds that user's journals.
 //!
-//! Root reading a file its invoking user can write hands that user nothing the
-//! command line did not already give them. The file's vocabulary names no path
-//! and no command, and `sudo` sets `SUDO_UID` itself, so a user cannot point an
-//! elevated run at somebody else's file.
+//! This hands the user nothing the command line did not already give them: the
+//! file's vocabulary names no path and no command, and `sudo` sets `SUDO_UID`
+//! itself, so a user cannot point an elevated run at somebody else's file.
 //!
-//! A configuration root that survived into the elevated process still leads, as
-//! it does for the journal: somebody kept it on purpose, and it is what an
-//! unelevated run reads too.
+//! A configuration root that survived into the elevated process still wins, as
+//! it does for the journal: somebody kept it on purpose, and an unelevated run
+//! reads it too.
 //!
 //! ## `$XDG_CONFIG_HOME` is only honoured when it is absolute
 //!
-//! The specification requires it, and it matters more here than elsewhere. A
-//! relative value would put a settings file under whatever directory the process
-//! happens to be running in, which for a tool run with `sudo` from an arbitrary
-//! shell is not a location anybody chose.
+//! The XDG specification requires this. A relative value would resolve against
+//! whatever directory the process happens to run in.
 
 use std::path::PathBuf;
 
 use super::FILE_NAME;
 
-/// The directory this crate's configuration lives in, under whatever
-/// configuration root applies.
+/// The directory this crate's configuration lives in, under the configuration
+/// root.
 const DIRECTORY: &str = "zond";
 
 /// Where this user's settings file would be.
 ///
-/// `None` when the environment names no home at all, which happens in a
-/// container or a daemon with a cleared environment. A caller getting `None`
-/// should carry on without a settings file rather than invent a location.
+/// `None` when the environment names no home at all, as in a container or a
+/// daemon with a cleared environment. A caller getting `None` should carry on
+/// without a settings file.
 pub fn user() -> Option<PathBuf> {
     user_directory().map(|directory| directory.join(FILE_NAME))
 }
 
 /// Where this user's settings *directory* would be.
 ///
-/// `%APPDATA%` is the roaming one: settings are what a person chose and should
-/// follow them between machines on a domain, unlike the journal in
-/// `%LOCALAPPDATA%`, which is a record of what one machine did.
+/// `%APPDATA%` is the roaming one, so settings follow a person between machines
+/// on a domain. The journal, a record of what one machine did, lives in
+/// `%LOCALAPPDATA%`.
 ///
-/// Written as two whole functions rather than one with two `cfg` blocks, for the
-/// reason `journal::paths::state_root` gives.
+/// Two whole functions per platform, for the reason `journal::paths::state_root`
+/// gives.
 #[cfg(windows)]
 pub fn user_directory() -> Option<PathBuf> {
     std::env::var_os("APPDATA")
@@ -91,21 +81,19 @@ pub fn user_directory() -> Option<PathBuf> {
 }
 
 /// Where this user's settings *directory* would be: `$XDG_CONFIG_HOME/zond`
-/// where that variable names an absolute path, and `.config/zond` under the
-/// home directory otherwise: the invoking user's under `sudo`, as the module
-/// note explains, and `$HOME` for anything else.
+/// where that variable names an absolute path, otherwise `.config/zond` under
+/// the home directory (the invoking user's under `sudo`, `$HOME` otherwise).
 ///
-/// `None` when no home can be found, which is what a container or a daemon with
-/// a cleared environment looks like. macOS lands here rather than under
-/// `~/Library/Application Support`; the module note says why.
+/// `None` when no home can be found, as in a container or a daemon with a
+/// cleared environment. macOS uses this path too.
 #[cfg(not(windows))]
 pub fn user_directory() -> Option<PathBuf> {
     crate::journal::paths::base_directory("XDG_CONFIG_HOME", std::path::Path::new(".config"))
         .map(|root| root.join(DIRECTORY))
 }
 
-/// [`user_directory`]'s choice, from values rather than the environment, so a
-/// test can put it under `sudo`.
+/// [`user_directory`]'s choice from explicit values, so a test can put it under
+/// `sudo`.
 #[cfg(all(test, not(windows)))]
 fn choose(
     configured: Option<PathBuf>,
@@ -137,8 +125,8 @@ pub fn system() -> Option<PathBuf> {
 /// Where a host-wide settings file would be: `/etc/zond/engine.toml`.
 ///
 /// Read before the user's file, so an administrator can set a floor a user then
-/// adjusts. Never `None` here; the [`Option`] is for Windows, where the
-/// location comes from `%PROGRAMDATA%` and that can be unset.
+/// adjusts. Always `Some` on Unix; the [`Option`] is for Windows, where
+/// `%PROGRAMDATA%` can be unset.
 #[cfg(not(windows))]
 pub fn system() -> Option<PathBuf> {
     Some(PathBuf::from("/etc").join(DIRECTORY).join(FILE_NAME))
@@ -147,8 +135,7 @@ pub fn system() -> Option<PathBuf> {
 /// Every settings file that may apply, in the order they layer.
 ///
 /// System first, user second, so the user's file has the last word. Paths that
-/// could not be computed are absent; nothing here says whether any of them
-/// exists.
+/// could not be computed are absent; the rest may or may not exist.
 pub fn layered() -> Vec<PathBuf> {
     [system(), user()].into_iter().flatten().collect()
 }
@@ -166,8 +153,7 @@ pub fn layered() -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
-    /// The file is named consistently wherever it lands, and it lands under a
-    /// directory a front end can share.
+    /// The file lands under the shared `zond` directory.
     #[test]
     fn a_computed_path_ends_in_the_expected_directory_and_file() {
         if let Some(path) = user() {
@@ -187,8 +173,7 @@ mod tests {
         }
     }
 
-    /// System first, user last, because the user's file has the final word over
-    /// an administrator's floor.
+    /// The user's file has the final word over an administrator's floor.
     #[test]
     fn the_user_file_layers_after_the_system_one() {
         let paths = layered();
@@ -200,8 +185,7 @@ mod tests {
         }
     }
 
-    /// Computing a path must not create, check or open anything. A caller
-    /// asking where its settings would be has not asked for a side effect.
+    /// Computing a path must not create, check or open anything.
     #[test]
     fn computing_a_path_touches_no_filesystem() {
         let before = user().and_then(|path| path.parent().map(std::path::Path::exists));
@@ -215,10 +199,8 @@ mod tests {
         assert_eq!(before, after, "asking where the settings are created them");
     }
 
-    /// Under `sudo` the settings that apply are the invoking user's, found the
-    /// way the journal finds its directory. Root's home is where a plain `sudo`
-    /// on Linux points `HOME`, and reading from there drops every exclusion
-    /// and profile the user wrote, with nothing said.
+    /// Under `sudo` the invoking user's settings apply, not those in root's
+    /// home, where a plain `sudo` on Linux points `HOME`.
     #[cfg(not(windows))]
     #[test]
     fn under_sudo_the_invoking_users_settings_are_the_ones_found() {
@@ -232,8 +214,7 @@ mod tests {
             "an elevated run read root's settings"
         );
 
-        // A configuration root that survived into the elevated process was
-        // kept on purpose, and it is what an unelevated run reads too.
+        // A configuration root that survived elevation was kept on purpose.
         assert_eq!(
             choose(Some(configured.clone()), Some(user.clone()), Some(root)),
             Some(configured.join(DIRECTORY))

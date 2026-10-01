@@ -13,9 +13,8 @@
 //! [`ImportLimits::max_document_bytes`](crate::import::ImportLimits::max_document_bytes)
 //! and the report readers under
 //! [`ReportOptions::max_document_bytes`](crate::import::report::ReportOptions::max_document_bytes).
-//! The ceiling is enforced on the stream rather than by each format's parser,
-//! so it holds the same way for every format and a format added later has
-//! only to be read through here.
+//! The ceiling is enforced on the stream, so it holds the same way for every
+//! format's parser.
 
 use std::io::BufRead;
 
@@ -41,11 +40,9 @@ pub(crate) fn within<T>(
 struct Bounded<'a> {
     inner: &'a mut dyn BufRead,
     left: u64,
-    /// Whether the budget ran out, which is all [`within`] needs back. A flag
-    /// rather than a distinguishable error: the refusal travels out through
-    /// `serde_json` and through the XML parser, and both rewrite an I/O
-    /// failure into an error of their own. Asking afterwards is exact where
-    /// reading the message that came back would be a guess.
+    /// Whether the budget ran out. A flag because `serde_json` and the XML
+    /// parser both rewrap an I/O failure into an error of their own, so the
+    /// refusal cannot be recognised from what comes back.
     exhausted: bool,
 }
 
@@ -68,14 +65,11 @@ impl<'a> Bounded<'a> {
 }
 
 impl Bounded<'_> {
-    /// Whether a reader asking for more bytes is asking for more than the
-    /// budget, rather than asking how it ends.
+    /// Whether the input has bytes past the budget.
     ///
-    /// A spent budget is not by itself an overrun. A document of exactly
-    /// `max_document_bytes` has been handed over whole, and a parser then asks
-    /// once more because that is how it learns there is nothing after the value
-    /// it read. Refusing that reading would make the ceiling refuse the largest
-    /// document it is supposed to admit.
+    /// A spent budget alone is not an overrun: after a document of exactly
+    /// `limit` bytes a parser reads once more to find the end, and that read
+    /// must succeed.
     fn overran(&mut self) -> std::io::Result<bool> {
         Ok(self.left == 0 && !self.inner.fill_buf()?.is_empty())
     }

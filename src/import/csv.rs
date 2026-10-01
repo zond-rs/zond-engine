@@ -8,62 +8,52 @@
 
 //! # CSV import
 //!
-//! A table with a column of addresses in it. Two quite different files arrive
-//! this way and both are worth reading:
+//! A table with a column of addresses in it, typically one of two kinds:
 //!
 //! - **A report this engine wrote.** The exporter emits one row per host and
-//!   port under the header in [`crate::format::csv`], so reading it back is how
-//!   a caller rescans exactly what a previous scan found, on exactly the ports
-//!   it found open.
-//! - **A spreadsheet somebody else wrote.** An asset inventory, a scope
-//!   document from a client, an export from a CMDB. One column is addresses and
-//!   the rest is theirs.
+//!   port under the header in [`crate::format::csv`], so reading it back
+//!   rescans what a previous scan found, on the ports it found open.
+//! - **A spreadsheet somebody else wrote**, such as an asset inventory, a
+//!   client's scope document or a CMDB export.
 //!
 //! ## Which column holds the addresses
 //!
-//! One rule, and not a heuristic about what the data looks like: the first record
-//! is a header if any of its fields names a column this importer understands.
-//! Otherwise there is no header, and the first field of every record is the
-//! address.
+//! The first record is a header if any of its fields names a column this
+//! importer understands. Otherwise there is no header, and the first field of
+//! every record is the address.
 //!
 //! Under a header, `ip`, `ipaddress`, `address`, `host` and `target` are read as
-//! addresses, `ip` first because that is what a report this engine wrote calls
-//! it, along with `port` and `protocol` where they are present. Names are
-//! compared case-insensitively and ignoring anything that is not a letter or a
-//! digit, so `IP Address` and `ip_address` reach `ipaddress`. A caller who knows
-//! better names the column it means, with
+//! addresses, in that order of preference, along with `port` and `protocol`
+//! where present. Names are compared case-insensitively and ignoring anything
+//! that is not a letter or a digit, so `IP Address` and `ip_address` reach
+//! `ipaddress`. A caller can name the columns with
 //! [`with_address_column`](CsvImporter::with_address_column),
-//! [`with_port_column`](CsvImporter::with_port_column) or
-//! [`with_protocol_column`](CsvImporter::with_protocol_column), and one whose
-//! header this importer cannot recognise at all says so with
-//! [`CsvImporter::with_header`].
+//! [`with_port_column`](CsvImporter::with_port_column) and
+//! [`with_protocol_column`](CsvImporter::with_protocol_column), and state that
+//! an unrecognisable first row is a header with [`CsvImporter::with_header`].
 //!
-//! Nothing here guesses from the values. A file whose first row is
-//! `Server,Location` has no recognised name in it, so it has no header, and
-//! `Server` is refused as a target on line 1. A rule that guessed from the values
-//! would read the wrong column instead, with nothing downstream able to notice.
+//! The values are never used to guess. A file whose first row is
+//! `Server,Location` has no recognised name, so it has no header, and `Server`
+//! is refused as a target on line 1. Guessing could silently read the wrong
+//! column.
 //!
 //! ## Reading it back the way it was written
 //!
-//! The reverse of the CSV exporter, detail for detail: RFC 4180 quoting with
-//! doubled quotes inside quoted fields, both line endings, a byte-order mark
-//! skipped if Excel left one, and the apostrophe the exporter puts in front of a
-//! field beginning with a formula character taken back off.
+//! The reverse of the CSV exporter: RFC 4180 quoting with doubled quotes inside
+//! quoted fields, both line endings, a byte-order mark skipped if Excel left
+//! one, and the exporter's apostrophe in front of a field beginning with a
+//! formula character taken back off.
 //!
-//! A record ends at a line break that is not inside a quoted field, so a field may
-//! span lines and [`ImportLimits::max_line_bytes`] bounds the whole record rather
-//! than one line of it.
+//! A record ends at a line break outside a quoted field, so a field may span
+//! lines and [`ImportLimits::max_line_bytes`] bounds the whole record.
 //!
-//! ## What it does not do
+//! ## Rows
 //!
-//! It does not filter by the `state` column. A row is a target because it is in
-//! the file, and choosing which rows to keep is what a spreadsheet is for.
+//! Every row is a target; the `state` column is not used to filter.
 //!
-//! Nor does it drop a row whose address column is empty or missing. That row is
-//! refused, under whichever [`OnRefusal`](crate::import::OnRefusal) policy the
-//! caller set, and the refusal names the line. A blank row is skipped instead: it
-//! says nothing, where a row with data in every other column and a gap in this one
-//! is a row somebody meant something by.
+//! A row whose address column is empty or missing is refused under the
+//! caller's [`OnRefusal`](crate::import::OnRefusal) policy, and the refusal
+//! names the line. A row blank all the way across is skipped.
 
 use std::io::BufRead;
 
@@ -77,10 +67,9 @@ const FORMAT: &str = "CSV";
 
 /// Header names read as the address column, in the order they are preferred.
 ///
-/// `ip` leads because that is what a report this engine wrote calls it, so a
-/// round trip never has to think about it. `hostname` is absent: in a report it
-/// sits beside `ip` and is the less useful of the two, and a file that has only
-/// hostnames is a file whose column is worth naming.
+/// `ip` leads because that is what this engine's reports call it. `hostname`
+/// is absent because in a report it sits beside `ip`; a file of hostnames only
+/// needs its column named.
 const ADDRESS_NAMES: [&str; 5] = ["ip", "ipaddress", "address", "host", "target"];
 
 /// Header names read as the port column.
@@ -98,10 +87,8 @@ pub enum CsvColumn {
     /// same column.
     ///
     /// Naming a column says the file has a header, so the first record is one
-    /// whether or not this importer recognises anything in it. A file with no such
-    /// column is an error rather than a fallback: a caller who named a column has
-    /// said what they mean, and reading a different one would answer
-    /// a question nobody asked.
+    /// whether or not this importer recognises anything in it. A file with no
+    /// such column is an error.
     Named(String),
     /// By 0-based position, for a file with no header or an unrecognisable one.
     Index(usize),
@@ -140,10 +127,9 @@ impl CsvImporter {
 
     /// Reads per-row ports from a column of the caller's choosing.
     ///
-    /// Rows whose port field is empty take the caller's default ports, which is
-    /// what makes a report of a discovery sweep, with every port column blank,
-    /// read
-    /// back as a plain list of hosts.
+    /// Rows whose port field is empty take the caller's default ports, so a
+    /// report of a discovery sweep, with every port column blank, reads back as
+    /// a plain list of hosts.
     pub fn with_port_column(mut self, column: CsvColumn) -> Self {
         self.ports = Some(column);
         self
@@ -151,22 +137,20 @@ impl CsvImporter {
 
     /// Reads the transport from a column of the caller's choosing.
     ///
-    /// For the reason [`with_port_column`](Self::with_port_column) exists: the
-    /// automatic rule looks for `protocol` and `proto`, and a spreadsheet calling
-    /// the column something else has its UDP rows read as TCP. A row whose
-    /// transport field is empty, or
-    /// names anything but UDP, takes the TCP half of the port set.
+    /// The automatic rule looks for `protocol` and `proto`; without this, a
+    /// spreadsheet calling the column something else has its UDP rows read as
+    /// TCP. A row whose transport field is empty or names anything but UDP takes
+    /// the TCP half of the port set.
     pub fn with_protocol_column(mut self, column: CsvColumn) -> Self {
         self.protocols = Some(column);
         self
     }
 
-    /// States whether the first record is a header, instead of letting the
-    /// importer work it out.
+    /// States whether the first record is a header.
     ///
-    /// Needed in one case the automatic rule cannot reach: a file whose header
-    /// names none of the columns this importer knows, read by position. Without
-    /// this the header is read as a target and refused on line 1.
+    /// Needed for a file whose header names none of the columns this importer
+    /// knows, read by position. Without it the header is read as a target and
+    /// refused on line 1.
     pub fn with_header(mut self, has_header: bool) -> Self {
         self.has_header = Some(has_header);
         self
@@ -204,19 +188,14 @@ impl Importer for CsvImporter {
                         let is_header = resolved.is_header;
                         layout = Some(resolved);
                         if is_header {
-                            // A header describes the records after it and is not one
-                            // of them.
                             continue;
                         }
                         layout.as_ref().expect("just set")
                     }
                 };
 
-                // A row with nothing in its address column is handed on rather than
-                // skipped. The grammar refuses it and the caller's `OnRefusal`
-                // decides what happens, where dropping it here would answer that
-                // silently. A row blank all the way across is not this; `is_blank`
-                // has already skipped it.
+                // An empty address is handed on so the grammar refuses it and the
+                // caller's `OnRefusal` decides. Fully blank rows were skipped above.
                 let address = record.field(layout.addresses, origin)?.unwrap_or("");
 
                 let port = match layout.ports {
@@ -257,8 +236,8 @@ impl Layout {
         let names: Vec<String> = (0..record.count)
             .map(|index| match record.field(index, origin) {
                 Ok(Some(field)) => normalize(field),
-                // A header field that is not text is not a name, and the record
-                // is refused later if it turns out to be data.
+                // Not text, so not a name. If the record is data it is refused
+                // later.
                 _ => String::new(),
             })
             .collect();
@@ -268,8 +247,7 @@ impl Layout {
                 || PORT_NAMES.contains(&name.as_str())
                 || PROTOCOL_NAMES.contains(&name.as_str())
         };
-        // Naming a column by name is itself a statement that there is a header
-        // to find it in.
+        // A column named by name implies a header.
         let named_by_name = matches!(importer.addresses, Some(CsvColumn::Named(_)))
             || matches!(importer.ports, Some(CsvColumn::Named(_)))
             || matches!(importer.protocols, Some(CsvColumn::Named(_)));
@@ -304,12 +282,9 @@ impl Layout {
             Some(column) => resolve_column(column)?,
             None => match find(&ADDRESS_NAMES) {
                 Some(index) => index,
-                // A header this importer recognised with no address column in
-                // it is a table it cannot read; reading column 0 there would be
-                // the silent guess this rule exists to avoid. A caller who
-                // stated the header has said only that row one is not data, and
-                // the first column is the ordinary
-                // default.
+                // A recognised header with no address column: reading column 0
+                // would be a silent guess. A caller who stated the header has
+                // said only that row one is not data, so column 0 applies there.
                 None if is_header && importer.has_header.is_none() => {
                     return Err(ImportError::Malformed {
                         format: FORMAT,
@@ -354,11 +329,10 @@ fn normalize(name: &str) -> String {
 /// Assembles the target expression a row describes, through
 /// [`expression`](crate::import::expression), which owns the bracketing rule.
 ///
-/// What belongs to this format is the transport column: a name this build knows
-/// takes that transport's prefix, and anything else is read as TCP, which is
-/// what the port grammar means by an unprefixed port. Leniently, unlike the JSON
-/// and nmap readers, because a spreadsheet somebody typed is the one input here
-/// with no schema behind it.
+/// A transport name this build knows takes that transport's prefix, and
+/// anything else is read as TCP, the port grammar's meaning of an unprefixed
+/// port. More lenient than the JSON and nmap readers because a hand-typed
+/// spreadsheet has no schema behind it.
 fn build_token(
     token: &mut String,
     ports: &mut String,
@@ -380,8 +354,8 @@ fn build_token(
     crate::import::expression(token, address, ports);
 }
 
-/// Takes back off the apostrophe the exporter puts in front of a field starting
-/// with a formula character, and nothing else.
+/// Takes off the apostrophe the exporter puts in front of a field starting with
+/// a formula character. Any other leading apostrophe stays.
 fn unescape(field: &str) -> &str {
     match field.strip_prefix('\'') {
         Some(rest) if rest.starts_with(FORMULA_LEADERS) => rest,
@@ -394,8 +368,8 @@ fn unescape(field: &str) -> &str {
 struct Record {
     fields: Vec<Vec<u8>>,
     count: usize,
-    /// Whether anything has been read yet, which is what makes the byte-order
-    /// mark the first record's business alone.
+    /// Whether anything has been read yet, so only the first record has its
+    /// byte-order mark stripped.
     started: bool,
 }
 
@@ -408,7 +382,7 @@ impl Record {
         }
     }
 
-    /// Whether every field is empty or blank, which is a blank row.
+    /// Whether every field is empty or whitespace.
     fn is_blank(&self) -> bool {
         self.fields[..self.count]
             .iter()
@@ -417,8 +391,8 @@ impl Record {
 
     /// One field as text, or `None` if the record is shorter than that.
     ///
-    /// Decoded on demand rather than all at once, so a twenty-five column report
-    /// costs the two or three fields a target is built from.
+    /// Decoded on demand, so a wide report costs only the fields a target is
+    /// built from.
     fn field(&self, column: usize, origin: ImportOrigin) -> Result<Option<&str>, ImportError> {
         let Some(field) = self.fields[..self.count].get(column) else {
             return Ok(None);
@@ -432,8 +406,7 @@ impl Record {
     /// Reads the next record, returning where it started or `None` at the end
     /// of the input.
     ///
-    /// A record ends at a line break that is not inside a quoted field, so this
-    /// counts lines as it goes rather than reading one.
+    /// A record can span lines, so `line` is advanced for each line break read.
     fn read(
         &mut self,
         input: &mut dyn BufRead,
@@ -448,9 +421,8 @@ impl Record {
         let mut in_quotes = false;
         let mut quote_pending = false;
         let mut at_field_start = true;
-        // A carriage return is held rather than stored, since only one
-        // immediately before a line break is a terminator. Anywhere else it is
-        // data, including inside a quoted field.
+        // A carriage return is held, since only one immediately before a line
+        // break is a terminator. Anywhere else it is data.
         let mut pending_cr = false;
         let mut total = 0usize;
         let mut saw_any = false;
@@ -517,9 +489,8 @@ impl Record {
                     }
 
                     match byte {
-                        // A quote only opens a field at its start. Anywhere
-                        // else it is a literal, which is what RFC 4180 says and
-                        // every spreadsheet emits.
+                        // A quote opens a field only at its start; elsewhere
+                        // it is a literal (RFC 4180).
                         b'"' if at_field_start => {
                             in_quotes = true;
                             at_field_start = false;
@@ -559,8 +530,7 @@ impl Record {
             count += 1;
         }
 
-        // Only the first bytes of the file can carry one, and stripping it
-        // anywhere else would accept a file that is not what it says it is.
+        // A byte-order mark is valid only at the start of the file.
         if first_record && fields[0].starts_with(&UTF8_BOM) {
             fields[0].drain(..UTF8_BOM.len());
         }
@@ -612,13 +582,8 @@ mod tests {
         Ok(collector.finish())
     }
 
-    /// A row whose address column is empty or missing is refused rather than
-    /// skipped, so the caller ends up holding what it lost.
-    ///
-    /// Dropping it was silent in every direction. Nothing counted the row,
-    /// nothing refused it, and `tokens` reported the survivors as though they
-    /// were the file, so a spreadsheet with a gap in it imported as a scan of
-    /// less than the operator handed over, and nothing said so.
+    /// A row whose address column is empty or missing is refused, so the
+    /// caller learns what it lost.
     #[test]
     fn a_row_with_no_address_is_refused_rather_than_dropped() {
         let file = "ip,port\n198.51.100.1,80\n\n,443\n198.51.100.2,80\n";
@@ -648,9 +613,7 @@ mod tests {
         );
     }
 
-    /// A row blank all the way across is not that and stays silent. It says
-    /// nothing, where a row with a gap in one column was meant to say
-    /// something.
+    /// A row blank all the way across is skipped without a refusal.
     #[test]
     fn a_blank_row_is_still_skipped_without_a_word() {
         let imported = read("ip,port\n198.51.100.1,80\n\n   \n198.51.100.2,80\n");
@@ -660,9 +623,8 @@ mod tests {
         assert_eq!(imported.tokens, 2);
     }
 
-    /// A caller can name every column the layout has, not just two of them. A
-    /// spreadsheet that calls its transport column something this importer does
-    /// not know would otherwise read every UDP row as TCP, silently.
+    /// A spreadsheet whose transport column has an unknown name would
+    /// otherwise read every UDP row as TCP.
     #[test]
     fn a_caller_can_name_the_transport_column() {
         let file = "Node,Service,Transport\n198.51.100.1,53,UDP\n198.51.100.2,80,tcp\n";
@@ -692,9 +654,9 @@ mod tests {
         );
     }
 
-    /// The round trip this format exists for: a report this engine wrote, read
-    /// back as the targets it describes. The header names the columns and the
-    /// protocol column decides which half of the port set each row lands in.
+    /// A report this engine wrote reads back as the targets it describes, with
+    /// the protocol column deciding which half of the port set each row lands
+    /// in.
     #[test]
     fn a_report_this_engine_wrote_reads_back_as_its_own_targets() {
         let file = concat!(
@@ -721,8 +683,8 @@ mod tests {
         assert!(units.iter().any(|unit| unit.ports().has_tcp(443)));
     }
 
-    /// A discovery sweep exports with every port column empty, and has to read
-    /// back as a plain list of hosts rather than as nothing at all.
+    /// A discovery sweep exports with every port column empty and reads back
+    /// as a plain list of hosts.
     #[test]
     fn rows_with_no_port_take_the_default_ports() {
         let imported = read("ip,hostname,port,protocol\n198.51.100.1,gateway,,\n198.51.100.2,,,\n");
@@ -742,9 +704,8 @@ mod tests {
         assert_eq!(imported.addresses, 2);
     }
 
-    /// The loud failure. A header nobody here understands is not a header, so
-    /// its first field is read as a target and refused on line 1, rather than a
-    /// rule that quietly reads whichever column looked most address-like.
+    /// An unrecognised header is not a header, so its first field is read as a
+    /// target and refused on line 1.
     #[test]
     fn an_unrecognised_header_is_refused_rather_than_guessed_at() {
         let err = ImportFormat::Csv
@@ -762,7 +723,7 @@ mod tests {
             other => panic!("expected the first field to be refused, got {other:?}"),
         }
 
-        // And the way out of it, for a caller who knows the shape of the file.
+        // Stating the header gets past it.
         let imported = read_with(
             "Server,Location\n198.51.100.1,rack 4\n",
             &CsvImporter::default().with_header(true),
@@ -771,8 +732,7 @@ mod tests {
         assert_eq!(imported.addresses, 1);
     }
 
-    /// Naming a column is itself a statement that there is a header, or the
-    /// name would have nothing to match against.
+    /// Naming a column implies a header.
     #[test]
     fn a_named_column_is_read_and_a_missing_one_is_an_error() {
         let file = "name,mgmt_ip,site\nweb01,198.51.100.1,ams\nweb02,198.51.100.2,ams\n";
@@ -791,8 +751,7 @@ mod tests {
         assert!(matches!(missing, Err(ImportError::Malformed { .. })));
     }
 
-    /// Quoting is the whole difference between a CSV reader and a line
-    /// splitter, and getting it wrong shifts every column silently.
+    /// Getting quoting wrong would shift every column silently.
     #[test]
     fn quoted_fields_carry_commas_quotes_and_line_breaks() {
         let file = concat!(
@@ -808,9 +767,8 @@ mod tests {
         assert_eq!(imported.addresses, 4);
     }
 
-    /// A line break inside a quoted field does not end the record and still
-    /// advances the line count. Otherwise every error after the first quoted
-    /// newline points at the wrong row.
+    /// A line break inside a quoted field does not end the record but does
+    /// advance the line count, so later errors name the right line.
     #[test]
     fn a_line_break_inside_a_field_is_counted_but_does_not_end_the_record() {
         let file = concat!(
@@ -831,8 +789,7 @@ mod tests {
     }
 
     /// A carriage return is a line ending only immediately before a line break.
-    /// Inside a quoted field it is data, and stripping it there would
-    /// alter a value.
+    /// Inside a quoted field it is data.
     #[test]
     fn a_carriage_return_is_a_terminator_only_where_it_terminates() {
         let mut collector = TargetCollector::new(options());
@@ -842,8 +799,8 @@ mod tests {
             .expect("imports");
         assert_eq!(collector.finish().addresses, 1);
 
-        // Read the field back directly: the one inside the quotes survives and
-        // the one before the line break does not.
+        // The CR inside the quotes survives; the one before the line break
+        // does not.
         let mut record = Record::new();
         let mut line = 1u64;
         let mut input = Cursor::new("a,\"x\ry\"\r\n");
@@ -867,9 +824,8 @@ mod tests {
         assert_eq!(imported.map.units.len(), 2);
     }
 
-    /// The exporter hides a field that starts like a spreadsheet formula behind
-    /// an apostrophe. Reading one back has to undo exactly that and nothing
-    /// else, or a value acquires a quote mark it never had.
+    /// The exporter puts an apostrophe in front of a field that starts like a
+    /// spreadsheet formula. Reading back removes exactly that one.
     #[test]
     fn the_exporters_formula_guard_is_taken_back_off() {
         assert_eq!(unescape("'=cmd|'/c calc'!A1"), "=cmd|'/c calc'!A1");
@@ -878,8 +834,7 @@ mod tests {
         assert_eq!(unescape("198.51.100.1"), "198.51.100.1");
     }
 
-    /// The bound covers a whole record here, because a quoted field can span
-    /// lines and a line is therefore not the unit that can run away.
+    /// The bound covers a whole record, because a quoted field can span lines.
     #[test]
     fn a_record_past_the_limit_is_refused() {
         let options = options().with_limits(ImportLimits {

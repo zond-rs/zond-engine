@@ -8,9 +8,8 @@
 
 //! # Target Lists
 //!
-//! A file of targets, one per line, `#` starting a comment. It is what `-iL`
-//! reads in every other tool in this space, what a person types, and what falls
-//! out of every pipeline anybody has ever built around a scanner.
+//! A file of targets, one per line, `#` starting a comment: the plain list
+//! that people type and that scripts around a scanner produce.
 //!
 //! ```text
 //! # staging, 2026-02
@@ -22,28 +21,23 @@
 //!
 //! ## What separates two targets
 //!
-//! Newlines and runs of whitespace, never commas. A comma belongs to the
-//! expression it is inside, where it separates ports in `192.0.2.1:80,443` and
-//! addresses in `192.0.2.1,192.0.2.2`, and only
-//! [`TargetExpr`](crate::model::parse::target::TargetExpr) knows which half it
-//! landed in. Splitting on commas out here would take the first of those apart
-//! into a host and a stray `443`.
+//! Newlines and runs of whitespace. A comma belongs to the expression it is
+//! inside, where it separates ports in `192.0.2.1:80,443` and addresses in
+//! `192.0.2.1,192.0.2.2`, and only
+//! [`TargetExpr`](crate::model::parse::target::TargetExpr) knows which.
 //!
 //! ## What it tolerates
 //!
-//! A target list is written by hand, pasted out of a ticket, or produced by
-//! something that was itself written by hand, so it is read forgivingly in every
-//! way that cannot change which hosts get scanned:
+//! The list is read forgivingly wherever that cannot change which hosts get
+//! scanned:
 //!
-//! - A UTF-8 byte-order mark at the start, which is what a Windows editor
-//!   leaves behind and what would otherwise make the first address unparseable.
+//! - A UTF-8 byte-order mark at the start, as Windows editors leave.
 //! - Both line endings, `\n` and `\r\n`.
-//! - Blank lines, and lines that are nothing but a comment.
+//! - Blank lines, and lines that are only a comment.
 //! - Any amount of surrounding whitespace.
 //!
-//! What it does not tolerate is anything that would silently change the scan:
-//! bytes that are not UTF-8 and lines longer than the limit are errors naming
-//! the line, never a lossy conversion or a truncation.
+//! Bytes that are not UTF-8 and lines longer than the limit are errors naming
+//! the line, so a damaged file cannot silently change the scan.
 
 use std::io::BufRead;
 
@@ -52,9 +46,7 @@ use crate::import::{ImportError, ImportLimits, ImportOrigin, Importer, TargetSin
 
 /// The character that starts a comment, to the end of its line.
 ///
-/// Only `#`, the convention every target list already follows. No address, range,
-/// port specification or hostname can contain one, so nothing a user might
-/// legitimately write reads as a comment.
+/// No address, range, port specification or hostname can contain a `#`.
 const COMMENT: char = '#';
 
 /// Reads a list of target expressions.
@@ -101,8 +93,7 @@ impl Importer for ListImporter {
                 let text = std::str::from_utf8(&buffer)
                     .map_err(|_| ImportError::InvalidUtf8 { origin })?;
 
-                // Only the first line can carry one. Stripping it anywhere else
-                // would accept a file that is not what it claims to be.
+                // A byte-order mark is valid only at the start of the file.
                 let text = if first_line {
                     first_line = false;
                     text.strip_prefix(UTF8_BOM_CHAR).unwrap_or(text)
@@ -125,25 +116,20 @@ impl Importer for ListImporter {
 
 /// Reads one line into `buffer`, without its terminator.
 ///
-/// Returns `false` at end of input. The read is bounded before it happens rather
-/// than measured after, since a file containing no newline must not be read
-/// into memory to discover that it is too long.
-///
-/// Shared with the record-per-line formats, which need exactly this bound and
-/// exactly these line endings.
+/// Returns `false` at end of input. The read is bounded as it happens, so a
+/// file with no newline is never read into memory whole. Shared with the
+/// record-per-line formats.
 pub(crate) fn read_line(
     input: &mut dyn BufRead,
     buffer: &mut Vec<u8>,
     max_line_bytes: usize,
     origin: ImportOrigin,
 ) -> Result<bool, ImportError> {
-    // Two bytes past the limit, the longest terminator there is. A line at
-    // exactly the limit has to be readable whole however it ends, and budgeting
-    // one byte would refuse a CRLF line for the length of its own
-    // line ending.
+    // Two bytes past the limit, for the longest terminator (CRLF), so a line
+    // at exactly the limit is read whole however it ends.
     let ceiling = (max_line_bytes as u64).saturating_add(2);
-    // Spelled out rather than a method call: `take` needs a sized
-    // receiver, and the reader arrives here as a trait object.
+    // Called as a function because `take` needs a sized receiver and the
+    // reader is a trait object.
     let mut bounded = std::io::Read::take(&mut *input, ceiling);
     let read = bounded.read_until(b'\n', buffer)?;
 
@@ -157,18 +143,16 @@ pub(crate) fn read_line(
             buffer.pop();
         }
     } else if read as u64 == ceiling {
-        // No terminator and the read stopped at the ceiling, so the line runs
-        // past anything that will be accepted. Anything shorter reached
-        // the end of the input, and a final line with no terminator is ordinary.
+        // No terminator and the read stopped at the ceiling. A shorter read
+        // without one is a final line at end of input.
         return Err(ImportError::LineTooLong {
             origin,
             limit: max_line_bytes,
         });
     }
 
-    // Checked on the content rather than on the bytes read, so the limit means
-    // the same thing whether a line ends with LF, with CRLF, or with the end of
-    // the input.
+    // Checked on the content, so the limit means the same whether a line ends
+    // with LF, CRLF or end of input.
     if buffer.len() > max_line_bytes {
         return Err(ImportError::LineTooLong {
             origin,
@@ -206,7 +190,7 @@ mod tests {
     }
 
     /// Everything a hand-written list can carry that is not a target, in one
-    /// file. None of it may change which hosts get scanned.
+    /// file.
     #[test]
     fn the_shapes_a_hand_written_list_arrives_in_are_all_read_the_same() {
         let file = concat!(
@@ -226,16 +210,15 @@ mod tests {
         assert_eq!(imported.addresses, 6);
     }
 
-    /// The byte-order mark is the one that fails confusingly. Without stripping
-    /// it, the first address of a file saved by a Windows
-    /// editor is refused and every other line works.
+    /// Unstripped, the mark makes the first address of a file saved by a
+    /// Windows editor fail while every other line works.
     #[test]
     fn a_byte_order_mark_does_not_cost_the_first_target() {
         assert_eq!(read("\u{feff}198.51.100.1\n198.51.100.2\n").addresses, 2);
     }
 
-    /// A comma is never a separator out here. Splitting on it would take
-    /// `198.51.100.1:80,443` apart into a host and a stray `443`.
+    /// Splitting on commas would take `198.51.100.1:80,443` apart into a host
+    /// and a stray `443`.
     #[test]
     fn a_comma_stays_inside_the_expression_it_was_written_in() {
         let imported = read("198.51.100.1:80,443\n198.51.100.2,198.51.100.3:22\n");
@@ -245,9 +228,8 @@ mod tests {
         assert_eq!(imported.map.units.len(), 2, "80 with 443, and 22");
     }
 
-    /// A final line with no newline is ordinary input, from an editor that does
-    /// not add one or from a here-string, and losing it would
-    /// drop a target with nothing to show for it.
+    /// A final line with no newline is ordinary input from some editors and
+    /// from here-strings.
     #[test]
     fn a_last_line_without_a_terminator_is_still_a_target() {
         assert_eq!(read("198.51.100.1\n198.51.100.2").addresses, 2);
@@ -263,9 +245,8 @@ mod tests {
         assert_eq!(read("\n\n   \n# only a comment\n").tokens, 0);
     }
 
-    /// The bound holds before the allocation rather than after. A file with no
-    /// newline in it would otherwise be read into memory in full to discover it
-    /// was never a target list.
+    /// The bound holds during the read, so a file with no newline is never
+    /// read into memory whole.
     #[test]
     fn a_line_past_the_limit_is_refused_without_being_read_whole() {
         let options =
@@ -282,8 +263,7 @@ mod tests {
         assert!(matches!(err, ImportError::LineTooLong { limit: 32, .. }));
     }
 
-    /// The limit has to mean the same length whichever way a line ends, or a
-    /// file saved on Windows is refused for the size of its own line endings.
+    /// The limit means the same length whichever way a line ends.
     #[test]
     fn the_line_limit_counts_content_and_not_the_terminator() {
         let options =
@@ -309,9 +289,9 @@ mod tests {
         }
     }
 
-    /// Bytes that are not UTF-8 are an error naming the line rather than a lossy
-    /// conversion, because the replacement character would turn a corrupted
-    /// address into something that parses as a hostname.
+    /// Bytes that are not UTF-8 are an error naming the line. A lossy
+    /// conversion would turn a corrupted address into something that parses as
+    /// a hostname.
     #[test]
     fn invalid_utf8_is_refused_rather_than_replaced() {
         let mut input = Cursor::new(b"198.51.100.1\n198.51.100.\xff\xfe2\n".to_vec());

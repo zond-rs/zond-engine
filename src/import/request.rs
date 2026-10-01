@@ -8,10 +8,10 @@
 
 //! # One scan, described as a document
 //!
-//! What to scan and how, written down rather than assembled by setting fields.
+//! What to scan and how, as a document.
 //! [`import::settings`](crate::import::settings) covers the values worth setting
-//! once and keeping; this covers the ones that change from run to run, and it
-//! covers the targets, which a settings file has no business naming.
+//! once and keeping; this covers the ones that change from run to run, and the
+//! targets.
 //!
 //! ```toml
 //! targets = ["192.0.2.0/24", "db.internal"]
@@ -31,9 +31,8 @@
 //! ttl = 12
 //! ```
 //!
-//! The same document in JSON, or in anything else `serde` reads, since
-//! [`ScanRequest`] is an ordinary deserializable struct and this module opens no
-//! files and names no format:
+//! [`ScanRequest`] is an ordinary deserializable struct, so the same document
+//! can be JSON or anything else `serde` reads:
 //!
 //! ```
 //! # #[cfg(feature = "import-json")]
@@ -61,26 +60,23 @@
 //! ZondConfig::default()  →  system file  →  user file  →  named profile  →  the caller
 //! ```
 //!
-//! A request is the last arrow. It is applied after everything a settings file
-//! said and overrides it, because it was written for this run by whoever is
-//! starting it. That position is why it may do two things a settings file may
-//! not: name targets, and widen a scan.
+//! A request is the last arrow: it overrides everything a settings file said,
+//! because it was written for this run. That is also why it may name targets
+//! and widen a scan, which a settings file may not.
 //!
-//! ## An unknown key is refused, not warned about
+//! ## An unknown key is refused
 //!
-//! The opposite of [`SettingsWarning`](crate::import::settings::SettingsWarning),
-//! and for the reason that makes a warning right there. A settings file outlives
-//! the engine that reads it, so an older build must be able to read a profile a
-//! colleague wrote with a newer one, and refusing would turn a shared file into a
-//! version lock. A request has no such life: it is written now, applied once, and
-//! whoever wrote it is holding the error. So `deny_unknown_fields` refuses a
-//! misspelled key by naming what would have worked, which is the answer a caller
-//! composing a request can act on.
+//! A settings file only warns
+//! ([`SettingsWarning`](crate::import::settings::SettingsWarning)), because it
+//! outlives the engine that reads it and an older build must still read a
+//! profile written for a newer one. A request is written for one run and whoever
+//! wrote it is holding the error, so `deny_unknown_fields` refuses a misspelled
+//! key and names the keys that would have worked.
 //!
-//! The `[settings]` table inside a request keeps the settings document's own
-//! rule, since it is that document's type. A key nobody knows there is ignored
-//! rather than refused, and [`settings::parse`](crate::import::settings::parse)
-//! is the reader that reports them.
+//! The `[settings]` table inside a request keeps the settings document's rule:
+//! an unknown key there is ignored, and
+//! [`settings::parse`](crate::import::settings::parse) is the reader that
+//! reports them.
 //!
 //! ## Two steps, because one of them touches the network
 //!
@@ -90,13 +86,11 @@
 //!
 //! [`resolve`](ScanRequest::resolve) turns the target and exclusion expressions
 //! into addresses, and into the plan a port scan runs, which keeps the ports a
-//! target was written with: `192.0.2.1:8080` is scanned on 8080. It reads this host's interface table for `lan` and for the
-//! `%interface` suffix, and it may send DNS queries, so it is asynchronous and
-//! fallible and the caller decides when to take it. Target expressions are held
-//! as written for the same reason
-//! [`default_ports`](crate::import::settings::Settings::default_ports) is: a
-//! target is a grammar, and a struct that parsed one on the way in would be
-//! doing lookups inside `Deserialize`.
+//! target was written with: `192.0.2.1:8080` is scanned on 8080. It reads this
+//! host's interface table for `lan` and the `%interface` suffix, and may send
+//! DNS queries, so it is asynchronous and fallible and the caller decides when
+//! to run it. Target expressions are held as written so that deserializing does
+//! no lookups.
 
 use std::collections::BTreeSet;
 use std::net::IpAddr;
@@ -138,17 +132,14 @@ pub enum RequestError {
 
 /// One scan, as a document.
 ///
-/// Every field is optional and silence means the value already in the
-/// [`ZondConfig`] stands, which is what makes a request a layer rather than a
-/// replacement. See the module documentation for where that layer sits.
+/// Every field is optional, and an absent one leaves the value already in the
+/// [`ZondConfig`]. See the module documentation for where this layer sits.
 ///
-/// A request widens a scan by naming what to ask, and never by loosening what
-/// keeps it safe. So nothing here takes a port off
-/// [`ZondConfig::listen_only_ports`], for the reason nothing here drops an
-/// exclusion: a service handing requests on from somebody else must not find
-/// that one of them made every printer on a segment print its probes. A key
-/// added for that set may only add to it; clearing it is the caller's
-/// decision, made in code.
+/// A request can widen what a scan asks but cannot loosen what keeps it safe:
+/// nothing here drops an exclusion or takes a port off
+/// [`ZondConfig::listen_only_ports`], so a service passing on requests from
+/// somebody else cannot be made to print probes on every printer on a segment.
+/// Clearing that set is the caller's decision, made in code.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -161,13 +152,12 @@ pub struct ScanRequest {
 
     /// What this scan may not probe, in the same grammar as `targets`.
     ///
-    /// The full grammar, unlike a settings file's `exclude`, which takes literal
-    /// addresses only. A settings file is written once and read on machines
-    /// where `lan` and `db.internal` mean something else; a request is resolved
-    /// on the machine that will run the scan, moments after it was written.
+    /// A settings file's `exclude` takes literal addresses only, since it is
+    /// read on machines where `lan` and `db.internal` mean different things. A
+    /// request is resolved on the machine that runs the scan.
     ///
-    /// Added to whatever the configuration already forbids rather than replacing
-    /// it, so applying a request cannot drop an exclusion a settings file set.
+    /// Added to whatever the configuration already forbids, so applying a
+    /// request cannot drop an exclusion a settings file set.
     pub exclude: Vec<String>,
 
     /// The ports to scan, in the [`PortSet`] grammar: `22`, `1-1024`,
@@ -179,9 +169,8 @@ pub struct ScanRequest {
 
     /// The values a settings file could also have set.
     ///
-    /// Present so one document can carry a whole scan. A request that names
-    /// nothing here layers over whatever was loaded from disk; one that does
-    /// overrides it, since a request is the later layer.
+    /// Lets one document carry a whole scan. Keys set here override what was
+    /// loaded from disk.
     pub settings: Settings,
 
     /// Treats every target as reachable and goes straight to the ports.
@@ -194,17 +183,17 @@ pub struct ScanRequest {
     /// are open.
     pub characterise: Option<bool>,
 
-    /// Keeps the ICMP messages a probe drew as evidence in the report, rather
-    /// than only the verdict they settled.
+    /// Keeps the ICMP messages a probe drew as evidence in the report, beside
+    /// the verdict they settled.
     pub icmp_evidence: Option<bool>,
 
     /// The IP protocol numbers to ask each host about, one layer below the
-    /// ports. Replaces the set rather than adding to it.
+    /// ports. Replaces the configured set.
     pub ip_protocols: Option<BTreeSet<u8>>,
 
-    /// The addresses to send every probe from, overriding what the routing table
-    /// would choose. At most one per family is used, and an empty list gives the
-    /// choice back to the host. Replaces the list rather than adding to it.
+    /// The addresses to send every probe from, overriding the routing table's
+    /// choice. At most one per family is used, and an empty list gives the
+    /// choice back to the host. Replaces the configured list.
     pub send_source: Option<Vec<IpAddr>>,
 
     /// How far to go establishing the operating system: `off`, `passive`,
@@ -221,16 +210,15 @@ pub struct ScanRequest {
     #[serde(deserialize_with = "de_named")]
     pub detection: Option<DetectionEnvelope>,
 
-    /// Scans through a third host rather than from this one.
+    /// Scans through a third host.
     #[serde(deserialize_with = "de_idle_scan")]
     pub idle_scan: Option<IdleScan>,
 
     /// How probes are shaped to get past a filter.
     ///
-    /// Replaces the profile outright rather than layering field by field. An
-    /// evasion profile is one posture, and half of one taken from a settings file
-    /// and half from a request would be a posture nobody chose. Refused at read
-    /// time if [`EvasionProfile::validate`] rejects it.
+    /// Replaces the configured profile whole, since a profile mixed field by
+    /// field from two sources would be one nobody chose. Refused at read time
+    /// if [`EvasionProfile::validate`] rejects it.
     #[serde(deserialize_with = "de_evasion")]
     pub evasion: Option<EvasionProfile>,
 }
@@ -244,15 +232,14 @@ impl ScanRequest {
     /// The port set this request scans, if it settles one.
     ///
     /// The request's own `ports` first, then the `[settings]` table's
-    /// `default_ports`. [`None`] when neither names any, which leaves the choice
-    /// to whatever the caller was going to use.
+    /// `default_ports`. [`None`] when neither names any, leaving the choice to
+    /// the caller.
     ///
     /// # Errors
     ///
     /// [`RequestError::Ports`] if the specification is malformed or names no
-    /// ports, since an empty one would plan a scan of nothing. Separate from
-    /// the field so that a request is worth reading even when one key in it is
-    /// wrong.
+    /// ports. Parsed here, not at deserialization, so the rest of a request is
+    /// readable when this key is wrong.
     pub fn ports(&self) -> Option<Result<PortSet, RequestError>> {
         if let Some(spec) = self.ports.as_deref() {
             return Some(
@@ -278,8 +265,7 @@ impl ScanRequest {
     /// override it, so a document that says `effort = "thorough"` under
     /// `[settings]` and `service_detection = "off"` at the top level means both.
     ///
-    /// Targets are not applied here. They are addresses rather than settings and
-    /// they need [`resolve`](Self::resolve) first.
+    /// Targets are not applied here; they need [`resolve`](Self::resolve).
     pub fn apply_to(&self, config: &mut ZondConfig) {
         self.settings.apply_to(config);
 
@@ -320,9 +306,8 @@ impl ScanRequest {
 
     /// Resolves the target and exclusion expressions into addresses.
     ///
-    /// `names` is the DNS policy and it is the caller's, exactly as it is on
-    /// [`resolve::for_discovery`]: [`Some`] resolves hostnames, and [`None`]
-    /// refuses them, which is what a scan running under
+    /// `names` is the DNS policy, as on [`resolve::for_discovery`]: [`Some`]
+    /// resolves hostnames and [`None`] refuses them, as a scan under
     /// [`no_dns`](ZondConfig::no_dns) needs.
     ///
     /// # Errors
@@ -393,8 +378,7 @@ impl Resolved {
     ///
     /// A target written with ports, such as `192.0.2.1:8080`, is scanned on
     /// those. Every other target is scanned on the request's ports, or on
-    /// `default_ports` where the request settled none, which leaves the
-    /// choice where [`ScanRequest::ports`] leaves it: with the caller.
+    /// `default_ports` where the request settled none.
     pub fn port_scan(&self, default_ports: &PortSet) -> PortScanTargets {
         self.plan
             .with_unported_on(self.ports.as_ref().unwrap_or(default_ports))
@@ -407,19 +391,19 @@ impl Resolved {
 
     /// Takes the addresses and the request's ports.
     ///
-    /// The ports written on a target are not among them, so a map built from
-    /// these scans `192.0.2.1:8080` on the request's ports rather than on
-    /// 8080. [`port_scan`](Self::port_scan) is the plan that keeps them.
+    /// Ports written on a target are lost, so a map built from these scans
+    /// `192.0.2.1:8080` on the request's ports. [`port_scan`](Self::port_scan)
+    /// is the plan that keeps them.
     pub fn into_parts(self) -> (IpSet, Option<PortSet>) {
         (self.targets.into_ips(), self.ports)
     }
 
     /// Writes what these targets imply into `config`.
     ///
-    /// The exclusions, whether a network was named rather than a set of
-    /// addresses, and the name each address was reached by. Exclusions are
-    /// added to what `config` already forbids, so the order a caller applies a
-    /// request and a settings file in cannot lose either one's scope.
+    /// The exclusions, whether a whole network was named, and the name each
+    /// address was reached by. Exclusions are
+    /// added to what `config` already forbids, so the order a request and a
+    /// settings file are applied in cannot lose either one's exclusions.
     pub fn apply_to(&self, config: &mut ZondConfig) {
         self.targets.apply_to(config);
         self.plan.apply_to(config);
@@ -503,7 +487,7 @@ mod tests {
         toml::from_str(document).expect("the document is a request")
     }
 
-    /// A configuration with nothing at its default, so anything a request
+    /// A configuration away from its defaults, so anything a request
     /// overwrites is visible.
     fn settled() -> ZondConfig {
         ZondConfig {
@@ -519,10 +503,9 @@ mod tests {
         }
     }
 
-    /// No request takes a port off the list a scan only listens on, at its
-    /// top level or in its settings table, for the reason no request drops an
-    /// exclusion. Today no key reads the list, and one naming it is refused or
-    /// ignored; a key added for it that replaced the set fails here.
+    /// No request takes a port off the listen-only list, at its top level or
+    /// in its settings table. A key naming the list is refused or ignored; one
+    /// that replaced the set would fail here.
     #[test]
     fn no_request_can_take_a_port_off_the_listen_only_list() {
         for text in [
@@ -531,7 +514,7 @@ mod tests {
             "[settings]\nlisten_only_ports = []\n",
         ] {
             let Ok(request) = toml::from_str::<ScanRequest>(text) else {
-                // Refusing the request keeps the list whole as well.
+                // A refused request keeps the list whole.
                 continue;
             };
             let mut config = ZondConfig::default();
@@ -546,8 +529,8 @@ mod tests {
         }
     }
 
-    /// The whole reason every field is an `Option`. A request layers over a
-    /// configuration somebody else built, and silence has to mean silence.
+    /// A request layers over a configuration somebody else built, so an absent
+    /// key must change nothing.
     #[test]
     fn a_request_that_says_nothing_changes_no_setting() {
         let mut config = settled();
@@ -629,9 +612,8 @@ mod tests {
         assert!(ports.has_tcp(22) && ports.has_tcp(80));
     }
 
-    /// The difference from a settings file, which warns about a key it does not
-    /// know and applies the rest. A request is written by whoever is holding the
-    /// error, so it is refused and the error names the field.
+    /// A settings file warns about an unknown key; a request is refused and
+    /// the error names the field.
     #[test]
     fn a_misspelled_key_is_refused_rather_than_ignored() {
         let error = toml::from_str::<ScanRequest>("traceroot = true\n")
@@ -668,7 +650,7 @@ mod tests {
     }
 
     /// The engine refuses a profile like this when a scan starts. Refusing it
-    /// where it was written names the key rather than the run.
+    /// at read time names the key.
     #[test]
     fn an_evasion_table_the_engine_would_refuse_is_refused_as_it_is_read() {
         let error = toml::from_str::<ScanRequest>("[evasion]\nfragment = 4\n")
@@ -703,9 +685,8 @@ mod tests {
         assert!(matches!(&error, RequestError::Ports { spec, .. } if spec == "nope"));
     }
 
-    /// A specification that names no ports would plan a scan of nothing and
-    /// finish it without a word, so both places a request can name its ports
-    /// refuse one.
+    /// A specification that names no ports would silently scan nothing, so
+    /// both places a request can name its ports refuse one.
     #[test]
     fn a_port_specification_naming_nothing_is_refused_rather_than_scanning_nothing() {
         for document in [
@@ -758,9 +739,6 @@ mod tests {
     }
 
     /// A port written on a target is the port that target is scanned on.
-    /// Dropped, `192.0.2.1:8080` scans the request's ports or the caller's
-    /// defaults instead, and the report answers a question nobody asked about
-    /// the one port somebody did.
     #[tokio::test]
     async fn a_port_written_on_a_target_is_the_port_it_is_scanned_on() {
         let defaults = PortSet::try_from("22").expect("a specification");
