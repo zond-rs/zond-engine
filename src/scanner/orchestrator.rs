@@ -13,26 +13,15 @@
 //! strategies, back the plan's intent with what actually opened, drive the port
 //! scan, and wait for the hostname tail.
 //!
-//! Nothing here is public. It is one implementation of the engine's own policy,
-//! and the two entry points above are its only callers. A consumer who wants a
-//! different policy does not need to reach in here: they build a
-//! [`plan`], edit it, and run the steps they want, which is the
-//! second of the three altitudes the [`scanner`](super) module documents.
+//! Nothing here is public; the two entry points are its only callers. A consumer
+//! who wants a different policy builds a [`plan`], edits it, and runs the steps
+//! they want, the second of the three altitudes the [`scanner`](super) module
+//! documents.
 //!
-//! ## Why it is a module of its own
-//!
-//! The two entry points are about ninety lines between them. Everything else a
-//! scan needs to be assembled is another five hundred, and read together they
-//! obscure the thing a reader opens `scanner.rs` to find. Split out, the facade
-//! reads as a facade and the policy reads as policy.
-//!
-//! ## The one decision worth knowing before reading
-//!
-//! A plan says what should run; only the attempt discovers what could. Those are
-//! separate steps here on purpose, and the seam between them is
-//! [`ensure_coverage`], which backs the plan's intent with the sockets that
-//! actually opened. A protocol left with no strategy at all is not a degraded
-//! scan but a silent one, since nothing would route its targets anywhere.
+//! A plan says what should run; only the attempt discovers what could.
+//! [`ensure_coverage`] is the seam: it backs the plan's intent with the sockets
+//! that actually opened, so no protocol is left without a strategy and silently
+//! unscanned.
 
 use crate::model::host::OsEvidence;
 use crate::system::privilege::{self, Privilege};
@@ -70,22 +59,15 @@ use crate::{counted, info, success, warn};
 
 /// The targets an unprivileged sweep can actually walk, refusing the rest.
 ///
-/// The privileged path gets this from [`plan::DiscoveryPlan::build`], which
-/// classifies every range against this host's interfaces and refuses the ones no
-/// strategy can take. The unprivileged path has no plan: it hands the whole set
-/// to `connect`, which probes addresses one at a time and would keep doing so
-/// until the process is killed. So the same rule is applied here, and applied to
-/// the same constant, because a `/64` that is refused with root and scanned
-/// forever without it is the engine giving two different answers about one
-/// range.
+/// The privileged path gets this from [`plan::DiscoveryPlan::build`]. The
+/// unprivileged path has no plan and hands the set to `connect`, which would walk
+/// a `/64` until the process is killed, so the same rule and constant apply here.
 ///
-/// Filtered per range rather than all-or-nothing. A set holding a `/64` and
-/// three literal addresses is three quarters scannable, and refusing the whole
-/// of it would throw away addresses somebody named.
+/// Filtered per range, so a set holding a `/64` and three literal addresses keeps
+/// the three.
 ///
-/// IPv4 is untouched. Every IPv4 range is finite in a way a person can reason
-/// about, and a `/8` is an unreasonable request rather than an impossible one,
-/// which is a judgement for whoever is driving the engine, not for the engine.
+/// IPv4 is untouched: every IPv4 range is finite, and whether a `/8` is reasonable
+/// is the caller's judgement.
 pub(super) fn walkable(targets: IpSet, ctx: &ScanContext) -> IpSet {
     let refused: Vec<_> = targets
         .v6()
@@ -118,12 +100,9 @@ pub(super) fn walkable(targets: IpSet, ctx: &ScanContext) -> IpSet {
 
 /// The environment-derived facts that steer how a scan runs.
 ///
-/// Both entry points face the same two questions: can the process open raw
-/// sockets, and should it resolve hostnames. Answering them once, up front,
-/// lets [`scan`](crate::scanner::scan) and
-/// [`discover`](crate::scanner::discover) branch on the same facts and keeps
-/// the privileged-versus-unprivileged and DNS-on-versus-off policy from
-/// drifting between phases.
+/// Whether the process can open raw sockets and whether it should resolve
+/// hostnames, answered once so [`scan`](crate::scanner::scan) and
+/// [`discover`](crate::scanner::discover) branch on the same facts.
 #[derive(Clone, Copy)]
 pub(super) struct ScanCapabilities {
     /// Which sockets every phase of this scan runs with. At
@@ -135,14 +114,12 @@ pub(super) struct ScanCapabilities {
     /// True for an unprivileged run on macOS holding the BPF devices, and for
     /// every privileged run on Windows, whose default send mode is frames alone.
     /// Such a run reaches loopback, this host's own addresses, anything routed
-    /// through a tunnel and, for its port probes, an IPv6 neighbour by connect,
-    /// the way an unprivileged run would, and reaches the rest with the packets
-    /// it chose. See [`interface::beyond_frames`].
+    /// through a tunnel and, for its port probes, an IPv6 neighbour by connect.
+    /// See [`interface::beyond_frames`].
     ///
     /// False where the caller chose the link layer, by naming the send mode or
-    /// by an evasion only a frame can carry. A connect honours neither choice,
-    /// so what the frames miss is left unanswered as the choice implies rather
-    /// than answered by a different probe than the one asked for.
+    /// by an evasion only a frame can carry. A connect honours neither choice, so
+    /// what the frames miss is left unanswered.
     pub(super) frames_only: bool,
     /// Whether hostname resolution is enabled, the inverse of `cfg.no_dns`.
     dns: bool,
@@ -150,20 +127,16 @@ pub(super) struct ScanCapabilities {
 
 impl ScanCapabilities {
     /// Reads the runtime capabilities from the environment and config, and
-    /// announces the scanning mode they imply once, here, rather than from the
-    /// code that later acts on them.
+    /// announces the scanning mode they imply, once.
     ///
-    /// `probing` is what the run sends beyond its liveness probes, which is
-    /// what the announcement names; `None` for a sitting an earlier one left
-    /// nothing to ask, which sends no probe and so announces none. `targets`
-    /// is what it will probe, asked by `sender`'s frames, since a run that
-    /// sends frames alone asks what no frame reaches by connect, and where
-    /// that is every target the connect is the route to announce.
+    /// `probing` is what the run sends beyond its liveness probes, which the
+    /// announcement names; `None` for a sitting an earlier one left nothing to
+    /// ask, which announces nothing. `targets` is what it will probe, asked of
+    /// `sender`'s frames: a frames-only run asks what no frame reaches by connect,
+    /// and where that is every target, connect is the route announced.
     ///
-    /// A run that sends no DNS says so here too, for a reader asking for
-    /// detail, and on every route alike: raw or connect, its hostnames come
-    /// from the hosts file alone, and a missing reverse name is that decision
-    /// rather than an answer nobody gave.
+    /// A run that sends no DNS says so at detail level: its hostnames come from
+    /// the hosts file alone.
     pub(super) fn resolve(
         cfg: &ZondConfig,
         probing: Option<Probing>,
@@ -203,15 +176,11 @@ impl ScanCapabilities {
     ///
     /// `raw_sockets` is which of the two routes to raw probing carries the
     /// probes; see [`by_raw_socket`]. `unframed` is why no frame reaches any
-    /// target, where none does, and the run then probes by connect alone,
-    /// which is what the line names: loopback scanned from a run holding the
-    /// link layer is asked by connect, and a line naming link-layer frames
-    /// would name a route nothing took.
+    /// target, where none does; the run then probes by connect alone, and the
+    /// line says so.
     ///
-    /// Without raw sockets the line carries what root would add, in brackets,
-    /// and is the only place a run says so: a front end reading the report
-    /// afterwards has the privilege level, and a second line at the end of a
-    /// run repeating this one is the same fact twice.
+    /// Without raw sockets the line carries what root would add, in brackets.
+    /// This is the only place a run says so.
     fn announce(self, probing: Probing, raw_sockets: bool, unframed: Option<&str>) {
         if let (true, None, Some(why)) = (self.privilege.is_raw(), probing.zombie, unframed) {
             match probing.udp {
@@ -230,11 +199,9 @@ impl ScanCapabilities {
             }
         } else if probing.zombie.is_some() {
             // Nothing: an idle scan without raw sockets is refused whole, and
-            // the refusal says why. A line naming a connect fallback would claim
-            // the one thing the scan exists not to do.
+            // the refusal says why.
         } else if probing.udp {
-            // The UDP ports go to ordinary sockets, which need no privilege, so
-            // a line naming TCP alone would say less than the run does.
+            // UDP needs no privilege, so the line names it too.
             warn!("no raw sockets: TCP by connect, plain UDP (sudo for SYN)");
         } else if probing.ports {
             warn!("no raw sockets: probing by TCP connect (sudo for SYN)");
@@ -262,29 +229,25 @@ impl ScanCapabilities {
     }
 }
 
-/// Whether a raw run's probes leave by raw socket rather than as frames it
-/// builds itself, given the send mode it runs in and whether this process may
-/// open a raw socket.
+/// Whether a raw run's probes leave by raw socket or as frames it builds itself,
+/// given its send mode and whether this process may open a raw socket.
 ///
-/// The route the probes take, not the one the privilege came from, since the
-/// two part in both directions. On macOS the link layer alone is what an
-/// unprivileged run gets, and a reader who expected to need sudo should see
-/// why they did not. A root run told to send its own frames, or one on
-/// Windows, where the frames are all a scan sends, holds raw sockets and puts
-/// none of its probes through one: it cannot reach a tunnel, or loopback
-/// anywhere but macOS, and a neighbour that never answers ARP is one it could
-/// not frame to rather than one the kernel failed to route to.
+/// This names the route the probes take, which can differ from the privilege
+/// held either way. On macOS an unprivileged run gets the link layer alone. A root
+/// run told to send its own frames, or any run on Windows, holds raw sockets but
+/// sends no probe through one: it cannot reach a tunnel, or loopback except on
+/// macOS, and a neighbour that never answers ARP is one it could not frame to.
 fn by_raw_socket(mode: SendMode, raw_sockets: bool) -> bool {
     raw_sockets && mode.reaches_past_frames()
 }
 
 /// What a run probes its ports with, beside the ARP, ICMPv6 and SYN every
-/// liveness pass and sweep sends: the part of its opening line the run's own
+/// liveness pass and sweep sends: the part of its opening line the caller's
 /// choices decide.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Probing {
-    /// Whether the run probes ports at all, rather than sweeping for hosts:
-    /// what root adds to a sweep is ARP, and to a port scan a SYN.
+    /// Whether the run probes ports, or only sweeps for hosts. Root adds ARP to a
+    /// sweep and a SYN to a port scan.
     ports: bool,
     /// The zombie an idle scan probes through, which replaces every technique
     /// below: its probes are forged from that host and read through it.
@@ -350,12 +313,10 @@ impl Probing {
 /// The hosts a pass that builds its own segments can reach, having recorded
 /// once that it leaves the rest alone.
 ///
-/// Every host, unless this scan's raw strategies send frames alone. Then a host
-/// a frame cannot reach is not probed some other way: what these passes read,
-/// a stack's answer to an unusual segment, the hops along a path, a middlebox's
-/// reply to a bad checksum, is what only a packet they built can ask. One
-/// refusal says how many were left and why, where a send per host would have
-/// failed once each and said nothing about the cause.
+/// Every host, unless this scan's raw strategies send frames alone. Then hosts a
+/// frame cannot reach are skipped, since these passes read what only a packet they
+/// built can ask (a stack's answer to an unusual segment, the hops along a path, a
+/// middlebox's reply to a bad checksum). One refusal says how many and why.
 fn within_frames<T>(
     hosts: Vec<T>,
     address: impl Fn(&T) -> IpAddr,
@@ -410,9 +371,9 @@ pub(super) fn reached_by_connect(
 /// Names the targets `phase` reaches by connect, and why, for a reader asking
 /// for detail.
 ///
-/// Detail rather than news: the scan answers these either way, and the
-/// report's [`reached_by_connect`](crate::report::ScanPhase::reached_by_connect)
-/// is the record of it. One line, with one address named per reason.
+/// At detail level; the report's
+/// [`reached_by_connect`](crate::report::ScanPhase::reached_by_connect) is the
+/// record. One line, with one address named per reason.
 fn announce_by_connect(phase: &str, beyond: &interface::BeyondFrames) {
     if beyond.is_empty() {
         return;
@@ -436,8 +397,7 @@ fn announce_by_connect(phase: &str, beyond: &interface::BeyondFrames) {
 /// MAC and RTT), a [`RoutedScanner`](strategy::routed::RoutedScanner) for
 /// off-link targets (RTT), and the passive DNS and mDNS [`HostnameResolver`].
 /// All of them write into the shared store. `discover` runs this alone, while
-/// `scan` runs it alongside the port scan. Keeping it in one place lets both
-/// surface identical host detail without duplicating the orchestration.
+/// `scan` runs it alongside the port scan.
 pub(super) struct Enrichment {
     scanners: Vec<(ScannerKind, JoinHandle<Result<(), StrategyError>>)>,
     resolver: Option<JoinHandle<Option<HostnameResolver>>>,
@@ -453,20 +413,12 @@ impl Enrichment {
         tuning: ProbeTuning,
     ) -> Self {
         let (dns_tx, resolver) = if caps.dns {
-            // **The one unbounded queue in the crate, and it is the right shape
-            // here.** Everything else a scan opens is bounded because its depth is
-            // set by how fast a producer runs; this one's depth is set by how many
-            // hosts exist, and every entry it holds accompanies a `Host` the store
-            // is already holding. An `IpAddr` is 17 bytes against that record's
-            // 480, so bounding this saves under four per cent of a cost the scan
-            // cannot avoid paying.
-            //
-            // What it would cost is worse than that. The two senders
-            // (`local::EnrichingScanner` and `routed::SweepScanner`) post from
-            // synchronous reply handlers, so a bounded channel is either
-            // `try_send`, which drops a hostname the scan will never look for
-            // again, or an `await` that makes two hot classification paths async
-            // to reclaim nothing.
+            // The crate's one unbounded queue. Its depth is the number of hosts,
+            // each entry (17 bytes) accompanying a `Host` the store already holds
+            // (480 bytes). The senders, `local::EnrichingScanner` and
+            // `routed::SweepScanner`, post from synchronous reply handlers, where
+            // a bounded channel would either drop hostnames on `try_send` or make
+            // two hot paths async.
             let (tx, rx) = mpsc::unbounded_channel();
             (Some(tx), Some(spawn_resolver(rx, ctx.clone()).await))
         } else {
@@ -505,19 +457,14 @@ impl Enrichment {
 /// Records the targets that are this host's own addresses as up, without
 /// probing them.
 ///
-/// No strategy can establish one. The kernel routes traffic for an address this
-/// host holds through loopback, so an ARP request for it goes onto a link where
-/// nothing will answer, and without this the address would be reported down
-/// while `ping` to it succeeds.
+/// No strategy can establish one: the kernel routes traffic for an address this
+/// host holds through loopback, so nothing on the link answers for it.
 ///
-/// The evidence is named rather than borrowed from a probe protocol, because
-/// nothing was sent: the interface table is the whole of it, and it is
-/// conclusive in a way no reply is.
+/// The evidence is the interface table, named as such since nothing was sent.
 ///
-/// Each is settled as answered, too. A sweep counted in addresses otherwise
-/// leaves this host's own position unsettled for ever, the watermark stops
-/// behind it, and every finished sweep of the segment the scanner sits on reads
-/// as resumable with nothing left to ask.
+/// Each is also settled as answered. Otherwise a sweep counted in addresses would
+/// leave this host's position unsettled, the watermark would stop behind it, and
+/// every finished sweep of the scanner's own segment would read as resumable.
 fn record_our_own_addresses(ours: &crate::model::ip::set::IpSet, ctx: &ScanContext) {
     let addresses: Vec<IpAddr> = ours.iter().collect();
     if addresses.is_empty() {
@@ -546,15 +493,11 @@ fn record_our_own_addresses(ours: &crate::model::ip::set::IpSet, ctx: &ScanConte
 
 /// Turns a [`DiscoveryPlan`](plan::DiscoveryPlan) into running tasks.
 ///
-/// Every refusal the plan carries is recorded before anything is spawned, so the
-/// distinction between "nothing is there" and "nobody looked" survives into the
-/// report. Then each step is asked for its strategy: a step that cannot open
-/// what it needs is recorded and skipped, and the rest of the scan proceeds
-/// rather than being abandoned over one bad interface.
+/// Every refusal the plan carries is recorded first. A step that cannot open what
+/// it needs is recorded and skipped, and the rest proceed.
 ///
-/// Each surviving strategy gets its own task, tagged with its own
-/// [`ScannerKind`], so the caller can wait on all of them and react to failures
-/// individually.
+/// Each surviving strategy gets its own task, tagged with its [`ScannerKind`], so
+/// the caller can wait on all of them and attribute failures.
 pub(super) async fn spawn_explorers(
     plan: plan::DiscoveryPlan,
     ctx: &ScanContext,
@@ -584,8 +527,7 @@ pub(super) async fn spawn_explorers(
     explorers
         .into_iter()
         .map(|mut explorer| {
-            // Read before the strategy moves into its task: once it is running,
-            // the only thing left to attribute a failure to is the handle.
+            // Read before the strategy moves into its task.
             let kind = explorer.kind();
             (
                 kind,
@@ -636,25 +578,23 @@ impl RawReach {
 /// Turns a [`PortScanPlan`](plan::PortScanPlan) into the single strategy
 /// [`run_port_scan`] drives.
 ///
-/// Every refusal is recorded first, for the same reason discovery records its
-/// own: a protocol nobody probed has to be distinguishable from a protocol with
-/// nothing open. A step that cannot open its socket is recorded and dropped, and
-/// whatever built is wrapped in a
+/// Every refusal is recorded first, so a protocol nobody probed is distinguishable
+/// from one with nothing open. A step that cannot open its socket is recorded and
+/// dropped, and whatever built is wrapped in a
 /// [`CompositePortScanner`](strategy::composite::CompositePortScanner), which
-/// routes each target to a strategy that covers its protocol. One scanner comes
-/// back either way, so the fork stays confined here.
+/// routes each target to a strategy that covers its protocol.
 ///
 /// `raw` is what the raw strategies can reach. Where that is every target but
-/// some, they are handed the rest and [`ensure_coverage`] finds those theirs;
-/// where it is no target at all, no raw strategy is opened.
+/// some, [`ensure_coverage`] finds strategies for the rest; where it is no target,
+/// no raw strategy is opened.
 ///
-/// `named` is the protocols the targets name a port on. A stand-in is found
-/// only for those: one for a protocol nothing names probes nothing, and the
-/// phase would still record the addresses it covers as reached by connect.
+/// `named` is the protocols the targets name a port on. A stand-in is found only
+/// for those, since one for an unnamed protocol probes nothing but would still
+/// mark addresses as reached by connect.
 ///
-/// Every refusal, the plan's and the coverage check's, is handed to the
-/// composite with the protocol and addresses it covers, so a target it leaves
-/// unprobed is counted there as refused rather than as lost.
+/// Every refusal, the plan's and the coverage check's, is handed to the composite
+/// with its protocol and addresses, so the targets it leaves unprobed are counted
+/// as refused, not lost.
 pub(super) fn build_port_scanner(
     plan: plan::PortScanPlan,
     named: &[Protocol],
@@ -670,8 +610,7 @@ pub(super) fn build_port_scanner(
 
     let technique = plan.technique();
     // Read before the steps are consumed. A protocol the plan never intended to
-    // cover has already been refused above, in the same words, and must not be
-    // refused a second time by the coverage check below.
+    // cover was refused above and must not be refused again below.
     let intended: Vec<Protocol> = Protocol::ALL
         .iter()
         .copied()
@@ -687,10 +626,9 @@ pub(super) fn build_port_scanner(
     let beyond = Arc::new(raw.beyond());
     let mut routes: Vec<(Box<dyn PortScanner>, Reach)> = Vec::new();
     for step in plan.into_steps() {
-        // Not opened rather than opened and starved: a raw strategy holds a
-        // capture on every interface for as long as the scan runs, and here it
-        // would be handed nothing. The protocol is left uncovered, which is what
-        // gives it its unprivileged strategy below, for every address.
+        // A raw strategy holds a capture on every interface for the whole scan,
+        // and here it would be handed nothing. Left uncovered, the protocol gets
+        // its unprivileged strategy below, for every address.
         if step.is_raw() && matches!(raw, RawReach::Nothing(_)) {
             continue;
         }
@@ -741,57 +679,39 @@ pub(super) struct Coverage {
 /// Backs the plan's intent with what actually opened: any protocol left without
 /// a strategy gets the unprivileged one, or is refused.
 ///
-/// The plan cannot do this on its own, and that is the point of separating
-/// them. A plan says a raw TCP scanner and a raw UDP scanner should run. Only
-/// the attempt discovers that this host permitted one raw socket and not the
-/// other, a sandbox can do exactly that, and a protocol left with no strategy
-/// at all is not a degraded scan but a silent one:
-/// [`CompositePortScanner`](strategy::composite::CompositePortScanner) has
-/// nowhere to route those targets, so they are never probed and never reported.
-/// Asking what actually built, rather than assuming a privileged scan covers
-/// everything, is what keeps that from happening.
+/// A plan says a raw TCP scanner and a raw UDP scanner should run; only the
+/// attempt discovers that a sandbox permitted one raw socket and not the other.
+/// A protocol with no strategy would never be probed or reported, since
+/// [`CompositePortScanner`](strategy::composite::CompositePortScanner) has nowhere
+/// to route its targets.
 ///
-/// A connect fallback substitutes for a SYN scan and for nothing else. It
-/// completes handshakes, so it answers roughly the question a SYN scan asks; it
-/// cannot send a FIN, a flagless segment or a bare ACK, and so cannot answer
-/// what any of those were asked. Where the caller chose one of those and no raw
-/// scanner opened, the TCP half is reported as a failure and left undone. That
-/// is worse for the caller and honest, where a silent substitution would hand
-/// back verdicts from a technique they did not choose - and no field in the
-/// report would say so.
+/// A connect fallback substitutes only for a SYN scan. It cannot send a FIN, a
+/// flagless segment or a bare ACK, so where the caller chose one of those and no
+/// raw scanner opened, the TCP half is reported as a failure.
 ///
-/// `intended` is what keeps this from repeating the plan. A protocol the
-/// plan never meant to cover was already refused, in the words
-/// [`plan::RefusedStep::technique_needs_raw_sockets`]
-/// supplies, and saying it again puts one cause in the report twice. What is
-/// left for this function is the narrower case the plan could not foresee: a
-/// protocol it did intend, whose socket would not open.
+/// `intended` keeps this from repeating the plan: a protocol the plan never meant
+/// to cover was already refused, in the words
+/// [`plan::RefusedStep::technique_needs_raw_sockets`] supplies. This function
+/// handles a protocol the plan did intend whose socket would not open.
 ///
-/// A refusal made here comes back with the protocol and the addresses it
-/// covers, in [`Coverage::refused`], because recording it is only half of what
-/// it takes: its targets still reach the router, which has to count them as
-/// refused rather than lost. See
+/// A refusal made here comes back in [`Coverage::refused`] with its protocol and
+/// addresses, so the router counts its targets as refused, not lost. See
 /// [`refusing`](strategy::composite::CompositePortScanner::refusing).
 ///
 /// ## The targets the raw strategies cannot reach
 ///
-/// `raw` says what the raw strategies reach, which is every target unless they
-/// send frames alone. Then what they miss is what a frame cannot reach:
-/// loopback, this host's own addresses, anything routed through a tunnel, and
-/// an IPv6 neighbour. The raw routes arrive already handed everything else, so
-/// the same question is asked a second time over these addresses, on the same
-/// terms: a protocol whose only strategies are raw gets its unprivileged one
-/// for them alone, or is refused for them alone. What is reached this way is
-/// recorded, since the phase's privilege reads as raw and the evidence at these
-/// addresses is not.
+/// `raw` says what the raw strategies reach, every target unless they send frames
+/// alone. Then they miss loopback, this host's own addresses, anything routed
+/// through a tunnel, and IPv6 neighbours. For those addresses alone, a protocol
+/// whose only strategies are raw gets its unprivileged one or is refused. What is
+/// reached this way is recorded, since the phase's privilege reads as raw and the
+/// evidence at these addresses is not.
 ///
-/// A protocol with no strategy at all is not asked about twice. Its fallback
-/// above reaches every address, these included, and its refusal already
-/// covers them. Its refusal says why there is none: a process with no raw
-/// socket is told so, and a frames-only one whose raw strategies were never
-/// opened, because no target was within a frame's reach, is told that. The
-/// two call for different things, and the second process already holds the
-/// privilege the first is told it lacks.
+/// A protocol with no strategy at all is handled once: its fallback reaches every
+/// address and its refusal covers them all. The refusal distinguishes a process
+/// with no raw socket from a frames-only one whose raw strategies were never opened
+/// because no target was within a frame's reach; the second already holds the
+/// privilege.
 pub(super) fn ensure_coverage(
     mut routes: Vec<(Box<dyn PortScanner>, Reach)>,
     ctx: &ScanContext,
@@ -803,16 +723,15 @@ pub(super) fn ensure_coverage(
 ) -> Coverage {
     let beyond = &Arc::new(raw.beyond());
     // Whether the raw strategies were left unopened because every target is
-    // beyond a frame's reach, rather than asked for and not had.
+    // beyond a frame's reach.
     let withheld = matches!(raw, RawReach::Nothing(_));
     let mut refused: Vec<(Protocol, Reach)> = Vec::new();
     let covered: Vec<Protocol> = routes
         .iter()
         .flat_map(|(scanner, _)| scanner.supported_protocols())
         .collect();
-    // Covered, and by nothing that is handed the addresses the raw routes are
-    // not. Asked before anything is added below, since a fallback reaching
-    // every address answers this question as well as the first one.
+    // Covered only by raw routes, which miss `beyond`. Asked before anything is
+    // added below, since a fallback reaching every address also covers these.
     let beyond_uncovered: Vec<Protocol> = match beyond.is_empty() {
         true => Vec::new(),
         false => covered
@@ -830,8 +749,7 @@ pub(super) fn ensure_coverage(
 
     let missing = |protocol: Protocol| intended.contains(&protocol) && !covered.contains(&protocol);
 
-    // Whether anything below stands in for a raw strategy. A stand-in reaching
-    // every address reaches the ones a frame cannot as well.
+    // Whether anything below stands in for a raw strategy.
     let mut connected = false;
 
     if missing(Protocol::Tcp) {
@@ -853,9 +771,7 @@ pub(super) fn ensure_coverage(
         connected = true;
     }
 
-    // Nothing stands in for an INIT scan. A protocol whose only strategy failed
-    // to open is reported rather than answered by something that asked a
-    // different question, which for SCTP is the whole of what is available.
+    // Nothing stands in for an INIT scan.
     if missing(Protocol::Sctp) {
         let refusal = match withheld {
             true => plan::RefusedStep::sctp_beyond_frames(beyond.len()),
@@ -938,27 +854,22 @@ fn connect_udp(
 pub(super) struct BuiltPortScan {
     pub(super) scanner: Box<dyn PortScanner>,
     /// Whether a connect strategy stands in for a raw one on the targets a
-    /// frame cannot reach, which is when the phase says it reached them by
-    /// connect.
+    /// frame cannot reach.
     reached_by_connect: bool,
 }
 
 /// Whether the scan was asked to stop, or ran out of budget, before `pass`
 /// began, recording the pass as cut by the stop where some host was owed it.
 ///
-/// Every pass that sends anything asks this first, ahead of announcing its
-/// stage: a scan the caller stopped is owed a prompt end and nothing further
-/// on the wire, and a pass that only checked its stop between the hosts it
-/// probes would still open its sockets, announce itself and send its first
-/// burst. The passes that only read the store, correlation and the rest, run
-/// whatever happened, since what they conclude is part of the partial report
-/// a stop still produces.
+/// Every pass that sends anything asks this before announcing its stage, so a
+/// stopped scan opens no sockets and sends nothing further. Passes that only read
+/// the store, such as correlation, run regardless, since they contribute to the
+/// partial report.
 ///
-/// A pass these ask about asks something of a host that answered, so one is
-/// cut where a host is up and owed the passes; see
-/// [`ScanPhase::passes_cut`](crate::report::ScanPhase::passes_cut). Asked
-/// before the pass works out its own targets, which for some of them files
-/// what it could not reach, so a stopped scan is not charged with that too.
+/// A pass is cut where a host is up and owed it; see
+/// [`ScanPhase::passes_cut`](crate::report::ScanPhase::passes_cut). Asked before
+/// the pass works out its targets, which for some passes files what it could not
+/// reach, so a stopped scan is not charged with that.
 fn stopped(ctx: &ScanContext, pass: Pass) -> bool {
     stopped_with(ctx, pass, || {
         ctx.hosts_owed_passes().into_iter().any(|key| {
@@ -1000,14 +911,11 @@ pub(super) async fn run_port_scan(
     let kind = scanner.kind();
     match scanner.scan(rx).await {
         Ok(()) => {
-            // Each pass asks after the stop itself, once it knows it has ports
-            // in front of it, so a stopped scan opens nothing further and the
-            // report names what the stop left rather than a pass that had
-            // nothing to do.
+            // Each pass checks the stop itself once it knows it has ports, so
+            // the report names what the stop cut.
             scanner.detect_services(ctx).await;
-            // Active detections run over the services just identified, on the same
-            // terms service detection did: after it, and only if the scan is not
-            // stopping.
+            // Active detections over the services just identified, unless the
+            // scan is stopping.
             super::detection::detect(ctx, service_detection, detection).await;
         }
         Err(e) => ctx.record_failure(kind, e.to_string()),
@@ -1018,12 +926,9 @@ pub(super) async fn run_port_scan(
 ///
 /// A privileged scan spawns passive DNS and mDNS resolution as part of its
 /// [`Enrichment`]; awaiting that here folds the collected hostnames and extra
-/// IPs into the store along with the rest of the enrichment strategies. A
-/// phase with no enrichment, which is every unprivileged one and every port
-/// phase, falls back to active reverse lookups when DNS is enabled. When it
-/// is not, either way, the hosts found are named from the hosts file alone,
-/// which sends nothing. This is the single place the "passive where a sweep
-/// ran, active otherwise" policy lives.
+/// IPs into the store. A phase with no enrichment, which is every unprivileged
+/// one and every port phase, falls back to active reverse lookups when DNS is
+/// enabled. With DNS disabled, hosts are named from the hosts file alone.
 ///
 /// `unheard` says whether the active lookups name hosts nothing was heard
 /// from too, which only a port scan whose caller asked for every address as a
@@ -1047,33 +952,21 @@ pub(super) async fn finish_enrichment(
 /// Reads an operating system out of what the scan already knows, sending
 /// nothing.
 ///
-/// This is [`OsDetection::Passive`] applied to a phase that has no other way to
-/// apply it. The port scanner reads a stack off the segments it drew and the
-/// echo prober reads one off a ping it sent, but host discovery draws neither,
-/// so without this a discovery sweep concludes nothing about any host, however
-/// much it has learned about it. A machine whose hardware address names its
-/// maker and whose hostname is the one its system generated would sit in the
-/// store, unread.
+/// [`OsDetection::Passive`] for host discovery, which draws no segments to read a
+/// stack from. It reads the hardware address's maker and a system-generated
+/// hostname.
 ///
-/// Runs after enrichment and not before it: [`os::hostname_evidence`] reads a
-/// name, and the name arrives on the resolver's tail. Ordering this earlier
-/// would consult a store that has not been told the hostnames yet.
+/// Runs after enrichment, because [`os::hostname_evidence`] reads a name that
+/// arrives on the resolver's tail.
 ///
-/// ## What it will and will not conclude
+/// ## What it concludes
 ///
-/// The two sources it has are each below the floor
-/// [`os::resolve`] reports at, so neither names a host alone, and a sweep of a
-/// network of randomly-addressed phones concludes nothing at all. Two agreeing
-/// sources clear it: an Apple address under a default `MacBook-Pro` name is a
-/// verdict, where either alone is a guess. That is the intended yield and it is
-/// a small one. It is not a substitute for reading a stack off the wire; it is
-/// the part of passive identification that costs nothing and was simply not
-/// wired up.
+/// Each source alone is below the floor [`os::resolve`] reports at, so a sweep of
+/// randomly-addressed phones concludes nothing. Two agreeing sources clear it: an
+/// Apple address under a default `MacBook-Pro` name is a verdict.
 pub(super) fn run_passive_os_identification(ctx: &ScanContext, os_detection: OsDetection) {
-    // `Off` means identify nothing and record nothing about the stacks that
-    // answered. It costs no packets to disobey that, which is exactly why it
-    // has to be obeyed here: a caller who asked for a report containing only
-    // what they requested would otherwise find a fingerprint in it.
+    // `Off` means record nothing about the stacks that answered, even though
+    // this pass costs no packets.
     if matches!(os_detection, OsDetection::Off) {
         return;
     }
@@ -1104,25 +997,21 @@ pub(super) fn run_passive_os_identification(ctx: &ScanContext, os_detection: OsD
 ///
 /// # Why this runs before the echo probe
 ///
-/// The two active probes reach different hosts and read different things, and
-/// this one is the stronger of the pair wherever it applies. It revisits ports
-/// whose state the port scan already settled, so it needs a host that answered
-/// *something* over TCP, and for such a host it reads the identifier, sequence
-/// and clock policies that no single reply carries. The echo probe is the route
-/// to the host that answered nothing at all, where a hop counter and an echoed
-/// code are all there is. Running the series first means the echo pass sees a
-/// store in which everything reachable by TCP has already been read.
+/// This is the stronger of the two active probes where it applies. It revisits
+/// ports the port scan settled, so it needs a host that answered something over
+/// TCP, and reads the identifier, sequence and clock policies no single reply
+/// carries. The echo probe covers hosts that answered nothing, where a hop counter
+/// and an echoed code are all there is, and runs on a store the series has already
+/// read.
 ///
 /// # What each level asks for
 ///
-/// At [`OsDetection::Active`] this follows the hosts a scan could not settle:
-/// every host that is up, has a TCP answer, and is not already named with high
-/// confidence. At [`OsDetection::Aggressive`] it follows **every** host with a
-/// TCP answer and takes twice the samples, which is what somebody measuring
-/// hosts they already know the answer for wants, and is the reading a new rule
-/// is authored from.
+/// At [`OsDetection::Active`], every host that is up, has a TCP answer, and is
+/// not already named with high confidence. At [`OsDetection::Aggressive`],
+/// **every** host with a TCP answer, with twice the samples: the reading a new
+/// rule is authored from.
 ///
-/// Declines quietly rather than failing when there is nothing to do.
+/// Does nothing, without failing, when there is nothing to do.
 pub(super) async fn run_active_os_series(
     ctx: &ScanContext,
     os_detection: OsDetection,
@@ -1147,9 +1036,7 @@ pub(super) async fn run_active_os_series(
                     return None;
                 }
                 // A host already named with high confidence is not worth more
-                // packets at `Active`: nothing this probe can read would change
-                // the answer, and the level's whole premise is that its traffic
-                // was asked for.
+                // packets at `Active`.
                 let settled = host.os().is_some_and(|os| os.is_highly_confident());
                 if settled && !thorough {
                     return None;
@@ -1173,8 +1060,7 @@ pub(super) async fn run_active_os_series(
         return;
     }
 
-    // Decided before the pass is announced, so a scan that will not run it
-    // does not say it is following anybody.
+    // Decided before the pass is announced.
     if strategy::identify::series::OsSeriesScanner::gap_it_cannot_keep(ctx).is_some() {
         info!(verbosity = 1, "OS series skipped (scan-wide gap)");
         return;
@@ -1198,8 +1084,7 @@ pub(super) async fn run_active_os_series(
             }
         }
         // The raw TCP socket would not open, most likely for want of
-        // privileges. One recorded line, not a per-host failure: every host
-        // keeps the answer the passive sources gave it.
+        // privileges. One recorded failure; every host keeps its passive answer.
         Err(e) => ctx.record_failure(
             ScannerKind::OsSeries,
             format!("the active series probe could not open its transport: {e}"),
@@ -1212,57 +1097,35 @@ pub(super) async fn run_active_os_series(
 /// One `GetRequest` for `sysDescr.0` per host, and on anything that answers, the
 /// exact kernel, because on a Unix host `sysDescr` is the output of `uname -a`.
 ///
-/// # Why this is worth a phase of its own
+/// # Why this is a phase of its own
 ///
-/// It is the only thing this engine can reach that states a kernel version. A
-/// TCP stack's shape identifies a *family* and cannot do more: Debian 12
-/// (kernel 6.1) and Debian 13 (kernel 6.12) answer this engine's probe with
-/// byte-identical shapes, measured on both. A service banner names a
-/// distribution release at best. An agent answering here answers outright, and a
-/// kernel version is the single most actionable thing a scan can learn about a
-/// Unix host, because it is what a known-vulnerability lookup keys on.
+/// It is the only thing this engine can reach that states a kernel version. A TCP
+/// stack's shape identifies a family: Debian 12 (kernel 6.1) and Debian 13 (kernel
+/// 6.12) answer this engine's probe identically. A service banner names a
+/// distribution release at best. A kernel version is what a known-vulnerability
+/// lookup keys on.
 ///
-/// # What comes back from a box that has no kernel to name
+/// An appliance answers with its own identity instead, such as `Brother
+/// NC-8700w, Firmware Ver.ZL`: a make, model, firmware and device class off one
+/// datagram, on a host the rest of the scan could only place by its initial hop
+/// count.
 ///
-/// An appliance answers with its own identity instead: `Brother NC-8700w,
-/// Firmware Ver.ZL`, and that is not a failed probe. It is a make, a model, a
-/// firmware and a device class off one datagram, on a host the rest of the scan
-/// could only place as *something with an initial hop count of 255*. The phase
-/// is named for the kernel because that is what justifies it; it is worth
-/// running for either answer.
+/// The phase is driven by the OS detection level, separately from the port list:
+/// adding port 161 to the list would probe a port the caller may have excluded,
+/// and establishing UDP port state means waiting on rate-limited ICMP
+/// unreachables. This phase needs no port state.
 ///
-/// # Why it does not simply add a port to the scan
+/// # It records the port
 ///
-/// Because a detection *level* and a port *list* are different dials, and
-/// crossing them would mean a scan of port 80 with active OS detection sending
-/// probes to a port the caller excluded. It would also be slower for no gain:
-/// establishing UDP port state means waiting on ICMP unreachables, which
-/// targets rate-limit, and this phase needs no port state at all. It asks a
-/// question and reads the answer.
-///
-/// # It does record the port
-///
-/// A host that answers an SNMP request has proved something is listening, more
-/// directly than a SYN+ACK proves it, and a scanner that knew a port was open
-/// and did not say so would be withholding a finding. An open agent answering
-/// the default `public` community is also a finding in its own right: arguably
-/// a more actionable one than the kernel it just disclosed.
-///
-/// The port is filed with the evidence that found it,
-/// [`ScanResponse::UdpResponse`], so a report can distinguish it from one the
-/// port scan established and never has to pretend it was asked for.
-///
-/// This is the *opposite* of widening the port list, not an exception to it.
-/// The objection there is to sending traffic nobody requested; the traffic here
-/// was requested, by the OS detection level, and what is at stake is only
-/// whether the answer is reported or discarded.
+/// An answer proves something is listening, and an agent answering the default
+/// `public` community is a finding in its own right. The port is filed with the
+/// evidence that found it, [`ScanResponse::UdpResponse`], so a report can tell it
+/// from one the port scan established.
 ///
 /// # Who is asked
 ///
-/// Every host that is up and whose kernel is still unknown, which is a
-/// different and better test than "could not be named". A host already reported
-/// as `Linux · Debian 13` has been named perfectly well and still has nothing to
-/// say about its kernel, so it is exactly the host worth asking.
+/// Every host that is up and whose kernel is still unknown. A host reported as
+/// `Linux · Debian 13` is named but has no kernel version, so it is asked.
 ///
 /// Nobody where `excluded` names the agent's port: see
 /// [`ZondConfig::excluded_ports`](crate::config::ZondConfig::excluded_ports).
@@ -1305,7 +1168,7 @@ pub(super) async fn run_active_os_snmp(
 
     let mut named = 0usize;
     // Hosts the process had no socket to ask, as a count and the first of
-    // them: one line for the lot, since a table full for one is full for all.
+    // them, for one line: a full socket table is full for all.
     let mut unasked: Option<(String, usize)> = None;
     let mut pool = ProbePool::new(
         CONNECT_CONCURRENCY,
@@ -1326,8 +1189,7 @@ pub(super) async fn run_active_os_snmp(
                 return;
             }
             // Recorded with what found it, so a report can tell this port from
-            // one the port scan established, and never has to imply it was
-            // asked for.
+            // one the port scan established.
             let port = found
                 .port
                 .with_discovery(PortDiscovery::new(ScanResponse::UdpResponse));
@@ -1382,21 +1244,17 @@ pub(super) async fn run_active_os_snmp(
 ///
 /// # Who is asked
 ///
-/// Every host that is up. The record is published under the host's own name, and
-/// a host that has not been named otherwise, or was named in a zone other than
-/// `.local`, is asked what it calls itself first, so the pass is not confined to
-/// the hosts something else happened to resolve under the right name. A host
-/// running no responder leaves the first question unanswered and is asked
-/// nothing more, one datagram in all.
+/// Every host that is up. The record is published under the host's own name, so a
+/// host with no `.local` name is first asked what it calls itself. A host running
+/// no responder leaves that unanswered and is asked nothing more, one datagram in
+/// all.
 ///
-/// That first question is a reverse-name query, and `names` says whether the
-/// scan may ask one. Where it may not, the scan was forbidden name queries of
-/// its own, and only the hosts it already holds a `.local` name for are asked:
-/// the device-info question asks what the machine is rather than what it is
-/// called, of the host the scan is already probing.
+/// That first question is a reverse-name query, and `names` says whether the scan
+/// may ask one. Where it may not, only hosts already holding a `.local` name are
+/// asked.
 ///
-/// Nobody where `excluded` names the responder's port, for the reason
-/// [`run_active_os_snmp`] asks nobody.
+/// Nobody where `excluded` names the responder's port, as with
+/// [`run_active_os_snmp`].
 pub(super) async fn run_active_os_mdns(
     ctx: &ScanContext,
     os_detection: OsDetection,
@@ -1493,9 +1351,8 @@ const MDNS_PORT: u16 = 5353;
 
 /// Asks a host what it calls itself, by the reverse name of its own address.
 ///
-/// One datagram, and it is what makes the device-info query possible at all on a
-/// host the scan reached by address and never resolved a name for. It leaves
-/// by `egress`.
+/// One datagram, which makes the device-info query possible on a host the scan
+/// reached by address. It leaves by `egress`.
 async fn own_name(
     addr: std::net::SocketAddr,
     ip: IpAddr,
@@ -1514,8 +1371,7 @@ async fn own_name(
 /// Asks one host for its device-info record and reads what it says about the
 /// machine.
 ///
-/// Sent to the host rather than to the multicast group: a scan is asking one host
-/// about itself, and the answer is attributable only if the question was.
+/// Sent to the host, not the multicast group, so the answer is attributable.
 /// Both datagrams leave by `egress`.
 async fn ask_what_hardware(
     target: crate::model::ip::scoped::ScopedIp,
@@ -1525,17 +1381,15 @@ async fn ask_what_hardware(
     let addr = target.to_socket_addr(MDNS_PORT)?;
 
     // The name the record hangs off. Asked of the host itself where nothing
-    // else resolved one, which is the ordinary case for a machine the scan
-    // reached by address, and where what did resolve one was a unicast
-    // resolver, whose zone publishes no record: a responder answers a reverse
-    // lookup about its own address with the name it publishes under.
+    // resolved one, or a unicast resolver did (its zone publishes no record): a
+    // responder answers a reverse lookup of its own address with the name it
+    // publishes under.
     let query = match hostname.as_deref().and_then(device_info_query) {
         Some(query) => query,
         None => device_info_query(&own_name(addr, target.addr(), &egress).await?)?,
     };
 
-    // Each `key=value` is its own claim: the model and the Darwin release are
-    // two facts about one machine, and a rule reads one of them.
+    // Each `key=value` is its own claim; a rule reads one of them.
     let evidence: Vec<OsEvidence> = crate::fingerprint::probe_udp_with_via(addr, &query, &egress)
         .await
         .iter()
@@ -1549,17 +1403,15 @@ async fn ask_what_hardware(
     (!evidence.is_empty()).then_some((target, evidence))
 }
 
-/// The port an SNMP agent listens on. Fixed: an agent elsewhere is one nothing
-/// could have found without being told, and guessing at others would be a port
-/// scan rather than a question.
+/// The port an SNMP agent listens on. Fixed, since trying others would be a port
+/// scan.
 const SNMP_PORT: u16 = 161;
 
 /// Sends one SNMP request to `target` and returns what the answer said about the
 /// machine.
 ///
 /// A link-local address with no interface recorded against it yields no socket
-/// address at all and is skipped: dialling it anyway would fail with an error
-/// describing this host's routing rather than anything about the target.
+/// address and is skipped.
 ///
 /// The request leaves by `egress`.
 async fn ask_for_kernel(
@@ -1574,25 +1426,19 @@ async fn ask_for_kernel(
     let port = crate::fingerprint::baseline_port(SNMP_PORT, Protocol::Udp, PortState::Open);
     let found = crate::fingerprint::fingerprint_udp_via(addr, port, &egress).await?;
 
-    // The key, not the address: an SNMP agent on a link-local neighbour is
-    // reachable here, `to_socket_addr` put the scope id on the socket, and
-    // writing the answer back bare would fork the host's record.
+    // The key, not the address: for a link-local neighbour the bare address
+    // would fork the host's record.
     Some((target, found))
 }
 
 /// Measures the route to every host the scan found alive, when asked to.
 ///
-/// Runs last, after the ports are known, and that ordering is the whole reason
-/// it is a separate phase rather than part of discovery. What reaches a host
-/// decides what a trace to it should be made of, and the port scan is what
-/// establishes that: a host with 443 open is traced with SYNs to 443, which
-/// crosses filters no ping survives. Run before the ports were known, every
-/// trace would fall back to echo and most of them would stop at the first
-/// firewall.
+/// Runs last, after the ports are known, because what reaches a host decides how
+/// to trace it: a host with 443 open is traced with SYNs to 443, which crosses
+/// filters no ping survives.
 ///
-/// Hosts that answered nothing are skipped rather than traced. A path is
-/// measured backwards from its far end and the far end's distance comes out of
-/// a reply, so there is nothing to measure from; see
+/// Hosts that answered nothing are skipped. A path is measured backwards from its
+/// far end, whose distance comes from a reply; see
 /// [`traceroute`](crate::scanner::strategy::topology::traceroute).
 pub(super) async fn run_traceroute(
     ctx: &ScanContext,
@@ -1641,23 +1487,15 @@ pub(super) async fn run_traceroute(
 /// recording a [`Finding`](crate::model::finding::Finding) on every port whose
 /// software a known vulnerability names at an affected version.
 ///
-/// The embedded one because it is the only catalogue a scan has: nothing in
-/// [`ZondConfig`] names a dataset, and nothing should, since the rule there is
-/// that every field changes packets or timing and a catalogue changes neither.
-/// A caller with their own feed runs
+/// [`ZondConfig`] names no dataset, since its fields change packets or timing
+/// and a catalogue changes neither. A caller with their own feed runs
 /// [`cve::correlate_report`](crate::cve::correlate_report) over the finished
-/// report, which is what that call is for.
+/// report.
 ///
-/// A sibling of the passes above and a step of its own, rather than something a
-/// report builder does on the way past. It sends nothing: everything it needs
-/// is already in the store, which is also why it correlates in place there
-/// instead of over the copies a report is built from.
+/// Sends nothing, and correlates in place in the store.
 ///
-/// Gated on [`ServiceDetection`], because the join is on the CPE a service
-/// identification produces and a scan that named no software has nothing to
-/// match. That gate reads oddly at first sight, since it makes a *service*
-/// setting decide whether a report carries vulnerability findings, and it is
-/// the honest one: with the pass off there is no CPE anywhere to join on.
+/// Gated on [`ServiceDetection`], because the join is on the CPE service
+/// identification produces; with that pass off there is nothing to join on.
 ///
 /// A scan runs it through [`correlate`], off the runtime's workers.
 pub(super) fn run_correlation(ctx: &ScanContext, detection: ServiceDetection) {
@@ -1690,9 +1528,8 @@ pub(super) fn run_correlation(ctx: &ScanContext, detection: ServiceDetection) {
         record_correlations(ctx, key, catalogue.id(), judged);
     }
 
-    // Why the findings are fewer than the catalogue's match, once for the
-    // scan: a reader comparing against another tool's count wants to know,
-    // and the ports it came from are one level down.
+    // Why the findings are fewer than the catalogue's matches, once per scan,
+    // for a reader comparing against another tool's count.
     if withdrawn.total() > 0 {
         info!(
             verbosity = 1,
@@ -1722,10 +1559,9 @@ fn withdrawn_reasons(withdrawn: &crate::cve::Withdrawn) -> String {
 /// same catalogue drew there before, and announcing the host only where
 /// something changed.
 ///
-/// Replacing rather than adding, because a correlation is recomputed rather
-/// than observed again: a sitting that resumes a journalled scan correlates the
-/// hosts the last sitting already did, and anything the last computation drew
-/// that this one does not has been withdrawn, not left unmentioned.
+/// Replaced because a correlation is recomputed: a resumed sitting correlates the
+/// hosts the last one did, and anything only the last computation drew has been
+/// withdrawn.
 fn record_correlations(
     ctx: &ScanContext,
     key: crate::model::ip::scoped::ScopedIp,
@@ -1748,13 +1584,11 @@ fn record_correlations(
 
 /// [`run_correlation`] on the blocking pool, for a scan to await.
 ///
-/// The catalogue is decoded the first time anything asks for it, which in a
-/// scan is this step, and the decode is tens of milliseconds in a debug build.
-/// The scan's own probes are done by then, but a runtime is the caller's and
-/// may be carrying another scan's, and a worker busy decoding holds up the
-/// readiness of every connection in flight on it, each of which is then timed
-/// as that much slower than it was. The join after it runs over every host
-/// and is kept off the workers for the same reason.
+/// The catalogue is decoded on first use, which in a scan is this step, and takes
+/// tens of milliseconds in a debug build. The runtime is the caller's and may be
+/// carrying another scan, whose connections would be timed that much slower if a
+/// worker were busy decoding. The join over every host is kept off the workers
+/// too.
 pub(super) async fn correlate(ctx: &ScanContext, detection: ServiceDetection) {
     if detection == ServiceDetection::Off {
         return;
@@ -1771,11 +1605,9 @@ pub(super) async fn correlate(ctx: &ScanContext, detection: ServiceDetection) {
 /// Records `findings` on the host at `key`, where there are any, announcing it
 /// only where one was news.
 ///
-/// For the passes that read the store and write back, which run over every
-/// host and find something on few: a write is taken down by a journal and a
-/// host announced is one a watcher reads again, so a host these found nothing
-/// on is left unwritten, and one they found only what it already held on is
-/// written without a word.
+/// For passes that read the store and write back. A write is journalled and an
+/// announcement makes watchers re-read the host, so a host with no findings is
+/// left unwritten, and one with nothing new is written without an announcement.
 fn record_port_findings(
     ctx: &ScanContext,
     key: crate::model::ip::scoped::ScopedIp,
@@ -1795,22 +1627,17 @@ fn record_port_findings(
     });
 }
 
-/// Assesses each gathered certificate's own posture — expiry, self-signing, a
-/// weak RSA key — and, on a host a target named, whether it answers to that
-/// name, recording a finding for each problem.
+/// Assesses each gathered certificate's own posture (expiry, self-signing, a weak
+/// RSA key) and, on a host a target named, whether it answers to that name,
+/// recording a finding for each problem.
 ///
-/// A sibling of [`run_correlation`]: it sends nothing, deriving entirely from the
-/// certificate the service pass already read off the handshake, and works in place
-/// in the store. A port with no certificate, or one a clean certificate, yields
-/// nothing, so this costs a walk of the store and no traffic. No gate: a scan that
-/// gathered no certificate has nothing here to find.
+/// Like [`run_correlation`], it sends nothing and works in place in the store,
+/// from the certificates the service pass read off the handshake.
 ///
-/// The name a certificate is held against is the one the service pass's
-/// handshake put in its server name, which is the target's name where a
-/// handshake can carry it and nothing otherwise. A host reached by its address
-/// was asked for no name, and a certificate naming some other site is no
-/// mismatch there: a server sharing its address among sites presents its
-/// default one's to a client naming none.
+/// The name checked is the one the service pass's handshake sent as its server
+/// name. A host reached by address was asked for no name, so a certificate naming
+/// another site is no mismatch there: a server hosting several sites presents its
+/// default one to a client naming none.
 pub(super) fn run_cert_posture(ctx: &ScanContext) {
     let now = std::time::SystemTime::now();
     for key in ctx.hosts_owed_passes() {
@@ -1854,8 +1681,7 @@ pub(super) fn run_cert_posture(ctx: &ScanContext) {
 /// [`characterise`](crate::config::ZondConfig::characterise) was set. It sends a
 /// bad-checksum probe to one open TCP port of each such host and marks a
 /// middlebox on those that answer one: a reply no conformant host could have
-/// sent. A host with no open TCP port is skipped: there is nowhere to aim a
-/// probe whose whole point is that a listener would answer it.
+/// sent. A host with no open TCP port is skipped.
 pub(super) async fn run_characterise(
     ctx: &ScanContext,
     cfg: &crate::config::ZondConfig,
@@ -1870,9 +1696,9 @@ pub(super) async fn run_characterise(
         if ctx.host_expired(key.addr()) {
             continue;
         }
-        // One open port to send the middlebox probe at, and one a SYN did not
-        // reach to aim the comparative probes at: silent or refused, a filter
-        // is doing something there, and nothing at a port that answered.
+        // One open port for the middlebox probe, and one a SYN did not reach
+        // (silent or refused, where a filter is acting) for the comparative
+        // probes.
         let ports = ctx.read_host(&key, |host| {
             host.status().is_up().then(|| {
                 let tcp = |wanted: &[PortState]| {
@@ -1926,10 +1752,9 @@ pub(super) async fn run_characterise(
 ///
 /// A sibling of [`run_characterise`]: it runs last, only against hosts that
 /// answered, and does nothing unless
-/// [`ip_protocols`](crate::config::ZondConfig::ip_protocols) names some. Unlike
-/// that pass it needs no port to aim at, since what it asks about sits below the
-/// ports; a host with nothing open is exactly the one worth asking, because a
-/// tunnel endpoint or a router terminates a protocol and listens on nothing.
+/// [`ip_protocols`](crate::config::ZondConfig::ip_protocols) names some. It needs
+/// no open port: a tunnel endpoint or a router terminates a protocol and listens
+/// on nothing.
 pub(super) async fn run_ip_protocols(ctx: &ScanContext, cfg: &crate::config::ZondConfig) {
     if cfg.ip_protocols.is_empty() || stopped(ctx, Pass::IpProtocols) {
         return;
@@ -1958,29 +1783,21 @@ pub(super) async fn run_ip_protocols(ctx: &ScanContext, cfg: &crate::config::Zon
 
 /// Establishes what each TLS port accepts, where the caller asked for it.
 ///
-/// A pass of its own, and it runs last among the port-level passes because what
-/// it needs first is the list of ports that speak TLS at all. Service detection
-/// produces that: a port with a `security` record is one a handshake completed
-/// against, which is the only evidence this engine has that an endpoint is worth
-/// enumerating. A port nobody handshook is skipped rather than guessed at, so a
-/// scan run with service detection off enumerates nothing and says so through
-/// the setting it recorded.
+/// Runs last among the port-level passes because it needs the ports that speak
+/// TLS: those with a `security` record, written when a handshake completed during
+/// service detection. With service detection off it enumerates nothing.
 ///
 /// ## What it costs the target
 ///
-/// One bare TCP connection per offer, each carrying a single ClientHello and
-/// torn down before a handshake completes. Nothing is negotiated and no
-/// application-level session exists, so a target's *application* logs stay
-/// empty; its connection log does not, and on a server accepting many suites
-/// this is dozens of entries against one port. That is the whole reason the
-/// pass is opt-in.
+/// One bare TCP connection per offer, each carrying a single ClientHello and torn
+/// down before a handshake completes. A target's application logs stay empty, but
+/// its connection log can gain dozens of entries per port, which is why the pass
+/// is opt-in.
 ///
-/// Ports are walked with the same concurrency the service pass uses, and a host
-/// that has spent [`ZondConfig::host_timeout`](crate::config::ZondConfig::host_timeout)
-/// is left alone: this is the most expensive thing the engine does to a single
-/// endpoint, and the last place to spend a budget that has already run out. The
-/// question is put again before every offer of a walk, so a budget that runs
-/// out part way through one ends it there.
+/// Ports are walked with the service pass's concurrency. A host that has spent
+/// [`ZondConfig::host_timeout`](crate::config::ZondConfig::host_timeout) is left
+/// alone, checked before every offer, so a budget that runs out mid-walk ends it
+/// there.
 pub(super) async fn run_tls_enumeration(ctx: &ScanContext, cfg: &crate::config::ZondConfig) {
     if !cfg.tls_enumeration || stopped_with(ctx, Pass::Tls, || !tls_ports(ctx).is_empty()) {
         return;
@@ -2012,9 +1829,8 @@ pub(super) async fn run_tls_enumeration(ctx: &ScanContext, cfg: &crate::config::
             crate::model::tls::TlsSupport,
         )>,
          _audit| {
-            // Counted as each walk ends, however it ended: one its host's budget
-            // cut short is written down with the versions it left unfinished,
-            // and the pass has nothing more to ask of that endpoint.
+            // Counted as each walk ends, however it ended; one its host's budget
+            // cut short records the versions it left unfinished.
             ctx.stage_advanced();
 
             if let Some((key, number, support)) = found {
@@ -2039,10 +1855,8 @@ pub(super) async fn run_tls_enumeration(ctx: &ScanContext, cfg: &crate::config::
 
 /// Every `(address, port)` a handshake already completed against.
 ///
-/// The `security` record is the filter: it is written only where a TLS
-/// handshake succeeded, so it names exactly the endpoints an enumeration has a
-/// reason to ask. Guessing from the port number instead would spend a dozen
-/// connections on every open port a scan happened to find.
+/// Filtered by the `security` record, which is written only where a TLS
+/// handshake succeeded.
 fn tls_ports(ctx: &ScanContext) -> Vec<(crate::model::ip::scoped::ScopedIp, u16)> {
     let mut targets = Vec::new();
     for host in ctx.store.iter() {
@@ -2056,10 +1870,8 @@ fn tls_ports(ctx: &ScanContext) -> Vec<(crate::model::ip::scoped::ScopedIp, u16)
             if port.protocol() == Protocol::Tcp
                 && port.state() == PortState::Open
                 && port.security().is_some()
-                // Asked even though this scan's own service pass never
-                // handshakes with such a port: a record restored from an
-                // earlier sitting is no licence for the dozens of hellos this
-                // pass sends. See `ScanContext::listens_only`.
+                // A record restored from an earlier sitting is no licence for
+                // this pass's hellos. See `ScanContext::listens_only`.
                 && !ctx.listens_only(port.number(), port.protocol())
             {
                 targets.push((address.clone(), port.number()));
@@ -2071,12 +1883,10 @@ fn tls_ports(ctx: &ScanContext) -> Vec<(crate::model::ip::scoped::ScopedIp, u16)
 
 /// Enumerates one endpoint, or `None` where its address cannot be dialled.
 ///
-/// The walk is up to 80 connections under one version, so it asks before each
-/// of them what the admission loop asked before the endpoint: whether the scan
-/// is still running and the host still within its budget. The scan's own stop
-/// is asked first, so a host is not named as left for its budget when it was
-/// the scan that stopped; a host whose budget ran out mid-walk is named by
-/// [`ScanContext::host_expired`] the moment it answers true.
+/// The walk is up to 80 connections per version, so before each it checks that
+/// the scan is still running and the host within its budget. The scan's stop is
+/// checked first, so a host is not blamed on its budget when the scan stopped; a
+/// host whose budget ran out mid-walk is named by [`ScanContext::host_expired`].
 async fn enumerate_one(
     ctx: ScanContext,
     address: crate::model::ip::scoped::ScopedIp,
@@ -2088,8 +1898,8 @@ async fn enumerate_one(
 )> {
     let socket = address.to_socket_addr(number)?;
     let ip = address.addr();
-    // Asked for the name the target reached the address by, as identification's
-    // handshake was, or a server holding its sites by name refuses every offer.
+    // Sent the target's name, as identification's handshake was, or a server
+    // hosting sites by name refuses every offer.
     let server_name = crate::fingerprint::authority::Authority::new(socket)
         .named(ctx.target_name(ip))
         .sni();
@@ -2100,23 +1910,19 @@ async fn enumerate_one(
         || !ctx.stopping_before(Pass::Tls) && !ctx.host_expired(ip),
     )
     .await;
-    // An endpoint that accepted nothing and left no walk unfinished is left
-    // alone rather than recorded as an empty enumeration: the two are the same
-    // value, and writing it back would announce a host update that carries no
-    // new fact. One whose walks were cut short is written back even with
-    // nothing accepted, since that is a fact a reader needs.
+    // An endpoint that accepted nothing and finished every walk is not written
+    // back, which would announce an update with no new fact. One whose walks
+    // were cut short is written back even with nothing accepted.
     (!support.is_empty()).then_some((address, number, support))
 }
 
 /// Folds what an endpoint accepts back into its port.
 ///
-/// Through [`Host::add_port`](crate::model::host::Host::add_port) rather than by
-/// reaching into the recorded port, so the fold takes the same confidence-driven
-/// path every other pass does. The port carried here holds nothing but the
-/// enumeration: `Security::merge` fills what is missing, so the version and
-/// certificate the service pass recorded survive intact, and an enumeration a
-/// resumed sitting restored onto the port gives way, version by version,
-/// wherever this one went further.
+/// Through [`Host::add_port`](crate::model::host::Host::add_port), the
+/// confidence-driven path every pass uses. The port carried here holds only the
+/// enumeration: `Security::merge` fills what is missing, so the service pass's
+/// version and certificate survive, and an enumeration restored by a resumed
+/// sitting gives way, version by version, wherever this one went further.
 fn record_tls_support(
     ctx: &ScanContext,
     key: crate::model::ip::scoped::ScopedIp,
@@ -2138,21 +1944,14 @@ fn record_tls_support(
 /// Runs the active operating-system echo probe, where the caller asked for it
 /// and the passive sources left hosts unnamed.
 ///
-/// Target selection is from the store and not from the plan: "the
-/// passive sources concluded nothing" is only true once those sources have
-/// finished, and the store is where that conclusion lives. Every host that
-/// answered nothing a TCP rule could read, a stock Windows firewall drops
-/// rather than refuses, is here, and an echo reply is the one packet such a
-/// host still gives.
+/// Targets come from the store, where the passive sources' conclusions live once
+/// they have finished. A host that answered nothing a TCP rule could read (a stock
+/// Windows firewall drops) may still answer an echo.
 ///
-/// Runs after [`run_active_os_series`], which has by then read everything a
-/// host with an open or closed TCP port can be made to say. What is left here is
-/// the machine that answered no TCP probe at all, and one ping is the cheapest
-/// thing that still reaches it.
+/// Runs after [`run_active_os_series`], which has read everything a host with a
+/// TCP answer can say.
 ///
-/// Declines quietly rather than failing when there is nothing to do: a scan
-/// where every host was already named, or where none were, has not lost
-/// anything by not pinging.
+/// Does nothing, without failing, when there is nothing to do.
 pub(super) async fn run_active_os_probe(
     ctx: &ScanContext,
     os_detection: crate::config::OsDetection,
@@ -2165,9 +1964,8 @@ pub(super) async fn run_active_os_probe(
 
     ctx.enter_stage(Stage::Os, None);
 
-    // A host worth pinging is one the scan found and could not name. Hosts the
-    // scan never recorded were never asked about, and pinging addresses nobody
-    // named is a discovery sweep rather than identification.
+    // Only hosts the scan found and could not name; pinging unrecorded
+    // addresses would be a discovery sweep.
     let mut unnamed: Vec<IpAddr> = ctx
         .hosts_owed_passes()
         .into_iter()
@@ -2208,9 +2006,7 @@ pub(super) async fn run_active_os_probe(
             }
         }
         // The raw ICMP socket would not open, most likely for want of
-        // privileges. One recorded line, not a per-host failure: every host
-        // keeps the answer the passive sources gave it, which is the state the
-        // caller was already looking at.
+        // privileges. One recorded failure; every host keeps its passive answer.
         Err(e) => ctx.record_failure(
             ScannerKind::OsEcho,
             format!("the active echo probe could not open its transport: {e}"),
@@ -2221,12 +2017,9 @@ pub(super) async fn run_active_os_probe(
 /// The addresses of `target_map` that still have a target `settled` does not
 /// account for: what a sitting of a port scan asks about host by host.
 ///
-/// The liveness sweep and the enrichment beside the port scan are both aimed
-/// here rather than at every address in the plan. A resumed sitting probes only
-/// what an earlier one left, and an address with nothing left has already been
-/// swept by the sitting that settled it; asking again sends the network a
-/// question the job already put. For a sitting that continues nothing, this is
-/// every address the plan names a port at. See [`Checkpoint::remaining_hosts`].
+/// The liveness sweep and the enrichment beside the port scan are aimed here. A
+/// resumed sitting probes only what an earlier one left; for a fresh sitting this
+/// is every address the plan names a port at. See [`Checkpoint::remaining_hosts`].
 pub(super) fn unsettled_ips(target_map: &TargetMap, settled: &Checkpoint) -> IpSet {
     settled.remaining_hosts(&TargetIndex::of(target_map))
 }
@@ -2234,12 +2027,10 @@ pub(super) fn unsettled_ips(target_map: &TargetMap, settled: &Checkpoint) -> IpS
 /// Starts the background hostname resolver as its own task.
 ///
 /// The resolver listens for raw DNS and mDNS traffic and answers reverse lookups
-/// for any IP sent down `dns_rx`, independent of and concurrent with whatever
-/// scanning strategies are running. When it fails to start, most likely because
-/// no usable network socket could be opened, the failure is filed against
-/// [`ScannerKind::Resolver`] and `None` is returned rather than the scan ended,
-/// since a scan without hostname resolution is still useful and the failure is
-/// what says its hosts' names are missing rather than absent.
+/// for any IP sent down `dns_rx`, concurrently with the scanning strategies. When
+/// it fails to start, most likely because no usable socket could be opened, the
+/// failure is filed against [`ScannerKind::Resolver`] and `None` is returned; the
+/// scan continues without hostnames.
 pub(super) async fn spawn_resolver(
     dns_rx: UnboundedReceiver<IpAddr>,
     ctx: ScanContext,
@@ -2247,8 +2038,7 @@ pub(super) async fn spawn_resolver(
     tokio::spawn(async move {
         match HostnameResolver::capturing_on(dns_rx, &ctx.capture_links()) {
             Ok(resolver) => {
-                // Working, not news: every run that resolves names starts one,
-                // and the failure below is the case worth a line.
+                // Routine; only the failure is worth a normal-level line.
                 success!(verbosity = 3, "successfully initialized hostname resolver");
                 Some(resolver.run().await)
             }
@@ -2266,14 +2056,11 @@ pub(super) async fn spawn_resolver(
 /// The targets a port scan's plan loses before it is numbered, and the zones
 /// the link-local ones it keeps were named on.
 ///
-/// Taken out together and ahead of the numbering, by
-/// [`withhold_unprobeable_targets`], so the numbering, the count a fraction is
-/// drawn against and the walk all describe one plan: a target numbered and then
-/// withheld leaves every target after it with two positions, the one the walk
-/// settles and the one the job goes on owing. What is taken out depends on the
-/// targets alone, so every sitting of a job withholds the same ones and numbers
-/// what is left alike. The refusals wait for the port phase, whose record is
-/// where a reader looks for what the ports did not cover.
+/// Taken out ahead of the numbering by [`withhold_unprobeable_targets`], so the
+/// numbering, the progress count and the walk all describe one plan. A target
+/// numbered and then withheld would give every later target two positions. What
+/// is taken out depends on the targets alone, so every sitting of a job numbers
+/// alike. The refusals are filed in the port phase's record.
 pub(super) struct Withheld {
     /// Ranges too large to walk.
     unwalkable: Vec<Ipv6Range>,
@@ -2317,48 +2104,35 @@ impl Withheld {
 /// Takes out of `target_map` every target its port phase cannot probe, before
 /// anything numbers it; see [`Withheld`].
 ///
-/// The link-local question comes first: an unscoped `fe80::/64` is both too
-/// wide to walk and on no segment, and the refusal that names the interface to
-/// write is the one the caller can act on. Which targets go is
-/// [`TargetMap::take_unprobeable`]'s to say, since a journal counts the
-/// job's total by the same reading.
+/// The link-local check comes first: an unscoped `fe80::/64` is both too wide to
+/// walk and on no segment, and the refusal naming the interface to write is the
+/// one the caller can act on. [`TargetMap::take_unprobeable`] decides which
+/// targets go, since a journal counts the job's total the same way.
 ///
 /// # A link-local range
 ///
-/// A port scan reaches its targets over the routing table, which cannot carry a
-/// link-local address without an interface, and every interface holds an
-/// `fe80::/64`, so an unscoped one names nothing this scan can send to. Written
-/// `fe80::1%en0` it names a segment outright, and the [`ZoneMap`] handed back
-/// is how the interface reaches the scanners: a target is addressed one at a
-/// time, and the zone is written on the range rather than on the addresses
-/// inside it. A range only partly link-local, such as `fe80::/10` widened by
-/// hand, is judged by
+/// The routing table cannot carry a link-local address without an interface, and
+/// every interface holds an `fe80::/64`. Written `fe80::1%en0` it names a segment,
+/// and the returned [`ZoneMap`] carries the interface to the scanners, since the
+/// zone is written on the range, not on each address. A range only partly
+/// link-local, such as a hand-widened `fe80::/10`, is judged by
 /// [`Ipv6Range::is_ambiguous`](crate::model::ip::range::Ipv6Range::is_ambiguous),
-/// which is the predicate the discovery classifier uses for the same question.
+/// as the discovery classifier does.
 ///
-/// Two ranges naming one address on different interfaces are refused.
-/// Which segment was meant is the one thing that cannot be recovered, and a
-/// verdict filed under a bare address would be a verdict about whichever of them
-/// answered first.
+/// Two ranges naming one address on different interfaces are refused, since a
+/// verdict filed under the bare address would be about whichever answered first.
 ///
-/// Withheld here rather than declined at the socket, because a target dropped
-/// at the send is a target with no verdict, no settlement and no line in the
-/// report: `resolve_unasked` only accounts for what is still queued, and one
-/// already taken off the stream is simply gone. A refusal says what was not
-/// covered and why, which is what the caller can act on.
+/// Withheld here, not at the socket, because a target dropped at the send gets no
+/// verdict, no settlement and no line in the report: `resolve_unasked` accounts
+/// only for what is still queued.
 ///
 /// # A range too wide to walk
 ///
-/// The port phase's side of the rule [`walkable`] applies to a sweep, and to
-/// the same constant. A port scan walks its plan target by target whatever
-/// the privilege, since no strategy asks a range's ports in one packet, so a
-/// `/64` behind a port list is a walk that never ends: the liveness pass
-/// refuses the range and leaves every target of it undecided, and the walk
-/// then settles them one at a time for longer than the process lives.
+/// The port phase's side of the rule [`walkable`] applies to a sweep, with the
+/// same constant. A port scan walks target by target whatever the privilege, so a
+/// `/64` behind a port list would never finish.
 pub(super) fn withhold_unprobeable_targets(target_map: &mut TargetMap) -> Withheld {
-    // Read once, and only for a scan that named a zone at all: the names come
-    // from the host's interface table, and every target is looked up in the
-    // same list.
+    // Read once, and only for a scan that named a zone.
     let named_a_zone = target_map
         .units
         .iter()
@@ -2384,20 +2158,18 @@ pub(super) fn withhold_unprobeable_targets(target_map: &mut TargetMap) -> Withhe
 
 /// Probes `target_map`'s ports, and nothing else of its hosts.
 ///
-/// Nothing is opened for an empty map. A liveness phase that found nothing is a
-/// finished answer, and raw sockets held to probe no targets are a failure this
-/// would report for no reason.
+/// Nothing is opened for an empty map: a liveness phase that found nothing is a
+/// finished answer.
 ///
 /// `stands_in` is whether these port probes stand in for a liveness pass the
 /// engine dropped as no cheaper; see
 /// [`LivenessSkip::PortsNoDearer`](crate::report::LivenessSkip::PortsNoDearer).
-/// There the addresses they heard nothing from are filed silent and their
-/// records forgotten, as the pass would have left them; see
-/// [`forget_the_silent`].
+/// Then the addresses they heard nothing from are filed silent and their records
+/// forgotten; see [`forget_the_silent`].
 ///
-/// `target_map` has had what its port phase cannot probe taken out before it
-/// was numbered, and `zones` is the interface each link-local target it kept
-/// was named on; see [`withhold_unprobeable_targets`].
+/// `target_map` has already had its unprobeable targets withheld, and `zones` is
+/// the interface each kept link-local target was named on; see
+/// [`withhold_unprobeable_targets`].
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_port_phase(
     target_map: TargetMap,
@@ -2417,10 +2189,9 @@ pub(super) async fn run_port_phase(
     // has to reach the host the sweep already found on that interface.
     ctx.learn_zones(zones.clone());
 
-    // A scan stopped before its ports were reached opens nothing to probe
-    // them with. The walk still runs, stopping at its first target, since
-    // that is what accounts for the plan as unreached rather than leaving it
-    // unsaid.
+    // A scan stopped before its ports were reached opens nothing. The walk
+    // still runs, stopping at its first target, so the plan is accounted for as
+    // unreached.
     if ctx.handle.should_stop() {
         let (rx, walk) = super::dispatcher::Dispatcher::new(target_map)
             .resuming(settled)
@@ -2434,10 +2205,8 @@ pub(super) async fn run_port_phase(
     }
 
     let target_count = target_map.gross_targets().unwrap_or(0) as usize;
-    // SCTP and UDP are both planned from the targets rather than from the
-    // configuration, since the ports are what name them and no default list
-    // holds one: a scan names neither by default, and a step built whatever the
-    // targets say would open a scanner for a transport nobody asked about.
+    // SCTP and UDP are planned from the targets, since only the targets' ports
+    // name them.
     let mut plan = super::plan::PortScanPlan::build(cfg, caps.privilege);
     if target_map.names(Protocol::Sctp) {
         plan.cover_sctp(caps.privilege);
@@ -2446,10 +2215,8 @@ pub(super) async fn run_port_phase(
         plan.cover_udp(caps.privilege);
     }
 
-    // Over what this sitting will probe, which is the addresses an earlier one
-    // left a target at, and of those the hosts that answered where the liveness
-    // phase ran: an address it found down is sent nothing here, and was reached
-    // by nothing.
+    // What this sitting will probe: addresses an earlier sitting left a target
+    // at, narrowed to the hosts that answered where the liveness phase ran.
     let mut probed = unsettled_ips(&target_map, &settled);
     if let Some(liveness) = &liveness {
         probed = within(&probed, &liveness.live);
@@ -2470,25 +2237,19 @@ pub(super) async fn run_port_phase(
         zones,
         &raw,
     );
-    // After the build rather than before, since only the build knows whether
-    // anything stands in for the raw strategies there: a technique with no
-    // connect form is refused on those targets instead, and nothing reaches
-    // them by connect.
+    // After the build, which knows whether anything stands in for the raw
+    // strategies; a technique with no connect form is refused there instead.
     if built.reached_by_connect {
         announce_by_connect("port scan", &beyond);
     }
 
-    // No sweep beside the ports, whatever it would add. With the liveness pass
-    // on, it has run already: the pass that established these hosts are there
-    // is the one that reads their hardware addresses and names. With it off,
-    // the caller asked for the ports and nothing else, and a sweep is the
-    // liveness pass under another name. It would also yield nothing the pass
-    // would not: a host that answers the sweep is one the pass would have
-    // found, so a caller who wants what it reads runs the pass.
-    // Numbered against the whole plan and filtered afterwards: to what an
-    // earlier sitting did not settle, and to the hosts that answered. Both
-    // filters run after the numbering, because both of them are properties of
-    // this sitting and the numbering is a property of the job.
+    // No sweep beside the ports: with the liveness pass on it has already read
+    // hardware addresses and names, and with it off the caller asked for ports
+    // only.
+    //
+    // Numbered against the whole plan, then filtered to what an earlier sitting
+    // left and to the hosts that answered. The numbering belongs to the job; the
+    // filters belong to this sitting.
     let mut dispatcher = super::dispatcher::Dispatcher::new(target_map).resuming(settled);
     if let Some(Liveness { live, silent }) = liveness {
         dispatcher = dispatcher.screened(live, silent);
@@ -2501,17 +2262,15 @@ pub(super) async fn run_port_phase(
     let (rx, walk) = dispatcher.spawn(ctx);
 
     run_port_scan(built.scanner, rx, ctx, cfg.service_detection, cfg.detection).await;
-    // The walk settles the targets of hosts found down as it passes them, and a
-    // scanner that stopped early may have left it still walking. Waited for
-    // here, so every settlement it makes is in before the scan's last
-    // checkpoint rather than racing it. It ends promptly: the receiver is gone
-    // with the scanner, so its next send fails, and a stopped scan's walk
-    // checks the stop between the targets it passes.
+    // The walk settles the targets of hosts found down, and may still be
+    // running after a scanner stopped early. Awaited so its settlements land
+    // before the last checkpoint. It ends promptly: the receiver is gone, so its
+    // next send fails, and it checks the stop between targets.
     if let Err(error) = walk.await {
         error!("the target walk ended abnormally: {error}");
     }
-    // Before the names are asked for, so the resolver is not sent a query per
-    // address the scan found nothing at.
+    // Before names are asked for, so the resolver is not queried for addresses
+    // where nothing was found.
     if stands_in {
         forget_the_silent(ctx, &probed);
         ctx.verdicts_reached();
@@ -2521,9 +2280,7 @@ pub(super) async fn run_port_phase(
         false => rdns::Unheard::Skipped,
     };
     finish_enrichment(None, caps, ctx, unheard).await;
-    // Passive first, then active: the echo probe is aimed at the hosts the
-    // passive sources could not name, and it can only know which those are once
-    // they have run.
+    // Passive first: the echo probe is aimed at the hosts it could not name.
     run_passive_os_identification(ctx, cfg.os_detection);
 }
 
@@ -2533,15 +2290,13 @@ pub(super) async fn run_port_phase(
 /// at both.
 ///
 /// Nothing drawn means the record is still
-/// [`Unknown`](crate::model::host::HostStatus::Unknown): no open port, no
-/// closed one, no ICMP error. Such an address is silent where every port was
-/// asked in full. Where one was not, a port still
-/// [`Unasked`](PortState::Unasked) because the scan stopped short of it or cut
-/// its probe off, or the address's own time budget ran out, its silence is not
-/// yet a verdict, and the address is what a liveness pass stopped early leaves
-/// undecided: no host either way, and asked again on a resume. An address
-/// nothing could be sent to is neither, and is named in the report for what
-/// it is. See [`ScanContext::forget_silent`] and
+/// [`Unknown`](crate::model::host::HostStatus::Unknown): no open port, no closed
+/// one, no ICMP error. Such an address is silent where every port was asked in
+/// full. Where a port is still [`Unasked`](PortState::Unasked) (the scan stopped
+/// short or cut the probe off) or the address's time budget ran out, it is
+/// undecided, as a liveness pass stopped early leaves it, and asked again on a
+/// resume. An address nothing could be sent to is neither, and is named in the
+/// report as such. See [`ScanContext::forget_silent`] and
 /// [`ScanContext::forget_undecided`].
 fn forget_the_silent(ctx: &ScanContext, probed: &IpSet) {
     let mut silent = Vec::new();
@@ -2568,22 +2323,16 @@ fn forget_the_silent(ctx: &ScanContext, probed: &IpSet) {
 
 /// The plan as the port phase actually probed it.
 ///
-/// Not what the dispatcher walks. That is the whole plan, so that a position
-/// means the same target in every sitting. see
-/// [`live_addresses`]. This is what the phase *covered*, which is a different
-/// number and the one a [`TargetScope`] records: a reader compares it against
-/// the liveness phase's to see how much of what they asked about went
-/// unprobed, and a scope that claimed the whole plan would report a scan that
-/// covered ground it deliberately skipped.
+/// The dispatcher walks the whole plan, so a position means the same target in
+/// every sitting (see [`live_addresses`]). This is what the phase covered, which
+/// a [`TargetScope`] records so a reader can compare it against the liveness
+/// phase's.
 ///
-/// Narrows every unit rather than rebuilding one set against one port list,
-/// because a unit may carry ports no other one does: `192.0.2.1:8080` names its
-/// own, and a subset that dropped that would answer a different question.
+/// Narrows each unit separately, because a unit may carry its own ports, as
+/// `192.0.2.1:8080` does.
 pub(super) fn probed_subset(target_map: &TargetMap, live: &IpSet) -> TargetMap {
-    // Walked once, not once per unit. `live.iter()` expands every address of
-    // every host the sweep found, so doing it inside the loop would cost that
-    // walk again for each target set - and a scan naming several port lists over a
-    // wide range is exactly when both numbers are large.
+    // Expanded once, not per unit: `live.iter()` yields every address of every
+    // host found.
     let live: Vec<IpAddr> = live.iter().collect();
 
     let mut kept = TargetMap::new();
@@ -2607,12 +2356,10 @@ pub(super) fn probed_subset(target_map: &TargetMap, live: &IpSet) -> TargetMap {
 /// The SCTP port a discovery sweep should ask about, or `None` where the scan
 /// named no SCTP port and so wants no SCTP sweep.
 ///
-/// Chosen from the ports the scan is about, because those are the ports a
-/// filter in front of an SCTP host is likeliest to pass. Among them the
-/// catalogue's order decides, which is this engine's opinion about which SCTP
-/// port something is actually running on; a port the catalogue has never heard
-/// of loses to one it has, and a scan naming only unknown ports takes the
-/// lowest of them so the choice is still the same on every run.
+/// Chosen from the scan's own ports, which a filter in front of an SCTP host is
+/// likeliest to pass. Among them the catalogue's order decides; a port it does not
+/// know loses to one it does, and with only unknown ports the lowest is taken, so
+/// every run chooses alike.
 pub(super) fn sctp_discovery_port(map: &TargetMap) -> Option<u16> {
     let named: Vec<u16> = map
         .units
@@ -2635,8 +2382,8 @@ pub(super) struct Liveness {
     /// Where it found a host, from [`live_addresses`].
     pub(super) live: IpSet,
     /// Where it asked as many times as its policy allows and heard nothing,
-    /// from [`ScanContext::take_silent`]. Not the complement of `live`: an
-    /// address in neither is one it reached no verdict on.
+    /// from [`ScanContext::take_silent`]. An address in neither `live` nor this
+    /// has no verdict.
     pub(super) silent: IpSet,
 }
 
@@ -2654,13 +2401,11 @@ impl Liveness {
     /// neither found live nor asked to exhaustion, and not among `unroutable`,
     /// which the phase names apart.
     ///
-    /// Computed from what the pass established rather than gathered from what
-    /// went wrong, so a way of failing to ask that nothing records still lands
-    /// here. A sweep stopped mid-send, a strategy that never built, a refused
-    /// range and a host whose budget ran out all leave an address in neither
-    /// set, and that is the whole test.
+    /// Computed from what the pass established, so any failure to ask lands
+    /// here, recorded or not: a sweep stopped mid-send, a strategy that never
+    /// built, a refused range, a host whose budget ran out.
     ///
-    /// Linear in ranges rather than addresses, as [`IpSet::subtract`] is.
+    /// Linear in ranges, as [`IpSet::subtract`] is.
     pub(super) fn undecided(&self, scope: &TargetScope, unroutable: &[IpAddr]) -> Vec<IpRange> {
         let mut undecided = IpSet::new();
         for range in scope.ranges() {
@@ -2683,17 +2428,13 @@ impl Liveness {
 
 /// Every address the liveness pass found a host at.
 ///
-/// A set rather than a narrowed plan. Were the port phase handed a `TargetMap`
-/// rebuilt from these, the dispatcher would number *that*, so a position would
-/// be counted in a plan that depends on which hosts happened to answer, and two
-/// sittings of one job could disagree about what position 400 means. The
-/// addresses travel to
-/// [`Dispatcher::screened`](crate::scanner::dispatcher::Dispatcher::screened)
-/// instead, which filters after numbering.
+/// A set, not a narrowed plan: the addresses go to
+/// [`Dispatcher::screened`](crate::scanner::dispatcher::Dispatcher::screened),
+/// which filters after numbering, so positions do not depend on which hosts
+/// answered.
 ///
-/// Every address of a host is included, not only the one it is filed under. A
-/// dual-stack machine found over IPv6 is still the machine whose IPv4 address
-/// was asked about, and a unit naming either of them meant this host.
+/// Every address of a host is included, so a dual-stack machine found over IPv6
+/// still matches a unit naming its IPv4 address.
 pub(super) fn live_addresses(ctx: &ScanContext) -> IpSet {
     let mut live = IpSet::new();
     for entry in ctx.store.iter() {
@@ -2712,35 +2453,26 @@ pub(super) fn live_addresses(ctx: &ScanContext) -> IpSet {
 /// The address a raw routed probe can be aimed at, or `None` for a host it
 /// cannot reach.
 ///
-/// This is where the store's key becomes a bare address, and the one place a
-/// key may be narrowed to one. The strategies below it, the trace, the echo
-/// probe, reach a host over the routing table and reason in addresses from end
-/// to end: a socket takes one, a reply carries one, and a hop table is keyed by
-/// one. Handing them a `ScopedIp` would key their reply matching on something no
-/// reply carries.
+/// The one place a store key is narrowed to a bare address. The trace and the
+/// echo probe reach a host over the routing table and reason in addresses: a
+/// socket takes one, a reply carries one, and a hop table is keyed by one.
 ///
-/// So they are given what they can use, and a host whose address is meaningless
-/// without an interface is not given at all. `fe80::1` cannot be routed: the
-/// kernel needs a scope id and a raw routed probe has nowhere to put one, which
-/// is the same refusal
+/// A host whose address needs an interface, such as `fe80::1`, is excluded: a raw
+/// routed probe has nowhere to put a scope id, the same refusal
 /// [`ScopedIp::to_socket_addr`](crate::model::ip::scoped::ScopedIp::to_socket_addr)
-/// makes rather than attempting a send that fails for a reason having nothing
-/// to do with the target. Those hosts are the local scanner's, which reaches
-/// them at the link layer and already holds them under the interface they were
-/// read on.
+/// makes. The local scanner reaches those hosts at the link layer.
 ///
-/// It also keeps the store honest. A routed strategy writes its finding back
+/// This also keeps the store consistent: a routed strategy writes its finding
 /// under the address it probed, and an address that is not the whole key would
-/// land in a second entry: one host in the report becoming two, each holding
-/// half of what was found.
+/// create a second entry for the same host.
 fn routable(key: crate::model::ip::scoped::ScopedIp) -> Option<IpAddr> {
     (!crate::model::ip::scoped::ScopedIp::needs_zone(&key.addr())).then(|| key.addr())
 }
 
 /// The addresses of `set` that `of` also holds.
 ///
-/// Two subtractions, each linear in ranges rather than in addresses: what `set`
-/// has that `of` lacks, taken back out of `set`.
+/// Two subtractions, each linear in ranges: what `set` has that `of` lacks, taken
+/// back out of `set`.
 fn within(set: &IpSet, of: &IpSet) -> IpSet {
     let mut outside = set.clone();
     outside.subtract(of);
@@ -2783,11 +2515,8 @@ mod tests {
     use crate::testing::loopback::accept_from_this_process;
 
     /// **A pass a stop skipped is named where a host was owed it, and only
-    /// there.** A scan whose budget ran out as its probes finished has asked
-    /// no host what it runs or how to reach it, and a report that did not say
-    /// so reads as one where those questions had no answer. A scan that found
-    /// no host lost nothing to the stop, and naming the pass there would call
-    /// a complete scan partial.
+    /// there.** A scan that found no host lost nothing to the stop, and naming
+    /// the pass there would call a complete scan partial.
     #[test]
     fn a_pass_a_stop_skipped_is_named_only_where_a_host_was_owed_it() {
         use crate::model::host::HostStatus;
@@ -2809,11 +2538,8 @@ mod tests {
         assert_eq!(ctx.take_passes_cut(), [Pass::Os, Pass::Traceroute]);
     }
 
-    /// **A scan forbidden name queries asks no host its name.** The mDNS pass
-    /// learns what a nameless host calls itself by a reverse-name query, and a
-    /// scan told to send no name queries of its own sent one to every host it
-    /// found. What it still asks is the device-info record of a host whose
-    /// `.local` name it already holds, a question about the machine.
+    /// **A scan forbidden name queries asks no host its name.** It still asks for
+    /// the device-info record of a host whose `.local` name it already holds.
     #[test]
     fn a_scan_forbidden_name_queries_asks_the_hardware_pass_only_of_hosts_it_has_named() {
         use crate::model::host::HostStatus;
@@ -2847,10 +2573,8 @@ mod tests {
 
     /// Which SCTP port a sweep asks about, when the scan named several.
     ///
-    /// The catalogue's order decides, so a scan naming a well-known port and an
-    /// arbitrary one asks on the one something is likely to be listening on. A
-    /// filter in front of an SCTP host is likeliest to pass that port, and a
-    /// sweep that picked the other would report the host down.
+    /// The catalogue's order decides, so the well-known port wins over an
+    /// arbitrary one.
     #[test]
     fn the_sweep_asks_on_the_likeliest_of_the_ports_the_scan_named() {
         use crate::model::target::TargetSet;
@@ -2865,7 +2589,7 @@ mod tests {
     }
 
     /// A scan naming nothing the catalogue knows still asks the same port every
-    /// time, so two runs of one command sweep alike.
+    /// time.
     #[test]
     fn a_sweep_over_unknown_ports_still_picks_one_deterministically() {
         use crate::model::target::TargetSet;
@@ -2906,9 +2630,7 @@ mod tests {
         set
     }
 
-    /// `fe80::1` with no interface named. Every interface holds an `fe80::/64`,
-    /// so a scan given one has no segment to send on and nothing to choose
-    /// between them.
+    /// `fe80::1` with no interface named is refused.
     #[test]
     fn a_bare_link_local_port_target_is_refused_rather_than_probed() {
         use crate::model::target::TargetSet;
@@ -2939,9 +2661,8 @@ mod tests {
         );
     }
 
-    /// The same address written `fe80::1%en0`. It names one segment, the scan
-    /// can send to it, and the interface it named comes back for the phases that
-    /// open a socket or a raw send.
+    /// The same address written `fe80::1%en0` is kept, and its interface comes
+    /// back for the phases that open a socket or a raw send.
     #[test]
     fn a_link_local_target_that_names_an_interface_is_kept_with_its_zone() {
         use crate::model::target::TargetSet;
@@ -2968,8 +2689,7 @@ mod tests {
     }
 
     /// `fe80::1%en0` and `fe80::1%en1` are two machines, and a port scan files
-    /// its verdicts under the address it probed. Both are refused rather than
-    /// merged into one host holding two segments' answers.
+    /// verdicts under the address, so both are refused.
     #[test]
     fn one_link_local_address_on_two_interfaces_is_refused() {
         use crate::model::target::TargetSet;
@@ -3005,8 +2725,7 @@ mod tests {
         );
     }
 
-    /// Refusing the whole unit over one bad address in it would discard targets
-    /// the caller named and the engine can reach.
+    /// One bad address does not refuse the rest of its unit.
     #[test]
     fn the_addressable_targets_beside_it_survive() {
         use crate::model::target::TargetSet;
@@ -3050,10 +2769,8 @@ mod tests {
     use crate::scanner::session::ScanSession;
     use tokio::sync::mpsc;
 
-    /// A finished sweep of the segment the scanner sits on is finished: this
-    /// host's own address, recorded up without a probe, is settled with the
-    /// rest, so the watermark reaches the end of the plan rather than stopping
-    /// behind it and leaving the sweep resumable with nothing left to ask.
+    /// This host's own address, recorded up without a probe, is settled with the
+    /// rest, so a finished sweep of its segment is not left resumable.
     #[test]
     fn this_hosts_own_address_is_settled_with_the_rest_of_a_sweep() {
         let plan: IpSet = "192.0.2.1-192.0.2.3".parse().expect("a range");
@@ -3103,10 +2820,7 @@ mod tests {
         crate::model::parse::ip::to_set(exprs, None, None).expect("hand-written targets parse")
     }
 
-    /// What this function exists for. Without it a `/64` handed to the
-    /// unprivileged path would be probed one address at a time until the process
-    /// was killed, while the same range with root is refused in the plan before a
-    /// packet is sent: one engine giving two answers about one range.
+    /// The unprivileged path refuses a `/64`, as the privileged plan does.
     #[test]
     fn a_range_too_large_to_walk_is_refused_rather_than_started() {
         let (_session, ctx) = ScanSession::new();
@@ -3115,8 +2829,7 @@ mod tests {
 
         assert!(kept.is_empty(), "nothing here can be walked");
 
-        // A refusal rather than a failure: nothing broke, and a reader who
-        // cannot tell the two apart learns to ignore both.
+        // A refusal, not a failure: nothing broke.
         assert!(ctx.failures_snapshot().is_empty(), "nothing went wrong");
 
         let refusals = ctx.refusals_snapshot();
@@ -3129,11 +2842,8 @@ mod tests {
         );
     }
 
-    /// **The passes that read the store announce only what they found.**
-    /// Correlation runs twice in a port scan and certificate posture once,
-    /// over every host, and a host announced each time is read again by
-    /// every watcher and written again by the journal for nothing. A host
-    /// they match is still told.
+    /// **The passes that read the store announce only what they found.** A host
+    /// they match is still announced.
     #[test]
     fn the_store_passes_announce_only_the_hosts_they_found_something_on() {
         use crate::model::port::{Port, Service};
@@ -3169,8 +2879,7 @@ mod tests {
 
     /// A port plan naming a range too wide to walk keeps everything else it
     /// named and hands the range back to be refused, once however many units
-    /// name it. Left in, its targets are settled one at a time for longer than
-    /// the process lives.
+    /// name it.
     #[test]
     fn a_port_plan_gives_up_only_the_ranges_too_wide_to_walk() {
         let mut map = TargetMap::new();
@@ -3190,8 +2899,7 @@ mod tests {
         assert_eq!(map.gross_targets().ok(), Some(8));
     }
 
-    /// Refusing the whole set over one unwalkable range in it would discard
-    /// addresses somebody named and could have had.
+    /// One unwalkable range does not refuse the rest of the set.
     #[test]
     fn the_walkable_part_of_a_mixed_set_survives() {
         let (_session, ctx) = ScanSession::new();
@@ -3207,9 +2915,8 @@ mod tests {
         assert!(ctx.failures_snapshot().is_empty());
     }
 
-    /// A set that is entirely walkable is handed back untouched, and, the part
-    /// that matters, files no failure. A report claiming a refusal that never
-    /// happened marks a complete scan as partial.
+    /// A set that is entirely walkable is handed back untouched and files no
+    /// failure, which would mark a complete scan partial.
     #[test]
     fn a_set_that_can_be_walked_is_left_alone_and_files_nothing() {
         let (_session, ctx) = ScanSession::new();
@@ -3220,9 +2927,7 @@ mod tests {
         assert!(ctx.failures_snapshot().is_empty());
     }
 
-    /// IPv4 is not bounded here. A `/8` is sixteen million probes,
-    /// which is unreasonable rather than impossible, and which of those it is is
-    /// a judgement for whoever is driving the engine.
+    /// IPv4 is not bounded here: a `/8` is the caller's judgement.
     #[test]
     fn a_large_ipv4_range_is_not_this_functions_business() {
         let (_session, ctx) = ScanSession::new();
@@ -3261,8 +2966,8 @@ mod tests {
             .collect()
     }
 
-    /// A scan whose raw strategies reach everything, stated rather than read
-    /// from the machine running the tests.
+    /// A scan whose raw strategies reach everything, independent of the machine
+    /// running the tests.
     fn raw_everywhere() -> ScanCapabilities {
         ScanCapabilities {
             privilege: Privilege::Raw,
@@ -3272,12 +2977,8 @@ mod tests {
     }
 
     /// The plan refuses what it can foresee and `ensure_coverage` catches what
-    /// only the attempt reveals. Both have the same words for the same cause, so
-    /// a coverage check that did not know the plan had already spoken would
-    /// record an unprivileged flag-probe scan's failure twice, once from each.
-    ///
-    /// A consumer counting failures would over-report, and one rendering them
-    /// would show the same paragraph to a user twice.
+    /// only the attempt reveals. A refusal the plan already made is not recorded
+    /// again.
     #[test]
     fn a_refusal_the_plan_already_made_is_not_recorded_again() {
         let cfg = ZondConfig {
@@ -3309,17 +3010,12 @@ mod tests {
 
     /// **An idle scan's UDP ports are refused, and not lost.**
     ///
-    /// An idle scan reads a third party's counter, which a UDP probe gives it no
-    /// way to move, and sending one directly would announce the host the
-    /// technique exists to hide. So the plan holds no UDP step, and the ports
-    /// reach the router with nothing to take them. Unless a refusal names them,
-    /// the router files them as a scan that had no scanner for their protocol:
-    /// a failure, which reads as a defect in the engine and is its own decision
-    /// told as an accident.
+    /// The plan holds no UDP step, so the ports reach the router with no scanner.
+    /// Unless a refusal names them, the router files a failure.
     ///
-    /// Through the whole port phase, which is where the plan learns the targets
-    /// name a UDP port. The zombie is excluded so the idle scan is refused
-    /// whatever privilege runs the test, and nothing is sent anywhere.
+    /// Run through the whole port phase, where the plan learns the targets name a
+    /// UDP port. The zombie is excluded so the idle scan is refused whatever
+    /// privilege runs the test, and nothing is sent.
     #[tokio::test]
     async fn an_idle_scans_udp_ports_are_refused_rather_than_lost() {
         use crate::journal::cursor::Checkpoint;
@@ -3393,19 +3089,16 @@ mod tests {
     }
 
     /// A frames-only scan of nothing but loopback, or of one box behind a VPN,
-    /// has no target a raw strategy can reach. Opened anyway, each holds a
-    /// capture on every interface and sends nothing: two audit lines of `0/0
-    /// hosts` on the machine this was measured on. Not opened, the connect
-    /// strategies take every target, nothing is reported as failing, and the
-    /// phase still says its evidence is connect evidence.
+    /// opens no raw strategy. The connect strategies take every target, nothing
+    /// is reported as failing, and the phase records connect evidence.
     #[test]
     fn nothing_within_a_frames_reach_opens_no_raw_strategy() {
         let cfg = ZondConfig::default();
         let (_session, ctx) = ScanSession::new();
 
         let mut plan = plan::PortScanPlan::build(&cfg, Privilege::Raw);
-        // The targets name a UDP port, so the plan carries a UDP step to lose to
-        // the frames reach and gain a connect stand-in, as a UDP scan's would.
+        // The targets name a UDP port, so the plan carries a UDP step to be
+        // replaced by a connect stand-in.
         plan.cover_udp(Privilege::Raw);
         let built = build_port_scanner(
             plan,
@@ -3430,16 +3123,10 @@ mod tests {
     /// **A technique refused for a target is one refusal, and not a scanner
     /// failure as well.**
     ///
-    /// A FIN scan of loopback with no raw socket to send it has no connect form
-    /// to fall back on, so its TCP ports are refused, on the connect path at
-    /// planning and on the frames path when the phase finds loopback beyond a
-    /// frame. The targets still arrive at the router, which is right: they are
-    /// still unprobed and a resume should still owe them. Counted there as
-    /// having no scanner, they became a second entry saying the scan had lost
-    /// them, which reads as an engine defect and is the same decision told
-    /// twice. And nothing was reached by connect, since nothing stood in for
-    /// the refused technique and the scan named no UDP port a connect could
-    /// have taken.
+    /// A FIN scan of loopback with no raw socket has no connect form, so its TCP
+    /// ports are refused, at planning on the connect path and in the phase on the
+    /// frames path. The targets still reach the router, unprobed and owed to a
+    /// resume, but are not counted again as lost. Nothing is reached by connect.
     #[tokio::test]
     async fn a_refused_technique_is_reported_once_and_not_as_a_failure() {
         let cfg = ZondConfig {
@@ -3502,8 +3189,7 @@ mod tests {
 
     /// Every message emitted while it is the default subscriber, in order.
     ///
-    /// Enough of a subscriber to read what the engine says and nothing more:
-    /// spans are accepted and ignored, since no line under test is inside one.
+    /// Spans are accepted and ignored, since no line under test is inside one.
     #[derive(Clone, Default)]
     struct Heard(Arc<std::sync::Mutex<Vec<String>>>);
 
@@ -3537,10 +3223,9 @@ mod tests {
         fn exit(&self, _: &tracing::span::Id) {}
     }
 
-    /// The one line a run without raw sockets opens with says what it probes
-    /// with and what would change that, once. A scan naming UDP ports probes
-    /// them with plain datagrams, so "TCP connect" alone would say less than
-    /// happened, and what root buys differs between a sweep and a port scan.
+    /// A run without raw sockets opens with one line saying what it probes with
+    /// and what root would add, which differs between a sweep and a port scan.
+    /// UDP ports are named too.
     #[test]
     fn an_unprivileged_run_says_how_it_probes_and_what_root_would_add() {
         let unprivileged = ScanCapabilities {
@@ -3582,11 +3267,8 @@ mod tests {
         }
     }
 
-    /// A run told to send no DNS says where its hostnames come from instead,
-    /// once and for a reader asking for detail, whichever privilege it holds.
-    /// The raw path and the connect path name hosts from the same hosts file,
-    /// and one of them keeping quiet about it leaves its reader to wonder why
-    /// no reverse name came back.
+    /// A run told to send no DNS says, once at detail level, that its hostnames
+    /// come from the hosts file, whichever privilege it holds.
     #[test]
     fn a_run_without_dns_says_where_its_names_come_from_whatever_its_privilege() {
         let said = |no_dns| {
@@ -3613,9 +3295,7 @@ mod tests {
 
     /// An idle scan's opening line names the zombie it probes through, not the
     /// TCP technique, which it never sends, nor the connect fallback, which it
-    /// refuses. Told a scan probes by SYN or by connect, a reader who chose an
-    /// idle scan so the target would never hear from this host reads that it
-    /// did.
+    /// refuses.
     #[test]
     fn an_idle_scan_announces_its_zombie_and_no_technique() {
         let zombie: IpAddr = "192.0.2.9".parse().expect("an address");
@@ -3654,10 +3334,8 @@ mod tests {
         }
     }
 
-    /// A raw run's opening line names the probes its ports are sent, beside
-    /// the liveness pass's SYN, and each of them once. A FIN scan announced
-    /// as probing with SYN, with its UDP and SCTP ports left out, tells its
-    /// reader the scan asked a different question than it did.
+    /// A raw run's opening line names the probes its ports are sent, beside the
+    /// liveness pass's SYN, each once.
     #[test]
     fn a_raw_run_names_the_technique_and_every_protocol_it_probes() {
         let raw = ScanCapabilities {
@@ -3712,11 +3390,8 @@ mod tests {
         }
     }
 
-    /// A run that sends frames alone, whose every target is one no frame
-    /// reaches, announces the connect it probes by and why, rather than the
-    /// frames it holds and sends none of. Loopback is the everyday case: a
-    /// scan of it told it probes with ARP and SYN as link-layer frames has its
-    /// reader expect a SYN scan's verdicts from what were connects.
+    /// A frames-only run whose every target is beyond a frame's reach, such as
+    /// loopback, announces the connect it probes by and why.
     #[test]
     fn a_run_whose_every_target_is_beyond_frames_announces_the_connect() {
         let frames = ScanCapabilities {
@@ -3766,26 +3441,19 @@ mod tests {
         assert_eq!(beyond.reasons(), "loopback");
     }
 
-    /// The opening line names the route the probes leave by, not the one the
-    /// privilege came from. A root run told to build its own frames sends no
-    /// segment through a raw socket, and meets a neighbour that never answers
-    /// ARP as one it could not frame to; told "raw sockets", its reader looks
-    /// for the kernel's routing and finds none.
+    /// The opening line names the route the probes leave by: a root run told to
+    /// build its own frames sends nothing through a raw socket.
     #[test]
     fn a_run_sending_its_own_frames_names_them_whatever_its_privilege() {
         assert!(!by_raw_socket(SendMode::Ethernet, true));
         assert!(!by_raw_socket(SendMode::Ethernet, false));
         assert!(by_raw_socket(SendMode::RawSocket, true));
-        // No socket to send by, whatever was asked for: frames are all the
-        // run has.
+        // No raw socket, whatever was asked for: frames are all the run has.
         assert!(!by_raw_socket(SendMode::RawSocket, false));
     }
 
-    /// A raw sweep asks loopback, and whatever nothing routes to, by connect,
-    /// whatever its opening line names the raw probes as. A reader asking for
-    /// detail is told which addresses and why, as the port scan tells them of
-    /// its own; left unsaid, the raw sockets the opening line names are all
-    /// they have to go on, and a connect's answer reads as a SYN's.
+    /// A raw sweep asks loopback, and whatever nothing routes to, by connect, and
+    /// says which addresses and why at detail level, as the port scan does.
     #[test]
     fn a_raw_sweep_names_what_it_asks_by_connect_and_why() {
         let (_session, ctx) = ScanSession::new();
@@ -3806,11 +3474,9 @@ mod tests {
         assert_eq!(ctx.take_reached_by_connect(&[]).len(), 2);
     }
 
-    /// A frames-only run whose every target is out of a frame's reach refuses
-    /// what nothing stands in for in the words that say so. It holds the link
-    /// layer, and told it has no raw sockets, which is the connect path's
-    /// reason, a reader goes looking for a privilege they already have rather
-    /// than at the targets, which are what no frame reaches.
+    /// A frames-only run whose every target is out of a frame's reach gives that
+    /// as the refusal's reason, not a missing raw socket: it already holds the
+    /// link layer.
     #[test]
     fn a_frames_only_refusal_names_the_frames_reach_rather_than_privilege() {
         let cfg = ZondConfig {
@@ -3859,9 +3525,7 @@ mod tests {
     }
 
     /// The per-protocol fallback: a host that can build the raw UDP scanner but
-    /// not the SYN one must still probe TCP. Gating on "any privileged scanner
-    /// exists" would leave those targets with no route at all, so they would be
-    /// dropped without a record.
+    /// not the SYN one still probes TCP.
     #[test]
     fn a_protocol_without_a_privileged_scanner_still_gets_a_fallback() {
         let protocols = covered(vec![Box::new(StubScanner(vec![Protocol::Udp]))]);
@@ -3872,14 +3536,12 @@ mod tests {
         assert!(protocols.contains(&Protocol::Udp));
     }
 
-    /// A connect scan is a substitute for a SYN scan and for nothing else. Asked
-    /// for a technique it cannot express, an unprivileged scan has to leave the
-    /// TCP half undone and say so - a silent substitution would hand back
-    /// verdicts from a technique nobody chose.
+    /// A connect scan substitutes only for a SYN scan. For another technique, the
+    /// TCP half is left undone and reported.
     ///
-    /// The case is a plan that *did* intend TCP, whose raw socket then would
-    /// not open. A plan that never intended it refused before reaching here;
-    /// see `a_refusal_the_plan_already_made_is_not_recorded_again`.
+    /// The case is a plan that did intend TCP, whose raw socket then would not
+    /// open. A plan that never intended it refused earlier; see
+    /// `a_refusal_the_plan_already_made_is_not_recorded_again`.
     #[test]
     fn a_technique_the_fallback_cannot_express_is_reported_rather_than_substituted() {
         let (_session, ctx) = ScanSession::new();
@@ -3925,7 +3587,7 @@ mod tests {
     }
 
     /// When the privileged scanners already cover everything, no fallback is
-    /// added - a connect scanner beside them would re-probe the same ports.
+    /// added.
     #[test]
     fn fully_covered_protocols_gain_no_fallback() {
         let (_session, ctx) = ScanSession::new();
@@ -3942,7 +3604,7 @@ mod tests {
             &RawReach::Everything,
         )
         .routes;
-        // Two scanners in, two scanners out: nothing was added beside them.
+        // Two scanners in, two out.
         assert_eq!(scanners.len(), 2);
     }
 
@@ -3979,12 +3641,9 @@ mod tests {
             .collect()
     }
 
-    /// What this exists for: a frames-only scan's raw routes are handed every
-    /// address but the ones a frame cannot reach, so without a strategy of
-    /// their own those addresses would reach no scanner at all and every port
-    /// on loopback would come back unasked. Each protocol the raw routes cover
-    /// gets its connect strategy for them alone, and the phase records that it
-    /// did.
+    /// A frames-only scan's raw routes miss the addresses a frame cannot reach.
+    /// Each protocol the raw routes cover gets a connect strategy for those
+    /// alone, and the phase records that it did.
     #[test]
     fn what_frames_cannot_reach_gets_the_connect_strategies_for_itself_alone() {
         let (_session, ctx) = ScanSession::new();
@@ -4011,10 +3670,8 @@ mod tests {
         );
     }
 
-    /// The same rule the whole-scan fallback keeps, applied to the part: a
-    /// connect scan cannot send a FIN, so the TCP ports on what a frame cannot
-    /// reach are refused rather than answered by a different question. UDP
-    /// still has its stand-in.
+    /// A connect scan cannot send a FIN, so the TCP ports beyond a frame's reach
+    /// are refused. UDP still has its stand-in.
     #[test]
     fn a_technique_connect_cannot_express_is_refused_for_those_targets_alone() {
         let (_session, ctx) = ScanSession::new();
@@ -4042,8 +3699,8 @@ mod tests {
         );
     }
 
-    /// Nothing stands in for an INIT, on part of a scan as on the whole of one.
-    /// Refused, and not recorded as reached by connect, since nothing was.
+    /// Nothing stands in for an INIT, on part of a scan as on the whole. Refused,
+    /// and not recorded as reached by connect.
     #[test]
     fn sctp_on_what_frames_cannot_reach_is_refused_and_nothing_is_reached_by_connect() {
         let (_session, ctx) = ScanSession::new();
@@ -4068,8 +3725,7 @@ mod tests {
     }
 
     /// A protocol whose raw strategy did not open at all is refused once, for
-    /// every address, and not a second time for the addresses a frame would
-    /// not have reached anyway.
+    /// every address, including those beyond a frame's reach.
     #[test]
     fn a_protocol_with_no_strategy_is_not_refused_twice_for_part_of_the_scan() {
         let (_session, ctx) = ScanSession::new();
@@ -4093,10 +3749,7 @@ mod tests {
         );
     }
 
-    /// The mirror of the double-record: a plan that never intended TCP gets no
-    /// connect fallback for it either, however open-port-finding the technique
-    /// would have been. Nothing intended it, so there is nothing to stand in
-    /// for.
+    /// A plan that never intended TCP gets no connect fallback for it either.
     #[test]
     fn a_protocol_the_plan_left_out_gains_no_fallback_and_no_second_refusal() {
         let (_session, ctx) = ScanSession::new();
@@ -4122,8 +3775,8 @@ mod tests {
         );
     }
 
-    /// The gap this pass exists to close: a sweep that learned a host's hardware
-    /// and its name, and concluded nothing from either.
+    /// A sweep that learned a host's hardware and its name concludes an OS from
+    /// them.
     #[test]
     fn a_discovery_sweep_now_names_what_its_own_findings_imply() {
         let (_session, ctx) = ScanSession::new();
@@ -4145,9 +3798,7 @@ mod tests {
         );
     }
 
-    /// `Off` means identify nothing. It costs no packets to disobey, which is
-    /// exactly why obeying it has to be tested: a caller who asked for a report
-    /// containing only what they requested must not find a fingerprint in it.
+    /// `Off` identifies nothing, though this pass would cost no packets.
     #[test]
     fn detection_turned_off_identifies_nothing() {
         let (_session, ctx) = ScanSession::new();
@@ -4168,11 +3819,8 @@ mod tests {
 
     /// A host that has already said what kernel it runs is not asked again.
     ///
-    /// The test is "is the kernel known", not "was the host named": a host
-    /// reported as `Linux · Debian 13` has been named perfectly well and still
-    /// has nothing on record about its kernel, so it is exactly the host worth
-    /// asking. Getting this backwards would skip the population the phase exists
-    /// for.
+    /// The test is whether the kernel is known, not whether the host was named:
+    /// a host reported as `Linux · Debian 13` is still asked.
     #[tokio::test(flavor = "current_thread")]
     async fn the_kernel_probe_skips_only_hosts_whose_kernel_is_known() {
         use crate::model::host::{HostStatus, OsFingerprint, StatusProtocol, StatusReason};
@@ -4185,9 +3833,9 @@ mod tests {
         };
 
         let (_session, ctx) = ScanSession::new();
-        // Named, with no kernel: still worth asking. On loopback, so the
-        // question never leaves the machine running the suite: Linux refuses it
-        // with a port-unreachable and macOS, holding `127.0.0.1` alone, drops it.
+        // Named, with no kernel: still asked. On loopback, so the question never
+        // leaves the machine: Linux answers port-unreachable and macOS, holding
+        // only `127.0.0.1`, drops it.
         let named: IpAddr = "127.0.0.2".parse().expect("a valid address");
         ctx.update_host(named, |host| {
             up(host);
@@ -4204,9 +3852,8 @@ mod tests {
             );
         });
 
-        // No SNMP agent answers there, so nothing is recorded. What this pins
-        // is the selection: the phase must run at all, and must not fail, for a
-        // store in exactly this state.
+        // No agent answers, so nothing is recorded; this pins that the phase
+        // runs without failing for this store.
         run_active_os_snmp(&ctx, OsDetection::Active, &PortSet::new()).await;
 
         assert!(ctx.take_failures().is_empty(), "declining is not failing");
@@ -4221,20 +3868,8 @@ mod tests {
         );
     }
 
-    /// A host that answers has proved a port open, and a scanner that knew and
-    /// did not say would be withholding a finding.
-    ///
-    /// The other way to build it is to discard the answer, on the reasoning
-    /// that 161 is not a port the caller asked to scan. That confuses two
-    /// things: the objection to widening the port list is to sending traffic
-    /// nobody requested, and this traffic *was* requested: by the detection
-    /// level.
-    /// Once it is sent, all that remains is whether the answer is reported or
-    /// thrown away, and an open agent answering the default community is a
-    /// finding in its own right.
-    ///
-    /// Recorded with the evidence that found it, so a report never has to imply
-    /// it was asked for.
+    /// A host that answers has proved a port open, and the port is recorded with
+    /// the evidence that found it. The detection level requested this traffic.
     #[test]
     fn a_port_the_kernel_probe_found_is_recorded_with_what_found_it() {
         let port = crate::fingerprint::baseline_port(161, Protocol::Udp, PortState::Open)
@@ -4275,11 +3910,9 @@ mod tests {
         }
     }
 
-    /// The series probe opens a raw socket, so it must not open one to probe
-    /// nothing. Every host here answered no TCP probe, which is the ordinary
-    /// state after a discovery sweep, and the phase has to notice that from the
-    /// store *before* reaching for a transport it would then have to report
-    /// failing to get.
+    /// The series probe does not open a raw socket to probe nothing. Every host
+    /// here answered no TCP probe, the ordinary state after a discovery sweep,
+    /// and the phase notices from the store before reaching for a transport.
     #[tokio::test(flavor = "current_thread")]
     async fn the_series_probe_declines_when_no_host_has_a_port_to_ask_again() {
         let (_session, ctx) = ScanSession::new();
@@ -4314,9 +3947,8 @@ mod tests {
         );
     }
 
-    /// Every level below `Active` sends nothing of its own, and this phase is
-    /// the whole reason `is_active` exists. A caller at the default must find
-    /// their scan byte-identical to one with detection off.
+    /// Every level below `Active` sends nothing of its own, so a scan at the
+    /// default sends exactly what one with detection off does.
     #[tokio::test(flavor = "current_thread")]
     async fn the_series_probe_sends_nothing_below_the_active_level() {
         use crate::model::port::{Port, PortState, Protocol};
@@ -4324,8 +3956,7 @@ mod tests {
         for level in [OsDetection::Off, OsDetection::Passive] {
             let (_session, ctx) = ScanSession::new();
             let ip: IpAddr = "192.0.2.4".parse().expect("a valid address");
-            // A host that *would* be followed, so the only thing declining the
-            // phase is the level itself.
+            // A host that would be followed, so only the level declines.
             ctx.update_host(ip, |host| {
                 host.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
             });
@@ -4339,8 +3970,7 @@ mod tests {
         }
     }
 
-    /// The pass runs over every host a sweep found, and most of them have
-    /// nothing to go on. That must leave them alone rather than guess.
+    /// A host with nothing to go on is left alone.
     #[test]
     fn a_host_with_nothing_to_go_on_is_left_as_it_was() {
         let (_session, ctx) = ScanSession::new();
@@ -4378,12 +4008,11 @@ mod tests {
         host
     }
 
-    /// The port probes standing in for a liveness pass file as silent, and
-    /// forget, exactly the records nothing was heard from at an address they
-    /// finished asking, and file as undecided, and forget, the ones nothing
-    /// was heard from at an address with a port never asked. One that answered
-    /// is a host; one nothing could be sent to is named for what it is; and an
-    /// address outside what the phase probed is not its to judge.
+    /// Port probes standing in for a liveness pass file as silent, and forget,
+    /// the records heard nothing from at addresses fully asked, and as undecided
+    /// those with a port never asked. One that answered is a host; one nothing
+    /// could be sent to is named as such; an address outside the phase is left
+    /// alone.
     #[test]
     fn the_silent_are_the_unheard_the_port_probes_finished_asking() {
         use crate::model::port::Port;
@@ -4420,10 +4049,8 @@ mod tests {
         assert_eq!(kept, ["192.0.2.1", "192.0.2.4", "192.0.2.9"]);
     }
 
-    /// And a record its own budget left part-asked is not silent either: the
-    /// budget ended its asking, which is not the silence of an address asked
-    /// in full. It is undecided, as a liveness pass leaves an address its
-    /// budget cut short, and named besides among those the budget left.
+    /// A record its own budget left part-asked is undecided, not silent, and
+    /// named among those the budget left.
     #[test]
     fn a_host_left_early_is_undecided_rather_than_silent() {
         use crate::model::port::Port;
@@ -4450,9 +4077,8 @@ mod tests {
     /// A host the store holds but that never answered is not a host to spend a
     /// probe per port on.
     ///
-    /// Worth testing rather than assuming: a target nothing answers for usually
-    /// leaves *no* store entry at all, so this filter is only reached by a host
-    /// that was recorded and still is not alive.
+    /// A target nothing answers for usually leaves no store entry, so this
+    /// filter is only reached by a host recorded but not alive.
     #[test]
     fn a_host_that_did_not_answer_is_not_live() {
         for status in [HostStatus::Down, HostStatus::Unknown] {
@@ -4475,8 +4101,7 @@ mod tests {
     }
 
     /// A dual-stack machine is one host filed under one address. If it answered
-    /// over IPv6, the IPv4 address somebody actually typed is still live: it is
-    /// the same machine, and it is the one that was asked about.
+    /// over IPv6, its IPv4 address is still live.
     #[test]
     fn every_address_of_a_live_host_is_live() {
         let mut host = host_at("2001:db8::1", HostStatus::Up);
@@ -4492,9 +4117,8 @@ mod tests {
         assert!(live.contains(&"2001:db8::1".parse::<IpAddr>().expect("an address")));
     }
 
-    /// Nothing answered, so nothing is live. The plan is unchanged either way:
-    /// what an empty answer costs is every one of its targets being settled as
-    /// [`Skipped`](crate::journal::settle::Outcome::Skipped) rather than probed.
+    /// Nothing answered, so nothing is live. The plan is unchanged; every target
+    /// is settled as [`Skipped`](crate::journal::settle::Outcome::Skipped).
     #[test]
     fn an_empty_store_has_nothing_live() {
         let (_session, ctx) = store_holding(Vec::new());
@@ -4503,10 +4127,7 @@ mod tests {
     }
 
     /// A scan that identified software carries the vulnerabilities that
-    /// identification implies, with no second pass a caller has to remember.
-    ///
-    /// Performed by a named step of its own rather than as a side effect of
-    /// `PhaseRecorder::finish`.
+    /// identification implies, from a step of its own.
     #[test]
     fn correlation_records_a_known_vulnerability_against_the_software_it_names() {
         use crate::model::ip::scoped::ScopedIp;
@@ -4647,10 +4268,9 @@ mod tests {
                 .all(|finding| finding.confidence() < Confidence::Probable),
             "a build hiding its patch level is only surely vulnerable where no fix exists"
         );
-        // And the Apache banner names no release, so its build is taken to be
-        // the release the SSH banner beside it names. The fixture carries no
-        // apache2 data, so the excerpt says which package in which release the
-        // data could not answer for.
+        // The Apache banner names no release, so its build is taken from the
+        // SSH banner's. The fixture has no apache2 data, so the excerpt names
+        // the package and release the data could not answer for.
         let http: Vec<&crate::model::finding::Finding> = host
             .ports()
             .filter(|port| port.number() == 80)
@@ -4675,8 +4295,7 @@ mod tests {
         }));
     }
 
-    /// At [`ServiceDetection::Off`] nothing asked a port what it was, so there
-    /// is nothing to join on, and the step does not run even where a CPE is
+    /// At [`ServiceDetection::Off`] the step does not run, even where a CPE is
     /// somehow present.
     #[test]
     fn correlation_does_not_run_when_no_service_pass_did() {
@@ -4706,10 +4325,8 @@ mod tests {
     /// A server accepting exactly one suite under TLS 1.2 and refusing
     /// everything else.
     ///
-    /// It reads the offer rather than counting connections, because the pass
-    /// walks the five versions concurrently: a server answering "the first
-    /// connection" would answer whichever version happened to arrive first, and
-    /// the walk would credit none of them.
+    /// It reads the offer, because the pass walks the five versions
+    /// concurrently and connection order is arbitrary.
     async fn tls_endpoint(suite: u16) -> std::net::SocketAddr {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
@@ -4735,11 +4352,9 @@ mod tests {
     /// A server accepting every suite TLS 1.2 can express, taking `pause` over
     /// each answer, and a count of the connections it has taken.
     ///
-    /// Accepting everything is what makes a walk long: each answer removes one
-    /// suite from the offer, so a walk nothing stops puts every TLS 1.2 suite
-    /// to it, one connection each. Each connection is served on its own task so
-    /// the pause is paid per offer, as a slow server charges it, rather than
-    /// queued behind the other versions' offers.
+    /// Accepting everything makes a walk long: each answer removes one suite
+    /// from the offer, one connection each. Each connection is served on its own
+    /// task so the pause is paid per offer, as a slow server charges it.
     async fn slow_endpoint_accepting_everything(
         pause: std::time::Duration,
     ) -> (std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
@@ -4828,8 +4443,7 @@ mod tests {
 
         let mut host = Host::new(address);
         host.set_status(crate::model::host::HostStatus::Up);
-        // The `security` record is the filter the pass selects on: it is written
-        // only where a handshake completed, so a port without one is skipped.
+        // The `security` record the pass selects on.
         host.add_port(
             Port::new(port, Protocol::Tcp, PortState::Open)
                 .with_security(Security::new().with_tls_version("TLSv1.2")),
@@ -4855,8 +4469,7 @@ mod tests {
         .flatten()
     }
 
-    /// The dial governs the pass. Off, nothing is asked and nothing is written,
-    /// which is what keeps a default scan from paying for this.
+    /// Off, nothing is asked and nothing is written.
     #[tokio::test]
     async fn the_pass_asks_nothing_unless_it_is_switched_on() {
         let addr = tls_endpoint(0xC02F).await;
@@ -4877,9 +4490,8 @@ mod tests {
     /// handshake's record, which this scan's own service pass would never have
     /// written there but a restored sitting can.
     ///
-    /// The walk is dozens of ClientHellos, and on a printer's raw-print port
-    /// each is a page. The endpoint here would accept, so an enumeration that
-    /// ran would be recorded, as the test after this one shows.
+    /// On a printer's raw-print port each ClientHello is a page. The endpoint
+    /// here would accept, so an enumeration that ran would be recorded.
     #[tokio::test]
     async fn the_pass_leaves_a_listen_only_port_alone() {
         use crate::model::host::Host;
@@ -4913,9 +4525,8 @@ mod tests {
     /// Switched on, the pass reaches the endpoint, writes what it accepts back
     /// onto the port, and leaves the handshake's own record intact.
     ///
-    /// The write-back is the part worth testing: it folds through the same
-    /// confidence-driven merge every other pass uses, and a merge in the wrong
-    /// direction would drop the enumeration without a word.
+    /// The write-back folds through the confidence-driven merge every pass uses;
+    /// a merge in the wrong direction would drop the enumeration silently.
     #[tokio::test]
     async fn the_pass_records_what_the_endpoint_accepts() {
         // A suite with a fault, so the findings path is exercised too.
@@ -4958,10 +4569,8 @@ mod tests {
     /// The pass counts each endpoint forward as its walk ends, read through the
     /// progress a front end holds.
     ///
-    /// With TLS enumeration switched on this is the slowest pass a scan runs,
-    /// up to eighty connections a version against an endpoint accepting
-    /// everything, and a stage that announces its size and never counts
-    /// towards it reads as nought for all of that time.
+    /// This is the slowest pass a scan runs, up to eighty connections a version,
+    /// so progress must move during it.
     #[tokio::test]
     async fn the_pass_counts_each_endpoint_as_its_walk_ends() {
         use crate::model::port::{Port, Security};
@@ -4996,11 +4605,8 @@ mod tests {
     /// A walk an earlier sitting left unfinished is finished by the sitting
     /// that resumes it.
     ///
-    /// The journal restores the port with the walk the scan was stopped in,
-    /// and the pass asks the endpoint again. The fold that writes the answer
-    /// back is where it can be lost: an account already on record that stood
-    /// against any other would keep the floor and drop the whole answer the
-    /// resumed sitting went back for.
+    /// The journal restores the port with the unfinished walk, and the pass asks
+    /// again. The fold must let the new answer replace the restored one.
     #[tokio::test]
     async fn a_resumed_sitting_finishes_a_walk_an_earlier_one_left_unfinished() {
         use crate::model::port::{Port, Security};
@@ -5040,9 +4646,7 @@ mod tests {
         );
     }
 
-    /// A host that has spent its budget is left alone. This is the most
-    /// expensive thing the engine does to one endpoint and the last place to
-    /// spend a budget that has already run out.
+    /// A host that has spent its budget is left alone.
     #[tokio::test]
     async fn a_host_out_of_time_is_not_enumerated() {
         let addr = tls_endpoint(0xC02F).await;
@@ -5062,10 +4666,8 @@ mod tests {
     /// what it learned, and names the host as left early.
     ///
     /// One endpoint is up to 80 offers under TLS 1.2 alone, each allowed two
-    /// seconds, so a budget asked about only before an endpoint is started
-    /// bounds almost nothing: a host with a second left would be held for
-    /// minutes past it, and the report would describe its enumeration as
-    /// finished.
+    /// seconds, so checking the budget only before an endpoint starts would hold
+    /// a host minutes past it.
     #[tokio::test]
     async fn a_walk_under_way_stops_when_its_host_runs_out_of_time() {
         use crate::model::tls::{CipherSuite, Interruption, TlsVersion, UnfinishedVersion};
@@ -5081,7 +4683,7 @@ mod tests {
         };
         run_tls_enumeration(&ctx, &cfg).await;
 
-        // A walk nothing stopped would have asked about every one of them.
+        // An unstopped walk would have asked about every one of them.
         let every = CipherSuite::offered_under(TlsVersion::Tls12).count();
         let asked = seen.load(Ordering::SeqCst);
         assert!(
@@ -5114,10 +4716,8 @@ mod tests {
 
     /// A walk already under way stops when the scan does.
     ///
-    /// The same shape as the budget above, from the scan's side: a caller who
-    /// aborts, or a scan whose own budget runs out, is otherwise kept waiting
-    /// for every walk in flight to finish, which is minutes against an
-    /// endpoint that accepts everything.
+    /// As with the host budget above: otherwise an abort, or the scan's own
+    /// budget running out, would wait minutes for every walk in flight.
     #[tokio::test]
     async fn a_walk_under_way_stops_when_the_scan_stops() {
         use crate::model::tls::{CipherSuite, TlsVersion};
