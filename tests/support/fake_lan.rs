@@ -66,8 +66,8 @@ const MIN_ETH_FRAME: usize = 60;
 ///
 /// The real capture bounds its queue and stalls its reader thread when the
 /// consumer falls behind; a simulated segment has no reader thread to stall, so
-/// it drops instead. Sized well above any fixture — a `/24` where every host
-/// answers is a few hundred frames — so that hitting it means a test built more
+/// it drops instead. Sized well above any fixture (a `/24` where every host
+/// answers is a few hundred frames) so that hitting it means a test built more
 /// traffic than a segment holds rather than that the scanner was briefly busy.
 const FAKE_QUEUE_DEPTH: usize = 4096;
 
@@ -100,7 +100,7 @@ const DHCP_CLIENT_PORT: u16 = 68;
 /// *truncated*. An ARP reply is 42 bytes and gets padded, which is why that went
 /// unnoticed; a neighbor advertisement is 78 and was being cut to 60, leaving
 /// six bytes where a 24-byte message should be. The scanner then read it as no
-/// advertisement at all — a reply the simulated host had sent and the simulated
+/// advertisement at all: a reply the simulated host had sent and the simulated
 /// wire destroyed.
 fn pad_to_min_frame(frame: &mut Vec<u8>) {
     if frame.len() < MIN_ETH_FRAME {
@@ -196,7 +196,7 @@ impl LanHost {
     ///
     /// The difference is real and it is large. A node answering a probe put to
     /// the whole segment holds its reply back so the segment does not answer at
-    /// once, and a device asleep on wifi answers when it next wakes — an order
+    /// once, and a device asleep on wifi answers when it next wakes: an order
     /// of magnitude slower than the same device answers a question addressed to
     /// it alone. A fake with one delay for both cannot express that host, and it
     /// is the one the ranking in `HostTelemetry` exists for.
@@ -270,8 +270,8 @@ pub struct FakeLan {
     hosts: HashMap<IpAddr, LanHost>,
     /// Addresses that advertise themselves without being asked.
     ///
-    /// A real segment is full of this — neighbours resolving each other,
-    /// announcing a new address, answering somebody else's solicitation — and a
+    /// A real segment is full of this (neighbours resolving each other,
+    /// announcing a new address, answering somebody else's solicitation) and a
     /// promiscuous capture sees all of it. Without a way to express it here the
     /// harness could only produce neighbours that answer our own probes, which
     /// is the minority of what a real sweep actually finds.
@@ -365,7 +365,7 @@ impl FakeLan {
     }
 
     /// The same, answering *from* `address` while naming `identifier` as the
-    /// server — which is what a relay agent forwarding for a server on another
+    /// server, which is what a relay agent forwarding for a server on another
     /// segment produces.
     pub fn serving_dhcp_as(
         mut self,
@@ -644,7 +644,7 @@ impl FakeSegment {
     /// Emits the switch's own announcement once, as soon as the scanner has put
     /// anything on the wire.
     ///
-    /// Unlike everything else here it answers nothing — a managed switch
+    /// Unlike everything else here it answers nothing: a managed switch
     /// announces itself on a timer, and the scanner's first frame is only the
     /// moment this fixture has to hang it on.
     fn emit_switch_announcement(&mut self) {
@@ -680,7 +680,7 @@ impl FakeSegment {
     /// Unlike the all-nodes echo, exactly one host can answer: the message names
     /// the address it is about. A host declared here answers whatever it thinks
     /// of being scanned, which is the property that makes solicitation worth
-    /// sending — replying is not optional in the way replying to a multicast
+    /// sending: replying is not optional in the way replying to a multicast
     /// echo is.
     fn answer_neighbor_solicit(&mut self, frame: &Frame<'_>) {
         let Ok(scanner_ip) = ip::ipv6_source(frame) else {
@@ -845,7 +845,7 @@ fn lldp_advertisement(switch: Switch) -> Vec<u8> {
     let mut port = vec![PORT_SUBTYPE_INTERFACE_NAME];
     port.extend_from_slice(switch.port.as_bytes());
 
-    // Bridging enabled, routing supported but not enabled — the distinction a
+    // Bridging enabled, routing supported but not enabled: the distinction a
     // reader has to keep, and one a real access switch actually reports.
     const BRIDGE: u16 = 1 << 2;
     const ROUTER: u16 = 1 << 4;
@@ -1123,7 +1123,7 @@ fn router_advertisement(router: Router, scanner_mac: MacAddr) -> Option<Vec<u8>>
         icmp_type: Icmpv6Types::RouterAdvert.0,
         code: 0,
         checksum: craft::Field::Computed,
-        // Current hop limit, flags, then a router lifetime of 1800 seconds —
+        // Current hop limit, flags, then a router lifetime of 1800 seconds:
         // the field that would be zero if this router were declining to be a
         // default one.
         rest_of_header: [64, 0, 0x07, 0x08],

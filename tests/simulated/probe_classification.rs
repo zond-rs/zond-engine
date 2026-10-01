@@ -298,14 +298,14 @@ async fn established_traffic_does_not_discover_a_host() {
 /// A SYN scan over IPv6 classifies a port.
 ///
 /// The engine reaches this conclusion through code that is almost all
-/// family-agnostic — `RoutedScanner` contains no IPv6 branch at all — so
+/// family-agnostic (`RoutedScanner` contains no IPv6 branch at all) so
 /// without a run the belief that IPv6 port scanning works rests on the parts:
 /// the TCP checksum has an IPv6 pseudo-header arm, the transport picks a v6
 /// socket, and the capture filter admits v6 answers. Each is tested alone. This
 /// test puts a SYN on the wire over IPv6 and reads a port state back.
 ///
 /// Both answers in one scan, because the failure worth catching is not "IPv6
-/// finds nothing" — that would be obvious — but a family whose replies are
+/// finds nothing" (that would be obvious) but a family whose replies are
 /// admitted and then classified the same way regardless of what came back.
 #[tokio::test]
 async fn a_syn_scan_over_ipv6_tells_open_from_closed() {
@@ -340,7 +340,7 @@ async fn silence_over_ipv6_is_no_reply() {
     );
 }
 
-/// A bare ACK over IPv6 answers no probe — and this is the family where that
+/// A bare ACK over IPv6 answers no probe, and this is the family where that
 /// check has to hold.
 ///
 /// Its IPv4 twin above passes partly for free: the kernel drops an established
@@ -748,15 +748,15 @@ async fn every_udp_probe_leaves_from_the_scan_source_port() {
 ///
 /// **This is the port-scan phase in miniature.** There, discovery runs as
 /// enrichment beside the port scanner, so the host is almost always in the store
-/// before a single discovery reply arrives. Crediting on store novelty — which
-/// is what `ScanContext::write_host` reports — meant every one of the sweep's own
+/// before a single discovery reply arrives. Crediting on store novelty (which
+/// is what `ScanContext::write_host` reports) meant every one of the sweep's own
 /// answers read as "not new": the audit reported nothing found, and
 /// `responded_count` never reached the target count, so the `AllResponded` exit
 /// was unavailable in exactly the phase where discovery is cheapest.
 ///
 /// The pre-seeded host is what makes the test bite. Without it the store is
 /// empty, store novelty and the sweep's own first sighting coincide, and the
-/// defect is invisible — which is why it survived until an audit line was read
+/// defect is invisible, which is why it survived until an audit line was read
 /// on a real segment.
 #[tokio::test]
 async fn a_host_already_in_the_store_is_still_credited_to_this_sweep() {
@@ -805,7 +805,7 @@ async fn a_host_already_in_the_store_is_still_credited_to_this_sweep() {
 /// answers a SYN the way a labelled Linux machine was recorded answering one,
 /// and the scan names it.
 ///
-/// This is the only test that covers the wiring — the point where a reply that
+/// This is the only test that covers the wiring: the point where a reply that
 /// resolved a port is read a second time for what it says about the machine, and
 /// the result is filed against the host. Everything below it has its own tests
 /// against recorded bytes; nothing else establishes that the scanner ever calls
@@ -873,19 +873,19 @@ async fn a_scan_names_no_operating_system_from_a_closed_port_alone() {
 /// 1. A SYN reaches an open port, which accepts and holds the connection.
 /// 2. The SYN+ACK is lost. This host never sees it, so it never resets it, and
 ///    the target goes on holding a connection nobody is coming back for.
-/// 3. The scan retransmits — carrying a *fresh* nonce, deliberately, so a late
+/// 3. The scan retransmits, carrying a *fresh* nonce, deliberately, so a late
 ///    reply names the attempt it answers.
 /// 4. That SYN does not fit the held connection, so the target challenges it
 ///    rather than answering it (RFC 793 §3.9, RFC 5961 §4).
 ///
 /// Every retransmission after the first draws a challenge. Discard those as
-/// noise and the port resolves `NoReply` once the budget runs out — an open
+/// noise and the port resolves `NoReply` once the budget runs out: an open
 /// port reported silent on a lossy path, which is precisely the case
 /// retransmission exists to rescue.
 ///
 /// It is invisible on the ordinary path, which never reaches step 2: when the
-/// SYN+ACK *does* arrive, this host's kernel resets it — no socket owns the
-/// scan's source port — which clears the target's half-open connection, so the
+/// SYN+ACK *does* arrive, this host's kernel resets it (no socket owns the
+/// scan's source port) which clears the target's half-open connection, so the
 /// next attempt meets a listener in LISTEN and gets a clean handshake.
 ///
 /// And a simulated network answering each probe from its flags alone cannot

@@ -114,7 +114,7 @@ async fn sweep_in(
 /// has one.
 ///
 /// A host records the zone its *key* carried, and a key carries one only where
-/// the address needs it — so a machine whose IPv4 replies before its link-local
+/// the address needs it, so a machine whose IPv4 replies before its link-local
 /// is created unscoped, and the link-local it advertises a moment later would
 /// be reported bare. Two runs of the same sweep against the same phone would
 /// print `fe80::aa%en1` and `fe80::aa`, decided by nothing but which reply
@@ -124,7 +124,7 @@ async fn a_link_local_carries_its_interface_even_when_ipv4_answered_first() {
     let peer_v6 = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
 
     // One machine at both addresses, with the IPv6 half held back so the record
-    // is created from the IPv4 reply — the order that would lose the zone.
+    // is created from the IPv4 reply: the order that would lose the zone.
     let lan = FakeLan::new().host(v4(10), LanHost::at(PEER_A)).host(
         peer_v6,
         LanHost::at(PEER_A).delay(Duration::from_millis(60)),
@@ -238,7 +238,7 @@ async fn an_ipv6_neighbour_is_alive_by_the_probe_that_found_it() {
 /// Without it, local discovery hands every later phase an address it cannot use.
 /// `fe80::AA` names a different machine on every segment, and a `SocketAddrV6`
 /// with a zero scope id is refused by the kernel however reachable the neighbour
-/// is — so service detection, fingerprinting and the connect fallback would each
+/// is, so service detection, fingerprinting and the connect fallback would each
 /// fail against a host discovery had just proved was there, with an error
 /// describing the network rather than the omission.
 ///
@@ -285,7 +285,7 @@ async fn an_ipv6_neighbour_carries_the_interface_it_was_found_on() {
 ///
 /// This is what neighbour discovery buys that the all-nodes echo cannot. That
 /// echo asks the whole segment one question, so a targeted scan must not send it
-/// — scanning one host may not wake its neighbours — and before solicitation
+/// (scanning one host may not wake its neighbours) and before solicitation
 /// existed that left a targeted IPv6 run sending *no packet at all*: the ARP
 /// iterator is built from the IPv4 targets, the echo is gated off, and the loop
 /// idled to its deadline reporting nothing. A solicitation names one address, so
@@ -326,8 +326,8 @@ async fn a_targeted_ipv6_run_probes_its_target() {
 ///
 /// The IPv6 half of the contract `retransmission.rs` holds the ARP path to.
 /// Solicitation is what makes it expressible at all: the ledger owns an
-/// outstanding probe per address, which the all-nodes echo — one packet answered
-/// by whoever feels like it — gives it nothing to do with.
+/// outstanding probe per address, which the all-nodes echo (one packet answered
+/// by whoever feels like it) gives it nothing to do with.
 #[tokio::test]
 async fn a_lost_solicitation_is_retried_and_the_neighbour_is_still_found() {
     let peer_v6 = IpAddr::V6(std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0xAA));
@@ -356,8 +356,8 @@ async fn a_lost_solicitation_is_retried_and_the_neighbour_is_still_found() {
 /// This is the shape a real segment produced. A host with several IPv6 addresses
 /// answers a solicitation from whichever its stack prefers, so a phone solicited
 /// at `…::21e9` replied from `…:14f0:ca99:5818:74ee`. Keyed on the frame's
-/// source, that reply retires no probe — the ledger is holding one for the
-/// address that was solicited — so it yields no round trip and files the host
+/// source, that reply retires no probe (the ledger is holding one for the
+/// address that was solicited) so it yields no round trip and files the host
 /// under an address the scan never asked about. Measured on the real network:
 /// only the router, whose advertisement happened to come from the solicited
 /// address, produced a latency at all.
@@ -435,7 +435,7 @@ async fn an_excluded_address_a_neighbour_answers_from_stays_off_its_record() {
 /// round trip rather than a blank.
 ///
 /// Measured on a real segment: nearly every IPv6 host a sweep reported came from
-/// an advertisement nobody had solicited — neighbours resolving each other,
+/// an advertisement nobody had solicited: neighbours resolving each other,
 /// announcing an address, answering somebody else's question, all of it visible
 /// to a promiscuous capture. That is genuine evidence the host exists, and it is
 /// evidence of a conversation we were not part of, so there is no probe to
@@ -482,7 +482,7 @@ async fn an_overheard_neighbour_is_asked_directly_and_then_measured() {
 /// A neighbour slow to answer its confirmation is still measured.
 ///
 /// The retry schedule is sized from whatever the scan has been measuring, and
-/// on a LAN that is ARP replies arriving in single-digit milliseconds — so a
+/// on a LAN that is ARP replies arriving in single-digit milliseconds, so a
 /// retried solicitation goes out again within tens of milliseconds, long before
 /// a device on wifi rouses itself to answer. Two solicitations are identical on
 /// the wire, so the advertisement cannot say which it answers, Karn's rule
@@ -492,7 +492,7 @@ async fn an_overheard_neighbour_is_asked_directly_and_then_measured() {
 /// is not timed`.
 ///
 /// A confirmation is not retried, so the reply is unambiguous however long it
-/// takes. The host was already known to exist — only the measurement was ever at
+/// takes. The host was already known to exist; only the measurement was ever at
 /// stake, and retrying is what loses it.
 #[tokio::test]
 async fn a_slow_confirmation_is_still_measured() {
@@ -529,7 +529,7 @@ async fn a_slow_confirmation_is_still_measured() {
 /// for.
 ///
 /// The confirmation is deliberately outside the retry ledger, and the ledger is
-/// what keeps the loop alive for every other outstanding probe — so without a
+/// what keeps the loop alive for every other outstanding probe, so without a
 /// window of its own the sweep sends a solicitation and then exits, which is a
 /// strange thing to spend a packet on. The delay here is longer than the sweep
 /// would otherwise run for.
@@ -746,8 +746,8 @@ async fn two_machines_are_recorded_separately() {
 ///
 /// A sweep records every IPv6 neighbour that answers the all-nodes echo, target
 /// set or not, which is what makes `lan` find IPv6-only devices. Applied to
-/// every discovery it would make a scan of one address report eight machines
-/// — surprising on your own network and indiscreet on somebody else's. So the
+/// every discovery it would make a scan of one address report eight machines:
+/// surprising on your own network and indiscreet on somebody else's. So the
 /// behaviour has to be asked for.
 #[tokio::test]
 async fn discovery_of_one_address_does_not_report_the_whole_segment() {
@@ -815,7 +815,7 @@ async fn a_sweep_discovers_ipv6_neighbours_through_the_solicitation() {
 /// A neighbour found only by the all-nodes echo still arrives with a round trip.
 ///
 /// This is the common case: a device that answers the segment-wide echo but
-/// never a neighbor solicitation — a TV, a console. Left untimed, it is
+/// never a neighbor solicitation: a TV, a console. Left untimed, it is
 /// recorded as up, with a MAC, a vendor and a hostname, and an empty space where
 /// every IPv4 host has a number. The argument for leaving it so is that a
 /// multicast probe cannot be attributed, since every neighbour may answer the
@@ -823,8 +823,8 @@ async fn a_sweep_discovers_ipv6_neighbours_through_the_solicitation() {
 ///
 /// That is true of *which host* answers and false of *which request* was
 /// answered. RFC 4443 requires an echo reply to carry back the identifier and
-/// sequence number it was asked with, so unlike two neighbor solicitations —
-/// identical on the wire, and unmeasurable for exactly that reason — the echo
+/// sequence number it was asked with, so unlike two neighbor solicitations
+/// (identical on the wire, and unmeasurable for exactly that reason) the echo
 /// names its own request. The scan sends three; a neighbour that wakes in time
 /// for the third is measured against the third.
 #[tokio::test]
@@ -856,7 +856,7 @@ async fn a_neighbour_answering_only_the_all_nodes_echo_is_timed() {
 /// reports the addressed probe's round trip, not a blend of the two.
 ///
 /// A node answering a question put to the whole segment waits before it
-/// answers — implementations spread their replies deliberately — so that
+/// answers (implementations spread their replies deliberately) so that
 /// interval is an upper bound rather than a round trip, however precisely the
 /// echoed token attributes it. Pooling the two made every host on a segment
 /// report a latency an order of magnitude above what it answers a directed
@@ -927,8 +927,8 @@ async fn a_directed_probe_outranks_the_segment_wide_one_for_latency() {
 /// for goes nowhere there.
 ///
 /// The lead is worth exactly one solicitation. An mDNS record is a claim
-/// somebody else made — the address may have moved on, and the announcer is
-/// often speaking for a different machine entirely — which is the same standing
+/// somebody else made (the address may have moved on, and the announcer is
+/// often speaking for a different machine entirely) which is the same standing
 /// a neighbour-table entry has, and it earns its report the same way.
 #[tokio::test]
 async fn an_address_only_mdns_knows_about_is_asked_about() {
@@ -940,7 +940,7 @@ async fn an_address_only_mdns_knows_about_is_asked_about() {
     let announcer = MacAddr::new(0x02, 0x00, 0x00, 0x00, 0x00, 0xCC);
 
     // Declared as a host so it can answer, but named by *another* machine's
-    // announcement — nothing else in the sweep would ever ask about it.
+    // announcement: nothing else in the sweep would ever ask about it.
     let lan = FakeLan::new()
         .host(IpAddr::V6(announced), LanHost::at(PEER_B))
         .announcing_over_mdns("tv.local", announced, announcer);
@@ -1078,7 +1078,7 @@ async fn an_excluded_address_learned_mid_sweep_is_not_asked_about() {
 /// Announcing over mDNS is not what makes the announcer a host.
 ///
 /// A frame off the segment does prove its sender exists, but crediting a host
-/// to "was chatty on mDNS" files it under a mechanism that did not find it —
+/// to "was chatty on mDNS" files it under a mechanism that did not find it:
 /// the same distinction `Icmpv6EchoProtocol` is careful about, and the reason a
 /// coverage measurement can tell a working probe from a talkative network.
 #[tokio::test]
@@ -1101,7 +1101,7 @@ async fn announcing_over_mdns_does_not_make_the_announcer_a_host() {
 ///
 /// This is what a link addressed only in IPv6 resolves to: a `/64` cannot be
 /// enumerated and there is no IPv4 range to walk, so nothing goes in the target
-/// set — and the sweep's most important probe does not need one. The all-nodes
+/// set, and the sweep's most important probe does not need one. The all-nodes
 /// echo is a single packet the whole segment may answer, and on such a link it
 /// is the only thing that finds anything.
 ///
@@ -1140,7 +1140,7 @@ async fn a_sweep_with_no_targets_still_finds_the_segment() {
 ///
 /// `all_targets_responded` compares the count of responders against the size of
 /// the address range, but under [`Scope::Sweep`] only in-range IPv4 addresses
-/// are ever counted as responders — an IPv6 neighbour found through the
+/// are ever counted as responders: an IPv6 neighbour found through the
 /// all-nodes echo is never in the range. So under a sweep the check would ask
 /// whether the IPv4 half was done and stop the IPv6 half on the answer, with
 /// advertisements sitting in the receive queue.
@@ -1148,7 +1148,7 @@ async fn a_sweep_with_no_targets_still_finds_the_segment() {
 /// It stays hidden in the case anyone runs: on a /24 the count never reaches
 /// the range size, so the sweep runs to its deadline and the defect never
 /// fires. It takes a sweep of a handful of addresses that all answer, which is
-/// what this reproduces — and the same arithmetic, `0 >= 0`, would end a sweep
+/// what this reproduces, and the same arithmetic, `0 >= 0`, would end a sweep
 /// of a link with no IPv4 targets at all before its echo could be answered.
 ///
 /// So the question is asked only under [`Scope::Targeted`], where it means
@@ -1177,7 +1177,7 @@ async fn a_small_sweep_does_not_drop_ipv6_neighbours() {
 /// **A send path the audit does not see leaves this number short by a whole
 /// pass.** First attempts sent through a second path that never touched the
 /// audit would leave `sends_attempted` describing the retries and confirmations
-/// while reading like a total — and `sends_failed` blind to a first attempt that
+/// while reading like a total, and `sends_failed` blind to a first attempt that
 /// failed at all, which is exactly the case the scanner reports a failure for.
 ///
 /// Every target answers, which is what makes the assertion mean anything: a
@@ -1265,7 +1265,7 @@ async fn a_sweep_that_asked_everything_and_waited_says_its_attempts_were_spent()
 /// on a segment somebody was watching.
 ///
 /// Asserted through the finished report rather than through the context,
-/// because the whole path — strategy, context, recorder, scope — is what has to
+/// because the whole path (strategy, context, recorder, scope) is what has to
 /// work. Reading the context would pass with the last two links missing.
 #[tokio::test]
 async fn a_segment_sweep_records_the_link_it_covered() {
@@ -1333,7 +1333,7 @@ async fn a_targeted_run_claims_no_link() {
 /// A sweep asks the segment's routers to identify themselves, and the answer is
 /// a role rather than merely another host.
 ///
-/// The evidence a network is *shaped* by — which box forwards — cannot be
+/// The evidence a network is *shaped* by (which box forwards) cannot be
 /// obtained by asking any address a question. A router advertisement is sent to
 /// the segment, and the one thing that makes it reliable to collect during a
 /// scan of seconds is asking for it: unprompted, a router sends one every few
@@ -1390,8 +1390,8 @@ async fn a_sweep_asks_the_segment_who_configures_it() {
 ///
 /// The one finding in this crate that no probe can obtain: a managed switch
 /// announces itself to each of its ports on its own timer, and the sweep is
-/// listening anyway. It is not a claim about any host in the report — it is
-/// where the *scan* was run from — so it is closed into the phase rather than
+/// listening anyway. It is not a claim about any host in the report (it is
+/// where the *scan* was run from) so it is closed into the phase rather than
 /// written against an address.
 #[tokio::test]
 async fn a_sweep_learns_which_switch_port_it_is_running_from() {
@@ -1434,7 +1434,7 @@ async fn a_sweep_learns_which_switch_port_it_is_running_from() {
 /// address, so it must not put a host in the report.
 ///
 /// A switch generally holds no address on the segment it serves, so the role it
-/// claims has nothing to attach to — and inventing a host for it would be the
+/// claims has nothing to attach to, and inventing a host for it would be the
 /// same mistake a router advertisement is guarded against.
 #[tokio::test]
 async fn a_switch_announcing_itself_does_not_become_a_host() {
@@ -1476,9 +1476,9 @@ async fn a_relayed_answer_names_nobody_a_dhcp_server() {
 /// A targeted run asks the segment its two questions, and still reports only
 /// the hosts it was asked about.
 ///
-/// Both halves are the decision. Neither question can be put to an address —
-/// a router answers from a link-local nobody named, a DHCP server answers a
-/// broadcast — so a scan that declines to ask them reports a segment without
+/// Both halves are the decision. Neither question can be put to an address
+/// (a router answers from a link-local nobody named, a DHCP server answers a
+/// broadcast) so a scan that declines to ask them reports a segment without
 /// the two machines it is built around, which is most of what a person scans a
 /// segment to learn. What keeps the run targeted is not silence but what may be
 /// *recorded*: a declaration is filed against the hardware address that made it
@@ -1487,7 +1487,7 @@ async fn a_relayed_answer_names_nobody_a_dhcp_server() {
 /// The ordering this exercises is the one that decides whether any of it works.
 /// The advertisement arrives within half a second of the solicitation, and the
 /// ARP request that identifies its sender leaves on a paced ticker some way
-/// into the run — so the claim almost always arrives before there is a host to
+/// into the run, so the claim almost always arrives before there is a host to
 /// put it on.
 #[tokio::test]
 async fn a_targeted_run_asks_the_segment_and_records_only_what_it_asked_about() {

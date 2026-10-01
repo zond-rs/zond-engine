@@ -11,7 +11,7 @@
 //! [`scanner::scan`] probes its targets for liveness first and skips the ones
 //! that answer nothing, because an address nothing lives at otherwise costs one
 //! probe per port to learn that. These drive the real entry point, because the
-//! thing worth checking is the sequencing — a gate that reads the store at the
+//! thing worth checking is the sequencing: a gate that reads the store at the
 //! wrong moment sees an empty one and turns every target away.
 //!
 //! The address that answers nothing is [`silent_loopback`], which never leaves
@@ -232,9 +232,9 @@ async fn an_idle_scan_runs_no_liveness_pass_against_its_target() {
 /// Under an idle scan, every pass that would contact the target directly is
 /// declined, and the caller learns which and why.
 ///
-/// The passes after the port phase — service detection, the detection corpus,
+/// The passes after the port phase (service detection, the detection corpus,
 /// active operating-system probing, the route trace, filter characterisation,
-/// IP-protocol probing and TLS enumeration — each open a connection to the
+/// IP-protocol probing and TLS enumeration) each open a connection to the
 /// target or send it a probe from this host, which is the one thing an idle
 /// scan exists to avoid. Turned off silently they would betray the scan or,
 /// caught, leave the caller wondering why what they asked for did nothing. So
@@ -304,8 +304,8 @@ async fn a_live_host_is_still_port_scanned() {
     );
 }
 
-/// Each unit keeps the ports it was given. A target may name its own —
-/// `192.0.2.1:8080` — so a gate that rebuilt one set against one port list
+/// Each unit keeps the ports it was given. A target may name its own
+/// (`192.0.2.1:8080`) so a gate that rebuilt one set against one port list
 /// would answer a different question from the one that was asked.
 #[tokio::test]
 async fn the_gate_keeps_each_unit_its_own_ports() {

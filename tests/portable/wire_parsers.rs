@@ -21,8 +21,8 @@
 //!
 //! Uniform random bytes are refused at the first length check and prove almost
 //! nothing about what is behind it. So most of the generators below build a
-//! *structurally plausible* frame — a real Ethernet header, a real ethertype,
-//! TLVs whose length fields are real lengths — and fill everything the parser
+//! *structurally plausible* frame (a real Ethernet header, a real ethertype,
+//! TLVs whose length fields are real lengths) and fill everything the parser
 //! actually reads with arbitrary values. Random bytes are covered too, because
 //! that path must also return, but they are the cheap half of this.
 //!

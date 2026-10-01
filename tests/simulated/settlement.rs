@@ -11,7 +11,7 @@
 //! The unit tests in `journal::settle` assert the rule; these assert that the
 //! right fate actually reaches it from a scan that ran. The distinction cannot
 //! be checked any other way, because the thing that makes it subtle is that
-//! every fate produces the *same verdict* — so a test reading port states sees
+//! every fate produces the *same verdict*, so a test reading port states sees
 //! nothing wrong with a scan that was cut off before it asked.
 //!
 //! The test that matters here is
@@ -89,7 +89,7 @@ async fn an_answering_port_settles_as_answered() {
 }
 
 /// Silence that spent the whole retry budget is *earned*, and is the one silence
-/// a resume may skip — the moment the ledger calls "a verdict of 'no reply'
+/// a resume may skip: the moment the ledger calls "a verdict of 'no reply'
 /// earned rather than assumed".
 #[tokio::test]
 async fn a_port_that_spent_its_budget_settles_as_exhausted() {
@@ -102,7 +102,7 @@ async fn a_port_that_spent_its_budget_settles_as_exhausted() {
 
 /// **The test this module exists for.**
 ///
-/// A scan stopped before it could ask still gives every port a verdict — that is
+/// A scan stopped before it could ask still gives every port a verdict: that is
 /// the engine's deliberate choice, because an absent port is the one shortfall a
 /// reader cannot see. Those verdicts must not read as coverage.
 ///
@@ -162,7 +162,7 @@ async fn the_cursor_never_exceeds_what_the_scan_was_given() {
 /// The unprivileged path settles too.
 ///
 /// It has no retry ledger, so its positions travel with the probe rather than
-/// inside one — and without this the connect fallback would resume by re-probing
+/// inside one, and without this the connect fallback would resume by re-probing
 /// everything, which is the path most users without root actually take.
 #[tokio::test]
 async fn the_connect_path_settles_what_it_probed() {
@@ -212,7 +212,7 @@ async fn the_connect_path_settles_what_it_probed() {
 /// what the first did not settle.
 ///
 /// Every port here is closed, so the first sitting earns a verdict for all of
-/// them and the second has nothing left — which is the case worth asserting at
+/// them and the second has nothing left, which is the case worth asserting at
 /// this level, because it is the one where a mistake is invisible. A resume that
 /// re-probed everything would still produce a correct report, just a wasteful
 /// one, and only the cursor shows the difference.
@@ -375,8 +375,8 @@ async fn a_journalled_scan_resumes_where_it_stopped() {
 /// A journalled scan's event stream closes when the scan ends.
 ///
 /// A caller watching a scan reads events until the stream closes and only then
-/// asks for the report. If anything outside the scan holds the event sender —
-/// the checkpoint task did, by holding a whole `ScanContext` — the stream never
+/// asks for the report. If anything outside the scan holds the event sender
+/// (the checkpoint task did, by holding a whole `ScanContext`) the stream never
 /// closes, the caller never asks for the report, and the checkpoint task waits
 /// to be told to stop by a caller that is itself waiting. Neither moves.
 ///
@@ -447,7 +447,7 @@ async fn a_journalled_scan_lets_a_watcher_finish() {
 ///
 /// The case: a port is probed, the scan is interrupted, and the reply either
 /// arrives too late to be read or never arrives at all. The engine still files a
-/// verdict for that port — silence, so the report is not missing it — but the
+/// verdict for that port (silence, so the report is not missing it) but the
 /// verdict was *assigned* rather than earned, and a resume must ask again rather
 /// than inherit it.
 ///
@@ -793,7 +793,7 @@ fn addresses(written: &str) -> IpSet {
 /// records a cursor nothing ever advances, and every sitting starts over.
 ///
 /// Loopback rather than a fake network, because the unprivileged path is real
-/// sockets by construction and refuses instantly on an unused port — which is a
+/// sockets by construction and refuses instantly on an unused port, which is a
 /// TCP-layer answer and so proof the host is there.
 #[tokio::test]
 async fn a_sweep_settles_the_address_that_answered() {
@@ -828,7 +828,7 @@ async fn a_sweep_settles_the_address_that_answered() {
 /// A port scan runs the discovery strategies too, as its liveness pass, against
 /// a context counted in address-and-port pairs. If those strategies settled
 /// addresses there, position 0 of the *port* plan would be marked covered by a
-/// liveness probe — and the resumed scan would skip a port nothing ever asked
+/// liveness probe, and the resumed scan would skip a port nothing ever asked
 /// about, reporting success.
 ///
 /// A context that does not number addresses is what prevents it. This asserts
@@ -858,7 +858,7 @@ async fn a_sweep_inside_a_port_scan_settles_nothing() {
 }
 
 /// An address the plan does not name has no position. A sweep finds neighbours
-/// it was never asked about — they are findings, and settling one would advance
+/// it was never asked about: they are findings, and settling one would advance
 /// the cursor over a position belonging to a different address.
 #[tokio::test]
 async fn an_address_outside_the_plan_settles_nothing() {
@@ -885,7 +885,7 @@ async fn an_address_outside_the_plan_settles_nothing() {
 ///
 /// Withhold the first half of a range and every position after it names a
 /// different target. Two sittings under different policies would then agree on a
-/// plan fingerprint and disagree on what position 400 means — the resumed one
+/// plan fingerprint and disagree on what position 400 means: the resumed one
 /// skipping targets nobody probed, and the merged report claiming them.
 ///
 /// The refusal belongs to the engine rather than to whichever front end

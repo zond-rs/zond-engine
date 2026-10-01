@@ -20,7 +20,7 @@ use zond_engine::scanner;
 use zond_engine::scanner::session::ScanEvent;
 
 /// Aborting via the session handle brings a running scan to a prompt, clean stop
-/// well inside a generous deadline — the loops honour `should_stop` rather than
+/// well inside a generous deadline: the loops honour `should_stop` rather than
 /// only checking between targets.
 #[tokio::test]
 async fn abort_stops_a_scan_promptly() {
@@ -68,7 +68,7 @@ async fn scan_emits_host_updated_events() {
         "expected a HostUpdated event for the scanned host"
     );
     // Sanity: the stream carries what a scan of one host has to say and nothing
-    // else. `EventsDropped` is deliberately not in the list — one loopback host
+    // else. `EventsDropped` is deliberately not in the list: one loopback host
     // cannot outrun a consumer, so a gap here would be a finding rather than a
     // variant to add.
     assert!(
@@ -83,7 +83,7 @@ async fn scan_emits_host_updated_events() {
     );
 }
 
-/// An empty port scan completes cleanly and records nothing — the task resolves
+/// An empty port scan completes cleanly and records nothing: the task resolves
 /// Ok even with no work to do.
 #[tokio::test]
 async fn empty_port_scan_completes_cleanly() {

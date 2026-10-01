@@ -34,7 +34,7 @@ use zond_engine::system::interface::RoutedTarget;
 /// because sending is attempted per probe rather than once; and the audit line
 /// that does record it is a log at verbosity 1, which a library consumer never
 /// sees. Measured against a real host whose VPN held the IPv6 default route
-/// without carrying IPv6, the whole visible result was `0/16 hosts` — a report
+/// without carrying IPv6, the whole visible result was `0/16 hosts`: a report
 /// indistinguishable from sixteen addresses with nothing on them.
 ///
 /// The cause travels with it because the responses differ completely: a host

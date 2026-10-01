@@ -9,7 +9,7 @@
 //! What a paced scan must still deliver.
 //!
 //! A raw TCP port scan admits targets only while its congestion window has room,
-//! and the window moves during the run — it grows on clean answers and is cut
+//! and the window moves during the run: it grows on clean answers and is cut
 //! when an answer arrives only because the probe was sent again. Every one of
 //! those movements is an opportunity to lose a verdict, and losing one does not
 //! fail: the port simply comes back with whatever the technique reads silence
@@ -87,7 +87,7 @@ async fn wide_syn_scan(policy: Policy) -> Vec<PortState> {
 
 /// The window starts well below this many targets, so the scan can only finish
 /// by admitting more as earlier probes resolve. A controller that grew but never
-/// released, or released but never re-admitted, loses the tail — and loses it
+/// released, or released but never re-admitted, loses the tail, and loses it
 /// silently, as ports nobody has a verdict for.
 #[tokio::test]
 async fn a_scan_wider_than_its_window_still_classifies_every_port() {
@@ -106,7 +106,7 @@ async fn a_scan_wider_than_its_window_still_classifies_every_port() {
 ///
 /// This is the case the pacing exists for. Measured against a consumer router
 /// asked faster than it would answer, the same six hundred ports came back
-/// `NoReply` — with no more hesitation than the three that really were.
+/// `NoReply`, with no more hesitation than the three that really were.
 #[tokio::test]
 async fn a_host_that_answers_only_on_the_retry_is_paced_down_rather_than_written_off() {
     let states = wide_syn_scan(Policy::open().drop_first(1)).await;
@@ -120,7 +120,7 @@ async fn a_host_that_answers_only_on_the_retry_is_paced_down_rather_than_written
 
 /// Silence is what a firewall produces, and it must not be read as congestion.
 /// A controller that cut on every timeout would crawl against exactly the hosts
-/// that are hardest to finish — and this scan, where nothing answers at all,
+/// that are hardest to finish, and this scan, where nothing answers at all,
 /// would be the worst case of it.
 #[tokio::test]
 async fn a_host_that_answers_nothing_is_still_finished_and_reads_no_reply() {
@@ -188,7 +188,7 @@ async fn a_host_that_talks_and_drops_is_recognised_as_being_outrun() {
 }
 
 /// Closed is an answer, and a scan of a host that refuses everything is the
-/// ordinary case — the great majority of ports in any real scan. It must not be
+/// ordinary case: the great majority of ports in any real scan. It must not be
 /// read as loss, or every scan would pace itself down to the floor.
 #[tokio::test]
 async fn a_host_that_refuses_everything_is_answering_and_not_losing() {
@@ -449,7 +449,7 @@ const GAP: Duration = Duration::from_millis(25);
 ///
 /// The two halves are the whole feature. A probe held for its host's next slot
 /// has been taken off the stream and owes a verdict, so a queue that lost one
-/// would report an open port as whatever the technique reads silence as — the
+/// would report an open port as whatever the technique reads silence as: the
 /// same answer a firewall produces, and indistinguishable from it. And a gap
 /// that did not actually delay anything would be a bound the report records and
 /// the scan never applied.

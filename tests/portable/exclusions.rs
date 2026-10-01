@@ -13,7 +13,7 @@
 //! without going near either: `seed_from_neighbor_table` takes candidates from
 //! the host's own neighbour table into the target set, and taken in *after*
 //! withholding, a swept segment would send a unicast solicitation to an address
-//! somebody had been told would not be probed — and because the recording gate
+//! somebody had been told would not be probed, and because the recording gate
 //! still drops the finding, the report would stay clean and the packet
 //! invisible.
 //!
@@ -68,7 +68,7 @@ fn addresses_of(step: &DiscoveryStep) -> Vec<IpAddr> {
 /// holding, no step may name an address the operator ruled out.
 ///
 /// **What this covers, and what it cannot.** It exercises the *list* source
-/// end to end — withholding runs, the plan is built, every step is walked. It
+/// end to end: withholding runs, the plan is built, every step is walked. It
 /// cannot exercise the *discovered* source, because `DiscoveryPlan::build` reads
 /// the running host's own neighbour table and an integration test has nowhere to
 /// put a synthetic one. That path is asserted where the table can be injected,

@@ -165,8 +165,8 @@ fn os_rule(family: &str, hops: u8) -> OsDefinition {
 /// **Rules of one's own are held to the checks the build makes.**
 ///
 /// The constructor for a caller's own corpus ran none of them, so the one defect
-/// the build calls worse than a build failure — a rule testing nothing, which
-/// names every host that ever answers — loaded happily.
+/// the build calls worse than a build failure (a rule testing nothing, which
+/// names every host that ever answers) loaded happily.
 #[test]
 fn rules_of_ones_own_are_checked_the_way_the_build_checks_them() {
     let loaded = RuleDb::try_from_rules(vec![os_rule("Linux", 64)]).expect("a well-formed rule");

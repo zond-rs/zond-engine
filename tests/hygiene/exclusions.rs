@@ -25,7 +25,7 @@
 //! - **The neighbour table.** `seed_from_neighbor_table` takes candidates from
 //!   the host's own neighbour table into the target set. Taken in *after*
 //!   withholding, a swept segment would send a unicast solicitation to an
-//!   address somebody had been told would not be probed — and because the
+//!   address somebody had been told would not be probed, and because the
 //!   recording gate still drops the finding, the report would stay clean and
 //!   the packet invisible.
 //!
@@ -60,7 +60,7 @@ use crate::source::{display, production, sources};
 /// exclusions.
 ///
 /// **Adding a file here is the point of this census.** If new code writes a
-/// host, say on this line what stops it writing one the operator forbade — and
+/// host, say on this line what stops it writing one the operator forbade, and
 /// if the answer is "nothing", that is a finding rather than an entry.
 const STORE_WRITERS: &[(&str, &str)] = &[(
     "src/scanner/session.rs",

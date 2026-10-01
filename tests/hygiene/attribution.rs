@@ -34,7 +34,7 @@
 //! somebody writes that line, and writing it is the moment the question gets
 //! asked.
 //!
-//! It cannot check that the answer is *correct* — no lexical test can. What it
+//! It cannot check that the answer is *correct*: no lexical test can. What it
 //! can do is make the answer exist.
 //!
 //! ## The ICMP nobody reads through the reader
@@ -94,8 +94,8 @@ const READER_MODULE: &str = "icmp_error";
 /// Every file allowed to read an ICMP error, and how each ties one to a probe.
 ///
 /// **Adding a file here is the point of this test.** If a new scanner reads an
-/// error, say on this line what makes the quotation its own — a nonce, a drawn
-/// port, an identifier — and if the honest answer is "less than the others
+/// error, say on this line what makes the quotation its own (a nonce, a drawn
+/// port, an identifier) and if the honest answer is "less than the others
 /// have", say that, as the protocol scan does.
 const ATTRIBUTED: &[(&str, &str)] = &[
     (

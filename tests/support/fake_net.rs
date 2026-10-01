@@ -198,7 +198,7 @@ pub enum Reply {
     /// Its sequence and acknowledgement belong to a conversation this scan is not
     /// part of, because that is what makes it somebody else's. A bare ACK that
     /// *does* acknowledge one of this scan's probes is a different segment
-    /// entirely — a challenge, from a port already holding a connection open —
+    /// entirely (a challenge, from a port already holding a connection open)
     /// and the nonce is what separates them.
     Established,
 }
@@ -711,7 +711,7 @@ impl FakeLink {
     /// Whether the answer this probe drew is swallowed on the way back.
     ///
     /// Counted separately from [`admit`](Self::admit), against its own tally, so
-    /// a policy can lose probes and replies independently — and, importantly,
+    /// a policy can lose probes and replies independently, and, importantly,
     /// this does not write to the probe log: the probe *arrived*, and a log
     /// saying otherwise would misreport what the target saw.
     fn withhold(&self, target: IpAddr, port: u16, loss: Loss) -> bool {
@@ -886,7 +886,7 @@ impl FakeLink {
             // RFC 793 §3.9 requires an unacceptable segment to be acknowledged
             // rather than answered, and RFC 5961 §4 makes that mandatory for a
             // SYN specifically, to close the blind-reset window. The reply is an
-            // acknowledgement of the *first* attempt — it carries `RCV.NXT` —
+            // acknowledgement of the *first* attempt (it carries `RCV.NXT`)
             // which is why it correlates back to a probe the scanner may have
             // stopped waiting for.
             let expecting = probe.seq.wrapping_add(1);
@@ -996,8 +996,8 @@ impl FakeLink {
     ///
     /// That matters beyond tidiness. A simulator emitting a bare header with a
     /// round window is emitting what the *port scanner* needs and nothing more,
-    /// so every reading further up — which operating system answered, what its
-    /// window is a multiple of — is untestable against it, and a defect there
+    /// so every reading further up (which operating system answered, what its
+    /// window is a multiple of) is untestable against it, and a defect there
     /// looks exactly like a feature nobody wrote. This engine has already shipped
     /// one fake that emitted what the parser accepted rather than what the wire
     /// carries, and the test built on it passed for a protocol the engine could

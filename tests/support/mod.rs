@@ -68,7 +68,7 @@ use loopback::{accept_from_this_process, recv_from_this_process};
 pub const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
 /// A config with DNS disabled, so a result reflects only what was actually
-/// observed on the wire — no reverse-lookup side effects.
+/// observed on the wire: no reverse-lookup side effects.
 pub fn test_config() -> ZondConfig {
     let mut cfg = ZondConfig::default();
     cfg.no_dns = true;
@@ -398,7 +398,7 @@ pub fn scanner_interface() -> Link {
 /// A link-local address as the store keys it, on the simulated segment.
 ///
 /// `fe80::AA` names a different machine on every segment, so the store keys a
-/// link-local host by the address *and* the interface it was read on — a bare
+/// link-local host by the address *and* the interface it was read on: a bare
 /// one names no host and finds none. A sweep over
 /// [`scanner_interface`] records its neighbours on `sim0`, so this is how a test
 /// asks for one back.

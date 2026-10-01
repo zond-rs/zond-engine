@@ -63,7 +63,7 @@ use std::path::{Path, PathBuf};
 /// both are answered.
 ///
 /// The first is that a gate over modules nobody has read demands prose for code
-/// sight unseen — the register `CONTRIBUTING.md` is dialling back. Every item
+/// sight unseen: the register `CONTRIBUTING.md` is dialling back. Every item
 /// under `src` is documented, so what this reports there is an item just added,
 /// which its author can document from knowledge.
 ///
@@ -76,7 +76,7 @@ const SCOPE: &[&str] = &["src"];
 
 /// Whether `path` is a module the crate declares under `#[cfg(test)]`.
 ///
-/// A file gated at its `mod` line — `#[cfg(test)] mod corpus;` — is test code
+/// A file gated at its `mod` line (`#[cfg(test)] mod corpus;`) is test code
 /// from its first byte, and nothing inside it says so. [`production`] strips an
 /// inner `#[cfg(test)] mod tests`, which is the other convention, and cannot see
 /// this one; without this, the test functions in such files would be reported
@@ -267,7 +267,7 @@ fn every_item_the_standard_covers_is_documented() {
             // routinely spans three or four, and a walk that only recognised a
             // line *starting* `#[` would stop at the closing `)]` and report the
             // item as bare. `UnknownTechnique` is documented and would be reported
-            // anyway, which is a gate crying wolf — the failure mode that gets a
+            // anyway, which is a gate crying wolf: the failure mode that gets a
             // gate switched off. So the step counts brackets: a line that closes
             // more than it opens is the tail of an attribute, and the walk
             // continues through it until the depth is level again.

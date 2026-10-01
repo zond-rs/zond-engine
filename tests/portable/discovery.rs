@@ -9,7 +9,7 @@
 //! Portable host-discovery tests.
 //!
 //! Discovery of loopback works even with no listener because a refused
-//! connection is still proof the host answered at the TCP layer — the connect
+//! connection is still proof the host answered at the TCP layer: the connect
 //! path treats that as alive. ARP/SYN discovery of real neighbours (with MAC and
 //! vendor) needs raw sockets on a real network, so it is out of scope here (see
 //! `tests/README.md`).
@@ -36,7 +36,7 @@ async fn loopback_is_discovered_alive_with_rtt() {
     );
 }
 
-/// An empty target set completes cleanly and finds nothing — no panics, no
+/// An empty target set completes cleanly and finds nothing: no panics, no
 /// spurious hosts.
 #[tokio::test]
 async fn empty_target_set_finds_nothing() {

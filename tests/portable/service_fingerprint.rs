@@ -9,7 +9,7 @@
 //! Portable service-fingerprinting tests.
 //!
 //! These run a *real* server on an ephemeral loopback port and assert the full
-//! pipeline — connect, banner grab or probe, analyzer, verdict — identifies it.
+//! pipeline (connect, banner grab or probe, analyzer, verdict) identifies it.
 //! None needs root. A speak-first server (SSH here) is read from its banner on
 //! any port, and a scan asks a web request and a TLS handshake of any port that
 //! stays quiet, so a scan of the ephemeral port reaches all three as it would

@@ -11,7 +11,7 @@
 //! Tier 2, alongside `lan_discovery`: no interface, no capture, no privileges.
 //! [`PassiveListener::from_parts`] takes the receiving half of a frame stream
 //! and reads whatever is pushed onto the other end as though it had been
-//! captured — the listening counterpart of `EthernetHandle::from_parts`, and
+//! captured: the listening counterpart of `EthernetHandle::from_parts`, and
 //! with no sending half to supply, because a listener never transmits.
 //!
 //! ## What belongs here rather than beside the strategy
@@ -22,7 +22,7 @@
 //! it never runs the loop, never opens a journal, and never crosses the crate
 //! boundary a consumer has to cross.
 //!
-//! So this covers what only a whole run can show — that the seam works from
+//! So this covers what only a whole run can show: that the seam works from
 //! outside, that the loop ends when the segment does, and that a watch resumed
 //! from a record on disk is one watch rather than two.
 
@@ -95,7 +95,7 @@ fn served(mac: MacAddr, from: Ipv4Addr, port: u16) -> CapturedFrame {
 /// Runs a watch over `frames` to its end, and hands back what it concluded.
 ///
 /// The segment is closed once everything has been pushed, which the loop reads
-/// as the capture having ended — the run's own end rather than a fault, and
+/// as the capture having ended: the run's own end rather than a fault, and
 /// what makes these tests finish in microseconds without a timer or an abort.
 async fn watch(ctx: &ScanContext, frames: Vec<CapturedFrame>) {
     let (tx, rx) = mpsc::channel(64);
@@ -129,7 +129,7 @@ fn record_of_a_watch(root: &Path, privilege: Privilege) -> Journal {
 ///
 /// The unit tests hand frames to the reader directly. This is the only thing
 /// that runs the loop the reader sits inside, and the only thing that reaches
-/// the listener the way a consumer of this crate has to — through
+/// the listener the way a consumer of this crate has to: through
 /// `from_parts`, from outside.
 #[tokio::test]
 async fn a_watch_reads_its_segment_and_stops_when_the_segment_does() {
@@ -167,7 +167,7 @@ async fn a_watch_reads_its_segment_and_stops_when_the_segment_does() {
 /// it at, so a second sitting that begins knowing nothing re-keys everything it
 /// hears. The laptop recorded last night under `192.0.2.5` and heard tonight
 /// from `192.0.2.6` becomes a second record, and a listener left up for a week
-/// across three restarts reports one machine as four — which is exactly what
+/// across three restarts reports one machine as four, which is exactly what
 /// resuming was supposed to stop.
 ///
 /// Through a real journal on disk rather than a seeded store, because the chain
@@ -233,7 +233,7 @@ async fn a_watch_resumed_from_its_record_is_one_watch() {
 /// A watch resumes whether or not the second sitting runs as root.
 ///
 /// The journal refuses a plan that moved, and privilege is part of what moves
-/// it — for the two phases that probe, where a raw SYN and a connect attempt
+/// it: for the two phases that probe, where a raw SYN and a connect attempt
 /// ask different questions of the same port. A listener has no such pair: it
 /// opened a capture or it did nothing, and it enumerated nothing either way.
 ///
@@ -257,8 +257,8 @@ async fn a_watch_resumes_across_a_change_of_privilege() {
 /// forwarded it, across a resume as well as within a sitting.
 ///
 /// The pairing a resumed watch is seeded with reads a hardware address off every
-/// restored host. A host heard through a router deliberately carries none — the
-/// address on that frame belonged to the last hop — so there is nothing to pair
+/// restored host. A host heard through a router deliberately carries none (the
+/// address on that frame belonged to the last hop) so there is nothing to pair
 /// it by, and inventing one would credit a machine somewhere else with the
 /// router's hardware and every claim held against it.
 #[tokio::test]
@@ -317,7 +317,7 @@ async fn a_restored_host_from_off_the_link_pairs_with_nothing() {
 ///
 /// A watch over a silent link is the ordinary case on a segment where probing
 /// is forbidden, which is what this phase is for. It has to end cleanly with an
-/// empty record — never with an error, and never with a host it inferred from
+/// empty record, never with an error, and never with a host it inferred from
 /// having heard nothing, which is the one conclusion a listener may never draw.
 #[tokio::test]
 async fn a_silent_link_records_nobody_and_is_not_a_failure() {
@@ -337,7 +337,7 @@ async fn a_silent_link_records_nobody_and_is_not_a_failure() {
 ///
 /// Guards the seam rather than the reader: `from_parts` builds a listener with
 /// the ranges a caller states, and a listener that lost them would record the
-/// on-link machine as though it were off-link — no hardware address, no
+/// on-link machine as though it were off-link: no hardware address, no
 /// pairing, and a fresh record every sitting.
 #[tokio::test]
 async fn a_listener_built_from_parts_keeps_the_link_addressing_it_was_given() {

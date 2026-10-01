@@ -45,7 +45,7 @@ async fn open_listener_is_reported_open() {
 /// A refusal is the clearest verdict this path ever gets: the RST the kernel
 /// translated proves the port has nothing listening *and* that something is
 /// there to say so. Asserting the state rather than merely the absence of `Open`
-/// is what makes this cover the summary figure too — `ports_closed` counts these
+/// is what makes this cover the summary figure too: `ports_closed` counts these
 /// and was structurally zero for every unprivileged scan until they were filed.
 #[tokio::test]
 async fn a_refused_port_is_reported_closed() {
@@ -170,7 +170,7 @@ async fn closed_udp_port_is_not_reported_open() {
 /// The figure the omission actually broke. `ports_by_state` is what a consumer
 /// reads to learn the shape of a scan without walking every host, and with
 /// refusals unrecorded it carried no `Closed` entry at all for an unprivileged
-/// run — reporting a network where nothing is closed rather than one nobody
+/// run: reporting a network where nothing is closed rather than one nobody
 /// asked properly.
 #[tokio::test]
 async fn closed_ports_reach_the_summary() {
