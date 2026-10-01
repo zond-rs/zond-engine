@@ -8,29 +8,19 @@
 
 //! # The guard expression grammar
 //!
-//! A guard is the one place a Tier-1 flow makes a decision: a step's `when`
-//! decides whether the step runs, a finding's `when` decides whether it fires.
-//! This module is the guard as syntax, an [`Expr`] tree and the [`parse`]
-//! that builds one from the string a flow author wrote. What a parsed guard
-//! means against a running flow's variables lives beside the interpreter
-//! ([`super::eval`]); the split is the same one the
-//! service signatures already keep.
+//! A step's `when` decides whether it runs, a finding's `when` whether it
+//! fires. This module parses a guard string into an [`Expr`]; [`super::eval`]
+//! evaluates it.
 //!
-//! ## Shared verbatim with the build
+//! ## Shared with the build
 //!
-//! Like [`fingerprint::pattern`](crate::fingerprint) and the signature schema,
-//! this module carries no dependency on the rest of the crate, only [`std`],
-//! so `build.rs` can load it with `#[path]` and reject a malformed guard at
-//! build time, with the exact parser the runtime uses. A guard the build
-//! accepts is a guard the interpreter can read, because both read this file.
-//! Nothing here reaches a network, a clock, or a variable's value: parsing is
-//! pure over the text, which is what lets the build do it.
+//! It depends only on [`std`], so `build.rs` loads it with `#[path]` and
+//! rejects malformed guards with the runtime's own parser.
 //!
 //! ## The grammar
 //!
 //! Precedence runs `not` over `and` over `or`, with parentheses to override it.
-//! A guard is ultimately a boolean; there is no bare-value truthiness, so a lone
-//! variable is a parse error rather than a silent "is it non-empty".
+//! There is no truthiness: a lone variable is a parse error.
 //!
 //! ```ebnf
 //! expr        = or-expr ;
@@ -44,28 +34,20 @@
 //! operand     = ident | string-literal | int-literal ;
 //! ```
 //!
-//! There is no arithmetic, no function call, and no regex operator
-//! (matching is `bind`'s job, run once and its result named): a guard that could
-//! compute would be the first inch of a programming language, and the signal
-//! that a detection belongs in the compute tier instead.
+//! No arithmetic, function calls or regex operator (matching is `bind`'s job).
+//! A detection that needs computation belongs in the compute tier.
 
 use std::collections::BTreeSet;
 use std::fmt;
 
-/// The deepest a guard may nest parentheses. The grammar recurses once per level,
-/// and `eval` re-parses a guard on every evaluation, so an unbounded guard would
-/// overflow the stack of the worker running it, which is an abort rather than a
-/// catchable error. A real guard nests two or three deep; this leaves generous
-/// room under the depth at which the parser's own recursion runs a thread out of
-/// stack.
+/// The deepest a guard may nest parentheses. The parser recurses per level and
+/// `eval` re-parses on every evaluation, so an unbounded guard would overflow
+/// the worker's stack (an abort, not an error). Real guards nest two or three
+/// deep.
 ///
-/// **Measured, since "generous" is otherwise a hope.** A guard at the deepest
-/// this allows parses inside 64 KiB of stack in a release build and 384 KiB in a
-/// debug one. Nothing here sets a stack size, so the thread running it has
-/// tokio's 2 MiB default: about thirty times the headroom where it matters and
-/// five times where the tests run. `a_guard_at_the_bound_parses_well_inside_a_
-/// worker_stack` holds the release figure, at a size chosen to pass in either
-/// profile.
+/// Measured: a guard at this depth parses within 64 KiB of stack in release and
+/// 384 KiB in debug, against tokio's 2 MiB default.
+/// `a_guard_at_the_bound_parses_well_inside_a_worker_stack` checks it.
 const MAX_GUARD_DEPTH: usize = 64;
 
 /// A parsed guard expression, the boolean a `when` clause denotes.
@@ -77,9 +59,8 @@ pub enum Expr {
     And(Box<Expr>, Box<Expr>),
     /// `not a`, the negation.
     Not(Box<Expr>),
-    /// `matched`, the enclosing step's combined match result. Meaningful only
-    /// where a step result is in scope (a finding's guard), which the build
-    /// checks; see [`super::eval`].
+    /// `matched`, the enclosing step's combined match result. Only valid in a
+    /// finding's guard, which the build checks; see [`super::eval`].
     Matched,
     /// `bound(x)`, true if variable `x` has a value.
     Bound(String),
@@ -118,14 +99,11 @@ pub enum RelOp {
     Ge,
 }
 
-// The static-analysis helpers below are consumed by the build-time validator
-// (which `#[path]`-loads this file), not by the runtime evaluator, so the plain
-// `--lib` build alone sees them as unused.
+// Used by the build-time validator, not the runtime.
 #[allow(dead_code)]
 impl Expr {
     /// The names of every variable this guard reads, the argument of a
-    /// `bound`/`unbound`, and any variable operand of a comparison. The build
-    /// uses it to prove a guard names only variables an earlier step binds.
+    /// `bound`/`unbound`, and any variable operand of a comparison.
     pub fn referenced_vars(&self) -> BTreeSet<String> {
         let mut names = BTreeSet::new();
         self.collect_vars(&mut names);
@@ -154,8 +132,7 @@ impl Expr {
         }
     }
 
-    /// Whether this guard reads `matched`. A step's own guard may not, nothing
-    /// has matched when the step is gated, so the build rejects one that does.
+    /// Whether this guard reads `matched`, which a step's own guard may not.
     pub fn uses_matched(&self) -> bool {
         match self {
             Expr::Matched => true,
@@ -186,8 +163,7 @@ pub enum ParseError {
     Expected(&'static str),
     /// A complete expression, then more tokens the grammar cannot attach.
     Trailing,
-    /// The guard nests parentheses deeper than the parser's bound, which it
-    /// refuses rather than recursing into a stack overflow.
+    /// The guard nests parentheses deeper than the parser allows.
     TooDeep,
 }
 
@@ -211,8 +187,7 @@ impl std::error::Error for ParseError {}
 
 /// Parses a guard string into an [`Expr`], or reports why it is not one.
 ///
-/// Pure over the text: it reads no variable's value and touches nothing outside
-/// the string, so the build can call it to validate a guard without running the
+/// Pure over the text, so the build can validate a guard without running the
 /// flow.
 pub fn parse(input: &str) -> Result<Expr, ParseError> {
     let tokens = lex(input)?;
@@ -231,7 +206,7 @@ pub fn parse(input: &str) -> Result<Expr, ParseError> {
     Ok(expr)
 }
 
-/// A lexical token, the parser's alphabet, one step up from characters.
+/// A lexical token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Token {
     And,
@@ -276,7 +251,7 @@ fn lex(input: &str) -> Result<Vec<Token>, ParseError> {
                     ('>', false) => RelOp::Gt,
                     ('=', true) => RelOp::Eq,
                     ('!', true) => RelOp::Ne,
-                    // A lone `=` or `!` is not an operator this grammar has.
+                    // A lone `=` or `!` is not an operator.
                     _ => return Err(ParseError::UnexpectedChar(c)),
                 };
                 tokens.push(Token::Op(op));
@@ -321,8 +296,8 @@ fn lex(input: &str) -> Result<Vec<Token>, ParseError> {
 }
 
 /// A bare word is one of the grammar's keywords or, failing that, an identifier.
-/// The keywords are reserved: a flow cannot bind a variable named `matched` or
-/// `and`, which is why they are spelled out here rather than left ambiguous.
+/// The keywords are reserved, so a flow cannot bind a variable named `matched`
+/// or `and`.
 fn keyword(word: String) -> Token {
     match word.as_str() {
         "and" => Token::And,
@@ -335,8 +310,7 @@ fn keyword(word: String) -> Token {
     }
 }
 
-/// A recursive-descent parser over the token stream. One pass, no backtracking:
-/// each rule consumes exactly the tokens it recognises and hands the rest on.
+/// A recursive-descent parser over the token stream, with no backtracking.
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
@@ -370,10 +344,8 @@ impl Parser {
 
     /// `or-expr = and-expr , { "or" , and-expr }`, the loosest binding.
     ///
-    /// Every nesting cycle passes through here, since a parenthesised primary
-    /// re-enters it, so the parenthesis-depth guard lives here. It counts nesting
-    /// rather than total work, so a flat guard with many `or` clauses is fine and
-    /// only genuine parenthesis nesting is bounded.
+    /// A parenthesised primary re-enters here, so the depth guard lives here. It
+    /// bounds nesting only; a flat guard with many `or` clauses is fine.
     fn or_expr(&mut self) -> Result<Expr, ParseError> {
         self.depth += 1;
         if self.depth > MAX_GUARD_DEPTH {
@@ -579,7 +551,7 @@ mod tests {
 
     #[test]
     fn the_grafana_guard_parses_as_written() {
-        // The design's worked conditional-step guard, verbatim.
+        // The conditional-step idiom.
         let expr = ok("bound(version) and version < '8.3.1'");
         assert_eq!(
             expr,
@@ -624,7 +596,7 @@ mod tests {
 
     #[test]
     fn a_bare_operand_is_not_a_guard() {
-        // No bare-value truthiness, a lone variable wants a comparison.
+        // A lone variable needs a comparison.
         assert_eq!(
             parse("version"),
             Err(ParseError::Expected("a comparison operator"))
@@ -648,35 +620,25 @@ mod tests {
         assert_eq!(parse("v = '1'"), Err(ParseError::UnexpectedChar('=')));
         assert_eq!(parse("v & w"), Err(ParseError::UnexpectedChar('&')));
         assert_eq!(parse("v == 'open"), Err(ParseError::UnterminatedString));
-        // An unquoted dotted version is not an integer and not a string, so its
-        // stray '.' is the unexpected character, versions must be quoted.
+        // Versions must be quoted; the unquoted `.` is unexpected.
         assert_eq!(parse("v < 8.3.1"), Err(ParseError::UnexpectedChar('.')));
     }
 
     #[test]
     fn a_guard_nested_past_the_bound_is_refused_rather_than_overflowing_the_stack() {
-        // `eval` re-parses a guard on every evaluation and this runs on a worker
-        // thread, so an unbounded parenthesis nest would abort the process rather
-        // than fail. The bound turns that into an ordinary parse error.
+        // Too deep is an ordinary parse error, not a stack overflow.
         let over = MAX_GUARD_DEPTH + 5;
         let deep = format!("{}matched{}", "(".repeat(over), ")".repeat(over));
         assert_eq!(parse(&deep), Err(ParseError::TooDeep));
 
-        // A guard nested the handful of levels a real one reaches still parses.
+        // A realistic nesting depth parses.
         let shallow = format!("{}matched{}", "(".repeat(4), ")".repeat(4));
         assert!(parse(&shallow).is_ok());
     }
 
-    /// **The bound sits a long way under the cliff, not just under it.**
-    ///
-    /// [`MAX_GUARD_DEPTH`]'s documentation claims generous room, and a bound
-    /// whose margin nobody has measured is a bound nobody knows the size of. The
-    /// failure it prevents is an abort rather than an error, so the margin is
-    /// the whole of the safety.
-    ///
-    /// 512 KiB is chosen to pass in either profile: a debug build needs a little
-    /// under 384 KiB for this and a release build a little under 64 KiB, against
-    /// the 2 MiB a tokio worker gets by default.
+    /// **The bound sits well under the stack limit.** 512 KiB passes in either
+    /// profile (debug needs just under 384 KiB, release just under 64 KiB),
+    /// against a tokio worker's 2 MiB.
     #[test]
     fn a_guard_at_the_bound_parses_well_inside_a_worker_stack() {
         let parsed = std::thread::Builder::new()
@@ -696,8 +658,7 @@ mod tests {
         );
     }
 
-    /// And nesting far past the bound is still an ordinary error rather than an
-    /// abort, however far past.
+    /// Nesting far past the bound is still an ordinary error.
     #[test]
     fn nesting_far_past_the_bound_is_still_only_an_error() {
         for levels in [1_000usize, 100_000] {

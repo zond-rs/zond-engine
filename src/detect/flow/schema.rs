@@ -8,43 +8,29 @@
 
 //! # The flow, as it is authored
 //!
-//! The data model of a Tier-1 detection: a bounded, straight-line sequence of
-//! steps, each a probe and a match, where a match binds variables and a later
-//! step or finding may be guarded on what an earlier one bound. It is the
-//! service-signature format ([`crate::fingerprint`]) grown a spine, sequencing,
-//! a variable environment, and a typed [`Finding`](crate::model::finding::Finding)
-//! on the end, and it reuses the matcher rather than reinventing it: `expect`
-//! and `bind` carry the same pattern (and optional product) a Tier-0
-//! [`MatchRule`](crate::fingerprint::MatchRule) does, compiled by the one shared
-//! engine. The authoring form here ([`MatchDetail`]) is a self-contained mirror
-//! of the fields a flow uses, so this schema deserializes without reaching into
-//! the fingerprint types, the discipline that lets `build.rs` share this file.
+//! A Tier-1 detection: a bounded, straight-line sequence of steps, each a probe
+//! and a match, where a match binds variables and a later step or finding may
+//! be guarded on them. `expect` and `bind` carry the same pattern (and optional
+//! product) a Tier-0 [`MatchRule`](crate::fingerprint::MatchRule) does,
+//! compiled by the same engine, and the flow ends in a typed
+//! [`Finding`](crate::model::finding::Finding). [`MatchDetail`] mirrors the
+//! fields a flow uses, so `build.rs` can share this file.
 //!
-//! ## Authoring against the model
+//! ## Authoring types
 //!
-//! These are authoring types: they deserialize from TOML and are
-//! separate from the [`model`](crate::model) types they map onto, for the reason
-//! [`fingerprint::signature`](crate::fingerprint) is separate from the model: the
-//! model stays serde-free, so a flow's `severity` and `references` are parsed here
-//! and converted into the model's own vocabulary when a flow produces a finding.
-//! The `[detection]` manifest a flow shares with the compute tier, its id, gate,
-//! and class, lives in [`manifest`](crate::detect::manifest).
+//! These deserialize from TOML and are kept separate from the serde-free
+//! [`model`](crate::model); `severity` and `references` are converted when a
+//! finding is produced. The `[detection]` manifest shared with the compute tier
+//! lives in [`manifest`](crate::detect::manifest).
 //!
 //! ## Bounded by construction
 //!
-//! A flow has at most [`MAX_FLOW_STEPS`] steps and a `for_each` iterates at most
-//! [`MAX_LOOP_ITEMS`] literals, so the total probe count is a number known before
-//! the flow runs. That bound is what lets a flow be validated end to end at build
-//! time and metered without a fuel counter, see the module documentation for the
-//! interpreter and the validator that enforce it.
+//! At most [`MAX_FLOW_STEPS`] steps, and a `for_each` iterates at most
+//! [`MAX_LOOP_ITEMS`] literals, so the probe count is known before the flow runs.
+//! That lets a flow be validated at build time and metered without fuel.
 
-// `build.rs` compiles this file too, to validate the flow corpus, and its
-// structural checks read only a subset of these authoring fields, the rest are
-// a finding's payload the runtime reads. Within the library every field is public
-// API and live; the unread-field lint fires only in the build-script crate, so it
-// is silenced here rather than field by field. (The flow database embeds each
-// flow's source, not a serialized form of this type, so unlike the signature
-// schema nothing in the build reads every field back.)
+// `build.rs` compiles this file too and reads only some fields; the lint fires
+// only there.
 #![allow(dead_code)]
 
 use super::authoring::{Reference, SeveritySpec};
@@ -54,8 +40,7 @@ use serde::{Deserialize, Deserializer};
 
 use super::manifest::DetectionManifest;
 
-/// The most steps a flow may have. The whole point of a fixed ceiling is that a
-/// flow's cost is knowable before it runs; the validator rejects a longer one.
+/// The most steps a flow may have, so its cost is known before it runs.
 pub const MAX_FLOW_STEPS: usize = 16;
 
 /// The most literals a `for_each` may name. With [`MAX_FLOW_STEPS`] this bounds a
@@ -63,27 +48,22 @@ pub const MAX_FLOW_STEPS: usize = 16;
 /// against.
 pub const MAX_LOOP_ITEMS: usize = 64;
 
-/// The variable a `{host}` template resolves to: the address the flow reached,
-/// filled before the first step. Reserved, so the validator counts it in scope
-/// everywhere and the runtime supplies it rather than a `bind`. See the runtime's
-/// `FlowSeed`, which fills these from the port under probe.
+/// The variable a `{host}` template resolves to: the address the flow reached.
+/// Reserved and in scope from the first step; the runtime's `FlowSeed` fills it.
 pub const SEED_VAR_HOST: &str = "host";
 
 /// The `{port}` counterpart: the number the flow reached the host on.
 pub const SEED_VAR_PORT: &str = "port";
 
-/// The seed variables in scope from the first step, filled from the port a flow
-/// runs against rather than by any step. The validator starts its scope with
-/// these so a `send` or a finding may name them, and the runtime writes the same
-/// names, so the two cannot disagree about what a flow is allowed to reference.
+/// The seed variables, in scope from the first step and filled from the port.
+/// The validator and the runtime both use this list.
 pub const SEED_VARS: &[&str] = &[SEED_VAR_HOST, SEED_VAR_PORT];
 
 /// A whole flow file: one detection, then its steps.
 ///
-/// Deserialized, never built by hand: `non_exhaustive` so a
-/// field the flow language grows is not a breaking change for a caller who parses
-/// one. A caller adds a flow as TOML through
-/// [`Detections::builder`](crate::detect::Detections::builder), not as a literal.
+/// Deserialized, not built by hand; `non_exhaustive` so fields can be added. A
+/// caller adds a flow as TOML through
+/// [`Detections::builder`](crate::detect::Detections::builder).
 #[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -97,10 +77,9 @@ pub struct FlowDetection {
     pub step: Vec<Step>,
 }
 
-/// One `[[step]]`, a straight-line node. There is no jump field; the absence is
-/// the no-backward-jumps guarantee made structural.
+/// One `[[step]]`. There is no jump.
 ///
-/// `non_exhaustive` for the reason [`FlowDetection`] is.
+/// `non_exhaustive` as [`FlowDetection`] is.
 #[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -120,11 +99,9 @@ pub struct Step {
     #[serde(default, deserialize_with = "one_or_many")]
     pub expect: Vec<MatchSpec>,
     /// The pattern marking where this step's reply ends, for a service that
-    /// greets on connect and then pauses before answering a pipelined command.
-    /// Absent = the reply ends at a close or the port falling silent, which is
-    /// right for a service answering one command per connection. Set, the read
-    /// waits through the pause up to the flow's deadline for this line rather
-    /// than taking the pause for the end.
+    /// greets and then pauses before answering a pipelined command. Set, the
+    /// read waits up to the deadline for it. Absent = the reply ends at a close
+    /// or when the port falls silent.
     #[serde(default)]
     pub until: Option<String>,
     /// var name → the rule whose capture supplies its value.
@@ -141,8 +118,7 @@ pub struct Step {
     pub finding: Vec<FindingSpec>,
 }
 
-/// A match rule as authored: a bare pattern string, or a full [`MatchDetail`].
-/// Boxed so a bare-pattern step does not carry the whole rule's weight.
+/// A match rule as authored: a bare pattern string, or a boxed [`MatchDetail`].
 #[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
@@ -155,9 +131,7 @@ pub enum MatchSpec {
 }
 
 impl MatchSpec {
-    /// The regular-expression pattern this rule matches on, the one field
-    /// present in every form, whether the rule was authored as a bare string or
-    /// a table.
+    /// The regular-expression pattern, present in both forms.
     pub fn pattern(&self) -> &str {
         match self {
             MatchSpec::Pattern(pattern) => pattern,
@@ -176,14 +150,12 @@ impl MatchSpec {
     }
 }
 
-/// The full authored form of a match rule: a [`MatchRule`](crate::fingerprint::MatchRule)
-/// reduced to the fields a flow uses. It is a self-contained mirror rather than
-/// the fingerprint type itself, so this schema carries no dependency on the
-/// fingerprint module and `build.rs` can share it. `product`/`vendor` name what a
-/// gate identifies, for a finding's evidence; the matcher reads only `pattern`
-/// and `version_group`.
+/// The full authored form of a match rule: a mirror of
+/// [`MatchRule`](crate::fingerprint::MatchRule) reduced to the fields a flow
+/// uses, so `build.rs` can share this file. `product` and `vendor` are for a
+/// finding's evidence; the matcher reads only `pattern` and `version_group`.
 ///
-/// `non_exhaustive` for the reason [`FlowDetection`] is.
+/// `non_exhaustive` as [`FlowDetection`] is.
 #[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -207,22 +179,21 @@ pub struct MatchDetail {
 
 /// A bounded loop over a literal list.
 ///
-/// `non_exhaustive` for the reason [`FlowDetection`] is.
+/// `non_exhaustive` as [`FlowDetection`] is.
 #[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForEach {
     /// The loop variable, referenced in `send` and `{var}` within the step.
     pub var: String,
-    /// A literal list, the only form. Never a range, never a computed set.
+    /// A literal list, the only form.
     #[serde(rename = "in")]
     pub items: Vec<String>,
 }
 
 /// What a step does when its `expect` does not match.
 ///
-/// Non-exhaustive: this is a policy knob in a flow language that is still
-/// growing, and "halt or continue" is where it starts rather than where it ends.
+/// Non-exhaustive, so policies can be added.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -238,7 +209,7 @@ pub enum OnNoMatch {
 /// `[[step.finding]]`, the typed output. Maps onto the model's
 /// [`Finding`](crate::model::finding::Finding).
 ///
-/// `non_exhaustive` for the reason [`FlowDetection`] is.
+/// `non_exhaustive` as [`FlowDetection`] is.
 #[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -273,8 +244,8 @@ pub struct FindingSpec {
     pub excerpt_from: Option<String>,
 }
 
-/// Accepts one value or a list of them into a `Vec`, so `expect = "x"` and
-/// `expect = ["x", "y"]` both read, the ergonomic shorthand the corpus uses.
+/// Accepts one value or a list, so `expect = "x"` and `expect = ["x", "y"]` both
+/// read.
 fn one_or_many<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
@@ -336,9 +307,7 @@ mod tests {
 
     #[test]
     fn a_bounded_loop_parses_its_var_and_items() {
-        // The `for_each` shorthand a flow uses for a bounded sweep, parsed from a
-        // fixture rather than a shipped file so the coverage stays put when the
-        // corpus changes.
+        // A fixture, independent of the shipped corpus.
         let flow = parse(
             r#"
             [detection]
