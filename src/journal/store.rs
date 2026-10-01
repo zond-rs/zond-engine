@@ -1014,6 +1014,10 @@ impl Entry {
 ///
 /// Call this before [`Journal::create`].
 ///
+/// What it creates is `0700` on Unix, as the XDG base directory specification asks of a
+/// directory it creates, so nobody else can list which scans there are, or add one to be
+/// resumed. One already there keeps its mode, which may be somebody's choice.
+///
 /// Raw strategies need root, so the first run on a machine is usually under `sudo`, and
 /// [`paths::root`](super::paths::root) resolves the invoking user's home. The two
 /// directories above each scan's directory are then created by root, and claiming a scan's
@@ -1070,7 +1074,7 @@ fn prepare_root_with(
     home: Option<&Path>,
     mut claim: impl FnMut(&Path, Hand),
 ) -> std::io::Result<()> {
-    let created = super::ownership::create_missing(root, None)?;
+    let created = super::ownership::create_missing(root, Some(0o700))?;
 
     if own && let Some(above) = root.parent() {
         // Outermost first, as they were created.
@@ -4132,6 +4136,41 @@ mod tests {
             .expect("a journal is created inside it")
             .close()
             .expect("it closes");
+    }
+
+    /// Every directory made on the way to the journals is the user's alone, so nobody
+    /// else can list which scans there are or, under a lax umask, plant one to be resumed.
+    #[cfg(unix)]
+    #[test]
+    fn preparing_a_root_creates_private_directories() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = scratch("prepare-root-private");
+        prepare_root_with(
+            &home.join(".local/state/zond/journals"),
+            true,
+            None,
+            |_, _| {},
+        )
+        .expect("the path is created");
+
+        for below in [
+            ".local",
+            ".local/state",
+            ".local/state/zond",
+            ".local/state/zond/journals",
+        ] {
+            let mode = fs::metadata(home.join(below))
+                .expect("made")
+                .permissions()
+                .mode();
+            assert_eq!(
+                format!("{:o}", mode & 0o777),
+                "700",
+                "{below} was created readable by others"
+            );
+        }
+        let _ = fs::remove_dir_all(&home);
     }
 
     /// Everything a first run under `sudo` creates on the way to its journals is given to
