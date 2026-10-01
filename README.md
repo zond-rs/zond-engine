@@ -1,8 +1,10 @@
-# zond-engine
+<h1 align="center">zond-engine</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/zond-engine.svg)](https://crates.io/crates/zond-engine)
-[![Docs](https://docs.rs/zond-engine/badge.svg)](https://docs.rs/zond-engine)
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+<p align="center">
+  <a href="https://crates.io/crates/zond-engine"><img src="https://img.shields.io/crates/v/zond-engine.svg" alt="Crates.io"></a>
+  <a href="https://docs.rs/zond-engine"><img src="https://docs.rs/zond-engine/badge.svg" alt="Docs"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg" alt="License: AGPL v3"></a>
+</p>
 
 A network scanner as a Rust library: host discovery, port scanning, service
 and OS identification, vulnerability matching, and the reports that come out
