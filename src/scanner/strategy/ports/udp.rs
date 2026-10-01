@@ -12,34 +12,28 @@
 //! specific `(address, port)` pairs with raw UDP packets and classifies each
 //! one by whether and how it responds.
 //!
-//! UDP scanning is harder than the SYN scan next door because UDP carries no
-//! handshake to correlate against. A closed port answers with an ICMP Port
-//! Unreachable, an open one answers with a UDP datagram *if* it understands
-//! what was sent, and one behind a filter that drops it says nothing at all -
-//! which is also what an open port that ignored the probe does. So:
+//! UDP has no handshake. A closed port answers with an ICMP Port Unreachable,
+//! an open one answers with a UDP datagram only if it understands what was
+//! sent, and a port behind a dropping filter says nothing, as does an open
+//! port that ignored the probe. So:
 //!
 //! - a direct UDP reply is [`PortState::Open`],
 //! - an ICMP Port Unreachable is [`PortState::Closed`],
-//! - silence until the deadline is [`PortState::OpenOrNoReply`], because it
-//!   genuinely cannot distinguish the two.
+//! - silence until the deadline is [`PortState::OpenOrNoReply`].
 //!
 //! ## Tying a reply to its probe
 //!
 //! Every probe in a scan leaves from one fixed source port, chosen when the
-//! scanner is built. That single port is what makes both answers correlatable:
+//! scanner is built:
 //!
 //! - A **direct reply** is addressed back to it, so the kernel's BPF filter
-//!   admits this scan's replies and drops the rest of the host's UDP traffic
+//!   admits this scan's replies and drops the host's other UDP traffic
 //!   ([`ProbeKind::UdpProbe`]).
-//! - An **ICMP error** carries no ports of its own, but RFC 792 requires it to
-//!   quote the datagram that caused it - IP header plus the first eight bytes,
-//!   which is exactly a whole UDP header. That quotation names the probe: its
-//!   source port proves the datagram was ours, and its destination address and
-//!   port say *which* probe, so one error retires exactly one probe.
-//!
-//! Reading the quoted packet rather than the error's own source address also
-//! keeps a router's error attributable: the ICMP comes from the router, but the
-//! probe it refers to was aimed at the host behind it.
+//! - An **ICMP error** quotes the IP header plus the first eight bytes of the
+//!   datagram that caused it (RFC 792), which is a whole UDP header. Its source
+//!   port proves the datagram was ours, and its destination address and port
+//!   say which probe, so one error retires exactly one probe, even when a
+//!   router sent the error.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -77,38 +71,30 @@ use crate::scanner::strategy::icmp_error::{self, Unreachable};
 
 /// How long this scan runs and how it adapts.
 ///
-/// Not the profile the SYN scanners share
-/// ([`DEADLINE_CONFIG`](super::super::raw::DEADLINE_CONFIG)), because the thing being
-/// waited for is different in kind. A SYN probe is answered by the target's
-/// TCP stack as fast as the link allows. A UDP probe's most informative answer
-/// is an ICMP error, and hosts **rate-limit** those: Linux emits roughly one
-/// destination-unreachable per second by default (`net.ipv4.icmp_ratelimit`),
-/// and BSD does the same. Answers to a multi-port scan therefore arrive spread
-/// over seconds no matter how fast the network is.
+/// Differs from the SYN profile
+/// ([`DEADLINE_CONFIG`](super::super::raw::DEADLINE_CONFIG)) because a UDP
+/// probe's most informative answer is an ICMP error, and hosts **rate-limit**
+/// those: Linux emits roughly one destination-unreachable per second by default
+/// (`net.ipv4.icmp_ratelimit`), and BSD does the same. Answers to a multi-port
+/// scan arrive spread over seconds however fast the network is.
 ///
-/// That reshapes every number here, but `silence_floor` most of all. The SYN
-/// profile gives up after 150 ms of quiet, which is generous for a stack that
-/// answers immediately and *meaningless* against a host allowed to speak once
-/// per second: the scan would stop while its answers were still queued and
-/// legally on their way, then report the ports it never heard about as
-/// `OpenOrNoReply`. A floor above the rate-limit interval is what makes silence
-/// evidence of anything at all.
+/// Hence `silence_floor` above the rate-limit interval: the SYN profile's 150 ms
+/// would stop the scan while answers were still legally on their way and report
+/// those ports as `OpenOrNoReply`.
 const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
-    // Hard ceiling: a UDP scan is inherently slow, but it still has to finish.
+    // Hard ceiling.
     ScanBudget::new(
         Duration::from_millis(2_000),
         Duration::from_millis(200),
         Duration::from_secs(45),
     ),
-    // Minimum runtime, so a scan cannot conclude before the first rate-limited
-    // answers have had time to arrive.
+    // Minimum runtime, so the first rate-limited answers have time to arrive.
     ScanBudget::new(
         Duration::from_millis(500),
         Duration::from_millis(50),
         Duration::from_secs(10),
     ),
-    // Silence floor: longer than one rate-limit interval, so quiet means
-    // "nothing is coming" rather than "the host is not allowed to answer yet".
+    // Silence floor: longer than one rate-limit interval.
     Duration::from_millis(1_200),
     Duration::from_secs(5),
     4.0,
@@ -117,21 +103,15 @@ const DEADLINE_CONFIG: AdaptiveDeadlineConfig = AdaptiveDeadlineConfig::new(
 
 /// How a UDP probe is retransmitted.
 ///
-/// Every number here is set against a rate limit rather than against a round
-/// trip, which is what makes this profile different in kind from the SYN one
-/// ([`RETRY_POLICY`](super::super::raw::RETRY_POLICY)). A closed UDP port answers with an
-/// ICMP error, and hosts emit those at roughly one per second; a retry sooner
-/// than that interval is guaranteed to be wasted, because the answer it is
-/// chasing was never allowed to be sent.
+/// Set against the ICMP rate limit (about one error per second), unlike the
+/// round-trip-based SYN profile ([`RETRY_POLICY`](super::super::raw::RETRY_POLICY)):
+/// a retry sooner than that interval chases an answer the host was never
+/// allowed to send.
 ///
-/// Two attempts rather than three, and a gentler backoff than the SYN profile
-/// uses, for the same reason. Backing off aggressively is how a scanner relieves
-/// congestion it is causing, but a UDP scan is not waiting on congestion, it is
-/// waiting on permission - so doubling buys little and costs a great deal of
-/// tail latency on a scan that is already the slowest thing the engine does. A
-/// probe therefore lives about 3.75 s against an unmeasured host and almost
-/// exactly 3 s against a measured one, in exchange for every port getting a
-/// second chance rather than a single one.
+/// Two attempts and a gentle backoff: the scan waits on the host's allowance,
+/// not on congestion, so doubling would add tail latency for little gain. A
+/// probe lives about 3.75 s against an unmeasured host and about 3 s against a
+/// measured one.
 const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
     2,
     Duration::from_millis(1_500),
@@ -142,40 +122,28 @@ const RETRY_POLICY: RetryPolicy = RetryPolicy::new(
     Some(SilentHostPolicy::new(32, 1)),
 );
 
-/// The most probes left outstanding at once, and equally the window this scan
-/// is paced by, which for UDP is a window that does not move.
+/// The most probes outstanding at once, which is also this scan's fixed window.
 ///
-/// Two jobs: it bounds the memory a scan of a large address space can occupy,
-/// and it keeps the send loop from emptying the dispatcher into the network as
-/// fast as the socket accepts writes - a burst that outruns any rate-limited
-/// host's ability to answer manufactures `OpenOrNoReply` verdicts.
+/// Bounds the memory of a large scan, and keeps the send loop from bursting
+/// faster than a rate-limited host can answer, which would manufacture
+/// `OpenOrNoReply` verdicts.
 ///
-/// Fixed, where the TCP scanner's equivalent adapts. A congestion window
-/// needs evidence, and a UDP scan is given none: silence is its ordinary
-/// outcome rather than a signal, and its replies carry nothing naming the
-/// attempt they answer, so neither the growth nor the reduction side of the
-/// controller has anything to read. See
-/// [`congestion`](crate::scanner::pacing::congestion) for the argument, and
-/// `UDP_PORT_RATE_PER_SEC` in the parent module for what paces this scan
-/// instead.
+/// Fixed, though the TCP scanner's window adapts: silence is a UDP scan's
+/// ordinary outcome and its replies do not name the attempt they answer, so a
+/// congestion controller has nothing to read (see
+/// [`congestion`](crate::scanner::pacing::congestion)). The scan is paced by
+/// `UDP_PORT_RATE_PER_SEC` in the parent module.
 ///
-/// The ceiling is global rather than per host because
-/// [`Dispatcher`](crate::scanner::dispatcher::Dispatcher) already hands out
-/// shuffled targets, so consecutive probes in a multi-host scan naturally land
-/// on different hosts. A per-host cap on top of that would constrain something
-/// the target stream has already spread out.
+/// Global, since [`Dispatcher`](crate::scanner::dispatcher::Dispatcher) already
+/// shuffles targets across hosts.
 const MAX_IN_FLIGHT: u32 = 512;
 
 /// Probes specific `(address, port)` pairs with raw UDP packets.
 pub struct UdpPortScanner {
-    /// Everything a raw port scan carries and does regardless of protocol: the
-    /// transport, the ledger, the deadline, the pacing and the stop conditions.
-    /// What stays in this file is what a *UDP* probe is and what its answers
-    /// prove - which for UDP is mostly what an ICMP error proves, since an open
-    /// port is under no obligation to say anything at all.
+    /// The protocol-independent part of a raw port scan: transport, ledger,
+    /// deadline, pacing and stop conditions.
     core: RawProbeScan<()>,
-    /// How far the second pass may go to name what answered. Held here because
-    /// the raw scan that classifies a port opens no conversation with it; see
+    /// How far the second pass may go to name what answered; see
     /// [`detect_services`](PortScanner::detect_services).
     service_detection: ServiceDetection,
     /// What each host's answers showed of the allowance its ICMP errors are
@@ -186,36 +154,29 @@ pub struct UdpPortScanner {
 /// How one host answered the ports it was asked about, kept to tell a host
 /// rate-limiting its ICMP errors from one whose ports are mostly silent.
 ///
-/// A closed UDP port is known only by the port unreachable its host sends,
-/// and hosts ration those: Linux sends a burst of six to each destination and
-/// one a second after it, and the BSDs cap the rate as a whole. Against a
-/// ration the answers a scan gets depend on how long it asks and not on how
-/// fast: measured against a Linux peer's 250 closed ports, a scan of 4.3 s
-/// read 8 closed, one of 11.8 s read 13, and one paced to 20 probes a second
-/// over 15.8 s read 19, one a second after the burst each time, where the
-/// same peer without its ration answered all 250 in 0.86 s. Slowing the pace
-/// to the ration therefore buys no verdicts; only time does, about one second
-/// a port, which the scan's own deadline does not give. What the scan owes is
-/// to say so, since without it every closed port it had no answer for reads
-/// as a port that might be open.
+/// Hosts ration port unreachables: Linux sends a burst of six to each
+/// destination and one a second after it, and the BSDs cap the rate as a
+/// whole. Against a ration, the answers depend on how long the scan asks, not
+/// how fast. Measured against a Linux peer's 250 closed ports, a 4.3 s scan
+/// read 8 closed, an 11.8 s scan 13, and one paced to 20 probes a second over
+/// 15.8 s read 19; without its ration the same peer answered all 250 in
+/// 0.86 s. Only time buys verdicts, about one second a port, which the deadline
+/// does not give, so the scan reports the ration; otherwise every unanswered
+/// closed port reads as possibly open.
 ///
-/// The signature is a retry answered. A closed port behind a ration is silent
-/// to the question the ration had no allowance for and answers the retry the
-/// next allowance falls to, while a port a filter drops is silent to every
-/// attempt and a closed port on a clean link answers the first. So a host is
-/// read as rationing when a port of its answered closed only once asked
-/// again, after others answered at once, and more of its ports stayed silent
-/// than answered. One late answer is often all a ration leaves: a Linux peer
-/// asked forty closed ports at once answered six at once and one retry, the
-/// next allowance, before the scan ended.
+/// The signature is a retry answered. A rationed closed port is silent to the
+/// first question and answers the retry the next allowance falls to; a
+/// filtered port is silent to every attempt; a closed port on a clean link
+/// answers the first. A host reads as rationing when a port answered closed
+/// only on a retry, others answered at once, and more ports stayed silent than
+/// answered. One late answer is often all a ration leaves: a Linux peer asked
+/// forty closed ports answered six at once and one retry before the scan ended.
 ///
-/// The answers at once are the burst every ration spends before it starts
-/// turning questions away, and they are what keeps a lossy link from reading
-/// as one. A lossy link answers late too, but leaves few of a host's ports
-/// silent, and a filter dropping most ports in front of a single closed one
-/// whose first answer was lost answers late and nothing at once. What the
-/// reading can still mistake is that filter in front of several closed ports,
-/// some answered at once and one of them lost.
+/// The answers at once (the ration's initial burst) keep a lossy link from
+/// matching: it answers late too, but leaves few ports silent. A filter in front
+/// of a single closed port whose first answer was lost answers late and nothing
+/// at once. The reading can still mistake a filter in front of several closed
+/// ports, some answered at once and one lost.
 #[derive(Debug, Default, Clone, Copy)]
 struct IcmpTally {
     /// Ports the host itself answered with a port unreachable.
@@ -267,14 +228,12 @@ impl UdpPortScanner {
     /// Builds a scanner around an already-opened transport, so the caller
     /// decides how probes reach the wire and where replies come from.
     ///
-    /// Probes leave from the port the transport's capture admits replies to,
-    /// since it is what both halves use to recognize this scan's own traffic -
-    /// see the module documentation and [`ProbeTransport::reply_port`].
-    /// `src_port` is the port for a transport that fixes none, which is one
-    /// built from parts. Paired with a synthetic
-    /// transport (`ProbeTransport::from_parts`, behind the `test-support`
-    /// feature) this is the seam that lets classification be driven against a
-    /// simulated network rather than a real one.
+    /// Probes leave from the port the transport's capture admits replies to
+    /// (see the module documentation and [`ProbeTransport::reply_port`]);
+    /// `src_port` is used for a transport that fixes none, one built from
+    /// parts. With a synthetic transport (`ProbeTransport::from_parts`, behind
+    /// the `test-support` feature) this drives classification against a
+    /// simulated network.
     ///
     /// A transport opened for anything but [`ProbeKind::UdpProbe`] cannot hear
     /// this scan's answers, and the scan refuses it when it runs, with
@@ -301,10 +260,10 @@ impl UdpPortScanner {
     /// what the evasion profile does to each probe, and how far it identifies
     /// what answers.
     ///
-    /// Everything in `tuning` that decides how the transport is opened is the
-    /// caller's to have honoured already, since the transport arrives open.
-    /// That includes the profile's source port: the transport's reply port is
-    /// the one probed from, and `src_port` only where it fixes none.
+    /// Whatever in `tuning` decides how the transport is opened, including the
+    /// profile's source port, is the caller's to have honoured already. Probes
+    /// leave from the transport's reply port, and from `src_port` only where it
+    /// fixes none.
     pub fn with_transport_tuned(
         resolver: SourceResolver,
         ctx: ScanContext,
@@ -322,9 +281,9 @@ impl UdpPortScanner {
 
     /// The core a UDP port scan runs on.
     ///
-    /// Paced by the send rate itself: a UDP scan has no evidence to run a
-    /// congestion window on, so the rate is the pacing rather than a backstop,
-    /// and the deadline outlives it; see [`deadline_for`](super::deadline_for).
+    /// Paced by the send rate alone, having no evidence to run a congestion
+    /// window on; the deadline outlives it (see
+    /// [`deadline_for`](super::deadline_for)).
     fn core(
         resolver: SourceResolver,
         ctx: ScanContext,
@@ -354,14 +313,12 @@ impl UdpPortScanner {
         })
     }
 
-    /// A reply that matches no outstanding probe is dropped: it is a duplicate
-    /// of one already resolved, an answer to a probe already written off, or a
-    /// packet that reached us despite not answering anything this scan sent.
-    /// Returns whether it resolved one.
+    /// A reply that matches no outstanding probe is dropped: a duplicate, an
+    /// answer to a probe already written off, or a stray packet. Returns
+    /// whether it resolved one.
     ///
-    /// The round trip is whatever the ledger is willing to vouch for. A probe
-    /// that was sent once is unambiguous; one that was retried is not, since
-    /// the two datagrams are identical on the wire, and no sample is taken.
+    /// No round-trip sample is taken for a retried probe, since its datagrams
+    /// are identical on the wire.
     fn resolve_probe(
         &mut self,
         target: ProbeTarget,
@@ -371,9 +328,6 @@ impl UdpPortScanner {
         now: Instant,
     ) -> bool {
         let Some(resolution) = self.core.ledger.resolve(&target, None, now) else {
-            // A duplicate of one already resolved, an answer to a probe already
-            // written off, or a packet that reached us despite answering nothing
-            // this scan sent.
             self.core.audit.record_reply_without_rtt();
             return false;
         };
@@ -389,16 +343,15 @@ impl UdpPortScanner {
         let rtt = resolution.rtt;
         self.core.record_answer(&resolution);
         self.record_port_answered_by(target.0, target.1, state, Some(sender), ttl, rtt);
-        // The target spoke: the only outcome that settles positively.
+        // The only outcome that settles positively.
         self.settle(Outcome::Answered {
             position: resolution.payload,
         });
         true
     }
 
-    /// Whether this scan asked `target` and settled it already, which is
-    /// what makes a reply matching no outstanding probe a duplicate or a late
-    /// answer rather than a stray: its port is on the host.
+    /// Whether this scan asked `target` and settled it already (its port is on
+    /// the host), making an unmatched reply a duplicate or late answer.
     fn asked(&self, (ip, port): ProbeTarget) -> bool {
         self.core
             .ctx
@@ -415,50 +368,38 @@ impl UdpPortScanner {
 ///
 /// ## The protocols this cannot reach
 ///
-/// The port credited is the port the reply came *from*, which is what lets one
-/// socket probe many ports on a host and still say which of them answered.
-/// TFTP breaks that assumption by design: RFC 1350 has the server allocate a
-/// fresh transfer identifier on receiving a request and send every packet after
-/// that, the error included, from the new port. Port 69 only ever *receives*.
+/// The port credited is the port the reply came *from*. TFTP breaks that: per
+/// RFC 1350 the server sends every packet after a request, errors included,
+/// from a freshly allocated port, and port 69 only receives. So a TFTP error is
+/// credited to a transient port nobody asked about, and 69 reads
+/// `OpenOrNoReply` on a host that answered. Measured against `tftpd-hpa`, which
+/// replied from 54154, 43519 and 34965 on three consecutive probes; no request
+/// form draws a reply from 69. Identifying TFTP needs a second way to
+/// correlate, since a corpus rule could never see the reply.
 ///
-/// So a TFTP error is credited to a transient port nobody asked about, and 69
-/// is reported `OpenOrNoReply` on a host that answered. Measured against
-/// `tftpd-hpa`, which replied from 54154, 43519 and 34965 on three consecutive
-/// probes; no request form draws a reply from 69 at all.
-///
-/// Identifying it wants a second way to correlate, not another signature: a
-/// corpus rule for TFTP could never fire, because the reply it reads cannot
-/// reach the matcher.
-///
-/// The capture filter already narrows the UDP half to `src_port`, but that is a
-/// performance boundary rather than a guarantee: a transport can be built with
-/// no filter at all (`ProbeTransport::from_parts`), and a filter that silently
-/// stopped matching would otherwise turn into false `Open`s. The check is cheap
-/// and it is the only thing making the reply *ours*.
+/// The capture filter already narrows UDP to `src_port`, but a transport can be
+/// built without one (`ProbeTransport::from_parts`), and a filter that stopped
+/// matching would produce false `Open`s. This check is what makes the reply
+/// ours.
 fn answering_probe(bytes: &[u8], src_port: u16) -> Option<(u16, &[u8])> {
     let udp = UdpPacket::new(bytes)?;
     if udp.get_destination() != src_port {
         return None;
     }
-    // The datagram's own payload, which is where the answer to "what is this
-    // host" lives when the port's protocol can say. Sliced from `bytes` at the
-    // fixed header length rather than taken from the parsed packet, whose
-    // borrow ends with it, and rather than derived from the length field,
-    // which a padded frame makes shorter than what was actually captured.
+    // Sliced at the fixed header length: the parsed packet's borrow ends here,
+    // and the length field of a padded frame is shorter than what was captured.
     Some((udp.get_source(), &bytes[UDP_HDR_LEN..]))
 }
 
 /// What a reply is a statement about: the port that was probed, or the address
 /// as a whole.
 ///
-/// The distinction is not cosmetic. A reply reporting on the port resolves the
-/// probe that provoked it; one reporting on the host says nothing about any
-/// particular port, and the probe is left outstanding to time out on its own
-/// rather than being given a verdict its evidence does not support.
+/// A reply about the port resolves the probe that provoked it. One about the
+/// host says nothing about any port, so the probe is left to time out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Verdict {
-    /// The probed port is in this state. Covers both a direct UDP reply and
-    /// every ICMP code that reports on a port rather than on the path.
+    /// The probed port is in this state: a direct UDP reply, or an ICMP code
+    /// that reports on the port.
     Port(PortState),
     /// The address itself could not be reached. The only evidence in the engine
     /// that produces [`HostStatus::Down`].
@@ -467,18 +408,15 @@ enum Verdict {
 
 /// What an ICMP error means for the UDP port it was drawn by.
 ///
-/// A port unreachable is the one unambiguous "closed" a UDP scan ever gets:
-/// the datagram reached a stack, which looked for a listener and found none.
-/// That reading is specific to UDP - the identical message answering a TCP
-/// probe means something else entirely, which is why this mapping lives beside
-/// the scanner it belongs to rather than in [`icmp_error`].
+/// A port unreachable is the one unambiguous "closed" a UDP scan gets: the
+/// datagram reached a stack that found no listener. The same message answering
+/// a TCP probe means something else, so this mapping lives here, outside
+/// [`icmp_error`].
 fn verdict_of(reason: Unreachable) -> Verdict {
     match reason {
         Unreachable::Port => Verdict::Port(PortState::Closed),
-        // A prohibition is the path refusing delivery. A protocol unreachable is
-        // the host saying it has no UDP stack, which is a stranger thing and
-        // still not a closed port: no listener was ever looked for. Both leave
-        // the port unprobed in effect, which is what blocked says.
+        // The path refused delivery, or the host has no UDP stack. Either way no
+        // listener was looked for, so the port is in effect unprobed.
         Unreachable::Prohibited | Unreachable::Protocol => Verdict::Port(PortState::Blocked),
         Unreachable::Host => Verdict::Host,
     }
@@ -486,11 +424,9 @@ fn verdict_of(reason: Unreachable) -> Verdict {
 
 /// The probe an ICMP error is about and what the error says about it.
 ///
-/// `None` unless the quoted datagram is a UDP probe this scan sent, which its
-/// source port is what proves. Its destination address and port name the probe
-/// to retire, and both come from the quotation rather than from the error's own
-/// header, so an error relayed by a router still points at the host the probe
-/// was aimed at.
+/// `None` unless the quoted datagram's source port shows it is a UDP probe this
+/// scan sent. Its quoted destination address and port name the probe to
+/// retire, so an error from a router still points at the probed host.
 fn quoted_probe(error: &icmp_error::IcmpError<'_>, src_port: u16) -> Option<ProbeTarget> {
     if error.quoted.protocol != IpNextHeaderProtocols::Udp.0 {
         return None;
@@ -519,9 +455,8 @@ impl RawPortScan for UdpPortScanner {
         Protocol::Udp
     }
 
-    /// Always `OpenOrNoReply`. UDP carries no handshake, so an open port that did
-    /// not recognise the payload says exactly as little as a firewall does, and
-    /// no amount of waiting separates the two.
+    /// Always `OpenOrNoReply`: an open port that did not recognise the payload is
+    /// as silent as a firewall.
     fn silence_means(&self) -> PortState {
         PortState::OpenOrNoReply
     }
@@ -533,17 +468,10 @@ impl RawPortScan for UdpPortScanner {
         }
     }
 
-    /// Sends one datagram at `(ip, port)` and records the attempt.
-    ///
-    /// Used for the first attempt and every retry alike, and the retry is
-    /// byte-for-byte the probe that preceded it: the payload is what makes an
-    /// open port answer at all, and the source port is the scan's identity on
-    /// the wire, so neither may vary between attempts.
     /// Classifies one captured reply and, if it answers an outstanding probe,
     /// resolves that probe.
     fn handle_reply(&mut self, reply: &CapturedSegment, now: Instant) {
-        // What the reply proves about the *host*, and the names it gives for
-        // it: separate claims from the port verdict, filed after it; see below.
+        // The host's role and names from the reply, filed after the port verdict.
         let mut declared = None;
         let mut names = Vec::new();
         let classified = match IpNextHeaderProtocol(reply.protocol) {
@@ -566,22 +494,15 @@ impl RawPortScan for UdpPortScanner {
                     target,
                     state,
                     reply.source,
-                    // The header this reply arrived under, read here because
-                    // there is no second chance to read it: whether the datagram
-                    // came from the target or from something refusing on its
-                    // behalf, the hop counter is the cheapest evidence of which.
+                    // Read now or never; the hop count hints whether the target
+                    // or something on its behalf sent the reply.
                     reply.observation.map(IpObservation::remaining_hops),
                     now,
                 );
-                // Only for a reply from a port this scan asked. The capture
-                // hands over whatever reaches the scan's source port, which on
-                // a busy machine includes other programs' conversations, and a
-                // role or a name read from a stray would write a host record
-                // for an address the scan never asked about. A reply that
-                // resolved nothing can still be a duplicate, or an answer to a
-                // probe already written off, and says what the first would
-                // have: a name server answering twice is still a name server.
-                // Those are the ones whose port is already on the host.
+                // Only for a port this scan asked: the capture also hands over
+                // other programs' traffic to the source port, which must not
+                // create host records. A duplicate or late answer still counts;
+                // its port is already on the host.
                 if (declared.is_some() || !names.is_empty()) && (resolved || self.asked(target)) {
                     self.core.ctx.update_host(target.0, |host| {
                         if let Some(role) = declared {
@@ -593,16 +514,11 @@ impl RawPortScan for UdpPortScanner {
                     });
                 }
             }
-            // Named a host but resolved no probe. Counted as seen rather than
-            // off-target: it came from an address this scan asked about.
-            // The probe is left outstanding. This message reports
-            // that the address could not be reached at all, so it carries no
-            // verdict on the port it happened to quote, and the probe should
-            // retire on its own schedule like any other unanswered one.
+            // The address could not be reached: no verdict on the quoted port,
+            // and the probe retires on its own schedule.
             Some((target, Verdict::Host)) => {
-                // No token: a UDP quotation carries the eight bytes RFC 792
-                // guarantees and a UDP header has no nonce field in them, so the
-                // probe's identity is the key, and it has to name a live one.
+                // No token: a UDP header has no nonce, so the probe's identity
+                // is the key, and it must name a live one.
                 self.core.record_host_down(&target, None, reply.source);
             }
             None => {}
@@ -612,48 +528,39 @@ impl RawPortScan for UdpPortScanner {
     /// Retires one outstanding probe with the state its reply established,
     /// crediting the round trip to the deadline.
     ///
-    /// Files a port verdict and whatever the reply that produced it proves about
-    /// the host.
+    /// Files a port verdict and whatever the reply proves about the host.
     ///
-    /// `sender` is the address the reply actually came from, or `None` when the
-    /// verdict came from a spent attempt budget rather than from a packet.
-    /// Everything here turns on comparing it against `ip`, because an ICMP error
-    /// names two addresses - the hop that generated it, and the destination of
-    /// the datagram it quotes - and they are different claims:
+    /// `sender` is the address the reply came from, or `None` when the verdict
+    /// came from a spent attempt budget. It is compared against `ip`, because an
+    /// ICMP error names both the hop that generated it and the quoted
+    /// destination:
     ///
-    /// - **The target answered.** Any reply the host sent proves it is up, and
-    ///   that includes ones negative about the port: a port unreachable is
-    ///   emitted by the host's own IP stack, and an administrative rejection
-    ///   from the host itself is a host that exists and is policing its traffic.
-    /// - **A middlebox rejected the probe by policy.** Something is enforcing a
-    ///   perimeter around this address, which is [`HostStatus::Blocked`] - the
-    ///   variant's documented meaning, and materially different from an address
-    ///   nothing answers for.
-    /// - **A middlebox reported the port closed.** The port verdict stands,
-    ///   since the message reports on the port, but no host status is recorded:
-    ///   the address that answered is not the address that was asked, and a NAT
-    ///   answering on another host's behalf must not be read as that host being
-    ///   up.
-    /// - **Nothing answered.** `OpenOrNoReply` from exhaustion records nothing.
-    ///   Silence is not evidence about a host.
+    /// - **The target answered.** Any reply from the host proves it is up,
+    ///   including a port unreachable or an administrative rejection.
+    /// - **A middlebox rejected the probe by policy.** Something enforces a
+    ///   perimeter around the address: [`HostStatus::Blocked`].
+    /// - **A middlebox reported the port closed.** The port verdict stands, but
+    ///   no host status is recorded: a NAT answering for another host does not
+    ///   show that host is up.
+    /// - **Nothing answered.** `OpenOrNoReply` from exhaustion records no host
+    ///   evidence.
     fn record_port(&mut self, ip: IpAddr, port_num: u16, state: PortState, sender: Option<IpAddr>) {
         if state == PortState::OpenOrNoReply && sender.is_none() {
             self.icmp.entry(ip).or_default().silent += 1;
         }
-        // Nothing answered, so there is no header to read and no round trip to
-        // credit. The fuller form below is for the paths that had a reply.
         self.record_port_answered_by(ip, port_num, state, sender, None, None);
     }
 
-    /// One send, first attempt or retry. `position` is `Some` only for a probe
-    /// that has never gone out, since the ledger keeps it thereafter.
+    /// Sends one datagram at `(ip, port)`, first attempt or retry, and records
+    /// it. A retry is byte-for-byte the probe before it: the payload makes an
+    /// open port answer and the source port is the scan's identity on the wire.
+    /// `position` is `Some` only for a probe that has never gone out, since the
+    /// ledger keeps it thereafter.
     fn send(&mut self, ip: IpAddr, port: u16, position: Option<u64>, now: Instant) {
-        // Whether this send takes a slot in the congestion window. A retry does
-        // not: the slot went back when the question it repeats ran out of
-        // round-trip budget. The position says which this is, as it does for
-        // the ledger below; the ledger's own state would not, since a retry
-        // whose probe was settled while it waited finds nothing there and
-        // would read as a first attempt.
+        // Only a first attempt takes a window slot; a retry's slot went back
+        // when its question ran out of round-trip budget. Read from `position`,
+        // since a retry whose probe settled while it waited is gone from the
+        // ledger.
         let first_attempt = position.is_some();
         let Some(src_addr) = self.core.source_for((ip, port), first_attempt) else {
             return;
@@ -706,9 +613,8 @@ impl UdpPortScanner {
     /// [`record_port`](RawPortScan::record_port), also carrying what the reply
     /// that produced the verdict was measured to be.
     ///
-    /// Kept off the shared trait for the reason the TCP scanner keeps its own:
-    /// the trait is the machinery both protocols share, and what a reply carried
-    /// is read from a header only one of them was holding.
+    /// Kept off the shared trait, as in the TCP scanner: the reply's header is
+    /// protocol-specific.
     fn record_port_answered_by(
         &mut self,
         ip: IpAddr,
@@ -720,11 +626,8 @@ impl UdpPortScanner {
     ) {
         let port = crate::fingerprint::baseline_port(port_num, Protocol::Udp, state);
 
-        // The packet that settled it, written down beside the host evidence
-        // drawn from the same two facts. Without it a UDP port carried a verdict
-        // and no account of it, which for this protocol is the worst case of
-        // all: almost every silence here is `OpenOrNoReply`, and a reader has no
-        // way to tell a refusal that arrived from one that never came.
+        // The packet that settled it, so a reader can tell a refusal that
+        // arrived from the usual `OpenOrNoReply` silence.
         let port = match port_evidence(state, sender, ip) {
             Some(reason) => {
                 let mut discovery = PortDiscovery::new(reason);
@@ -779,21 +682,17 @@ impl UdpPortScanner {
 
 /// Which packet settled a UDP port, in the vocabulary a report records.
 ///
-/// The port-level mirror of the host evidence recorded beside it, drawn from the
-/// same two facts. A closed UDP port is only ever known by the unreachable that
-/// says so, nothing else refuses a datagram, so the two verdicts a reply can
-/// produce here are both ICMP, and which one turns on who sent it.
+/// The port-level mirror of the host evidence recorded beside it. Both refusals
+/// are ICMP; which one turns on who sent it.
 ///
-/// `None` where nothing arrived. `OpenOrNoReply` from exhaustion is the ordinary
-/// outcome of a UDP scan and has no packet to name: recording `no reply` for it
-/// would dress the protocol's normal silence as a finding.
+/// `None` where nothing arrived: `OpenOrNoReply` from exhaustion is a UDP
+/// scan's ordinary outcome, not a finding.
 fn port_evidence(state: PortState, sender: Option<IpAddr>, target: IpAddr) -> Option<ScanResponse> {
     match (state, sender) {
         (PortState::Open, _) => Some(ScanResponse::UdpResponse),
-        // A port unreachable is the refusal that means nothing is listening.
         (PortState::Closed, _) => Some(ScanResponse::IcmpUnreachable),
         // A prohibition from the host is its own policy; from anywhere else it
-        // is somebody in the path refusing on its behalf.
+        // is the path refusing on its behalf.
         (PortState::Blocked, Some(from)) => Some(match from == target {
             true => ScanResponse::IcmpProhibited,
             false => ScanResponse::IcmpUnreachable,
@@ -817,16 +716,12 @@ impl PortScanner for UdpPortScanner {
     /// scan's deadline expires. Anything still outstanding when the loop ends is
     /// reported as `OpenOrNoReply`.
     ///
-    /// New targets are admitted only while fewer than `MAX_IN_FLIGHT` probes
-    /// are outstanding, and released no faster than
-    /// `UDP_PORT_RATE_PER_SEC`. Both are fixed,
-    /// unlike the TCP scanner's window, because a UDP scan is given no evidence
-    /// it could adapt on: silence is its ordinary outcome and its replies name
-    /// no attempt.
+    /// New targets are admitted only while fewer than `MAX_IN_FLIGHT` probes are
+    /// outstanding, and released no faster than `UDP_PORT_RATE_PER_SEC`. Both
+    /// are fixed; see `MAX_IN_FLIGHT`.
     ///
-    /// A host whose answers show its ICMP errors rationed is named in the
-    /// phase's report once the scan is over: a port of its answered closed
-    /// only when asked again, while more of them stayed silent than answered. See
+    /// A host whose ICMP errors look rationed is named in the phase's report once
+    /// the scan is over; see
     /// [`ScanPhase::icmp_rate_limited`](crate::report::ScanPhase::icmp_rate_limited).
     async fn scan(&mut self, targets: mpsc::Receiver<PlannedTarget>) -> Result<(), StrategyError> {
         let driven = super::drive(self, targets).await;
@@ -836,19 +731,12 @@ impl PortScanner for UdpPortScanner {
 
     /// Identifies the UDP services this scanner found open.
     ///
-    /// The second pass asks each port the question the corpus registers for it
-    /// and reads the answer through
-    /// [`from_datagram`](crate::fingerprint::reads_replies), which is a
-    /// different exchange from the TCP one beside it: a datagram out and a
-    /// datagram back, with no connection between them.
+    /// The second pass sends each port the question the corpus registers for it
+    /// and reads the datagram back through
+    /// [`from_datagram`](crate::fingerprint::reads_replies).
     ///
     /// Scoped to [`Protocol::Udp`] so the SYN scanner sharing a composite with
-    /// this one keeps the TCP half. Both members run the phase over what each
-    /// discovered, which is what stops an open TCP port being fingerprinted once
-    /// per member.
-    ///
-    /// Not the trait's no-op: identifying a UDP service needs a UDP
-    /// conversation, and the engine has one.
+    /// this one keeps the TCP half, and no port is fingerprinted once per member.
     async fn detect_services(&mut self, ctx: &ScanContext) {
         crate::scanner::service::detect(ctx, self.service_detection, Protocol::Udp).await;
     }
@@ -887,8 +775,8 @@ mod tests {
 
     const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 200));
     const TARGET_V6: IpAddr = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 200));
-    /// A router between us and the target, which reports errors under its own
-    /// address rather than the target's.
+    /// A router between us and the target, reporting errors under its own
+    /// address.
     const ROUTER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
     /// This host's addresses, as the scanner's source resolver reports them.
     const LOCAL_V4: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
@@ -907,8 +795,8 @@ mod tests {
         ])
     }
 
-    /// [`scanner_with_mock`] plus the probe log, for the tests that assert on
-    /// what actually reached the wire rather than only on what was recorded.
+    /// [`scanner_with_mock`] plus the probe log, for tests that assert on what
+    /// reached the wire.
     fn scanner_with_recorder() -> (UdpPortScanner, ScanSession, SentProbes) {
         let (session, ctx) = ScanSession::new();
         let (_reply_tx, reply_rx) = tokio::sync::mpsc::channel(1024);
@@ -958,10 +846,6 @@ mod tests {
 
     /// A UDP port that answered records what answered it, and the hop counter
     /// the reply arrived under.
-    ///
-    /// This protocol needs the account more than TCP does: almost every silence
-    /// here is `OpenOrNoReply`, so a reader with only the verdict cannot tell a
-    /// refusal that arrived from one that never came.
     #[test]
     fn an_answered_udp_port_records_the_datagram_that_settled_it() {
         let (mut scanner, session) = scanner_with_mock();
@@ -992,11 +876,8 @@ mod tests {
         assert_eq!(discovery.ttl(), Some(58));
     }
 
-    /// The protocol's ordinary outcome is silence, and silence gets no packet.
-    ///
-    /// `OpenOrNoReply` from exhaustion is what most of a UDP scan comes back as.
-    /// Recording `no reply` against every one of them would dress the normal
-    /// case as a finding.
+    /// `OpenOrNoReply` from exhaustion, the ordinary UDP outcome, records no
+    /// packet.
     #[test]
     fn an_unanswered_udp_port_records_no_evidence() {
         let (mut scanner, session) = scanner_with_mock();
@@ -1036,8 +917,7 @@ mod tests {
         udp_reply_saying(src_port, dst_port, vec![])
     }
 
-    /// A reply carrying something, for the ports whose answers say more than
-    /// "somebody is listening".
+    /// A direct UDP reply with a payload.
     fn udp_reply_saying(src_port: u16, dst_port: u16, said: Vec<u8>) -> CapturedSegment {
         captured(
             TARGET,
@@ -1047,9 +927,7 @@ mod tests {
     }
 
     /// The quoted datagram an ICMP error carries: the IP header of the probe
-    /// plus its UDP header. Built with the very functions that build a real
-    /// probe, so the test agrees with the wire by construction rather than by
-    /// a hand-written byte array.
+    /// plus its UDP header, built with the functions that build a real probe.
     fn quoted_probe_packet(from: IpAddr, to: IpAddr, src_port: u16, dst_port: u16) -> Vec<u8> {
         let datagram = udp::build_packet(from, to, src_port, dst_port, vec![]).unwrap();
         let len = datagram.len() as u16;
@@ -1107,18 +985,15 @@ mod tests {
         captured(to, IpNextHeaderProtocols::Icmpv6, buf)
     }
 
-    /// A port verdict and a claim about the host are two findings, and the
-    /// second is read out of the datagram the first was inferred from. The
-    /// payload has to be sliced off at exactly the UDP header: one byte either
-    /// way and the message no longer parses, which reads as an ordinary open
-    /// port and silently loses the role on every name server a scan finds.
+    /// The host's role is read from the same datagram as the port verdict. The
+    /// payload must be sliced at exactly the UDP header, or the DNS message
+    /// fails to parse and the role is silently lost.
     #[test]
     fn a_dns_answer_names_the_host_a_name_server() {
         let (mut scanner, session) = scanner_with_mock();
         probe(&mut scanner, TARGET, 53);
 
-        // The engine's own question with the QR bit set, which is what a name
-        // server sends back.
+        // The engine's own question with the QR bit set.
         let mut answer = crate::scanner::payload::for_port(53).to_vec();
         answer[2] |= 0b1000_0000;
 
@@ -1136,13 +1011,10 @@ mod tests {
     /// nothing, and one to a question it did ask still names the host however
     /// many times it arrives.
     ///
-    /// The capture hands over whatever reaches the scan's source port, which
-    /// on a busy machine includes other programs' conversations: a resolver
-    /// that drew the same ephemeral port hears its name server's answers
-    /// there. Reading a role from one would write a host record for its
-    /// sender, an address the scan never asked about, into a report that
-    /// then lists it as a name server. A second answer from a host that was
-    /// asked is a duplicate rather than a stray, and says what the first did.
+    /// A local resolver that drew the same ephemeral port hears its name
+    /// server's answers on the scan's source port; reading a role from one
+    /// would invent a host record. A second answer from an asked host is a
+    /// duplicate and says what the first did.
     #[test]
     fn a_dns_answer_names_the_sender_only_if_the_scan_asked_it() {
         let (mut scanner, session) = scanner_with_mock();
@@ -1169,9 +1041,8 @@ mod tests {
         );
     }
 
-    /// A name table names the machine and the workgroup it joined, read from
-    /// the reply the port verdict came from, and recorded on the host that
-    /// was asked, as the connect path records them.
+    /// A name table names the machine and its workgroup on the host that was
+    /// asked, as the connect path records them.
     #[test]
     fn a_name_table_names_the_machine_and_its_workgroup() {
         use crate::model::host::{NameKind, NameSource};
@@ -1204,8 +1075,7 @@ mod tests {
         );
     }
 
-    /// The same port answering with something that is not DNS is an open port
-    /// and nothing more: a socket bound to 53 is not a name server.
+    /// Port 53 answering with something other than DNS is only an open port.
     #[test]
     fn an_open_port_53_that_does_not_speak_dns_is_only_an_open_port() {
         let (mut scanner, session) = scanner_with_mock();
@@ -1232,8 +1102,8 @@ mod tests {
         assert!(scanner.core.ledger.is_empty());
     }
 
-    /// A datagram from a pending port that is *not* addressed to this scan's
-    /// source port answers some other conversation on the host, not our probe.
+    /// A datagram from a pending port addressed to another source port belongs
+    /// to some other conversation.
     #[test]
     fn udp_traffic_not_addressed_to_the_scan_is_ignored() {
         let (mut scanner, session) = scanner_with_mock();
@@ -1268,9 +1138,8 @@ mod tests {
         assert!(scanner.core.ledger.is_empty());
     }
 
-    /// An unreachable message names one port in its quoted datagram, and must
-    /// retire that probe alone. Every other probe to the same host is
-    /// still outstanding and must stay that way.
+    /// An unreachable retires only the probe it quotes; other probes to the
+    /// same host stay outstanding.
     #[test]
     fn icmp_unreachable_closes_only_the_port_it_quotes() {
         let (mut scanner, session) = scanner_with_mock();
@@ -1295,9 +1164,7 @@ mod tests {
         assert_eq!(scanner.core.ledger.len(), 2);
     }
 
-    /// An error relayed by a router carries the router's address, but quotes a
-    /// probe aimed at the host behind it. The quoted destination is what
-    /// identifies the probe.
+    /// An error from a router is attributed by its quoted destination.
     #[test]
     fn unreachable_from_a_router_resolves_the_quoted_target() {
         let (mut scanner, session) = scanner_with_mock();
@@ -1318,9 +1185,8 @@ mod tests {
         assert_eq!(port_state(&session, ROUTER, 53), None);
     }
 
-    /// Host unreachable reports on the address, not on the port that happened to
-    /// be quoted. Recording it as a port verdict would invent a fact about a
-    /// port nothing ever answered for.
+    /// Host unreachable reports on the address and gives the quoted port no
+    /// verdict.
     #[test]
     fn host_unreachable_is_a_host_verdict_and_not_a_port_one() {
         let (mut scanner, session) = scanner_with_mock();
@@ -1350,9 +1216,7 @@ mod tests {
         );
     }
 
-    /// The distinction the whole host-status design turns on: an ICMP error
-    /// names the hop that sent it as well as the address it is about, and only
-    /// the first says whether the target is alive.
+    /// An ICMP error proves the target alive only when the target sent it.
     #[test]
     fn a_port_unreachable_proves_the_host_only_when_the_host_sent_it() {
         let (mut scanner, session) = scanner_with_mock();
@@ -1393,9 +1257,8 @@ mod tests {
         );
     }
 
-    /// A policy rejection from a middlebox proves a perimeter, not a host - but
-    /// a perimeter is still more than nothing, which is what separates
-    /// `Blocked` from `Unknown`.
+    /// A policy rejection from a middlebox proves a perimeter, which is
+    /// `Blocked`.
     #[test]
     fn an_in_path_policy_rejection_is_blocked_rather_than_up() {
         let (mut scanner, session) = scanner_with_mock();
@@ -1415,9 +1278,7 @@ mod tests {
         assert_eq!(host_status(&session, TARGET), Some(HostStatus::Blocked));
     }
 
-    /// Silence is the one thing that must never move a host's status, however
-    /// many probes it swallows. `OpenOrNoReply` is a port verdict reached by
-    /// exhaustion, and a host that has sent nothing has proved nothing.
+    /// Silence never moves a host's status, however many probes it swallows.
     #[test]
     fn exhausting_every_attempt_leaves_the_host_unknown() {
         let (mut scanner, session) = scanner_with_mock();
@@ -1445,8 +1306,7 @@ mod tests {
         );
     }
 
-    /// An unreachable quoting a datagram this scan never sent - a different
-    /// source port - belongs to someone else's traffic.
+    /// An unreachable quoting another source port is someone else's traffic.
     #[test]
     fn unreachable_quoting_a_foreign_probe_is_ignored() {
         let (mut scanner, session) = scanner_with_mock();
@@ -1467,9 +1327,8 @@ mod tests {
         assert_eq!(scanner.core.ledger.len(), 1);
     }
 
-    /// Only code 3 says a port answered. The codes that describe a blocked
-    /// path prove the probe did not arrive, which is `Blocked` - a strictly
-    /// better answer than letting the probe time out into `OpenOrNoReply`.
+    /// Only code 3 says a port answered. The codes for a blocked path prove the
+    /// probe did not arrive: `Blocked`.
     #[test]
     fn administratively_prohibited_icmp_is_blocked() {
         for code in [
@@ -1540,8 +1399,8 @@ mod tests {
     }
 
     /// An ICMP error's first two bytes (type 3, code 3) read as the source port
-    /// 771 if the segment is parsed as UDP. Carrying the protocol from the IP
-    /// header is what stops that from becoming a false `Open`.
+    /// 771 if the segment is parsed as UDP; the protocol from the IP header
+    /// prevents a false `Open`.
     #[test]
     fn icmp_error_is_never_read_as_a_udp_reply() {
         let (mut scanner, session) = scanner_with_mock();
@@ -1578,7 +1437,7 @@ mod tests {
         assert!(scanner.core.ledger.is_empty());
     }
 
-    /// ICMPv6 code 0 is "no route to destination" - a statement about the path.
+    /// ICMPv6 code 0 is "no route to destination", a statement about the path.
     #[test]
     fn icmpv6_no_route_is_ignored() {
         let (mut scanner, session) = scanner_with_mock();
@@ -1593,8 +1452,7 @@ mod tests {
         assert_eq!(scanner.core.ledger.len(), 1);
     }
 
-    /// A truncated or malformed reply must be dropped, never panic: every byte
-    /// of it was chosen by a remote host.
+    /// A truncated or malformed reply is dropped without panicking.
     #[test]
     fn malformed_replies_are_dropped() {
         let (mut scanner, session) = scanner_with_mock();
@@ -1615,8 +1473,7 @@ mod tests {
         assert_eq!(scanner.core.ledger.len(), 1);
     }
 
-    /// An unanswered probe is sent again rather than written off, since silence
-    /// on a first UDP probe is the least informative signal in the protocol.
+    /// An unanswered probe is sent again.
     #[test]
     fn an_unanswered_probe_is_sent_again() {
         let (mut scanner, session, sent) = scanner_with_recorder();
@@ -1628,16 +1485,10 @@ mod tests {
         assert_eq!(port_state(&session, TARGET, 53), None, "no verdict yet");
     }
 
-    /// A host that answers some closed ports only when asked again, and
-    /// leaves more silent than it answers, is named as rationing its ICMP
-    /// errors; one whose answered ports all answered the first question is
-    /// not, however many of its ports stayed silent.
-    ///
-    /// The first is Linux's ration as a scan meets it: a burst of answers, and
-    /// then one a second going to whichever probe arrives next, which by then
-    /// is a retry. The second is a filter dropping most ports in front of a
-    /// few closed ones, whose silence no retry changes. Naming the second as
-    /// the first would tell a reader its silent ports are closed ones.
+    /// A host that answers some closed ports only on a retry, and leaves more
+    /// silent than it answers, is named as rationing its ICMP errors (Linux's
+    /// burst, then one a second). One whose answered ports all answered the
+    /// first question is a filter in front of a few closed ports, and is not.
     #[test]
     fn a_host_rationing_its_icmp_errors_is_named_and_a_dropping_one_is_not() {
         const DROPPING: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 201));
@@ -1656,8 +1507,8 @@ mod tests {
             probe(&mut scanner, DROPPING, port);
         }
 
-        // The burst: six answered at once from the rationing host, and eight
-        // from the dropping one, which answers every closed port it has.
+        // The burst: six from the rationing host, and all eight closed ports of
+        // the dropping one.
         let mut now = Instant::now();
         for port in 1..=6 {
             scanner.handle_reply(&unreachable(TARGET, port), now);
@@ -1684,12 +1535,9 @@ mod tests {
         assert_eq!(scanner.core.ctx.take_icmp_rate_limited(), vec![TARGET]);
     }
 
-    /// **A closed port whose only answer came late, behind a filter dropping
-    /// the rest, is not a ration.** A ration answers its burst at once before
-    /// it answers anything late, and a lossy link in front of a filter can
-    /// lose the first answer of the one closed port there is, leaving a late
-    /// answer and a page of silence that read as a ration. Named rationing,
-    /// the host's silent ports would be read as closed ones.
+    /// **A single closed port answered late behind a filter is not a ration.**
+    /// A ration answers its burst at once first; a lossy link can lose the one
+    /// closed port's first answer and leave a late answer amid silence.
     #[test]
     fn a_single_closed_port_answered_late_behind_a_filter_is_not_a_ration() {
         let lossy_filter = IcmpTally {
@@ -1708,15 +1556,13 @@ mod tests {
     }
 
     /// A probe that has spent its budget is written off while the scan is still
-    /// running, so results reach the caller as they are decided rather than all
-    /// at once at the end.
+    /// running, so results reach the caller as they are decided.
     #[test]
     fn a_probe_that_spends_its_budget_is_written_off_during_the_scan() {
         let (mut scanner, session) = scanner_with_mock();
         probe(&mut scanner, TARGET, 53);
 
-        // Each retry reschedules from the moment it is sent, so the schedule
-        // has to be walked rather than jumped over.
+        // Each retry reschedules from when it is sent, so walk the schedule.
         let mut now = Instant::now();
         for _ in 0..RETRY_POLICY.max_attempts + 1 {
             now += RETRY_POLICY.worst_case_probe_lifetime();
@@ -1730,15 +1576,14 @@ mod tests {
         assert!(scanner.core.ledger.is_empty());
     }
 
-    /// Running out of attempts is not activity: nothing answered, so the
-    /// adaptive deadline must not be told the scan is making progress.
+    /// Running out of attempts does not count as progress for the adaptive
+    /// deadline.
     #[test]
     fn running_out_of_attempts_does_not_extend_the_deadline() {
         let (mut scanner, _session) = scanner_with_mock();
         probe(&mut scanner, TARGET, 53);
 
-        // A deadline whose silence clock has been reset reports a full tick;
-        // capture the value before and after to see whether it moved.
+        // A reset silence clock reports a full tick.
         let before = scanner.core.deadline.time_until_next_tick();
         let mut now = Instant::now();
         for _ in 0..RETRY_POLICY.max_attempts + 1 {
@@ -1753,9 +1598,8 @@ mod tests {
         );
     }
 
-    /// While probes are outstanding the loop must not sleep past the point
-    /// where the next one falls due - nothing else will wake it, because
-    /// silence is exactly the case being timed.
+    /// While probes are outstanding the loop does not sleep past the next one
+    /// falling due; in silence nothing else wakes it.
     #[test]
     fn pending_probes_shorten_the_sleep() {
         let (mut scanner, _session) = scanner_with_mock();
@@ -1773,10 +1617,9 @@ mod tests {
         );
     }
 
-    /// The UDP profile has to tolerate silence for longer than a host's ICMP
-    /// rate-limit interval (~1/sec), or a scan concludes while its answers are
-    /// still queued. This is the property that makes it a separate profile from
-    /// the SYN one, so it is asserted rather than left to a comment.
+    /// The UDP profile tolerates silence longer than a host's ICMP rate-limit
+    /// interval (~1/sec), or a scan concludes while its answers are still
+    /// queued.
     #[test]
     fn silence_floor_outlasts_the_icmp_rate_limit() {
         const ICMP_RATE_LIMIT_INTERVAL: Duration = Duration::from_secs(1);
@@ -1849,12 +1692,9 @@ mod tests {
         }
     }
 
-    /// A UDP quotation carries no nonce — the eight bytes RFC 792 guarantees are
-    /// the UDP header, which has no field for one — so the probe's identity is
-    /// the whole of the evidence and it has to name a probe that exists.
-    ///
-    /// Two addresses the sender chose freely: one never probed, one probed on a
-    /// different port. Neither is a host this scan may file down.
+    /// A UDP header has no nonce field, so a host unreachable is attributed by
+    /// the probe's identity alone and must name a live probe. Neither an
+    /// address never probed nor one probed on another port is filed down.
     #[test]
     fn a_host_unreachable_about_no_live_probe_records_nothing() {
         let never = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 77));
@@ -1862,7 +1702,7 @@ mod tests {
         let (mut scanner, session) = scanner_with_mock();
         probe(&mut scanner, TARGET, 53);
 
-        // An address this scan never addressed at all.
+        // An address never probed.
         scanner.handle_reply(
             &icmpv4_error(
                 ROUTER,

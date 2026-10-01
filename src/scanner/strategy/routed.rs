@@ -8,19 +8,15 @@
 
 //! # Routed host discovery
 //!
-//! Finds hosts reached through a gateway, as against ones sitting on the local
-//! segment. Raw TCP SYNs to a handful of ports per target, and anything that
-//! comes back credits the host: the handshake is never completed, so an address
-//! answers whether or not the port it was asked about is open, and it only has
-//! to answer on one of them. See [`SynPorts`] for which ports and why.
+//! Finds hosts reached through a gateway. Sends raw TCP SYNs to a handful of
+//! ports per target (see [`SynPorts`]), or an SCTP INIT, and credits the host
+//! on any answer: the handshake is never completed, so a closed port answers
+//! too, and one answering port is enough.
 //!
-//! The counterpart of [`local`](super::local), which reaches a segment at the
-//! link layer. Between them they are what a privileged discovery sweep is made
-//! of, and which one a target gets is decided by
-//! [`plan`](crate::scanner::plan) from this host's own routing table.
-//!
-//! Raw sockets, so root. What a probe is built from and how it reaches the wire
-//! is `raw`, shared with every other strategy that opens one.
+//! The counterpart of [`local`](super::local), which reaches the local segment
+//! at the link layer. [`plan`](crate::scanner::plan) picks one per target from
+//! this host's routing table. Needs raw sockets; probe building and sending
+//! live in `raw`.
 
 use std::num::NonZeroU32;
 use std::{
@@ -61,42 +57,29 @@ use crate::scanner::strategy::{HostScanner, StrategyError};
 
 /// The fastest a routed sweep puts probes on the wire, in probes per second.
 ///
-/// A probe's chance of being answered is not a constant of the path; it falls
-/// as the rate rises. Unpaced, a sweep of a large range loses most of its first
-/// attempt, and the hosts behind those packets are recovered only by
-/// retransmitting into a quieter moment - coverage bought at several times the
-/// traffic, and only where the attempt budget happens to outlast the policer.
+/// A probe's chance of being answered falls as the rate rises. Unpaced, a sweep
+/// of a large range loses most of its first attempt and recovers those hosts
+/// only by retransmitting, at several times the traffic.
 ///
-/// So the rate is set below where that loss sets in rather than at whatever the
-/// socket will accept. Measured against a /22 where every address answers, the
-/// first attempt alone finds a sixth to a third of the range unpaced and around
-/// three quarters of it at this rate, and the sweep needs roughly half the
-/// packets to finish. Loss becomes visible again several times higher.
+/// Set below where that loss begins. Measured against a /22 where every address
+/// answers, the first attempt finds a sixth to a third of the range unpaced and
+/// about three quarters at this rate, and the sweep needs roughly half the
+/// packets. Loss reappears at several times this rate.
 ///
-/// What it costs is the time a large range takes to emit, which grows linearly:
-/// a /22 leaves in a quarter of a second, a /16 in sixteen. That is the trade,
-/// and it is the right way round - a probe not yet sent and a probe dropped by a
-/// policer are equally invisible, and only the first is under our control.
+/// The cost is emission time, linear in range size: a /22 leaves in a quarter
+/// of a second, a /16 in sixteen.
 pub(super) const PROBE_RATE_PER_SEC: NonZeroU32 = NonZeroU32::new(4_000).expect("a non-zero rate");
 
 /// Whether `bytes` is one of the two segments a SYN probe can draw *and be
 /// credited for without correlating it*.
 ///
 /// A SYN+ACK and a RST each require the target to have received the probe and
-/// answered it, and nothing else a SYN elicits sets either flag. Anything else
-/// from the same address is traffic that happens to share a host with the scan.
+/// answered it; nothing else a SYN elicits sets either flag.
 ///
-/// A challenge ACK is excluded, though it is a genuine answer.
-/// It says a listener holds a connection half-open, which the port scanner acts
-/// on, but the port scanner earns that by checking the probe's nonce against
-/// its ledger, and this sweep has no ledger and checks nothing. A bare ACK is
-/// the commonest segment on any network: every established connection emits a
-/// stream of them, and a scan of an address somebody is talking to would credit
-/// the host on the strength of that conversation. The flags of a SYN+ACK or a
-/// RST are their own correlation; the flags of an ACK are not.
-///
-/// The asymmetry is the point. Evidence usable where it can be tied to a probe
-/// is not usable where it cannot.
+/// A challenge ACK is excluded, though it is a genuine answer. The port scanner
+/// can act on one because it checks the probe's nonce; this check does not, and
+/// a bare ACK is the commonest segment on any network, so any established
+/// connection to the address would credit the host.
 fn answers_a_syn_probe(bytes: &[u8]) -> bool {
     protocol::tcp::parse(bytes)
         .ok()
@@ -108,52 +91,36 @@ fn answers_a_syn_probe(bytes: &[u8]) -> bool {
 /// all of them on every attempt, a connect sweep each in turn until one
 /// answers.
 ///
-/// One port is enough for a host that answers a SYN to a closed port with a
-/// reset, which is what an unfiltered stack does. It is not enough for the
-/// host that matters most: one behind a filter that drops a SYN to anything
-/// not listening, which is Windows Firewall's default and what an `iptables`
-/// `DROP` policy does. That host answers on the ports it serves and nowhere
-/// else, so a sweep that asks one port it does not serve reports it down, and
-/// a port scan then never asks about the port it does serve.
+/// One port is enough for an unfiltered stack, which answers a SYN to a closed
+/// port with a reset. A host behind a filter that drops SYNs to anything not
+/// listening (Windows Firewall's default, an `iptables` `DROP` policy) answers
+/// only on the ports it serves; asked about one it does not serve, it reads as
+/// down and is never port-scanned.
 ///
 /// So the set is two lists:
 ///
 /// - **The common five**, SSH, HTTP, HTTPS, SMB and RDP, from
 ///   [`COMMON_DISCOVERY_PORTS`].
-/// - **Up to [`SCAN_PORTS`](Self::SCAN_PORTS) of the scan's own ports**, for
-///   a port scan's liveness pass: those are the ports whose answers the scan
-///   exists to report, so a host behind such a filter serving nothing else
-///   still has a port it answers on among the ones asked. The catalogue's order
-///   picks among them, so a scan of a thousand ports adds the few the engine
-///   thinks likeliest to be listening and a scan naming one port adds that
-///   port.
+/// - **Up to [`SCAN_PORTS`](Self::SCAN_PORTS) of the scan's own ports**, for a
+///   port scan's liveness pass, so a filtered host serving only those still
+///   answers. The catalogue's order picks among them: a scan of a thousand
+///   ports adds the likeliest few, a scan naming one port adds that port.
 ///
-/// One set for both sweeps, so that privilege decides how an address is
-/// asked and never which ports: a set kept by each would let an unprivileged
-/// run find fewer hosts than a privileged one over the same ports, or the
-/// reverse, and nothing would report the two drifting apart. See
+/// Both the SYN and connect sweeps use this set, so privilege decides how an
+/// address is asked and never which ports. See
 /// [`connect::discover_on`](super::connect::discover_on) for what a connect
-/// sweep pays for the larger set.
+/// sweep pays for it.
 ///
 /// A SYN sweep sends all of them on every attempt, under one sequence number
 /// and source port, so a reply on any of them names the attempt and retires
-/// the address.
-/// Spreading them across attempts instead would leave a lost SYN to the one
-/// port a host behind such a filter serves with no retransmission behind it.
+/// the address, and every port gets its retransmissions.
 ///
-/// **What it costs** is a packet per port per unanswered attempt. A host that
-/// answers costs one attempt; an address with nothing on it costs the whole set
-/// on every attempt, so a silent range costs five to eight times the packets a
-/// single port would, and the sweep paces and sizes its deadline from that
-/// total rather than
-/// from its address count. That is the price of asking the question the scan
-/// depends on: a host missed here is not port-scanned at all, which no later
-/// phase recovers.
+/// **Cost**: a packet per port per unanswered attempt. A silent range costs five
+/// to eight times the packets of a single port, and the sweep paces and sizes
+/// its deadline from that total. A host missed here is not port-scanned at all.
 ///
-/// Not asked: an ICMP echo or a bare ACK. Both find hosts a SYN does not, an
-/// echo where nothing listens and pings pass, an ACK through a filter that
-/// keeps no state, and neither passes the stateful filters this set exists for.
-/// An echo also needs a second transport beside the TCP one the sweep holds.
+/// An ICMP echo and a bare ACK are not sent: neither passes the stateful
+/// filters this set exists for, and an echo would need a second transport.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SynPorts {
     /// The ports, in the order they leave, valid up to `len`.
@@ -165,9 +132,8 @@ pub struct SynPorts {
 impl SynPorts {
     /// How many of a scan's own ports the set may add to the common five.
     ///
-    /// Three covers a port scan naming a short list in full, which is the
-    /// usual shape of a scan about particular services. Past that the scan is
-    /// broad, and its likeliest ports are the common five already.
+    /// Three covers a short list of particular services in full. A broader
+    /// scan's likeliest ports are the common five already.
     pub const SCAN_PORTS: usize = 3;
 
     /// The most ports a set can hold.
@@ -199,9 +165,8 @@ impl SynPorts {
     /// The common five and up to [`SCAN_PORTS`](Self::SCAN_PORTS) of the TCP
     /// ports in `scan`, for a port scan's liveness pass.
     ///
-    /// Ranked by the catalogue, [`TCP_BY_PREVALENCE`], and a port it has never
-    /// heard of after every one it has, lowest first, so the choice is the same
-    /// on every run of one scan.
+    /// Ranked by [`TCP_BY_PREVALENCE`], with uncatalogued ports after, lowest
+    /// first, so the choice is the same on every run.
     pub fn for_scan(scan: &PortSet) -> Self {
         let mut set = Self::common();
         let common = set.len();
@@ -235,9 +200,7 @@ impl SynPorts {
         usize::from(self.len)
     }
 
-    /// Whether the set asks no port at all, which only
-    /// `excluding` can leave it: every other constructor
-    /// puts at least one port in it.
+    /// Whether the set asks no port at all, which only `excluding` can cause.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -246,12 +209,9 @@ impl SynPorts {
     /// leave.
     ///
     /// For a sweep held to
-    /// [`ZondConfig::excluded_ports`](crate::config::ZondConfig::excluded_ports):
-    /// a port a caller excluded is one no probe may be aimed at, and a liveness
-    /// probe is one. Nothing takes the excluded port's place, since a set the
-    /// caller narrowed is still the caller's choice of what to ask. It may
-    /// leave the set empty, and a sweep asking nothing is its caller's to
-    /// decline.
+    /// [`ZondConfig::excluded_ports`](crate::config::ZondConfig::excluded_ports),
+    /// which liveness probes obey too. Nothing replaces an excluded port. The
+    /// result may be empty; declining an empty sweep is the caller's job.
     pub(crate) fn excluding(self, excluded: &PortSet) -> Self {
         let mut kept = Self {
             ports: [0; Self::CAPACITY],
@@ -273,47 +233,36 @@ impl SynPorts {
 
 /// Which packet a routed sweep asks with.
 ///
-/// The sweep is the same either way. Its pacing, its retry schedule, its
-/// deadline and its audit are properties of asking a list of addresses whether
-/// anything is there, not of the packet that asks. Four things do follow from
-/// the packet: the transport the probes and their answers travel over, what a
-/// probe is, what counts as an answer to one, and what the report says the host
-/// was found by.
+/// Pacing, retries, deadline and audit are the same either way. The packet
+/// decides the transport, what a probe is, what counts as an answer, and what
+/// the report says the host was found by.
 ///
-/// There are two because a scan asking about SCTP ports and a scan asking about
-/// TCP ports are putting different questions to the network. A host behind a
-/// filter that passes one transport and drops the other answers exactly one of
-/// these probes, and sweeping it with the wrong one reports it down while its
-/// ports are listening.
-/// Non-exhaustive: a probe kind per transport, and the transports a sweep can
-/// ask with is a list that has grown twice already.
+/// A host behind a filter that passes one transport and drops the other
+/// answers only one of these probes, so a scan about SCTP ports sweeps with
+/// SCTP.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepProbe {
     /// TCP SYNs, never completed, one to each of a set of ports.
     Syn {
-        /// The port every probe leaves from when a caller pinned one, or `None`
-        /// for a fresh high port per attempt. A fresh port and a fresh sequence
-        /// number together are what let a reply name the attempt it answers; a
-        /// pinned one keeps the sequence number varying and buys a port a filter
-        /// is known to trust.
+        /// The port every probe leaves from when a caller pinned one (say, a
+        /// port a filter trusts), or `None` for a fresh high port per attempt.
+        /// The reply names its attempt by port and sequence number; a pinned
+        /// port leaves only the sequence number varying.
         src_port: Option<u16>,
         /// The ports every attempt is aimed at, all of them each time.
         dst_ports: SynPorts,
     },
     /// An SCTP INIT, for a scan that asked about SCTP.
     ///
-    /// Both answers it can draw prove the host: an INIT-ACK is an endpoint
-    /// accepting the association, an ABORT is the same stack refusing it. The
-    /// association is never completed, so nothing is left half-open.
+    /// Both answers prove the host: an INIT-ACK accepts the association, an
+    /// ABORT refuses it. The association is never completed.
     Init {
-        /// The one port every probe leaves from. Fixed rather than fresh per
-        /// probe, because it is what the capture filter narrows on; the Initiate
-        /// Tag is what varies per attempt.
+        /// The one port every probe leaves from, fixed because the capture
+        /// filter narrows on it; the Initiate Tag varies per attempt.
         src_port: u16,
-        /// The port every probe is aimed at, which a caller takes from the ports
-        /// the scan is about. A filter that passes SCTP at all is likeliest to
-        /// pass it to the port something is running on.
+        /// The port every probe is aimed at, taken from the ports the scan is
+        /// about, since a filter passing SCTP most likely passes it there.
         dst_port: u16,
     },
 }
@@ -337,9 +286,8 @@ impl SweepProbe {
         Self::Init { src_port, dst_port }
     }
 
-    /// This sweep, its probes leaving from `port` where a transport's capture
-    /// admits replies to that port alone: an answer to any other never reaches
-    /// the sweep.
+    /// This sweep, its probes leaving from `port` when a transport's capture
+    /// admits replies to that port alone.
     const fn leaving_from(self, port: Option<u16>) -> Self {
         match (self, port) {
             (Self::Syn { dst_ports, .. }, Some(port)) => Self::Syn {
@@ -364,8 +312,8 @@ impl SweepProbe {
         }
     }
 
-    /// How many packets one attempt at one address puts on the wire, which is
-    /// what the sweep's pacing and deadline are counted in.
+    /// How many packets one attempt at one address puts on the wire; the unit
+    /// of the sweep's pacing and deadline.
     fn packets_per_attempt(self) -> u32 {
         match self {
             Self::Syn { dst_ports, .. } => dst_ports.len() as u32,
@@ -381,9 +329,8 @@ impl SweepProbe {
         }
     }
 
-    /// The IP protocol an answer to this probe arrives under, over either
-    /// family: the one the probe left under, since a SYN is answered in TCP and
-    /// an INIT in SCTP.
+    /// The IP protocol an answer to this probe arrives under, the same one the
+    /// probe left under.
     const fn answered_under(self) -> IpNextHeaderProtocol {
         match self {
             Self::Syn { .. } => IpNextHeaderProtocols::Tcp,
@@ -393,24 +340,21 @@ impl SweepProbe {
 
     /// Whether `reply` answers a probe of this kind at all.
     ///
-    /// The capture filter has already narrowed what arrives, but it is a
-    /// performance boundary rather than a guarantee: over IPv6 the TCP half
-    /// cannot be narrowed on flags at all, the INIT sweep's filter admits every
-    /// ICMP message for the SCTP port scan that shares it, and a transport can
-    /// be built with no filter. This is what holds all of them to one standard.
+    /// The capture filter narrows what arrives, but over IPv6 it cannot filter
+    /// TCP flags, the INIT sweep's filter admits every ICMP message for the
+    /// SCTP port scan sharing it, and a transport can be built with no filter.
     ///
-    /// The protocol is checked before a byte is parsed, because a Layer-4
-    /// header does not say what it is. An ICMP error read as SCTP puts its first
-    /// chunk on the quoted IPv4 identification, which spells an INIT-ACK or an
-    /// ABORT often enough to credit a host with an answer it never sent.
+    /// The protocol is checked before parsing, since a Layer-4 header does not
+    /// say what it is: an ICMP error read as SCTP puts its first chunk on the
+    /// quoted IPv4 identification, which spells an INIT-ACK or an ABORT often
+    /// enough to credit a host falsely.
     fn answers(self, reply: &CapturedSegment) -> bool {
         if reply.protocol != self.answered_under().0 {
             return false;
         }
         match self {
             Self::Syn { .. } => answers_a_syn_probe(&reply.bytes),
-            // Either chunk an INIT can draw, and nothing else. A packet from an
-            // association this sweep is not part of carries neither.
+            // An INIT-ACK or an ABORT, which other associations' packets lack.
             Self::Init { .. } => protocol::sctp::parse(&reply.bytes)
                 .ok()
                 .and_then(|packet| protocol::sctp::classify_probe_response(&packet))
@@ -436,9 +380,7 @@ impl SweepProbe {
     /// What a report says about a host this probe found.
     fn evidence(self) -> StatusReason {
         match self {
-            // A TCP segment from a probed address is proof of a live stack
-            // whichever flags it carries: a SYN+ACK and a RST both require the
-            // host to have received the probe and answered it.
+            // A SYN+ACK and a RST both prove a live stack.
             Self::Syn { .. } => {
                 StatusReason::new(StatusProtocol::TcpSyn, "tcp reply to a discovery probe")
             }
@@ -449,9 +391,8 @@ impl SweepProbe {
     }
 }
 
-/// What identifies one attempt of a sweep's probe on the wire.
-/// Non-exhaustive, and for the same reason as [`SweepProbe`]: one token kind per
-/// probe kind, so the two grow together.
+/// What identifies one attempt of a sweep's probe on the wire; one token kind
+/// per [`SweepProbe`] kind.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SweepToken {
@@ -465,26 +406,21 @@ pub(crate) enum SweepToken {
 /// Checks whether addresses behind a gateway are alive, putting raw probes to
 /// each and crediting whatever comes back.
 ///
-/// The handshake is never completed, so an address answers whether or not the
-/// port it was asked about is open, and every probe leaves from the source
-/// address its route named. [`new`](Self::new) opens the raw transport it
-/// sends through, which takes root; [`with_transport`](Self::with_transport)
-/// takes one the caller opened.
+/// Every probe leaves from the source address its route named.
+/// [`new`](Self::new) opens the raw transport, which takes root;
+/// [`with_transport`](Self::with_transport) takes one the caller opened.
 pub struct RoutedScanner {
-    /// Shared state (host store, event channel, abort signal) for the scan
-    /// this explorer is part of.
+    /// Shared state (host store, event channel, abort signal) for the scan.
     ctx: ScanContext,
-    /// The source address to probe each target from. Kept for the whole sweep
-    /// rather than consumed by the first pass, since a retry has to leave from
-    /// the same place the probe it repeats did.
+    /// The source address to probe each target from, kept for the whole sweep
+    /// so a retry leaves from the same place.
     sources: HashMap<IpAddr, IpAddr>,
     /// Membership-and-count view of the targets, used to filter incoming
     /// replies and to size the adaptive deadline.
     ips: IpSet,
     /// Transport used to send SYN probes and receive replies.
     transport: ProbeTransport,
-    /// What this sweep asks with, and everything that follows from it: the
-    /// packet, what counts as an answer, and what the report credits.
+    /// What this sweep asks with.
     probe: SweepProbe,
     /// The IP-header state every SYN carries: its hop limit and any evasion
     /// override of the IP header.
@@ -500,29 +436,23 @@ pub struct RoutedScanner {
     /// Where to forward newly discovered addresses for hostname
     /// resolution, if enabled.
     dns_tx: Option<UnboundedSender<IpAddr>>,
-    /// The outstanding probes, the retry queue, what has answered and the
-    /// run's counters, shared with the other two probing sweeps.
+    /// Outstanding probes, retry queue, answers and counters, shared with the
+    /// other probing sweeps.
     sweep: HostSweep<SweepToken>,
     /// Targets whose first probe has not left yet, released by the send ticker.
     pending: std::vec::IntoIter<IpAddr>,
-    /// Targets whose first probe has been put off: turned away by the gap the
-    /// scan keeps between probes, or refused by the kernel for a hold-down on
-    /// their neighbour (see [`SendFaults::hold`]). Each is sent once both allow
-    /// it.
+    /// Targets whose first probe was put off by the scan's probe gap or by a
+    /// kernel hold-down on their neighbour (see [`SendFaults::hold`]); each is
+    /// sent once both allow it.
     held: std::collections::VecDeque<IpAddr>,
-    /// How much of the time hold-downs keep probes back the deadline has been
-    /// given.
+    /// How much hold-down time the deadline has been given.
     held_allowed: HeldAllowance,
     /// How often the send ticker fires, and how many probes it releases each
-    /// time. Together they are the configured rate; see [`pacing_for`].
+    /// time; together the configured rate (see [`pacing_for`]).
     send_tick: Duration,
     batch: usize,
-    /// Why probes that could not be sent could not be sent, if any could not.
-    ///
-    /// Kept so the reason survives into the report. The count of failed sends is
-    /// already in the audit, but a count cannot distinguish a host with no route
-    /// to the target from one refusing raw sockets, and those call for opposite
-    /// responses from whoever is reading.
+    /// Why sends failed, if any did, for the report. The audit's count cannot
+    /// tell no route from refused raw sockets, which call for different fixes.
     faults: SendFaults,
 }
 
@@ -534,21 +464,15 @@ impl HostScanner for RoutedScanner {
 
     async fn discover_hosts(&mut self) -> Result<(), StrategyError> {
         let mut send_tick = tokio::time::interval(self.send_tick);
-        // Without this, a ticker that went unpolled while the loop was busy with
-        // replies hands back every missed tick at once, and the pacing it exists
-        // to impose evaporates exactly when the queue is longest.
+        // Otherwise missed ticks fire in a burst after a busy stretch.
         send_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        // The loop yields why it stopped, so the audit cannot report a reason
-        // the code never actually took.
         let reason = loop {
             let now = Instant::now();
-            // Answers already waiting first, so one that arrived before its
-            // probe came due settles it before the timer can retire it; see
-            // the port scans' `read_waiting_replies`.
+            // Waiting answers first, so one that arrived before its probe came
+            // due settles it before the timer retires it; see the port scans'
+            // `read_waiting_replies`.
             self.read_waiting_replies();
-            // A sweep settles: it was asked whether an address is there and
-            // has now asked as many times as the policy allows.
             self.sweep.service_retries(&self.ctx, now);
 
             let all_responded = self.sweep.all_responded(self.ips.len());
@@ -558,13 +482,8 @@ impl HostScanner for RoutedScanner {
             if all_responded {
                 break StopReason::AllResponded;
             }
-            // Nothing outstanding and nothing left to send means every target
-            // has either answered or been asked as many times as it is going
-            // to be. Waiting longer cannot change the result.
-            //
-            // Both queues have to be checked, not just the ledger: at the first
-            // iteration the ledger is empty because no probe has left yet, and
-            // stopping there would end the sweep before it began.
+            // Every target answered or was asked its last time. The send queues
+            // are checked too, since the ledger is empty before the first send.
             if self.nothing_left_to_send() && self.sweep.ledger.is_empty() {
                 break StopReason::AttemptsSpent;
             }
@@ -580,9 +499,7 @@ impl HostScanner for RoutedScanner {
                     match res {
                         Some(reply) => {
                             self.sweep.audit.record_segment();
-                            // The moment the capture took the reply, not the
-                            // moment this loop reached it. See
-                            // `CapturedSegment::received_at`.
+                            // Capture time; see `CapturedSegment::received_at`.
                             self.handle_discovery_reply(&reply, reply.received_at);
                         }
                         None => break StopReason::StreamClosed,
@@ -593,10 +510,8 @@ impl HostScanner for RoutedScanner {
                     self.send_allowance(Instant::now());
                 }
 
-                // Wakes when the next probe is due, so a retry is queued on time
-                // even though nothing is arriving to wake the loop otherwise.
-                // Only while idle: with probes still to send, the ticker above
-                // is what governs how often the loop comes round.
+                // Wakes when the next probe is due, so retries go out on time in
+                // silence. While sending, the ticker above drives the loop.
                 _ = tokio::time::sleep(tick), if !sending => {}
             }
         };
@@ -608,12 +523,10 @@ impl HostScanner for RoutedScanner {
 
 /// How much longer than its pacing needs a sweep is allowed to send for.
 ///
-/// A multiple rather than a fixed margin because the shortfall it covers
-/// grows with the sweep: the send ticker skips no tick it missed, it delays
-/// the next one, so every stretch the loop spends on replies pushes the whole
-/// remaining schedule back. A half again is room for a loop kept busy a third
-/// of the time. Only a sweep that is still sending when it runs out ever
-/// spends it.
+/// A multiple, since the shortfall grows with the sweep: the ticker delays
+/// missed ticks, so every stretch spent on replies pushes the remaining
+/// schedule back. 1.5 covers a loop kept busy a third of the time. Only a sweep
+/// still sending at the end spends it.
 const SEND_SLACK: f64 = 1.5;
 
 /// How a sweep of `target_count` addresses asking `probe` paces its sends, and
@@ -627,41 +540,26 @@ fn schedule(
     gap: Option<Duration>,
     scan_gap: Option<Duration>,
 ) -> (Duration, usize, AdaptiveDeadlineConfig) {
-    // The rate is in packets, because a policer counts packets, and an
-    // attempt at one address is as many packets as the probe asks ports.
-    // The ticker releases addresses, so it runs at that fraction of it.
+    // The rate is in packets, as a policer counts them; the ticker releases
+    // addresses, each one attempt of `packets_per_attempt` packets.
     let addresses_per_sec = NonZeroU32::new(rate_per_sec.get() / probe.packets_per_attempt())
         .unwrap_or(NonZeroU32::MIN);
     let (send_tick, batch) = pacing_for(addresses_per_sec);
 
-    // The sweep has to outlive both of the limits it sets itself: its own
-    // retry schedule, or probes are given up on having never been fully
-    // asked, and its own send rate, or the sweep is cut off mid-send. The
-    // second fails invisibly, since an address never probed is
-    // indistinguishable from one with nothing on it, which is why it is
-    // derived here rather than left to a constant that has to be remembered.
+    // The deadline must outlive the retry schedule and the send rate. Cutting
+    // the sweep off mid-send fails invisibly: an unprobed address looks empty.
     //
-    // The schedule is taken at its longest, every attempt at the ceiling,
-    // rather than as an unmeasured path would run it. A sweep that has heard
-    // slow hosts times the rest from what it heard, at up to the ceiling on
-    // every attempt, the first included. And every attempt at the longer of
-    // the gaps the scan keeps between probes, where that is longer still,
-    // since a retry waits it out with its probe's clock stopped.
+    // The schedule is taken at its longest, every attempt at the ceiling (a
+    // sweep that heard slow hosts times the rest from them) and at the longer
+    // probe gap, which a retry waits out with its clock stopped.
     //
-    // The send rate is the one that grows with the range, and it is counted
-    // in every attempt rather than the first: a retry leaves through the same
-    // ticker as a first attempt, so a silent range takes the ticker's time
-    // once per attempt. Handed to the deadline as a pace per address, so the
-    // ceiling is raised to cover the range rather than left to clamp it; see
-    // `ScanBudget::covering`. The slack is for the ticker falling behind, which
-    // it does whenever the loop is busy with replies and never makes up, and
-    // it costs a sweep that finishes nothing, since the sweep stops the moment
-    // its attempts are spent.
+    // Retries leave through the same ticker, so a silent range takes the
+    // ticker's time once per attempt. Given to the deadline as a pace per
+    // address so the ceiling covers the range (see `ScanBudget::covering`).
+    // The slack costs nothing once attempts are spent.
     //
-    // The scan-wide gap is a send rate too, one attempt per gap, and where it
-    // is the slower of the two it is the pace. It counts an attempt rather
-    // than a packet, since the attempt at an address is one probe to it
-    // however many ports it asks.
+    // The scan-wide gap paces one attempt per gap, whatever the port count,
+    // and wins where it is slower.
     let by_rate = Duration::from_secs_f64(
         SEND_SLACK * f64::from(retry.max_attempts) / f64::from(addresses_per_sec.get()),
     );
@@ -681,14 +579,12 @@ impl RoutedScanner {
     /// probe it from, over a transport this constructor opens, asking the
     /// common five ports.
     ///
-    /// Hosts land in `ctx`, which is also where an abort is read from, and
-    /// every address found is posted to `dns_tx` for a reverse lookup; pass
-    /// `None` to resolve no hostnames. `tuning` supplies the retry schedule,
-    /// the probe rate the sweep paces itself to, and the evasion profile that
-    /// shapes each packet and decides how the transport is opened.
+    /// Hosts land in `ctx`, which also carries the abort signal; every address
+    /// found is posted to `dns_tx` for a reverse lookup (`None` for no
+    /// lookups). `tuning` supplies the retry schedule, the probe rate, and the
+    /// evasion profile that shapes each packet and the transport.
     ///
-    /// Fails when that transport cannot be opened, which is what happens
-    /// without root.
+    /// Fails when the transport cannot be opened, as without root.
     pub fn new(
         targets: Vec<RoutedTarget>,
         ctx: ScanContext,
@@ -698,11 +594,10 @@ impl RoutedScanner {
         Self::over_tcp(targets, ctx, dns_tx, tuning, SynPorts::common())
     }
 
-    /// [`new`](Self::new), asking `ports` rather than the common five.
+    /// [`new`](Self::new), asking `ports`.
     ///
-    /// For a port scan's liveness pass, which takes
-    /// [`SynPorts::for_scan`] so that a host behind a filter is asked about
-    /// the ports the scan is about to ask it.
+    /// A port scan's liveness pass passes [`SynPorts::for_scan`], so a filtered
+    /// host is asked about the ports the scan is about to ask it.
     pub fn over_tcp(
         targets: Vec<RoutedTarget>,
         ctx: ScanContext,
@@ -719,16 +614,13 @@ impl RoutedScanner {
         )
     }
 
-    /// A sweep of `targets` that asks over SCTP, sending one INIT per address to
-    /// `dst_port` instead of a SYN.
+    /// A sweep of `targets` sending one SCTP INIT per address to `dst_port`.
     ///
-    /// For a scan whose ports name SCTP. A host that answers only SCTP is
-    /// reported down by a SYN sweep, and its ports are never reached: the port
-    /// phase probes what discovery found. `dst_port` is the caller's to choose
+    /// For a scan whose ports name SCTP: a host that answers only SCTP reads as
+    /// down to a SYN sweep, and its ports are never probed. `dst_port` comes
     /// from the ports the scan is about; see [`SweepProbe::Init`].
     ///
-    /// Fails when the raw transport cannot be opened, which is what happens
-    /// without root.
+    /// Fails when the raw transport cannot be opened, as without root.
     pub fn over_sctp(
         targets: Vec<RoutedTarget>,
         ctx: ScanContext,
@@ -749,8 +641,8 @@ impl RoutedScanner {
         )
     }
 
-    /// The constructor both of the above are: it opens the transport `probe`
-    /// calls for and hands everything else to [`build`](Self::build).
+    /// Opens the transport `probe` calls for and hands the rest to
+    /// [`build`](Self::build).
     fn asking(
         probe: SweepProbe,
         targets: Vec<RoutedTarget>,
@@ -784,16 +676,11 @@ impl RoutedScanner {
     /// Builds a sweep around an already-opened transport, so the caller decides
     /// how probes reach the wire and where replies come from.
     ///
-    /// This is the constructor for a caller orchestrating their own scan.
-    /// [`new`](Self::new) opens a transport with the settings this engine would
-    /// choose; this one takes whatever the caller opened, which is what makes it
-    /// possible to scan through a transport built with a particular send mode or
-    /// bound to particular interfaces.
-    ///
-    /// Paired with a synthetic transport (`ProbeTransport::from_parts`, behind
-    /// the `test-support` feature) it is also the seam that lets liveness
-    /// detection and RTT correlation be driven against a simulated network
-    /// rather than a real one.
+    /// For a caller orchestrating their own scan, for example through a
+    /// transport with a particular send mode or bound to particular interfaces.
+    /// With a synthetic transport (`ProbeTransport::from_parts`, behind the
+    /// `test-support` feature) it drives liveness detection and RTT correlation
+    /// against a simulated network.
     pub fn with_transport(
         targets: Vec<RoutedTarget>,
         ctx: ScanContext,
@@ -803,14 +690,12 @@ impl RoutedScanner {
         Self::with_transport_asking(targets, ctx, dns_tx, transport, SweepProbe::syn(None))
     }
 
-    /// [`with_transport`](Self::with_transport) for a sweep asking something
-    /// other than a SYN.
+    /// [`with_transport`](Self::with_transport) asking with `probe`.
     ///
-    /// The transport has to be one `probe` would have opened: an INIT sweep
-    /// reading a capture filtered for TCP hears nothing, and the silence is
-    /// indistinguishable from a range with nothing on it. Its probes leave from
-    /// the port the transport admits replies to, where it fixes one, whatever
-    /// port `probe` names; see [`ProbeTransport::reply_port`].
+    /// The transport must be one `probe` would have opened: an INIT sweep on a
+    /// TCP-filtered capture hears nothing and reports an empty range. Probes
+    /// leave from the transport's reply port where it fixes one, whatever port
+    /// `probe` names; see [`ProbeTransport::reply_port`].
     pub fn with_transport_asking(
         targets: Vec<RoutedTarget>,
         ctx: ScanContext,
@@ -832,9 +717,8 @@ impl RoutedScanner {
         )
     }
 
-    /// The common constructor, taking the retry schedule and the send rate as
-    /// arguments because the sweep's own deadline is derived from both and so
-    /// has to be settled before anything is built.
+    /// The common constructor. Takes the retry schedule and send rate because
+    /// the deadline is derived from both.
     #[allow(clippy::too_many_arguments)]
     fn build(
         targets: Vec<RoutedTarget>,
@@ -858,9 +742,8 @@ impl RoutedScanner {
             }
         }
         ips.canonicalize();
-        // In the walk the scan's seed names rather than the order the plan
-        // lists them, which is address order: a sweep across a range in address
-        // order is what a correlating sensor keys on.
+        // In the seed's walk order: a sweep in address order is what a
+        // correlating sensor keys on.
         if let Some(walk) = WalkOrder::of(&ips, &ctx) {
             walk.arrange(&mut order);
         }
@@ -902,21 +785,15 @@ impl RoutedScanner {
     /// `reason`: the addresses it reached no verdict on and why, the sends that
     /// failed, and its audit.
     fn finish(&mut self, reason: StopReason) {
-        // What this sweep is in the report: `Routed` for the SYN sweep,
-        // `RoutedSctp` for the INIT one. Read from the probe rather than
-        // hardcoded, or an SCTP sweep's failures and counters would be filed as
-        // the SYN sweep's and a reader could not tell which question the network
-        // did not answer.
+        // `Routed` for the SYN sweep, `RoutedSctp` for the INIT one.
         let kind = self.kind();
         let label = match self.probe {
             SweepProbe::Init { .. } => "sctp-discovery",
             _ => "routed-discovery",
         };
 
-        // What the sweep did not earn a verdict for, so a resumed one asks again
-        // rather than skipping it. None of these carries a position: a probe
-        // still mid-schedule was cut off rather than spent, one still queued was
-        // never sent, and one with no route was never asked.
+        // Addresses without a verdict, so a resumed sweep asks them again: cut
+        // off mid-schedule, never sent, or never routable.
         let interrupted = self.sweep.ledger.drain_unresolved();
         let unasked: Vec<IpAddr> = self.held.drain(..).chain(self.pending.by_ref()).collect();
         self.ctx
@@ -924,11 +801,8 @@ impl RoutedScanner {
         self.ctx
             .record_address_outcomes(Outcome::Unasked, unasked.len() as u64);
 
-        // Addresses never asked leave the result narrower than the caller asked
-        // for, which is what a failure says, and the number is the part a reader
-        // can act on. Only where the sweep stopped itself: a caller who aborted
-        // the scan or set its budget knows why it ended, and every strategy
-        // running when it did was cut short alike.
+        // Unasked addresses narrow the result, so they are a failure, but only
+        // where the sweep stopped itself: an abort or a budget is the caller's.
         if !unasked.is_empty() && !matches!(reason, StopReason::Aborted | StopReason::TimedOut) {
             self.ctx.record_failure(
                 self.kind(),
@@ -940,30 +814,15 @@ impl RoutedScanner {
                 ),
             );
         }
-        // Distinct addresses rather than failed sends: a target with no route
-        // fails on every retry, and counting each of those would report more
-        // unreached addresses than the sweep had.
+        // Distinct addresses: an unroutable target fails on every retry.
         self.ctx
             .record_address_outcomes(Outcome::Unroutable, self.faults.addresses.len() as u64);
 
-        // A sweep whose probes never left is not a sweep that found nothing, and
-        // the difference is invisible in every number a caller reads: the host
-        // count is zero either way, no strategy errored, and the audit line that
-        // does say so is a log at verbosity 1. So it is recorded as a failure,
-        // which is the one channel a library consumer sees without opting in.
-        //
-        // Reported once with the first cause rather than once per probe. Sixteen
-        // identical lines say nothing the first does not, and a sweep of a large
-        // range would bury everything else in the report.
-        //
-        // **Only the failures that are about this host.** An address with no
-        // route is not a strategy that did not run: the strategy ran, and that
-        // address is not reachable from here. Recorded as a failure it would
-        // make every scan of a dual-stack name on an IPv4-only network report
-        // itself as partial, which is the surest way to teach a reader to
-        // ignore the warning that matters. It is recorded against the address
-        // instead, where a report counts what it did not cover and a front end
-        // says so beside its result. The filing every raw pass shares does both.
+        // Probes that never left would otherwise look like a sweep that found
+        // nothing, so this host's send failures are recorded as a failure, once
+        // with the first cause. An address with no route is recorded against the
+        // address, so a dual-stack name on an IPv4-only network does not mark
+        // every scan partial. The shared filing does both.
         self.faults.file(
             &self.ctx,
             kind,
@@ -972,15 +831,11 @@ impl RoutedScanner {
             self.sweep.audit.sends_failed,
         );
 
-        // Which address it was, at the level that says what went uncovered and
-        // why: the default console already has the count from the report, and
-        // a second line there would say the same thing twice. Addresses rather
-        // than failed sends, since an attempt at one address is a packet per
-        // port and each of them fails. "Unreachable" rather than "no route",
-        // since a neighbour that never answered its address resolution is
-        // filed here too, and it has a route. Nothing is wrong with the scan,
-        // so the line carries no error prefix and no errno; that detail is on
-        // the line beside the send that failed.
+        // Names the address at -v; the default console has the count already.
+        // Counted in addresses, since each attempt is a packet per port.
+        // "Unreachable" covers a neighbour that never answered address
+        // resolution, which has a route. No error prefix or errno: the scan
+        // itself is fine, and the send's own line carries the detail.
         if let Some((address, _)) = &self.faults.unroutable {
             match self.faults.addresses.len().saturating_sub(1) {
                 0 => info!(verbosity = 1, "{address} unreachable"),
@@ -992,8 +847,7 @@ impl RoutedScanner {
             }
         }
 
-        // Read before the transport is dropped, since the counters live with
-        // the capture threads it keeps alive.
+        // Read while the transport keeps the capture threads alive.
         let capture = self.transport.capture_counts();
         let targets = self.ips.len();
         self.sweep
@@ -1010,16 +864,9 @@ impl RoutedScanner {
             return;
         }
 
-        // Not every TCP segment from a probed address answers a probe, and over
-        // IPv6 the kernel does not guarantee otherwise: `tcp[tcpflags]` does
-        // not compile for that family, so the transport admits established
-        // traffic too and the narrowing has to happen here.
-        //
-        // Checking it is what keeps the two families held to one standard. The
-        // IPv4 half only ever sees SYN+ACK and RST because the filter drops the
-        // rest; without the same test, an ACK from an IPv6 host the user
-        // happens to be connected to would credit a discovery this scan did not
-        // make, on evidence the IPv4 path never accepts.
+        // `tcp[tcpflags]` does not compile for IPv6, so the transport admits
+        // established traffic there and the flags are checked here, holding
+        // both families to what the IPv4 filter admits.
         if !self.probe.answers(reply) {
             self.sweep.audit.record_off_target();
             return;
@@ -1031,16 +878,9 @@ impl RoutedScanner {
             self.sweep.audit.record_reply_without_rtt();
         }
 
-        // Host mutation only; the guard is dropped and the event emitted inside
-        // `write_host`, so the deadline and DNS follow-ups below never run under
-        // the store lock.
-        // Evidence goes in whatever this sweep has seen before; the return
-        // value is ignored, because it reports store novelty and
-        // the decisions below are about *this sweep's* first sighting.
-        // Whichever answer arrived, it required the host to have received the
-        // probe and answered it: a SYN+ACK and a RST both do, and so do an
-        // INIT-ACK and an ABORT. Discovery already treats either of a pair as an
-        // answer; this records which packet proved it.
+        // Host mutation only, so the follow-ups below run outside the store
+        // lock. The return value reports store novelty and is ignored; the
+        // decisions below are about this sweep's first sighting.
         let evidence = self.probe.evidence();
         self.ctx.write_host(ip, |host| {
             let was_up = host.status().is_up();
@@ -1052,7 +892,6 @@ impl RoutedScanner {
             }
             !was_up
         });
-        // The address answered, which is a verdict however the reply was timed.
         // Settled once the answer is stored; see `ScanContext::record_outcome`.
         self.ctx.settle_address(ip, Settled::Answered);
 
@@ -1073,14 +912,10 @@ impl RoutedScanner {
 
     /// Retires the probe to `ip` and reports what resolving it revealed.
     ///
-    /// Correlation is attempted twice on purpose. The first pass matches the
-    /// segment against the exact attempt it acknowledges, which is what yields a
-    /// true round trip even for a target that had to be asked more than once.
-    /// The second accepts the reply on its own terms: for discovery the question
-    /// is only whether something is there, and a TCP segment from a probed
-    /// address answers that whether or not it can be tied to a particular
-    /// attempt. Retiring the probe either way is what stops a host that has
-    /// already proved it exists from being asked again.
+    /// Matches the exact attempt the segment acknowledges first, which gives a
+    /// true round trip even after retries. Failing that, the reply still
+    /// retires the probe without a round trip, since discovery only asks
+    /// whether something is there.
     fn resolve_probe(&mut self, ip: IpAddr, bytes: &[u8], now: Instant) -> Option<Resolution> {
         let token = self
             .probe
@@ -1095,9 +930,8 @@ impl RoutedScanner {
     /// waiting for more, bounded by what is queued on entry.
     ///
     /// A loop held up past a timeout wakes to the answer and the expired timer
-    /// at once, and read in the other order an address's last attempt is
-    /// spent, the sweep finds nothing left to do and stops with the answer
-    /// unread: a live host reported absent.
+    /// at once; handling the timer first would spend the last attempt and stop
+    /// the sweep with a live host's answer unread.
     fn read_waiting_replies(&mut self) {
         let waiting = self.transport.rx.len();
         for _ in 0..waiting {
@@ -1118,17 +952,10 @@ impl RoutedScanner {
     /// asked.
     fn send_allowance(&mut self, now: Instant) {
         for _ in 0..self.batch {
-            // A queued retry first, unless the gaps the scan keeps between
-            // probes turn it away. A retry turned away stays queued with its
-            // clock stopped, and the allowance moves on to one that is ready,
-            // or to a fresh target, instead of spending the slot waiting.
-            //
-            // A first attempt can be turned away too. The per-host gap cannot
-            // do it on this sweep's account, since the sweep asks each host
-            // once per attempt, but another pass may have probed the address,
-            // the sweep over the other protocol among them, and the scan-wide
-            // gap is spent by every probe the scan sends. One turned away is
-            // held; see `probe`.
+            // A ready retry first; one the probe gaps turn away stays queued
+            // with its clock stopped. A first attempt can be turned away too,
+            // by another pass's probe to the address or the scan-wide gap, and
+            // is then held; see `probe`.
             if let Some(target) = self.next_ready_retry(now) {
                 self.reprobe(target, now);
             } else if let Some(target) = self.next_unheld(now) {
@@ -1144,11 +971,9 @@ impl RoutedScanner {
     /// The first queued retry whose host may be asked now, taken off the
     /// queue, or `None` where none is ready.
     ///
-    /// A retry whose probe has left the ledger was answered while it waited
-    /// and is dropped: sending it asks a question nothing is waiting on, and
-    /// arming it would start its address a fresh schedule after its verdict.
-    /// One turned away for the gap goes to the back. The walk is bounded by
-    /// the queue's length on entry.
+    /// A retry whose probe has left the ledger was answered while it waited and
+    /// is dropped. One turned away for the gap goes to the back. The walk is
+    /// bounded by the queue's length on entry.
     fn next_ready_retry(&mut self, now: Instant) -> Option<IpAddr> {
         for _ in 0..self.sweep.retries.len() {
             let target = self.sweep.retries.pop_front()?;
@@ -1177,8 +1002,8 @@ impl RoutedScanner {
     }
 
     /// Whether the kernel refused the attempt just made at `target` for a
-    /// hold-down on its neighbour, which it is held through: the deadline is
-    /// given the time, once for holds that overlap.
+    /// hold-down on its neighbour. If so the deadline is given the hold time,
+    /// once for overlapping holds.
     fn held_down(&mut self, target: IpAddr, now: Instant) -> bool {
         let Some(until) = self.faults.held_until(target, now) else {
             return false;
@@ -1190,13 +1015,10 @@ impl RoutedScanner {
 
     /// Puts the first attempt at `target` on the wire and arms its probe.
     ///
-    /// An attempt none of whose packets could be sent is not armed, so an
-    /// address nobody asked never earns a verdict. One that reached the wire
-    /// on any port is armed, since any of them can draw the answer.
-    ///
-    /// One the gaps between probes turn away, or the kernel refuses for a
-    /// hold-down on its neighbour, is held, and made once both allow it. A
-    /// refused one gives back its slot, since nothing reached the target.
+    /// Armed if any of its packets left, so an address never asked earns no
+    /// verdict. One the probe gaps turn away, or the kernel refuses for a
+    /// neighbour's hold-down, is held until both allow it; a refused one gives
+    /// back its slot.
     fn probe(&mut self, target: IpAddr, now: Instant) {
         let Ok(claim) = self.ctx.claim_probe(target) else {
             self.held.push_back(target);
@@ -1218,12 +1040,8 @@ impl RoutedScanner {
     /// left, whose attempt stays charged so an unroutable target still runs
     /// out of attempts on schedule. See [`HostSweep::retries`].
     ///
-    /// One the kernel refused for a hold-down on its neighbour goes back to
-    /// the queue with its clock still stopped, and is sent once the
-    /// hold-down is over.
-    ///
-    /// One another pass took the slot from since it was chosen goes back to
-    /// the queue the same way.
+    /// One refused for a neighbour's hold-down, or whose slot another pass
+    /// took, goes back to the queue with its clock still stopped.
     fn reprobe(&mut self, target: IpAddr, now: Instant) {
         let Ok(claim) = self.ctx.claim_probe(target) else {
             self.sweep.retries.push_back(target);
@@ -1255,8 +1073,7 @@ impl RoutedScanner {
                 let token = SynToken::fresh(src_port);
                 let mut sent = false;
                 for &dst_port in dst_ports.as_slice() {
-                    // Every port of it is refused while the kernel holds its
-                    // neighbour down, and none is put to the kernel.
+                    // Skip the rest while the kernel holds its neighbour down.
                     if self.faults.held_until(target, now).is_some() {
                         break;
                     }
@@ -1331,9 +1148,7 @@ mod tests {
     }
 
     /// A sweep over a transport opened for replies to one port leaves from
-    /// that port, whatever port its probe named: the capture hears nothing
-    /// sent to any other, and a sweep that left from one would read every
-    /// host down.
+    /// that port, whatever port its probe named, or it would hear nothing.
     #[test]
     fn a_sweep_leaves_from_the_port_its_transport_hears_replies_on() {
         let (_session, ctx) = ScanSession::new();
@@ -1357,9 +1172,8 @@ mod tests {
         );
     }
 
-    /// A sweep asks at least what the unprivileged sweep asks, so privilege
-    /// never finds fewer hosts. Pinned against the list that sweep reads rather
-    /// than restated, since the two drifting apart is the failure.
+    /// A sweep asks at least what the unprivileged sweep asks, pinned against
+    /// the list that sweep reads.
     #[test]
     fn the_common_set_is_the_list_the_unprivileged_sweep_asks() {
         assert_eq!(SynPorts::common().as_slice(), COMMON_DISCOVERY_PORTS);
@@ -1376,9 +1190,7 @@ mod tests {
         );
     }
 
-    /// A broad scan adds the ports the catalogue thinks likeliest, and no more
-    /// than the set holds, so the cost per address stays bounded whatever the
-    /// scan's size.
+    /// A broad scan adds the catalogue's likeliest ports, up to capacity.
     #[test]
     fn a_broad_scan_adds_its_highest_ranked_ports_up_to_the_limit() {
         let asked = asked_for("1-65535");
@@ -1409,10 +1221,6 @@ mod tests {
 
     /// An excluded port leaves the set and nothing else does, and a UDP
     /// exclusion of the same number leaves it alone.
-    ///
-    /// A liveness probe aimed at an excluded port is a packet the caller
-    /// forbade, sent before the port scan that honours the exclusion has
-    /// started.
     #[test]
     fn an_excluded_port_is_not_asked_and_the_rest_keep_their_order() {
         let excluded = |spec: &str| PortSet::try_from(spec).expect("a port specification");
@@ -1447,8 +1255,8 @@ mod tests {
     }
 
     /// What a silent range of `targets` costs to put on the wire at `rate`,
-    /// worked out from the numbers rather than from the sweep: every attempt
-    /// at every address, one packet per port.
+    /// computed independently of the sweep: every attempt at every address,
+    /// one packet per port.
     fn every_packet_sent(targets: usize, attempts: u8, rate: u32) -> Duration {
         let packets = targets * usize::from(attempts) * SynPorts::common().len();
         Duration::from_secs_f64(packets as f64 / f64::from(rate))
@@ -1456,11 +1264,8 @@ mod tests {
 
     /// A sweep is given at least the time its own pacing needs to ask every
     /// address as often as its schedule says, retries included, however large
-    /// the range, however slow the rate and however many attempts.
-    ///
-    /// A deadline shorter than that stops the sweep with addresses never
-    /// asked, and an address never asked looks exactly like one with nothing
-    /// on it. Each case is one the fixed ceiling cut short.
+    /// the range, however slow the rate and however many attempts. An address
+    /// never asked looks like one with nothing on it.
     #[test]
     fn a_sweep_outlasts_the_time_its_pacing_needs_to_send_every_attempt() {
         const SLASH_16: usize = 1 << 16;
@@ -1505,13 +1310,8 @@ mod tests {
     }
 
     /// A sweep outlasts the schedule of the last address it asks, with every
-    /// attempt timed as long as measurement may make it.
-    ///
-    /// A sweep that has heard slow hosts times the rest at up to the retry
-    /// ceiling on every attempt, the first included, which is far longer than
-    /// the schedule an unmeasured path gets. Sized for the unmeasured one, the
-    /// deadline stops a small sweep of a slow path while its last address
-    /// still has attempts to spend, and that address reads as cut off.
+    /// attempt timed at the retry ceiling, as a sweep that heard slow hosts
+    /// may time it.
     #[test]
     fn a_sweep_outlasts_a_probe_timed_at_the_ceiling_on_every_attempt() {
         let thorough = RetryConfig {
@@ -1534,11 +1334,7 @@ mod tests {
 
     /// A sweep keeping a gap between two probes at one host outlasts the
     /// schedule of the last address it asks with every attempt waiting out
-    /// that gap.
-    ///
-    /// A retry held for the gap waits with its probe's clock stopped, so a gap
-    /// longer than the timeout is what spaces the attempts, and a deadline
-    /// sized from the timeouts alone stops the sweep with retries still owed.
+    /// that gap, since a retry held for the gap waits with its clock stopped.
     #[test]
     fn a_spaced_sweep_outlasts_every_attempt_waiting_out_the_gap() {
         let gap = Duration::from_secs(60);
@@ -1561,10 +1357,6 @@ mod tests {
 
     /// A sweep under a scan-wide gap outlasts every attempt at every address
     /// leaving that gap apart, which on a range is far slower than its rate.
-    ///
-    /// The gap is the sweep's real pace there, and a deadline sized from the
-    /// rate alone would stop it with most of the range never asked, reading
-    /// as a range with nothing on it.
     #[test]
     fn a_scan_wide_gap_is_the_pace_of_a_range() {
         let gap = Duration::from_secs(1);
@@ -1614,12 +1406,7 @@ mod tests {
     }
 
     /// A seeded sweep asks its addresses in the order the scan's seed names,
-    /// the order a dispatched sweep streams the same plan in, rather than
-    /// walking the range.
-    ///
-    /// A sweep across an address range in address order is the most
-    /// recognisable thing a scanner puts on the wire, and the one a
-    /// correlating sensor keys on.
+    /// the same order a dispatched sweep streams the plan in.
     #[tokio::test]
     async fn a_seeded_sweep_asks_in_the_order_the_seed_names() {
         use crate::model::ip::set::Positions;
@@ -1670,11 +1457,9 @@ mod tests {
         Ipv4Addr::new(198, 51, 100, 3),
     ];
 
-    /// A sweep that stops itself with addresses still queued says how many it
-    /// never asked, where a caller reads whether a result is partial, and files
-    /// none of the addresses it reached no verdict on as silent, so its phase
-    /// names them undecided rather than reading them as hosts that are not
-    /// there.
+    /// A sweep that stops itself with addresses still queued records how many
+    /// it never asked as a failure, and files none of its undecided addresses
+    /// as silent.
     #[test]
     fn a_sweep_cut_short_reports_what_it_never_asked() {
         let (mut scanner, ctx) = sweep_with_first_attempts(&THREE, 1);
@@ -1700,11 +1485,8 @@ mod tests {
         assert!(ctx.take_silent().is_empty(), "none of them was silent");
     }
 
-    /// An unreachable address is recorded against the address, which a front
-    /// end counts beside its result, and named at the verbosity that says
-    /// what went uncovered. A default console that printed the name as
-    /// well would say the same thing twice, once in the engine's words and
-    /// once in the front end's.
+    /// An unreachable address is recorded against the address and named only
+    /// at -v, since a front end already counts it on the default console.
     #[test]
     fn an_unreachable_address_is_named_only_beyond_the_default_console() {
         let (mut scanner, ctx) = sweep_with_first_attempts(&THREE, THREE.len());
@@ -1731,11 +1513,9 @@ mod tests {
         assert_eq!(ctx.take_unroutable().len(), 2, "both are recorded");
     }
 
-    /// A send path that refused probes is one failure naming how many of the
-    /// sweep's sends it refused, the unroutable ones apart, and an address with
-    /// no route is filed against the address rather than as a failure. The
-    /// same filing every raw pass makes, so the report reads a broken send
-    /// path the same way whichever pass met it.
+    /// A send path that refused probes is one failure naming how many sends it
+    /// refused, unroutable ones apart; an address with no route is filed
+    /// against the address. Every raw pass files the same way.
     #[test]
     fn a_refused_send_is_one_failure_and_an_unroutable_address_is_filed_against_itself() {
         let (mut scanner, ctx) = sweep_with_first_attempts(&THREE, THREE.len());
@@ -1767,10 +1547,6 @@ mod tests {
     /// neighbour, `EHOSTDOWN` on macOS, is made again once the hold-down is
     /// over, and the address is not filed unreached on it; refused for a
     /// second hold-down after waiting one out, it is.
-    ///
-    /// Filed on the first, an address whose neighbour slept through one
-    /// resolution, whoever asked for it, was never asked whether anything is
-    /// there.
     #[cfg(unix)]
     #[test]
     fn an_attempt_refused_for_a_hold_down_is_made_after_it() {
@@ -1868,9 +1644,8 @@ mod tests {
         assert!(ctx.take_silent().is_empty(), "none of them was silent");
     }
 
-    /// A sweep that asked everything and heard nothing has nothing to report:
-    /// every address was asked as often as the schedule says, and silence is
-    /// its verdict.
+    /// A sweep that asked everything and heard nothing reports nothing unasked;
+    /// silence is its verdict.
     #[test]
     fn a_sweep_that_spent_its_attempts_reports_nothing_unasked() {
         let (mut scanner, ctx) = sweep_with_first_attempts(&THREE, THREE.len());
@@ -1942,12 +1717,9 @@ mod tests {
     /// An ICMP error from a swept address is never read as an SCTP answer,
     /// however its bytes fall.
     ///
-    /// The capture an INIT sweep reads admits every ICMP message, and an error
-    /// read as an SCTP packet puts its first chunk header on the quoted IPv4
-    /// identification. Under don't-fragment and a random identification two of
-    /// every 256 such errors spell an INIT-ACK or an ABORT. Read that way, each
-    /// files its host as found by an SCTP answer nobody sent and retires the
-    /// probe, so the retry that might draw a real one never leaves.
+    /// Read as SCTP, an error's first chunk header lands on the quoted IPv4
+    /// identification; under don't-fragment and a random identification, two
+    /// in 256 spell an INIT-ACK or an ABORT.
     #[test]
     fn an_icmp_error_is_not_read_as_an_sctp_answer() {
         let (mut scanner, session, probe) = init_sweep_with_a_probe_out();
@@ -1981,9 +1753,8 @@ mod tests {
         );
     }
 
-    /// A path that answers the first SYN it is handed with a SYN+ACK the
-    /// moment it leaves, and then holds the sending thread for `stall`: the
-    /// sweep stopped in its tracks with the answer already waiting for it.
+    /// Answers the first SYN with an immediate SYN+ACK, then holds the sending
+    /// thread for `stall`, leaving the sweep stopped with the answer waiting.
     struct StalledAfterAnswering {
         stall: Duration,
         replies: tokio::sync::mpsc::Sender<CapturedSegment>,
@@ -2026,9 +1797,8 @@ mod tests {
         CapturedSegment::synthetic(dst, IpNextHeaderProtocols::Tcp.0, reply)
     }
 
-    /// A path that answers every SYN at once, captured the moment it is sent,
-    /// and hands the answer to the reader `backlog` later: a capture queue the
-    /// sweep has fallen behind on.
+    /// Answers every SYN at once and hands the answer to the reader `backlog`
+    /// later, like a capture queue the sweep has fallen behind on.
     struct AnsweringThroughABacklog {
         backlog: Duration,
         replies: tokio::sync::mpsc::Sender<CapturedSegment>,
@@ -2054,12 +1824,8 @@ mod tests {
     }
 
     /// An answer that was waiting before its probe ran out of attempts finds
-    /// its host, however late the loop gets round to either.
-    ///
-    /// A loop held up for longer than a timeout wakes to find both the answer
-    /// and the expired timer. Serviced timer first, the address's last attempt
-    /// is spent, nothing is left to send or wait for, and the sweep stops
-    /// without reading the answer behind it: a live host reported absent.
+    /// its host, however late the loop gets round to either; see
+    /// `read_waiting_replies`.
     #[tokio::test]
     async fn an_answer_waiting_when_its_probe_runs_out_still_finds_the_host() {
         let (session, ctx) = ScanSession::new();
@@ -2105,22 +1871,15 @@ mod tests {
         );
     }
 
-    /// A reply is timed from when the capture took it, not from when the sweep
-    /// got round to reading it.
-    ///
-    /// A sweep reads its replies behind a queue, and a round trip measured at
-    /// the read carries the queue's depth and the runtime's scheduling. Under
-    /// load that is most of the figure: the host is recorded as far slower
-    /// than its path, and every later pass times its probes from that.
+    /// A reply is timed from when the capture took it, so queue depth and
+    /// scheduling do not inflate the round trip later passes time from.
     #[tokio::test]
     async fn a_reply_read_late_is_timed_from_its_capture() {
         let (session, ctx) = ScanSession::new();
         let (replies, rx) = tokio::sync::mpsc::channel(16);
-        // Inside the first timeout, so the answer finds its probe out on one
-        // attempt and is timed at all. The timeout is stretched well past
-        // the backlog: on a loaded machine a sleeping thread and a busy
-        // runtime can deliver the answer later than the default's 200 ms,
-        // and the probe would have run out before it arrived.
+        // Inside the first timeout, which is stretched well past the backlog
+        // so a loaded machine cannot deliver the answer after the probe ran
+        // out.
         let backlog = Duration::from_millis(100);
         let retry = RETRY_POLICY.configured(RetryConfig {
             max_attempts: std::num::NonZeroU8::new(1),
