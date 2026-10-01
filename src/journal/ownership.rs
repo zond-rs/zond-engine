@@ -32,8 +32,12 @@
 //! ## Repairing what an elevated run left to root
 //!
 //! A directory inside the invoking user's home that root owns was made by an elevated
-//! process that did not give it back. [`reclaim`] gives such a directory or file back on the
-//! way to this crate's own locations, and leaves alone one owned by any other user.
+//! process that did not give it back. [`reclaim`] and its file forms give such a directory or
+//! file back on the way to this crate's own locations, and leave alone one owned by any other
+//! user.
+//!
+//! Nothing is given whose handle shows a file another link also names, since that link may
+//! be a system file's; see [`refusal`].
 //!
 //! Compiled for either of the two writers, the journal and the settings files.
 
@@ -225,6 +229,32 @@ impl Place {
             Some(directory) => open_at(directory, &self.name, flags, mode),
             None => open_at_raw(libc::AT_FDCWD, &self.name, flags, mode),
         }
+    }
+
+    /// Opens the name for reading and writing, creating it with `mode` where it is
+    /// missing, and says whether this call created it.
+    ///
+    /// For a file every racer opens, such as a lock: what this call created is the run's
+    /// to give, what it found is not; see [`give_open`] and [`reclaim_open`].
+    #[cfg(feature = "journal-format")]
+    pub(crate) fn open_or_create(&self, mode: libc::mode_t) -> io::Result<(fs::File, bool)> {
+        /// Each miss is a racer removing the name between the two opens.
+        const ATTEMPTS: usize = 8;
+
+        let mut missed = None;
+        for _ in 0..ATTEMPTS {
+            match self.open(libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, mode) {
+                Ok(created) => return Ok((created, true)),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+            match self.open(libc::O_RDWR, 0) {
+                Ok(found) => return Ok((found, false)),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => missed = Some(e),
+                Err(e) => return Err(e),
+            }
+        }
+        Err(missed.unwrap_or_else(|| io::Error::from(io::ErrorKind::NotFound)))
     }
 
     /// The name `sibling` in the directory this name was reached in, through the same
@@ -562,7 +592,7 @@ pub(crate) fn invoking() -> Option<&'static InvokingUser> {
     INVOKING.get_or_init(super::paths::invoking_user).as_ref()
 }
 
-/// Gives something this run created to the user who invoked it, when it lies
+/// Gives a directory this run created to the user who invoked it, when it lies
 /// in that user's home.
 ///
 /// Best effort: worth avoiding leaving things to root, not worth failing a run over.
@@ -570,14 +600,8 @@ pub(crate) fn invoking() -> Option<&'static InvokingUser> {
 #[cfg(unix)]
 pub(crate) fn give(path: &Path) {
     let Some(user) = invoking() else { return };
-    let Ok(opened) = open_in_home(user, path) else {
-        return;
-    };
-
-    // SAFETY: the descriptor is owned by `opened` and open for the call; `fchown` reads
-    // only it.
-    unsafe {
-        libc::fchown(opened.as_raw_fd(), user.uid, user.gid);
+    if let Some(opened) = open_directory_in_home(user, path) {
+        hand(user, &opened, path, Offer::Made);
     }
 }
 
@@ -604,51 +628,156 @@ pub(crate) fn hand_over(leaf: &Path, created: &[PathBuf]) {
     }
 }
 
-/// [`give`] through a handle already open on `path`, so the name is not looked up
-/// again between opening it and changing its owner.
-#[cfg(all(unix, feature = "journal-format"))]
+/// Gives a file this run created, through its handle, so the name is not looked up
+/// again between creating it and changing its owner.
+#[cfg(all(unix, any(feature = "journal-format", feature = "import-settings")))]
 pub(crate) fn give_open(opened: &fs::File, path: &Path) {
-    let Some((uid, gid)) = owner_for(invoking(), path) else {
-        return;
-    };
-
-    // SAFETY: the descriptor is owned by `opened` and open for the call; `fchown` reads
-    // only it.
-    unsafe {
-        libc::fchown(opened.as_raw_fd(), uid, gid);
+    if let Some(user) = recipient(invoking(), path) {
+        hand(user, opened, path, Offer::Made);
     }
 }
 
-/// Gives `path` back to the invoking user when it lies in their home and root
-/// owns it, and says so at the first verbosity.
+/// Gives a file this run found, through its handle, back to the invoking user when
+/// root owns it, as [`reclaim`] does for a directory.
+#[cfg(all(unix, feature = "journal-format"))]
+pub(crate) fn reclaim_open(opened: &fs::File, path: &Path) {
+    if let Some(user) = recipient(invoking(), path) {
+        hand(user, opened, path, Offer::LeftToRoot);
+    }
+}
+
+/// [`reclaim_open`] for the file at `path`, reached as [`Place`] reaches a name.
+///
+/// Opened without blocking, since a pipe planted at the name would otherwise hold the
+/// open until something writes to it.
+#[cfg(all(unix, feature = "import-settings"))]
+pub(crate) fn reclaim_file(path: &Path) {
+    let Some(user) = recipient(invoking(), path) else {
+        return;
+    };
+    let opened = Place::of_as(Some(user), path)
+        .and_then(|place| place.open(libc::O_RDONLY | libc::O_NONBLOCK, 0));
+    if let Ok(opened) = opened {
+        hand(user, &opened, path, Offer::LeftToRoot);
+    }
+}
+
+/// Gives a directory `path` back to the invoking user when it lies in their home and
+/// root owns it, and says so at the first verbosity.
 ///
 /// For what already exists on the way to this crate's locations; see the module
 /// documentation.
 #[cfg(unix)]
 pub(crate) fn reclaim(path: &Path) {
+    let Some(user) = invoking() else { return };
+    if let Some(opened) = open_directory_in_home(user, path) {
+        hand(user, &opened, path, Offer::LeftToRoot);
+    }
+}
+
+/// Why something is offered to the invoking user.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Offer {
+    /// This run made it, so it is the user's whoever owns it now.
+    Made,
+    /// It was found, so it is given only where root owns it, the sign of an elevated
+    /// run that gave nothing back.
+    LeftToRoot,
+}
+
+/// What [`hand`] did.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Handed {
+    /// Its owner is now the user.
+    Given,
+    /// Found owned by somebody other than root, so left as it is.
+    NotRoots,
+    /// Refused, for the reason given; see [`refusal`].
+    Refused(&'static str),
+    /// It could not be looked at or its owner could not be changed.
+    Failed,
+}
+
+/// Gives `opened` to `user` as `offer` allows, checked on the handle so what is
+/// checked is what is changed.
+#[cfg(unix)]
+fn hand(user: &InvokingUser, opened: &fs::File, path: &Path, offer: Offer) -> Handed {
     use std::os::unix::fs::MetadataExt;
 
-    let Some(user) = invoking() else { return };
-    let Ok(opened) = open_in_home(user, path) else {
-        return;
+    let Ok(held) = opened.metadata() else {
+        return Handed::Failed;
     };
-    // Checked on the handle, so what is checked is what is changed.
-    if !opened.metadata().is_ok_and(|held| held.uid() == 0) {
-        return;
+    if let Some(why) = refusal(&held) {
+        crate::info!(
+            verbosity = 1,
+            "{} not given to its user ({why})",
+            path.display()
+        );
+        return Handed::Refused(why);
+    }
+    if offer == Offer::LeftToRoot && held.uid() != 0 {
+        return Handed::NotRoots;
     }
 
-    // SAFETY: as in `give`.
-    let changed = unsafe { libc::fchown(opened.as_raw_fd(), user.uid, user.gid) } == 0;
-    if changed {
+    // SAFETY: the descriptor is owned by `opened` and open for the call; `fchown` reads
+    // only it.
+    if unsafe { libc::fchown(opened.as_raw_fd(), user.uid, user.gid) } != 0 {
+        return Handed::Failed;
+    }
+    if offer == Offer::LeftToRoot {
         crate::info!(
             verbosity = 1,
             "{} given back to its user (left to root)",
             path.display()
         );
     }
+    Handed::Given
 }
 
-/// Opens what `path` names to change its owner, when it lies strictly inside
+/// Why what `held` describes may not be given away, or `None` where it may.
+///
+/// A file with a second link may be a name for something outside the home: `ln` needs no
+/// say over its target, so where a system allows it a user can link a root-owned
+/// system file into their own state directory, and changing the owner through that name
+/// would give them the original. A directory cannot be hard-linked. Nothing but a file or a
+/// directory is this crate's to make.
+#[cfg(unix)]
+fn refusal(held: &fs::Metadata) -> Option<&'static str> {
+    use std::os::unix::fs::MetadataExt;
+
+    let kind = held.file_type();
+    if kind.is_dir() {
+        None
+    } else if !kind.is_file() {
+        Some("not a file or directory")
+    } else if held.nlink() > 1 {
+        Some("another link names it")
+    } else {
+        None
+    }
+}
+
+/// [`open_in_home`] for a directory to give, saying at the first verbosity when
+/// something else stands at the name.
+#[cfg(unix)]
+fn open_directory_in_home(user: &InvokingUser, path: &Path) -> Option<fs::File> {
+    match open_in_home(user, path) {
+        Ok(opened) => Some(opened),
+        Err(e) if e.raw_os_error() == Some(libc::ENOTDIR) => {
+            crate::info!(
+                verbosity = 1,
+                "{} not given to its user (not a directory)",
+                path.display()
+            );
+            None
+        }
+        Err(_) => None,
+    }
+}
+
+/// Opens the directory `path` names to change its owner, when it lies strictly inside
 /// `user`'s home, without following a link the user could have planted on the way.
 ///
 /// By name, `~/.config` linked to `/etc` would turn `~/.config/zond` into `/etc/zond`, and
@@ -659,8 +788,8 @@ fn open_in_home(user: &InvokingUser, path: &Path) -> io::Result<fs::File> {
     walk_from_home(user, path, false)
 }
 
-/// Opens `path`, which must lie inside `user`'s home or, where `home_itself` allows,
-/// be the home, without following a link that leads out of it.
+/// Opens the directory `path`, which must lie inside `user`'s home or, where
+/// `home_itself` allows, be the home, without following a link that leads out of it.
 ///
 /// The path is resolved once to decide whether it lies in the home, so dotfiles linked
 /// elsewhere inside the home keep working. The resolved path is then walked from the home
@@ -685,7 +814,12 @@ fn walk_from_home(user: &InvokingUser, path: &Path, home_itself: bool) -> io::Re
         let std::path::Component::Normal(name) = component else {
             return Err(outside(path));
         };
-        current = open_at(&current, &c_name(name)?, libc::O_RDONLY, 0)?;
+        current = open_at(
+            &current,
+            &c_name(name)?,
+            libc::O_RDONLY | libc::O_DIRECTORY,
+            0,
+        )?;
     }
     Ok(current)
 }
@@ -807,23 +941,36 @@ pub(crate) fn give(_path: &Path) {}
 #[cfg(all(not(unix), any(feature = "import-settings", feature = "fetch")))]
 pub(crate) fn hand_over(_leaf: &Path, _created: &[PathBuf]) {}
 
-/// [`give`]'s handle form, inert for the same reason.
-#[cfg(all(not(unix), feature = "journal-format"))]
+/// [`give`] for a file, inert for the same reason.
+#[cfg(all(
+    not(unix),
+    any(feature = "journal-format", feature = "import-settings")
+))]
 pub(crate) fn give_open(_opened: &fs::File, _path: &Path) {}
 
 /// Nothing is ever left to root on a platform with no `sudo`.
 #[cfg(not(unix))]
 pub(crate) fn reclaim(_path: &Path) {}
 
+/// [`reclaim`] for a file, inert for the same reason.
+#[cfg(all(not(unix), feature = "journal-format"))]
+pub(crate) fn reclaim_open(_opened: &fs::File, _path: &Path) {}
+
+/// [`reclaim`] for a file, inert for the same reason.
+#[cfg(all(not(unix), feature = "import-settings"))]
+pub(crate) fn reclaim_file(_path: &Path) {}
+
 /// Who `path` should be given to: the invoking user, when there is one and the path
 /// lies strictly inside their home.
 ///
 /// Strictly inside, because the home itself was not this run's to create. A path that climbs
 /// out with `..` is refused, not resolved.
-#[cfg(all(unix, any(test, feature = "journal-format")))]
-fn owner_for(invoking: Option<&InvokingUser>, path: &Path) -> Option<(u32, u32)> {
-    let user = invoking?;
-    inside_home(user, path).then_some((user.uid, user.gid))
+#[cfg(all(
+    unix,
+    any(test, feature = "journal-format", feature = "import-settings")
+))]
+fn recipient<'a>(invoking: Option<&'a InvokingUser>, path: &Path) -> Option<&'a InvokingUser> {
+    invoking.filter(|user| inside_home(user, path))
 }
 
 /// Whether `path` lies strictly inside `user`'s home, spelled without `..`.
@@ -900,7 +1047,7 @@ mod tests {
 
         for inside in ["/home/user/.local", "/home/user/.config/zond/engine.toml"] {
             assert_eq!(
-                owner_for(Some(&user), Path::new(inside)),
+                recipient(Some(&user), Path::new(inside)).map(|user| (user.uid, user.gid)),
                 Some((1000, 1000)),
                 "{inside}"
             );
@@ -912,14 +1059,14 @@ mod tests {
             "/home/user/../root/.config",
         ] {
             assert_eq!(
-                owner_for(Some(&user), Path::new(outside)),
+                recipient(Some(&user), Path::new(outside)).map(|user| user.uid),
                 None,
                 "{outside}"
             );
         }
 
         // Nothing elevated: nobody to give anything to.
-        assert_eq!(owner_for(None, Path::new("/home/user/.local")), None);
+        assert!(recipient(None, Path::new("/home/user/.local")).is_none());
     }
 
     /// What is given is reached from the home without following a planted link that
@@ -951,6 +1098,107 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&scratch);
+    }
+
+    /// The user this test process is, as an elevated run's invoking user, so a give
+    /// is a `chown` to the owner a file already has and needs no privilege.
+    #[cfg(unix)]
+    fn this_user(home: &Path) -> InvokingUser {
+        // SAFETY: neither call can fail or touches memory.
+        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+        InvokingUser {
+            uid,
+            gid,
+            home: home.to_path_buf(),
+        }
+    }
+
+    /// A file with a second link is never given, made or found: the other link may be a
+    /// system file's, linked into the home by the user. One with no other link is, and so is
+    /// a directory, whose link count only counts what is in it.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_another_link_names_is_never_given() {
+        let home = scratch("hard-links");
+        let user = this_user(&home);
+        let sole = home.join("sole");
+        let linked = home.join("linked");
+        fs::write(&sole, b"").expect("writes");
+        fs::write(home.join("system-file"), b"").expect("writes");
+        fs::hard_link(home.join("system-file"), &linked).expect("links");
+        fs::create_dir(home.join("directory")).expect("a directory");
+        fs::create_dir(home.join("directory/inner")).expect("a directory");
+
+        for offer in [Offer::Made, Offer::LeftToRoot] {
+            let opened = fs::File::open(&linked).expect("opens");
+            assert_eq!(
+                hand(&user, &opened, &linked, offer),
+                Handed::Refused("another link names it"),
+                "a file with a second link was handed over ({offer:?})"
+            );
+        }
+        let opened = fs::File::open(&sole).expect("opens");
+        assert_eq!(hand(&user, &opened, &sole, Offer::Made), Handed::Given);
+        assert_eq!(
+            hand(&user, &opened, &sole, Offer::LeftToRoot),
+            Handed::NotRoots
+        );
+        let directory = home.join("directory");
+        let opened = open_in_home(&user, &directory).expect("opens");
+        assert_eq!(hand(&user, &opened, &directory, Offer::Made), Handed::Given);
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// What is given as a directory is opened as one, so a file planted at a directory's
+    /// name is not reached, and a pipe opened as a file is refused.
+    #[cfg(unix)]
+    #[test]
+    fn only_a_directory_is_given_as_one() {
+        let scratch = scratch("kinds");
+        let home = scratch.join("home");
+        fs::create_dir_all(&home).expect("a home");
+        fs::write(home.join("state"), b"").expect("writes");
+        let user = this_user(&home);
+
+        assert_eq!(
+            open_in_home(&user, &home.join("state"))
+                .map(drop)
+                .map_err(|e| e.raw_os_error()),
+            Err(Some(libc::ENOTDIR)),
+            "a file was opened as a directory to give"
+        );
+
+        let pipe = home.join("pipe");
+        let name = c_name(pipe.as_os_str()).expect("a name");
+        // SAFETY: `name` is a NUL-terminated string that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0, "a pipe");
+        let opened = Place::of_as(Some(&user), &pipe)
+            .and_then(|place| place.open(libc::O_RDONLY | libc::O_NONBLOCK, 0))
+            .expect("opens without blocking");
+        assert_eq!(
+            hand(&user, &opened, &pipe, Offer::LeftToRoot),
+            Handed::Refused("not a file or directory")
+        );
+
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    /// Opening a file every racer shares says whether this call made it, since only
+    /// what it made is the run's to give.
+    #[cfg(all(unix, feature = "journal-format"))]
+    #[test]
+    fn opening_or_creating_says_whether_it_created() {
+        let home = scratch("open-or-create");
+        let user = this_user(&home);
+        let lock = Place::of_as(Some(&user), &home.join("update.lock")).expect("reached");
+
+        let (_, created) = lock.open_or_create(0o600).expect("creates");
+        assert!(created, "the first open did not create");
+        let (_, created) = lock.open_or_create(0o600).expect("opens");
+        assert!(!created, "a file already there was reported as made");
+
+        let _ = fs::remove_dir_all(&home);
     }
 
     /// A listing under `sudo` is not led out of the home by a link, and reports a link

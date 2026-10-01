@@ -755,12 +755,12 @@ pub fn provision_document(path: &Path, document: &str) -> Result<Provisioned, Se
                     path: path.to_path_buf(),
                     source,
                 })?;
-            crate::journal::ownership::give(path);
+            crate::journal::ownership::give_open(&file, path);
             Ok(Provisioned::Created)
         }
         // An existing file is success.
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            crate::journal::ownership::reclaim(path);
+            crate::journal::ownership::reclaim_file(path);
             Ok(Provisioned::Existed)
         }
         Err(source) => Err(SettingsError::Io {

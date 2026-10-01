@@ -198,10 +198,31 @@ pub(super) fn open_existing(path: &Path) -> std::io::Result<fs::File> {
 /// `journal::lock`'s `break` file, whose lock lives on the open file. No truncate, since
 /// that would be one more thing a racer could do to a file another holds. Same mode and
 /// `O_NOFOLLOW` as everywhere here.
+///
+/// Under `sudo` a file this call created is given to the invoking user, and one it found
+/// is given back only where root owns it.
+#[cfg(unix)]
 pub(super) fn open_or_create_private(path: &Path) -> std::io::Result<fs::File> {
-    let file = open(path, Access::CreateOrOpen)?;
-    claim(&file, path);
+    let place = Place::of(path)?;
+    let (file, created) = place
+        .open_or_create(0o600)
+        .map_err(|error| named(&place, path, error))?;
+    if created {
+        claim(&file, path);
+    } else {
+        super::ownership::reclaim_open(&file, path);
+    }
     Ok(file)
+}
+
+/// [`open_or_create_private`] where there is no `sudo` and no mode to set.
+#[cfg(not(unix))]
+pub(super) fn open_or_create_private(path: &Path) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(path)
 }
 
 /// Removes a journal file's name (a link at it, not what the link points to),
@@ -285,13 +306,11 @@ pub(super) fn exists(path: &Path) -> std::io::Result<bool> {
     }
 }
 
-/// The five ways a journal file is opened.
+/// The ways a journal file is opened, beside [`open_or_create_private`].
 #[derive(Clone, Copy)]
 enum Access {
     /// Created, and refused if the name exists.
     CreateNew,
-    /// Created if missing, opened for reading and writing either way.
-    CreateOrOpen,
     /// Opened to add to its end.
     Append,
     /// Opened for reading and writing.
@@ -314,25 +333,30 @@ fn open(path: &Path, how: Access) -> std::io::Result<fs::File> {
 fn open_in(place: &Place, path: &Path, how: Access) -> std::io::Result<fs::File> {
     let flags = match how {
         Access::CreateNew => libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
-        Access::CreateOrOpen => libc::O_RDWR | libc::O_CREAT,
         Access::Append => libc::O_WRONLY | libc::O_APPEND,
         Access::ReadWrite => libc::O_RDWR,
         Access::Read => libc::O_RDONLY,
     };
-    place.open(flags, 0o600).map_err(|error| {
-        // Asked of the name itself, to tell a link at it from a loop further up, which
-        // fails the same way.
-        let linked = error.raw_os_error() == Some(libc::ELOOP)
-            && place.kind().is_ok_and(|kind| kind == Kind::Link);
-        if linked {
-            std::io::Error::other(format!(
-                "{} is a link, not a journal file (not followed)",
-                path.display()
-            ))
-        } else {
-            error
-        }
-    })
+    place
+        .open(flags, 0o600)
+        .map_err(|error| named(place, path, error))
+}
+
+/// `error` from opening `place`, reported as a link where a link at the name is why.
+#[cfg(unix)]
+fn named(place: &Place, path: &Path, error: std::io::Error) -> std::io::Error {
+    // Asked of the name itself, to tell a link at it from a loop further up, which
+    // fails the same way.
+    let linked = error.raw_os_error() == Some(libc::ELOOP)
+        && place.kind().is_ok_and(|kind| kind == Kind::Link);
+    if linked {
+        std::io::Error::other(format!(
+            "{} is a link, not a journal file (not followed)",
+            path.display()
+        ))
+    } else {
+        error
+    }
 }
 
 /// Platforms with no mode to set at open. Nothing is promised about who else can
@@ -342,7 +366,6 @@ fn open_in(place: &Place, _path: &Path, how: Access) -> std::io::Result<fs::File
     let mut options = fs::OpenOptions::new();
     match how {
         Access::CreateNew => options.write(true).create_new(true),
-        Access::CreateOrOpen => options.read(true).write(true).create(true),
         Access::Append => options.append(true),
         Access::ReadWrite => options.read(true).write(true),
         Access::Read => options.read(true),

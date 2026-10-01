@@ -672,18 +672,23 @@ enum Access {
 
 /// Opens `path` as `how` says, never following a link at it and, under
 /// `sudo`, never through one leading out of the invoking user's home; a file
-/// this creates there is given to them.
+/// this creates there is given to them, and one it finds is given back only
+/// where root owns it.
 #[cfg(unix)]
 fn open(path: &Path, how: Access) -> io::Result<File> {
-    let flags = match how {
-        Access::Read => libc::O_RDONLY,
-        Access::CreateOrOpen => libc::O_RDWR | libc::O_CREAT,
-    };
-    let file = Place::of(path)?.open(flags, 0o644)?;
-    if matches!(how, Access::CreateOrOpen) {
-        ownership::give_open(&file, path);
+    let place = Place::of(path)?;
+    match how {
+        Access::Read => place.open(libc::O_RDONLY, 0),
+        Access::CreateOrOpen => {
+            let (file, created) = place.open_or_create(0o644)?;
+            if created {
+                ownership::give_open(&file, path);
+            } else {
+                ownership::reclaim_open(&file, path);
+            }
+            Ok(file)
+        }
     }
-    Ok(file)
 }
 
 /// Opens `path` as `how` says, where there is no `sudo` to guard against.
